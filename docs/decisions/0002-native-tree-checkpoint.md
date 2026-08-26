@@ -16,7 +16,9 @@ evidence into product architecture.
 Add a separate Stage A protocol checkpoint without changing the current service or browser
 path. Enumerate all documented source kinds explicitly, exhaust pagination, construct spawned
 lineage only from `parentThreadId`, and preserve native status names. Generic `forkedFromId`
-history is not parent-child evidence, and runtime `idle` is not semantic done.
+history is not parent-child evidence. A nonempty `sessionId` is required on every thread but
+remains opaque per-thread evidence; equality across threads is not a lineage invariant. Runtime
+`idle` is not semantic done.
 
 For exact native controls, start normal input on an observed idle thread, steer an observed
 active thread only with its exact in-progress turn id, and interrupt only an exact thread/turn.

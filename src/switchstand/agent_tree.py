@@ -204,14 +204,6 @@ class AgentTreeAdapter:
                 "the selected thread is not a native root",
                 phase="root_read",
             )
-        root_session_id = str(root["sessionId"])
-        if root_session_id != root_thread_id:
-            raise AgentTreeEvidenceError(
-                "root_session_mismatch",
-                "the selected root does not own its native session tree",
-                phase="root_read",
-            )
-
         descendants, pages = self._list_all({"ancestorThreadId": root_thread_id})
         by_id = {root_thread_id: root}
         for thread in descendants:
@@ -226,12 +218,6 @@ class AgentTreeAdapter:
 
         for thread in descendants:
             thread_id = str(thread["id"])
-            if thread.get("sessionId") != root_session_id:
-                raise AgentTreeEvidenceError(
-                    "descendant_session_mismatch",
-                    "a descendant does not share the root native session",
-                    phase="lineage_validation",
-                )
             parent_id = thread.get("parentThreadId")
             if not isinstance(parent_id, str) or not parent_id:
                 raise AgentTreeEvidenceError(

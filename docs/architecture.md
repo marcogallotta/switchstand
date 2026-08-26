@@ -12,7 +12,8 @@ submits narrow message and attempt-control requests.
 threads into the engine's roles or write a duplicate source of truth. It reads one exact root,
 lists descendants with `ancestorThreadId`, supplies every documented `sourceKinds` value on
 every page, follows `nextCursor` to exhaustion, and validates ancestry only through
-`parentThreadId`. `forkedFromId` remains visible evidence but is not spawned lineage.
+`parentThreadId`. Every thread must carry a nonempty `sessionId`, but the value is opaque
+per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
 
 Native runtime state remains exactly `active` (with documented flags), `idle`, `systemError`,
 or `notLoaded`. In particular, `idle` is not renamed to semantic completion. For direct input,
@@ -93,6 +94,5 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- A claimed live checkpoint; it must be performed and recorded separately with real evidence
-- Replacing the fixed-role service or browser surface before the native-tree Stage A live
-  checkpoint passes
+- Replacing the fixed-role service or browser surface; the native-tree Stage A gate has passed,
+  but that replacement remains a separate unimplemented decision

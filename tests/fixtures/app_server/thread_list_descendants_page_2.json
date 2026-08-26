@@ -2,7 +2,7 @@
   "data": [
     {
       "id": "grandchild-1",
-      "sessionId": "root-1",
+      "sessionId": "opaque-grandchild-session",
       "forkedFromId": null,
       "parentThreadId": "child-1",
       "preview": "Review pagination evidence",

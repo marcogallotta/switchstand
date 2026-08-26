@@ -2,7 +2,7 @@
   "data": [
     {
       "id": "child-1",
-      "sessionId": "root-1",
+      "sessionId": "opaque-child-session",
       "forkedFromId": "unrelated-history-fork",
       "parentThreadId": "root-1",
       "preview": "Research App Server lineage",

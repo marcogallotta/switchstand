@@ -140,16 +140,36 @@ class AgentTreeProtocolTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "missing_intermediate_parent")
         self.assertEqual(raised.exception.phase, "lineage_validation")
 
-    def test_descendant_from_another_native_session_fails_closed(self):
+    def test_session_ids_are_required_opaque_evidence_not_lineage(self):
         client = FixtureClient()
-        client.pages = [deepcopy(client.pages[0])]
-        client.pages[0]["data"][0]["sessionId"] = "different-root"
-        client.pages[0]["nextCursor"] = None
+        observed = AgentTreeAdapter(client).observe_tree("root-1")
 
-        with self.assertRaises(AgentTreeEvidenceError) as raised:
-            AgentTreeAdapter(client).observe_tree("root-1")
-        self.assertEqual(raised.exception.code, "descendant_session_mismatch")
-        self.assertEqual(raised.exception.phase, "lineage_validation")
+        self.assertEqual(
+            [thread["sessionId"] for thread in observed["threads"]],
+            [
+                "opaque-root-session",
+                "opaque-child-session",
+                "opaque-grandchild-session",
+            ],
+        )
+
+    def test_empty_session_id_fails_each_thread_record_closed(self):
+        cases = []
+
+        client = FixtureClient()
+        client.reads["root-1"]["thread"]["sessionId"] = ""
+        cases.append((client, "root_not_found_or_invalid", "root_read"))
+
+        client = FixtureClient()
+        client.pages[0]["data"][0]["sessionId"] = ""
+        cases.append((client, "invalid_descendant_record", "descendant_list"))
+
+        for client, expected_code, expected_phase in cases:
+            with self.subTest(expected_code=expected_code):
+                with self.assertRaises(AgentTreeEvidenceError) as raised:
+                    AgentTreeAdapter(client).observe_tree("root-1")
+                self.assertEqual(raised.exception.code, expected_code)
+                self.assertEqual(raised.exception.phase, expected_phase)
 
     def test_native_status_event_is_preserved_and_idle_is_not_done(self):
         adapter = AgentTreeAdapter(FixtureClient())

@@ -14,20 +14,18 @@ and result fencing by role generation plus attempt identity.
 
 The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are
 implemented and covered by local unit tests. The adapter speaks the real Codex app-server
-v2 thread/turn protocol. The **live checkpoint has not been run** in this standalone
-repository: no claim is made that a real local Codex daemon, authentication, or model turn
-has been exercised here.
+v2 thread/turn protocol. The native-tree Stage A probe has passed against a real local App
+Server socket; the retained redacted evidence records the observed tree and status events.
 
-Issue #3's native-agent-tree checkpoint is staged but not claimed complete. The separate
+Issue #3's native-agent-tree checkpoint is complete at the probe boundary. The separate
 `agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
 kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
 preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
 fixtures are documented protocol-shape fixtures, not live captures. The default read-only
 `switchstand-stage-a` snapshot CLI now turns a real socket plus one exact root thread id into
 redacted machine-readable evidence or a nonzero fail-closed reason. Its separate notification
-mode requires an explicit runtime-loading subscription opt-in. Until that command observes a
-real root plus spawned descendant, the synthetic two-role UI remains the main surface and
-Stage B must not begin.
+mode requires an explicit runtime-loading subscription opt-in. The live gate has passed, but
+Stage B remains unimplemented and the synthetic two-role UI is unchanged.
 
 ## Non-goals
 

@@ -136,23 +136,24 @@ The output never calls native `idle` done or silence stale.
 Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
 failure, exit `4` is unavailable/incomplete evidence, and argparse usage errors exit `2`. Error
 objects are JSON for runtime failures and omit the socket path. Their `code`, fixed `message`,
-and allowlisted `phase` distinguish safe categories including invalid/missing roots, selected
-non-roots, root or descendant session mismatches, absent descendants, invalid pagination,
-duplicate threads, missing parent edges or intermediate parents, lineage cycles, invalid or
-unsupported native statuses, and missing protocol timestamps. They never include protocol ids,
-paths, raw statuses or flags, cursors, prompts/outputs, or exception strings. Run the following
-for the complete flag reference; an editable install also provides the `switchstand-stage-a`
-console command.
+and allowlisted `phase` distinguish safe categories including invalid/missing roots or
+descendant records with absent session evidence, selected non-roots, absent descendants,
+invalid pagination, duplicate threads, missing parent edges or intermediate parents, lineage
+cycles, invalid or unsupported native statuses, and missing protocol timestamps. They never
+include protocol ids, paths, raw statuses or flags, cursors, prompts/outputs, or exception
+strings. Run the following for the complete flag reference; an editable install also provides
+the `switchstand-stage-a` console command.
 
 ```sh
 PYTHONPATH=src python -m switchstand.stage_a_probe --help
 ```
 
-### 2026-08-26 blocked live attempt
+### 2026-08-26 live checkpoint
 
-In the current Work workspace, Codex `0.150.0-alpha.10` successfully generated the
-experimental TypeScript protocol schema, but no real checkpoint was possible. No daemon socket
-was exposed. Starting a Unix listener and the stdio initialize path exited with
-`Codex executable path is not configured`; the daemon socket path was unavailable with
-`Operation not permitted`. Consequently, no live root/descendant payload or status transition
-was observed. Stage A did not pass and Stage B was not started.
+The Stage A probe connected to a real local App Server socket and passed against one exact root
+plus one spawned descendant. The retained `stage-a-evidence.json` records complete one-page
+pagination with every source kind, lineage only through `parentThreadId`, distinct valid opaque
+session ids, protocol timestamps and native statuses, two exact resume acknowledgements, exact
+tree revalidation, and received `active` then `idle` status notifications. A benign diagnostic
+turn on the exact idle root produced the status transition while the probe was subscribed; the
+probe itself added no conversation history. Stage B was not started and the browser is unchanged.

@@ -1,7 +1,7 @@
 {
   "thread": {
     "id": "root-1",
-    "sessionId": "root-1",
+    "sessionId": "opaque-root-session",
     "forkedFromId": null,
     "parentThreadId": null,
     "preview": "Investigate the real agent tree",

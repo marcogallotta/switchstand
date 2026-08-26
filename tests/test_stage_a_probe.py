@@ -496,10 +496,6 @@ class StageAProbeTests(unittest.TestCase):
         cases.append((client, "selected_thread_not_root", "root_read"))
 
         client = ProbeClient()
-        client.root["thread"]["sessionId"] = leaked
-        cases.append((client, "root_session_mismatch", "root_read"))
-
-        client = ProbeClient()
         page = fixture("thread_list_descendants_page_1.json")
         page["nextCursor"] = [leaked]
         client.pages = deque([page])
