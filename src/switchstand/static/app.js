@@ -70,6 +70,7 @@ function roleCard(state, role, refresh, reportError) {
 
   const send = el("form", "form");
   const input = el("textarea");
+  input.dataset.draftKey = `message:${role.id}`;
   input.placeholder = `Message ${role.name} directly`;
   input.required = true;
   const sendButton = el("button", "button button--primary", "Send message");
@@ -90,6 +91,7 @@ function roleCard(state, role, refresh, reportError) {
     const controls = el("section", "inset form");
     controls.append(el("h3", null, "Exact attempt controls"));
     const correction = el("textarea");
+    correction.dataset.draftKey = `correction:${current.id}`;
     correction.placeholder = "Correction for an exact redirect";
     const actions = el("div", "actions");
     if (["running", "waiting"].includes(current.status)) {
@@ -149,11 +151,43 @@ function reportError(value) {
   errorHost.textContent = value instanceof Error ? value.message : String(value);
   errorHost.hidden = false;
 }
+
+function captureDrafts() {
+  const values = new Map();
+  let focused = null;
+  rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
+    const key = input.dataset.draftKey;
+    values.set(key, input.value);
+    if (input === document.activeElement) {
+      focused = {
+        key,
+        start: input.selectionStart,
+        end: input.selectionEnd,
+        direction: input.selectionDirection,
+      };
+    }
+  });
+  return { values, focused };
+}
+
+function restoreDrafts(drafts) {
+  rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
+    const key = input.dataset.draftKey;
+    if (drafts.values.has(key)) input.value = drafts.values.get(key);
+    if (drafts.focused?.key === key) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(drafts.focused.start, drafts.focused.end, drafts.focused.direction);
+    }
+  });
+}
+
 async function refresh() {
   try {
     const state = await request("/api/workbench");
     errorHost.hidden = true;
+    const drafts = captureDrafts();
     rolesHost.replaceChildren(...Object.values(state.roles).map((role) => roleCard(state, role, refresh, reportError)));
+    restoreDrafts(drafts);
   } catch (error) { reportError(error); }
 }
 

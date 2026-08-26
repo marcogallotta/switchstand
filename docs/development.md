@@ -24,12 +24,13 @@ Installation is not required. The canonical dependency-free commands use `PYTHON
 ```sh
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m compileall -q src tests
+node --test tests/browser_focus.test.js
 node --check src/switchstand/static/app.js
 ```
 
 The first two commands are required for every code change. Run the JavaScript syntax check when
-Node is available and for every browser-code change. There is deliberately no package manager,
-bundler, formatter, or framework-owned test runner in this slice.
+Node is available and for every browser-code change. The browser regression uses Node's built-in
+test runner and a minimal DOM fixture, so it adds no package-manager or framework dependency.
 
 ## Run
 

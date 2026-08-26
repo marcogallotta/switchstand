@@ -47,11 +47,12 @@ Run the dependency-free checks:
 ```sh
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m compileall -q src tests
+node --test tests/browser_focus.test.js
 node --check src/switchstand/static/app.js
 ```
 
-The Node command is optional and only checks JavaScript syntax; Node is not needed to run
-Switchstand.
+The Node commands are optional, cover the browser refresh regression, and check JavaScript
+syntax; Node is not needed to run Switchstand.
 
 ## Repository layout
 
