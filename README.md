@@ -22,11 +22,12 @@ Issue #3's native-agent-tree checkpoint is staged but not claimed complete. The 
 `agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
 kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
 preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
-fixtures are documented protocol-shape fixtures, not live captures. The read-only
-`switchstand-stage-a` CLI now turns a real socket plus one exact root thread id into redacted
-machine-readable evidence or a nonzero fail-closed reason. Until that command observes a real
-root plus spawned descendant, the synthetic two-role UI remains the main surface and Stage B
-must not begin.
+fixtures are documented protocol-shape fixtures, not live captures. The default read-only
+`switchstand-stage-a` snapshot CLI now turns a real socket plus one exact root thread id into
+redacted machine-readable evidence or a nonzero fail-closed reason. Its separate notification
+mode requires an explicit runtime-loading subscription opt-in. Until that command observes a
+real root plus spawned descendant, the synthetic two-role UI remains the main surface and
+Stage B must not begin.
 
 ## Non-goals
 
@@ -74,9 +75,10 @@ PYTHONPATH=src python -m switchstand.stage_a_probe \
   --root-thread-id EXACT_ROOT_THREAD_ID
 ```
 
-The command does not discover or guess a root and does not resume, load, or mutate threads.
-It prints one JSON object to stdout. See [Development](docs/development.md#run-the-native-stage-a-probe)
-for bounded polling, actual status-notification evidence, output fields, and exit codes.
+The default command does not discover or guess a root and does not resume, load, or mutate
+threads. It prints one JSON object to stdout. See
+[Development](docs/development.md#run-the-native-stage-a-probe) for bounded polling, the
+explicit notification-subscription consequence, output fields, and exit codes.
 
 ## Repository layout
 

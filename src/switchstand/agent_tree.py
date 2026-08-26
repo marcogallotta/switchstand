@@ -35,6 +35,7 @@ class AgentTreeEvidenceError(RuntimeError):
 class AgentTreeClient(Protocol):
     def thread_read(self, thread_id: str, *, include_turns: bool = True) -> Mapping[str, Any]: ...
     def thread_list(self, params: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def thread_resume(self, thread_id: str) -> Mapping[str, Any]: ...
     def turn_start_text_native(self, thread_id: str, text: str) -> Mapping[str, Any]: ...
     def turn_steer_text(
         self, thread_id: str, expected_turn_id: str, text: str
@@ -189,6 +190,21 @@ class AgentTreeAdapter:
         thread_id = _required_text(params, "threadId", context="status notification")
         status = validate_native_status(params.get("status"), context=f"thread {thread_id}")
         return {"threadId": thread_id, "status": status}
+
+    def resume_exact(self, thread_id: str) -> dict[str, Any]:
+        """Load and subscribe to one exact thread without starting a turn.
+
+        This changes App Server runtime loaded/subscription state. It does not
+        add conversation history, but callers must opt in to the consequence.
+        """
+        response = self.client.thread_resume(thread_id)
+        thread_raw = response.get("thread") if isinstance(response, Mapping) else None
+        if not isinstance(thread_raw, Mapping):
+            raise AgentTreeEvidenceError("thread/resume returned no thread")
+        resumed_id = _required_text(thread_raw, "id", context="thread/resume response")
+        if resumed_id != thread_id:
+            raise AgentTreeEvidenceError("thread/resume returned a different thread")
+        return deepcopy(dict(thread_raw))
 
     def send_text(self, thread_id: str, text: str) -> dict[str, str]:
         """Start on native idle, or steer the exact active turn.

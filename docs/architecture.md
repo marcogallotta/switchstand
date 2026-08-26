@@ -20,12 +20,22 @@ the checkpoint uses `turn/start` only for an observed idle thread and `turn/stee
 exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
-`stage_a_probe.py` is a read-only CLI over the same `CodexAppServer` and `AgentTreeAdapter`.
-It records bounded local observation windows, the exact safe subset of native thread evidence,
-and the cursor/count/source-kind request facts for every exhausted page. It emits no previews,
-turns, prompt/output text, or socket paths, and redacts path-valued source metadata. Snapshot or
-poll evidence and actually received `thread/status/changed` notifications are separate fields;
-native statuses in both paths are projected only to validated `type` and, for `active`,
+`stage_a_probe.py` defaults to read-only observation over the same `CodexAppServer` and
+`AgentTreeAdapter`. It records bounded local observation windows, the exact safe subset of
+native thread evidence, and cursor/count/source-kind request facts for every exhausted page.
+It emits no previews, turns, prompt/output text, or socket paths, and redacts path-valued source
+metadata. Snapshot or poll evidence and actually received `thread/status/changed` notifications
+are separate fields.
+
+`thread/read` and `thread/list` do not subscribe a new connection to thread events. Notification
+mode therefore requires an explicit opt-in that calls `thread/resume` for only the exact observed
+root and descendants, then fully re-observes the same tree before waiting. This changes runtime
+loaded/subscribed state but does not add conversation history. Default mode never resumes.
+Attempted and exact-id-acknowledged resume counts are fenced into every later failure result.
+After any acknowledgement, failure evidence reports the runtime state change; when a request was
+sent without an exact acknowledgement, it reports the effect as unknown and `mayHaveChanged`
+instead of claiming no side effect. Failure disclosure uses counts, not raw attempted ids.
+Native statuses in both paths are projected only to validated `type` and, for `active`,
 `activeFlags`. Failures retain only stable probe-authored codes and messages, never raw protocol
 values or exception text. Absence of a notification never changes a native status or implies
 stale work.

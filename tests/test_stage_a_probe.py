@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 import io
 import json
@@ -9,7 +9,12 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from switchstand.stage_a_probe import ProbeEvidenceError, collect_evidence, main
+from switchstand.stage_a_probe import (
+    ProbeEvidenceError,
+    ProbeExecutionError,
+    collect_evidence,
+    main,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "app_server"
@@ -30,6 +35,15 @@ class ProbeClient:
         )
         self.queued = []
         self.waiting = deque()
+        self.resumes = []
+        self.resume_events = {}
+        self.resume_return_ids = {}
+        self.resume_exceptions = {}
+        self.resume_threads = {
+            "root-1": deepcopy(self.root["thread"]),
+            "child-1": deepcopy(self.pages[0]["data"][0]),
+            "grandchild-1": deepcopy(self.pages[1]["data"][0]),
+        }
 
     def thread_read(self, thread_id, *, include_turns=True):
         return deepcopy(self.root)
@@ -46,6 +60,22 @@ class ProbeClient:
         if not self.waiting:
             raise TimeoutError
         return deepcopy(self.waiting.popleft())
+
+    def thread_resume(self, thread_id):
+        self.resumes.append(thread_id)
+        failure = self.resume_exceptions.get(thread_id)
+        if failure is not None:
+            raise failure
+        event = self.resume_events.get(thread_id)
+        if event is not None:
+            self.queued.append(deepcopy(event))
+        return {
+            "thread": {
+                "id": self.resume_return_ids.get(
+                    thread_id, self.resume_threads[thread_id]["id"]
+                )
+            }
+        }
 
     def close(self):
         pass
@@ -99,6 +129,12 @@ class StageAProbeTests(unittest.TestCase):
 
     def test_required_status_notification_must_be_received_for_observed_tree(self):
         client = ProbeClient()
+        client.pages.extend(
+            [
+                fixture("thread_list_descendants_page_1.json"),
+                fixture("thread_list_descendants_page_2.json"),
+            ]
+        )
         client.waiting.append(
             {
                 "method": "thread/status/changed",
@@ -107,12 +143,13 @@ class StageAProbeTests(unittest.TestCase):
         )
         monotonic_values = iter([0.0, 0.0, 0.5])
 
-        with self.assertRaisesRegex(ProbeEvidenceError, "observed tree"):
+        with self.assertRaisesRegex(ProbeExecutionError, "observed tree"):
             collect_evidence(
                 client,
                 "root-1",
                 notification_wait_seconds=1.0,
                 require_status_notification=True,
+                subscribe_status_notifications=True,
                 monotonic=lambda: next(monotonic_values),
             )
 
@@ -185,6 +222,181 @@ class StageAProbeTests(unittest.TestCase):
             ["type", "activeFlags"],
         )
 
+    def test_later_resume_mismatch_discloses_partial_subscription_without_ids(self):
+        leaked = "/private/operator/wrong-thread-id"
+        client = ProbeClient()
+        client.resume_return_ids["child-1"] = leaked
+        stdout = io.StringIO()
+
+        with patch("switchstand.stage_a_probe.CodexAppServer", return_value=client):
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--app-server-socket",
+                        "/private/operator/app-server.sock",
+                        "--root-thread-id",
+                        "root-1",
+                        "--subscribe-status-notifications",
+                        "--notification-wait-seconds",
+                        "1",
+                    ]
+                )
+
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 4)
+        self.assertFalse(result["readOnly"])
+        self.assertTrue(result["runtimeLoadedOrSubscriptionStateChanged"])
+        self.assertFalse(result["conversationHistoryMutated"])
+        self.assertEqual(result["subscriptionEvidence"]["method"], "thread/resume")
+        self.assertEqual(result["subscriptionEvidence"]["attemptedCount"], 2)
+        self.assertEqual(result["subscriptionEvidence"]["acknowledgedCount"], 1)
+        self.assertEqual(result["subscriptionEvidence"]["unacknowledgedAttemptCount"], 1)
+        self.assertTrue(result["subscriptionEvidence"]["mayHaveChanged"])
+        self.assertNotIn("subscribedThreadIds", result["subscriptionEvidence"])
+        self.assertNotIn(leaked, stdout.getvalue())
+
+    def test_missing_resume_ack_discloses_unknown_runtime_side_effect(self):
+        leaked = "connection failed at /private/operator/socket"
+        client = ProbeClient()
+        client.resume_exceptions["root-1"] = OSError(leaked)
+        stdout = io.StringIO()
+
+        with patch("switchstand.stage_a_probe.CodexAppServer", return_value=client):
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--app-server-socket",
+                        "/private/operator/app-server.sock",
+                        "--root-thread-id",
+                        "root-1",
+                        "--subscribe-status-notifications",
+                        "--notification-wait-seconds",
+                        "1",
+                    ]
+                )
+
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 3)
+        self.assertFalse(result["readOnly"])
+        self.assertEqual(result["runtimeLoadedOrSubscriptionStateChanged"], "unknown")
+        self.assertFalse(result["conversationHistoryMutated"])
+        self.assertEqual(result["subscriptionEvidence"]["attemptedCount"], 1)
+        self.assertEqual(result["subscriptionEvidence"]["acknowledgedCount"], 0)
+        self.assertTrue(result["subscriptionEvidence"]["mayHaveChanged"])
+        self.assertNotIn(leaked, stdout.getvalue())
+
+    def test_post_resume_revalidation_failure_discloses_acknowledged_state(self):
+        leaked = "/private/operator/missing-parent"
+        client = ProbeClient()
+        page_one = fixture("thread_list_descendants_page_1.json")
+        page_two = fixture("thread_list_descendants_page_2.json")
+        page_two["data"][0]["parentThreadId"] = leaked
+        client.pages.extend([page_one, page_two])
+        stdout = io.StringIO()
+
+        with patch("switchstand.stage_a_probe.CodexAppServer", return_value=client):
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--app-server-socket",
+                        "/private/operator/app-server.sock",
+                        "--root-thread-id",
+                        "root-1",
+                        "--subscribe-status-notifications",
+                        "--notification-wait-seconds",
+                        "1",
+                    ]
+                )
+
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 4)
+        self.assertEqual(result["error"]["code"], "invalid_native_tree_evidence")
+        self.assertFalse(result["readOnly"])
+        self.assertTrue(result["runtimeLoadedOrSubscriptionStateChanged"])
+        self.assertFalse(result["conversationHistoryMutated"])
+        self.assertEqual(result["subscriptionEvidence"]["attemptedCount"], 3)
+        self.assertEqual(result["subscriptionEvidence"]["acknowledgedCount"], 3)
+        self.assertEqual(result["subscriptionEvidence"]["unacknowledgedAttemptCount"], 0)
+        self.assertFalse(result["subscriptionEvidence"]["mayHaveChanged"])
+        self.assertNotIn(leaked, stdout.getvalue())
+
+    def test_default_snapshot_never_resumes_or_changes_runtime_subscription_state(self):
+        client = ProbeClient()
+
+        evidence = collect_evidence(client, "root-1")
+
+        self.assertEqual(client.resumes, [])
+        self.assertTrue(evidence["readOnly"])
+        self.assertFalse(evidence["runtimeLoadedOrSubscriptionStateChanged"])
+        self.assertFalse(evidence["subscriptionEvidence"]["requested"])
+
+    def test_opt_in_resumes_only_exact_observed_ids_and_revalidates_before_event_claim(self):
+        leaked = "IGNORE PROMPT /private/operator/status.txt"
+        client = ProbeClient()
+        client.pages.extend(
+            [
+                fixture("thread_list_descendants_page_1.json"),
+                fixture("thread_list_descendants_page_2.json"),
+            ]
+        )
+        client.resume_events["child-1"] = {
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": "child-1",
+                "status": {
+                    "type": "active",
+                    "activeFlags": ["waitingOnUserInput"],
+                    "detail": leaked,
+                },
+            },
+        }
+        monotonic_values = iter([0.0, 0.0])
+
+        evidence = collect_evidence(
+            client,
+            "root-1",
+            notification_wait_seconds=1.0,
+            require_status_notification=True,
+            subscribe_status_notifications=True,
+            monotonic=lambda: next(monotonic_values),
+        )
+
+        self.assertEqual(client.resumes, ["root-1", "child-1", "grandchild-1"])
+        self.assertFalse(evidence["readOnly"])
+        self.assertFalse(evidence["conversationHistoryMutated"])
+        self.assertTrue(evidence["runtimeLoadedOrSubscriptionStateChanged"])
+        self.assertEqual(
+            evidence["subscriptionEvidence"]["subscribedThreadIds"],
+            ["root-1", "child-1", "grandchild-1"],
+        )
+        self.assertTrue(
+            evidence["subscriptionEvidence"]["exactTreeRevalidatedAfterResume"]
+        )
+        self.assertEqual(
+            evidence["notificationEvidence"]["statusChanged"][0]["status"],
+            {"type": "active", "activeFlags": ["waitingOnUserInput"]},
+        )
+        self.assertNotIn(leaked, json.dumps(evidence))
+
+    def test_required_notification_without_subscription_opt_in_fails_before_connecting(self):
+        stderr = io.StringIO()
+        with patch("switchstand.stage_a_probe.CodexAppServer") as client_class:
+            with redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    main(
+                        [
+                            "--app-server-socket",
+                            "/private/operator/app-server.sock",
+                            "--root-thread-id",
+                            "root-1",
+                            "--require-status-notification",
+                        ]
+                    )
+
+        self.assertEqual(raised.exception.code, 2)
+        client_class.assert_not_called()
+        self.assertIn("requires --subscribe-status-notifications", stderr.getvalue())
+
     def test_cli_failure_is_nonzero_machine_readable_and_does_not_emit_socket_path(self):
         client = ProbeClient()
         client.pages = deque([{"data": [], "nextCursor": None}])
@@ -205,6 +417,10 @@ class StageAProbeTests(unittest.TestCase):
         self.assertEqual(exit_code, 4)
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "no_spawned_descendant")
+        self.assertTrue(result["readOnly"])
+        self.assertFalse(result["runtimeLoadedOrSubscriptionStateChanged"])
+        self.assertFalse(result["conversationHistoryMutated"])
+        self.assertEqual(result["subscriptionEvidence"]["attemptedCount"], 0)
         self.assertNotIn("/private/operator", stdout.getvalue())
 
     def test_cli_failure_never_retains_protocol_derived_lineage_or_prompt_values(self):

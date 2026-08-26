@@ -106,15 +106,31 @@ tree, keep that tree active while running a bounded notification window:
 PYTHONPATH=src python -m switchstand.stage_a_probe \
   --app-server-socket /path/to/codex-app-server.sock \
   --root-thread-id EXACT_ROOT_THREAD_ID \
+  --subscribe-status-notifications \
   --notification-wait-seconds 30 \
   --require-status-notification \
   > stage-a-evidence-with-status-event.json
 ```
 
-The initialized App Server connection supplies notifications; no explicit subscription RPC is
-invented or claimed. The probe does not resume/load a thread to provoke an event. A captured
-event appears only under `notificationEvidence.statusChanged`, with its local receive time and
-whether its thread belonged to an observed snapshot. Snapshot facts remain under `snapshots`.
+App Server does not subscribe a connection when it calls `thread/read` or `thread/list`.
+`--subscribe-status-notifications` is therefore an explicit state-changing opt-in: the probe
+calls `thread/resume` for only the exact root and descendants in its completed snapshot, then
+fully re-reads and validates the same tree before waiting. Resume changes runtime loaded and
+connection-subscription state but does not add conversation history or start a turn. The JSON
+records this under `subscriptionEvidence`, sets `readOnly` to `false`, and keeps
+`conversationHistoryMutated` false. Without this flag, default snapshot/polling mode never
+resumes or loads a thread.
+
+If subscription setup fails partway through, the failure JSON retains sanitized attempted and
+exact-id-acknowledged counts. Any acknowledgement makes the runtime-state field `true`. A sent
+request without an exact acknowledgement sets `mayHaveChanged` and reports runtime state as
+`unknown`; it never claims the failed run stayed read-only. Raw attempted thread ids are omitted
+from failure disclosure. Failures before the first resume attempt remain read-only.
+
+A captured event appears only under `notificationEvidence.statusChanged`, with its local receive
+time and whether its thread belonged to the observed tree. Snapshot facts remain under
+`snapshots`. Both `--notification-wait-seconds` and `--require-status-notification` require the
+explicit subscription flag; invalid combinations exit with usage error `2` before connecting.
 The output never calls native `idle` done or silence stale.
 
 Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
