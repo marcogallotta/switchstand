@@ -1,0 +1,66 @@
+# Development
+
+## Setup
+
+Use Python 3.11 or newer. Runtime and tests use only the standard library.
+
+```sh
+cd switchstand
+python --version
+```
+
+Optional editable installation (this may ask the packaging tool for build dependencies):
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+```
+
+Installation is not required. The canonical dependency-free commands use `PYTHONPATH=src`.
+
+## Test and static checks
+
+```sh
+PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src python -m compileall -q src tests
+node --test tests/browser_focus.test.js
+node --check src/switchstand/static/app.js
+```
+
+The first two commands are required for every code change. Run the JavaScript syntax check when
+Node is available and for every browser-code change. The browser regression uses Node's built-in
+test runner and a minimal DOM fixture, so it adds no package-manager or framework dependency.
+
+## Run
+
+```sh
+PYTHONPATH=src python -m switchstand.service \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --workspace "$PWD" \
+  --state ./state/state.json \
+  --port 4180
+```
+
+The socket must already be provided by a Codex app-server daemon. The service does not launch,
+authenticate, or supervise that daemon. Bind to the default `127.0.0.1`; the prototype has no
+authentication or CSRF protection and is not designed for network exposure.
+
+## Review expectations
+
+Review engine changes as state-machine changes. Check exact target validation, generation and
+attempt fencing, transition persistence before external calls, replay behavior after ambiguous
+acknowledgements, FIFO delivery, and preservation of stale/unknown evidence. Tests should cover
+both the expected transition and the unsafe alternative that must not occur.
+
+Review adapter changes against the concrete Codex method names and request fields. A mock-backed
+protocol test proves request construction only. Report a live checkpoint only when a real Unix
+socket was used and the observed thread/turn evidence is recorded; otherwise state explicitly
+that it was not run.
+
+Lost-acknowledgement tests must use the documented app-server v2 history shape:
+`userMessage.content` with `text` entries. Do not recover from private correlation fields. Retry
+is permitted only for complete history, an absent durable message marker, and exact idle status.
+
+Update documentation when behavior, constraints, commands, state fields, or the prototype
+boundary changes.
