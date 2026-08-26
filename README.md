@@ -18,6 +18,14 @@ v2 thread/turn protocol. The **live checkpoint has not been run** in this standa
 repository: no claim is made that a real local Codex daemon, authentication, or model turn
 has been exercised here.
 
+Issue #3's native-agent-tree checkpoint is staged but not claimed complete. The separate
+`agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
+kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
+preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
+fixtures are documented protocol-shape fixtures, not live captures. Until a real root plus
+spawned descendant is observed through a real socket, the synthetic two-role UI remains the
+main surface and Stage B must not begin.
+
 ## Non-goals
 
 - General-purpose multi-agent orchestration or arbitrary role counts
@@ -58,6 +66,7 @@ syntax; Node is not needed to run Switchstand.
 
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
+- `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `tests/` — standard-library unit tests
@@ -69,5 +78,6 @@ syntax; Node is not needed to run Switchstand.
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
 - [Prototype boundary decision](docs/decisions/0001-prototype-boundary.md)
+- [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
 
 Switchstand is available under the [MIT License](LICENSE).

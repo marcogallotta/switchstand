@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
+import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +13,82 @@ from switchstand.engine import CodexAdapter, _message_marker
 
 
 class AppServerProtocolTests(unittest.TestCase):
+    def test_request_retains_interleaved_status_notification(self):
+        client = object.__new__(CodexAppServer)
+        client._lock = threading.Lock()
+        client._next_id = 0
+        client._server_messages = deque()
+        client._send_frame = lambda opcode, payload: None
+        replies = iter(
+            [
+                json.dumps(
+                    {
+                        "method": "thread/status/changed",
+                        "params": {"threadId": "child-1", "status": {"type": "idle"}},
+                    }
+                ),
+                json.dumps({"id": 1, "result": {"data": [], "nextCursor": None}}),
+            ]
+        )
+        client._read_text = lambda: next(replies)
+
+        response = client.thread_list({"sourceKinds": ["cli"]})
+
+        self.assertEqual(response, {"data": [], "nextCursor": None})
+        self.assertEqual(
+            client.drain_server_messages(),
+            [
+                {
+                    "method": "thread/status/changed",
+                    "params": {"threadId": "child-1", "status": {"type": "idle"}},
+                }
+            ],
+        )
+
+    def test_client_constructs_tree_list_native_start_and_exact_steer_requests(self):
+        client = object.__new__(CodexAppServer)
+        calls = []
+        client._request = lambda method, params: calls.append((method, params)) or {}
+
+        client.thread_list(
+            {
+                "sourceKinds": ["cli", "subAgent"],
+                "ancestorThreadId": "root-1",
+                "cursor": "page-2",
+            }
+        )
+        client.turn_start_text_native("thread-idle", "normal input")
+        client.turn_steer_text("thread-active", "turn-exact", "correct course")
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "thread/list",
+                    {
+                        "sourceKinds": ["cli", "subAgent"],
+                        "ancestorThreadId": "root-1",
+                        "cursor": "page-2",
+                    },
+                ),
+                (
+                    "turn/start",
+                    {
+                        "threadId": "thread-idle",
+                        "input": [{"type": "text", "text": "normal input"}],
+                    },
+                ),
+                (
+                    "turn/steer",
+                    {
+                        "threadId": "thread-active",
+                        "input": [{"type": "text", "text": "correct course"}],
+                        "expectedTurnId": "turn-exact",
+                    },
+                ),
+            ],
+        )
+
     def test_client_constructs_normal_turn_and_exact_interrupt_requests(self):
         client = object.__new__(CodexAppServer)
         calls = []

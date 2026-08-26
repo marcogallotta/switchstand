@@ -8,6 +8,18 @@ serves the static operator UI. `engine.py` owns all state transitions and persis
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
 
+`agent_tree.py` is a separate, fail-closed Stage A protocol layer. It does not adapt native
+threads into the engine's roles or write a duplicate source of truth. It reads one exact root,
+lists descendants with `ancestorThreadId`, supplies every documented `sourceKinds` value on
+every page, follows `nextCursor` to exhaustion, and validates ancestry only through
+`parentThreadId`. `forkedFromId` remains visible evidence but is not spawned lineage.
+
+Native runtime state remains exactly `active` (with documented flags), `idle`, `systemError`,
+or `notLoaded`. In particular, `idle` is not renamed to semantic completion. For direct input,
+the checkpoint uses `turn/start` only for an observed idle thread and `turn/steer` with the
+exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
+they are not retried through another mode. Stop uses the exact thread and turn ids.
+
 ## State model
 
 The JSON snapshot contains one Work, a fixed map of two roles, ordered messages, and append-only
@@ -59,3 +71,5 @@ service per state path.
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
 - A claimed live checkpoint; it must be performed and recorded separately with real evidence
+- Replacing the fixed-role service or browser surface before the native-tree Stage A live
+  checkpoint passes

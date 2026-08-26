@@ -64,3 +64,27 @@ is permitted only for complete history, an absent durable message marker, and ex
 
 Update documentation when behavior, constraints, commands, state fields, or the prototype
 boundary changes.
+
+## Native agent-tree checkpoint
+
+The tests under `tests/test_agent_tree.py` and `tests/fixtures/app_server/` prove request
+construction and fail-closed handling of documented protocol shapes only. They are not a live
+checkpoint. A Stage A claim requires a real App Server socket and recorded evidence for:
+
+- one exact root plus at least one spawned descendant with `parentThreadId` lineage;
+- explicit coverage of every root/subagent/unknown source kind and `nextCursor` exhaustion;
+- native `active`, `idle`, `systemError`, and `notLoaded` status where exercised, plus actual
+  `thread/status/changed` events (without calling idle done); and
+- exact idle `turn/start`, active `turn/steer(expectedTurnId)`, and `turn/interrupt` behavior.
+
+If the socket, root/descendant tree, ancestry, pagination, or state evidence is unavailable,
+record the gap and stop. Do not replace the browser surface or synthesize missing evidence.
+
+### 2026-08-26 blocked live attempt
+
+In the current Work workspace, Codex `0.150.0-alpha.10` successfully generated the
+experimental TypeScript protocol schema, but no real checkpoint was possible. No daemon socket
+was exposed. Starting a Unix listener and the stdio initialize path exited with
+`Codex executable path is not configured`; the daemon socket path was unavailable with
+`Operation not permitted`. Consequently, no live root/descendant payload or status transition
+was observed. Stage A did not pass and Stage B was not started.

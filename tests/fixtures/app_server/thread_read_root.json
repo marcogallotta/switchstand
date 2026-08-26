@@ -1,0 +1,17 @@
+{
+  "thread": {
+    "id": "root-1",
+    "sessionId": "root-1",
+    "forkedFromId": null,
+    "parentThreadId": null,
+    "preview": "Investigate the real agent tree",
+    "name": "Switchstand checkpoint",
+    "source": "cli",
+    "createdAt": 1777221000,
+    "updatedAt": 1777221060,
+    "status": {
+      "type": "idle"
+    },
+    "turns": []
+  }
+}

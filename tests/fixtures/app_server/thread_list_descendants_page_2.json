@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "id": "grandchild-1",
+      "sessionId": "root-1",
+      "forkedFromId": null,
+      "parentThreadId": "child-1",
+      "preview": "Review pagination evidence",
+      "agentNickname": "review",
+      "source": {
+        "subAgent": "review"
+      },
+      "createdAt": 1777221020,
+      "updatedAt": 1777221080,
+      "status": {
+        "type": "notLoaded"
+      },
+      "turns": []
+    }
+  ],
+  "nextCursor": null,
+  "backwardsCursor": "descendants-page-1"
+}
