@@ -59,6 +59,25 @@ class AgentTreeProtocolTests(unittest.TestCase):
 
         self.assertTrue(observed["paginationComplete"])
         self.assertEqual(observed["pagesRead"], 2)
+        self.assertEqual(
+            observed["pages"],
+            [
+                {
+                    "page": 1,
+                    "requestCursor": None,
+                    "resultCount": 1,
+                    "nextCursor": "descendants-page-2",
+                    "sourceKinds": list(THREAD_SOURCE_KINDS),
+                },
+                {
+                    "page": 2,
+                    "requestCursor": "descendants-page-2",
+                    "resultCount": 1,
+                    "nextCursor": None,
+                    "sourceKinds": list(THREAD_SOURCE_KINDS),
+                },
+            ],
+        )
         self.assertEqual(observed["sourceKinds"], list(THREAD_SOURCE_KINDS))
         self.assertEqual(
             [thread["id"] for thread in observed["threads"]],

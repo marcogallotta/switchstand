@@ -22,9 +22,11 @@ Issue #3's native-agent-tree checkpoint is staged but not claimed complete. The 
 `agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
 kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
 preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
-fixtures are documented protocol-shape fixtures, not live captures. Until a real root plus
-spawned descendant is observed through a real socket, the synthetic two-role UI remains the
-main surface and Stage B must not begin.
+fixtures are documented protocol-shape fixtures, not live captures. The read-only
+`switchstand-stage-a` CLI now turns a real socket plus one exact root thread id into redacted
+machine-readable evidence or a nonzero fail-closed reason. Until that command observes a real
+root plus spawned descendant, the synthetic two-role UI remains the main surface and Stage B
+must not begin.
 
 ## Non-goals
 
@@ -62,11 +64,26 @@ node --check src/switchstand/static/app.js
 The Node commands are optional, cover the browser refresh regression, and check JavaScript
 syntax; Node is not needed to run Switchstand.
 
+## Native Stage A probe
+
+Run one complete read-only snapshot against an exact known native root thread id:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID
+```
+
+The command does not discover or guess a root and does not resume, load, or mutate threads.
+It prints one JSON object to stdout. See [Development](docs/development.md#run-the-native-stage-a-probe)
+for bounded polling, actual status-notification evidence, output fields, and exit codes.
+
 ## Repository layout
 
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
 - `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
+- `src/switchstand/stage_a_probe.py` — read-only machine-readable live checkpoint CLI
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `tests/` — standard-library unit tests

@@ -191,15 +191,27 @@ class CodexAppServer:
                     raise RuntimeError(f"Codex app-server {method} returned invalid result")
                 return dict(result)
 
-    def next_server_message(self) -> Mapping[str, Any]:
-        """Block until the next queued notification or server request arrives."""
+    def next_server_message(self, *, timeout_seconds: float | None = None) -> Mapping[str, Any]:
+        """Return the next notification/server request, optionally with a bounded wait.
+
+        A timeout is intended as the final read on a connection. Python's buffered
+        socket reader may not be reusable after its underlying socket times out.
+        """
         with self._lock:
             if self._server_messages:
                 return self._server_messages.popleft()
-            while True:
-                message = json.loads(self._read_text())
-                if isinstance(message, Mapping) and isinstance(message.get("method"), str):
-                    return dict(message)
+            previous_timeout = self.socket.gettimeout()
+            self.socket.settimeout(timeout_seconds)
+            try:
+                while True:
+                    try:
+                        message = json.loads(self._read_text())
+                    except socket.timeout as exc:
+                        raise TimeoutError("timed out waiting for an App Server message") from exc
+                    if isinstance(message, Mapping) and isinstance(message.get("method"), str):
+                        return dict(message)
+            finally:
+                self.socket.settimeout(previous_timeout)
 
     def drain_server_messages(self) -> list[Mapping[str, Any]]:
         """Return messages already observed while completing earlier requests."""

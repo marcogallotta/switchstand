@@ -20,6 +20,16 @@ the checkpoint uses `turn/start` only for an observed idle thread and `turn/stee
 exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
+`stage_a_probe.py` is a read-only CLI over the same `CodexAppServer` and `AgentTreeAdapter`.
+It records bounded local observation windows, the exact safe subset of native thread evidence,
+and the cursor/count/source-kind request facts for every exhausted page. It emits no previews,
+turns, prompt/output text, or socket paths, and redacts path-valued source metadata. Snapshot or
+poll evidence and actually received `thread/status/changed` notifications are separate fields;
+native statuses in both paths are projected only to validated `type` and, for `active`,
+`activeFlags`. Failures retain only stable probe-authored codes and messages, never raw protocol
+values or exception text. Absence of a notification never changes a native status or implies
+stale work.
+
 ## State model
 
 The JSON snapshot contains one Work, a fixed map of two roles, ordered messages, and append-only

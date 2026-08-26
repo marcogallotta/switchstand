@@ -80,6 +80,53 @@ checkpoint. A Stage A claim requires a real App Server socket and recorded evide
 If the socket, root/descendant tree, ancestry, pagination, or state evidence is unavailable,
 record the gap and stop. Do not replace the browser surface or synthesize missing evidence.
 
+### Run the native Stage A probe
+
+The probe requires an exact root id. It intentionally has no auto-selection or heuristic root
+discovery. This one-shot command prints redacted JSON and exits nonzero unless the root, at
+least one spawned descendant, complete `parentThreadId` lineage, every source-kind filter on
+every exhausted page, native sources/statuses, protocol timestamps, and a local observation
+window are all present:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  > stage-a-evidence.json
+```
+
+For multiple independent complete snapshots, add `--poll-count 3` and
+`--poll-interval-seconds 1`. These remain polling evidence. They are not status-change
+notifications.
+
+To require an actually received `thread/status/changed` event for a thread in the observed
+tree, keep that tree active while running a bounded notification window:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  --notification-wait-seconds 30 \
+  --require-status-notification \
+  > stage-a-evidence-with-status-event.json
+```
+
+The initialized App Server connection supplies notifications; no explicit subscription RPC is
+invented or claimed. The probe does not resume/load a thread to provoke an event. A captured
+event appears only under `notificationEvidence.statusChanged`, with its local receive time and
+whether its thread belonged to an observed snapshot. Snapshot facts remain under `snapshots`.
+The output never calls native `idle` done or silence stale.
+
+Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
+failure, exit `4` is unavailable/incomplete evidence, and argparse usage errors exit `2`. Error
+objects are JSON for runtime failures and omit the socket path. Run the following for the
+complete flag reference; an editable install also provides the `switchstand-stage-a` console
+command.
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe --help
+```
+
 ### 2026-08-26 blocked live attempt
 
 In the current Work workspace, Codex `0.150.0-alpha.10` successfully generated the

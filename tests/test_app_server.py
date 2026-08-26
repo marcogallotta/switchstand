@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 import json
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,30 @@ from switchstand.engine import CodexAdapter, _message_marker
 
 
 class AppServerProtocolTests(unittest.TestCase):
+    def test_bounded_server_message_wait_reports_timeout_and_restores_socket_timeout(self):
+        class FakeSocket:
+            def __init__(self):
+                self.timeout = None
+                self.values = []
+
+            def gettimeout(self):
+                return self.timeout
+
+            def settimeout(self, value):
+                self.timeout = value
+                self.values.append(value)
+
+        client = object.__new__(CodexAppServer)
+        client._lock = threading.Lock()
+        client._server_messages = deque()
+        client.socket = FakeSocket()
+        client._read_text = lambda: (_ for _ in ()).throw(socket.timeout())
+
+        with self.assertRaises(TimeoutError):
+            client.next_server_message(timeout_seconds=2.5)
+
+        self.assertEqual(client.socket.values, [2.5, None])
+
     def test_request_retains_interleaved_status_notification(self):
         client = object.__new__(CodexAppServer)
         client._lock = threading.Lock()

@@ -81,11 +81,13 @@ class AgentTreeAdapter:
     def __init__(self, client: AgentTreeClient) -> None:
         self.client = client
 
-    def _list_all(self, params: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    def _list_all(
+        self, params: Mapping[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         cursor: str | None = None
         seen_cursors: set[str] = set()
         threads: list[dict[str, Any]] = []
-        pages_read = 0
+        pages: list[dict[str, Any]] = []
         while True:
             request = dict(params)
             request["sourceKinds"] = list(THREAD_SOURCE_KINDS)
@@ -93,16 +95,25 @@ class AgentTreeAdapter:
             if cursor is not None:
                 request["cursor"] = cursor
             response = self.client.thread_list(request)
-            pages_read += 1
+            page_number = len(pages) + 1
             data = response.get("data") if isinstance(response, Mapping) else None
             if not isinstance(data, list):
                 raise AgentTreeEvidenceError("thread/list returned no data page")
             threads.extend(
-                validate_thread(item, context=f"thread/list page {pages_read}") for item in data
+                validate_thread(item, context=f"thread/list page {page_number}") for item in data
             )
             next_cursor = response.get("nextCursor")
+            pages.append(
+                {
+                    "page": page_number,
+                    "requestCursor": cursor,
+                    "resultCount": len(data),
+                    "nextCursor": next_cursor,
+                    "sourceKinds": list(THREAD_SOURCE_KINDS),
+                }
+            )
             if next_cursor is None:
-                return threads, pages_read
+                return threads, pages
             if not isinstance(next_cursor, str) or not next_cursor:
                 raise AgentTreeEvidenceError("thread/list returned an invalid nextCursor")
             if next_cursor in seen_cursors:
@@ -127,7 +138,7 @@ class AgentTreeAdapter:
         if root_session_id != root_thread_id:
             raise AgentTreeEvidenceError("selected root does not own its native session tree")
 
-        descendants, pages_read = self._list_all({"ancestorThreadId": root_thread_id})
+        descendants, pages = self._list_all({"ancestorThreadId": root_thread_id})
         by_id = {root_thread_id: root}
         for thread in descendants:
             thread_id = str(thread["id"])
@@ -163,7 +174,8 @@ class AgentTreeAdapter:
         return {
             "rootThreadId": root_thread_id,
             "sourceKinds": list(THREAD_SOURCE_KINDS),
-            "pagesRead": pages_read,
+            "pagesRead": len(pages),
+            "pages": pages,
             "paginationComplete": True,
             "threads": [root, *descendants],
         }
