@@ -16,14 +16,32 @@ from .app_server import CodexAppServer
 
 SCHEMA_VERSION = 1
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_SAFE_ERROR_PHASES = frozenset(
+    {
+        "root_read",
+        "descendant_list",
+        "lineage_validation",
+        "status_validation",
+        "timestamp_validation",
+        "source_validation",
+        "notification_validation",
+        "notification_wait",
+        "subscription_setup",
+        "subscription_revalidation",
+        "transport",
+        "protocol_validation",
+        "probe_runtime",
+    }
+)
 
 
 class ProbeEvidenceError(RuntimeError):
     """Raised when the requested live evidence is not available."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, phase: str) -> None:
         super().__init__(message)
         self.code = code
+        self.phase = phase
 
 
 class ProbeExecutionError(RuntimeError):
@@ -35,11 +53,14 @@ class ProbeExecutionError(RuntimeError):
         message: str,
         exit_code: int,
         side_effects: Mapping[str, Any],
+        *,
+        phase: str,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.exit_code = exit_code
         self.side_effects = dict(side_effects)
+        self.phase = phase
 
 
 def _utc_now() -> str:
@@ -85,14 +106,18 @@ def _thread_evidence(thread: Mapping[str, Any]) -> dict[str, Any]:
     source = thread.get("source")
     if not isinstance(source, (str, Mapping)) or not source:
         raise ProbeEvidenceError(
-            "missing_native_source", "native source evidence is unavailable"
+            "missing_native_source",
+            "native source evidence is unavailable",
+            phase="source_validation",
         )
     timestamps: dict[str, int | float] = {}
     for field in ("createdAt", "updatedAt"):
         value = thread.get(field)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ProbeEvidenceError(
-                "missing_protocol_timestamp", "a required protocol timestamp is unavailable"
+                "missing_protocol_timestamp",
+                "a required protocol timestamp is unavailable",
+                phase="timestamp_validation",
             )
         timestamps[field] = value
     return {
@@ -112,21 +137,28 @@ def _snapshot(adapter: AgentTreeAdapter, root_thread_id: str, now: Callable[[], 
     threads = [_thread_evidence(thread) for thread in tree["threads"]]
     if len(threads) < 2:
         raise ProbeEvidenceError(
-            "no_spawned_descendant", "no spawned descendant was observed"
+            "no_spawned_descendant",
+            "no spawned descendant was observed",
+            phase="lineage_validation",
         )
     pages = tree.get("pages")
     if not isinstance(pages, list) or not pages:
         raise ProbeEvidenceError(
-            "missing_pagination_evidence", "descendant pagination evidence is unavailable"
+            "missing_pagination_evidence",
+            "descendant pagination evidence is unavailable",
+            phase="descendant_list",
         )
     if pages[-1].get("nextCursor") is not None:
         raise ProbeEvidenceError(
-            "incomplete_pagination", "descendant pagination was not exhausted"
+            "incomplete_pagination",
+            "descendant pagination was not exhausted",
+            phase="descendant_list",
         )
     if any(page.get("sourceKinds") != list(THREAD_SOURCE_KINDS) for page in pages):
         raise ProbeEvidenceError(
             "incomplete_source_kind_coverage",
             "not every descendant page requested all source kinds",
+            phase="descendant_list",
         )
     return {
         "observationWindow": {"startedAt": started_at, "completedAt": completed_at},
@@ -192,17 +224,24 @@ def _subscription_failure(
         acknowledged_count=acknowledged_count,
     )
     if isinstance(exc, ProbeEvidenceError):
-        return ProbeExecutionError(exc.code, str(exc), 4, disclosure)
+        return ProbeExecutionError(
+            exc.code, str(exc), 4, disclosure, phase=exc.phase
+        )
     if isinstance(exc, AgentTreeEvidenceError):
         return ProbeExecutionError(
-            "invalid_native_tree_evidence",
-            "native tree evidence was incomplete or internally inconsistent",
+            exc.code,
+            str(exc),
             4,
             disclosure,
+            phase=exc.phase,
         )
     if isinstance(exc, (OSError, socket.timeout)):
         return ProbeExecutionError(
-            "transport_failure", "App Server transport failed", 3, disclosure
+            "transport_failure",
+            "App Server transport failed",
+            3,
+            disclosure,
+            phase="transport",
         )
     if isinstance(exc, RuntimeError):
         if "WebSocket" in str(exc) or "app-server closed" in str(exc):
@@ -211,18 +250,21 @@ def _subscription_failure(
                 "App Server connection failed or closed (RuntimeError)",
                 3,
                 disclosure,
+                phase="transport",
             )
         return ProbeExecutionError(
             "evidence_unavailable",
             "App Server request failed or returned unusable protocol evidence (RuntimeError)",
             4,
             disclosure,
+            phase="protocol_validation",
         )
     return ProbeExecutionError(
         "subscription_failed",
         "notification subscription could not be established or validated",
         4,
         disclosure,
+        phase="subscription_setup",
     )
 
 
@@ -288,6 +330,7 @@ def collect_evidence(
                 raise ProbeEvidenceError(
                     "tree_changed_during_subscription",
                     "the native tree changed while notification subscription was established",
+                    phase="subscription_revalidation",
                 )
             revalidated_by_id = {
                 thread["id"]: thread for thread in subscription_revalidation["threads"]
@@ -299,6 +342,7 @@ def collect_evidence(
                         raise ProbeEvidenceError(
                             "thread_changed_during_subscription",
                             "an exact thread changed while notification subscription was established",
+                            phase="subscription_revalidation",
                         )
             drain()
 
@@ -329,6 +373,7 @@ def collect_evidence(
                 raise ProbeEvidenceError(
                     "missing_status_notification",
                     "no status-change notification was received for the observed tree",
+                    phase="notification_wait",
                 )
         except ProbeExecutionError:
             raise
@@ -444,13 +489,18 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _failure(
-    code: str, message: str, *, side_effects: Mapping[str, Any] | None = None
+    code: str,
+    message: str,
+    *,
+    phase: str,
+    side_effects: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    safe_phase = phase if phase in _SAFE_ERROR_PHASES else "probe_runtime"
     result = {
         "schemaVersion": SCHEMA_VERSION,
         "probe": "switchstand-stage-a",
         "ok": False,
-        "error": {"code": code, "message": message},
+        "error": {"code": code, "message": message, "phase": safe_phase},
     }
     result.update(
         dict(side_effects)
@@ -504,23 +554,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             subscribe_status_notifications=args.subscribe_status_notifications,
         )
     except ProbeExecutionError as exc:
-        result = _failure(exc.code, str(exc), side_effects=exc.side_effects)
+        result = _failure(
+            exc.code, str(exc), phase=exc.phase, side_effects=exc.side_effects
+        )
         print(json.dumps(result, sort_keys=True))
         return exc.exit_code
     except (OSError, socket.timeout):
         result = _failure(
-            "transport_failure", "App Server transport failed", side_effects=no_effects
+            "transport_failure",
+            "App Server transport failed",
+            phase="transport",
+            side_effects=no_effects,
         )
         print(json.dumps(result, sort_keys=True))
         return 3
     except ProbeEvidenceError as exc:
-        result = _failure(exc.code, str(exc), side_effects=no_effects)
+        result = _failure(
+            exc.code, str(exc), phase=exc.phase, side_effects=no_effects
+        )
         print(json.dumps(result, sort_keys=True))
         return 4
-    except AgentTreeEvidenceError:
+    except AgentTreeEvidenceError as exc:
         result = _failure(
-            "invalid_native_tree_evidence",
-            "native tree evidence was incomplete or internally inconsistent",
+            exc.code,
+            str(exc),
+            phase=exc.phase,
             side_effects=no_effects,
         )
         print(json.dumps(result, sort_keys=True))
@@ -530,6 +588,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _failure(
                 "transport_failure",
                 "App Server connection failed or closed (RuntimeError)",
+                phase="transport",
                 side_effects=no_effects,
             )
             exit_code = 3
@@ -537,6 +596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _failure(
                 "evidence_unavailable",
                 "App Server request failed or returned unusable protocol evidence (RuntimeError)",
+                phase="protocol_validation",
                 side_effects=no_effects,
             )
             exit_code = 4
@@ -546,6 +606,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _failure(
             "evidence_unavailable",
             "protocol evidence was not valid",
+            phase="protocol_validation",
             side_effects=no_effects,
         )
         print(json.dumps(result, sort_keys=True))

@@ -135,9 +135,14 @@ The output never calls native `idle` done or silence stale.
 
 Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
 failure, exit `4` is unavailable/incomplete evidence, and argparse usage errors exit `2`. Error
-objects are JSON for runtime failures and omit the socket path. Run the following for the
-complete flag reference; an editable install also provides the `switchstand-stage-a` console
-command.
+objects are JSON for runtime failures and omit the socket path. Their `code`, fixed `message`,
+and allowlisted `phase` distinguish safe categories including invalid/missing roots, selected
+non-roots, root or descendant session mismatches, absent descendants, invalid pagination,
+duplicate threads, missing parent edges or intermediate parents, lineage cycles, invalid or
+unsupported native statuses, and missing protocol timestamps. They never include protocol ids,
+paths, raw statuses or flags, cursors, prompts/outputs, or exception strings. Run the following
+for the complete flag reference; an editable install also provides the `switchstand-stage-a`
+console command.
 
 ```sh
 PYTHONPATH=src python -m switchstand.stage_a_probe --help

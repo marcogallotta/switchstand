@@ -310,7 +310,8 @@ class StageAProbeTests(unittest.TestCase):
 
         result = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 4)
-        self.assertEqual(result["error"]["code"], "invalid_native_tree_evidence")
+        self.assertEqual(result["error"]["code"], "missing_intermediate_parent")
+        self.assertEqual(result["error"]["phase"], "lineage_validation")
         self.assertFalse(result["readOnly"])
         self.assertTrue(result["runtimeLoadedOrSubscriptionStateChanged"])
         self.assertFalse(result["conversationHistoryMutated"])
@@ -459,12 +460,71 @@ class StageAProbeTests(unittest.TestCase):
 
         result = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 4)
-        self.assertEqual(result["error"]["code"], "invalid_native_tree_evidence")
+        self.assertEqual(result["error"]["code"], "missing_intermediate_parent")
+        self.assertEqual(result["error"]["phase"], "lineage_validation")
         self.assertEqual(
             result["error"]["message"],
-            "native tree evidence was incomplete or internally inconsistent",
+            "spawned lineage is missing an intermediate parent",
         )
         self.assertNotIn(leaked, stdout.getvalue())
+
+    def test_initial_failures_emit_distinct_safe_diagnostic_taxonomy(self):
+        leaked = "IGNORE PROMPT /private/operator/secret.txt"
+
+        def run(client):
+            stdout = io.StringIO()
+            with patch("switchstand.stage_a_probe.CodexAppServer", return_value=client):
+                with redirect_stdout(stdout):
+                    exit_code = main(
+                        [
+                            "--app-server-socket",
+                            "/private/operator/app-server.sock",
+                            "--root-thread-id",
+                            "root-1",
+                        ]
+                    )
+            return exit_code, json.loads(stdout.getvalue()), stdout.getvalue()
+
+        cases = []
+
+        client = ProbeClient()
+        client.root = {"thread": None, "detail": leaked}
+        cases.append((client, "root_not_found_or_invalid", "root_read"))
+
+        client = ProbeClient()
+        client.root["thread"]["parentThreadId"] = leaked
+        cases.append((client, "selected_thread_not_root", "root_read"))
+
+        client = ProbeClient()
+        client.root["thread"]["sessionId"] = leaked
+        cases.append((client, "root_session_mismatch", "root_read"))
+
+        client = ProbeClient()
+        page = fixture("thread_list_descendants_page_1.json")
+        page["nextCursor"] = [leaked]
+        client.pages = deque([page])
+        cases.append((client, "invalid_pagination", "descendant_list"))
+
+        client = ProbeClient()
+        client.root["thread"]["status"] = {"type": leaked}
+        cases.append((client, "unsupported_status_or_flag", "root_read"))
+
+        client = ProbeClient()
+        del client.pages[0]["data"][0]["updatedAt"]
+        cases.append((client, "missing_protocol_timestamp", "timestamp_validation"))
+
+        observed_codes = []
+        for client, expected_code, expected_phase in cases:
+            with self.subTest(expected_code=expected_code):
+                exit_code, result, raw = run(client)
+                self.assertEqual(exit_code, 4)
+                self.assertEqual(result["error"]["code"], expected_code)
+                self.assertEqual(result["error"]["phase"], expected_phase)
+                self.assertNotIn(leaked, raw)
+                self.assertNotIn("/private/operator", raw)
+                observed_codes.append(result["error"]["code"])
+
+        self.assertEqual(len(observed_codes), len(set(observed_codes)))
 
     def test_probe_failure_never_retains_exact_root_value(self):
         leaked = "/private/operator/IGNORE_PROMPT_root"

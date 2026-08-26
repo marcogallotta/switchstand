@@ -37,8 +37,11 @@ sent without an exact acknowledgement, it reports the effect as unknown and `may
 instead of claiming no side effect. Failure disclosure uses counts, not raw attempted ids.
 Native statuses in both paths are projected only to validated `type` and, for `active`,
 `activeFlags`. Failures retain only stable probe-authored codes and messages, never raw protocol
-values or exception text. Absence of a notification never changes a native status or implies
-stale work.
+values or exception text. Native-tree validation errors carry structured codes at their origin
+and are emitted with an allowlisted phase such as `root_read`, `descendant_list`,
+`lineage_validation`, or `timestamp_validation`. This makes a failed live gate diagnosable
+without retaining ids, paths, statuses, flags, cursors, prompts, outputs, or exception strings.
+Absence of a notification never changes a native status or implies stale work.
 
 ## State model
 

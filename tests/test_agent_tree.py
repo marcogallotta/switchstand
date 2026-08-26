@@ -113,8 +113,10 @@ class AgentTreeProtocolTests(unittest.TestCase):
             }
         ]
 
-        with self.assertRaisesRegex(AgentTreeEvidenceError, "no spawned parent"):
+        with self.assertRaises(AgentTreeEvidenceError) as raised:
             AgentTreeAdapter(client).observe_tree("root-1")
+        self.assertEqual(raised.exception.code, "missing_parent_edge")
+        self.assertEqual(raised.exception.phase, "lineage_validation")
 
     def test_missing_intermediate_parent_fails_closed(self):
         client = FixtureClient()
@@ -133,8 +135,10 @@ class AgentTreeProtocolTests(unittest.TestCase):
             }
         ]
 
-        with self.assertRaisesRegex(AgentTreeEvidenceError, "missing parent missing-child"):
+        with self.assertRaises(AgentTreeEvidenceError) as raised:
             AgentTreeAdapter(client).observe_tree("root-1")
+        self.assertEqual(raised.exception.code, "missing_intermediate_parent")
+        self.assertEqual(raised.exception.phase, "lineage_validation")
 
     def test_descendant_from_another_native_session_fails_closed(self):
         client = FixtureClient()
@@ -142,8 +146,10 @@ class AgentTreeProtocolTests(unittest.TestCase):
         client.pages[0]["data"][0]["sessionId"] = "different-root"
         client.pages[0]["nextCursor"] = None
 
-        with self.assertRaisesRegex(AgentTreeEvidenceError, "does not share root session"):
+        with self.assertRaises(AgentTreeEvidenceError) as raised:
             AgentTreeAdapter(client).observe_tree("root-1")
+        self.assertEqual(raised.exception.code, "descendant_session_mismatch")
+        self.assertEqual(raised.exception.phase, "lineage_validation")
 
     def test_native_status_event_is_preserved_and_idle_is_not_done(self):
         adapter = AgentTreeAdapter(FixtureClient())
