@@ -1,0 +1,54 @@
+:root {
+  color-scheme: light dark;
+  --background: #f4f1ea;
+  --surface: #fffdf8;
+  --text: #20201e;
+  --muted: #68645c;
+  --border: #cbc4b8;
+  --accent: #0f6b61;
+  --danger: #a4382b;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--background);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  margin: 0;
+}
+.page { display: grid; gap: 1rem; margin: 0 auto; max-width: 92rem; padding: 1.25rem; }
+.intro, .role-card, .inset, .record {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.9rem;
+}
+.intro { align-items: end; display: flex; gap: 1rem; justify-content: space-between; }
+.intro h1, .intro p, h2, h3, .record p { margin: 0; }
+.eyebrow { color: var(--accent); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.facts, .muted { color: var(--muted); font-size: 0.86rem; }
+.role-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.role-card { display: grid; gap: 1rem; min-width: 0; }
+.role-card__header, .record__summary, .actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: space-between; }
+.form { display: grid; gap: 0.6rem; }
+textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text); font: inherit; min-height: 5rem; padding: 0.55rem; resize: vertical; width: 100%; }
+.button { background: var(--surface); border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text); cursor: pointer; font: inherit; font-weight: 700; padding: 0.48rem 0.75rem; }
+.button--primary { background: var(--accent); border-color: var(--accent); color: white; }
+.button--danger { border-color: var(--danger); color: var(--danger); }
+.list { display: grid; gap: 0.55rem; list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.status { border: 1px solid currentColor; border-radius: 999px; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.035em; padding: 0.16rem 0.45rem; text-transform: uppercase; }
+.status--busy, .status--running { color: #1769aa; }
+.status--waiting, .status--queued, .status--dispatching { color: #806000; }
+.status--completed { color: #167344; }
+.status--dead, .status--stopped, .status--failed { color: var(--danger); }
+.status--stale, .status--unknown { color: #744f84; }
+.output { overflow: auto; white-space: pre-wrap; }
+.output--stale { border-left: 0.25rem solid #744f84; opacity: 0.8; padding-left: 0.6rem; }
+.error, .stale-label { color: var(--danger); font-weight: 800; }
+code { overflow-wrap: anywhere; }
+@media (max-width: 64rem) { .role-grid { grid-template-columns: 1fr; } .intro { align-items: start; flex-direction: column; } }
+@media (prefers-color-scheme: dark) {
+  :root { --background: #171816; --surface: #22231f; --text: #f4f1e9; --muted: #bdb7aa; --border: #4a4b43; --accent: #4bb5a5; --danger: #ef8374; }
+  .button--primary { color: #10221f; }
+}
