@@ -407,12 +407,6 @@ function samePair(left, right) {
     && left?.agentRef === right?.agentRef;
 }
 
-function currentInputTarget() {
-  const state = nativeSelectionController?.getState();
-  if (state?.currentTarget) return state.currentTarget;
-  return pairKey(state?.candidate) === visibleInputTargetKey ? state.candidate : null;
-}
-
 function syncNativeInput(target) {
   const key = pairKey(target);
   if (visibleInputTargetKey !== key) {
@@ -465,14 +459,11 @@ nativeInput?.addEventListener("input", () => {
 });
 nativeInputForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const confirmedTarget = nativeSelectionController?.getState().currentTarget;
-  const target = currentInputTarget();
+  const target = nativeSelectionController?.getState().currentTarget;
   if (!target) return;
   const key = pairKey(target);
   if (nativeInputRequests.has(key)) return;
-  const bufferedDraft = nativeInputDrafts.get(key);
-  const text = confirmedTarget ? nativeInput.value : bufferedDraft ?? nativeInput.value;
-  if (!confirmedTarget && bufferedDraft !== undefined) nativeInput.value = bufferedDraft;
+  const text = nativeInput.value;
   nativeInputDrafts.set(key, text);
   const requestRef = ++nextInputRequest;
   nativeInputRequests.set(key, requestRef);

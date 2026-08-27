@@ -82,8 +82,6 @@
       const pair = { ...candidate };
       const expectedSnapshotGeneration = snapshotGeneration;
       const expectedRequestGeneration = ++requestGeneration;
-      currentTarget = null;
-      emit();
       let result;
       try {
         result = await resolve(pair, suppliedSnapshot);

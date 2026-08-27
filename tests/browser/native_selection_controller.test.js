@@ -118,6 +118,28 @@ test("delayed old selection success and failure cannot mutate a newer exact sele
   }
 });
 
+test("same-target revalidation retains the last validated target until failure is known", async () => {
+  const storage = new Storage();
+  const pending = new Map();
+  const created = controller(storage, pending);
+  const selection = pair("observation-run-one", "agent-current");
+  const validated = success(selection, { name: "Current target" });
+  created.controller.select(seam(selection, validated));
+  await tick();
+
+  const delayedFailure = failure("OBSERVATION_STALE");
+  const gate = deferred();
+  pending.set(delayedFailure, gate);
+  created.controller.supplySeam(seam(selection, delayedFailure));
+  assert.deepEqual(plain(created.controller.getState().currentTarget), validated);
+  assert.deepEqual(JSON.parse(storage.getItem(created.key)), selection);
+
+  gate.resolve(delayedFailure);
+  await tick();
+  assert.deepEqual(plain(created.controller.getState()), { candidate: null, currentTarget: null });
+  assert.equal(storage.getItem(created.key), null);
+});
+
 test("every clearing result fences a delayed older success and never chooses another agent", async () => {
   const storage = new Storage();
   const pending = new Map();
