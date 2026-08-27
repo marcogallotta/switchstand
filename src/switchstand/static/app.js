@@ -58,20 +58,24 @@ function textOffset(root, node, offset) {
 function captureView() {
   const focus = document.activeElement?.closest?.("[data-focus-key]");
   const selection = window.getSelection?.();
+  const nodes = [...treeHost.querySelectorAll("details[data-node-key]")];
   const selected = focus && selection?.rangeCount && focus.contains(selection.anchorNode)
     && focus.contains(selection.focusNode) ? [textOffset(focus, selection.anchorNode, selection.anchorOffset),
       textOffset(focus, selection.focusNode, selection.focusOffset)] : null;
   return {
     focus: focus?.dataset.focusKey,
     selected,
-    open: new Set([...treeHost.querySelectorAll("details[data-node-key][open]")].map((node) => node.dataset.nodeKey)),
+    hadTree: nodes.length > 0,
+    open: new Set(nodes.filter((node) => node.open).map((node) => node.dataset.nodeKey)),
     treeScroll: treeHost.scrollTop,
     windowScroll: [window.scrollX, window.scrollY],
   };
 }
 
 function restoreView(view) {
-  treeHost.querySelectorAll("details[data-node-key]").forEach((node) => { node.open = view.open.has(node.dataset.nodeKey); });
+  treeHost.querySelectorAll("details[data-node-key]").forEach((node) => {
+    node.open = view.hadTree ? view.open.has(node.dataset.nodeKey) : true;
+  });
   const focus = [...treeHost.querySelectorAll("[data-focus-key]")].find((node) => node.dataset.focusKey === view.focus);
   if (focus) {
     focus.focus({ preventScroll: true });
