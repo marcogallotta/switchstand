@@ -39,7 +39,18 @@ class CodexAppServer:
         client_title: str = "Switchstand",
         timeout_seconds: float | None = None,
         bounded_stop: bool = False,
+        bounded_response_bytes: int = 256 * 1024,
     ) -> None:
+        if bounded_stop and (type(bounded_response_bytes) is not int or bounded_response_bytes <= 0):
+            raise ValueError("bounded response byte cap must be positive")
+        self._bounded_deadline = (
+            time.monotonic() + timeout_seconds
+            if bounded_stop and timeout_seconds is not None
+            else None
+        )
+        self._bounded_response_bytes_remaining = (
+            bounded_response_bytes if bounded_stop else None
+        )
         self.socket_path = Path(socket_path)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.settimeout(timeout_seconds)
@@ -85,12 +96,16 @@ class CodexAppServer:
             }
         setup_failed = False
         try:
-            self._upgrade(
-                64 * 1024 if bounded_stop else None,
+            upgrade_bytes = self._upgrade(
+                min(64 * 1024, bounded_response_bytes) if bounded_stop else None,
                 timeout_seconds if bounded_stop else None,
+                deadline=self._bounded_deadline,
             )
+            self._consume_bounded_response_bytes(upgrade_bytes)
             if bounded_stop:
-                classification, _ = self.stop_request("initialize", initialize, _close_after=False)
+                classification, _ = self.bounded_request(
+                    "initialize", initialize, _close_after=False
+                )
                 if classification != "ok":
                     raise _StopFailure("setup_unavailable")
             else:
@@ -108,8 +123,11 @@ class CodexAppServer:
         self,
         max_header_bytes: int | None = None,
         timeout_seconds: float | None = None,
-    ) -> None:
-        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+        *,
+        deadline: float | None = None,
+    ) -> int:
+        if deadline is None and timeout_seconds is not None:
+            deadline = time.monotonic() + timeout_seconds
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         request = (
             "GET / HTTP/1.1\r\n"
@@ -119,6 +137,11 @@ class CodexAppServer:
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n\r\n"
         ).encode("ascii")
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            self.socket.settimeout(remaining)
         self.socket.sendall(request)
         status_line = self._read_line(max_header_bytes, deadline)
         used = len(status_line)
@@ -148,6 +171,16 @@ class CodexAppServer:
             or headers.get("sec-websocket-accept") != expected
         ):
             raise RuntimeError(f"Codex app-server rejected WebSocket upgrade: {status}")
+        return used
+
+    def _consume_bounded_response_bytes(self, used: int) -> None:
+        remaining = self._bounded_response_bytes_remaining
+        if remaining is None:
+            return
+        remaining -= used
+        self._bounded_response_bytes_remaining = remaining
+        if remaining < 0:
+            raise _StopFailure
 
     def _read_line(self, max_bytes: int | None, deadline: float | None) -> bytes:
         if deadline is None:
@@ -244,23 +277,34 @@ class CodexAppServer:
                     continue
                 return bytes(fragments).decode("utf-8")
 
-    def stop_request(self, method: str, params: Mapping[str, Any], *,
+    def bounded_request(self, method: str, params: Mapping[str, Any], *,
         max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
         _close_after: bool = True,
     ) -> tuple[str, Mapping[str, Any] | None]:
-        """Send one bounded B2 request, discard all unrelated input, and close."""
+        """Send one bounded one-shot request, discard unrelated input, and close."""
         classification, result = "ambiguous", None
         with self._lock:
             self._next_id += 1
             request_id = self._next_id
-            deadline = time.monotonic() + timeout_seconds
+            deadline = self._bounded_deadline
+            if deadline is None:
+                deadline = time.monotonic() + timeout_seconds
             try:
-                self.socket.settimeout(timeout_seconds)
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    raise TimeoutError
+                self.socket.settimeout(remaining_time)
                 request = {"method": method, "id": request_id, "params": dict(params)}
                 self._send_frame(0x1, _canonical(request).encode("utf-8"))
                 while time.monotonic() < deadline:
                     self.socket.settimeout(max(0.001, deadline - time.monotonic()))
-                    raw = self._read_text(max_response_bytes, deadline)
+                    response_limit = max_response_bytes
+                    if self._bounded_response_bytes_remaining is not None:
+                        response_limit = min(
+                            response_limit, self._bounded_response_bytes_remaining
+                        )
+                    raw = self._read_text(response_limit, deadline)
+                    self._consume_bounded_response_bytes(len(raw.encode("utf-8")))
                     try:
                         message = json.loads(raw)
                     except (UnicodeError, json.JSONDecodeError):
@@ -268,10 +312,16 @@ class CodexAppServer:
                         classification = "malformed"
                         break
                     raw = ""
-                    if not isinstance(message, Mapping) or message.get("id") != request_id:
+                    if not isinstance(message, Mapping):
+                        message = None
+                        classification = "malformed"
+                        break
+                    if type(message.get("id")) is not int or message.get("id") != request_id:
                         message = None
                         continue
-                    if "error" in message:
+                    if "error" in message and "result" in message:
+                        classification = "malformed"
+                    elif "error" in message:
                         classification = "rejected"
                     elif isinstance(message.get("result"), Mapping):
                         classification, result = "ok", dict(message["result"])
@@ -286,6 +336,71 @@ class CodexAppServer:
                 if _close_after or classification != "ok":
                     self._stop_close()
         return classification, result
+
+    def stop_request(self, method: str, params: Mapping[str, Any], *,
+        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
+        _close_after: bool = True,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        """Compatibility entry point for the B2 exact-turn Stop boundary."""
+        return self.bounded_request(
+            method,
+            params,
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+            _close_after=_close_after,
+        )
+
+    def bounded_thread_read(
+        self,
+        thread_id: str,
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        """Read one exact thread through the bounded one-shot path."""
+        return self.bounded_request(
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": True},
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def bounded_turn_start_text_native(
+        self,
+        thread_id: str,
+        text: str,
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        """Start one turn without overriding the native thread settings."""
+        return self.bounded_request(
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def bounded_turn_steer_text(
+        self,
+        thread_id: str,
+        expected_turn_id: str,
+        text: str,
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        """Steer one exact active turn through the bounded one-shot path."""
+        return self.bounded_request(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": text}],
+                "expectedTurnId": expected_turn_id,
+            },
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+        )
 
     def _stop_close(self) -> None:
         self._server_messages.clear()
