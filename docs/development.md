@@ -49,6 +49,7 @@ those above 200,000 bytes fail. Gate, config, lock, and workflow changes require
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m compileall -q src tests
 node --test tests/browser_focus.test.js
+node --test tests/native_selection_contract.test.js
 node --check src/switchstand/static/app.js
 ```
 

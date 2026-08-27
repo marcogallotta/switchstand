@@ -59,7 +59,7 @@ Run the dependency-free checks:
 ```sh
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m compileall -q src tests
-node --test tests/browser_focus.test.js
+node --test tests/browser_focus.test.js tests/native_selection_contract.test.js
 node --check src/switchstand/static/app.js
 ```
 
@@ -100,6 +100,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation
 - `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/native_stop.py` — exact-turn native stop receipts and outcome projection
+- `src/switchstand/native_selection.py` — pure closed `native-selection-v1` resolution boundary
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `scripts/stage_b1_live_check.py` — exact-head, read-only native-board live evidence runner
@@ -116,5 +117,6 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
 - [Native read-only flight-board decision](docs/decisions/0004-native-read-only-flight-board.md)
 - [Exact-turn native stop decision](docs/decisions/0005-exact-turn-native-stop.md)
+- [Native selection v1 contract](docs/native-selection-v1.md)
 
 Switchstand is available under the [MIT License](LICENSE).

@@ -1,0 +1,290 @@
+{
+  "version": "native-selection-v1",
+  "baseSelection": {
+    "observationRunRef": "observation-run-alpha",
+    "agentRef": "agent-alpha-1"
+  },
+  "baseObservation": {
+    "observationRunRef": "observation-run-alpha",
+    "connected": true,
+    "latestCompletePassCompletedAt": 100,
+    "agentRecords": [
+      {
+        "agentRef": "agent-alpha-1",
+        "present": true,
+        "name": {
+          "value": "Build agent",
+          "provenance": "explicitly-safe"
+        },
+        "agentNickname": {
+          "value": "Builder",
+          "provenance": "explicitly-safe"
+        }
+      },
+      {
+        "agentRef": "agent-alpha-gone",
+        "present": false
+      }
+    ]
+  },
+  "baseExpected": {
+    "version": "native-selection-v1",
+    "observationRunRef": "observation-run-alpha",
+    "agentRef": "agent-alpha-1",
+    "connected": true,
+    "present": true,
+    "name": "Build agent",
+    "agentNickname": "Builder"
+  },
+  "resolveCases": [
+    {
+      "id": "safe-display",
+      "now": 105,
+      "maximumObservationAgeSeconds": 5,
+      "expected": {
+        "version": "native-selection-v1",
+        "observationRunRef": "observation-run-alpha",
+        "agentRef": "agent-alpha-1",
+        "connected": true,
+        "present": true,
+        "name": "Build agent",
+        "agentNickname": "Builder"
+      }
+    },
+    {
+      "id": "optional-display-absent",
+      "recordPatch": {
+        "name": {
+          "value": "unsafe name",
+          "provenance": "native"
+        },
+        "agentNickname": null
+      },
+      "now": 104,
+      "maximumObservationAgeSeconds": 5,
+      "expected": {
+        "version": "native-selection-v1",
+        "observationRunRef": "observation-run-alpha",
+        "agentRef": "agent-alpha-1",
+        "connected": true,
+        "present": true
+      }
+    },
+    {
+      "id": "fresh-below-maximum",
+      "now": 104.999,
+      "maximumObservationAgeSeconds": 5,
+      "expectedBase": true
+    },
+    {
+      "id": "fresh-at-maximum",
+      "now": 105,
+      "maximumObservationAgeSeconds": 5,
+      "expectedBase": true
+    },
+    {
+      "id": "stale-above-maximum",
+      "now": 105.001,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "OBSERVATION_STALE"
+    },
+    {
+      "id": "observation-run-mismatch",
+      "selectionPatch": {
+        "observationRunRef": "observation-run-before-restart"
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "INVALID_AGENT_REF"
+    },
+    {
+      "id": "cross-run-agent-ref-reuse-does-not-retarget",
+      "selectionPatch": {
+        "observationRunRef": "observation-run-before-restart"
+      },
+      "observationPatch": {
+        "connected": false,
+        "latestCompletePassCompletedAt": 0
+      },
+      "recordPatch": {
+        "present": false
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "INVALID_AGENT_REF"
+    },
+    {
+      "id": "unknown-agent-ref",
+      "selectionPatch": {
+        "agentRef": "agent-never-issued"
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "INVALID_AGENT_REF"
+    },
+    {
+      "id": "unknown-selection-field-is-rejected",
+      "selectionPatch": {
+        "nativeThreadId": "must-not-be-accepted"
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "INVALID_AGENT_REF"
+    },
+    {
+      "id": "invalid-agent-precedes-all-other-errors",
+      "selectionPatch": {
+        "agentRef": "agent-never-issued"
+      },
+      "observationPatch": {
+        "connected": false,
+        "latestCompletePassCompletedAt": 0
+      },
+      "recordPatch": {
+        "present": false
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "INVALID_AGENT_REF"
+    },
+    {
+      "id": "disconnected-precedes-stale-and-absent",
+      "selectionPatch": {
+        "agentRef": "agent-alpha-gone"
+      },
+      "observationPatch": {
+        "connected": false,
+        "latestCompletePassCompletedAt": 0
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "APP_SERVER_DISCONNECTED"
+    },
+    {
+      "id": "stale-precedes-absent",
+      "selectionPatch": {
+        "agentRef": "agent-alpha-gone"
+      },
+      "now": 106,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "OBSERVATION_STALE"
+    },
+    {
+      "id": "known-agent-not-present",
+      "selectionPatch": {
+        "agentRef": "agent-alpha-gone"
+      },
+      "now": 105,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "AGENT_NOT_PRESENT"
+    },
+    {
+      "id": "native-updated-at-cannot-make-pass-fresh",
+      "observationPatch": {
+        "updatedAt": 1000,
+        "activityAt": 1000,
+        "turnAt": 1000
+      },
+      "recordPatch": {
+        "updatedAt": 1000,
+        "status": "active"
+      },
+      "now": 106,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "OBSERVATION_STALE"
+    },
+    {
+      "id": "huge-now-is-stale-not-an-exception",
+      "now": {
+        "hugeInteger": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "OBSERVATION_STALE"
+    },
+    {
+      "id": "huge-completion-time-is-stale-not-an-exception",
+      "observationPatch": {
+        "latestCompletePassCompletedAt": {
+          "hugeInteger": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      "now": 100,
+      "maximumObservationAgeSeconds": 5,
+      "expectedError": "OBSERVATION_STALE"
+    },
+    {
+      "id": "huge-maximum-age-is-stale-not-an-exception",
+      "now": 100,
+      "maximumObservationAgeSeconds": {
+        "hugeInteger": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expectedError": "OBSERVATION_STALE"
+    }
+  ],
+  "errorMessages": {
+    "INVALID_AGENT_REF": "Selected agent is unavailable.",
+    "APP_SERVER_DISCONNECTED": "Agent connection is unavailable.",
+    "OBSERVATION_STALE": "Selected agent observation is stale.",
+    "AGENT_NOT_PRESENT": "Selected agent is no longer present."
+  },
+  "privacyClasses": [
+    {
+      "id": "native-identifiers",
+      "fields": {
+        "threadId": "native-thread-secret",
+        "turnId": "native-turn-secret",
+        "sessionId": "native-session-secret",
+        "processId": 4242,
+        "transportId": "socket-secret"
+      }
+    },
+    {
+      "id": "content",
+      "fields": {
+        "preview": "prompt secret",
+        "transcript": ["transcript secret"],
+        "prompt": "prompt secret",
+        "messages": ["message secret"],
+        "pendingInput": "input secret"
+      }
+    },
+    {
+      "id": "topology",
+      "fields": {
+        "parentRef": "agent-parent",
+        "childRefs": ["agent-child"],
+        "lineage": ["agent-parent", "agent-child"],
+        "fullAgentList": ["agent-other"]
+      }
+    },
+    {
+      "id": "durable-or-fallback-identity",
+      "fields": {
+        "durableIdentity": "durable-secret",
+        "crossRunCorrelation": "correlation-secret",
+        "fallbackAgentRef": "agent-other"
+      }
+    },
+    {
+      "id": "native-or-inferred-state",
+      "fields": {
+        "status": "active",
+        "semanticCompletion": "done",
+        "role": "reviewer",
+        "lifecycle": "running",
+        "health": "healthy"
+      }
+    },
+    {
+      "id": "native-activity-timestamps",
+      "fields": {
+        "updatedAt": 999,
+        "activityAt": 999,
+        "turnAt": 999
+      }
+    }
+  ],
+  "unknownDtoFields": {
+    "futureField": "must be rejected"
+  }
+}

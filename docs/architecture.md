@@ -67,6 +67,13 @@ bounded read, and sends at most one interrupt. A later bounded read may move `re
 `confirmed`, `not_confirmed`, or `unknown`; it never retries or retargets. Receipts are capped,
 expiring, process-local tombstones and contain no transcript content.
 
+`native_selection.py` freezes the additive B3 `native-selection-v1` boundary without wiring it
+into production. It purely re-resolves an exact observation-run/agent-reference pair from a
+supplied current B1 observation. Its closed output retains only the pair, connected/present
+truth, and display values whose provenance is explicitly safe. Freshness depends only on the
+supplied latest complete-pass completion time and configured maximum age. It owns no native
+read, cache, persistence, HTTP, browser, transcript/input, topology, or Stop behavior.
+
 Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
 changes may be missed or collapsed. It is not a native event stream, and elapsed time is age
