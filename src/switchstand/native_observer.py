@@ -74,6 +74,7 @@ class NativeObserver:
         root_thread_id: str,
         *,
         clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
         trail_limit: int = 20,
     ) -> None:
         if not root_thread_id:
@@ -81,16 +82,15 @@ class NativeObserver:
         self._client_factory = client_factory
         self._root_thread_id = root_thread_id
         self._clock = clock
+        self._monotonic = monotonic
         self._trail_limit = max(1, trail_limit)
         self._lock = threading.Lock()
         self._refs: dict[str, str] = {}
         self._active_since: dict[str, float] = {}
         self._threads: list[dict[str, Any]] = []
         self._trail: list[dict[str, Any]] = []
-        self._pass_sequence = 0
         self._state: dict[str, Any] = {
             "mode": "native",
-            "passSequence": 0,
             "observation": {
                 "connected": False,
                 "historical": False,
@@ -109,7 +109,7 @@ class NativeObserver:
             target[thread_id] = f"thread-{len(target) + 1}"
         return target[thread_id]
 
-    def _project(self, tree: Mapping[str, Any], completed_at: float) -> list[dict[str, Any]]:
+    def _project(self, tree: Mapping[str, Any], completed_tick: float) -> list[dict[str, Any]]:
         raw_threads = tree["threads"]
         if not isinstance(raw_threads, list) or not raw_threads:
             raise ValueError("tree unavailable")
@@ -126,8 +126,8 @@ class NativeObserver:
             status = _status(thread["status"])
             active_observed_seconds = None
             if status["type"] == "active":
-                active_now[ref] = self._active_since.get(ref, completed_at)
-                active_observed_seconds = max(0.0, completed_at - active_now[ref])
+                active_now[ref] = self._active_since.get(ref, completed_tick)
+                active_observed_seconds = max(0.0, completed_tick - active_now[ref])
             projected.append(
                 {
                     "ref": ref,
@@ -178,14 +178,13 @@ class NativeObserver:
                 self._root_thread_id
             )
             completed_at = self._clock()
+            completed_tick = self._monotonic()
             with self._lock:
-                threads = self._project(tree, completed_at)
+                threads = self._project(tree, completed_tick)
                 self._record_differences(self._threads, threads, completed_at)
                 self._threads = threads
-                self._pass_sequence += 1
                 self._state = {
                     "mode": "native",
-                    "passSequence": self._pass_sequence,
                     "observation": {
                         "connected": True,
                         "historical": False,

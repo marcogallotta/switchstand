@@ -33,7 +33,7 @@ function nativeState({ sequence, connected = true, historical = false, status = 
     updatedAt: 180 + index,
     status: index === 1
       ? { type: status, ...(status === "active" ? { activeFlags: ["waitingOnUserInput"] } : {}) }
-      : { type: "idle" },
+      : index === 2 ? { type: "systemError" } : index === 3 ? { type: "notLoaded" } : { type: "idle" },
     activeObservedSeconds: index === 1 && status === "active" ? activeSeconds : null,
   }));
   return {
@@ -156,9 +156,16 @@ test("native flight board preserves focus, text selection, and scroll across 50 
   const card = page.locator('[data-focus-key="thread-2"]');
   await card.waitFor();
   await expect(card).toContainText("Agent 1");
+  await expect(card).toContainText("parent Root");
+  await expect(card).toContainText("depth 1");
+  await expect(card).toContainText("updated 19s ago");
   await expect(card).toContainText("waitingOnUserInput");
   await expect(card).toContainText("consecutive observed active 5s");
   await expect(page.locator(".flight-meta").first()).toContainText("multi-request observation pass");
+  await expect(page.locator(".status--systemError")).toHaveCount(1);
+  await expect(page.locator(".status--notLoaded")).toHaveCount(1);
+  await expect(page.locator(".difference-trail .record")).toHaveCount(20);
+  await expect(page.locator("button")).toHaveCount(0);
   const initial = await page.evaluate(() => {
     const cardNode = document.querySelector('[data-focus-key="thread-2"]');
     const selectionNode = document.querySelector('[data-selection-key="source:thread-2"]');

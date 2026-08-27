@@ -60,10 +60,16 @@ class NativeObserverTests(unittest.TestCase):
     def test_projects_private_tree_and_forces_state_db_only_on_every_page(self):
         active = FakeClient()
         still_active = FakeClient()
+        still_active_after_clock_step = FakeClient()
         idle = FakeClient(child_status={"type": "idle"})
-        times = iter([100.0, 105.0, 110.0])
+        times = iter([100.0, 105.0, 103.0, 110.0])
+        ticks = iter([10.0, 15.0, 18.0, 20.0])
         observer = NativeObserver(
-            Factory([active, still_active, idle]), "root-1", clock=lambda: next(times), trail_limit=3
+            Factory([active, still_active, still_active_after_clock_step, idle]),
+            "root-1",
+            clock=lambda: next(times),
+            monotonic=lambda: next(ticks),
+            trail_limit=3,
         )
 
         observer.observe_once()
@@ -72,10 +78,12 @@ class NativeObserverTests(unittest.TestCase):
         second = observer.snapshot()
         observer.observe_once()
         third = observer.snapshot()
+        observer.observe_once()
+        fourth = observer.snapshot()
 
         self.assertEqual(active.reads, [("root-1", False)])
         self.assertEqual(idle.reads, [("root-1", False)])
-        for client in (active, still_active, idle):
+        for client in (active, still_active, still_active_after_clock_step, idle):
             self.assertTrue(client.closed)
             self.assertEqual(len(client.list_requests), 2)
             self.assertTrue(all(request["useStateDbOnly"] is True for request in client.list_requests))
@@ -88,10 +96,11 @@ class NativeObserverTests(unittest.TestCase):
         self.assertEqual(first["threads"][1]["activeObservedSeconds"], 0)
         self.assertEqual(first["differences"], [])
         self.assertEqual(second["threads"][1]["activeObservedSeconds"], 5)
-        self.assertEqual(third["threads"][1]["status"]["type"], "idle")
-        self.assertIsNone(third["threads"][1]["activeObservedSeconds"])
-        self.assertLessEqual(len(third["differences"]), 3)
-        serialized = json.dumps(third)
+        self.assertEqual(third["threads"][1]["activeObservedSeconds"], 8)
+        self.assertEqual(fourth["threads"][1]["status"]["type"], "idle")
+        self.assertIsNone(fourth["threads"][1]["activeObservedSeconds"])
+        self.assertLessEqual(len(fourth["differences"]), 3)
+        serialized = json.dumps(fourth)
         for private in (
             "root-1",
             "child-1",
@@ -106,8 +115,11 @@ class NativeObserverTests(unittest.TestCase):
     def test_failure_retains_historical_pass_and_resets_active_duration_on_reconnect(self):
         first_client = FakeClient()
         recovered_client = FakeClient()
-        factory = Factory([first_client, OSError("private socket path"), recovered_client])
-        times = iter([100.0, 130.0])
+        missing_client = FakeClient()
+        missing_client.pages = [{"data": [], "nextCursor": None}]
+        active_again = FakeClient()
+        factory = Factory([first_client, OSError("private socket path"), recovered_client, missing_client, active_again])
+        times = iter([100.0, 130.0, 140.0, 150.0])
         observer = NativeObserver(factory, "root-1", clock=lambda: next(times))
 
         observer.observe_once()
@@ -116,7 +128,6 @@ class NativeObserverTests(unittest.TestCase):
         self.assertFalse(failed["observation"]["connected"])
         self.assertTrue(failed["observation"]["historical"])
         self.assertEqual(failed["observation"]["errorCode"], ERROR_CODE)
-        self.assertEqual(failed["passSequence"], 1)
         self.assertEqual(len(failed["threads"]), 3)
         self.assertNotIn("private socket path", json.dumps(failed))
 
@@ -124,9 +135,13 @@ class NativeObserverTests(unittest.TestCase):
         recovered = observer.snapshot()
         self.assertTrue(recovered["observation"]["connected"])
         self.assertFalse(recovered["observation"]["historical"])
-        self.assertEqual(recovered["passSequence"], 2)
         self.assertEqual(recovered["threads"][1]["activeObservedSeconds"], 0)
-        self.assertEqual(factory.calls, 3)
+
+        observer.observe_once()
+        self.assertEqual(len(observer.snapshot()["threads"]), 1)
+        observer.observe_once()
+        self.assertEqual(observer.snapshot()["threads"][1]["activeObservedSeconds"], 0)
+        self.assertEqual(factory.calls, 5)
 
     def test_initial_invalid_evidence_fails_closed_without_leaking_protocol_values(self):
         observer = NativeObserver(Factory([FakeClient(invalid_timestamp=True)]), "root-1")

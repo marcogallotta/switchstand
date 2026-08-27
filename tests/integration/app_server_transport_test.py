@@ -186,6 +186,11 @@ class ScriptedPeer(threading.Thread):
                 },
             },
         )
+        if self.observer_status == "invalid":
+            opcode, _, masked = receive_frame(connection)
+            self.masked.append(masked)
+            self.assert_equal(opcode, 8)
+            return
         final_page = self.message(connection)
         self.assert_equal(final_page["method"], "thread/list")
         final_params = cast(dict[str, object], final_page["params"])
@@ -231,18 +236,20 @@ class AppServerTransportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "observer.sock"
             peers = []
-            clock = iter([100.0, 105.0])
+            states = []
+            clock = iter([100.0, 105.0, 110.0])
             observer = NativeObserver(
                 lambda: CodexAppServer(socket_path),
                 "root-live",
                 clock=lambda: next(clock),
             )
-            for status in ("disconnect", "active", "idle"):
+            for status in ("disconnect", "active", "invalid", "active", "idle"):
                 peer = ScriptedPeer(socket_path, observer_status=status)
                 peers.append(peer)
                 peer.start()
                 self.assertTrue(peer.ready.wait(5), "scripted observer peer did not start")
                 observer.observe_once()
+                states.append(observer.snapshot())
                 peer.join(5)
                 self.assertFalse(peer.is_alive(), "scripted observer peer did not shut down")
                 if peer.error:
@@ -252,15 +259,24 @@ class AppServerTransportTest(unittest.TestCase):
 
             state = observer.snapshot()
             self.assertTrue(state["observation"]["connected"])
-            self.assertEqual(state["passSequence"], 2)
             self.assertEqual(state["threads"][1]["status"], {"type": "idle"})
+            self.assertEqual(
+                states[1]["threads"][1]["status"],
+                {"type": "active", "activeFlags": ["waitingOnUserInput"]},
+            )
+            self.assertEqual(states[1]["threads"][1]["activeObservedSeconds"], 0)
+            self.assertTrue(states[2]["observation"]["historical"])
+            self.assertEqual(states[2]["observation"]["errorCode"], "native_observation_unavailable")
+            self.assertEqual(states[3]["threads"][1]["activeObservedSeconds"], 0)
             methods = [[request["method"] for request in peer.requests] for peer in peers]
             self.assertEqual(methods[0], ["initialize", "initialized", "thread/read", "thread/list"])
-            for method_list in methods[1:]:
+            self.assertEqual(methods[2], ["initialize", "initialized", "thread/read", "thread/list"])
+            for method_list in (methods[1], methods[3], methods[4]):
                 self.assertEqual(
                     method_list,
                     ["initialize", "initialized", "thread/read", "thread/list", "thread/list"],
                 )
+            self.assertTrue(all(set(items) <= {"initialize", "initialized", "thread/read", "thread/list"} for items in methods))
             self.assertTrue(all(all(peer.masked) for peer in peers))
 
 
