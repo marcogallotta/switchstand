@@ -1,1 +1,224 @@
-{"captureMode": "oneShotSnapshot", "conversationHistoryMutated": false, "notificationEvidence": {"delivery": "threadResumeSubscription", "explicitSubscriptionRpcUsed": false, "ignoredServerMessageCount": 10, "statusChanged": [{"belongsToObservedTree": true, "receivedAt": "2026-08-26T20:38:12.098312Z", "status": {"activeFlags": [], "type": "active"}, "threadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"}, {"belongsToObservedTree": true, "receivedAt": "2026-08-26T20:38:14.815932Z", "status": {"type": "idle"}, "threadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"}], "threadResumeUsedToSubscribe": true, "waitSeconds": 30.0}, "ok": true, "probe": "switchstand-stage-a", "readOnly": false, "redaction": {"nativeStatusFieldsEmitted": ["type", "activeFlags"], "protocolDerivedErrorTextEmitted": false, "sensitiveSourcePaths": "redacted", "socketPathEmitted": false, "threadPreviewTurnsAndOutputFieldsEmitted": false}, "requirementsObserved": {"allSourceKindsRequestedOnEveryPage": true, "completeParentThreadIdLineage": true, "exactRootThread": true, "localObservationWindow": true, "nativeSourceStatusAndTimestampsForEveryThread": true, "paginationExhausted": true, "spawnedDescendant": true, "threadStatusChangedNotificationForObservedTree": true}, "runtimeLoadedOrSubscriptionStateChanged": true, "schemaVersion": 1, "semanticInferences": {"idleMeansDone": false, "silenceMeansStale": false}, "snapshots": [{"observationWindow": {"completedAt": "2026-08-26T20:37:58.089852Z", "startedAt": "2026-08-26T20:37:58.087271Z"}, "pagination": {"complete": true, "pages": [{"nextCursor": null, "page": 1, "requestCursor": null, "resultCount": 1, "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]}], "pagesRead": 1}, "rootThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "sourceKindsRequested": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"], "threads": [{"createdAt": 1787775916, "id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "parentThreadId": null, "sessionId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "source": "vscode", "status": {"type": "idle"}, "updatedAt": 1787776040}, {"createdAt": 1787775929, "id": "01a03fbf-ce1d-7593-9037-943cdb7d36b5", "parentThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "sessionId": "01a03fbf-ce1d-7593-9037-943cdb7d36b5", "source": {"subAgent": {"thread_spawn": {"agent_nickname": "Confucius", "agent_path": "[redacted]", "agent_role": null, "depth": 1, "parent_thread_id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"}}}, "status": {"type": "idle"}, "updatedAt": 1787776038}]}], "subscriptionEvidence": {"acknowledgedCount": 2, "attemptedCount": 2, "exactTreeRevalidatedAfterResume": true, "mayHaveChanged": false, "method": "thread/resume", "requested": true, "revalidationSnapshot": {"observationWindow": {"completedAt": "2026-08-26T20:37:58.109173Z", "startedAt": "2026-08-26T20:37:58.104666Z"}, "pagination": {"complete": true, "pages": [{"nextCursor": null, "page": 1, "requestCursor": null, "resultCount": 1, "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]}], "pagesRead": 1}, "rootThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "sourceKindsRequested": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"], "threads": [{"createdAt": 1787775916, "id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "parentThreadId": null, "sessionId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "source": "vscode", "status": {"type": "idle"}, "updatedAt": 1787776040}, {"createdAt": 1787775929, "id": "01a03fbf-ce1d-7593-9037-943cdb7d36b5", "parentThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd", "sessionId": "01a03fbf-ce1d-7593-9037-943cdb7d36b5", "source": {"subAgent": {"thread_spawn": {"agent_nickname": "Confucius", "agent_path": "[redacted]", "agent_role": null, "depth": 1, "parent_thread_id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"}}}, "status": {"type": "idle"}, "updatedAt": 1787776038}]}, "subscribedThreadIds": ["01a03fbf-9b45-78f2-b9e6-39117e6611bd", "01a03fbf-ce1d-7593-9037-943cdb7d36b5"], "unacknowledgedAttemptCount": 0}}
+{
+  "captureMode": "oneShotSnapshot",
+  "conversationHistoryMutated": false,
+  "notificationEvidence": {
+    "delivery": "threadResumeSubscription",
+    "explicitSubscriptionRpcUsed": false,
+    "ignoredServerMessageCount": 16,
+    "statusChanged": [
+      {
+        "belongsToObservedTree": true,
+        "receivedAt": "2026-08-27T05:54:07.668126Z",
+        "status": {"type": "idle"},
+        "threadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"
+      },
+      {
+        "belongsToObservedTree": true,
+        "receivedAt": "2026-08-27T05:54:07.668151Z",
+        "status": {"type": "idle"},
+        "threadId": "01a03fbf-ce1d-7593-9037-943cdb7d36b5"
+      },
+      {
+        "belongsToObservedTree": true,
+        "receivedAt": "2026-08-27T05:54:18.963491Z",
+        "status": {"activeFlags": [], "type": "active"},
+        "threadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"
+      },
+      {
+        "belongsToObservedTree": true,
+        "receivedAt": "2026-08-27T05:54:21.993043Z",
+        "status": {"type": "idle"},
+        "threadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"
+      }
+    ],
+    "threadResumeUsedToSubscribe": true,
+    "waitSeconds": 30.0
+  },
+  "ok": true,
+  "probe": "switchstand-stage-a",
+  "readOnly": false,
+  "redaction": {
+    "nativeStatusFieldsEmitted": ["type", "activeFlags"],
+    "protocolDerivedErrorTextEmitted": false,
+    "sensitiveSourcePaths": "redacted",
+    "socketPathEmitted": false,
+    "threadPreviewTurnsAndOutputFieldsEmitted": false
+  },
+  "requirementsObserved": {
+    "allSourceKindsRequestedOnEveryPage": true,
+    "completeParentThreadIdLineage": true,
+    "exactRootThread": true,
+    "localObservationWindow": true,
+    "nativeSourceStatusAndTimestampsForEveryThread": true,
+    "paginationExhausted": true,
+    "spawnedDescendant": true,
+    "threadStatusChangedNotificationForObservedTree": true
+  },
+  "runtimeLoadedOrSubscriptionStateChanged": true,
+  "schemaVersion": 1,
+  "semanticInferences": {
+    "idleMeansDone": false,
+    "silenceMeansStale": false
+  },
+  "snapshots": [
+    {
+      "observationWindow": {
+        "completedAt": "2026-08-27T05:54:07.462089Z",
+        "startedAt": "2026-08-27T05:54:07.458821Z"
+      },
+      "pagination": {
+        "complete": true,
+        "pages": [
+          {
+            "nextCursor": null,
+            "page": 1,
+            "requestCursor": null,
+            "resultCount": 1,
+            "sourceKinds": [
+              "cli",
+              "vscode",
+              "exec",
+              "appServer",
+              "subAgent",
+              "subAgentReview",
+              "subAgentCompact",
+              "subAgentThreadSpawn",
+              "subAgentOther",
+              "unknown"
+            ]
+          }
+        ],
+        "pagesRead": 1
+      },
+      "rootThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+      "sourceKindsRequested": [
+        "cli",
+        "vscode",
+        "exec",
+        "appServer",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+        "unknown"
+      ],
+      "threads": [
+        {
+          "createdAt": 1787775916,
+          "id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "parentThreadId": null,
+          "sessionId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "source": "vscode",
+          "status": {"type": "notLoaded"},
+          "updatedAt": 1787776694
+        },
+        {
+          "createdAt": 1787775929,
+          "id": "01a03fbf-ce1d-7593-9037-943cdb7d36b5",
+          "parentThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "sessionId": "01a03fbf-ce1d-7593-9037-943cdb7d36b5",
+          "source": {
+            "subAgent": {
+              "thread_spawn": {
+                "agent_nickname": "Confucius",
+                "agent_path": "[redacted]",
+                "agent_role": null,
+                "depth": 1,
+                "parent_thread_id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"
+              }
+            }
+          },
+          "status": {"type": "notLoaded"},
+          "updatedAt": 1787776038
+        }
+      ]
+    }
+  ],
+  "subscriptionEvidence": {
+    "acknowledgedCount": 2,
+    "attemptedCount": 2,
+    "exactTreeRevalidatedAfterResume": true,
+    "mayHaveChanged": false,
+    "method": "thread/resume",
+    "requested": true,
+    "revalidationSnapshot": {
+      "observationWindow": {
+        "completedAt": "2026-08-27T05:54:07.668019Z",
+        "startedAt": "2026-08-27T05:54:07.662822Z"
+      },
+      "pagination": {
+        "complete": true,
+        "pages": [
+          {
+            "nextCursor": null,
+            "page": 1,
+            "requestCursor": null,
+            "resultCount": 1,
+            "sourceKinds": [
+              "cli",
+              "vscode",
+              "exec",
+              "appServer",
+              "subAgent",
+              "subAgentReview",
+              "subAgentCompact",
+              "subAgentThreadSpawn",
+              "subAgentOther",
+              "unknown"
+            ]
+          }
+        ],
+        "pagesRead": 1
+      },
+      "rootThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+      "sourceKindsRequested": [
+        "cli",
+        "vscode",
+        "exec",
+        "appServer",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+        "unknown"
+      ],
+      "threads": [
+        {
+          "createdAt": 1787775916,
+          "id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "parentThreadId": null,
+          "sessionId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "source": "vscode",
+          "status": {"type": "idle"},
+          "updatedAt": 1787776694
+        },
+        {
+          "createdAt": 1787775929,
+          "id": "01a03fbf-ce1d-7593-9037-943cdb7d36b5",
+          "parentThreadId": "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+          "sessionId": "01a03fbf-ce1d-7593-9037-943cdb7d36b5",
+          "source": {
+            "subAgent": {
+              "thread_spawn": {
+                "agent_nickname": "Confucius",
+                "agent_path": "[redacted]",
+                "agent_role": null,
+                "depth": 1,
+                "parent_thread_id": "01a03fbf-9b45-78f2-b9e6-39117e6611bd"
+              }
+            }
+          },
+          "status": {"type": "idle"},
+          "updatedAt": 1787776038
+        }
+      ]
+    },
+    "subscribedThreadIds": [
+      "01a03fbf-9b45-78f2-b9e6-39117e6611bd",
+      "01a03fbf-ce1d-7593-9037-943cdb7d36b5"
+    ],
+    "unacknowledgedAttemptCount": 0
+  }
+}
