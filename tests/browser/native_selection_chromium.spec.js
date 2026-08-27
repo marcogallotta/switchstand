@@ -138,7 +138,9 @@ test.beforeEach(() => {
   requests = [];
 });
 
-const rowFor = (page, label) => page.locator("details", { hasText: label });
+const rowFor = (page, label) => page.locator("details").filter({
+  has: page.getByText(label, { exact: true }),
+});
 
 async function selectAgent(page, label) {
   await rowFor(page, label).getByRole("button", { name: "Select as current target" }).click();
@@ -198,7 +200,18 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
-    await page.getByRole("button", { name: "Send exact message" }).click();
+    if (index === 0) {
+      await page.evaluate(() => {
+        const state = nativeSelectionController.getState();
+        nativeSelectionController.supplySeam({
+          selection: state.candidate,
+          snapshot: state.currentTarget,
+        });
+        document.querySelector("#native-input-form").requestSubmit();
+      });
+    } else {
+      await page.getByRole("button", { name: "Send exact message" }).click();
+    }
     await expect(page.locator("#native-input-outcome")).toHaveText(outcomes[index]);
     await expect(input).toHaveValue(index < 2 ? "" : values[index]);
   }
