@@ -231,5 +231,5 @@ test "$?" -eq 0
 ```
 
 Retain that generated artifact only when it came from the exact reviewed head and exits zero.
-Do not substitute the historical artifact or fixtures. Stage B remains unimplemented and the
-browser is unchanged.
+Do not substitute the historical artifact or fixtures. This Stage A retained-evidence gate is
+separate from the Stage B1 read-only flight-board checkpoint above.
