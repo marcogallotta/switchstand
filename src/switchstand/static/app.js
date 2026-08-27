@@ -162,7 +162,11 @@ function renderNative(model) {
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
-    const stop = stopState.get(agent.agentRef);
+    let stop = stopState.get(agent.agentRef);
+    if (agent.status !== "active" && ["requested", "confirmed"].includes(stop?.outcome)) {
+      stopState.delete(agent.agentRef);
+      stop = undefined;
+    }
     if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
     if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
       const button = el("button", "button button--danger", "Stop current turn");
