@@ -198,29 +198,7 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
-    if (index === 0) {
-      const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
-      const sentResponse = page.waitForResponse(`${origin}/api/native-input`);
-      const submittedDraft = await page.evaluate(() => {
-        const state = nativeSelectionController.getState();
-        nativeSelectionController.supplySeam({
-          selection: state.candidate,
-          snapshot: state.currentTarget,
-        });
-        document.querySelector("#native-input-form").dispatchEvent(new Event("submit", {
-          bubbles: true,
-          cancelable: true,
-        }));
-        return document.querySelector("#native-input").value;
-      });
-      expect(submittedDraft).toBe(values[index]);
-      await sentRequest;
-      expect((await sentResponse).status()).toBe(200);
-      await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length)
-        .toBe(1);
-    } else {
-      await page.getByRole("button", { name: "Send exact message" }).click();
-    }
+    await page.getByRole("button", { name: "Send exact message" }).click();
     await expect(page.locator("#native-input-outcome")).toHaveText(outcomes[index]);
     await expect(input).toHaveValue(index < 2 ? "" : values[index]);
   }

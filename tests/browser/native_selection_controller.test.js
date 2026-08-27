@@ -130,7 +130,9 @@ test("same-target revalidation retains the last validated target until failure i
   const delayedFailure = failure("OBSERVATION_STALE");
   const gate = deferred();
   pending.set(delayedFailure, gate);
+  const priorChanges = created.changes.length;
   created.controller.supplySeam(seam(selection, delayedFailure));
+  assert.equal(created.changes.length, priorChanges);
   assert.deepEqual(plain(created.controller.getState().currentTarget), validated);
   assert.deepEqual(JSON.parse(storage.getItem(created.key)), selection);
 
