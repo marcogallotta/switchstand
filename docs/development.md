@@ -21,7 +21,31 @@ Installation is not required. The canonical dependency-free commands use `PYTHON
 
 ## Test and static checks
 
+### Code-quality gate
+
+Install the exact development-tool versions from the committed locks:
+
 ```sh
+python -m pip install -r requirements-dev.lock
+npm ci --ignore-scripts --no-audit --no-fund
+```
+
+Then run the same command used by CI:
+
+```sh
+./scripts/quality
+```
+
+It requires Ruff 0.16.2, Pyright 1.1.411 in basic mode, and jscpd 4.2.5. It rejects Ruff
+E9/F/B findings, Pyright diagnostics, and qualifying duplication of at least 10 lines and 80
+tokens. New or newly oversized Python files cannot exceed 500 physical nonblank lines; legacy
+files already above that threshold cannot grow. Nonignored files above 100,000 bytes warn and
+those above 200,000 bytes fail. Gate, config, lock, and workflow changes require human review.
+
+### Full verification
+
+```sh
+./scripts/quality
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m compileall -q src tests
 node --test tests/browser_focus.test.js

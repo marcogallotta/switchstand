@@ -213,7 +213,7 @@ class CodexAppServer:
             finally:
                 self.socket.settimeout(previous_timeout)
 
-    def drain_server_messages(self) -> list[Mapping[str, Any]]:
+    def drain_server_messages(self) -> list[dict[str, Any]]:
         """Return messages already observed while completing earlier requests."""
         with self._lock:
             messages = list(self._server_messages)

@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
 from .engine import CodexAdapter, Engine
@@ -38,8 +38,6 @@ class Runtime:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server: "Server"
-
     def log_message(self, format: str, *args: Any) -> None:
         return
 
@@ -67,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _static(self, pathname: str) -> None:
         relative = "index.html" if pathname in {"/", "/workbench"} else unquote(pathname).lstrip("/")
-        root = self.server.static_root.resolve()
+        root = cast("Server", self.server).static_root.resolve()
         candidate = (root / relative).resolve()
         if root not in candidate.parents or not candidate.is_file():
             if "." not in Path(relative).name:
@@ -92,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
         if pathname == "/api/workbench":
-            self._json(200, self.server.runtime.engine.snapshot())
+            self._json(200, cast("Server", self.server).runtime.engine.snapshot())
             return
         self._static(pathname)
 
@@ -101,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
             parts = [part for part in pathname.split("/") if part]
-            engine = self.server.runtime.engine
+            engine = cast("Server", self.server).runtime.engine
             if len(parts) == 5 and parts[:2] == ["api", "workbench"] and parts[2] == "roles" and parts[4] == "messages":
                 engine.enqueue(parts[3], str(body.get("text") or ""), kind=str(body.get("kind") or "message"))
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "stop":

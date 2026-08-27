@@ -39,6 +39,9 @@ class FixtureClient:
         self.list_requests.append(deepcopy(dict(params)))
         return deepcopy(self.pages[len(self.list_requests) - 1])
 
+    def thread_resume(self, thread_id):
+        return {"thread": {"id": thread_id}}
+
     def turn_start_text_native(self, thread_id, text):
         self.starts.append((thread_id, text))
         return {"turn": {"id": "turn-started"}}

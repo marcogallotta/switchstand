@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from typing import cast
 import unittest
 
 from switchstand.engine import CodexAdapter, Engine, _message_marker, _submitted_message_text
@@ -169,7 +170,8 @@ class EngineTests(unittest.TestCase):
             [first_a["id"], first_b["id"], correction["id"]],
         )
         context = adapter.contexts[-1]
-        self.assertEqual([item["id"] for item in context["accepted_messages"]], [first_a["id"], correction["id"]])
+        accepted_messages = cast(list[dict[str, object]], context["accepted_messages"])
+        self.assertEqual([item["id"] for item in accepted_messages], [first_a["id"], correction["id"]])
 
         adapter.finish(old_a["turn_id"], "obsolete pre-stop output")
         adapter.finish(b_attempt["turn_id"], "role B accepted result")

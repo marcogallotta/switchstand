@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT"
+
+PYTHON=${PYTHON:-python}
+test "$($PYTHON -m ruff --version)" = "ruff 0.16.2"
+test "$(./node_modules/.bin/pyright --version)" = "pyright 1.1.411"
+test "$(./node_modules/.bin/jscpd --version)" = "4.2.5"
+
+$PYTHON -m ruff check src tests scripts
+./node_modules/.bin/pyright
+./node_modules/.bin/jscpd src tests scripts --config .jscpd.json --silent
+$PYTHON scripts/check_sizes.py

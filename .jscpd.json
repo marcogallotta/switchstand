@@ -1,0 +1,13 @@
+{
+  "threshold": 0,
+  "minLines": 10,
+  "minTokens": 80,
+  "mode": "mild",
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/.venv*/**",
+    "**/__pycache__/**",
+    "**/fixtures/**"
+  ]
+}
