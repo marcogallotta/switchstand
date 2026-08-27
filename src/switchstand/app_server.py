@@ -5,6 +5,7 @@ This module intentionally implements only the methods used by Switchstand.
 from __future__ import annotations
 
 import base64
+from collections import deque
 import hashlib
 import json
 import os
@@ -39,6 +40,7 @@ class CodexAppServer:
         self.reader = self.socket.makefile("rb")
         self._next_id = 0
         self._lock = threading.Lock()
+        self._server_messages: deque[dict[str, Any]] = deque()
         self._upgrade()
         self._request(
             "initialize",
@@ -175,6 +177,8 @@ class CodexAppServer:
             while True:
                 message = json.loads(self._read_text())
                 if message.get("id") != request_id:
+                    if isinstance(message, Mapping) and isinstance(message.get("method"), str):
+                        self._server_messages.append(dict(message))
                     continue
                 if "error" in message:
                     error = message.get("error") or {}
@@ -187,8 +191,40 @@ class CodexAppServer:
                     raise RuntimeError(f"Codex app-server {method} returned invalid result")
                 return dict(result)
 
+    def next_server_message(self, *, timeout_seconds: float | None = None) -> Mapping[str, Any]:
+        """Return the next notification/server request, optionally with a bounded wait.
+
+        A timeout is intended as the final read on a connection. Python's buffered
+        socket reader may not be reusable after its underlying socket times out.
+        """
+        with self._lock:
+            if self._server_messages:
+                return self._server_messages.popleft()
+            previous_timeout = self.socket.gettimeout()
+            self.socket.settimeout(timeout_seconds)
+            try:
+                while True:
+                    try:
+                        message = json.loads(self._read_text())
+                    except socket.timeout as exc:
+                        raise TimeoutError("timed out waiting for an App Server message") from exc
+                    if isinstance(message, Mapping) and isinstance(message.get("method"), str):
+                        return dict(message)
+            finally:
+                self.socket.settimeout(previous_timeout)
+
+    def drain_server_messages(self) -> list[Mapping[str, Any]]:
+        """Return messages already observed while completing earlier requests."""
+        with self._lock:
+            messages = list(self._server_messages)
+            self._server_messages.clear()
+            return messages
+
     def thread_read(self, thread_id: str, *, include_turns: bool = True) -> Mapping[str, Any]:
         return self._request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
+
+    def thread_list(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._request("thread/list", params)
 
     def thread_start(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._request("thread/start", params)
@@ -214,6 +250,25 @@ class CodexAppServer:
                 "input": [{"type": "text", "text": text}],
                 "approvalPolicy": approval_policy,
                 "sandboxPolicy": dict(sandbox_policy or {"type": "workspaceWrite"}),
+            },
+        )
+
+    def turn_start_text_native(self, thread_id: str, text: str) -> Mapping[str, Any]:
+        """Start input without overriding the selected native thread's settings."""
+        return self._request(
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
+        )
+
+    def turn_steer_text(
+        self, thread_id: str, expected_turn_id: str, text: str
+    ) -> Mapping[str, Any]:
+        return self._request(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": text}],
+                "expectedTurnId": expected_turn_id,
             },
         )
 

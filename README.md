@@ -14,9 +14,21 @@ and result fencing by role generation plus attempt identity.
 
 The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are
 implemented and covered by local unit tests. The adapter speaks the real Codex app-server
-v2 thread/turn protocol. The **live checkpoint has not been run** in this standalone
-repository: no claim is made that a real local Codex daemon, authentication, or model turn
-has been exercised here.
+v2 thread/turn protocol. An earlier Stage A probe revision passed against a real local App
+Server socket, but its retained artifact predates the current evidence schema and has been
+removed. This exact head requires a fresh live capture before it can claim exact-head proof.
+
+Issue #3's native-agent-tree checkpoint is complete at the probe boundary. The separate
+`agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
+kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
+preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
+fixtures are documented protocol-shape fixtures, not live captures. The default read-only
+`switchstand-stage-a` snapshot CLI now turns a real socket plus one exact root thread id into
+redacted machine-readable evidence or a nonzero fail-closed reason. Its separate notification
+mode requires an explicit runtime-loading subscription opt-in. The protocol capability was
+observed by the earlier revision, but the exact-head retained-evidence gate remains open until
+the current probe produces a fresh passing artifact. Stage B remains unimplemented and the
+synthetic two-role UI is unchanged.
 
 ## Non-goals
 
@@ -54,10 +66,28 @@ node --check src/switchstand/static/app.js
 The Node commands are optional, cover the browser refresh regression, and check JavaScript
 syntax; Node is not needed to run Switchstand.
 
+## Native Stage A probe
+
+Run one complete read-only snapshot against an exact known native root thread id:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID
+```
+
+The default command does not discover or guess a root and does not resume, load, or mutate
+threads. It prints one JSON object to stdout. See
+[Development](docs/development.md#run-the-native-stage-a-probe) for bounded polling, the
+explicit notification-subscription consequence, output fields, and exit codes.
+
 ## Repository layout
 
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
+- `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
+- `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation
+- `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `tests/` — standard-library unit tests
@@ -69,5 +99,6 @@ syntax; Node is not needed to run Switchstand.
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
 - [Prototype boundary decision](docs/decisions/0001-prototype-boundary.md)
+- [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
 
 Switchstand is available under the [MIT License](LICENSE).

@@ -8,6 +8,49 @@ serves the static operator UI. `engine.py` owns all state transitions and persis
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
 
+`agent_tree.py` is a separate, fail-closed Stage A protocol layer. It does not adapt native
+threads into the engine's roles or write a duplicate source of truth. It reads one exact root,
+lists descendants with `ancestorThreadId`, supplies every documented `sourceKinds` value on
+every page, follows `nextCursor` to exhaustion, and validates ancestry only through
+`parentThreadId`. Every thread must carry a nonempty `sessionId`, but the value is opaque
+per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
+
+Native runtime state remains exactly `active` (with documented flags), `idle`, `systemError`,
+or `notLoaded`. In particular, `idle` is not renamed to semantic completion. For direct input,
+the checkpoint uses `turn/start` only for an observed idle thread and `turn/steer` with the
+exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
+they are not retried through another mode. Stop uses the exact thread and turn ids.
+
+`stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
+owns bounded collection orchestration and the CLI over the same `CodexAppServer` and
+`AgentTreeAdapter`. Together they record local observation windows, the exact safe subset of
+native thread evidence, and cursor-presence/count/source-kind request facts for every exhausted
+page. Exact native thread, parent, session, subscription, and notification identifiers remain
+in memory for matching; retained evidence uses stable run-local pseudonyms consistently across
+snapshots, revalidation, subscriptions, and related-thread events. Unrelated-thread status
+events contribute only to a count.
+It emits no previews, turns, prompt/output text, or socket paths. Native source evidence is a
+strict projection of approved classification fields and bounded value shapes: unknown nested
+metadata is dropped, while an approved path field is retained only as the constant
+`[redacted]`. Snapshot or poll evidence and actually received
+`thread/status/changed` notifications are separate fields.
+
+`thread/read` and `thread/list` do not subscribe a new connection to thread events. Notification
+mode therefore requires an explicit opt-in that calls `thread/resume` for only the exact observed
+root and descendants, then fully re-observes the same tree before waiting. This changes runtime
+loaded/subscribed state but does not add conversation history. Default mode never resumes.
+Attempted and exact-id-acknowledged resume counts are fenced into every later failure result.
+After any acknowledgement, failure evidence reports the runtime state change; when a request was
+sent without an exact acknowledgement, it reports the effect as unknown and `mayHaveChanged`
+instead of claiming no side effect. Failure disclosure uses counts, not raw attempted ids.
+Native statuses in both paths are projected only to validated `type` and, for `active`,
+`activeFlags`. Failures retain only stable probe-authored codes and messages, never raw protocol
+values or exception text. Native-tree validation errors carry structured codes at their origin
+and are emitted with an allowlisted phase such as `root_read`, `descendant_list`,
+`lineage_validation`, or `timestamp_validation`. This makes a failed live gate diagnosable
+without retaining ids, paths, statuses, flags, cursors, prompts, outputs, or exception strings.
+Absence of a notification never changes a native status or implies stale work.
+
 ## State model
 
 The JSON snapshot contains one Work, a fixed map of two roles, ordered messages, and append-only
@@ -58,4 +101,6 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- A claimed live checkpoint; it must be performed and recorded separately with real evidence
+- Replacing the fixed-role service or browser surface; historical live evidence observed the
+  native-tree protocol capability, but schema-v2 exact-head evidence remains pending external
+  receipt and no retained repository artifact currently proves this head

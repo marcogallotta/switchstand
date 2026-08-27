@@ -1,0 +1,12 @@
+{
+  "method": "thread/status/changed",
+  "params": {
+    "threadId": "child-1",
+    "status": {
+      "type": "active",
+      "activeFlags": [
+        "waitingOnUserInput"
+      ]
+    }
+  }
+}

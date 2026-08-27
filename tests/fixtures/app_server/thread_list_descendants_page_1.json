@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "id": "child-1",
+      "sessionId": "opaque-child-session",
+      "forkedFromId": "unrelated-history-fork",
+      "parentThreadId": "root-1",
+      "preview": "Research App Server lineage",
+      "agentNickname": "research",
+      "source": {
+        "subAgent": {
+          "thread_spawn": {
+            "parent_thread_id": "root-1",
+            "depth": 1,
+            "agent_path": null,
+            "agent_nickname": "research",
+            "agent_role": null
+          }
+        }
+      },
+      "createdAt": 1777221010,
+      "updatedAt": 1777221070,
+      "status": {
+        "type": "active",
+        "activeFlags": [
+          "waitingOnApproval"
+        ]
+      },
+      "turns": []
+    }
+  ],
+  "nextCursor": "descendants-page-2",
+  "backwardsCursor": "newer-page"
+}

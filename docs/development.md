@@ -64,3 +64,116 @@ is permitted only for complete history, an absent durable message marker, and ex
 
 Update documentation when behavior, constraints, commands, state fields, or the prototype
 boundary changes.
+
+## Native agent-tree checkpoint
+
+The tests under `tests/test_agent_tree.py` and `tests/fixtures/app_server/` prove request
+construction and fail-closed handling of documented protocol shapes only. They are not a live
+checkpoint. A Stage A claim requires a real App Server socket and recorded evidence for:
+
+- one exact root plus at least one spawned descendant with `parentThreadId` lineage;
+- explicit coverage of every root/subagent/unknown source kind and `nextCursor` exhaustion;
+- native `active`, `idle`, `systemError`, and `notLoaded` status where exercised, plus actual
+  `thread/status/changed` events (without calling idle done); and
+- exact idle `turn/start`, active `turn/steer(expectedTurnId)`, and `turn/interrupt` behavior.
+
+If the socket, root/descendant tree, ancestry, pagination, or state evidence is unavailable,
+record the gap and stop. Do not replace the browser surface or synthesize missing evidence.
+
+### Run the native Stage A probe
+
+The probe requires an exact root id. It intentionally has no auto-selection or heuristic root
+discovery. This one-shot command prints redacted JSON and exits nonzero unless the root, at
+least one spawned descendant, complete `parentThreadId` lineage, every source-kind filter on
+every exhausted page, native sources/statuses, protocol timestamps, and a local observation
+window are all present:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  > stage-a-evidence.json
+```
+
+For multiple independent complete snapshots, add `--poll-count 3` and
+`--poll-interval-seconds 1`. These remain polling evidence. They are not status-change
+notifications.
+
+To require an actually received `thread/status/changed` event for a thread in the observed
+tree, keep that tree active while running a bounded notification window:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  --subscribe-status-notifications \
+  --notification-wait-seconds 30 \
+  --require-status-notification \
+  > stage-a-evidence-with-status-event.json
+```
+
+App Server does not subscribe a connection when it calls `thread/read` or `thread/list`.
+`--subscribe-status-notifications` is therefore an explicit state-changing opt-in: the probe
+calls `thread/resume` for only the exact root and descendants in its completed snapshot, then
+fully re-reads and validates the same tree before waiting. Resume changes runtime loaded and
+connection-subscription state but does not add conversation history or start a turn. The JSON
+records this under `subscriptionEvidence`, sets `readOnly` to `false`, and keeps
+`conversationHistoryMutated` false. Without this flag, default snapshot/polling mode never
+resumes or loads a thread.
+
+If subscription setup fails partway through, the failure JSON retains sanitized attempted and
+exact-id-acknowledged counts. Any acknowledgement makes the runtime-state field `true`. A sent
+request without an exact acknowledgement sets `mayHaveChanged` and reports runtime state as
+`unknown`; it never claims the failed run stayed read-only. Raw attempted thread ids are omitted
+from failure disclosure. Failures before the first resume attempt remain read-only.
+
+A captured event appears only under `notificationEvidence.statusChanged`, with its local receive
+time and whether its thread belonged to the observed tree. Snapshot facts remain under
+`snapshots`. Both `--notification-wait-seconds` and `--require-status-notification` require the
+explicit subscription flag; invalid combinations exit with usage error `2` before connecting.
+The output never calls native `idle` done or silence stale. Exact native identifiers and cursor
+values stay in memory: retained evidence uses consistent run-local thread/session references,
+records only cursor presence, and counts unrelated-thread status events without retaining their
+identifiers, statuses, or other details.
+
+Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
+failure, exit `4` is unavailable/incomplete evidence, and argparse usage errors exit `2`. Error
+objects are JSON for runtime failures and omit the socket path. Their `code`, fixed `message`,
+and allowlisted `phase` distinguish safe categories including invalid/missing roots or
+descendant records with absent session evidence, selected non-roots, absent descendants,
+invalid pagination, duplicate threads, missing parent edges or intermediate parents, lineage
+cycles, invalid or unsupported native statuses, and missing protocol timestamps. They never
+include protocol ids, paths, raw statuses or flags, cursors, prompts/outputs, or exception
+strings. Successful evidence also projects source metadata through a fixed field allowlist:
+unknown nested fields are dropped rather than copied, and an approved path field retains only
+the constant `[redacted]`. Run the following for the complete flag reference; an editable
+install also provides the `switchstand-stage-a` console command.
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe --help
+```
+
+### Exact-head live evidence gate
+
+An earlier probe revision connected to a real App Server and observed the required native tree,
+but that artifact predates schema version 2's identifier pseudonymization and cursor projection.
+It is historical protocol evidence, not proof for the current head, and is not retained in the
+repository.
+
+Before claiming an exact-head live checkpoint, run the current checkout against the live socket
+and exact root while that tree changes status:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket "$PWD/.switchstand/codex.sock" \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  --subscribe-status-notifications \
+  --notification-wait-seconds 30 \
+  --require-status-notification \
+  > stage-a-evidence.json
+test "$?" -eq 0
+```
+
+Retain that generated artifact only when it came from the exact reviewed head and exits zero.
+Do not substitute the historical artifact or fixtures. Stage B remains unimplemented and the
+browser is unchanged.
