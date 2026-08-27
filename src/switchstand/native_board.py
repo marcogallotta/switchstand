@@ -21,6 +21,13 @@ from .native_projection import (
     project_complete_tree,
     reset_projection_activity,
 )
+from .native_contracts import (
+    NativeBoardSnapshot,
+    NativeBrowserSelectionResult,
+    NativeStopCommitResult,
+    NativeStopPrepareResult,
+    NativeStopStatusResult,
+)
 from .native_stop import NativeStop, StopClient
 
 
@@ -182,14 +189,14 @@ class NativeBoard:
                 except Exception:
                     pass
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self) -> NativeBoardSnapshot:
         with self._lock:
             completed_at = self._completed_at
             now = self._wall_clock()
             agents = [] if self._projection is None else deepcopy(self._projection.agents)
             for agent in agents:
                 agent["updatedAgeSeconds"] = round(max(0.0, now - agent["updatedAt"]), 3)
-            return {
+            return cast(NativeBoardSnapshot, {
                 "mode": "native",
                 "observation": {
                     "connected": self._connected,
@@ -204,7 +211,7 @@ class NativeBoard:
                 "trail": [] if self._projection is None else deepcopy(self._projection.trail),
                 "trailLimit": self._trail_limit,
                 "disclosure": DISCLOSURE,
-            }
+            })
 
     def resolve_current_target(
         self,
@@ -229,19 +236,19 @@ class NativeBoard:
         *,
         now: Any,
         maximum_observation_age_seconds: Any,
-    ) -> dict[str, Any]:
+    ) -> NativeBrowserSelectionResult:
         """Produce the minimal safe #17 selection pair/snapshot seam."""
         with self._lock:
             selection = {
                 "observationRunRef": self._observation_run_ref,
                 "agentRef": agent_ref,
             }
-            return browser_selection_shape(
+            return cast(NativeBrowserSelectionResult, browser_selection_shape(
                 selection,
                 self._selection_observation(),
                 now=now,
                 maximum_observation_age_seconds=maximum_observation_age_seconds,
-            )
+            ))
 
     def _resolve_active(self, agent_ref: str) -> str | None:
         with self._lock:
@@ -263,11 +270,11 @@ class NativeBoard:
                 if agent.get("agentRef") == agent_ref and agent.get("status") == "active"]
             return self._native_ids_by_target.get(target) if len(matches) == 1 else None
 
-    def prepare_stop(self, agent_ref: Any) -> dict[str, str]:
+    def prepare_stop(self, agent_ref: Any) -> NativeStopPrepareResult:
         return self._stopper.prepare(agent_ref)
 
-    def commit_stop(self, confirmation_ref: Any) -> dict[str, str]:
+    def commit_stop(self, confirmation_ref: Any) -> NativeStopCommitResult:
         return self._stopper.commit(confirmation_ref)
 
-    def stop_status(self, operation_ref: Any) -> dict[str, str]:
+    def stop_status(self, operation_ref: Any) -> NativeStopStatusResult:
         return self._stopper.status(operation_ref)

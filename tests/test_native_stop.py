@@ -4,6 +4,7 @@ import json
 import threading
 import unittest
 
+from switchstand.native_contracts import NativeStopCommitResult
 from switchstand.native_stop import NativeStop, _project
 
 
@@ -49,11 +50,19 @@ class Clock:
         return self.value
 
 
+def operation_ref(result: NativeStopCommitResult) -> str:
+    if result["code"] != "stop_result":
+        raise AssertionError("expected a retained stop operation")
+    return result["operationRef"]
+
+
 class NativeStopTests(unittest.TestCase):
     def prepared(self, replies, **kwargs):
         stop = NativeStop(replies, lambda ref: "thread-1" if ref == "agent-1" else None, **kwargs)
         result = stop.prepare("agent-1")
         self.assertEqual(result["code"], "prepared")
+        if result["code"] != "prepared":
+            raise AssertionError("expected a prepared stop")
         return stop, result["confirmationRef"]
 
     def test_exact_projection_rejects_coercion_duplicates_and_inconsistent_state(self):
@@ -101,7 +110,7 @@ class NativeStopTests(unittest.TestCase):
         )
         stop, reference = self.prepared(replies)
         requested = stop.commit(reference)
-        confirmed = stop.status(requested["operationRef"])
+        confirmed = stop.status(operation_ref(requested))
 
         self.assertEqual(requested["outcome"], "requested")
         self.assertEqual(confirmed["outcome"], "confirmed")
@@ -129,12 +138,12 @@ class NativeStopTests(unittest.TestCase):
                 replies = Replies(("ok", read_result()), ("ok", read_result()), ("ok", {}),
                     ("ok", read_result(status=status)))
                 stop, reference = self.prepared(replies)
-                operation = stop.commit(reference)["operationRef"]
+                operation = operation_ref(stop.commit(reference))
                 self.assertEqual(stop.status(operation)["outcome"], expected)
         replies = Replies(("ok", read_result()), ("ok", read_result()), ("ok", {}),
             ("malformed", None))
         stop, reference = self.prepared(replies)
-        operation = stop.commit(reference)["operationRef"]
+        operation = operation_ref(stop.commit(reference))
         self.assertEqual(stop.status(operation)["outcome"], "unknown")
 
     def test_concurrent_double_commit_consumes_before_io(self):
@@ -171,7 +180,7 @@ class NativeStopTests(unittest.TestCase):
     def test_concurrent_status_failure_cannot_regress_a_terminal_outcome(self):
         replies = Replies(("ok", read_result()), ("ok", read_result()), ("ok", {}))
         stop, reference = self.prepared(replies)
-        operation = stop.commit(reference)["operationRef"]
+        operation = operation_ref(stop.commit(reference))
         both_reading = threading.Barrier(2)
         confirmed = threading.Event()
 

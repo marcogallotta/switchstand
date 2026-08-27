@@ -318,7 +318,11 @@ class AppServerTransportTest(unittest.TestCase):
             stop = NativeStop(lambda: CodexAppServer(socket_path, timeout_seconds=3,
                 bounded_stop=True), lambda _: "root-1")
             prepared = stop.prepare("agent-1")
+            if prepared["code"] != "prepared":
+                raise AssertionError("expected a prepared stop")
             requested = stop.commit(prepared["confirmationRef"])
+            if requested["code"] != "stop_result":
+                raise AssertionError("expected a retained stop operation")
             confirmed = stop.status(requested["operationRef"])
             peer.join(5)
             if peer.error:

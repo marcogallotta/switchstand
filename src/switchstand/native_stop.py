@@ -5,7 +5,13 @@ from dataclasses import dataclass
 import secrets
 import threading
 import time
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, cast
+
+from .native_contracts import (
+    NativeStopCommitResult,
+    NativeStopPrepareResult,
+    NativeStopStatusResult,
+)
 
 
 THREAD_STATUSES = frozenset({"active", "idle", "systemError", "notLoaded"})
@@ -101,7 +107,7 @@ class NativeStop:
         active = [turn_id for turn_id, status in projection[1].items() if status == "inProgress"]
         return active[0] if len(active) == 1 else None
 
-    def prepare(self, agent_ref: Any) -> dict[str, str]:
+    def prepare(self, agent_ref: Any) -> NativeStopPrepareResult:
         if not isinstance(agent_ref, str) or not agent_ref:
             return {"code": "target_unavailable", "outcome": "not_sent"}
         with self._lock:
@@ -126,7 +132,7 @@ class NativeStop:
             self._receipts[reference] = _Receipt(agent_ref, thread_id, turn_id, now + self._ttl)
         return {"code": "prepared", "agentRef": agent_ref, "confirmationRef": reference}
 
-    def commit(self, reference: Any) -> dict[str, str]:
+    def commit(self, reference: Any) -> NativeStopCommitResult:
         now = self._clock()
         with self._lock:
             self._prune(now)
@@ -160,9 +166,10 @@ class NativeStop:
             result = None
         with self._lock:
             receipt.outcome = outcome
-        return {"code": "stop_result", "operationRef": reference, "outcome": outcome}
+        return cast(NativeStopCommitResult,
+            {"code": "stop_result", "operationRef": reference, "outcome": outcome})
 
-    def status(self, reference: Any) -> dict[str, str]:
+    def status(self, reference: Any) -> NativeStopStatusResult:
         now = self._clock()
         with self._lock:
             self._prune(now)
@@ -171,9 +178,11 @@ class NativeStop:
                 return {"code": "operation_unavailable", "outcome": "unknown"}
             outcome = receipt.outcome
         if outcome == "in_flight":
-            return {"code": "stop_pending", "operationRef": reference, "outcome": "unknown"}
+            return cast(NativeStopStatusResult,
+                {"code": "stop_pending", "operationRef": reference, "outcome": "unknown"})
         if outcome not in {"requested", "unknown"}:
-            return {"code": "stop_result", "operationRef": reference, "outcome": outcome}
+            return cast(NativeStopStatusResult,
+                {"code": "stop_result", "operationRef": reference, "outcome": outcome})
         classification, projection = self._read(receipt.thread_id)
         observed = None if projection is None else projection[1].get(receipt.turn_id)
         if classification != "ok" or observed is None:
@@ -191,4 +200,5 @@ class NativeStop:
                 outcome = receipt.outcome
             else:
                 receipt.outcome = outcome
-        return {"code": "stop_result", "operationRef": reference, "outcome": outcome}
+        return cast(NativeStopStatusResult,
+            {"code": "stop_result", "operationRef": reference, "outcome": outcome})
