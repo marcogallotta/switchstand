@@ -403,10 +403,15 @@ class NativeBoardTests(unittest.TestCase):
         board.poll_once()
 
         class Stopper:
+            def __init__(self):
+                self.calls = []
+
             def prepare(self, value):
+                self.calls.append(value)
                 return {"code": "prepared", "agentRef": value, "confirmationRef": "opaque"}
 
-        board._stopper = cast(Any, Stopper())
+        stopper = Stopper()
+        board._stopper = cast(Any, stopper)
         server = Server(("127.0.0.1", 0), board, Path(PACKAGE_ROOT / "static"))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -423,8 +428,11 @@ class NativeBoardTests(unittest.TestCase):
                 {**valid, "Content-Type": "text/plain"},
                 {**valid, "X-Switchstand-Control": "wrong"},
                 {**valid, "Host": "example.com"},
+                {**valid, "Host": f"user@127.0.0.1:{port}"},
+                {**valid, "Host": f"127.0.0.1:{port}/path"},
                 {**valid, "Origin": "null"},
                 {**valid, "Origin": "http://127.0.0.1:9"},
+                {**valid, "Origin": f"http://127.0.0.1:{port}/path"},
             ]
             for headers in cases:
                 connection = http.client.HTTPConnection("127.0.0.1", port)
@@ -433,11 +441,13 @@ class NativeBoardTests(unittest.TestCase):
                 self.assertEqual(response.status, 403)
                 self.assertEqual(json.load(response)["code"], "control_request_rejected")
                 connection.close()
+            self.assertEqual(stopper.calls, [])
             connection = http.client.HTTPConnection("127.0.0.1", port)
             connection.request("POST", "/api/native-stop/prepare", '{"agentRef":"agent-1"}', valid)
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(json.load(response)["confirmationRef"], "opaque")
+            self.assertEqual(stopper.calls, ["agent-1"])
             self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
             connection.close()
             connection = http.client.HTTPConnection("127.0.0.1", port)
