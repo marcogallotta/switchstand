@@ -5,7 +5,8 @@ import threading
 import unittest
 
 from switchstand.native_contracts import NativeStopCommitResult
-from switchstand.native_stop import NativeStop, _project
+from switchstand.native_stop import NativeStop
+from switchstand.native_turns import NativeTurnProjection, project_native_turns
 
 
 SENTINEL = "PRIVATE-TRANSCRIPT-SENTINEL"
@@ -67,9 +68,12 @@ class NativeStopTests(unittest.TestCase):
 
     def test_exact_projection_rejects_coercion_duplicates_and_inconsistent_state(self):
         valid = read_result()
-        projected = _project(valid, "thread-1")
+        projected = project_native_turns(valid, "thread-1")
         self.assertIsNotNone(projected)
-        self.assertEqual(projected[1] if projected else None, {"turn-1": "inProgress"})
+        self.assertEqual(
+            projected if projected else None,
+            NativeTurnProjection("active", "turn-1"),
+        )
         mutations = []
         for value in (1, "", "x" * 257):
             case = read_result()
@@ -99,7 +103,9 @@ class NativeStopTests(unittest.TestCase):
         case = read_result()
         case["thread"]["turns"] *= 257
         mutations.append(case)
-        self.assertTrue(all(_project(case, "thread-1") is None for case in mutations))
+        self.assertTrue(
+            all(project_native_turns(case, "thread-1") is None for case in mutations)
+        )
 
     def test_prepare_commit_and_later_status_keep_content_out_of_all_retained_surfaces(self):
         replies = Replies(
@@ -153,7 +159,10 @@ class NativeStopTests(unittest.TestCase):
         stop, reference = self.prepared(replies)
         original = stop._read
 
-        def blocked(thread_id):
+        def blocked(
+            thread_id: str, *, terminal_turn_id: str | None = None
+        ) -> tuple[str, NativeTurnProjection | None]:
+            del terminal_turn_id
             entered.set()
             release.wait(2)
             return original(thread_id)
@@ -184,11 +193,17 @@ class NativeStopTests(unittest.TestCase):
         both_reading = threading.Barrier(2)
         confirmed = threading.Event()
 
-        def racing_read(thread_id: str) -> tuple[str, tuple[str, dict[str, str]] | None]:
+        def racing_read(
+            thread_id: str, *, terminal_turn_id: str | None = None
+        ) -> tuple[str, NativeTurnProjection | None]:
             del thread_id
             index = both_reading.wait()
             if index == 0:
-                return "ok", _project(read_result(status="interrupted"), "thread-1")
+                return "ok", project_native_turns(
+                    read_result(status="interrupted"),
+                    "thread-1",
+                    terminal_turn_id=terminal_turn_id,
+                )
             confirmed.wait(1)
             return "unavailable", None
 

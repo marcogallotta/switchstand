@@ -17,24 +17,36 @@ class NativeTurnProjection:
 
     status: Literal["active", "idle", "systemError", "notLoaded"]
     active_turn_id: str | None
+    requested_terminal_status: Literal["completed", "failed", "interrupted"] | None = None
 
 
 ThreadStatus = Literal["active", "idle", "systemError", "notLoaded"]
 
 
 def project_native_turns(
-    response: Any, expected_target: object
+    response: Any,
+    expected_target: object,
+    *,
+    terminal_turn_id: object | None = None,
 ) -> NativeTurnProjection | None:
     """Fail closed unless *response* is one consistent exact-target projection."""
     try:
-        return _project_native_turns(response, expected_target)
+        return _project_native_turns(response, expected_target, terminal_turn_id)
     except Exception:
         return None
 
 
 def _project_native_turns(
-    response: Any, expected_target: object
+    response: Any,
+    expected_target: object,
+    terminal_turn_id: object | None,
 ) -> NativeTurnProjection | None:
+    if terminal_turn_id is not None and (
+        type(terminal_turn_id) is not str
+        or not terminal_turn_id
+        or len(terminal_turn_id) > MAX_TURN_ID_CHARACTERS
+    ):
+        return None
     if not isinstance(response, Mapping):
         return None
     thread = response.get("thread")
@@ -51,6 +63,7 @@ def _project_native_turns(
         return None
     seen: set[str] = set()
     active_turn_id: str | None = None
+    requested_terminal_status: Literal["completed", "failed", "interrupted"] | None = None
     for turn in turns:
         if not isinstance(turn, Mapping):
             return None
@@ -70,8 +83,14 @@ def _project_native_turns(
             if active_turn_id is not None:
                 return None
             active_turn_id = turn_id
+        elif turn_id == terminal_turn_id:
+            requested_terminal_status = cast(
+                Literal["completed", "failed", "interrupted"], turn_status
+            )
     if (status == "active") != (active_turn_id is not None):
         return None
     return NativeTurnProjection(
-        status=cast(ThreadStatus, status), active_turn_id=active_turn_id
+        status=cast(ThreadStatus, status),
+        active_turn_id=active_turn_id,
+        requested_terminal_status=requested_terminal_status,
     )
