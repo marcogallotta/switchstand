@@ -72,17 +72,26 @@ timeout, or assertion failure is nonzero; neither boundary retries to green.
 
 ## Run
 
+Run the read-only native flight board for one exact root:
+
 ```sh
 PYTHONPATH=src python -m switchstand.service \
   --app-server-socket /path/to/codex-app-server.sock \
-  --workspace "$PWD" \
-  --state ./state/state.json \
+  --native-root-thread-id EXACT_NATIVE_ROOT_ID \
   --port 4180
 ```
+
+Omit `--native-root-thread-id` to run the default legacy reliability spike; that mode also
+accepts `--workspace` and `--state`. Native mode never discovers a root, resumes a thread, or
+exposes controls.
 
 The socket must already be provided by a Codex app-server daemon. The service does not launch,
 authenticate, or supervise that daemon. Bind to the default `127.0.0.1`; the prototype has no
 authentication or CSRF protection and is not designed for network exposure.
+
+Use a user-owned virtual environment, Unix socket, state/cache directory, and process. Do not
+run Switchstand with `sudo`, install its dependencies system-wide, create root-owned project
+files, bind privileged ports, or require a root-managed service.
 
 ## Review expectations
 
@@ -191,15 +200,16 @@ install also provides the `switchstand-stage-a` console command.
 PYTHONPATH=src python -m switchstand.stage_a_probe --help
 ```
 
-### Exact-head live evidence gate
+### Live evidence record
 
-An earlier probe revision connected to a real App Server and observed the required native tree,
-but that artifact predates schema version 2's identifier pseudonymization and cursor projection.
-It is historical protocol evidence, not proof for the current head, and is not retained in the
-repository.
+The Stage A gate passed on exact PR4 head
+`8670f50b629ae3f201d5eed3aa04fc92afa9888b` and PR4 was merged. The live run observed one root,
+one spawned descendant, and `active` to `idle` status notifications; it exited 0 with `ok: true`
+and no conversation-history mutation. Its accompanying checks were 44 Python tests, compilation,
+one browser test, and JavaScript syntax. This record proves that exact PR4 head only; it is not a
+claim that the later main head was freshly exercised against a live App Server.
 
-Before claiming an exact-head live checkpoint, run the current checkout against the live socket
-and exact root while that tree changes status:
+After a protocol-affecting change, use the same exact-head gate against the reviewed checkout:
 
 ```sh
 PYTHONPATH=src python -m switchstand.stage_a_probe \
@@ -212,6 +222,5 @@ PYTHONPATH=src python -m switchstand.stage_a_probe \
 test "$?" -eq 0
 ```
 
-Retain that generated artifact only when it came from the exact reviewed head and exits zero.
-Do not substitute the historical artifact or fixtures. Stage B remains unimplemented and the
-browser is unchanged.
+Retain generated evidence only when it came from the exact reviewed head and exits zero. Do not
+substitute the PR4 result or fixtures for a later exact-head claim.
