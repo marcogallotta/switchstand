@@ -129,7 +129,7 @@ class CodexAdapter:
                     ),
                 }
             )
-            thread = response.get("thread") if isinstance(response.get("thread"), Mapping) else {}
+            thread = value if isinstance(value := response.get("thread"), Mapping) else {}
             thread_id = str(thread.get("id") or "")
             if not thread_id:
                 raise RuntimeError("Codex thread/start returned no thread id")
@@ -148,7 +148,7 @@ class CodexAdapter:
                 approval_policy="never",
                 sandbox_policy={"type": "workspaceWrite", "writableRoots": [str(self.cwd)]},
             )
-            turn = response.get("turn") if isinstance(response.get("turn"), Mapping) else {}
+            turn = value if isinstance(value := response.get("turn"), Mapping) else {}
             turn_id = str(turn.get("id") or "")
             if not turn_id:
                 raise RuntimeError("Codex turn/start returned no turn id")
@@ -197,7 +197,7 @@ class CodexAdapter:
 
     def inspect_turn(self, *, thread_id: str, turn_id: str) -> Mapping[str, Any]:
         response = self._read(thread_id)
-        thread = response.get("thread") if isinstance(response.get("thread"), Mapping) else {}
+        thread = value if isinstance(value := response.get("thread"), Mapping) else {}
         for turn in thread.get("turns") or []:
             if isinstance(turn, Mapping) and str(turn.get("id") or "") == turn_id:
                 return self._turn_result(turn)
@@ -205,7 +205,7 @@ class CodexAdapter:
 
     def inspect_message(self, *, thread_id: str, message_id: str) -> Mapping[str, Any]:
         response = self._read(thread_id)
-        thread = response.get("thread") if isinstance(response.get("thread"), Mapping) else {}
+        thread = value if isinstance(value := response.get("thread"), Mapping) else {}
         turns = thread.get("turns")
         complete_history = isinstance(turns, list)
         for turn in turns if isinstance(turns, list) else []:
@@ -231,7 +231,7 @@ class CodexAdapter:
                     continue
                 if any(_message_marker(message_id) in text for text in texts) and isinstance(turn_id, str) and turn_id:
                     return {"found": True, "turn_id": turn_id, **self._turn_result(turn)}
-        status = thread.get("status") if isinstance(thread.get("status"), Mapping) else {}
+        status = value if isinstance(value := thread.get("status"), Mapping) else {}
         status_type = str(status.get("type") or "unknown")
         return {
             "found": False,

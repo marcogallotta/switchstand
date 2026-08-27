@@ -66,6 +66,17 @@ node --check src/switchstand/static/app.js
 The Node commands are optional, cover the browser refresh regression, and check JavaScript
 syntax; Node is not needed to run Switchstand.
 
+Install the pinned development tools, then run the canonical code-quality gate:
+
+```sh
+python -m pip install -r requirements-dev.lock
+npm ci --ignore-scripts --no-audit --no-fund
+./scripts/quality
+```
+
+This runs Ruff, Pyright, duplication detection, and repository size ratchets. See
+[Development](docs/development.md#code-quality-gate) for the exact policy.
+
 ## Native Stage A probe
 
 Run one complete read-only snapshot against an exact known native root thread id:
@@ -100,5 +111,6 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Development](docs/development.md)
 - [Prototype boundary decision](docs/decisions/0001-prototype-boundary.md)
 - [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
+- [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
 
 Switchstand is available under the [MIT License](LICENSE).

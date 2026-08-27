@@ -18,3 +18,12 @@ switchstand-stage-a = "switchstand.stage_a_probe:main"
 
 [tool.setuptools.package-data]
 switchstand = ["static/*.html", "static/*.js", "static/*.css"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+include = ["src", "tests", "scripts"]
+extraPaths = ["src"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
