@@ -175,7 +175,8 @@ class NativeStopTests(unittest.TestCase):
         both_reading = threading.Barrier(2)
         confirmed = threading.Event()
 
-        def racing_read(_thread_id):
+        def racing_read(thread_id: str) -> tuple[str, tuple[str, dict[str, str]] | None]:
+            del thread_id
             index = both_reading.wait()
             if index == 0:
                 return "ok", _project(read_result(status="interrupted"), "thread-1")
