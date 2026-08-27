@@ -241,7 +241,9 @@ PYTHONPATH=src python scripts/stage_b1_live_check.py \
 
 Exit `0` requires the descendant transition within two poll intervals, complete pagination,
 `includeTurns=false`, `useStateDbOnly=true`, an exact observer-method allowlist, and unchanged
-repository state. Exit `2` writes a fixed fail-closed code. The output omits native IDs and the
-socket path; it is evidence for coordinator review, not an automatic acceptance decision.
+repository state. Exit `2` writes a fixed fail-closed code. An output path that resolves to the
+repository or anywhere within it is rejected without writing that path; its fixed safe code is
+written to stderr. The output omits native IDs and the socket path; it is evidence for coordinator
+review, not an automatic acceptance decision.
 An exact root reported as `notLoaded` on the first pass fails immediately with
 `root_not_loaded_on_observer_server`; use the socket for the App Server that owns the workload.

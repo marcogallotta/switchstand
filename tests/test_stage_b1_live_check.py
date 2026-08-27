@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 import importlib.util
+from io import StringIO
 import json
 from pathlib import Path
 import sys
@@ -81,6 +83,49 @@ class FakeAuditedClient:
 
 
 class StageB1LiveCheckTests(unittest.TestCase):
+    def test_rejects_resolved_repository_output_without_writing_or_mutation(self):
+        invalid_output = REPO / ".stage-b1-invalid-evidence.json"
+        self.assertFalse(invalid_output.exists())
+
+        for output in (REPO, invalid_output):
+            with self.subTest(output=output.name):
+                initial_status = runner.git_status(REPO)
+                initial_stat = output.stat() if output.exists() else None
+                arguments = [
+                    "stage_b1_live_check.py",
+                    "--repo",
+                    str(REPO),
+                    "--socket",
+                    str(REPO / "missing.sock"),
+                    "--root-thread-id",
+                    ROOT_ID,
+                    "--expected-sha",
+                    "unused",
+                    "--expected-tree",
+                    "unused",
+                    "--output",
+                    str(output),
+                ]
+                stderr = StringIO()
+
+                with patch.object(sys, "argv", arguments), redirect_stderr(stderr):
+                    exit_code = runner.main()
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(
+                    json.loads(stderr.getvalue()),
+                    {
+                        "schemaVersion": 1,
+                        "result": "BLOCKED",
+                        "code": "output_path_inside_repository",
+                    },
+                )
+                self.assertEqual(runner.git_status(REPO), initial_status)
+                if initial_stat is None:
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(output.stat(), initial_stat)
+
     def run_check(self, client_class: type[FakeAuditedClient]):
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "app-server.sock"

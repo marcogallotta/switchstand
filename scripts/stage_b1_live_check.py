@@ -116,6 +116,12 @@ def write_result(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def reject_repository_output() -> int:
+    value = {"schemaVersion": 1, "result": "BLOCKED", "code": "output_path_inside_repository"}
+    print(json.dumps(value, sort_keys=True), file=sys.stderr)
+    return 2
+
+
 def blocked(
     output: Path,
     code: str,
@@ -153,6 +159,9 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--max-passes", type=int, default=30)
     args = parser.parse_args()
+
+    if args.output.resolve().is_relative_to(args.repo.resolve()):
+        return reject_repository_output()
 
     try:
         sha = git_value(args.repo, "rev-parse", "HEAD")
