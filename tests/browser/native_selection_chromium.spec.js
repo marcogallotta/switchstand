@@ -196,9 +196,29 @@ test("input sends the exact selected pair and unchanged text with only truthful 
 
   const values = ["  exact start\ntext  ", "exact steer", "retain on refusal", "retain on failure"];
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
+  const statuses = [200, 200, 200, 503];
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
-    await page.getByRole("button", { name: "Send exact message" }).click();
+    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue(values[index]);
+    const submit = page.getByRole("button", { name: "Send exact message" });
+    await expect(submit).toBeVisible();
+    await expect(submit).toBeEnabled();
+    const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
+    const sentResponse = page.waitForResponse(`${origin}/api/native-input`);
+    await submit.click();
+    await sentRequest;
+    expect((await sentResponse).status()).toBe(statuses[index]);
+    await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length)
+      .toBe(index + 1);
+    expect(requests.filter((item) => item.pathname === "/api/native-input").at(-1).body)
+      .toEqual({
+        version: "native-input-v1",
+        observationRunRef: "observation-run-one",
+        agentRef: "agent-beta",
+        text: values[index],
+      });
     await expect(page.locator("#native-input-outcome")).toHaveText(outcomes[index]);
     await expect(input).toHaveValue(index < 2 ? "" : values[index]);
   }
