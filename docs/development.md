@@ -227,3 +227,26 @@ test "$?" -eq 0
 
 Retain generated evidence only when it came from the exact reviewed head and exits zero. Do not
 substitute the PR4 result or fixtures for a later exact-head claim.
+
+### Run the Stage B1 flight-board live gate
+
+`scripts/stage_b1_live_check.py` polls one exact root without resume, subscription, transcript
+loading, or control calls. It requires the expected commit and tree, audits every observer
+method, and writes redacted evidence outside the repository. Run it while a real descendant
+handled by the same App Server transitions from active to idle:
+
+```sh
+PYTHONPATH=src python scripts/stage_b1_live_check.py \
+  --repo "$PWD" --socket /path/to/codex.sock --root-thread-id EXACT_ROOT_ID \
+  --expected-sha EXACT_SHA --expected-tree EXACT_TREE \
+  --output /tmp/switchstand-stage-b1-live-evidence.json
+```
+
+Exit `0` requires the descendant transition within two poll intervals, complete pagination,
+`includeTurns=false`, `useStateDbOnly=true`, an exact observer-method allowlist, and unchanged
+repository state. Exit `2` writes a fixed fail-closed code. An output path that resolves to the
+repository or anywhere within it is rejected without writing that path; its fixed safe code is
+written to stderr. The output omits native IDs and the socket path; it is evidence for coordinator
+review, not an automatic acceptance decision.
+An exact root reported as `notLoaded` on the first pass fails immediately with
+`root_not_loaded_on_observer_server`; use the socket for the App Server that owns the workload.
