@@ -37,9 +37,11 @@ class CodexAppServer:
         *,
         client_name: str = "switchstand",
         client_title: str = "Switchstand",
+        timeout_seconds: float | None = None,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.settimeout(timeout_seconds)
         self.socket.connect(str(self.socket_path))
         self.reader = self.socket.makefile("rb")
         self._next_id = 0

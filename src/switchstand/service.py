@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         if not _loopback(args.host):
             parser.error("native mode requires a loopback --host")
         runtime: Runtime | NativeBoard = NativeBoard(
-            lambda: CodexAppServer(args.app_server_socket), args.native_root_thread_id
+            lambda: CodexAppServer(args.app_server_socket, timeout_seconds=3), args.native_root_thread_id
         )
     else:
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
