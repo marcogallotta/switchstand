@@ -15,6 +15,36 @@ from switchstand.engine import CodexAdapter, _message_marker
 
 
 class AppServerProtocolTests(unittest.TestCase):
+    def test_bounded_reads_enforce_one_wall_clock_deadline_across_partial_reads(self):
+        class FakeSocket:
+            def __init__(self):
+                self.timeouts = []
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+        class DripReader:
+            def __init__(self):
+                self.chunks = iter((b"a", b"b"))
+
+            def read1(self, _length):
+                return next(self.chunks)
+
+        client = object.__new__(CodexAppServer)
+        client.socket = cast(Any, FakeSocket())
+        client.reader = cast(Any, DripReader())
+
+        with patch("switchstand.app_server.time.monotonic", side_effect=[1.0, 1.6]):
+            with self.assertRaises(TimeoutError):
+                client._read_exact(2, deadline=1.5)
+
+        client.reader = cast(Any, DripReader())
+        with patch("switchstand.app_server.time.monotonic", side_effect=[2.0, 2.6]):
+            with self.assertRaises(TimeoutError):
+                client._read_line(10, deadline=2.5)
+
+        self.assertEqual(client.socket.timeouts, [0.5, 0.5])
+
     def test_bounded_server_message_wait_reports_timeout_and_restores_socket_timeout(self):
         class FakeSocket:
             def __init__(self):
@@ -33,7 +63,9 @@ class AppServerProtocolTests(unittest.TestCase):
         client._server_messages = deque()
         fake_socket = FakeSocket()
         client.socket = cast(Any, fake_socket)
-        client._read_text = lambda: (_ for _ in ()).throw(socket.timeout())
+        client._read_text = lambda max_bytes=0, deadline=None: (
+            _ for _ in ()
+        ).throw(socket.timeout())
 
         with self.assertRaises(TimeoutError):
             client.next_server_message(timeout_seconds=2.5)
@@ -57,7 +89,7 @@ class AppServerProtocolTests(unittest.TestCase):
                 json.dumps({"id": 1, "result": {"data": [], "nextCursor": None}}),
             ]
         )
-        client._read_text = lambda: next(replies)
+        client._read_text = lambda max_bytes=0, deadline=None: next(replies)
 
         response = client.thread_list({"sourceKinds": ["cli"]})
 

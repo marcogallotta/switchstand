@@ -82,12 +82,15 @@ PYTHONPATH=src python -m switchstand.service \
 ```
 
 Omit `--native-root-thread-id` to run the default legacy reliability spike; that mode also
-accepts `--workspace` and `--state`. Native mode never discovers a root, resumes a thread, or
-exposes controls.
+accepts `--workspace` and `--state`. Native mode never discovers a root or resumes a thread. Its
+emergency stop requires active current board evidence, browser confirmation, JSON plus
+`X-Switchstand-Control: native-stop-v1`, and same-origin loopback Host/Origin.
 
 The socket must already be provided by a Codex app-server daemon. The service does not launch,
-authenticate, or supervise that daemon. Bind to the default `127.0.0.1`; the prototype has no
-authentication or CSRF protection and is not designed for network exposure.
+authenticate, or supervise that daemon. Native startup rejects non-loopback binding. Bind to the
+default `127.0.0.1`; the prototype is not designed for network exposure. The native boundary
+rejects simple/cross-origin requests and permissive CORS but does not authenticate same-user
+local processes or browser automation.
 
 Use a user-owned virtual environment, Unix socket, state/cache directory, and process. Do not
 run Switchstand with `sudo`, install its dependencies system-wide, create root-owned project

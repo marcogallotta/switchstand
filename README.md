@@ -1,12 +1,13 @@
 # Switchstand
 
 Switchstand is an experimental local operator surface for Codex work. Its explicitly selected
-native mode is a read-only flight board over one real Codex root and its spawned descendants.
+native mode observes one real Codex root and its descendants and can request cancellation of one
+exact active turn after explicit confirmation.
 The default legacy mode remains a fixed two-role reliability spike with durable messages,
 checkpoints, attempt controls, and conservative failure handling.
 
 This repository is a clean prototype, not a production orchestrator. It keeps two bounded
-slices easy to inspect: truthful read-only observation of a native tree, and the legacy
+slices easy to inspect: truthful native-tree observation with one emergency control, and the legacy
 flat-file reliability mechanisms for ordered messages, restart reconciliation, controls, and
 result fencing.
 
@@ -22,8 +23,10 @@ Issue #9 adds Stage B1 as an explicitly selected native view. It polls one exact
 `thread/read(includeTurns=false)` and all descendants with paginated
 `thread/list(useStateDbOnly=true)`. It displays native lineage, native status, observer
 freshness, consecutive observed-active time, and the latest 50 endpoint differences. It does not resume or
-subscribe to threads, mutate conversation history, or expose message/steer/stop controls. The
-legacy two-role engine remains available as a reliability spike.
+subscribe to threads or mutate conversation history. The legacy two-role engine remains
+available as a reliability spike. Issue #12 adds one native-only emergency control: explicit
+two-step confirmation requests interruption of one exact active turn. It does not undo work or
+stop background processes or descendants.
 
 ## Non-goals
 
@@ -33,7 +36,7 @@ legacy two-role engine remains available as a reliability spike.
 - Inferring completion, progress, failure, staleness, intent, or a complete event history
 - Abstracting multiple model providers behind a common adapter
 
-## Quick start: native read-only mode
+## Quick start: native observation mode
 
 Requirements: Python 3.11+ and a running Codex app-server Unix socket. No third-party runtime
 packages or frontend build are required.
@@ -96,6 +99,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
 - `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation
 - `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
+- `src/switchstand/native_stop.py` — exact-turn native stop receipts and outcome projection
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `tests/` — standard-library unit tests
@@ -110,5 +114,6 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
 - [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
 - [Native read-only flight-board decision](docs/decisions/0004-native-read-only-flight-board.md)
+- [Exact-turn native stop decision](docs/decisions/0005-exact-turn-native-stop.md)
 
 Switchstand is available under the [MIT License](LICENSE).

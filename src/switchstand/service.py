@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,19 @@ from .native_board import NativeBoard
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE = Path.home() / ".local" / "state" / "switchstand" / "state.json"
 MAX_BODY_BYTES = 64 * 1024
+NATIVE_HEADER = "native-stop-v1"
+
+
+def _loopback(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        hostname = urlsplit(f"//{value}").hostname
+        return hostname == "localhost" or (
+            hostname is not None and ipaddress.ip_address(hostname).is_loopback
+        )
+    except ValueError:
+        return False
 
 
 class Runtime:
@@ -94,6 +108,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
+        if pathname.startswith("/api/native-stop/"):
+            self._json(405, {"code": "control_request_rejected", "outcome": "not_sent"})
+            return
         if pathname == "/api/workbench":
             self._json(200, cast("Server", self.server).runtime.snapshot())
             return
@@ -101,10 +118,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         pathname = urlsplit(self.path).path
+        runtime = cast("Server", self.server).runtime
+        native_actions = {"/api/native-stop/prepare": "prepare_stop",
+            "/api/native-stop/commit": "commit_stop", "/api/native-stop/status": "stop_status"}
+        if isinstance(runtime, NativeBoard) and pathname in native_actions:
+            host, origin = self.headers.get("Host"), self.headers.get("Origin")
+            origin_ok = origin is None or (origin != "null" and urlsplit(origin).scheme == "http"
+                and urlsplit(origin).netloc.lower() == (host or "").lower())
+            if (self.headers.get("Content-Type") != "application/json"
+                    or self.headers.get("X-Switchstand-Control") != NATIVE_HEADER
+                    or not _loopback(host) or not origin_ok):
+                self._json(403, {"code": "control_request_rejected", "outcome": "not_sent"})
+                return
+            try:
+                body = self._read_json()
+            except (ValueError, json.JSONDecodeError):
+                self._json(400, {"code": "invalid_request", "outcome": "not_sent"})
+                return
+            keys = {"prepare_stop": "agentRef", "commit_stop": "confirmationRef",
+                "stop_status": "operationRef"}
+            key = keys[native_actions[pathname]]
+            result = getattr(runtime, native_actions[pathname])(body.get(key))
+            self._json(200, result)
+            return
         try:
             body = self._read_json()
             parts = [part for part in pathname.split("/") if part]
-            runtime = cast("Server", self.server).runtime
             if not isinstance(runtime, Runtime):
                 self._json(404, {"error": "operation_unavailable_in_native_mode"})
                 return
@@ -159,8 +198,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"static files are missing at {args.static_root}")
 
     if args.native_root_thread_id:
+        if not _loopback(args.host):
+            parser.error("native mode requires a loopback --host")
         runtime: Runtime | NativeBoard = NativeBoard(
-            lambda: CodexAppServer(args.app_server_socket), args.native_root_thread_id
+            lambda: CodexAppServer(
+                args.app_server_socket,
+                timeout_seconds=3,
+                bounded_stop=True,
+            ),
+            args.native_root_thread_id,
         )
     else:
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)

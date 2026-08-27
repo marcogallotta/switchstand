@@ -12,6 +12,7 @@ import unittest
 
 from switchstand.app_server import CodexAppServer
 from switchstand.native_board import NativeBoard
+from switchstand.native_stop import NativeStop
 
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -42,15 +43,18 @@ def receive_frame(connection: socket.socket) -> tuple[int, bytes, bool]:
     return first & 0x0F, payload, masked
 
 
-def send_json(connection: socket.socket, value: object) -> None:
-    payload = json.dumps(value, separators=(",", ":")).encode()
+def send_frame(connection: socket.socket, payload: bytes, *, opcode: int = 1, final: bool = True) -> None:
     if len(payload) < 126:
-        header = bytes((0x81, len(payload)))
+        header = bytes(((0x80 if final else 0) | opcode, len(payload)))
     elif len(payload) <= 0xFFFF:
-        header = bytes((0x81, 126)) + struct.pack("!H", len(payload))
+        header = bytes(((0x80 if final else 0) | opcode, 126)) + struct.pack("!H", len(payload))
     else:
-        header = bytes((0x81, 127)) + struct.pack("!Q", len(payload))
+        header = bytes(((0x80 if final else 0) | opcode, 127)) + struct.pack("!Q", len(payload))
     connection.sendall(header + payload)
+
+
+def send_json(connection: socket.socket, value: object) -> None:
+    send_frame(connection, json.dumps(value, separators=(",", ":")).encode())
 
 
 class ScriptedPeer(threading.Thread):
@@ -77,7 +81,7 @@ class ScriptedPeer(threading.Thread):
         if actual != expected:
             raise AssertionError(f"expected {expected!r}, received {actual!r}")
 
-    def upgrade(self, server: socket.socket) -> socket.socket:
+    def upgrade(self, server: socket.socket, *, initialize_client: bool = True) -> socket.socket:
         connection, _ = server.accept()
         self.connections += 1
         connection.settimeout(5)
@@ -98,11 +102,12 @@ class ScriptedPeer(threading.Thread):
                 f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
             ).encode("ascii")
         )
-        initialize = self.message(connection)
-        self.assert_equal(initialize["method"], "initialize")
-        send_json(connection, {"id": initialize["id"], "result": {}})
-        initialized = self.message(connection)
-        self.assert_equal(initialized, {"method": "initialized", "params": {}})
+        if initialize_client:
+            initialize = self.message(connection)
+            self.assert_equal(initialize["method"], "initialize")
+            send_json(connection, {"id": initialize["id"], "result": {}})
+            initialized = self.message(connection)
+            self.assert_equal(initialized, {"method": "initialized", "params": {}})
         return connection
 
     @staticmethod
@@ -190,7 +195,154 @@ class ScriptedPeer(threading.Thread):
                 server.close()
 
 
+class StopPeer(ScriptedPeer):
+    def run(self) -> None:
+        server = None
+        try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(self.path))
+            server.listen(4)
+            server.settimeout(5)
+            self.ready.set()
+            for status in ("inProgress", "inProgress", None, "interrupted"):
+                with self.upgrade(server) as connection:
+                    request = self.message(connection)
+                    if status is None:
+                        self.assert_equal(request["method"], "turn/interrupt")
+                        self.assert_equal(request["params"], {"threadId": "root-1", "turnId": "turn-1"})
+                        result = {}
+                    else:
+                        self.assert_equal(request["method"], "thread/read")
+                        result = {"thread": {"id": "root-1", "status": {
+                            "type": "active" if status == "inProgress" else "idle"},
+                            "turns": [{"id": "turn-1", "status": status,
+                                "items": [{"text": "PRIVATE-TRANSCRIPT-SENTINEL"}]}]}}
+                    send_json(connection, {"id": request["id"], "result": result})
+                    receive_frame(connection)
+        except BaseException as exc:
+            self.error = exc
+            self.ready.set()
+        finally:
+            if server is not None:
+                server.close()
+
+
+class OversizePeer(ScriptedPeer):
+    def run(self) -> None:
+        server = None
+        try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(self.path))
+            server.listen(2)
+            server.settimeout(5)
+            self.ready.set()
+            for fragmented in (False, True):
+                with self.upgrade(server) as connection:
+                    self.message(connection)
+                    if fragmented:
+                        send_frame(connection, b"x" * 40, final=False)
+                        send_frame(connection, b"\xff" * 40, opcode=0)
+                    else:
+                        send_frame(connection, b"\xff" * 80)
+                    receive_frame(connection)
+        except BaseException as exc:
+            self.error = exc
+            self.ready.set()
+        finally:
+            if server is not None:
+                server.close()
+
+
+class SetupPeer(ScriptedPeer):
+    def run(self) -> None:
+        server = None
+        try:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(self.path))
+            server.listen(3)
+            server.settimeout(5)
+            self.ready.set()
+            with self.upgrade(server, initialize_client=False) as connection:
+                initialize = self.message(connection)
+                send_json(connection, {"method": "private", "params": {"text": "SETUP-SENTINEL"}})
+                send_json(connection, {"id": initialize["id"], "result": {}})
+                self.assert_equal(self.message(connection)["method"], "initialized")
+                target = self.message(connection)
+                send_json(connection, {"id": target["id"], "result": {}})
+                receive_frame(connection)
+            with self.upgrade(server, initialize_client=False) as connection:
+                self.message(connection)
+                send_frame(connection, b"x" * 140_000, final=False)
+                send_frame(connection, b"\xff" * 140_000, opcode=0)
+                receive_frame(connection)
+            with self.upgrade(server, initialize_client=False) as connection:
+                self.message(connection)
+                send_frame(connection, b'{"SETUP-SENTINEL":')
+                receive_frame(connection)
+        except BaseException as exc:
+            self.error = exc
+            self.ready.set()
+        finally:
+            if server is not None:
+                server.close()
+
+
 class AppServerTransportTest(unittest.TestCase):
+    def test_bounded_stop_setup_discards_sentinel_and_closes_oversize_or_malformed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "setup.sock"
+            peer = SetupPeer(socket_path)
+            peer.start()
+            self.assertTrue(peer.ready.wait(5))
+            client = CodexAppServer(socket_path, timeout_seconds=3, bounded_stop=True)
+            classification, result = client.stop_request("thread/read", {})
+            self.assertEqual((classification, result), ("ok", {}))
+            self.assertEqual(client.drain_server_messages(), [])
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "^setup_unavailable$") as raised:
+                    CodexAppServer(socket_path, timeout_seconds=3, bounded_stop=True)
+                self.assertNotIn("SETUP-SENTINEL", repr(raised.exception))
+                self.assertIsNone(raised.exception.__context__)
+            peer.join(5)
+            if peer.error:
+                raise peer.error
+            self.assertEqual([request["method"] for request in peer.requests],
+                ["initialize", "initialized", "thread/read", "initialize", "initialize"])
+
+    def test_native_stop_real_unix_sequence_targets_once_and_confirms_exact_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "stop.sock"
+            peer = StopPeer(socket_path)
+            peer.start()
+            self.assertTrue(peer.ready.wait(5))
+            stop = NativeStop(lambda: CodexAppServer(socket_path, timeout_seconds=3,
+                bounded_stop=True), lambda _: "root-1")
+            prepared = stop.prepare("agent-1")
+            requested = stop.commit(prepared["confirmationRef"])
+            confirmed = stop.status(requested["operationRef"])
+            peer.join(5)
+            if peer.error:
+                raise peer.error
+            self.assertEqual((requested["outcome"], confirmed["outcome"]), ("requested", "confirmed"))
+            methods = [request["method"] for request in peer.requests]
+            self.assertEqual(methods.count("turn/interrupt"), 1)
+            self.assertEqual(methods[2::3], ["thread/read", "thread/read", "turn/interrupt", "thread/read"])
+
+    def test_stop_seam_rejects_complete_and_cumulative_oversize_before_decode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "oversize.sock"
+            peer = OversizePeer(socket_path)
+            peer.start()
+            self.assertTrue(peer.ready.wait(5))
+            outcomes = []
+            for _ in range(2):
+                client = CodexAppServer(socket_path, timeout_seconds=3, bounded_stop=True)
+                outcomes.append(client.stop_request("thread/read", {}, max_response_bytes=64)[0])
+            peer.join(5)
+            if peer.error:
+                raise peer.error
+            self.assertEqual(outcomes, ["oversize", "oversize"])
+
     def test_real_unix_websocket_json_rpc_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "app-server.sock"

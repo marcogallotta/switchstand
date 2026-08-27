@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol, cast
 
 from .agent_tree import AgentTreeAdapter, AgentTreeClient, THREAD_SOURCE_KINDS
+from .native_stop import NativeStop, StopClient
 
 
 SAFE_ERROR = "native_observation_unavailable"
@@ -92,6 +93,7 @@ class NativeBoard:
         self._completed_at: float | None = None
         self._connected = False
         self._error_code: str | None = None
+        self._stopper = NativeStop(cast(Callable[[], StopClient], client_factory), self._resolve_active)
 
     def start(self) -> None:
         self.poll_once()
@@ -240,3 +242,21 @@ class NativeBoard:
                 "trailLimit": self._trail_limit,
                 "disclosure": DISCLOSURE,
             }
+
+    def _resolve_active(self, agent_ref: str) -> str | None:
+        with self._lock:
+            if not self._connected:
+                return None
+            for thread_id, endpoint in self._endpoints.items():
+                if self._labels.get(thread_id) == agent_ref and endpoint.get("status") == "active":
+                    return thread_id
+        return None
+
+    def prepare_stop(self, agent_ref: Any) -> dict[str, str]:
+        return self._stopper.prepare(agent_ref)
+
+    def commit_stop(self, confirmation_ref: Any) -> dict[str, str]:
+        return self._stopper.commit(confirmation_ref)
+
+    def stop_status(self, operation_ref: Any) -> dict[str, str]:
+        return self._stopper.status(operation_ref)

@@ -7,15 +7,73 @@ function el(tag, className, text) {
   return node;
 }
 
-async function request(path, body) {
+async function request(path, body, nativeControl = false) {
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers: body === undefined ? {} : { "Content-Type": "application/json",
+      ...(nativeControl ? { "X-Switchstand-Control": "native-stop-v1" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json();
   if (!response.ok) throw new Error(value.error ?? `Request failed (${response.status})`);
   return value;
+}
+
+const stopState = new Map();
+const stopEpoch = new Map();
+const observedStatus = new Map();
+async function stopAgent(agent) {
+  const epoch = stopEpoch.get(agent.agentRef) ?? 0;
+  try {
+    const prepared = await request(
+      "/api/native-stop/prepare",
+      { agentRef: agent.agentRef },
+      true,
+    );
+    if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
+    const warning = [
+      `Stop ${agent.label}’s current turn?`,
+      "Switchstand will request cancellation of that exact turn only.",
+      "Work already performed is not undone.",
+      "Background processes and descendant agents may continue.",
+    ].join(" ");
+    if (prepared.code !== "prepared") {
+      stopState.set(agent.agentRef, prepared);
+    } else if (!window.confirm(warning)) {
+      stopState.set(agent.agentRef, { outcome: "not_sent" });
+    } else {
+      const result = await request(
+        "/api/native-stop/commit",
+        { confirmationRef: prepared.confirmationRef },
+        true,
+      );
+      if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
+      stopState.set(agent.agentRef, result);
+    }
+    if (lastModel) renderNative(lastModel);
+  } catch (_error) {
+    if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
+    stopState.set(agent.agentRef, { outcome: "unknown" });
+    if (lastModel) renderNative(lastModel);
+  }
+}
+
+async function checkStop(agentRef) {
+  const current = stopState.get(agentRef);
+  const epoch = stopEpoch.get(agentRef) ?? 0;
+  try {
+    const result = await request(
+      "/api/native-stop/status",
+      { operationRef: current.operationRef },
+      true,
+    );
+    if ((stopEpoch.get(agentRef) ?? 0) !== epoch) return;
+    stopState.set(agentRef, result);
+  } catch (_error) {
+    if ((stopEpoch.get(agentRef) ?? 0) !== epoch) return;
+    stopState.set(agentRef, { ...current, outcome: "unknown" });
+  }
+  if (lastModel) renderNative(lastModel);
 }
 
 const shown = (value) => value === null || value === undefined ? "not observed"
@@ -92,8 +150,8 @@ function renderNative(model) {
   nativeSurface.hidden = false;
   rolesHost.hidden = true;
   eyebrowHost.textContent = "Native agent observation";
-  descriptionHost.textContent = "Read-only evidence from the connected Codex agent tree.";
-  headlineFactsHost.textContent = "Observed state only · no inferred progress";
+  descriptionHost.textContent = "Observed evidence with exact-turn emergency stop.";
+  headlineFactsHost.textContent = "Observed state only · exact cancellation requests";
   const view = captureView();
   const observation = model.observation;
   const title = observation.historical ? "Historical snapshot" : "Current observation";
@@ -102,6 +160,12 @@ function renderNative(model) {
       ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`], ["error", observation.errorCode]]));
   const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
   const agents = model.agents.map((agent) => {
+    const previousStatus = observedStatus.get(agent.agentRef);
+    if (previousStatus === "active" && agent.status !== "active") {
+      stopEpoch.set(agent.agentRef, (stopEpoch.get(agent.agentRef) ?? 0) + 1);
+      stopState.delete(agent.agentRef);
+    }
+    observedStatus.set(agent.agentRef, agent.status);
     const row = el("details", "agent");
     row.dataset.nodeKey = agent.agentRef;
     row.dataset.focusKey = `agent:${agent.agentRef}`;
@@ -113,6 +177,20 @@ function renderNative(model) {
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
+    const stop = stopState.get(agent.agentRef);
+    if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
+    if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
+      const button = el("button", "button button--danger", "Stop current turn");
+      button.type = "button";
+      button.addEventListener("click", () => stopAgent(agent));
+      row.append(button);
+    }
+    if (["requested", "unknown"].includes(stop?.outcome) && stop.operationRef) {
+      const check = el("button", "button", "Check stop outcome");
+      check.type = "button";
+      check.addEventListener("click", () => checkStop(agent.agentRef));
+      row.append(check);
+    }
     return row;
   });
   const tree = el("div", "tree");
