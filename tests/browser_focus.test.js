@@ -72,13 +72,14 @@ class Document {
     this.trail = new Element(this, "ol");
     this.disclosure = new Element(this, "p");
     this.observer = new Element(this, "section");
+    this.currentTarget = new Element(this, "section");
     this.error = new Element(this, "div");
     this.roles = new Element(this, "section");
     this.nativeSurface = new Element(this, "div");
     this.eyebrow = new Element(this, "p");
     this.description = new Element(this, "p");
     this.headlineFacts = new Element(this, "p");
-    this.nativeSurface.append(this.observer, this.tree, this.trail, this.disclosure);
+    this.nativeSurface.append(this.observer, this.currentTarget, this.tree, this.trail, this.disclosure);
     this.body.append(this.error, this.eyebrow, this.description, this.headlineFacts, this.nativeSurface, this.roles);
   }
 
@@ -90,6 +91,7 @@ class Document {
     if (selector === "#tree") return this.tree;
     if (selector === "#trail") return this.trail;
     if (selector === "#observer") return this.observer;
+    if (selector === "#current-target") return this.currentTarget;
     if (selector === "#disclosure") return this.disclosure;
     if (selector === "#error") return this.error;
     if (selector === "#roles") return this.roles;
@@ -194,4 +196,75 @@ test("legacy response retains the two-role surface and reports failed writes", a
   assert.deepEqual(requests.at(-1), ["/api/workbench/roles/a/messages", "POST"]);
   assert.equal(document.error.textContent, "denied");
   assert.equal(document.error.hidden, false);
+});
+
+test("fake-DOM refresh failure clears selection and fences its delayed prior result", async () => {
+  const document = new Document();
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) ?? null,
+    removeItem: (key) => values.delete(key), setItem: (key, value) => values.set(key, value) };
+  const second = { ...state.agents[0], agentRef: "agent-2", label: "Second agent", parentRef: "agent-1" };
+  const pairs = new Map(["agent-1", "agent-2"].map((agentRef) => [agentRef,
+    { observationRunRef: "observation-run", agentRef }]));
+  const seams = new Map([...pairs].map(([agentRef, selection]) => [agentRef, { selection,
+    snapshot: { version: "native-selection-v1", ...selection, connected: true, present: true } }]));
+  let supplied;
+  let intervalCallback;
+  let failRefresh = false;
+  let delayedSnapshot;
+  let releaseDelayed;
+  const delayed = new Promise((resolve) => { releaseDelayed = resolve; });
+  const view = { scrollX: 0, scrollY: 0 };
+  const window = { addEventListener() {}, clearInterval() {}, getSelection() { return { rangeCount: 0 }; },
+    localStorage: storage, scrollX: 0, scrollY: 0, scrollTo(x, y) { view.scrollX = x; view.scrollY = y; },
+    setInterval(callback) { intervalCallback = callback; return 1; }, switchstandNativeSelectionAdapter: {
+      resolve: async (_selection, snapshot) => {
+        if (snapshot === delayedSnapshot) await delayed;
+        return snapshot;
+      },
+      selectionForAgent: (agentRef) => seams.get(agentRef),
+      subscribe(callback) { supplied = callback; },
+    } };
+  Object.defineProperties(window, { scrollX: { get: () => view.scrollX }, scrollY: { get: () => view.scrollY } });
+  const context = { console, document, Error, fetch: async () => failRefresh
+    ? { ok: false, json: async () => ({ error: "unavailable" }) }
+    : { ok: true, json: async () => state },
+    Map, Object, Set, setTimeout, window };
+  const controllerPath = path.join(__dirname, "..", "src", "switchstand", "static",
+    "native_selection_controller.js");
+  vm.runInNewContext(fs.readFileSync(controllerPath, "utf8"), context, { filename: controllerPath });
+  window.SwitchstandNativeSelection = context.SwitchstandNativeSelection;
+  state.agents.push(second);
+  const scriptPath = path.join(__dirname, "..", "src", "switchstand", "static", "app.js");
+  vm.runInNewContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
+  await new Promise(setImmediate);
+  const focused = document.tree.querySelectorAll("[data-focus-key]")
+    .find((node) => node.dataset.focusKey === "select:agent-2");
+  focused.parentNode.open = true;
+  focused.focus();
+  document.tree.scrollTop = 19;
+  view.scrollY = 37;
+  focused.listeners.click();
+  await new Promise(setImmediate);
+  assert.equal(values.size, 1);
+  delayedSnapshot = { version: "native-selection-v1", ...pairs.get("agent-2"),
+    connected: true, present: true, name: "Late identity" };
+  supplied({ selection: pairs.get("agent-2"), snapshot: delayedSnapshot });
+  seams.set("agent-2", { selection: pairs.get("agent-2"), snapshot: {
+    code: "APP_SERVER_DISCONNECTED", message: "Agent connection is unavailable.",
+  } });
+  failRefresh = true;
+  await intervalCallback();
+  releaseDelayed();
+  await new Promise(setImmediate);
+  const after = document.tree.querySelectorAll("[data-focus-key]")
+    .find((node) => node.dataset.focusKey === "select:agent-2");
+  assert.strictEqual(document.activeElement, after);
+  assert.equal(after.parentNode.open, true);
+  assert.equal(document.tree.scrollTop, 19);
+  assert.equal(view.scrollY, 37);
+  assert.equal(values.size, 0);
+  assert.equal(document.currentTarget.children[0].textContent, "No current target selected.");
+  assert.equal(document.observer.children[0].textContent, "Historical snapshot");
+  state.agents.pop();
 });

@@ -21,6 +21,7 @@
       <div id="error" class="error" hidden></div>
       <div id="native-surface" hidden>
         <section id="observer" class="observer" aria-live="polite"></section>
+        <section id="current-target" class="observer" aria-live="polite" hidden></section>
         <section class="board-grid">
           <article class="panel">
             <h2>Agent tree</h2>
@@ -35,6 +36,7 @@
       </div>
       <section id="roles" class="role-grid" aria-live="polite" hidden></section>
     </main>
+    <script src="/native_selection_controller.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

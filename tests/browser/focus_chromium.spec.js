@@ -62,7 +62,8 @@ test.beforeAll(async () => {
       response.end(body);
       return;
     }
-    const names = { "/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css" };
+    const names = { "/": "index.html", "/app.js": "app.js",
+      "/native_selection_controller.js": "native_selection_controller.js", "/styles.css": "styles.css" };
     const name = names[pathname];
     if (!name) {
       response.writeHead(404).end();
