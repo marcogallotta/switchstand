@@ -35,6 +35,7 @@ def native_thread(thread_id: str, parent: str | None, status: str) -> dict[str, 
 
 class FakeAuditedClient:
     forbidden_method: str | None = None
+    statuses = ("active", "idle")
 
     def __init__(self, socket_path: Path, pass_number: int, audit: list[dict[str, Any]]) -> None:
         del socket_path
@@ -59,7 +60,7 @@ class FakeAuditedClient:
                 "params": {"includeTurns": include_turns, "hasExactThreadId": True},
             }
         )
-        status = "active" if self.pass_number == 1 else "idle"
+        status = self.statuses[min(self.pass_number - 1, len(self.statuses) - 1)]
         return {"thread": native_thread(thread_id, None, status)}
 
     def thread_list(self, params):
@@ -72,7 +73,7 @@ class FakeAuditedClient:
                 "nextCursorPresent": False,
             }
         )
-        status = "active" if self.pass_number == 1 else "idle"
+        status = self.statuses[min(self.pass_number - 1, len(self.statuses) - 1)]
         return {"data": [native_thread(CHILD_ID, ROOT_ID, status)], "nextCursor": None}
 
     def close(self):
@@ -134,6 +135,17 @@ class StageB1LiveCheckTests(unittest.TestCase):
         self.assertEqual(evidence["result"], "BLOCKED")
         self.assertEqual(evidence["code"], "observer_method_contract_failed")
         self.assertGreater(evidence["forbiddenMethodCount"], 0)
+
+    def test_root_loaded_by_another_server_fails_after_first_pass(self):
+        class NotLoadedClient(FakeAuditedClient):
+            statuses = ("notLoaded",)
+
+        exit_code, evidence, _ = self.run_check(NotLoadedClient)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(evidence["code"], "root_not_loaded_on_observer_server")
+        self.assertEqual(len(evidence["passes"]), 1)
+        self.assertEqual(evidence["forbiddenMethodCount"], 0)
 
 
 if __name__ == "__main__":

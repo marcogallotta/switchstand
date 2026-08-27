@@ -205,6 +205,16 @@ def main() -> int:
                 audit=audit,
                 passes=passes,
             )
+        roots = [item for item in projected if item["parentRef"] is None]
+        if pass_number == 1 and roots and roots[0]["status"] == "notLoaded":
+            return blocked(
+                args.output,
+                "root_not_loaded_on_observer_server",
+                sha=sha,
+                tree=tree,
+                audit=audit,
+                passes=passes,
+            )
 
         for item in projected:
             ref = item["ref"]

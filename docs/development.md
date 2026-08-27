@@ -243,3 +243,5 @@ Exit `0` requires the descendant transition within two poll intervals, complete 
 `includeTurns=false`, `useStateDbOnly=true`, an exact observer-method allowlist, and unchanged
 repository state. Exit `2` writes a fixed fail-closed code. The output omits native IDs and the
 socket path; it is evidence for coordinator review, not an automatic acceptance decision.
+An exact root reported as `notLoaded` on the first pass fails immediately with
+`root_not_loaded_on_observer_server`; use the socket for the App Server that owns the workload.
