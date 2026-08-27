@@ -6,12 +6,15 @@ from pathlib import Path
 import socket
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 import unittest
 
 from app_server_transport_test import ScriptedPeer, receive_frame, send_frame, send_json
 from switchstand.app_server import CodexAppServer
+from switchstand.current_target import ExactCurrentTarget
+from switchstand.native_board import NativeBoard
 from switchstand.native_input import NativeInput
+from switchstand.native_target_transport import NativeTargetTransport
 
 
 NOT_SENT = {"code": "input_unavailable", "outcome": "not_sent"}
@@ -154,6 +157,21 @@ class Resolver:
         return next(self.values)
 
 
+class BindingBoard:
+    """Minimal scripted owner of the production transport's private binding seam."""
+
+    def __init__(self, target: ExactCurrentTarget, *, maximum_bindings: int = 99) -> None:
+        self.target = target
+        self.maximum_bindings = maximum_bindings
+        self.calls = 0
+
+    def _with_current_native_target(self, target, operation):
+        self.calls += 1
+        if self.calls > self.maximum_bindings or target != self.target:
+            return None
+        return operation("native-thread")
+
+
 def input_request(text="  wire input\n"):
     return {
         "version": "native-input-v1",
@@ -279,6 +297,52 @@ class NativeInputTransportTest(unittest.TestCase):
                     isinstance(item["method"], str) and item["method"].startswith("turn/")
                     for item in requests
                 ))
+
+    def run_production_case(self, plans, *, maximum_bindings=99):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "PRIVATE-SOCKET-SENTINEL.sock"
+            peer = InputPeer(path, plans)
+            peer.start()
+            self.assertTrue(peer.ready.wait(5))
+            target = ExactCurrentTarget()
+            board = BindingBoard(target, maximum_bindings=maximum_bindings)
+            native_input = NativeInput(
+                Resolver([target, target]),
+                NativeTargetTransport(cast(NativeBoard, board), path),
+                maximum_observation_age_seconds=3,
+                timeout_seconds=1,
+                max_response_bytes=4096,
+            )
+            result = native_input.send(input_request())
+            peer.join(5)
+            self.assertFalse(peer.is_alive())
+            if peer.error:
+                raise peer.error
+            return result, board.calls, peer.requests
+
+    def test_production_transport_binds_opaque_target_on_scripted_unix_socket(self):
+        result, calls, requests = self.run_production_case((
+            {"method": "thread/read", "response": read_response("idle", [])},
+            {"method": "turn/start", "response": {"turn": {"id": "new-turn"}}},
+        ))
+        self.assertEqual(result, {
+            "code": "input_sent", "outcome": "sent", "mode": "start"
+        })
+        self.assertEqual(calls, 2)
+        self.assertEqual([request["method"] for request in requests], [
+            "initialize", "initialized", "thread/read",
+            "initialize", "initialized", "turn/start",
+        ])
+
+    def test_production_transport_disappearance_before_action_fails_closed(self):
+        result, calls, requests = self.run_production_case((
+            {"method": "thread/read", "response": read_response("idle", [])},
+        ), maximum_bindings=1)
+        self.assertEqual(result, NOT_SENT)
+        self.assertEqual(calls, 2)
+        self.assertEqual([request["method"] for request in requests], [
+            "initialize", "initialized", "thread/read",
+        ])
 
 
 if __name__ == "__main__":

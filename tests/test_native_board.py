@@ -377,6 +377,93 @@ class NativeBoardTests(unittest.TestCase):
             "APP_SERVER_DISCONNECTED",
         )
 
+    def test_private_target_operation_binds_only_latest_connected_fresh_record(self):
+        clock = Clock()
+        root_only = FakeClient(
+            native_thread("raw-root", updated=101.0),
+            [{"data": [], "nextCursor": None}],
+        )
+        board = NativeBoard(
+            ClientFactory(client_with_status(), root_only),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+            maximum_observation_age_seconds=1.0,
+        )
+        board.poll_once()
+        pair = selection_pair(board.browser_selection(
+            "agent-2", now=100.0, maximum_observation_age_seconds=1.0
+        ))
+        target = board.resolve_current_target(
+            pair, now=100.0, maximum_observation_age_seconds=1.0
+        )
+        self.assertIsInstance(target, ExactCurrentTarget)
+        observed: list[str] = []
+        operation = lambda native_id: observed.append(native_id) or "called"
+
+        self.assertEqual(board._with_current_native_target(target, operation), "called")
+        self.assertEqual(observed, ["raw-child"])
+
+        clock.value = 101.0
+        board.poll_once()
+        self.assertIsNone(board._with_current_native_target(target, operation))
+        self.assertEqual(observed, ["raw-child"])
+
+        root_pair = selection_pair(board.browser_selection(
+            "agent-1", now=101.0, maximum_observation_age_seconds=1.0
+        ))
+        root_target = board.resolve_current_target(
+            root_pair, now=101.0, maximum_observation_age_seconds=1.0
+        )
+        clock.value = 102.001
+        self.assertIsNone(board._with_current_native_target(root_target, operation))
+        self.assertEqual(observed, ["raw-child"])
+
+    def test_private_target_operation_does_not_hold_board_lock_during_io(self):
+        clock = Clock()
+        board = NativeBoard(
+            lambda: client_with_status(),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+        )
+        board.poll_once()
+        pair = selection_pair(board.browser_selection(
+            "agent-1", now=100.0, maximum_observation_age_seconds=5.0
+        ))
+        target = board.resolve_current_target(
+            pair, now=100.0, maximum_observation_age_seconds=5.0
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        operation_done = threading.Event()
+
+        def delayed_operation(native_id: str) -> str:
+            self.assertEqual(native_id, "raw-root")
+            entered.set()
+            release.wait(2)
+            return "done"
+
+        def run_operation() -> None:
+            board._with_current_native_target(target, delayed_operation)
+            operation_done.set()
+
+        worker = threading.Thread(target=run_operation)
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        try:
+            snapshot_done = threading.Event()
+            snapshot_thread = threading.Thread(
+                target=lambda: (board.snapshot(), snapshot_done.set())
+            )
+            snapshot_thread.start()
+            self.assertTrue(snapshot_done.wait(1))
+            snapshot_thread.join(1)
+        finally:
+            release.set()
+            worker.join(1)
+        self.assertTrue(operation_done.is_set())
+
     def test_http_api_serves_native_snapshot_and_rejects_controls(self):
         board = NativeBoard(lambda: client_with_status(), "raw-root")
         board.poll_once()
