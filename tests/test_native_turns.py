@@ -48,6 +48,43 @@ class NativeTurnsTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertEqual(project_native_turns(response(target, status, turns), target), expected)
 
+    def test_projects_only_the_requested_terminal_turn_fact(self):
+        target = OpaqueTarget(1)
+        turns = [
+            {"id": "completed", "status": "completed", "items": ["discarded"]},
+            {"id": "failed", "status": "failed", "items": ["discarded"]},
+            {"id": "interrupted", "status": "interrupted", "items": ["discarded"]},
+        ]
+        for turn_id, expected in (
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("interrupted", "interrupted"),
+            ("absent", None),
+        ):
+            with self.subTest(turn_id=turn_id):
+                projection = project_native_turns(
+                    response(target, turns=turns),
+                    target,
+                    terminal_turn_id=turn_id,
+                )
+                self.assertIsNotNone(projection)
+                self.assertEqual(
+                    projection.requested_terminal_status if projection else None,
+                    expected,
+                )
+
+    def test_rejects_invalid_requested_terminal_turn_id(self):
+        target = OpaqueTarget(1)
+        for turn_id in ("", "x" * 257, 1):
+            with self.subTest(turn_id=turn_id):
+                self.assertIsNone(
+                    project_native_turns(
+                        response(target),
+                        target,
+                        terminal_turn_id=turn_id,
+                    )
+                )
+
     def test_rejects_missing_wrong_or_unknown_thread_evidence(self):
         target = OpaqueTarget(1)
         cases = (

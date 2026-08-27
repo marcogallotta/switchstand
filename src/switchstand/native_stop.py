@@ -12,10 +12,9 @@ from .native_contracts import (
     NativeStopPrepareResult,
     NativeStopStatusResult,
 )
+from .native_turns import NativeTurnProjection, project_native_turns
 
 
-THREAD_STATUSES = frozenset({"active", "idle", "systemError", "notLoaded"})
-TURN_STATUSES = frozenset({"inProgress", "completed", "failed", "interrupted"})
 TERMINAL_OUTCOMES = frozenset({"confirmed", "not_confirmed", "rejected", "not_sent"})
 
 
@@ -40,36 +39,6 @@ class _Receipt:
     outcome: str = "not_sent"
 
 
-def _project(value: Mapping[str, Any], thread_id: str) -> tuple[str, dict[str, str]] | None:
-    thread = value.get("thread")
-    if not isinstance(thread, Mapping) or thread.get("id") != thread_id:
-        return None
-    status = thread.get("status")
-    if not isinstance(status, Mapping) or status.get("type") not in THREAD_STATUSES:
-        return None
-    turns = thread.get("turns")
-    if not isinstance(turns, list) or len(turns) > 256:
-        return None
-    projected: dict[str, str] = {}
-    for turn in turns:
-        if not isinstance(turn, Mapping):
-            return None
-        turn_id = turn.get("id")
-        turn_status = turn.get("status")
-        if (not isinstance(turn_id, str) or not turn_id or len(turn_id) > 256
-                or turn_id in projected or not isinstance(turn_status, str)
-                or turn_status not in TURN_STATUSES):
-            return None
-        projected[turn_id] = turn_status
-    active = [key for key, current in projected.items() if current == "inProgress"]
-    thread_status = status["type"]
-    if (thread_status == "active" and len(active) != 1) or (
-        thread_status != "active" and active
-    ):
-        return None
-    return thread_status, projected
-
-
 class NativeStop:
     def __init__(self, client_factory: Callable[[], StopClient],
         resolve_agent: Callable[[str], str | None], *,
@@ -86,7 +55,9 @@ class NativeStop:
         self._receipts = {reference: receipt for reference, receipt in self._receipts.items()
             if receipt.expires_at > now}
 
-    def _read(self, thread_id: str) -> tuple[str, tuple[str, dict[str, str]] | None]:
+    def _read(
+        self, thread_id: str, *, terminal_turn_id: str | None = None
+    ) -> tuple[str, NativeTurnProjection | None]:
         try:
             client = self._client_factory()
             classification, response = client.stop_request(
@@ -96,16 +67,17 @@ class NativeStop:
             return "unavailable", None
         if classification != "ok" or response is None:
             return classification, None
-        projected = _project(response, thread_id)
+        projected = project_native_turns(
+            response, thread_id, terminal_turn_id=terminal_turn_id
+        )
         response = None
         return ("ok", projected) if projected is not None else ("malformed", None)
 
     @staticmethod
-    def _sole_active(projection: tuple[str, dict[str, str]] | None) -> str | None:
-        if projection is None or projection[0] != "active":
+    def _sole_active(projection: NativeTurnProjection | None) -> str | None:
+        if projection is None or projection.status != "active":
             return None
-        active = [turn_id for turn_id, status in projection[1].items() if status == "inProgress"]
-        return active[0] if len(active) == 1 else None
+        return projection.active_turn_id
 
     def prepare(self, agent_ref: Any) -> NativeStopPrepareResult:
         if not isinstance(agent_ref, str) or not agent_ref:
@@ -183,8 +155,15 @@ class NativeStop:
         if outcome not in {"requested", "unknown"}:
             return cast(NativeStopStatusResult,
                 {"code": "stop_result", "operationRef": reference, "outcome": outcome})
-        classification, projection = self._read(receipt.thread_id)
-        observed = None if projection is None else projection[1].get(receipt.turn_id)
+        classification, projection = self._read(
+            receipt.thread_id, terminal_turn_id=receipt.turn_id
+        )
+        if projection is None:
+            observed = None
+        elif projection.active_turn_id == receipt.turn_id:
+            observed = "inProgress"
+        else:
+            observed = projection.requested_terminal_status
         if classification != "ok" or observed is None:
             outcome = "unknown"
         elif observed == "interrupted":
