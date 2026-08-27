@@ -10,7 +10,9 @@ import threading
 from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
+from .app_server import CodexAppServer
 from .engine import CodexAdapter, Engine
+from .native_board import NativeBoard
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -35,6 +37,9 @@ class Runtime:
     def _observe(self) -> None:
         while not self.stop_event.wait(0.5):
             self.engine.reconcile()
+
+    def snapshot(self) -> dict[str, Any]:
+        return self.engine.snapshot()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -90,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
         if pathname == "/api/workbench":
-            self._json(200, cast("Server", self.server).runtime.engine.snapshot())
+            self._json(200, cast("Server", self.server).runtime.snapshot())
             return
         self._static(pathname)
 
@@ -99,7 +104,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
             parts = [part for part in pathname.split("/") if part]
-            engine = cast("Server", self.server).runtime.engine
+            runtime = cast("Server", self.server).runtime
+            if not isinstance(runtime, Runtime):
+                self._json(404, {"error": "operation_unavailable_in_native_mode"})
+                return
+            engine = runtime.engine
             if len(parts) == 5 and parts[:2] == ["api", "workbench"] and parts[2] == "roles" and parts[4] == "messages":
                 engine.enqueue(parts[3], str(body.get("text") or ""), kind=str(body.get("kind") or "message"))
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "stop":
@@ -121,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], runtime: Runtime, static_root: Path) -> None:
+    def __init__(self, address: tuple[str, int], runtime: Runtime | NativeBoard, static_root: Path) -> None:
         super().__init__(address, Handler)
         self.runtime = runtime
         self.static_root = static_root
@@ -137,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT") or "4180"))
     parser.add_argument("--role-a", default="Role A")
     parser.add_argument("--role-b", default="Role B")
+    parser.add_argument("--native-root-thread-id")
     return parser
 
 
@@ -148,8 +158,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.static_root.is_dir():
         parser.error(f"static files are missing at {args.static_root}")
 
-    adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
-    runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
+    if args.native_root_thread_id:
+        runtime: Runtime | NativeBoard = NativeBoard(
+            lambda: CodexAppServer(args.app_server_socket), args.native_root_thread_id
+        )
+    else:
+        adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
+        runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
     runtime.start()
     server = Server((args.host, args.port), runtime, args.static_root)
     print(f"Switchstand: http://{args.host}:{server.server_address[1]}/", flush=True)

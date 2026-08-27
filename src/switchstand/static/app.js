@@ -3,7 +3,7 @@
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = String(text);
+  if (text !== undefined) node.textContent = String(text);
   return node;
 }
 
@@ -18,18 +18,123 @@ async function request(path, body) {
   return value;
 }
 
-const attemptFor = (state, id) => state.attempts.find((attempt) => attempt.id === id) ?? null;
+const shown = (value) => value === null || value === undefined ? "not observed"
+  : typeof value === "object" ? JSON.stringify(value) : String(value);
 
-function badge(status) {
-  const node = el("span", `status status--${status}`, status);
-  node.setAttribute("aria-label", `State: ${status}`);
+function factList(entries) {
+  const list = el("dl", "facts-list");
+  entries.forEach(([term, value]) => {
+    const item = el("div");
+    item.append(el("dt", null, term), el("dd", null, shown(value)));
+    list.append(item);
+  });
+  return list;
+}
+
+function badge(value, label = "Native status") {
+  const node = el("span", `status status--${value}`, value);
+  node.setAttribute("aria-label", `${label}: ${value}`);
   return node;
 }
+
+function textPoint(root, target) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node;
+  let remaining = target;
+  while ((node = walker.nextNode())) {
+    if (remaining <= node.data.length) return [node, remaining];
+    remaining -= node.data.length;
+  }
+  return [root, root.childNodes.length];
+}
+
+function textOffset(root, node, offset) {
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.setEnd(node, offset);
+  return range.toString().length;
+}
+
+function captureView() {
+  const focus = document.activeElement?.closest?.("[data-focus-key]");
+  const selection = window.getSelection?.();
+  const selected = focus && selection?.rangeCount && focus.contains(selection.anchorNode)
+    && focus.contains(selection.focusNode) ? [textOffset(focus, selection.anchorNode, selection.anchorOffset),
+      textOffset(focus, selection.focusNode, selection.focusOffset)] : null;
+  return {
+    focus: focus?.dataset.focusKey,
+    selected,
+    open: new Set([...treeHost.querySelectorAll("details[data-node-key][open]")].map((node) => node.dataset.nodeKey)),
+    treeScroll: treeHost.scrollTop,
+    windowScroll: [window.scrollX, window.scrollY],
+  };
+}
+
+function restoreView(view) {
+  treeHost.querySelectorAll("details[data-node-key]").forEach((node) => { node.open = view.open.has(node.dataset.nodeKey); });
+  const focus = [...treeHost.querySelectorAll("[data-focus-key]")].find((node) => node.dataset.focusKey === view.focus);
+  if (focus) {
+    focus.focus({ preventScroll: true });
+    if (view.selected) {
+      const selection = window.getSelection();
+      selection.setBaseAndExtent(...textPoint(focus, view.selected[0]), ...textPoint(focus, view.selected[1]));
+    }
+  }
+  treeHost.scrollTop = view.treeScroll;
+  window.scrollTo(...view.windowScroll);
+}
+
+function renderNative(model) {
+  nativeSurface.hidden = false;
+  rolesHost.hidden = true;
+  eyebrowHost.textContent = "Native agent observation";
+  descriptionHost.textContent = "Read-only evidence from the connected Codex agent tree.";
+  headlineFactsHost.textContent = "Observed state only · no inferred progress";
+  const view = captureView();
+  const observation = model.observation;
+  const title = observation.historical ? "Historical snapshot" : "Current observation";
+  observerHost.replaceChildren(el("strong", null, title), badge(observation.connected ? "connected" : "disconnected", "Observer"),
+    factList([["available", observation.available], ["pass", observation.kind], ["completed", observation.completedAt],
+      ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`], ["error", observation.errorCode]]));
+  const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
+  const agents = model.agents.map((agent) => {
+    const row = el("details", "agent");
+    row.dataset.nodeKey = agent.agentRef;
+    row.dataset.focusKey = `agent:${agent.agentRef}`;
+    row.tabIndex = 0;
+    row.style.setProperty("--depth", agent.depth);
+    const summary = el("summary", "agent__summary");
+    summary.append(el("strong", null, agent.label), badge(agent.status));
+    row.append(summary, factList([["parent", agent.parentRef === null ? "none" : labels.get(agent.parentRef) ?? "unavailable"], ["depth", agent.depth],
+      ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
+      ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
+      ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
+    return row;
+  });
+  const tree = el("div", "tree");
+  tree.append(...(agents.length ? agents : [el("p", "muted", "No complete agent-tree observation is available.")]));
+  treeHost.replaceChildren(tree);
+  const trail = model.trail.slice(-model.trailLimit).reverse().map((entry) => {
+    const row = el("li", "record");
+    row.append(el("strong", null, labels.get(entry.agentRef) ?? "Unknown observed agent"),
+      el("div", "muted", entry.observedAt));
+    Object.entries(entry.changes).forEach(([field, change]) => {
+      const value = (item) => field === "parentRef" ? item === null ? "none" : labels.get(item) ?? "unavailable" : shown(item);
+      row.append(factList([[field, `${value(change.from)} → ${value(change.to)}`]]));
+    });
+    return row;
+  });
+  trailHost.replaceChildren(...(trail.length ? trail : [el("li", "muted", "No endpoint differences observed in the retained window.")]));
+  disclosureHost.textContent = model.disclosure;
+  restoreView(view);
+}
+
+const attemptFor = (state, id) => state.attempts.find((attempt) => attempt.id === id) ?? null;
 
 function messageRow(message) {
   const row = el("li", "record");
   const identity = el("div", "record__summary");
-  identity.append(el("strong", null, `${message.sequence}. ${message.kind}`), badge(message.status));
+  identity.append(el("strong", null, `${message.sequence}. ${message.kind}`), badge(message.status, "State"));
   row.append(identity, el("p", null, message.text));
   if (message.result) row.append(el("pre", "output", message.result));
   return row;
@@ -38,36 +143,29 @@ function messageRow(message) {
 function attemptRow(attempt, currentId) {
   const row = el("li", "record");
   const summary = el("div", "record__summary");
-  summary.append(
-    el("code", null, attempt.id),
-    badge(attempt.status),
-    el("span", "muted", `generation ${attempt.generation}${attempt.id === currentId ? " · current" : ""}`),
-  );
+  summary.append(el("code", null, attempt.id), badge(attempt.status, "State"),
+    el("span", "muted", `generation ${attempt.generation}${attempt.id === currentId ? " · current" : ""}`));
   row.append(summary);
   if (attempt.thread_id) row.append(el("div", "muted", `thread ${attempt.thread_id}`));
   if (attempt.turn_id) row.append(el("div", "muted", `turn ${attempt.turn_id}`));
   if (attempt.error) row.append(el("p", "error", attempt.error));
-  if (attempt.stale_output) {
-    row.append(el("strong", "stale-label", "Stale output — visible, not accepted"));
-    row.append(el("pre", "output output--stale", attempt.stale_output));
-  }
+  if (attempt.stale_output) row.append(el("strong", "stale-label", "Stale output — visible, not accepted"),
+    el("pre", "output output--stale", attempt.stale_output));
   return row;
 }
 
-function roleCard(state, role, refresh, reportError) {
+function roleCard(state, role) {
   const card = el("article", "role-card");
   const heading = el("header", "role-card__header");
   const title = el("div");
   title.append(el("h2", null, role.name), el("div", "muted", `${role.id} · generation ${role.generation}`));
-  heading.append(title, badge(role.status));
+  heading.append(title, badge(role.status, "State"));
   card.append(heading);
-
   const checkpoint = el("section", "inset");
-  checkpoint.append(el("h3", null, "Accepted checkpoint"));
-  checkpoint.append(el("p", null, role.checkpoint.latest_correction ?? "No accepted correction yet."));
+  checkpoint.append(el("h3", null, "Accepted checkpoint"),
+    el("p", null, role.checkpoint.latest_correction ?? "No accepted correction yet."));
   if (role.checkpoint.latest_result) checkpoint.append(el("pre", "output", role.checkpoint.latest_result));
   card.append(checkpoint);
-
   const send = el("form", "form");
   const input = el("textarea");
   input.dataset.draftKey = `message:${role.id}`;
@@ -78,14 +176,10 @@ function roleCard(state, role, refresh, reportError) {
   send.append(input, sendButton);
   send.addEventListener("submit", async (event) => {
     event.preventDefault();
-    try {
-      await request(`/api/workbench/roles/${role.id}/messages`, { text: input.value, kind: "message" });
-      input.value = "";
-      await refresh();
-    } catch (error) { reportError(error); }
+    try { await request(`/api/workbench/roles/${role.id}/messages`, { text: input.value, kind: "message" }); input.value = ""; await refresh(); }
+    catch (error) { reportError(error); }
   });
   card.append(send);
-
   const current = attemptFor(state, role.current_attempt_id);
   if (current) {
     const controls = el("section", "inset form");
@@ -94,83 +188,57 @@ function roleCard(state, role, refresh, reportError) {
     correction.dataset.draftKey = `correction:${current.id}`;
     correction.placeholder = "Correction for an exact redirect";
     const actions = el("div", "actions");
+    const addAction = (label, style, path, body = () => ({})) => {
+      const button = el("button", style, label);
+      button.type = "button";
+      button.addEventListener("click", async () => {
+        try { await request(path, body()); await refresh(); } catch (error) { reportError(error); }
+      });
+      actions.append(button);
+    };
     if (["running", "waiting"].includes(current.status)) {
-      const redirect = el("button", "button", "Redirect");
-      redirect.type = "button";
-      redirect.addEventListener("click", async () => {
-        try {
-          await request(`/api/workbench/attempts/${current.id}/redirect`, { text: correction.value });
-          correction.value = "";
-          await refresh();
-        } catch (error) { reportError(error); }
-      });
-      const stop = el("button", "button button--danger", "Stop");
-      stop.type = "button";
-      stop.addEventListener("click", async () => {
-        try { await request(`/api/workbench/attempts/${current.id}/stop`, {}); await refresh(); }
-        catch (error) { reportError(error); }
-      });
-      actions.append(redirect, stop);
+      addAction("Redirect", "button", `/api/workbench/attempts/${current.id}/redirect`, () => ({ text: correction.value }));
+      addAction("Stop", "button button--danger", `/api/workbench/attempts/${current.id}/stop`);
     }
     if (["stopped", "stale", "failed", "unknown"].includes(current.status)) {
-      const replace = el("button", "button button--primary", "Replace from checkpoint");
-      replace.type = "button";
-      replace.addEventListener("click", async () => {
-        try { await request(`/api/workbench/attempts/${current.id}/replace`, {}); await refresh(); }
-        catch (error) { reportError(error); }
-      });
-      actions.append(replace);
+      addAction("Replace from checkpoint", "button button--primary", `/api/workbench/attempts/${current.id}/replace`);
     }
     controls.append(correction, actions);
     card.append(controls);
   }
-
-  const messages = state.messages.filter((message) => message.role_id === role.id);
-  const messageSection = el("section");
-  messageSection.append(el("h3", null, "Durable messages"));
-  const messageList = el("ol", "list");
-  messages.forEach((message) => messageList.append(messageRow(message)));
-  if (!messages.length) messageList.append(el("li", "muted", "No messages yet."));
-  messageSection.append(messageList);
-  card.append(messageSection);
-
-  const attempts = state.attempts.filter((attempt) => attempt.role_id === role.id).reverse();
-  const attemptSection = el("section");
-  attemptSection.append(el("h3", null, "Attempt identity and history"));
-  const attemptList = el("ul", "list");
-  attempts.forEach((attempt) => attemptList.append(attemptRow(attempt, role.current_attempt_id)));
-  if (!attempts.length) attemptList.append(el("li", "muted", "No attempt yet."));
-  attemptSection.append(attemptList);
-  card.append(attemptSection);
+  const records = (headingText, items) => {
+    const section = el("section");
+    section.append(el("h3", null, headingText));
+    const list = el("ul", "list");
+    list.append(...(items.length ? items : [el("li", "muted", "No records yet.")]));
+    section.append(list);
+    return section;
+  };
+  card.append(records("Durable messages", state.messages.filter((item) => item.role_id === role.id).map(messageRow)),
+    records("Attempt identity and history", state.attempts.filter((item) => item.role_id === role.id).reverse()
+      .map((item) => attemptRow(item, role.current_attempt_id))));
   return card;
-}
-
-const rolesHost = document.querySelector("#roles");
-const errorHost = document.querySelector("#error");
-function reportError(value) {
-  errorHost.textContent = value instanceof Error ? value.message : String(value);
-  errorHost.hidden = false;
 }
 
 function captureDrafts() {
   const values = new Map();
   let focused = null;
   rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
-    const key = input.dataset.draftKey;
-    values.set(key, input.value);
-    if (input === document.activeElement) {
-      focused = {
-        key,
-        start: input.selectionStart,
-        end: input.selectionEnd,
-        direction: input.selectionDirection,
-      };
-    }
+    values.set(input.dataset.draftKey, input.value);
+    if (input === document.activeElement) focused = { key: input.dataset.draftKey, start: input.selectionStart,
+      end: input.selectionEnd, direction: input.selectionDirection };
   });
   return { values, focused };
 }
 
-function restoreDrafts(drafts) {
+function renderLegacy(model) {
+  const drafts = captureDrafts();
+  nativeSurface.hidden = true;
+  rolesHost.hidden = false;
+  eyebrowHost.textContent = "Experimental local prototype";
+  descriptionHost.textContent = "Direct conversation with two durable roles, with exact attempt identity and truthful state.";
+  headlineFactsHost.textContent = "One Work · two roles · flat JSON/JSONL · Codex app-server";
+  rolesHost.replaceChildren(...Object.values(model.roles).map((role) => roleCard(model, role)));
   rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
     const key = input.dataset.draftKey;
     if (drafts.values.has(key)) input.value = drafts.values.get(key);
@@ -181,14 +249,34 @@ function restoreDrafts(drafts) {
   });
 }
 
+const treeHost = document.querySelector("#tree");
+const trailHost = document.querySelector("#trail");
+const observerHost = document.querySelector("#observer");
+const disclosureHost = document.querySelector("#disclosure");
+const errorHost = document.querySelector("#error");
+const rolesHost = document.querySelector("#roles");
+const nativeSurface = document.querySelector("#native-surface");
+const eyebrowHost = document.querySelector("#eyebrow");
+const descriptionHost = document.querySelector("#description");
+const headlineFactsHost = document.querySelector("#headline-facts");
+function reportError(value) {
+  errorHost.textContent = value instanceof Error ? value.message : String(value);
+  errorHost.hidden = false;
+}
+let lastModel = null;
 async function refresh() {
   try {
-    const state = await request("/api/workbench");
+    lastModel = await request("/api/workbench");
     errorHost.hidden = true;
-    const drafts = captureDrafts();
-    rolesHost.replaceChildren(...Object.values(state.roles).map((role) => roleCard(state, role, refresh, reportError)));
-    restoreDrafts(drafts);
-  } catch (error) { reportError(error); }
+    if (lastModel.mode === "native") renderNative(lastModel); else renderLegacy(lastModel);
+  } catch (_error) {
+    errorHost.textContent = lastModel?.mode === "native"
+      ? "Observation request failed. The displayed board is a historical snapshot."
+      : "Workbench request failed. Existing input has been retained.";
+    errorHost.hidden = false;
+    if (lastModel?.mode === "native") renderNative({ ...lastModel, observation: { ...lastModel.observation, connected: false, available: false,
+      historical: true, errorCode: "board_request_failed", passAgeSeconds: null } });
+  }
 }
 
 refresh();

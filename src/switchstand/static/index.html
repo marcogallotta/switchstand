@@ -12,14 +12,28 @@
     <main class="page">
       <header class="intro">
         <div>
-          <p class="eyebrow">Experimental local prototype</p>
+          <p id="eyebrow" class="eyebrow">Switchstand</p>
           <h1>Switchstand</h1>
-          <p>Direct conversation with two durable roles, with exact attempt identity and truthful state.</p>
+          <p id="description"></p>
         </div>
-        <p class="facts">One Work · two roles · flat JSON/JSONL · Codex app-server</p>
+        <p id="headline-facts" class="facts"></p>
       </header>
       <div id="error" class="error" hidden></div>
-      <section id="roles" class="role-grid" aria-live="polite"></section>
+      <div id="native-surface" hidden>
+        <section id="observer" class="observer" aria-live="polite"></section>
+        <section class="board-grid">
+          <article class="panel">
+            <h2>Agent tree</h2>
+            <div id="tree"></div>
+          </article>
+          <article class="panel">
+            <h2>Observed endpoint differences</h2>
+            <p id="disclosure" class="muted"></p>
+            <ol id="trail" class="list"></ol>
+          </article>
+        </section>
+      </div>
+      <section id="roles" class="role-grid" aria-live="polite" hidden></section>
     </main>
     <script src="/app.js" defer></script>
   </body>

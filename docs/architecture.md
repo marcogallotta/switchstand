@@ -2,8 +2,9 @@
 
 ## Components
 
-`service.py` owns the loopback HTTP process, periodically asks the engine to reconcile, and
-serves the static operator UI. `engine.py` owns all state transitions and persistence.
+`service.py` owns the loopback HTTP process and serves the static operator UI. In default legacy
+mode it periodically asks the engine to reconcile; `engine.py` owns that mode's state transitions
+and persistence.
 `app_server.py` is a dependency-free synchronous WebSocket/JSON-RPC client for the small
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
@@ -51,9 +52,27 @@ and are emitted with an allowlisted phase such as `root_read`, `descendant_list`
 without retaining ids, paths, statuses, flags, cursors, prompts, outputs, or exception strings.
 Absence of a notification never changes a native status or implies stale work.
 
+Stage B1 is enabled only by `--native-root-thread-id EXACT_NATIVE_ROOT_ID`. It polls
+`thread/read(includeTurns=false)` for that root and fully paginated `thread/list` requests for
+descendants, forcing `useStateDbOnly=true`. It does not call resume, subscribe, or any control
+method. The existing `/api/workbench` endpoint projects native lineage/status, observer
+freshness, safe run-local agent references, and the latest 50 in-memory endpoint differences
+instead of the legacy Work model. It exposes no raw native ids or transcripts.
+
+Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
+difference trail records only changes visible in successive successful polls; intermediate
+changes may be missed or collapsed. It is not a native event stream, and elapsed time is age
+since observation; consecutive observed-active time is not time spent working. Transport failure affects observer truth without
+rewriting the last native status. No poll result is promoted to done, progress, stale, wedged,
+failure, or intent.
+
 ## State model
 
-The JSON snapshot contains one Work, a fixed map of two roles, ordered messages, and append-only
+Native mode has no durable product state. It holds the latest successful observation and a
+bounded trail in memory; restarting the service resets both. Native thread records remain the
+App Server's truth.
+
+The legacy JSON snapshot contains one Work, a fixed map of two roles, ordered messages, and append-only
 attempt history. Each role stores a monotonically increasing `generation`, one selected
 `current_attempt_id`, and a checkpoint with accepted message ids, the latest correction, and
 latest accepted result. Each message has a role-local sequence and an explicit state such as
@@ -101,6 +120,6 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Replacing the fixed-role service or browser surface; historical live evidence observed the
-  native-tree protocol capability, but schema-v2 exact-head evidence remains pending external
-  receipt and no retained repository artifact currently proves this head
+- Native message/steer/stop controls and any inferred semantic status
+- Treating the poll-difference trail as complete history or durable audit evidence
+- Replacing or removing the fixed-role reliability spike outside explicitly selected native mode

@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import threading
+from typing import Any
+import unittest
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from switchstand.native_board import NativeBoard
+from switchstand.service import PACKAGE_ROOT, Server
+
+
+def native_thread(
+    thread_id: str,
+    *,
+    parent: str | None = None,
+    status: str = "active",
+    updated: float = 100.0,
+) -> dict[str, Any]:
+    return {
+        "id": thread_id,
+        "sessionId": f"secret-session-{thread_id}",
+        "parentThreadId": parent,
+        "preview": f"secret prompt {thread_id}",
+        "name": f"secret name {thread_id}",
+        "source": "cli" if parent is None else {"subAgent": "review", "secret": "drop"},
+        "createdAt": 90.0,
+        "updatedAt": updated,
+        "status": {"type": status, **({"activeFlags": ["waitingOnUserInput"]} if status == "active" else {})},
+    }
+
+
+class FakeClient:
+    def __init__(self, root: dict[str, Any], pages: list[dict[str, Any]]) -> None:
+        self.root = root
+        self.pages = pages
+        self.list_requests: list[dict[str, Any]] = []
+        self.closed = False
+
+    def thread_read(self, thread_id: str, *, include_turns: bool = True):
+        self.read = (thread_id, include_turns)
+        return {"thread": self.root}
+
+    def thread_list(self, params):
+        request = dict(params)
+        self.list_requests.append(request)
+        page = 0 if "cursor" not in request else 1
+        return self.pages[page]
+
+    def close(self):
+        self.closed = True
+
+
+class Clock:
+    value = 100.0
+
+    def __call__(self):
+        return self.value
+
+
+class ClientFactory:
+    def __init__(self, *values: FakeClient | Exception) -> None:
+        self.values = list(values)
+
+    def __call__(self) -> FakeClient:
+        value = self.values.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def client_with_status(status: str = "active", *, updated: float = 100.0) -> FakeClient:
+    return FakeClient(
+        native_thread("raw-root", status=status, updated=updated),
+        [
+            {
+                "data": [native_thread("raw-child", parent="raw-root", status=status, updated=updated)],
+                "nextCursor": "secret-cursor",
+            },
+            {
+                "data": [native_thread("raw-grandchild", parent="raw-child", status="idle", updated=updated)],
+                "nextCursor": None,
+            },
+        ],
+    )
+
+
+class NativeBoardTests(unittest.TestCase):
+    def test_complete_pass_forces_state_db_only_and_projects_no_sensitive_values(self):
+        client = client_with_status()
+        clock = Clock()
+        board = NativeBoard(lambda: client, "raw-root", wall_clock=clock, monotonic=clock)
+
+        board.poll_once()
+        result = board.snapshot()
+
+        self.assertEqual(client.read, ("raw-root", False))
+        self.assertTrue(client.closed)
+        self.assertEqual(len(client.list_requests), 2)
+        self.assertTrue(all(request["useStateDbOnly"] is True for request in client.list_requests))
+        self.assertEqual([agent["depth"] for agent in result["agents"]], [0, 1, 2])
+        self.assertEqual(result["agents"][1]["sourceKind"], "subAgent")
+        self.assertEqual(result["agents"][1]["sourceDetail"], "review")
+        self.assertEqual(result["agents"][1]["parentRef"], "agent-1")
+        self.assertEqual(result["agents"][0]["updatedAgeSeconds"], 0.0)
+        emitted = json.dumps(result)
+        for secret in ("raw-root", "raw-child", "secret-session", "secret prompt", "secret name", "secret-cursor"):
+            self.assertNotIn(secret, emitted)
+
+    def test_active_time_resets_on_gap_and_trail_is_capped(self):
+        clock = Clock()
+        factory = ClientFactory(
+            client_with_status(),
+            client_with_status(updated=105),
+            OSError("private socket path"),
+            client_with_status(updated=109),
+            client_with_status("idle", updated=110),
+        )
+        board = NativeBoard(factory, "raw-root", wall_clock=clock, monotonic=clock, trail_limit=2)
+
+        board.poll_once()
+        clock.value = 105
+        board.poll_once()
+        self.assertEqual(board.snapshot()["agents"][0]["activeObservedSeconds"], 5.0)
+
+        clock.value = 107
+        board.poll_once()
+        failed = board.snapshot()
+        self.assertFalse(failed["observation"]["available"])
+        self.assertTrue(failed["observation"]["historical"])
+        self.assertEqual(failed["observation"]["errorCode"], "native_observation_unavailable")
+        self.assertEqual(failed["agents"][0]["activeObservedSeconds"], 0.0)
+        self.assertNotIn("private socket path", json.dumps(failed))
+
+        clock.value = 109
+        board.poll_once()
+        self.assertEqual(board.snapshot()["agents"][0]["activeObservedSeconds"], 0.0)
+        clock.value = 110
+        board.poll_once()
+        recovered = board.snapshot()
+        self.assertEqual(recovered["agents"][0]["status"], "idle")
+        self.assertLessEqual(len(recovered["trail"]), 2)
+        self.assertTrue(any("status" in entry["changes"] for entry in recovered["trail"]))
+
+    def test_inactive_status_drops_untrusted_active_flags(self):
+        client = client_with_status("idle")
+        client.root["status"]["activeFlags"] = ["secret-inactive-flag"]
+        board = NativeBoard(lambda: client, "raw-root")
+
+        board.poll_once()
+        result = board.snapshot()
+
+        self.assertEqual(result["agents"][0]["activeFlags"], [])
+        self.assertNotIn("secret-inactive-flag", json.dumps(result))
+
+    def test_invalid_complete_pass_retains_last_good_projection(self):
+        good = client_with_status()
+        invalid = client_with_status()
+        del invalid.pages[0]["data"][0]["updatedAt"]
+        board = NativeBoard(ClientFactory(good, invalid), "raw-root")
+
+        board.poll_once()
+        before = board.snapshot()["agents"]
+        board.poll_once()
+        after = board.snapshot()
+
+        for agent in before:
+            agent.pop("updatedAgeSeconds")
+            agent["activeObservedSeconds"] = 0.0
+        retained = after["agents"]
+        for agent in retained:
+            agent.pop("updatedAgeSeconds")
+        self.assertEqual(retained, before)
+        self.assertFalse(after["observation"]["connected"])
+
+    def test_http_api_serves_native_snapshot_and_rejects_controls(self):
+        board = NativeBoard(lambda: client_with_status(), "raw-root")
+        board.poll_once()
+        server = Server(("127.0.0.1", 0), board, Path(PACKAGE_ROOT / "static"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urlopen(f"{base}/api/workbench") as response:
+                self.assertEqual(json.load(response)["mode"], "native")
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(Request(f"{base}/api/workbench/reconcile", data=b"{}", method="POST"))
+            self.assertEqual(raised.exception.code, 404)
+            self.assertEqual(json.load(raised.exception)["error"], "operation_unavailable_in_native_mode")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

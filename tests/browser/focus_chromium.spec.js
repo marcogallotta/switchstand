@@ -7,30 +7,37 @@ const { test, expect } = require("@playwright/test");
 
 const assets = path.join(__dirname, "..", "..", "src", "switchstand", "static");
 const state = {
-  roles: {
-    design: {
-      id: "design",
-      name: "Design",
-      generation: 1,
-      status: "idle",
-      current_attempt_id: null,
-      checkpoint: { latest_correction: null, latest_result: null },
-    },
+  mode: "native",
+  observation: {
+    connected: true, available: true, historical: false, errorCode: null,
+    completedAt: "2026-08-27T12:00:00Z", passAgeSeconds: 0, kind: "completed_multi_request_pass",
   },
-  attempts: [],
-  messages: [],
+  agents: [{ agentRef: "agent-1", label: "Root", parentRef: null, depth: 0,
+    sourceKind: "thread/read", sourceDetail: "root", createdAt: "2026-08-27T11:00:00Z",
+    updatedAt: "2026-08-27T12:00:00Z", updatedAgeSeconds: 0, status: "active",
+    activeFlags: ["waiting"], activeObservedSeconds: 10 }],
+  trail: [{ observedAt: "2026-08-27T12:00:00Z", agentRef: "agent-1",
+    changes: { status: { from: "idle", to: "active" } } }],
+  trailLimit: 50,
+  disclosure: "Polling may miss intermediate transitions; trail entries are observed endpoint differences, not native events.",
 };
 
 let server;
 let origin;
 let apiRequests;
+let failRequests;
 
 test.beforeAll(async () => {
   apiRequests = 0;
+  failRequests = false;
   server = http.createServer((request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
     if (pathname === "/api/workbench") {
       apiRequests += 1;
+      if (failRequests) {
+        response.writeHead(503, { "Content-Type": "application/json" }).end('{"error":"unavailable"}');
+        return;
+      }
       const body = Buffer.from(JSON.stringify(state));
       response.writeHead(200, { "Content-Type": "application/json", "Content-Length": body.length });
       response.end(body);
@@ -61,35 +68,40 @@ test.afterAll(async () => {
 async function waitForReplacement(page) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const value = await page.evaluate(() => {
-      const current = document.querySelector("textarea[data-draft-key]");
-      if (!current || current === window.__previousTextarea) return null;
-      window.__previousTextarea = current;
+      const current = document.querySelector("details[data-focus-key]");
+      if (!current || current === window.__previousRow) return null;
+      window.__previousRow = current;
       return {
-        value: current.value,
         focused: document.activeElement === current,
-        start: current.selectionStart,
-        end: current.selectionEnd,
-        direction: current.selectionDirection,
+        open: current.open,
+        selected: window.getSelection().toString(),
+        scrollY: window.scrollY,
       };
     });
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("textarea was not replaced after refresh");
+  throw new Error("tree row was not replaced after refresh");
 }
 
-test("real Chromium preserves draft, focus, and selection across 50 replaced textareas", async ({ page }) => {
+test("real Chromium preserves tree focus, selection, open state, and scroll across 50 refreshes", async ({ page }) => {
   await page.clock.install();
   await page.goto(origin);
-  const textarea = page.locator("textarea[data-draft-key]").first();
-  await textarea.waitFor();
+  const row = page.locator("details[data-focus-key]").first();
+  await row.waitFor();
   await expect.poll(() => apiRequests).toBe(1);
+  await expect(page.locator("body")).not.toContainText("agent-1");
+  await expect(page.getByText("consecutive observed active")).toBeVisible();
+  await expect(page.locator("button, textarea")).toHaveCount(0);
   await page.evaluate(() => {
-    const input = document.querySelector("textarea[data-draft-key]");
-    input.value = "keep this in-progress message";
-    input.focus();
-    input.setSelectionRange(5, 12, "forward");
-    window.__previousTextarea = input;
+    document.body.style.minHeight = "2000px";
+    const current = document.querySelector("details[data-focus-key]");
+    current.open = true;
+    current.focus();
+    const text = current.querySelector("strong").firstChild;
+    window.getSelection().setBaseAndExtent(text, 0, text, 4);
+    window.scrollTo(0, 120);
+    window.__previousRow = current;
   });
 
   for (let cycle = 1; cycle <= 50; cycle += 1) {
@@ -97,13 +109,20 @@ test("real Chromium preserves draft, focus, and selection across 50 replaced tex
     await page.clock.runFor(1000);
     await response;
     expect(await waitForReplacement(page)).toEqual({
-      value: "keep this in-progress message",
       focused: true,
-      start: 5,
-      end: 12,
-      direction: "forward",
+      open: true,
+      selected: "Root",
+      scrollY: 120,
     });
     expect(apiRequests).toBe(cycle + 1);
   }
   expect(apiRequests).toBe(51);
+
+  failRequests = true;
+  const response = page.waitForResponse(`${origin}/api/workbench`);
+  await page.clock.runFor(1000);
+  await response;
+  await expect(page.locator("#observer")).toContainText("Historical snapshot");
+  await expect(page.locator("#tree")).toContainText("Root");
+  await expect(page.locator("#error")).toContainText("displayed board is a historical snapshot");
 });

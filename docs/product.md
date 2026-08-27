@@ -2,34 +2,36 @@
 
 ## Operator problem
 
-An operator needs to work directly with two distinct logical roles without losing which role
-received which instruction, whether a message is still queued, which exact attempt is live,
-or whether a late result is still eligible to update durable context. A generic chat list
-does not make those execution truths obvious, especially after a stop, correction, process
-restart, or lost acknowledgement.
+An operator needs to see whether real Codex agents are working and how they relate without
+opening hidden threads or mistaking a silent interface for stalled work. The surface must show
+only what App Server actually exposes and distinguish observed activity from semantic claims.
 
 ## Intended experience
 
-Switchstand presents one Work with two durable role cards. Each role has its own ordered
-message stream, accepted checkpoint, selected attempt, and attempt history. The operator can:
+When native mode is explicitly selected, Switchstand presents one exact root and every observed
+spawned descendant as a read-only flight board. The operator can see:
 
-- send a direct message to either role;
-- see later messages remain queued behind the active turn;
-- stop the exact selected attempt;
-- redirect it by durably recording a correction, stopping it, and replacing it from the
-  role checkpoint;
-- replace a stopped, failed, stale, or unknown selected attempt;
-- distinguish accepted output from visible but fenced stale output; and
-- restart the local service without treating an interrupted mutation as known success.
+- `parentThreadId` lineage and exact native status/flags;
+- whether the observer is connected, available, current or historical, or reporting an error;
+- age since the last successful observation; and
+- a chronological trail of differences Switchstand actually observed between polls.
+
+The trail is not a complete native event log: polling can miss or collapse intermediate
+changes, and root and descendant data come from different App Server endpoints. Silence and
+native `idle` are not translated into done, stale, failed, or blocked. Consecutive
+observed-active time is observation evidence, not measured execution time.
+
+The default legacy mode retains the original fixed two-role experience and its message,
+stop, redirect, and replace controls as a reliability spike. Issue #9 supersedes it as the
+primary surface only while native mode is explicitly selected.
 
 ## Boundaries
 
-The prototype has one local Work and exactly two roles. It stores a JSON snapshot and JSONL
-event log on one machine. It serves one unauthenticated loopback HTTP UI and uses one explicit
-Codex app-server adapter over a Unix socket.
+Native Stage B1 observes one exact local root and its descendants over a Unix socket. It polls
+read-only, keeps only bounded in-memory observation state, and exposes no message, steer, stop,
+redirect, replace, resume, or subscription action. The service is an unauthenticated loopback
+UI and must not be exposed to a network.
 
-Switchstand does not decide what the roles should build, grant remote-system authority,
-coordinate releases, schedule background projects, manage multiple users, or claim durable
-distributed execution. It does not hide transport uncertainty: `unknown` means the available
-evidence does not prove the outcome, and `stale` means output was observed but was not eligible
-to update the selected generation's checkpoint.
+Switchstand does not decide what agents should build, infer semantic progress or intent, grant
+remote-system authority, coordinate releases, schedule projects, manage users, or claim
+durable distributed execution. It requires no elevated privileges.

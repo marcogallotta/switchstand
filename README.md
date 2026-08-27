@@ -1,44 +1,39 @@
 # Switchstand
 
-Switchstand is an experimental local operator surface for talking directly to two durable
-logical Codex roles working on one Work. It preserves message order and role checkpoints,
-exposes exact attempt controls, and reports uncertain or stale execution state instead of
-inventing completion.
+Switchstand is an experimental local operator surface for Codex work. Its explicitly selected
+native mode is a read-only flight board over one real Codex root and its spawned descendants.
+The default legacy mode remains a fixed two-role reliability spike with durable messages,
+checkpoints, attempt controls, and conservative failure handling.
 
-This repository is a clean prototype, not a production orchestrator. Its purpose is to make
-one implemented vertical slice easy to run, inspect, and change: flat JSON/JSONL durability,
-direct and queued messages, exact stop/redirect/replace operations, restart reconciliation,
-and result fencing by role generation plus attempt identity.
+This repository is a clean prototype, not a production orchestrator. It keeps two bounded
+slices easy to inspect: truthful read-only observation of a native tree, and the legacy
+flat-file reliability mechanisms for ordered messages, restart reconciliation, controls, and
+result fencing.
 
 ## Status and checkpoint
 
-The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are
-implemented and covered by local unit tests. The adapter speaks the real Codex app-server
-v2 thread/turn protocol. An earlier Stage A probe revision passed against a real local App
-Server socket, but its retained artifact predates the current evidence schema and has been
-removed. This exact head requires a fresh live capture before it can claim exact-head proof.
+The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are covered by
+local tests. Stage A passed live on exact PR4 head `8670f50b629ae3f201d5eed3aa04fc92afa9888b`
+and was merged: one root plus one descendant, native `active` to `idle` notifications, exit 0,
+and no conversation-history mutation. That proves the tested PR4 head, not a fresh live run of
+this later main head.
 
-Issue #3's native-agent-tree checkpoint is complete at the probe boundary. The separate
-`agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
-kinds, exhausts descendant pagination, validates spawned ancestry from `parentThreadId`,
-preserves native runtime status, and exposes exact native start/steer/interrupt seams. Its
-fixtures are documented protocol-shape fixtures, not live captures. The default read-only
-`switchstand-stage-a` snapshot CLI now turns a real socket plus one exact root thread id into
-redacted machine-readable evidence or a nonzero fail-closed reason. Its separate notification
-mode requires an explicit runtime-loading subscription opt-in. The protocol capability was
-observed by the earlier revision, but the exact-head retained-evidence gate remains open until
-the current probe produces a fresh passing artifact. Stage B remains unimplemented and the
-synthetic two-role UI is unchanged.
+Issue #9 adds Stage B1 as an explicitly selected native view. It polls one exact root with
+`thread/read(includeTurns=false)` and all descendants with paginated
+`thread/list(useStateDbOnly=true)`. It displays native lineage, native status, observer
+freshness, consecutive observed-active time, and the latest 50 endpoint differences. It does not resume or
+subscribe to threads, mutate conversation history, or expose message/steer/stop controls. The
+legacy two-role engine remains available as a reliability spike.
 
 ## Non-goals
 
-- General-purpose multi-agent orchestration or arbitrary role counts
+- General-purpose multi-agent orchestration or native-agent lifecycle control
 - A database, distributed queue, account system, hosted service, or production hardening
 - Repository, issue-tracker, release, deploy, or other lifecycle automation
-- Inferring completion, replay safety, or authority when acknowledgements are unavailable
+- Inferring completion, progress, failure, staleness, intent, or a complete event history
 - Abstracting multiple model providers behind a common adapter
 
-## Quick start
+## Quick start: native read-only mode
 
 Requirements: Python 3.11+ and a running Codex app-server Unix socket. No third-party runtime
 packages or frontend build are required.
@@ -47,12 +42,14 @@ packages or frontend build are required.
 cd switchstand
 PYTHONPATH=src python -m switchstand.service \
   --app-server-socket /path/to/codex-app-server.sock \
-  --workspace /path/to/operator/workspace
+  --native-root-thread-id EXACT_NATIVE_ROOT_ID
 ```
 
-Then open <http://127.0.0.1:4180/>. State defaults to
-`~/.local/state/switchstand/state.json`; use `--state` to choose another file. Run
-`PYTHONPATH=src python -m switchstand.service --help` for all options.
+Then open <http://127.0.0.1:4180/>. Switchstand never discovers or guesses the root. Omit
+`--native-root-thread-id` to run the legacy two-role reliability spike; its state defaults to
+`~/.local/state/switchstand/state.json`. Run
+`PYTHONPATH=src python -m switchstand.service --help` for all options. Both modes are
+loopback-only and run as the invoking user; no `sudo` or system service is required.
 
 Run the dependency-free checks:
 
@@ -112,5 +109,6 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Prototype boundary decision](docs/decisions/0001-prototype-boundary.md)
 - [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
 - [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
+- [Native read-only flight-board decision](docs/decisions/0004-native-read-only-flight-board.md)
 
 Switchstand is available under the [MIT License](LICENSE).
