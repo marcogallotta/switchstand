@@ -65,8 +65,14 @@ class QualityGateTests(unittest.TestCase):
                 ],
                 capture_output=True,
             )
-        self.assertNotEqual((ruff.returncode, pyright.returncode, jscpd.returncode), (0, 0, 0))
-        self.assertTrue(all(code != 0 for code in (ruff.returncode, pyright.returncode, jscpd.returncode)))
+        self.assertEqual(ruff.returncode, 1)
+        self.assertIn(b"F821", ruff.stdout)
+        self.assertEqual(pyright.returncode, 1)
+        self.assertIn(b"reportAssignmentType", pyright.stdout)
+        self.assertIn(b"reportUndefinedVariable", pyright.stdout)
+        self.assertEqual(jscpd.returncode, 1)
+        self.assertIn(b"exact clones", jscpd.stdout)
+        self.assertIn(b"threshold (0%)", jscpd.stderr)
 
     def test_python_ratchet_rejects_new_501_lines_and_legacy_growth(self):
         temporary, root, base = self._repo()
