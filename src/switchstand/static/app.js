@@ -7,11 +7,11 @@ function el(tag, className, text) {
   return node;
 }
 
-async function request(path, body, nativeControl = false) {
+async function request(path, body, controlValue = null) {
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? {} : { "Content-Type": "application/json",
-      ...(nativeControl ? { "X-Switchstand-Control": "native-stop-v1" } : {}) },
+      ...(controlValue ? { "X-Switchstand-Control": controlValue } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json();
@@ -28,7 +28,7 @@ async function stopAgent(agent) {
     const prepared = await request(
       "/api/native-stop/prepare",
       { agentRef: agent.agentRef },
-      true,
+      "native-stop-v1",
     );
     if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
     const warning = [
@@ -45,7 +45,7 @@ async function stopAgent(agent) {
       const result = await request(
         "/api/native-stop/commit",
         { confirmationRef: prepared.confirmationRef },
-        true,
+        "native-stop-v1",
       );
       if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
       stopState.set(agent.agentRef, result);
@@ -65,7 +65,7 @@ async function checkStop(agentRef) {
     const result = await request(
       "/api/native-stop/status",
       { operationRef: current.operationRef },
-      true,
+      "native-stop-v1",
     );
     if ((stopEpoch.get(agentRef) ?? 0) !== epoch) return;
     stopState.set(agentRef, result);
@@ -117,12 +117,15 @@ function captureView() {
   const focus = document.activeElement?.closest?.("[data-focus-key]");
   const selection = window.getSelection?.();
   const nodes = [...treeHost.querySelectorAll("details[data-node-key]")];
-  const selected = focus && selection?.rangeCount && focus.contains(selection.anchorNode)
+  const textSelection = focus && selection?.rangeCount && focus.contains(selection.anchorNode)
     && focus.contains(selection.focusNode) ? [textOffset(focus, selection.anchorNode, selection.anchorOffset),
       textOffset(focus, selection.focusNode, selection.focusOffset)] : null;
+  const inputSelection = focus && typeof focus.selectionStart === "number"
+    ? [focus.selectionStart, focus.selectionEnd, focus.selectionDirection] : null;
   return {
     focus: focus?.dataset.focusKey,
-    selected,
+    inputSelection,
+    textSelection,
     hadTree: nodes.length > 0,
     open: new Set(nodes.filter((node) => node.open).map((node) => node.dataset.nodeKey)),
     treeScroll: treeHost.scrollTop,
@@ -134,12 +137,16 @@ function restoreView(view) {
   treeHost.querySelectorAll("details[data-node-key]").forEach((node) => {
     node.open = view.hadTree ? view.open.has(node.dataset.nodeKey) : true;
   });
-  const focus = [...treeHost.querySelectorAll("[data-focus-key]")].find((node) => node.dataset.focusKey === view.focus);
+  const focus = [...nativeSurface.querySelectorAll("[data-focus-key]")]
+    .find((node) => node.dataset.focusKey === view.focus);
   if (focus) {
     focus.focus({ preventScroll: true });
-    if (view.selected) {
+    if (view.inputSelection) {
+      focus.setSelectionRange(...view.inputSelection);
+    } else if (view.textSelection) {
       const selection = window.getSelection();
-      selection.setBaseAndExtent(...textPoint(focus, view.selected[0]), ...textPoint(focus, view.selected[1]));
+      selection.setBaseAndExtent(...textPoint(focus, view.textSelection[0]),
+        ...textPoint(focus, view.textSelection[1]));
     }
   }
   treeHost.scrollTop = view.treeScroll;
@@ -178,19 +185,14 @@ function renderNative(model) {
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
-    const seam = nativeSelectionAdapter?.selectionForAgent(agent.agentRef) ?? null;
-    const pair = seam?.selection;
-    if (pair) {
-      const selected = selectionState?.currentTarget?.observationRunRef === pair.observationRunRef
-        && selectionState.currentTarget.agentRef === pair.agentRef;
-      const select = el("button", selected ? "button button--primary" : "button",
-        selected ? "Current target" : "Select as current target");
-      select.type = "button";
-      select.setAttribute("aria-pressed", selected ? "true" : "false");
-      select.dataset.focusKey = `select:${agent.agentRef}`;
-      select.addEventListener("click", () => nativeSelectionController.select(seam));
-      row.append(select);
-    }
+    const selected = selectionState?.currentTarget?.agentRef === agent.agentRef;
+    const select = el("button", selected ? "button button--primary" : "button",
+      selected ? "Current target" : "Select as current target");
+    select.type = "button";
+    select.setAttribute("aria-pressed", selected ? "true" : "false");
+    select.dataset.focusKey = `select:${agent.agentRef}`;
+    select.addEventListener("click", () => selectAgent(agent.agentRef));
+    row.append(select);
     const stop = stopState.get(agent.agentRef);
     if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
     if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
@@ -227,21 +229,23 @@ function renderNative(model) {
 }
 
 function renderCurrentTarget(state) {
-  if (!currentTargetHost) return;
+  if (!currentTargetHost || !currentTargetSummaryHost || !nativeInputForm) return;
   if (!nativeSelectionController) {
     currentTargetHost.hidden = true;
-    currentTargetHost.textContent = "";
     return;
   }
   currentTargetHost.hidden = false;
   const target = state?.currentTarget;
   if (!target) {
-    currentTargetHost.replaceChildren(el("strong", null, "No current target selected."));
+    currentTargetSummaryHost.textContent = "No current target selected.";
+    nativeInputForm.hidden = true;
     return;
   }
   const identity = [target.agentNickname, target.name].filter((value) => typeof value === "string");
-  currentTargetHost.replaceChildren(el("strong", null, identity.length
-    ? `Current target: ${identity.join(" · ")}` : "Current target selected."));
+  currentTargetSummaryHost.textContent = identity.length
+    ? `Current target: ${identity.join(" · ")}` : "Current target selected.";
+  nativeInputForm.hidden = false;
+  syncNativeInput(target);
 }
 
 const attemptFor = (state, id) => state.attempts.find((attempt) => attempt.id === id) ?? null;
@@ -375,36 +379,142 @@ const eyebrowHost = document.querySelector("#eyebrow");
 const descriptionHost = document.querySelector("#description");
 const headlineFactsHost = document.querySelector("#headline-facts");
 const currentTargetHost = document.querySelector("#current-target");
-const nativeSelectionAdapter = window.switchstandNativeSelectionAdapter ?? null;
-const nativeSelectionController = nativeSelectionAdapter && window.SwitchstandNativeSelection
-  && typeof nativeSelectionAdapter.resolve === "function"
-  && typeof nativeSelectionAdapter.selectionForAgent === "function"
+const currentTargetSummaryHost = document.querySelector("#current-target-summary");
+const nativeInputForm = document.querySelector("#native-input-form");
+const nativeInput = document.querySelector("#native-input");
+const nativeInputSubmit = document.querySelector("#native-input-submit");
+const nativeInputOutcomeHost = document.querySelector("#native-input-outcome");
+const nativeSelectionController = window.SwitchstandNativeSelection
   ? window.SwitchstandNativeSelection.createController({
-    resolve: (pair, snapshot) => nativeSelectionAdapter.resolve(pair, snapshot),
+    resolve: (_pair, snapshot) => snapshot,
     storage: window.localStorage,
     onChange: () => { if (lastModel?.mode === "native") renderNative(lastModel); },
   }) : null;
+const nativeInputDrafts = new Map();
+const nativeInputOutcomes = new Map();
+const nativeInputRequests = new Map();
+let visibleInputTargetKey = null;
+let nextInputRequest = 0;
+let selectionEpoch = 0;
+let refreshEpoch = 0;
+
+function pairKey(pair) {
+  return pair ? `${pair.observationRunRef}\u0000${pair.agentRef}` : null;
+}
+
+function samePair(left, right) {
+  return left?.observationRunRef === right?.observationRunRef
+    && left?.agentRef === right?.agentRef;
+}
+
+function syncNativeInput(target) {
+  const key = pairKey(target);
+  if (visibleInputTargetKey !== key) {
+    if (visibleInputTargetKey) nativeInputDrafts.set(visibleInputTargetKey, nativeInput.value);
+    visibleInputTargetKey = key;
+    nativeInput.value = nativeInputDrafts.get(key) ?? "";
+  }
+  nativeInputOutcomeHost.textContent = nativeInputOutcomes.get(key) ?? "";
+  nativeInputSubmit.disabled = nativeInputRequests.has(key);
+}
+
+async function selectAgent(agentRef) {
+  const epoch = ++selectionEpoch;
+  nativeSelectionController?.clear();
+  try {
+    const seam = await request(
+      "/api/native-selection/resolve",
+      { agentRef },
+      "native-selection-v1",
+    );
+    if (epoch !== selectionEpoch) return;
+    nativeSelectionController?.select(seam);
+  } catch (_error) {
+    if (epoch === selectionEpoch) nativeSelectionController?.clear();
+  }
+}
+
+async function revalidateSelection() {
+  const candidate = nativeSelectionController?.getState().candidate;
+  if (!candidate) return;
+  const epoch = ++selectionEpoch;
+  try {
+    const seam = await request(
+      "/api/native-selection/resolve",
+      { agentRef: candidate.agentRef },
+      "native-selection-v1",
+    );
+    if (epoch !== selectionEpoch
+      || !samePair(candidate, nativeSelectionController?.getState().candidate)) return;
+    nativeSelectionController.supplySeam(seam);
+  } catch (_error) {
+    if (epoch === selectionEpoch) {
+      nativeSelectionController?.clear();
+    }
+  }
+}
+
+nativeInput?.addEventListener("input", () => {
+  if (visibleInputTargetKey) nativeInputDrafts.set(visibleInputTargetKey, nativeInput.value);
+});
+nativeInputForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const target = nativeSelectionController?.getState().currentTarget;
+  if (!target) return;
+  const key = pairKey(target);
+  if (nativeInputRequests.has(key)) return;
+  const text = nativeInput.value;
+  nativeInputDrafts.set(key, text);
+  const requestRef = ++nextInputRequest;
+  nativeInputRequests.set(key, requestRef);
+  nativeInputSubmit.disabled = true;
+  let result = null;
+  try {
+    result = await request("/api/native-input", {
+      version: "native-input-v1",
+      observationRunRef: target.observationRunRef,
+      agentRef: target.agentRef,
+      text,
+    }, "native-input-v1");
+  } catch (_error) {
+    result = null;
+  }
+  if (nativeInputRequests.get(key) !== requestRef) return;
+  nativeInputRequests.delete(key);
+  const sent = result?.code === "input_sent" && result.outcome === "sent"
+    && ["start", "steer"].includes(result.mode);
+  const outcome = sent ? `sent · ${result.mode}` : "not sent";
+  nativeInputOutcomes.set(key, outcome);
+  if (sent) nativeInputDrafts.set(key, "");
+  const candidate = nativeSelectionController?.getState().candidate;
+  if (samePair(candidate, target)) {
+    if (sent) nativeInput.value = "";
+    nativeInputOutcomeHost.textContent = outcome;
+  }
+  const current = nativeSelectionController?.getState().currentTarget;
+  if (current) syncNativeInput(current);
+});
+
 function reportError(value) {
   errorHost.textContent = value instanceof Error ? value.message : String(value);
   errorHost.hidden = false;
 }
 let lastModel = null;
 async function refresh() {
+  const epoch = ++refreshEpoch;
   try {
-    lastModel = await request("/api/workbench");
+    const model = await request("/api/workbench");
+    if (epoch !== refreshEpoch) return;
+    lastModel = model;
     errorHost.hidden = true;
     if (lastModel.mode === "native") {
       renderNative(lastModel);
-      const candidate = nativeSelectionController?.getState().candidate;
-      if (candidate) {
-        nativeSelectionController.supplySeam(nativeSelectionAdapter.selectionForAgent(candidate.agentRef));
-      }
+      void revalidateSelection();
     } else renderLegacy(lastModel);
   } catch (_error) {
-    const candidate = nativeSelectionController?.getState().candidate;
-    if (candidate) {
-      nativeSelectionController.invalidate(nativeSelectionAdapter.selectionForAgent(candidate.agentRef));
-    }
+    if (epoch !== refreshEpoch) return;
+    selectionEpoch += 1;
+    nativeSelectionController?.clear();
     errorHost.textContent = lastModel?.mode === "native"
       ? "Observation request failed. The displayed board is a historical snapshot."
       : "Workbench request failed. Existing input has been retained.";
@@ -417,8 +527,3 @@ async function refresh() {
 refresh();
 const timer = window.setInterval(refresh, 1000);
 window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });
-if (nativeSelectionController && typeof nativeSelectionAdapter.subscribe === "function") {
-  nativeSelectionAdapter.subscribe((seam) => {
-    nativeSelectionController.supplySeam(seam);
-  });
-}

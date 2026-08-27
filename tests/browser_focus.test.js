@@ -14,6 +14,9 @@ class Element {
     this.parentNode = null;
     this.dataset = {};
     this.value = "";
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
+    this.selectionDirection = "none";
     this.open = false;
     this.scrollTop = 0;
     this.listeners = {};
@@ -62,6 +65,12 @@ class Element {
     this.ownerDocument.activeElement = this;
   }
 
+  setSelectionRange(start, end, direction) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+    this.selectionDirection = direction;
+  }
+
 }
 
 class Document {
@@ -73,6 +82,14 @@ class Document {
     this.disclosure = new Element(this, "p");
     this.observer = new Element(this, "section");
     this.currentTarget = new Element(this, "section");
+    this.currentTargetSummary = new Element(this, "strong");
+    this.nativeInputForm = new Element(this, "form");
+    this.nativeInput = new Element(this, "textarea");
+    this.nativeInput.dataset.focusKey = "native-input";
+    this.nativeInputSubmit = new Element(this, "button");
+    this.nativeInputOutcome = new Element(this, "span");
+    this.nativeInputForm.append(this.nativeInput, this.nativeInputSubmit, this.nativeInputOutcome);
+    this.currentTarget.append(this.currentTargetSummary, this.nativeInputForm);
     this.error = new Element(this, "div");
     this.roles = new Element(this, "section");
     this.nativeSurface = new Element(this, "div");
@@ -92,6 +109,11 @@ class Document {
     if (selector === "#trail") return this.trail;
     if (selector === "#observer") return this.observer;
     if (selector === "#current-target") return this.currentTarget;
+    if (selector === "#current-target-summary") return this.currentTargetSummary;
+    if (selector === "#native-input-form") return this.nativeInputForm;
+    if (selector === "#native-input") return this.nativeInput;
+    if (selector === "#native-input-submit") return this.nativeInputSubmit;
+    if (selector === "#native-input-outcome") return this.nativeInputOutcome;
     if (selector === "#disclosure") return this.disclosure;
     if (selector === "#error") return this.error;
     if (selector === "#roles") return this.roles;
@@ -119,6 +141,16 @@ const state = {
   trailLimit: 50,
   disclosure: "Polling may miss intermediate transitions; trail entries are observed endpoint differences, not native events.",
 };
+
+async function runNativeApp(context) {
+  const controllerPath = path.join(__dirname, "..", "src", "switchstand", "static",
+    "native_selection_controller.js");
+  vm.runInNewContext(fs.readFileSync(controllerPath, "utf8"), context, { filename: controllerPath });
+  context.window.SwitchstandNativeSelection = context.SwitchstandNativeSelection;
+  const scriptPath = path.join(__dirname, "..", "src", "switchstand", "static", "app.js");
+  vm.runInNewContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
+  await new Promise(setImmediate);
+}
 
 test("fake-DOM seam: 50 refreshes preserve focused tree row, open state, and scroll", async () => {
   const document = new Document();
@@ -204,40 +236,33 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
   const storage = { getItem: (key) => values.get(key) ?? null,
     removeItem: (key) => values.delete(key), setItem: (key, value) => values.set(key, value) };
   const second = { ...state.agents[0], agentRef: "agent-2", label: "Second agent", parentRef: "agent-1" };
-  const pairs = new Map(["agent-1", "agent-2"].map((agentRef) => [agentRef,
-    { observationRunRef: "observation-run", agentRef }]));
-  const seams = new Map([...pairs].map(([agentRef, selection]) => [agentRef, { selection,
-    snapshot: { version: "native-selection-v1", ...selection, connected: true, present: true } }]));
-  let supplied;
+  const selection = { observationRunRef: "observation-run", agentRef: "agent-2" };
+  const seam = { selection, snapshot: {
+    version: "native-selection-v1", ...selection, connected: true, present: true,
+  } };
   let intervalCallback;
   let failRefresh = false;
-  let delayedSnapshot;
+  let delaySelection = false;
   let releaseDelayed;
   const delayed = new Promise((resolve) => { releaseDelayed = resolve; });
+  const selectionRequests = [];
   const view = { scrollX: 0, scrollY: 0 };
   const window = { addEventListener() {}, clearInterval() {}, getSelection() { return { rangeCount: 0 }; },
     localStorage: storage, scrollX: 0, scrollY: 0, scrollTo(x, y) { view.scrollX = x; view.scrollY = y; },
-    setInterval(callback) { intervalCallback = callback; return 1; }, switchstandNativeSelectionAdapter: {
-      resolve: async (_selection, snapshot) => {
-        if (snapshot === delayedSnapshot) await delayed;
-        return snapshot;
-      },
-      selectionForAgent: (agentRef) => seams.get(agentRef),
-      subscribe(callback) { supplied = callback; },
-    } };
+    setInterval(callback) { intervalCallback = callback; return 1; } };
   Object.defineProperties(window, { scrollX: { get: () => view.scrollX }, scrollY: { get: () => view.scrollY } });
-  const context = { console, document, Error, fetch: async () => failRefresh
-    ? { ok: false, json: async () => ({ error: "unavailable" }) }
-    : { ok: true, json: async () => state },
+  const context = { console, document, Error, fetch: async (url, options = {}) => {
+    if (url === "/api/native-selection/resolve") {
+      selectionRequests.push(options);
+      if (delaySelection) await delayed;
+      return { ok: true, json: async () => seam };
+    }
+    return failRefresh ? { ok: false, json: async () => ({ error: "unavailable" }) }
+      : { ok: true, json: async () => state };
+  },
     Map, Object, Set, setTimeout, window };
-  const controllerPath = path.join(__dirname, "..", "src", "switchstand", "static",
-    "native_selection_controller.js");
-  vm.runInNewContext(fs.readFileSync(controllerPath, "utf8"), context, { filename: controllerPath });
-  window.SwitchstandNativeSelection = context.SwitchstandNativeSelection;
   state.agents.push(second);
-  const scriptPath = path.join(__dirname, "..", "src", "switchstand", "static", "app.js");
-  vm.runInNewContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
-  await new Promise(setImmediate);
+  await runNativeApp(context);
   const focused = document.tree.querySelectorAll("[data-focus-key]")
     .find((node) => node.dataset.focusKey === "select:agent-2");
   focused.parentNode.open = true;
@@ -247,12 +272,11 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
   focused.listeners.click();
   await new Promise(setImmediate);
   assert.equal(values.size, 1);
-  delayedSnapshot = { version: "native-selection-v1", ...pairs.get("agent-2"),
-    connected: true, present: true, name: "Late identity" };
-  supplied({ selection: pairs.get("agent-2"), snapshot: delayedSnapshot });
-  seams.set("agent-2", { selection: pairs.get("agent-2"), snapshot: {
-    code: "APP_SERVER_DISCONNECTED", message: "Agent connection is unavailable.",
-  } });
+  assert.deepEqual(JSON.parse(selectionRequests[0].body), { agentRef: "agent-2" });
+  assert.equal(selectionRequests[0].headers["X-Switchstand-Control"], "native-selection-v1");
+  delaySelection = true;
+  await intervalCallback();
+  await new Promise(setImmediate);
   failRefresh = true;
   await intervalCallback();
   releaseDelayed();
@@ -266,5 +290,73 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
   assert.equal(values.size, 0);
   assert.equal(document.currentTarget.children[0].textContent, "No current target selected.");
   assert.equal(document.observer.children[0].textContent, "Historical snapshot");
+  state.agents.pop();
+});
+
+test("fake-DOM exact input rejects a duplicate and fences an old target result", async () => {
+  const document = new Document();
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) ?? null,
+    removeItem: (key) => values.delete(key), setItem: (key, value) => values.set(key, value) };
+  const second = { ...state.agents[0], agentRef: "agent-2", label: "Second agent", parentRef: "agent-1" };
+  const inputRequests = [];
+  let releaseOld;
+  const old = new Promise((resolve) => { releaseOld = resolve; });
+  const view = { scrollX: 0, scrollY: 0 };
+  const window = { addEventListener() {}, clearInterval() {}, getSelection() { return { rangeCount: 0 }; },
+    localStorage: storage, setInterval() { return 1; }, scrollTo(x, y) { view.scrollX = x; view.scrollY = y; } };
+  Object.defineProperties(window, { scrollX: { get: () => view.scrollX }, scrollY: { get: () => view.scrollY } });
+  const context = { console, document, Error, Map, Object, Set, setTimeout, window,
+    fetch: async (url, options = {}) => {
+      if (url === "/api/workbench") return { ok: true, json: async () => state };
+      const body = JSON.parse(options.body);
+      if (url === "/api/native-selection/resolve") {
+        const selection = { observationRunRef: "observation-run", agentRef: body.agentRef };
+        return { ok: true, json: async () => ({ selection, snapshot: {
+          version: "native-selection-v1", ...selection, connected: true, present: true,
+        } }) };
+      }
+      inputRequests.push({ body, headers: options.headers });
+      const requestNumber = inputRequests.length;
+      if (requestNumber === 1) await old;
+      return { ok: true, json: async () => ({ code: "input_sent", outcome: "sent",
+        mode: requestNumber === 1 ? "start" : "steer" }) };
+    } };
+  state.agents.push(second);
+  await runNativeApp(context);
+
+  const buttons = () => document.tree.querySelectorAll("[data-focus-key]");
+  buttons().find((node) => node.dataset.focusKey === "select:agent-2").listeners.click();
+  await new Promise(setImmediate);
+  document.nativeInput.value = "old exact text";
+  document.nativeInput.listeners.input();
+  const first = document.nativeInputForm.listeners.submit({ preventDefault() {} });
+  const duplicate = document.nativeInputForm.listeners.submit({ preventDefault() {} });
+  await new Promise(setImmediate);
+  assert.equal(inputRequests.length, 1);
+
+  buttons().find((node) => node.dataset.focusKey === "select:agent-1").listeners.click();
+  await new Promise(setImmediate);
+  assert.equal(document.nativeInputSubmit.disabled, false);
+  document.nativeInput.value = "new exact text";
+  document.nativeInput.listeners.input();
+  await document.nativeInputForm.listeners.submit({ preventDefault() {} });
+  assert.equal(document.nativeInputOutcome.textContent, "sent · steer");
+  releaseOld();
+  await Promise.all([first, duplicate]);
+  assert.equal(document.nativeInput.value, "");
+  assert.equal(document.nativeInputOutcome.textContent, "sent · steer");
+  assert.equal(inputRequests.length, 2);
+  buttons().find((node) => node.dataset.focusKey === "select:agent-2").listeners.click();
+  await new Promise(setImmediate);
+  assert.equal(document.nativeInput.value, "");
+  assert.equal(document.nativeInputOutcome.textContent, "sent · start");
+  assert.deepEqual(inputRequests.map((item) => item.body), [
+    { version: "native-input-v1", observationRunRef: "observation-run", agentRef: "agent-2",
+      text: "old exact text" },
+    { version: "native-input-v1", observationRunRef: "observation-run", agentRef: "agent-1",
+      text: "new exact text" },
+  ]);
+  assert.equal(inputRequests.every((item) => item.headers["X-Switchstand-Control"] === "native-input-v1"), true);
   state.agents.pop();
 });
