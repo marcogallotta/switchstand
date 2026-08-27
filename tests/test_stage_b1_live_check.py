@@ -127,10 +127,11 @@ class StageB1LiveCheckTests(unittest.TestCase):
                     self.assertEqual(output.stat(), initial_stat)
 
     def run_check(self, client_class: type[FakeAuditedClient]):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=REPO.parent) as directory:
             socket_path = Path(directory) / "app-server.sock"
             socket_path.touch()
             output = Path(directory) / "evidence.json"
+            self.assertFalse(output.resolve().is_relative_to(REPO.resolve()))
             sha = runner.git_value(REPO, "rev-parse", "HEAD")
             tree = runner.git_value(REPO, "rev-parse", "HEAD^{tree}")
             arguments = [
