@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from switchstand.current_target import ExactCurrentTarget
 from switchstand.native_board import NativeBoard
+from switchstand.native_contracts import NativeBrowserSelectionResult, NativeSelectionPair
 from switchstand.service import PACKAGE_ROOT, Server, _loopback
 
 
@@ -77,6 +78,20 @@ def target_error_code(value: dict[str, Any] | ExactCurrentTarget) -> Any:
     if not isinstance(value, dict):
         raise AssertionError("expected a frozen safe error")
     return value["code"]
+
+
+def selection_pair(value: NativeBrowserSelectionResult) -> NativeSelectionPair:
+    pair = value["selection"]
+    if pair is None:
+        raise AssertionError("expected a current selection pair")
+    return pair
+
+
+def selection_error_code(value: NativeBrowserSelectionResult) -> str:
+    snapshot = value["snapshot"]
+    if "code" not in snapshot:
+        raise AssertionError("expected a frozen safe selection error")
+    return snapshot["code"]
 
 
 class FailSecondPageClient(FakeClient):
@@ -211,7 +226,7 @@ class NativeBoardTests(unittest.TestCase):
         first_shape = first_board.browser_selection(
             "agent-1", now=100.0, maximum_observation_age_seconds=5.0
         )
-        old_pair = first_shape["selection"]
+        old_pair = selection_pair(first_shape)
         first_target = first_board.resolve_current_target(
             old_pair, now=100.0, maximum_observation_age_seconds=5.0
         )
@@ -225,16 +240,18 @@ class NativeBoardTests(unittest.TestCase):
         second_target = first_board.resolve_current_target(
             old_pair, now=101.0, maximum_observation_age_seconds=5.0
         )
-        self.assertEqual(second_shape["selection"]["observationRunRef"], old_pair["observationRunRef"])
+        self.assertEqual(
+            selection_pair(second_shape)["observationRunRef"], old_pair["observationRunRef"]
+        )
         self.assertEqual(second_target, first_target)
 
         new_board = NativeBoard(
             lambda: client_with_status(), "raw-root", wall_clock=clock, monotonic=clock
         )
         new_board.poll_once()
-        new_pair = new_board.browser_selection(
+        new_pair = selection_pair(new_board.browser_selection(
             "agent-1", now=101.0, maximum_observation_age_seconds=5.0
-        )["selection"]
+        ))
         self.assertNotEqual(new_pair["observationRunRef"], old_pair["observationRunRef"])
         self.assertEqual(
             target_error_code(new_board.resolve_current_target(
@@ -254,7 +271,7 @@ class NativeBoardTests(unittest.TestCase):
             maximum_observation_age_seconds=5.0,
         )
         self.assertIsNone(invalid["selection"])
-        self.assertEqual(invalid["snapshot"]["code"], "INVALID_AGENT_REF")
+        self.assertEqual(selection_error_code(invalid), "INVALID_AGENT_REF")
         self.assertNotIn("raw-root", json.dumps(invalid))
 
     def test_incomplete_pagination_retains_complete_projection_time_run_and_target_index(self):
@@ -279,9 +296,9 @@ class NativeBoardTests(unittest.TestCase):
         )
         board.poll_once()
         before = board.snapshot()
-        pair = board.browser_selection(
+        pair = selection_pair(board.browser_selection(
             "agent-1", now=100.0, maximum_observation_age_seconds=10.0
-        )["selection"]
+        ))
         target = board.resolve_current_target(
             pair, now=100.0, maximum_observation_age_seconds=10.0
         )
@@ -300,7 +317,7 @@ class NativeBoardTests(unittest.TestCase):
         self.assertEqual(failed["trail"], before["trail"])
         self.assertEqual(tuple(board._target_records), records_before)
         self.assertEqual(failed_shape["selection"], pair)
-        self.assertEqual(failed_shape["snapshot"]["code"], "APP_SERVER_DISCONNECTED")
+        self.assertEqual(selection_error_code(failed_shape), "APP_SERVER_DISCONNECTED")
         self.assertEqual(
             target_error_code(board.resolve_current_target(
                 pair, now=105.0, maximum_observation_age_seconds=10.0
@@ -324,9 +341,9 @@ class NativeBoardTests(unittest.TestCase):
             maximum_observation_age_seconds=1.0,
         )
         board.poll_once()
-        child_pair = board.browser_selection(
+        child_pair = selection_pair(board.browser_selection(
             "agent-2", now=100.0, maximum_observation_age_seconds=1.0
-        )["selection"]
+        ))
         clock.value = 101.0
         board.poll_once()
         self.assertEqual(
@@ -335,9 +352,9 @@ class NativeBoardTests(unittest.TestCase):
             )),
             "AGENT_NOT_PRESENT",
         )
-        root_pair = board.browser_selection(
+        root_pair = selection_pair(board.browser_selection(
             "agent-1", now=101.0, maximum_observation_age_seconds=1.0
-        )["selection"]
+        ))
         self.assertIsInstance(
             board.resolve_current_target(
                 root_pair, now=102.0, maximum_observation_age_seconds=1.0

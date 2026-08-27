@@ -6,6 +6,7 @@ import time
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, cast
 
+from .native_contracts import NativeInputResult
 from .native_turns import MAX_TURN_ID_CHARACTERS, project_native_turns
 
 
@@ -156,14 +157,14 @@ class NativeInput:
             return None
         return target
 
-    def send(self, request: Any) -> dict[str, str]:
+    def send(self, request: Any) -> NativeInputResult:
         """Consume one closed native-input-v1 request and return one closed result."""
         try:
             validated = validate_native_input_request(request)
         except Exception:
             validated = False
         if not validated:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         fields = cast(Mapping[str, str], request)
         text = fields["text"]
         selection = MappingProxyType({
@@ -172,7 +173,7 @@ class NativeInput:
         })
         first_target = self._resolve(selection)
         if first_target is None:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         try:
             classification, response = self._transport.thread_read(
                 first_target,
@@ -180,7 +181,7 @@ class NativeInput:
                 timeout_seconds=self._timeout_seconds,
             )
         except Exception:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         try:
             projection = (
                 project_native_turns(response, first_target)
@@ -191,14 +192,14 @@ class NativeInput:
             projection = None
         response = None
         if projection is None or projection.status not in {"active", "idle"}:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         second_target = self._resolve(selection)
         try:
             targets_match = second_target is not None and second_target == first_target
         except Exception:
             targets_match = False
         if not targets_match:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         try:
             if projection.status == "idle":
                 classification, acknowledgement = self._transport.turn_start(
@@ -212,7 +213,7 @@ class NativeInput:
             else:
                 expected_turn_id = projection.active_turn_id
                 if not _valid_turn_id(expected_turn_id):
-                    return dict(_NOT_SENT)
+                    return cast(NativeInputResult, dict(_NOT_SENT))
                 expected_turn_id = cast(str, expected_turn_id)
                 classification, acknowledgement = self._transport.turn_steer(
                     second_target,
@@ -226,8 +227,8 @@ class NativeInput:
                 )
                 mode = "steer"
         except Exception:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         acknowledgement = None
         if not acknowledged:
-            return dict(_NOT_SENT)
+            return cast(NativeInputResult, dict(_NOT_SENT))
         return {"code": "input_sent", "outcome": "sent", "mode": mode}
