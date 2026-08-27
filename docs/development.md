@@ -96,6 +96,12 @@ The native board is GET-only and does not resume or subscribe. Before claiming i
 checkpoint, observe a real root and descendant change from active to idle within two poll
 intervals and record the exact reviewed head.
 
+Use the socket for the App Server that owns the exact root's loaded runtime. A shared state
+database can contain a root or descendant managed by another App Server while state-database-only
+observation truthfully reports it as `notLoaded`; this is not an observer connection failure. Do
+not disable `useStateDbOnly:true` or resume the thread to make the checkpoint pass. Instead, run a
+genuine descendant workload through the same App Server while the read-only observer polls.
+
 ## Review expectations
 
 Review engine changes as state-machine changes. Check exact target validation, generation and

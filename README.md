@@ -63,6 +63,10 @@ PYTHONPATH=src python -m switchstand.service \
 
 This mode reconnects for each completed multi-request observation pass and forces
 `useStateDbOnly:true` on every descendant-list page. Polling can miss intermediate transitions.
+The exact root must be loaded by the same App Server reached through the supplied socket. A
+thread managed by another App Server may be present in the shared state database but truthfully
+appear `notLoaded`; the observer never resumes it. A live checkpoint therefore needs a genuine
+descendant workload running through that same App Server while observation polls.
 
 Run the dependency-free checks:
 
