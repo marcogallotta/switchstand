@@ -101,5 +101,6 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Replacing the fixed-role service or browser surface; the native-tree Stage A gate has passed,
-  but that replacement remains a separate unimplemented decision
+- Replacing the fixed-role service or browser surface; historical live evidence observed the
+  native-tree protocol capability, but schema-v2 exact-head evidence remains pending external
+  receipt and no retained repository artifact currently proves this head
