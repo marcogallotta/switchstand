@@ -98,6 +98,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
+- `scripts/stage_b1_live_check.py` — exact-head, read-only native-board live evidence runner
 - `tests/` — standard-library unit tests
 - `docs/` — product boundary, architecture, development workflow, and decisions
 
