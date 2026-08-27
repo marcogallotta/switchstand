@@ -148,6 +148,85 @@ class AppServerProtocolTests(unittest.TestCase):
             ],
         )
 
+    def test_client_constructs_bounded_input_requests_without_settings_override(self):
+        client = object.__new__(CodexAppServer)
+        calls = []
+        client.bounded_request = lambda method, params, **limits: (
+            calls.append((method, params, limits)) or ("ok", {})
+        )
+
+        client.bounded_thread_read("thread-exact", max_response_bytes=10, timeout_seconds=1)
+        client.bounded_turn_start_text_native(
+            "thread-exact", "  input\n", max_response_bytes=11, timeout_seconds=2
+        )
+        client.bounded_turn_steer_text(
+            "thread-exact", "turn-exact", "steer", max_response_bytes=12,
+            timeout_seconds=3,
+        )
+
+        self.assertEqual(calls, [
+            ("thread/read", {"threadId": "thread-exact", "includeTurns": True},
+                {"max_response_bytes": 10, "timeout_seconds": 1}),
+            ("turn/start", {
+                "threadId": "thread-exact", "input": [{"type": "text", "text": "  input\n"}]},
+                {"max_response_bytes": 11, "timeout_seconds": 2}),
+            ("turn/steer", {
+                "threadId": "thread-exact", "input": [{"type": "text", "text": "steer"}],
+                "expectedTurnId": "turn-exact"},
+                {"max_response_bytes": 12, "timeout_seconds": 3}),
+        ])
+        self.assertNotIn("approvalPolicy", repr(calls))
+        self.assertNotIn("sandboxPolicy", repr(calls))
+
+    def test_stop_request_is_a_compatibility_alias_for_bounded_request(self):
+        client = object.__new__(CodexAppServer)
+        calls = []
+        client.bounded_request = lambda method, params, **limits: (
+            calls.append((method, params, limits)) or ("ok", {"safe": True})
+        )
+        self.assertEqual(
+            client.stop_request("turn/interrupt", {"turnId": "one"}),
+            ("ok", {"safe": True}),
+        )
+        self.assertEqual(calls[0][0:2], ("turn/interrupt", {"turnId": "one"}))
+
+    def test_bounded_request_reuses_setup_deadline_and_cumulative_response_budget(self):
+        class FakeSocket:
+            def __init__(self):
+                self.timeouts = []
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+        client = object.__new__(CodexAppServer)
+        client._lock = threading.Lock()
+        client._next_id = 0
+        client._bounded_deadline = 10.0
+        client._bounded_response_bytes_remaining = 100
+        client.socket = cast(Any, FakeSocket())
+        client._send_frame = lambda opcode, payload: None
+        first = json.dumps({"method": "private", "params": {}})
+        second = json.dumps({"id": 1, "result": {}})
+        replies = iter((first, second))
+        limits = []
+        client._read_text = lambda max_bytes=0, deadline=None: (
+            limits.append((max_bytes, deadline)) or next(replies)
+        )
+        client._stop_close = lambda: None
+
+        with patch("switchstand.app_server.time.monotonic", return_value=2.0):
+            outcome = client.bounded_request(
+                "thread/read", {}, max_response_bytes=100, timeout_seconds=99
+            )
+
+        self.assertEqual(outcome, ("ok", {}))
+        self.assertEqual(client.socket.timeouts, [8.0, 8.0, 8.0])
+        self.assertEqual(limits, [(100, 10.0), (100 - len(first.encode()), 10.0)])
+        self.assertEqual(
+            client._bounded_response_bytes_remaining,
+            100 - len(first.encode()) - len(second.encode()),
+        )
+
     def test_client_constructs_normal_turn_and_exact_interrupt_requests(self):
         client = object.__new__(CodexAppServer)
         calls = []
