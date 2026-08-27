@@ -20,13 +20,17 @@ async function request(path, body, nativeControl = false) {
 }
 
 const stopState = new Map();
+const stopEpoch = new Map();
+const observedStatus = new Map();
 async function stopAgent(agent) {
+  const epoch = stopEpoch.get(agent.agentRef) ?? 0;
   try {
     const prepared = await request(
       "/api/native-stop/prepare",
       { agentRef: agent.agentRef },
       true,
     );
+    if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
     const warning = [
       `Stop ${agent.label}’s current turn?`,
       "Switchstand will request cancellation of that exact turn only.",
@@ -43,10 +47,12 @@ async function stopAgent(agent) {
         { confirmationRef: prepared.confirmationRef },
         true,
       );
+      if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
       stopState.set(agent.agentRef, result);
     }
     if (lastModel) renderNative(lastModel);
   } catch (_error) {
+    if ((stopEpoch.get(agent.agentRef) ?? 0) !== epoch) return;
     stopState.set(agent.agentRef, { outcome: "unknown" });
     if (lastModel) renderNative(lastModel);
   }
@@ -54,14 +60,17 @@ async function stopAgent(agent) {
 
 async function checkStop(agentRef) {
   const current = stopState.get(agentRef);
+  const epoch = stopEpoch.get(agentRef) ?? 0;
   try {
     const result = await request(
       "/api/native-stop/status",
       { operationRef: current.operationRef },
       true,
     );
+    if ((stopEpoch.get(agentRef) ?? 0) !== epoch) return;
     stopState.set(agentRef, result);
   } catch (_error) {
+    if ((stopEpoch.get(agentRef) ?? 0) !== epoch) return;
     stopState.set(agentRef, { ...current, outcome: "unknown" });
   }
   if (lastModel) renderNative(lastModel);
@@ -151,6 +160,12 @@ function renderNative(model) {
       ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`], ["error", observation.errorCode]]));
   const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
   const agents = model.agents.map((agent) => {
+    const previousStatus = observedStatus.get(agent.agentRef);
+    if (previousStatus === "active" && agent.status !== "active") {
+      stopEpoch.set(agent.agentRef, (stopEpoch.get(agent.agentRef) ?? 0) + 1);
+      stopState.delete(agent.agentRef);
+    }
+    observedStatus.set(agent.agentRef, agent.status);
     const row = el("details", "agent");
     row.dataset.nodeKey = agent.agentRef;
     row.dataset.focusKey = `agent:${agent.agentRef}`;
@@ -162,11 +177,7 @@ function renderNative(model) {
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
-    let stop = stopState.get(agent.agentRef);
-    if (agent.status !== "active" && ["requested", "confirmed"].includes(stop?.outcome)) {
-      stopState.delete(agent.agentRef);
-      stop = undefined;
-    }
+    const stop = stopState.get(agent.agentRef);
     if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
     if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
       const button = el("button", "button button--danger", "Stop current turn");

@@ -28,6 +28,8 @@ let apiRequests;
 let failRequests;
 let stopRequests;
 let stopOutcome;
+let delayStopResponse;
+let pendingStopResponses;
 
 test.beforeAll(async () => {
   apiRequests = 0;
@@ -40,7 +42,13 @@ test.beforeAll(async () => {
       const value = pathname.endsWith("prepare")
         ? { code: "prepared", agentRef: "agent-1", confirmationRef: "opaque-confirmation" }
         : { code: "stop_result", operationRef: "opaque-confirmation", outcome: stopOutcome };
-      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(value));
+      const send = () => response.writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify(value));
+      if (!pathname.endsWith("prepare") && delayStopResponse) {
+        pendingStopResponses.push(send);
+      } else {
+        send();
+      }
       return;
     }
     if (pathname === "/api/workbench") {
@@ -80,6 +88,8 @@ test.beforeEach(() => {
   failRequests = false;
   stopRequests = [];
   stopOutcome = "requested";
+  delayStopResponse = false;
+  pendingStopResponses = [];
   state.agents[0].status = "active";
 });
 
@@ -186,6 +196,33 @@ test("a later active turn can be stopped without reloading", async ({ page }) =>
   state.agents[0].status = "active";
   await page.waitForResponse(`${origin}/api/workbench`);
 
+  await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Stop current turn" }).click();
+  expect(stopRequests.map((value) => value.pathname)).toEqual([
+    "/api/native-stop/prepare", "/api/native-stop/commit", "/api/native-stop/prepare",
+  ]);
+});
+
+test("a delayed old-turn result cannot hide Stop for a later turn", async ({ page }) => {
+  stopOutcome = "confirmed";
+  delayStopResponse = true;
+  await page.goto(origin);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Stop current turn" }).click();
+  await expect.poll(() => pendingStopResponses.length).toBe(1);
+
+  state.agents[0].status = "idle";
+  await page.waitForResponse(`${origin}/api/workbench`);
+  state.agents[0].status = "active";
+  await page.waitForResponse(`${origin}/api/workbench`);
+  await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
+
+  const oldResponse = page.waitForResponse(`${origin}/api/native-stop/commit`);
+  pendingStopResponses.shift()();
+  await oldResponse;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await expect(page.getByText("Stop outcome: confirmed")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Stop current turn" }).click();
