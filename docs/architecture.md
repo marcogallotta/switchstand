@@ -128,6 +128,6 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Native message/steer/stop controls and any inferred semantic status
+- Native message/steer controls, stop beyond exact B2 cancellation, and inferred semantic status
 - Treating the poll-difference trail as complete history or durable audit evidence
 - Replacing or removing the fixed-role reliability spike outside explicitly selected native mode

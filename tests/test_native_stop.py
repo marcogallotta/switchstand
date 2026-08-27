@@ -155,6 +155,10 @@ class NativeStopTests(unittest.TestCase):
         first = threading.Thread(target=lambda: results.append(stop.commit(reference)))
         first.start()
         self.assertTrue(entered.wait(1))
+        before_status = list(replies.calls)
+        self.assertEqual(stop.status(reference),
+            {"code": "stop_pending", "operationRef": reference, "outcome": "unknown"})
+        self.assertEqual(replies.calls, before_status)
         second = threading.Thread(target=lambda: results.append(stop.commit(reference)))
         second.start()
         second.join(1)

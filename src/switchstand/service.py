@@ -109,8 +109,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
         if pathname.startswith("/api/native-stop/"):
-            self._json(405, {"code": "control_request_rejected", "outcome": "not_sent"})
-            return
+            self._json(405, {"code": "control_request_rejected", "outcome": "not_sent"}); return
         if pathname == "/api/workbench":
             self._json(200, cast("Server", self.server).runtime.snapshot())
             return
@@ -119,25 +118,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         pathname = urlsplit(self.path).path
         runtime = cast("Server", self.server).runtime
-        native_actions = {
-            "/api/native-stop/prepare": "prepare_stop",
-            "/api/native-stop/commit": "commit_stop",
-            "/api/native-stop/status": "stop_status",
-        }
+        native_actions = {"/api/native-stop/prepare": "prepare_stop",
+            "/api/native-stop/commit": "commit_stop", "/api/native-stop/status": "stop_status"}
         if isinstance(runtime, NativeBoard) and pathname in native_actions:
-            host = self.headers.get("Host")
-            origin = self.headers.get("Origin")
-            origin_ok = origin is None or (
-                origin != "null"
-                and urlsplit(origin).scheme == "http"
-                and urlsplit(origin).netloc.lower() == (host or "").lower()
-            )
-            if (
-                self.headers.get("Content-Type") != "application/json"
-                or self.headers.get("X-Switchstand-Control") != NATIVE_HEADER
-                or not _loopback(host)
-                or not origin_ok
-            ):
+            host, origin = self.headers.get("Host"), self.headers.get("Origin")
+            origin_ok = origin is None or (origin != "null" and urlsplit(origin).scheme == "http"
+                and urlsplit(origin).netloc.lower() == (host or "").lower())
+            if (self.headers.get("Content-Type") != "application/json"
+                    or self.headers.get("X-Switchstand-Control") != NATIVE_HEADER
+                    or not _loopback(host) or not origin_ok):
                 self._json(403, {"code": "control_request_rejected", "outcome": "not_sent"})
                 return
             try:
@@ -145,11 +134,9 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError):
                 self._json(400, {"code": "invalid_request", "outcome": "not_sent"})
                 return
-            key = {
-                "prepare_stop": "agentRef",
-                "commit_stop": "confirmationRef",
-                "stop_status": "operationRef",
-            }[native_actions[pathname]]
+            keys = {"prepare_stop": "agentRef", "commit_stop": "confirmationRef",
+                "stop_status": "operationRef"}
+            key = keys[native_actions[pathname]]
             result = getattr(runtime, native_actions[pathname])(body.get(key))
             self._json(200, result)
             return
@@ -213,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         if not _loopback(args.host):
             parser.error("native mode requires a loopback --host")
         runtime: Runtime | NativeBoard = NativeBoard(
-            lambda: CodexAppServer(args.app_server_socket, timeout_seconds=3), args.native_root_thread_id
+            lambda: CodexAppServer(args.app_server_socket, timeout_seconds=3, bounded_stop=True), args.native_root_thread_id
         )
     else:
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)

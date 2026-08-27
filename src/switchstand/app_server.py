@@ -21,7 +21,7 @@ _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
-class _MessageTooLarge(RuntimeError): pass
+class _StopFailure(RuntimeError): pass
 
 
 def _canonical(value: Any) -> str:
@@ -38,19 +38,29 @@ class CodexAppServer:
         client_name: str = "switchstand",
         client_title: str = "Switchstand",
         timeout_seconds: float | None = None,
+        bounded_stop: bool = False,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.settimeout(timeout_seconds)
-        self.socket.connect(str(self.socket_path))
-        self.reader = self.socket.makefile("rb")
+        if not bounded_stop:
+            self.socket.connect(str(self.socket_path))
+        else:
+            failed = False
+            try: self.socket.connect(str(self.socket_path))
+            except Exception: self.socket.close(); failed = True
+            if failed: raise _StopFailure("setup_unavailable")
         self._next_id = 0
         self._lock = threading.Lock()
         self._server_messages: deque[dict[str, Any]] = deque()
-        self._upgrade()
-        self._request(
-            "initialize",
-            {
+        if not bounded_stop:
+            self.reader = self.socket.makefile("rb")
+        else:
+            failed = False
+            try: self.reader = self.socket.makefile("rb")
+            except Exception: self.socket.close(); failed = True
+            if failed: raise _StopFailure("setup_unavailable")
+        initialize = {
                 "clientInfo": {
                     "name": client_name,
                     "title": client_title,
@@ -64,11 +74,25 @@ class CodexAppServer:
                         "thread/tokenUsage/updated",
                     ],
                 },
-            },
-        )
-        self._notify("initialized", {})
+            }
+        setup_failed = False
+        try:
+            self._upgrade(64 * 1024 if bounded_stop else None, timeout_seconds if bounded_stop else None)
+            if bounded_stop:
+                classification, _ = self.stop_request("initialize", initialize, _close_after=False)
+                if classification != "ok":
+                    raise _StopFailure("setup_unavailable")
+            else:
+                self._request("initialize", initialize)
+            self._notify("initialized", {})
+        except Exception:
+            if not bounded_stop:
+                raise
+            self._stop_close(); setup_failed = True
+        if setup_failed: raise _StopFailure("setup_unavailable")
 
-    def _upgrade(self) -> None:
+    def _upgrade(self, max_header_bytes: int | None = None, timeout_seconds: float | None = None) -> None:
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         request = (
             "GET / HTTP/1.1\r\n"
@@ -79,10 +103,19 @@ class CodexAppServer:
             "Sec-WebSocket-Version: 13\r\n\r\n"
         ).encode("ascii")
         self.socket.sendall(request)
-        status = self.reader.readline().decode("ascii", errors="replace").strip()
+        if deadline is not None: self.socket.settimeout(max(0.001, deadline - time.monotonic()))
+        status_line = self.reader.readline() if max_header_bytes is None else self.reader.readline(max_header_bytes + 1)
+        used = len(status_line)
+        if max_header_bytes is not None and used > max_header_bytes:
+            raise _StopFailure
+        status = status_line.decode("ascii", errors="replace").strip()
         headers: dict[str, str] = {}
         while True:
-            line = self.reader.readline()
+            if deadline is not None: self.socket.settimeout(max(0.001, deadline - time.monotonic()))
+            line = self.reader.readline() if max_header_bytes is None else self.reader.readline(max_header_bytes - used + 1)
+            used += len(line)
+            if max_header_bytes is not None and used > max_header_bytes:
+                raise _StopFailure
             if not line:
                 raise RuntimeError("Codex app-server closed during WebSocket upgrade")
             if line in {b"\r\n", b"\n"}:
@@ -128,7 +161,7 @@ class CodexAppServer:
             elif length == 127:
                 length = struct.unpack("!Q", self._read_exact(8))[0]
             if length > max_bytes:
-                raise _MessageTooLarge
+                raise _StopFailure
             mask = self._read_exact(4) if masked else b""
             payload = self._read_exact(length)
             if masked:
@@ -149,7 +182,7 @@ class CodexAppServer:
                 continue
             if len(fragments) > max_bytes:
                 fragments.clear()
-                raise _MessageTooLarge
+                raise _StopFailure
             if final:
                 if message_opcode != 0x1:
                     fragments.clear()
@@ -159,13 +192,12 @@ class CodexAppServer:
 
     def stop_request(self, method: str, params: Mapping[str, Any], *,
         max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
+        _close_after: bool = True,
     ) -> tuple[str, Mapping[str, Any] | None]:
         """Send one bounded B2 request, discard all unrelated input, and close."""
-        classification = "ambiguous"
-        result: Mapping[str, Any] | None = None
+        classification, result = "ambiguous", None
         with self._lock:
-            self._next_id += 1
-            request_id = self._next_id
+            self._next_id += 1; request_id = self._next_id
             deadline = time.monotonic() + timeout_seconds
             try:
                 self.socket.settimeout(timeout_seconds)
@@ -177,13 +209,10 @@ class CodexAppServer:
                     try:
                         message = json.loads(raw)
                     except (UnicodeError, json.JSONDecodeError):
-                        raw = ""
-                        classification = "malformed"
-                        break
+                        raw = ""; classification = "malformed"; break
                     raw = ""
                     if not isinstance(message, Mapping) or message.get("id") != request_id:
-                        message = None
-                        continue
+                        message = None; continue
                     if "error" in message:
                         classification = "rejected"
                     elif isinstance(message.get("result"), Mapping):
@@ -192,19 +221,18 @@ class CodexAppServer:
                         classification = "malformed"
                     message = None
                     break
-            except _MessageTooLarge:
-                classification = "oversize"
-            except UnicodeError:
-                classification = "malformed"
-            except (OSError, RuntimeError, TimeoutError):
-                classification = "ambiguous"
+            except _StopFailure: classification = "oversize"
+            except UnicodeError: classification = "malformed"
+            except (OSError, RuntimeError, TimeoutError): classification = "ambiguous"
             finally:
-                self._server_messages.clear()
-                try:
-                    self.close()
-                except (OSError, ValueError):
-                    pass
+                if _close_after or classification != "ok":
+                    self._stop_close()
         return classification, result
+
+    def _stop_close(self) -> None:
+        self._server_messages.clear()
+        try: self.close()
+        except (OSError, ValueError): self.socket.close()
 
     def close(self) -> None:
         try:

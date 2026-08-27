@@ -14,16 +14,13 @@ TURN_STATUSES = frozenset({"inProgress", "completed", "failed", "interrupted"})
 
 class StopClient(Protocol):
     def stop_request(self, method: str, params: Mapping[str, Any], *,
-        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
-    ) -> tuple[str, Mapping[str, Any] | None]: ...
+        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0) -> tuple[str, Mapping[str, Any] | None]: ...
 
 
 @dataclass
 class _Receipt:
     agent_ref: str; thread_id: str; turn_id: str
-    expires_at: float
-    used: bool = False
-    outcome: str = "not_sent"
+    expires_at: float; used: bool = False; outcome: str = "not_sent"
 
 
 def _project(value: Mapping[str, Any], thread_id: str) -> tuple[str, dict[str, str]] | None:
@@ -57,8 +54,6 @@ def _project(value: Mapping[str, Any], thread_id: str) -> tuple[str, dict[str, s
 
 
 class NativeStop:
-    """Prepare, consume, and later observe one exact native turn interruption."""
-
     def __init__(self, client_factory: Callable[[], StopClient],
         resolve_agent: Callable[[str], str | None], *,
         clock: Callable[[], float] = time.monotonic, ttl_seconds: float = 30.0,
@@ -66,10 +61,8 @@ class NativeStop:
         self._client_factory = client_factory
         self._resolve_agent = resolve_agent
         self._clock = clock
-        self._ttl = ttl_seconds
-        self._operation_ttl = operation_ttl_seconds
-        self._capacity = capacity
-        self._lock = threading.Lock()
+        self._ttl, self._operation_ttl = ttl_seconds, operation_ttl_seconds
+        self._capacity, self._lock = capacity, threading.Lock()
         self._receipts: dict[str, _Receipt] = {}
 
     def _prune(self, now: float) -> None:
@@ -129,7 +122,7 @@ class NativeStop:
             receipt = self._receipts.get(reference) if isinstance(reference, str) else None
             if receipt is None or receipt.used:
                 return {"code": "confirmation_unavailable", "outcome": "not_sent"}
-            receipt.used = True
+            receipt.used, receipt.outcome = True, "in_flight"
             receipt.expires_at = now + self._operation_ttl
         classification, projection = self._read(receipt.thread_id)
         if classification != "ok" or self._sole_active(projection) != receipt.turn_id:
@@ -166,6 +159,8 @@ class NativeStop:
             if receipt is None or not receipt.used:
                 return {"code": "operation_unavailable", "outcome": "unknown"}
             outcome = receipt.outcome
+        if outcome == "in_flight":
+            return {"code": "stop_pending", "operationRef": reference, "outcome": "unknown"}
         if outcome not in {"requested", "unknown"}:
             return {"code": "stop_result", "operationRef": reference, "outcome": outcome}
         classification, projection = self._read(receipt.thread_id)
