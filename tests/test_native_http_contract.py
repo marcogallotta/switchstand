@@ -31,32 +31,84 @@ class NativeHttpContractTests(unittest.TestCase):
             '{"code": "invalid_request", "outcome": "not_sent"}',
         )
 
-    def test_loopback_and_same_origin_predicates_preserve_service_behavior(self):
-        for host, expected in (
-            ("localhost:4180", True),
-            ("127.0.0.1:4180", True),
-            ("[::1]:4180", True),
-            ("0.0.0.0:4180", False),
-            ("example.com", False),
-            (None, False),
+    def test_valid_loopback_host_authorities(self):
+        for host in (
+            "localhost",
+            "LOCALHOST:4180",
+            "127.0.0.1",
+            "127.0.0.2:65535",
+            "[::1]",
+            "[0:0:0:0:0:0:0:1]:0",
         ):
             with self.subTest(host=host):
-                self.assertEqual(contract.is_loopback_host(host), expected)
-                self.assertEqual(service._loopback(host), expected)
+                self.assertTrue(contract.is_loopback_host(host))
 
-        host = "127.0.0.1:4180"
-        for origin, expected in (
-            (None, True),
-            ("http://127.0.0.1:4180", True),
-            ("HTTP://127.0.0.1:4180", True),
-            ("null", False),
-            ("https://127.0.0.1:4180", False),
-            ("http://127.0.0.1:9", False),
-            ("not an origin", False),
+    def test_invalid_or_non_loopback_host_authorities(self):
+        for label, host in (
+            ("missing", None),
+            ("empty", ""),
+            ("hostname", "example.com"),
+            ("ipv4", "0.0.0.0:4180"),
+            ("ipv6", "[::2]:4180"),
+            ("userinfo", "user@localhost:4180"),
+            ("path", "localhost:4180/path"),
+            ("query", "localhost:4180?query"),
+            ("fragment", "localhost:4180#fragment"),
+            ("scheme", "http://localhost:4180"),
+            ("backslash", "localhost:4180\\path"),
+            ("leading whitespace", " localhost:4180"),
+            ("interior whitespace", "local host:4180"),
+            ("control", "localhost:4180\x7f"),
+            ("missing bracket", "[::1:4180"),
+            ("extra bracket", "[::1]]:4180"),
+            ("bracketed ipv4", "[127.0.0.1]:4180"),
+            ("unbracketed ipv6", "::1"),
+            ("empty port", "localhost:"),
+            ("nonnumeric port", "localhost:abc"),
+            ("negative port", "localhost:-1"),
+            ("multiple ports", "localhost:80:90"),
+            ("large port", "localhost:65536"),
+            ("oversized port text", f"localhost:{'9' * 5000}"),
+            ("unicode port", "localhost:\u0664\u0661\u0668\u0660"),
         ):
-            with self.subTest(origin=origin):
-                self.assertEqual(contract.is_same_origin_http(origin, host), expected)
-                self.assertEqual(service._same_origin_http(origin, host), expected)
+            with self.subTest(label=label, host=host):
+                self.assertFalse(contract.is_loopback_host(host))
+
+    def test_origin_is_absent_or_exact_http_host(self):
+        for host in ("localhost", "LOCALHOST:4180", "127.0.0.1:80", "[::1]:4180"):
+            with self.subTest(host=host, origin=None):
+                self.assertTrue(contract.is_same_origin_http(None, host))
+            with self.subTest(host=host, origin=f"http://{host}"):
+                self.assertTrue(contract.is_same_origin_http(f"http://{host}", host))
+
+    def test_malformed_cross_origin_and_normalized_origins_are_rejected(self):
+        host = "LOCALHOST:04180"
+        for label, origin in (
+            ("null", "null"),
+            ("non-http", f"https://{host}"),
+            ("uppercase scheme", f"HTTP://{host}"),
+            ("userinfo", f"http://user@{host}"),
+            ("path", f"http://{host}/"),
+            ("query", f"http://{host}?query"),
+            ("fragment", f"http://{host}#fragment"),
+            ("leading whitespace", f" http://{host}"),
+            ("trailing whitespace", f"http://{host} "),
+            ("control", f"http://{host}\x00"),
+            ("cross-origin", "http://localhost:9"),
+            ("host case normalized", "http://localhost:04180"),
+            ("port normalized", "http://LOCALHOST:4180"),
+        ):
+            with self.subTest(label=label, origin=origin):
+                self.assertFalse(contract.is_same_origin_http(origin, host))
+
+    def test_origin_rejects_missing_or_invalid_host_even_when_absent(self):
+        for host in (None, "", "example.com", "localhost/path"):
+            with self.subTest(host=host):
+                self.assertFalse(contract.is_same_origin_http(None, host))
+
+    def test_service_consumes_the_exact_shared_predicates(self):
+        self.assertIs(service._loopback, contract.is_loopback_host)
+        self.assertIs(service._same_origin_http, contract.is_same_origin_http)
 
 
 if __name__ == "__main__":
