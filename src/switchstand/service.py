@@ -109,7 +109,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
         if pathname.startswith("/api/native-stop/"):
-            self._json(405, {"code": "control_request_rejected", "outcome": "not_sent"}); return
+            self._json(405, {"code": "control_request_rejected", "outcome": "not_sent"})
+            return
         if pathname == "/api/workbench":
             self._json(200, cast("Server", self.server).runtime.snapshot())
             return
@@ -200,7 +201,12 @@ def main(argv: list[str] | None = None) -> int:
         if not _loopback(args.host):
             parser.error("native mode requires a loopback --host")
         runtime: Runtime | NativeBoard = NativeBoard(
-            lambda: CodexAppServer(args.app_server_socket, timeout_seconds=3, bounded_stop=True), args.native_root_thread_id
+            lambda: CodexAppServer(
+                args.app_server_socket,
+                timeout_seconds=3,
+                bounded_stop=True,
+            ),
+            args.native_root_thread_id,
         )
     else:
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)

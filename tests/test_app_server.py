@@ -15,6 +15,31 @@ from switchstand.engine import CodexAdapter, _message_marker
 
 
 class AppServerProtocolTests(unittest.TestCase):
+    def test_bounded_reads_enforce_one_wall_clock_deadline_across_partial_reads(self):
+        class FakeSocket:
+            def __init__(self):
+                self.timeouts = []
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+        class DripReader:
+            def __init__(self):
+                self.chunks = iter((b"a", b"b"))
+
+            def read1(self, _length):
+                return next(self.chunks)
+
+        client = object.__new__(CodexAppServer)
+        client.socket = cast(Any, FakeSocket())
+        client.reader = cast(Any, DripReader())
+
+        with patch("switchstand.app_server.time.monotonic", side_effect=[1.0, 1.6]):
+            with self.assertRaises(TimeoutError):
+                client._read_exact(2, deadline=1.5)
+
+        self.assertEqual(client.socket.timeouts, [0.5])
+
     def test_bounded_server_message_wait_reports_timeout_and_restores_socket_timeout(self):
         class FakeSocket:
             def __init__(self):

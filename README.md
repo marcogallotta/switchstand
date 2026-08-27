@@ -1,12 +1,13 @@
 # Switchstand
 
 Switchstand is an experimental local operator surface for Codex work. Its explicitly selected
-native mode is a read-only flight board over one real Codex root and its spawned descendants.
+native mode observes one real Codex root and its descendants and can request cancellation of one
+exact active turn after explicit confirmation.
 The default legacy mode remains a fixed two-role reliability spike with durable messages,
 checkpoints, attempt controls, and conservative failure handling.
 
 This repository is a clean prototype, not a production orchestrator. It keeps two bounded
-slices easy to inspect: truthful read-only observation of a native tree, and the legacy
+slices easy to inspect: truthful native-tree observation with one emergency control, and the legacy
 flat-file reliability mechanisms for ordered messages, restart reconciliation, controls, and
 result fencing.
 
@@ -35,7 +36,7 @@ stop background processes or descendants.
 - Inferring completion, progress, failure, staleness, intent, or a complete event history
 - Abstracting multiple model providers behind a common adapter
 
-## Quick start: native read-only mode
+## Quick start: native observation mode
 
 Requirements: Python 3.11+ and a running Codex app-server Unix socket. No third-party runtime
 packages or frontend build are required.

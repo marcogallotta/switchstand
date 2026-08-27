@@ -10,17 +10,28 @@ from typing import Any, Callable, Mapping, Protocol
 
 THREAD_STATUSES = frozenset({"active", "idle", "systemError", "notLoaded"})
 TURN_STATUSES = frozenset({"inProgress", "completed", "failed", "interrupted"})
+TERMINAL_OUTCOMES = frozenset({"confirmed", "not_confirmed", "rejected", "not_sent"})
 
 
 class StopClient(Protocol):
-    def stop_request(self, method: str, params: Mapping[str, Any], *,
-        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0) -> tuple[str, Mapping[str, Any] | None]: ...
+    def stop_request(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+    ) -> tuple[str, Mapping[str, Any] | None]: ...
 
 
 @dataclass
 class _Receipt:
-    agent_ref: str; thread_id: str; turn_id: str
-    expires_at: float; used: bool = False; outcome: str = "not_sent"
+    agent_ref: str
+    thread_id: str
+    turn_id: str
+    expires_at: float
+    used: bool = False
+    outcome: str = "not_sent"
 
 
 def _project(value: Mapping[str, Any], thread_id: str) -> tuple[str, dict[str, str]] | None:
@@ -176,5 +187,8 @@ class NativeStop:
         else:
             outcome = "unknown"
         with self._lock:
-            receipt.outcome = outcome
+            if receipt.outcome in TERMINAL_OUTCOMES:
+                outcome = receipt.outcome
+            else:
+                receipt.outcome = outcome
         return {"code": "stop_result", "operationRef": reference, "outcome": outcome}

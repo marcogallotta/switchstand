@@ -168,6 +168,38 @@ class NativeStopTests(unittest.TestCase):
         self.assertEqual(sorted(value["outcome"] for value in results), ["not_sent", "requested"])
         self.assertEqual([method for method, _ in replies.calls].count("turn/interrupt"), 1)
 
+    def test_concurrent_status_failure_cannot_regress_a_terminal_outcome(self):
+        replies = Replies(("ok", read_result()), ("ok", read_result()), ("ok", {}))
+        stop, reference = self.prepared(replies)
+        operation = stop.commit(reference)["operationRef"]
+        both_reading = threading.Barrier(2)
+        confirmed = threading.Event()
+
+        def racing_read(_thread_id):
+            index = both_reading.wait()
+            if index == 0:
+                return "ok", _project(read_result(status="interrupted"), "thread-1")
+            confirmed.wait(1)
+            return "unavailable", None
+
+        stop._read = racing_read
+        results = []
+
+        def check_status():
+            result = stop.status(operation)
+            results.append(result)
+            if result["outcome"] == "confirmed":
+                confirmed.set()
+
+        threads = [threading.Thread(target=check_status) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(2)
+
+        self.assertEqual([result["outcome"] for result in results], ["confirmed", "confirmed"])
+        self.assertEqual(stop.status(operation)["outcome"], "confirmed")
+
     def test_acknowledgement_classifications_are_truthful_and_never_retried(self):
         expected = {
             "rejected": "rejected",
