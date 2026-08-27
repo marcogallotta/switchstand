@@ -24,10 +24,13 @@ jobs:
           cache: npm
       - run: python -m pip install --requirement requirements-dev.lock
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: ./scripts/quality
         env:
           QUALITY_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
       - run: PYTHONPATH=src python -m unittest discover -s tests -v
       - run: PYTHONPATH=src python -m compileall -q src tests scripts
       - run: node --test tests/browser_focus.test.js
+      - run: PYTHONPATH=src python tests/integration/app_server_transport_test.py -v
+      - run: ./node_modules/.bin/playwright test tests/browser/focus_chromium.spec.js
       - run: node --check src/switchstand/static/app.js

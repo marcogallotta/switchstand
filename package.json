@@ -2,6 +2,7 @@
   "name": "switchstand-quality-tools",
   "private": true,
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "jscpd": "4.2.5",
     "pyright": "1.1.411"
   }

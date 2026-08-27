@@ -53,8 +53,22 @@ node --check src/switchstand/static/app.js
 ```
 
 The first two commands are required for every code change. Run the JavaScript syntax check when
-Node is available and for every browser-code change. The browser regression uses Node's built-in
-test runner and a minimal DOM fixture, so it adds no package-manager or framework dependency.
+Node is available and for every browser-code change. The Node regression is an honest fake-DOM
+seam. `./scripts/quality` also rejects disabled, focused, or retried tests.
+
+Run the two real local boundaries separately:
+
+```sh
+PYTHONPATH=src python tests/integration/app_server_transport_test.py -v
+./node_modules/.bin/playwright install chromium
+./node_modules/.bin/playwright test tests/browser/focus_chromium.spec.js
+```
+
+The transport test uses a temporary local Unix socket and a scripted WebSocket/JSON-RPC peer; it
+does not launch Codex or use a network. The Chromium journey serves the production browser assets
+on loopback, forces 50 one-second textarea-replacing refreshes, and verifies draft, focus, and
+selection every time. Playwright is pinned, Chromium-only, one-worker, and zero-retry. Setup,
+timeout, or assertion failure is nonzero; neither boundary retries to green.
 
 ## Run
 
