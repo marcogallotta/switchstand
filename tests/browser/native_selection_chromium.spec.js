@@ -201,7 +201,7 @@ test("input sends the exact selected pair and unchanged text with only truthful 
     if (index === 0) {
       const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
       const sentResponse = page.waitForResponse(`${origin}/api/native-input`);
-      await page.evaluate(() => {
+      const submittedDraft = await page.evaluate(() => {
         const state = nativeSelectionController.getState();
         nativeSelectionController.supplySeam({
           selection: state.candidate,
@@ -211,7 +211,9 @@ test("input sends the exact selected pair and unchanged text with only truthful 
           bubbles: true,
           cancelable: true,
         }));
+        return document.querySelector("#native-input").value;
       });
+      expect(submittedDraft).toBe(values[index]);
       await sentRequest;
       expect((await sentResponse).status()).toBe(200);
       await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length)

@@ -465,11 +465,14 @@ nativeInput?.addEventListener("input", () => {
 });
 nativeInputForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const confirmedTarget = nativeSelectionController?.getState().currentTarget;
   const target = currentInputTarget();
   if (!target) return;
   const key = pairKey(target);
   if (nativeInputRequests.has(key)) return;
-  const text = nativeInput.value;
+  const bufferedDraft = nativeInputDrafts.get(key);
+  const text = confirmedTarget ? nativeInput.value : bufferedDraft ?? nativeInput.value;
+  if (!confirmedTarget && bufferedDraft !== undefined) nativeInput.value = bufferedDraft;
   nativeInputDrafts.set(key, text);
   const requestRef = ++nextInputRequest;
   nativeInputRequests.set(key, requestRef);
