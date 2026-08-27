@@ -106,7 +106,7 @@ const state = {
   messages: [],
 };
 
-test("background refresh preserves the focused message draft and selection", async () => {
+test("fake-DOM seam: background refresh preserves the focused message draft and selection", async () => {
   const document = new Document();
   let intervalCallback;
   const context = {

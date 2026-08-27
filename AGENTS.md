@@ -27,3 +27,7 @@ Run `./scripts/quality` before handoff. Do not weaken, bypass, or broaden the qu
 an implementation task. Changes to the gate, its configuration, locks, or CI workflow require
 explicit human review. If a requested change needs another surface or larger scope, stop and
 return it to the coordinator instead of expanding the task.
+
+Tests must remain enabled and single-run: no skip/focus/todo/fixme or retry/rerun escape hatches.
+Run the local Unix transport and real-Chromium journeys when their boundary is affected; a fake
+DOM test is seam evidence only.

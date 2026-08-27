@@ -5,6 +5,9 @@ __pycache__/
 .venv/
 .venv-*/
 node_modules/
+pip-*/
+playwright-report/
+test-results/
 report/
 build/
 dist/

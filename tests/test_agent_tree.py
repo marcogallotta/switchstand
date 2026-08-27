@@ -8,7 +8,6 @@ import unittest
 from switchstand.agent_tree import (
     AgentTreeAdapter,
     AgentTreeEvidenceError,
-    NATIVE_THREAD_STATUS_TYPES,
     THREAD_SOURCE_KINDS,
 )
 
@@ -88,6 +87,14 @@ class AgentTreeProtocolTests(unittest.TestCase):
         )
         self.assertEqual(observed["threads"][1]["parentThreadId"], "root-1")
         self.assertEqual(observed["threads"][1]["forkedFromId"], "unrelated-history-fork")
+        self.assertEqual(
+            [thread["sessionId"] for thread in observed["threads"]],
+            [
+                "opaque-root-session",
+                "opaque-child-session",
+                "opaque-grandchild-session",
+            ],
+        )
         self.assertNotEqual(
             observed["threads"][1]["parentThreadId"],
             observed["threads"][1]["forkedFromId"],
@@ -143,19 +150,6 @@ class AgentTreeProtocolTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "missing_intermediate_parent")
         self.assertEqual(raised.exception.phase, "lineage_validation")
 
-    def test_session_ids_are_required_opaque_evidence_not_lineage(self):
-        client = FixtureClient()
-        observed = AgentTreeAdapter(client).observe_tree("root-1")
-
-        self.assertEqual(
-            [thread["sessionId"] for thread in observed["threads"]],
-            [
-                "opaque-root-session",
-                "opaque-child-session",
-                "opaque-grandchild-session",
-            ],
-        )
-
     def test_empty_session_id_fails_each_thread_record_closed(self):
         cases = []
 
@@ -174,22 +168,30 @@ class AgentTreeProtocolTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, expected_code)
                 self.assertEqual(raised.exception.phase, expected_phase)
 
-    def test_native_status_event_is_preserved_and_idle_is_not_done(self):
+    def test_native_status_event_projects_exact_supported_cases_and_rejects_others(self):
         adapter = AgentTreeAdapter(FixtureClient())
-        observed = adapter.status_change(fixture("thread_status_changed.json"))
-
-        self.assertEqual(
-            observed,
-            {
-                "threadId": "child-1",
-                "status": {"type": "active", "activeFlags": ["waitingOnUserInput"]},
-            },
+        cases = (
+            ({"type": "active", "activeFlags": ["waitingOnUserInput"]}, None),
+            ({"type": "idle"}, None),
+            ({"type": "systemError"}, None),
+            ({"type": "notLoaded"}, None),
+            ({"type": "done"}, "unsupported_status_or_flag"),
+            ({"type": "active", "activeFlags": ["invented"]}, "unsupported_status_or_flag"),
         )
-        self.assertEqual(
-            NATIVE_THREAD_STATUS_TYPES,
-            {"active", "idle", "systemError", "notLoaded"},
-        )
-        self.assertNotIn("done", NATIVE_THREAD_STATUS_TYPES)
+        for status, error_code in cases:
+            notification = {
+                "method": "thread/status/changed",
+                "params": {"threadId": "child-1", "status": status},
+            }
+            with self.subTest(status=status):
+                if error_code:
+                    with self.assertRaises(AgentTreeEvidenceError) as raised:
+                        adapter.status_change(notification)
+                    self.assertEqual(raised.exception.code, error_code)
+                else:
+                    observed = adapter.status_change(notification)
+                    self.assertEqual(observed, {"threadId": "child-1", "status": status})
+                    self.assertNotIn("done", observed)
 
     def test_idle_send_starts_normal_turn_without_steering(self):
         client = FixtureClient()
