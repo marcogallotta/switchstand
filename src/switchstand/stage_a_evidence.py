@@ -1,13 +1,14 @@
 """Safe projection and validation for retained native-tree probe evidence."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from .agent_tree import AgentTreeAdapter, THREAD_SOURCE_KINDS
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SIMPLE_SUBAGENT_KINDS = frozenset(
     {"review", "compact", "thread_spawn", "other", "unknown"}
 )
@@ -41,11 +42,37 @@ class ProbeExecutionError(RuntimeError):
         self.phase = phase
 
 
+class EvidenceIdentifiers:
+    """Assign stable run-local references without retaining native identifiers."""
+
+    def __init__(self) -> None:
+        self._thread_refs: dict[str, str] = {}
+        self._session_refs: dict[str, str] = {}
+
+    def thread_ref(self, thread_id: str | None) -> str | None:
+        if thread_id is None:
+            return None
+        if thread_id not in self._thread_refs:
+            self._thread_refs[thread_id] = f"thread-{len(self._thread_refs) + 1}"
+        return self._thread_refs[thread_id]
+
+    def session_ref(self, session_id: str) -> str:
+        if session_id not in self._session_refs:
+            self._session_refs[session_id] = f"session-{len(self._session_refs) + 1}"
+        return self._session_refs[session_id]
+
+
+@dataclass(frozen=True)
+class SnapshotCapture:
+    evidence: dict[str, Any]
+    exact_threads: tuple[dict[str, Any], ...]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _source_evidence(value: Any, *, expected_parent_id: Any) -> Any:
+def _source_evidence(value: Any) -> Any:
     """Project only explicitly approved native source fields and safe value shapes."""
     if isinstance(value, str):
         return value if value in THREAD_SOURCE_KINDS else "unknown"
@@ -68,9 +95,6 @@ def _source_evidence(value: Any, *, expected_parent_id: Any) -> Any:
         return {"subAgent": "unknown"}
 
     projected: dict[str, Any] = {}
-    parent_id = spawn.get("parent_thread_id")
-    if isinstance(parent_id, str) and parent_id and parent_id == expected_parent_id:
-        projected["parent_thread_id"] = parent_id
     depth = spawn.get("depth")
     if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
         projected["depth"] = depth
@@ -87,7 +111,10 @@ def _status_evidence(status: Mapping[str, Any]) -> dict[str, Any]:
     return projected
 
 
-def _thread_evidence(thread: Mapping[str, Any]) -> dict[str, Any]:
+def _thread_evidence(
+    thread: Mapping[str, Any],
+    identifiers: EvidenceIdentifiers,
+) -> dict[str, Any]:
     timestamps: dict[str, int | float] = {}
     for field in ("createdAt", "updatedAt"):
         value = thread.get(field)
@@ -99,13 +126,10 @@ def _thread_evidence(thread: Mapping[str, Any]) -> dict[str, Any]:
             )
         timestamps[field] = value
     return {
-        "id": thread["id"],
-        "parentThreadId": thread.get("parentThreadId"),
-        "sessionId": thread["sessionId"],
-        "source": _source_evidence(
-            thread.get("source"),
-            expected_parent_id=thread.get("parentThreadId"),
-        ),
+        "threadRef": identifiers.thread_ref(thread["id"]),
+        "parentThreadRef": identifiers.thread_ref(thread.get("parentThreadId")),
+        "sessionRef": identifiers.session_ref(thread["sessionId"]),
+        "source": _source_evidence(thread.get("source")),
         "status": _status_evidence(thread["status"]),
         **timestamps,
     }
@@ -115,11 +139,13 @@ def snapshot(
     adapter: AgentTreeAdapter,
     root_thread_id: str,
     now: Callable[[], str],
-) -> dict[str, Any]:
+    identifiers: EvidenceIdentifiers,
+) -> SnapshotCapture:
     started_at = now()
     tree = adapter.observe_tree(root_thread_id)
     completed_at = now()
-    threads = [_thread_evidence(thread) for thread in tree["threads"]]
+    exact_threads = tuple(tree["threads"])
+    threads = [_thread_evidence(thread, identifiers) for thread in exact_threads]
     if len(threads) < 2:
         raise ProbeEvidenceError(
             "no_spawned_descendant",
@@ -145,17 +171,28 @@ def snapshot(
             "not every descendant page requested all source kinds",
             phase="descendant_list",
         )
-    return {
+    retained_pages = [
+        {
+            "page": page["page"],
+            "requestCursorPresent": page.get("requestCursor") is not None,
+            "resultCount": page["resultCount"],
+            "nextCursorPresent": page.get("nextCursor") is not None,
+            "sourceKinds": page["sourceKinds"],
+        }
+        for page in pages
+    ]
+    evidence = {
         "observationWindow": {"startedAt": started_at, "completedAt": completed_at},
-        "rootThreadId": tree["rootThreadId"],
+        "rootThreadRef": identifiers.thread_ref(tree["rootThreadId"]),
         "sourceKindsRequested": tree["sourceKinds"],
         "pagination": {
             "complete": tree["paginationComplete"],
             "pagesRead": tree["pagesRead"],
-            "pages": pages,
+            "pages": retained_pages,
         },
         "threads": threads,
     }
+    return SnapshotCapture(evidence=evidence, exact_threads=exact_threads)
 
 
 def collect_notification(
@@ -163,13 +200,16 @@ def collect_notification(
     message: Mapping[str, Any],
     observed_thread_ids: set[str],
     now: Callable[[], str],
-) -> dict[str, Any] | None:
+    identifiers: EvidenceIdentifiers,
+) -> tuple[dict[str, Any] | None, bool]:
     if message.get("method") != "thread/status/changed":
-        return None
+        return None, False
     change = adapter.status_change(message)
+    if change["threadId"] not in observed_thread_ids:
+        return None, True
     return {
         "receivedAt": now(),
-        "threadId": change["threadId"],
+        "threadRef": identifiers.thread_ref(change["threadId"]),
         "status": _status_evidence(change["status"]),
-        "belongsToObservedTree": change["threadId"] in observed_thread_ids,
-    }
+        "belongsToObservedTree": True,
+    }, False

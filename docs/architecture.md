@@ -24,7 +24,11 @@ they are not retried through another mode. Stop uses the exact thread and turn i
 `stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
 owns bounded collection orchestration and the CLI over the same `CodexAppServer` and
 `AgentTreeAdapter`. Together they record local observation windows, the exact safe subset of
-native thread evidence, and cursor/count/source-kind request facts for every exhausted page.
+native thread evidence, and cursor-presence/count/source-kind request facts for every exhausted
+page. Exact native thread, parent, session, subscription, and notification identifiers remain
+in memory for matching; retained evidence uses stable run-local pseudonyms consistently across
+snapshots, revalidation, subscriptions, and related-thread events. Unrelated-thread status
+events contribute only to a count.
 It emits no previews, turns, prompt/output text, or socket paths. Native source evidence is a
 strict projection of approved classification fields and bounded value shapes: unknown nested
 metadata is dropped, while an approved path field is retained only as the constant

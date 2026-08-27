@@ -131,7 +131,10 @@ A captured event appears only under `notificationEvidence.statusChanged`, with i
 time and whether its thread belonged to the observed tree. Snapshot facts remain under
 `snapshots`. Both `--notification-wait-seconds` and `--require-status-notification` require the
 explicit subscription flag; invalid combinations exit with usage error `2` before connecting.
-The output never calls native `idle` done or silence stale.
+The output never calls native `idle` done or silence stale. Exact native identifiers and cursor
+values stay in memory: retained evidence uses consistent run-local thread/session references,
+records only cursor presence, and counts unrelated-thread status events without retaining their
+identifiers, statuses, or other details.
 
 Exit `0` means all evidence requested by that invocation was observed. Exit `3` is a transport
 failure, exit `4` is unavailable/incomplete evidence, and argparse usage errors exit `2`. Error
@@ -150,12 +153,27 @@ install also provides the `switchstand-stage-a` console command.
 PYTHONPATH=src python -m switchstand.stage_a_probe --help
 ```
 
-### 2026-08-26 live checkpoint
+### Exact-head live evidence gate
 
-The Stage A probe connected to a real local App Server socket and passed against one exact root
-plus one spawned descendant. The retained `stage-a-evidence.json` records complete one-page
-pagination with every source kind, lineage only through `parentThreadId`, distinct valid opaque
-session ids, protocol timestamps and native statuses, two exact resume acknowledgements, exact
-tree revalidation, and received `active` then `idle` status notifications. A benign diagnostic
-turn on the exact idle root produced the status transition while the probe was subscribed; the
-probe itself added no conversation history. Stage B was not started and the browser is unchanged.
+An earlier probe revision connected to a real App Server and observed the required native tree,
+but that artifact predates schema version 2's identifier pseudonymization and cursor projection.
+It is historical protocol evidence, not proof for the current head, and is not retained in the
+repository.
+
+Before claiming an exact-head live checkpoint, run the current checkout against the live socket
+and exact root while that tree changes status:
+
+```sh
+PYTHONPATH=src python -m switchstand.stage_a_probe \
+  --app-server-socket "$PWD/.switchstand/codex.sock" \
+  --root-thread-id EXACT_ROOT_THREAD_ID \
+  --subscribe-status-notifications \
+  --notification-wait-seconds 30 \
+  --require-status-notification \
+  > stage-a-evidence.json
+test "$?" -eq 0
+```
+
+Retain that generated artifact only when it came from the exact reviewed head and exits zero.
+Do not substitute the historical artifact or fixtures. Stage B remains unimplemented and the
+browser is unchanged.

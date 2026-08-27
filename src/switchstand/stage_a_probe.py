@@ -12,6 +12,7 @@ from .agent_tree import AgentTreeAdapter, AgentTreeEvidenceError
 from .app_server import CodexAppServer
 from .stage_a_evidence import (
     SCHEMA_VERSION,
+    EvidenceIdentifiers,
     ProbeEvidenceError,
     ProbeExecutionError,
     collect_notification,
@@ -136,44 +137,61 @@ def collect_evidence(
     if require_status_notification and not subscribe_status_notifications:
         raise ValueError("required notifications require explicit subscription opt-in")
     adapter = AgentTreeAdapter(client)
+    identifiers = EvidenceIdentifiers()
     snapshots: list[dict[str, Any]] = []
+    snapshot_exact_threads: list[tuple[dict[str, Any], ...]] = []
     notifications: list[dict[str, Any]] = []
     ignored_notification_count = 0
+    unrelated_status_count = 0
     subscribed_thread_ids: list[str] = []
     subscription_revalidation: dict[str, Any] | None = None
     subscription_attempted_count = 0
     subscription_acknowledged_count = 0
 
     def drain() -> None:
-        nonlocal ignored_notification_count
+        nonlocal ignored_notification_count, unrelated_status_count
         observed_ids = {
-            thread["id"] for snapshot in snapshots for thread in snapshot["threads"]
+            thread["id"]
+            for exact_threads in snapshot_exact_threads
+            for thread in exact_threads
         }
         for message in client.drain_server_messages():
-            event = collect_notification(adapter, message, observed_ids, now)
+            event, unrelated = collect_notification(
+                adapter,
+                message,
+                observed_ids,
+                now,
+                identifiers,
+            )
             if event is None:
-                ignored_notification_count += 1
+                if unrelated:
+                    unrelated_status_count += 1
+                else:
+                    ignored_notification_count += 1
             else:
                 notifications.append(event)
 
     for index in range(poll_count):
         if index:
             sleep(poll_interval_seconds)
-        snapshots.append(snapshot(adapter, root_thread_id, now))
+        capture = snapshot(adapter, root_thread_id, now, identifiers)
+        snapshots.append(capture.evidence)
+        snapshot_exact_threads.append(capture.exact_threads)
         drain()
 
     if subscribe_status_notifications:
         try:
-            exact_threads = snapshots[-1]["threads"]
+            exact_threads = snapshot_exact_threads[-1]
             subscribed_thread_ids = [thread["id"] for thread in exact_threads]
             expected_by_id = {thread["id"]: thread for thread in exact_threads}
             for thread_id in subscribed_thread_ids:
                 subscription_attempted_count += 1
                 adapter.resume_exact(thread_id)
                 subscription_acknowledged_count += 1
-            subscription_revalidation = snapshot(adapter, root_thread_id, now)
+            revalidation_capture = snapshot(adapter, root_thread_id, now, identifiers)
+            subscription_revalidation = revalidation_capture.evidence
             revalidated_ids = [
-                thread["id"] for thread in subscription_revalidation["threads"]
+                thread["id"] for thread in revalidation_capture.exact_threads
             ]
             if set(revalidated_ids) != set(subscribed_thread_ids):
                 raise ProbeEvidenceError(
@@ -182,7 +200,7 @@ def collect_evidence(
                     phase="subscription_revalidation",
                 )
             revalidated_by_id = {
-                thread["id"]: thread for thread in subscription_revalidation["threads"]
+                thread["id"]: thread for thread in revalidation_capture.exact_threads
             }
             for thread_id, expected in expected_by_id.items():
                 revalidated = revalidated_by_id[thread_id]
@@ -206,12 +224,21 @@ def collect_evidence(
                     break
                 observed_ids = {
                     thread["id"]
-                    for snapshot in snapshots
-                    for thread in snapshot["threads"]
+                    for exact_threads in snapshot_exact_threads
+                    for thread in exact_threads
                 }
-                event = collect_notification(adapter, message, observed_ids, now)
+                event, unrelated = collect_notification(
+                    adapter,
+                    message,
+                    observed_ids,
+                    now,
+                    identifiers,
+                )
                 if event is None:
-                    ignored_notification_count += 1
+                    if unrelated:
+                        unrelated_status_count += 1
+                    else:
+                        ignored_notification_count += 1
                 else:
                     notifications.append(event)
 
@@ -234,7 +261,7 @@ def collect_evidence(
             ) from exc
     else:
         relevant_notifications = [
-            event for event in notifications if event["belongsToObservedTree"]
+                event for event in notifications if event["belongsToObservedTree"]
         ]
 
     return {
@@ -248,7 +275,9 @@ def collect_evidence(
         "subscriptionEvidence": {
             "requested": subscribe_status_notifications,
             "method": "thread/resume" if subscribe_status_notifications else None,
-            "subscribedThreadIds": subscribed_thread_ids,
+            "subscribedThreadRefs": [
+                identifiers.thread_ref(thread_id) for thread_id in subscribed_thread_ids
+            ],
             "attemptedCount": subscription_attempted_count,
             "acknowledgedCount": subscription_acknowledged_count,
             "unacknowledgedAttemptCount": (
@@ -269,10 +298,12 @@ def collect_evidence(
             "waitSeconds": notification_wait_seconds,
             "statusChanged": notifications,
             "ignoredServerMessageCount": ignored_notification_count,
+            "unrelatedThreadStatusChangedCount": unrelated_status_count,
         },
         "requirementsObserved": {
             "exactRootThread": all(
-                snapshot["rootThreadId"] == root_thread_id for snapshot in snapshots
+                exact_threads[0]["id"] == root_thread_id
+                for exact_threads in snapshot_exact_threads
             ),
             "spawnedDescendant": all(len(snapshot["threads"]) > 1 for snapshot in snapshots),
             "completeParentThreadIdLineage": True,
@@ -292,6 +323,9 @@ def collect_evidence(
             "nativeStatusFieldsEmitted": ["type", "activeFlags"],
             "protocolDerivedErrorTextEmitted": False,
             "socketPathEmitted": False,
+            "nativeIdentifiers": "runLocalPseudonyms",
+            "paginationCursors": "presenceOnly",
+            "unrelatedThreadStatusDetailsEmitted": False,
         },
     }
 
