@@ -2,11 +2,25 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
+import secrets
 import threading
 import time
 from typing import Any, Callable, Mapping, Protocol, cast
 
-from .agent_tree import AgentTreeAdapter, AgentTreeClient, THREAD_SOURCE_KINDS
+from .agent_tree import AgentTreeAdapter, AgentTreeClient
+from .current_target import (
+    ExactCurrentTarget,
+    PrivateTargetRecord,
+    browser_selection_shape,
+    resolve_exact_current_target,
+)
+from .native_projection import (
+    NativeProjection,
+    _private_projection_state,
+    project_complete_tree,
+    reset_projection_activity,
+)
 from .native_stop import NativeStop, StopClient
 
 
@@ -15,7 +29,7 @@ DISCLOSURE = (
     "Polling may miss intermediate transitions; trail entries are observed endpoint "
     "differences, not native events."
 )
-_SAFE_SUBAGENT_DETAILS = frozenset({"review", "compact", "thread_spawn", "other", "unknown"})
+DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS = 5.0
 
 
 class NativeClient(Protocol):
@@ -39,26 +53,6 @@ class _StateDbOnlyClient:
         return self._client.thread_list(request)
 
 
-def _source(value: Any) -> tuple[str, str | None]:
-    if isinstance(value, str):
-        return (value if value in THREAD_SOURCE_KINDS else "unknown", None)
-    if not isinstance(value, Mapping):
-        return "unknown", None
-    subagent = value.get("subAgent")
-    if isinstance(subagent, str):
-        return "subAgent", subagent if subagent in _SAFE_SUBAGENT_DETAILS else "unknown"
-    if isinstance(subagent, Mapping) and isinstance(subagent.get("thread_spawn"), Mapping):
-        return "subAgent", "thread_spawn"
-    return "unknown", None
-
-
-def _timestamp(thread: Mapping[str, Any], field: str) -> float:
-    value = thread.get(field)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("native timestamp unavailable")
-    return float(value)
-
-
 class NativeBoard:
     """Poll complete native-tree passes and retain only a safe browser projection."""
 
@@ -69,6 +63,7 @@ class NativeBoard:
         *,
         poll_interval_seconds: float = 1.0,
         trail_limit: int = 50,
+        maximum_observation_age_seconds: float = DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS,
         wall_clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -76,23 +71,32 @@ class NativeBoard:
             raise ValueError("an exact native root thread id is required")
         if poll_interval_seconds <= 0 or trail_limit <= 0:
             raise ValueError("poll interval and trail limit must be positive")
+        if (
+            isinstance(maximum_observation_age_seconds, bool)
+            or not isinstance(maximum_observation_age_seconds, (int, float))
+            or not math.isfinite(float(maximum_observation_age_seconds))
+            or maximum_observation_age_seconds < 0
+        ):
+            raise ValueError("maximum observation age must be a finite nonnegative number")
         self._client_factory = client_factory
         self._root_thread_id = root_thread_id
         self._poll_interval = poll_interval_seconds
         self._trail_limit = trail_limit
+        self._maximum_observation_age = float(maximum_observation_age_seconds)
         self._wall_clock = wall_clock
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._labels: dict[str, str] = {}
-        self._active_since: dict[str, float] = {}
-        self._endpoints: dict[str, dict[str, Any]] = {}
-        self._agents: list[dict[str, Any]] = []
-        self._trail: list[dict[str, Any]] = []
+        self._closed = False
+        self._observation_run_ref = secrets.token_urlsafe(24)
+        self._projection: NativeProjection | None = None
         self._completed_at: float | None = None
         self._connected = False
         self._error_code: str | None = None
+        self._target_identities: dict[str, ExactCurrentTarget] = {}
+        self._native_ids_by_target: dict[ExactCurrentTarget, str] = {}
+        self._target_records: list[PrivateTargetRecord] = []
         self._stopper = NativeStop(cast(Callable[[], StopClient], client_factory), self._resolve_active)
 
     def start(self) -> None:
@@ -104,92 +108,35 @@ class NativeBoard:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+        with self._lock:
+            self._closed = True
+            self._connected = False
 
     def _run(self) -> None:
         while not self._stop.wait(self._poll_interval):
             self.poll_once()
 
-    def _label(self, thread_id: str) -> str:
-        if thread_id not in self._labels:
-            self._labels[thread_id] = f"agent-{len(self._labels) + 1}"
-        return self._labels[thread_id]
-
-    def _project(self, threads: list[Mapping[str, Any]], completed_mono: float) -> list[dict[str, Any]]:
-        by_id = {str(thread["id"]): thread for thread in threads}
-        depth_cache: dict[str, int] = {}
-
-        def depth(thread_id: str) -> int:
-            if thread_id in depth_cache:
-                return depth_cache[thread_id]
-            parent = by_id[thread_id].get("parentThreadId")
-            result = 0 if parent is None else depth(str(parent)) + 1
-            depth_cache[thread_id] = result
-            return result
-
-        projected = []
-        current_ids = set(by_id)
-        self._active_since = {
-            thread_id: started
-            for thread_id, started in self._active_since.items()
-            if thread_id in current_ids
+    def _selection_observation(self) -> dict[str, Any]:
+        if self._projection is None:
+            labels: Mapping[str, str] = {}
+            endpoints: Mapping[str, Mapping[str, Any]] = {}
+        else:
+            labels, _, endpoints, _ = _private_projection_state(self._projection)
+        present = set(endpoints)
+        return {
+            "observationRunRef": self._observation_run_ref,
+            "connected": self._connected and not self._closed,
+            "latestCompletePassCompletedAt": self._completed_at,
+            "agentRecords": [
+                {"agentRef": ref, "present": ref in present}
+                for ref in labels.values()
+            ],
         }
-        for thread in threads:
-            thread_id = str(thread["id"])
-            ref = self._label(thread_id)
-            parent_id = thread.get("parentThreadId")
-            status = dict(thread["status"])
-            status_type = str(status["type"])
-            was_active = self._endpoints.get(thread_id, {}).get("status") == "active"
-            if status_type == "active":
-                if not was_active or thread_id not in self._active_since:
-                    self._active_since[thread_id] = completed_mono
-                active_seconds = completed_mono - self._active_since[thread_id]
-            else:
-                self._active_since.pop(thread_id, None)
-                active_seconds = 0.0
-            source_kind, source_detail = _source(thread.get("source"))
-            projected.append(
-                {
-                    "agentRef": ref,
-                    "label": f"Agent {ref.removeprefix('agent-')}",
-                    "parentRef": self._label(str(parent_id)) if parent_id is not None else None,
-                    "depth": depth(thread_id),
-                    "sourceKind": source_kind,
-                    "sourceDetail": source_detail,
-                    "createdAt": _timestamp(thread, "createdAt"),
-                    "updatedAt": _timestamp(thread, "updatedAt"),
-                    "status": status_type,
-                    "activeFlags": list(status.get("activeFlags", [])) if status_type == "active" else [],
-                    "activeObservedSeconds": round(active_seconds, 3),
-                }
-            )
-        return projected
-
-    @staticmethod
-    def _endpoint(agent: Mapping[str, Any]) -> dict[str, Any]:
-        return {key: deepcopy(value) for key, value in agent.items() if key not in {"label", "activeObservedSeconds"}}
-
-    def _record_differences(self, agents: list[dict[str, Any]], observed_at: float) -> None:
-        current = {agent["agentRef"]: self._endpoint(agent) for agent in agents}
-        previous = {self._label(thread_id): value for thread_id, value in self._endpoints.items()}
-        entries = []
-        for ref in sorted(set(previous) | set(current)):
-            before, after = previous.get(ref), current.get(ref)
-            if before is None or after is None:
-                changes = {"presence": {"from": "absent" if before is None else "present", "to": "present" if after is not None else "absent"}}
-            else:
-                changes = {
-                    key: {"from": before.get(key), "to": after.get(key)}
-                    for key in sorted(set(before) | set(after))
-                    if before.get(key) != after.get(key)
-                }
-            if changes:
-                entries.append({"observedAt": observed_at, "agentRef": ref, "changes": changes})
-        self._trail = (self._trail + entries)[-self._trail_limit :]
-        id_by_ref = {self._label(thread_id): thread_id for thread_id in self._labels}
-        self._endpoints = {id_by_ref[ref]: value for ref, value in current.items()}
 
     def poll_once(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
         client: NativeClient | None = None
         try:
             client = self._client_factory()
@@ -199,9 +146,26 @@ class NativeBoard:
             completed_mono = self._monotonic()
             threads = list(tree["threads"])
             with self._lock:
-                agents = self._project(threads, completed_mono)
-                self._record_differences(agents, completed_wall)
-                self._agents = agents
+                if self._closed:
+                    return
+                projection = project_complete_tree(
+                    threads,
+                    prior_projection=self._projection,
+                    completed_at=completed_wall,
+                    completed_monotonic=completed_mono,
+                    trail_limit=self._trail_limit,
+                )
+                target_records = []
+                _, _, _, targets = _private_projection_state(projection)
+                for agent_ref, native_id in targets:
+                    target = self._target_identities.get(native_id)
+                    if target is None:
+                        target = ExactCurrentTarget()
+                        self._target_identities[native_id] = target
+                        self._native_ids_by_target[target] = native_id
+                    target_records.append(PrivateTargetRecord(agent_ref, target))
+                self._projection = projection
+                self._target_records = target_records
                 self._completed_at = completed_wall
                 self._connected = True
                 self._error_code = None
@@ -209,9 +173,8 @@ class NativeBoard:
             with self._lock:
                 self._connected = False
                 self._error_code = SAFE_ERROR
-                self._active_since.clear()
-                for agent in self._agents:
-                    agent["activeObservedSeconds"] = 0.0
+                if self._projection is not None:
+                    self._projection = reset_projection_activity(self._projection)
         finally:
             if client is not None:
                 try:
@@ -223,7 +186,7 @@ class NativeBoard:
         with self._lock:
             completed_at = self._completed_at
             now = self._wall_clock()
-            agents = deepcopy(self._agents)
+            agents = [] if self._projection is None else deepcopy(self._projection.agents)
             for agent in agents:
                 agent["updatedAgeSeconds"] = round(max(0.0, now - agent["updatedAt"]), 3)
             return {
@@ -238,19 +201,67 @@ class NativeBoard:
                     "kind": "completed_multi_request_pass",
                 },
                 "agents": agents,
-                "trail": deepcopy(self._trail),
+                "trail": [] if self._projection is None else deepcopy(self._projection.trail),
                 "trailLimit": self._trail_limit,
                 "disclosure": DISCLOSURE,
             }
 
+    def resolve_current_target(
+        self,
+        selection: Any,
+        *,
+        now: Any,
+        maximum_observation_age_seconds: Any,
+    ) -> dict[str, Any] | ExactCurrentTarget:
+        """Resolve the exact current private target for the #19 action lane."""
+        with self._lock:
+            return resolve_exact_current_target(
+                selection,
+                self._selection_observation(),
+                tuple(self._target_records),
+                now=now,
+                maximum_observation_age_seconds=maximum_observation_age_seconds,
+            )
+
+    def browser_selection(
+        self,
+        agent_ref: Any,
+        *,
+        now: Any,
+        maximum_observation_age_seconds: Any,
+    ) -> dict[str, Any]:
+        """Produce the minimal safe #17 selection pair/snapshot seam."""
+        with self._lock:
+            selection = {
+                "observationRunRef": self._observation_run_ref,
+                "agentRef": agent_ref,
+            }
+            return browser_selection_shape(
+                selection,
+                self._selection_observation(),
+                now=now,
+                maximum_observation_age_seconds=maximum_observation_age_seconds,
+            )
+
     def _resolve_active(self, agent_ref: str) -> str | None:
         with self._lock:
-            if not self._connected:
+            selection = {
+                "observationRunRef": self._observation_run_ref,
+                "agentRef": agent_ref,
+            }
+            target = resolve_exact_current_target(
+                selection,
+                self._selection_observation(),
+                tuple(self._target_records),
+                now=self._wall_clock(),
+                maximum_observation_age_seconds=self._maximum_observation_age,
+            )
+            if not isinstance(target, ExactCurrentTarget):
                 return None
-            for thread_id, endpoint in self._endpoints.items():
-                if self._labels.get(thread_id) == agent_ref and endpoint.get("status") == "active":
-                    return thread_id
-        return None
+            agents = [] if self._projection is None else self._projection.agents
+            matches = [agent for agent in agents
+                if agent.get("agentRef") == agent_ref and agent.get("status") == "active"]
+            return self._native_ids_by_target.get(target) if len(matches) == 1 else None
 
     def prepare_stop(self, agent_ref: Any) -> dict[str, str]:
         return self._stopper.prepare(agent_ref)

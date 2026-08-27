@@ -9,6 +9,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from switchstand.current_target import ExactCurrentTarget
 from switchstand.native_board import NativeBoard
 from switchstand.service import PACKAGE_ROOT, Server, _loopback
 
@@ -70,6 +71,20 @@ class ClientFactory:
         if isinstance(value, Exception):
             raise value
         return value
+
+
+def target_error_code(value: dict[str, Any] | ExactCurrentTarget) -> Any:
+    if not isinstance(value, dict):
+        raise AssertionError("expected a frozen safe error")
+    return value["code"]
+
+
+class FailSecondPageClient(FakeClient):
+    def thread_list(self, params):
+        if "cursor" in params:
+            self.list_requests.append(dict(params))
+            raise OSError("private pagination failure")
+        return super().thread_list(params)
 
 
 def client_with_status(status: str = "active", *, updated: float = 100.0) -> FakeClient:
@@ -183,6 +198,167 @@ class NativeBoardTests(unittest.TestCase):
         self.assertIsNone(board._resolve_active("unknown"))
         board.poll_once()
         self.assertIsNone(board._resolve_active("agent-1"))
+
+    def test_run_identity_is_stable_within_run_and_old_pair_cannot_retarget(self):
+        clock = Clock()
+        first_board = NativeBoard(
+            ClientFactory(client_with_status(), client_with_status(updated=101)),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+        )
+        first_board.poll_once()
+        first_shape = first_board.browser_selection(
+            "agent-1", now=100.0, maximum_observation_age_seconds=5.0
+        )
+        old_pair = first_shape["selection"]
+        first_target = first_board.resolve_current_target(
+            old_pair, now=100.0, maximum_observation_age_seconds=5.0
+        )
+        self.assertIsInstance(first_target, ExactCurrentTarget)
+
+        clock.value = 101.0
+        first_board.poll_once()
+        second_shape = first_board.browser_selection(
+            "agent-1", now=101.0, maximum_observation_age_seconds=5.0
+        )
+        second_target = first_board.resolve_current_target(
+            old_pair, now=101.0, maximum_observation_age_seconds=5.0
+        )
+        self.assertEqual(second_shape["selection"]["observationRunRef"], old_pair["observationRunRef"])
+        self.assertEqual(second_target, first_target)
+
+        new_board = NativeBoard(
+            lambda: client_with_status(), "raw-root", wall_clock=clock, monotonic=clock
+        )
+        new_board.poll_once()
+        new_pair = new_board.browser_selection(
+            "agent-1", now=101.0, maximum_observation_age_seconds=5.0
+        )["selection"]
+        self.assertNotEqual(new_pair["observationRunRef"], old_pair["observationRunRef"])
+        self.assertEqual(
+            target_error_code(new_board.resolve_current_target(
+                old_pair, now=101.0, maximum_observation_age_seconds=5.0
+            )),
+            "INVALID_AGENT_REF",
+        )
+        new_target = new_board.resolve_current_target(
+            new_pair, now=101.0, maximum_observation_age_seconds=5.0
+        )
+        self.assertIsInstance(new_target, ExactCurrentTarget)
+        self.assertNotEqual(new_target, first_target)
+
+        invalid = new_board.browser_selection(
+            "raw-root",
+            now=101.0,
+            maximum_observation_age_seconds=5.0,
+        )
+        self.assertIsNone(invalid["selection"])
+        self.assertEqual(invalid["snapshot"]["code"], "INVALID_AGENT_REF")
+        self.assertNotIn("raw-root", json.dumps(invalid))
+
+    def test_incomplete_pagination_retains_complete_projection_time_run_and_target_index(self):
+        clock = Clock()
+        partial = FailSecondPageClient(
+            native_thread("raw-root", updated=105.0),
+            [
+                {
+                    "data": [
+                        native_thread("raw-child", parent="raw-root", updated=105.0),
+                        native_thread("raw-partial", parent="raw-root", updated=105.0),
+                    ],
+                    "nextCursor": "secret-cursor",
+                }
+            ],
+        )
+        board = NativeBoard(
+            ClientFactory(client_with_status(), partial),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+        )
+        board.poll_once()
+        before = board.snapshot()
+        pair = board.browser_selection(
+            "agent-1", now=100.0, maximum_observation_age_seconds=10.0
+        )["selection"]
+        target = board.resolve_current_target(
+            pair, now=100.0, maximum_observation_age_seconds=10.0
+        )
+        records_before = tuple(board._target_records)
+
+        clock.value = 105.0
+        board.poll_once()
+        failed = board.snapshot()
+        failed_shape = board.browser_selection(
+            "agent-1", now=105.0, maximum_observation_age_seconds=10.0
+        )
+
+        self.assertFalse(failed["observation"]["connected"])
+        self.assertTrue(failed["observation"]["historical"])
+        self.assertEqual(failed["observation"]["completedAt"], before["observation"]["completedAt"])
+        self.assertEqual(failed["trail"], before["trail"])
+        self.assertEqual(tuple(board._target_records), records_before)
+        self.assertEqual(failed_shape["selection"], pair)
+        self.assertEqual(failed_shape["snapshot"]["code"], "APP_SERVER_DISCONNECTED")
+        self.assertEqual(
+            target_error_code(board.resolve_current_target(
+                pair, now=105.0, maximum_observation_age_seconds=10.0
+            )),
+            "APP_SERVER_DISCONNECTED",
+        )
+        self.assertIsInstance(target, ExactCurrentTarget)
+        self.assertNotIn("raw-partial", json.dumps(failed))
+
+    def test_absent_known_agent_and_stale_or_closed_board_fail_closed(self):
+        clock = Clock()
+        root_only = FakeClient(
+            native_thread("raw-root", updated=101.0),
+            [{"data": [], "nextCursor": None}],
+        )
+        board = NativeBoard(
+            ClientFactory(client_with_status(), root_only),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+            maximum_observation_age_seconds=1.0,
+        )
+        board.poll_once()
+        child_pair = board.browser_selection(
+            "agent-2", now=100.0, maximum_observation_age_seconds=1.0
+        )["selection"]
+        clock.value = 101.0
+        board.poll_once()
+        self.assertEqual(
+            target_error_code(board.resolve_current_target(
+                child_pair, now=101.0, maximum_observation_age_seconds=1.0
+            )),
+            "AGENT_NOT_PRESENT",
+        )
+        root_pair = board.browser_selection(
+            "agent-1", now=101.0, maximum_observation_age_seconds=1.0
+        )["selection"]
+        self.assertIsInstance(
+            board.resolve_current_target(
+                root_pair, now=102.0, maximum_observation_age_seconds=1.0
+            ),
+            ExactCurrentTarget,
+        )
+        self.assertEqual(
+            target_error_code(board.resolve_current_target(
+                root_pair, now=102.001, maximum_observation_age_seconds=1.0
+            )),
+            "OBSERVATION_STALE",
+        )
+        clock.value = 102.001
+        self.assertIsNone(board._resolve_active("agent-1"))
+        board.close()
+        self.assertEqual(
+            target_error_code(board.resolve_current_target(
+                root_pair, now=101.0, maximum_observation_age_seconds=10.0
+            )),
+            "APP_SERVER_DISCONNECTED",
+        )
 
     def test_http_api_serves_native_snapshot_and_rejects_controls(self):
         board = NativeBoard(lambda: client_with_status(), "raw-root")
