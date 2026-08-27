@@ -8,6 +8,7 @@ import socket
 import struct
 import tempfile
 import threading
+from typing import cast
 import unittest
 
 from switchstand.app_server import CodexAppServer
@@ -158,7 +159,8 @@ class ScriptedPeer(threading.Thread):
         )
         listing = self.message(connection)
         self.assert_equal(listing["method"], "thread/list")
-        self.assert_equal(listing["params"]["useStateDbOnly"], True)
+        listing_params = cast(dict[str, object], listing["params"])
+        self.assert_equal(listing_params["useStateDbOnly"], True)
         if self.observer_status == "disconnect":
             return
         send_json(
@@ -186,8 +188,9 @@ class ScriptedPeer(threading.Thread):
         )
         final_page = self.message(connection)
         self.assert_equal(final_page["method"], "thread/list")
-        self.assert_equal(final_page["params"]["cursor"], "page-2")
-        self.assert_equal(final_page["params"]["useStateDbOnly"], True)
+        final_params = cast(dict[str, object], final_page["params"])
+        self.assert_equal(final_params["cursor"], "page-2")
+        self.assert_equal(final_params["useStateDbOnly"], True)
         send_json(connection, {"id": final_page["id"], "result": {"data": [], "nextCursor": None}})
         opcode, _, masked = receive_frame(connection)
         self.masked.append(masked)
