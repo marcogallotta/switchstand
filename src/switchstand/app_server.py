@@ -13,11 +13,15 @@ from pathlib import Path
 import socket
 import struct
 import threading
+import time
 from typing import Any, Mapping
 
 
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
+
+class _MessageTooLarge(RuntimeError): pass
 
 
 def _canonical(value: Any) -> str:
@@ -108,7 +112,7 @@ class CodexAppServer:
         masked = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
         self.socket.sendall(header + mask + masked)
 
-    def _read_text(self) -> str:
+    def _read_text(self, max_bytes: int = _MAX_MESSAGE_BYTES) -> str:
         fragments = bytearray()
         message_opcode: int | None = None
         while True:
@@ -121,8 +125,8 @@ class CodexAppServer:
                 length = struct.unpack("!H", self._read_exact(2))[0]
             elif length == 127:
                 length = struct.unpack("!Q", self._read_exact(8))[0]
-            if length > _MAX_MESSAGE_BYTES:
-                raise RuntimeError("Codex app-server WebSocket message exceeds limit")
+            if length > max_bytes:
+                raise _MessageTooLarge
             mask = self._read_exact(4) if masked else b""
             payload = self._read_exact(length)
             if masked:
@@ -141,14 +145,64 @@ class CodexAppServer:
                 fragments.extend(payload)
             else:
                 continue
-            if len(fragments) > _MAX_MESSAGE_BYTES:
-                raise RuntimeError("Codex app-server fragmented message exceeds limit")
+            if len(fragments) > max_bytes:
+                fragments.clear()
+                raise _MessageTooLarge
             if final:
                 if message_opcode != 0x1:
                     fragments.clear()
                     message_opcode = None
                     continue
                 return bytes(fragments).decode("utf-8")
+
+    def stop_request(self, method: str, params: Mapping[str, Any], *,
+        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        """Send one bounded B2 request, discard all unrelated input, and close."""
+        classification = "ambiguous"
+        result: Mapping[str, Any] | None = None
+        with self._lock:
+            self._next_id += 1
+            request_id = self._next_id
+            deadline = time.monotonic() + timeout_seconds
+            try:
+                self.socket.settimeout(timeout_seconds)
+                request = {"method": method, "id": request_id, "params": dict(params)}
+                self._send_frame(0x1, _canonical(request).encode("utf-8"))
+                while time.monotonic() < deadline:
+                    self.socket.settimeout(max(0.001, deadline - time.monotonic()))
+                    raw = self._read_text(max_response_bytes)
+                    try:
+                        message = json.loads(raw)
+                    except (UnicodeError, json.JSONDecodeError):
+                        raw = ""
+                        classification = "malformed"
+                        break
+                    raw = ""
+                    if not isinstance(message, Mapping) or message.get("id") != request_id:
+                        message = None
+                        continue
+                    if "error" in message:
+                        classification = "rejected"
+                    elif isinstance(message.get("result"), Mapping):
+                        classification, result = "ok", dict(message["result"])
+                    else:
+                        classification = "malformed"
+                    message = None
+                    break
+            except _MessageTooLarge:
+                classification = "oversize"
+            except UnicodeError:
+                classification = "malformed"
+            except (OSError, RuntimeError, TimeoutError):
+                classification = "ambiguous"
+            finally:
+                self._server_messages.clear()
+                try:
+                    self.close()
+                except (OSError, ValueError):
+                    pass
+        return classification, result
 
     def close(self) -> None:
         try:

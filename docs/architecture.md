@@ -59,6 +59,14 @@ method. The existing `/api/workbench` endpoint projects native lineage/status, o
 freshness, safe run-local agent references, and the latest 50 in-memory endpoint differences
 instead of the legacy Work model. It exposes no raw native ids or transcripts.
 
+`native_stop.py` adds the B2-only control path. Prepare resolves a run-local agent reference
+only from current connected, present, active board evidence, performs one byte-capped
+`thread/read(includeTurns=true)`, and binds the sole active exact turn into a short-lived opaque
+receipt. Commit atomically consumes the receipt, revalidates the same exact turn with another
+bounded read, and sends at most one interrupt. A later bounded read may move `requested` to
+`confirmed`, `not_confirmed`, or `unknown`; it never retries or retargets. Receipts are capped,
+expiring, process-local tombstones and contain no transcript content.
+
 Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
 changes may be missed or collapsed. It is not a native event stream, and elapsed time is age

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import http.client
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, cast
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from switchstand.native_board import NativeBoard
-from switchstand.service import PACKAGE_ROOT, Server
+from switchstand.service import PACKAGE_ROOT, Server, _loopback
 
 
 def native_thread(
@@ -175,6 +176,14 @@ class NativeBoardTests(unittest.TestCase):
         self.assertEqual(retained, before)
         self.assertFalse(after["observation"]["connected"])
 
+    def test_stop_resolution_requires_current_connected_active_board_evidence(self):
+        board = NativeBoard(ClientFactory(client_with_status(), OSError("gone")), "raw-root")
+        board.poll_once()
+        self.assertEqual(board._resolve_active("agent-1"), "raw-root")
+        self.assertIsNone(board._resolve_active("unknown"))
+        board.poll_once()
+        self.assertIsNone(board._resolve_active("agent-1"))
+
     def test_http_api_serves_native_snapshot_and_rejects_controls(self):
         board = NativeBoard(lambda: client_with_status(), "raw-root")
         board.poll_once()
@@ -189,6 +198,61 @@ class NativeBoardTests(unittest.TestCase):
                 urlopen(Request(f"{base}/api/workbench/reconcile", data=b"{}", method="POST"))
             self.assertEqual(raised.exception.code, 404)
             self.assertEqual(json.load(raised.exception)["error"], "operation_unavailable_in_native_mode")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_native_control_http_boundary_rejects_simple_and_cross_origin_requests(self):
+        self.assertTrue(_loopback("127.0.0.1:4180"))
+        self.assertFalse(_loopback("0.0.0.0:4180"))
+        board = NativeBoard(lambda: client_with_status(), "raw-root")
+        board.poll_once()
+
+        class Stopper:
+            def prepare(self, value):
+                return {"code": "prepared", "agentRef": value, "confirmationRef": "opaque"}
+
+        board._stopper = cast(Any, Stopper())
+        server = Server(("127.0.0.1", 0), board, Path(PACKAGE_ROOT / "static"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            valid = {
+                "Host": f"127.0.0.1:{port}",
+                "Origin": f"http://127.0.0.1:{port}",
+                "Content-Type": "application/json",
+                "X-Switchstand-Control": "native-stop-v1",
+            }
+            cases = [
+                {},
+                {**valid, "Content-Type": "text/plain"},
+                {**valid, "X-Switchstand-Control": "wrong"},
+                {**valid, "Host": "example.com"},
+                {**valid, "Origin": "null"},
+                {**valid, "Origin": "http://127.0.0.1:9"},
+            ]
+            for headers in cases:
+                connection = http.client.HTTPConnection("127.0.0.1", port)
+                connection.request("POST", "/api/native-stop/prepare", "{}", headers)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                self.assertEqual(json.load(response)["code"], "control_request_rejected")
+                connection.close()
+            connection = http.client.HTTPConnection("127.0.0.1", port)
+            connection.request("POST", "/api/native-stop/prepare", '{"agentRef":"agent-1"}', valid)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.load(response)["confirmationRef"], "opaque")
+            self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
+            connection.close()
+            connection = http.client.HTTPConnection("127.0.0.1", port)
+            connection.request("GET", "/api/native-stop/prepare")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 405)
+            self.assertEqual(json.load(response)["outcome"], "not_sent")
+            connection.close()
         finally:
             server.shutdown()
             server.server_close()

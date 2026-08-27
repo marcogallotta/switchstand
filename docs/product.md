@@ -27,10 +27,18 @@ primary surface only while native mode is explicitly selected.
 
 ## Boundaries
 
-Native Stage B1 observes one exact local root and its descendants over a Unix socket. It polls
-read-only, keeps only bounded in-memory observation state, and exposes no message, steer, stop,
-redirect, replace, resume, or subscription action. The service is an unauthenticated loopback
-UI and must not be exposed to a network.
+Native mode observes one exact local root and its descendants over a Unix socket. It keeps only
+bounded in-memory observation state and exposes no message, steer, redirect, replace, resume,
+or subscription action. Its one control prepares and confirms cancellation of the exact active
+turn mapped from current connected board evidence. A request does not undo completed work or
+promise to stop background processes or descendants.
+
+Exact-turn resolution uses a bounded `thread/read(includeTurns=true)`. The full response,
+including transcript content, passes transiently through local process memory, is immediately
+reduced to status and turn identity/status, and is never logged, persisted, retained in a stop
+receipt, or returned to the browser. The UI is unauthenticated loopback-only and must not be
+exposed to a network. It does not authenticate against same-user local processes or browser
+automation; stronger authentication is outside this checkpoint.
 
 Switchstand does not decide what agents should build, infer semantic progress or intent, grant
 remote-system authority, coordinate releases, schedule projects, manage users, or claim

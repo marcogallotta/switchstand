@@ -26,12 +26,22 @@ let server;
 let origin;
 let apiRequests;
 let failRequests;
+let stopRequests;
 
 test.beforeAll(async () => {
   apiRequests = 0;
   failRequests = false;
+  stopRequests = [];
   server = http.createServer((request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
+    if (pathname.startsWith("/api/native-stop/")) {
+      stopRequests.push({ pathname, header: request.headers["x-switchstand-control"] });
+      const value = pathname.endsWith("prepare")
+        ? { code: "prepared", agentRef: "agent-1", confirmationRef: "opaque-confirmation" }
+        : { code: "stop_result", operationRef: "opaque-confirmation", outcome: "requested" };
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(value));
+      return;
+    }
     if (pathname === "/api/workbench") {
       apiRequests += 1;
       if (failRequests) {
@@ -65,6 +75,8 @@ test.afterAll(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
 });
 
+test.beforeEach(() => { failRequests = false; stopRequests = []; });
+
 async function waitForReplacement(page) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const value = await page.evaluate(() => {
@@ -92,7 +104,7 @@ test("real Chromium preserves tree focus, selection, open state, and scroll acro
   await expect.poll(() => apiRequests).toBe(1);
   await expect(page.locator("body")).not.toContainText("agent-1");
   await expect(page.getByText("consecutive observed active")).toBeVisible();
-  await expect(page.locator("button, textarea")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop current turn" })).toHaveCount(1);
   await page.evaluate(() => {
     document.body.style.minHeight = "2000px";
     const current = document.querySelector("details[data-focus-key]");
@@ -125,4 +137,32 @@ test("real Chromium preserves tree focus, selection, open state, and scroll acro
   await expect(page.locator("#observer")).toContainText("Historical snapshot");
   await expect(page.locator("#tree")).toContainText("Root");
   await expect(page.locator("#error")).toContainText("displayed board is a historical snapshot");
+});
+
+test("confirmation cancel, confirm, and refresh never replay a native stop", async ({ page }) => {
+  await page.goto(origin);
+  const stop = page.getByRole("button", { name: "Stop current turn" });
+  const prompt = "Stop Root’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe(prompt);
+    await dialog.dismiss();
+  });
+  await stop.click();
+  await expect(page.getByText("Stop outcome: not_sent")).toBeVisible();
+  expect(stopRequests.map((value) => value.pathname)).toEqual(["/api/native-stop/prepare"]);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe(prompt);
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "Stop current turn" }).click();
+  await expect(page.getByText("Stop outcome: requested")).toBeVisible();
+  expect(stopRequests.map((value) => value.pathname)).toEqual([
+    "/api/native-stop/prepare", "/api/native-stop/prepare", "/api/native-stop/commit",
+  ]);
+  expect(stopRequests.every((value) => value.header === "native-stop-v1")).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
+  expect(stopRequests).toHaveLength(3);
 });

@@ -33,7 +33,7 @@ class AppServerProtocolTests(unittest.TestCase):
         client._server_messages = deque()
         fake_socket = FakeSocket()
         client.socket = cast(Any, fake_socket)
-        client._read_text = lambda: (_ for _ in ()).throw(socket.timeout())
+        client._read_text = lambda max_bytes=0: (_ for _ in ()).throw(socket.timeout())
 
         with self.assertRaises(TimeoutError):
             client.next_server_message(timeout_seconds=2.5)
@@ -57,7 +57,7 @@ class AppServerProtocolTests(unittest.TestCase):
                 json.dumps({"id": 1, "result": {"data": [], "nextCursor": None}}),
             ]
         )
-        client._read_text = lambda: next(replies)
+        client._read_text = lambda max_bytes=0: next(replies)
 
         response = client.thread_list({"sourceKinds": ["cli"]})
 
