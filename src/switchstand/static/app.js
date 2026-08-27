@@ -159,6 +159,7 @@ function renderNative(model) {
     factList([["available", observation.available], ["pass", observation.kind], ["completed", observation.completedAt],
       ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`], ["error", observation.errorCode]]));
   const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
+  const selectionState = nativeSelectionController?.getState();
   const agents = model.agents.map((agent) => {
     const previousStatus = observedStatus.get(agent.agentRef);
     if (previousStatus === "active" && agent.status !== "active") {
@@ -177,6 +178,19 @@ function renderNative(model) {
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
+    const seam = nativeSelectionAdapter?.selectionForAgent(agent.agentRef) ?? null;
+    const pair = seam?.selection;
+    if (pair) {
+      const selected = selectionState?.currentTarget?.observationRunRef === pair.observationRunRef
+        && selectionState.currentTarget.agentRef === pair.agentRef;
+      const select = el("button", selected ? "button button--primary" : "button",
+        selected ? "Current target" : "Select as current target");
+      select.type = "button";
+      select.setAttribute("aria-pressed", selected ? "true" : "false");
+      select.dataset.focusKey = `select:${agent.agentRef}`;
+      select.addEventListener("click", () => nativeSelectionController.select(seam));
+      row.append(select);
+    }
     const stop = stopState.get(agent.agentRef);
     if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
     if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
@@ -208,7 +222,26 @@ function renderNative(model) {
   });
   trailHost.replaceChildren(...(trail.length ? trail : [el("li", "muted", "No endpoint differences observed in the retained window.")]));
   disclosureHost.textContent = model.disclosure;
+  renderCurrentTarget(selectionState);
   restoreView(view);
+}
+
+function renderCurrentTarget(state) {
+  if (!currentTargetHost) return;
+  if (!nativeSelectionController) {
+    currentTargetHost.hidden = true;
+    currentTargetHost.textContent = "";
+    return;
+  }
+  currentTargetHost.hidden = false;
+  const target = state?.currentTarget;
+  if (!target) {
+    currentTargetHost.replaceChildren(el("strong", null, "No current target selected."));
+    return;
+  }
+  const identity = [target.agentNickname, target.name].filter((value) => typeof value === "string");
+  currentTargetHost.replaceChildren(el("strong", null, identity.length
+    ? `Current target: ${identity.join(" · ")}` : "Current target selected."));
 }
 
 const attemptFor = (state, id) => state.attempts.find((attempt) => attempt.id === id) ?? null;
@@ -341,6 +374,16 @@ const nativeSurface = document.querySelector("#native-surface");
 const eyebrowHost = document.querySelector("#eyebrow");
 const descriptionHost = document.querySelector("#description");
 const headlineFactsHost = document.querySelector("#headline-facts");
+const currentTargetHost = document.querySelector("#current-target");
+const nativeSelectionAdapter = window.switchstandNativeSelectionAdapter ?? null;
+const nativeSelectionController = nativeSelectionAdapter && window.SwitchstandNativeSelection
+  && typeof nativeSelectionAdapter.resolve === "function"
+  && typeof nativeSelectionAdapter.selectionForAgent === "function"
+  ? window.SwitchstandNativeSelection.createController({
+    resolve: (pair, snapshot) => nativeSelectionAdapter.resolve(pair, snapshot),
+    storage: window.localStorage,
+    onChange: () => { if (lastModel?.mode === "native") renderNative(lastModel); },
+  }) : null;
 function reportError(value) {
   errorHost.textContent = value instanceof Error ? value.message : String(value);
   errorHost.hidden = false;
@@ -350,8 +393,18 @@ async function refresh() {
   try {
     lastModel = await request("/api/workbench");
     errorHost.hidden = true;
-    if (lastModel.mode === "native") renderNative(lastModel); else renderLegacy(lastModel);
+    if (lastModel.mode === "native") {
+      renderNative(lastModel);
+      const candidate = nativeSelectionController?.getState().candidate;
+      if (candidate) {
+        nativeSelectionController.supplySeam(nativeSelectionAdapter.selectionForAgent(candidate.agentRef));
+      }
+    } else renderLegacy(lastModel);
   } catch (_error) {
+    const candidate = nativeSelectionController?.getState().candidate;
+    if (candidate) {
+      nativeSelectionController.invalidate(nativeSelectionAdapter.selectionForAgent(candidate.agentRef));
+    }
     errorHost.textContent = lastModel?.mode === "native"
       ? "Observation request failed. The displayed board is a historical snapshot."
       : "Workbench request failed. Existing input has been retained.";
@@ -364,3 +417,8 @@ async function refresh() {
 refresh();
 const timer = window.setInterval(refresh, 1000);
 window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });
+if (nativeSelectionController && typeof nativeSelectionAdapter.subscribe === "function") {
+  nativeSelectionAdapter.subscribe((seam) => {
+    nativeSelectionController.supplySeam(seam);
+  });
+}
