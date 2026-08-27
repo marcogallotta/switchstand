@@ -38,7 +38,12 @@ class AppServerProtocolTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 client._read_exact(2, deadline=1.5)
 
-        self.assertEqual(client.socket.timeouts, [0.5])
+        client.reader = cast(Any, DripReader())
+        with patch("switchstand.app_server.time.monotonic", side_effect=[2.0, 2.6]):
+            with self.assertRaises(TimeoutError):
+                client._read_line(10, deadline=2.5)
+
+        self.assertEqual(client.socket.timeouts, [0.5, 0.5])
 
     def test_bounded_server_message_wait_reports_timeout_and_restores_socket_timeout(self):
         class FakeSocket:
