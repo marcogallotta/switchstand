@@ -18,7 +18,7 @@ body {
   margin: 0;
 }
 .page { display: grid; gap: 1rem; margin: 0 auto; max-width: 92rem; padding: 1.25rem; }
-.intro, .observer, .panel, .agent, .role-card, .inset, .record {
+.intro, .observer, .current-target, .panel, .agent, .role-card, .inset, .record {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 0.65rem;
@@ -33,6 +33,7 @@ body {
 .role-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .role-card { display: grid; gap: 1rem; min-width: 0; }
 .observer, .agent__summary, .role-card__header, .record__summary, .actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: space-between; }
+.current-target { display: grid; gap: 0.7rem; }
 .tree { display: grid; gap: 0.55rem; margin-top: 0.6rem; }
 .agent { margin-left: calc(var(--depth) * 1.25rem); padding: 0.65rem; }
 .agent summary { cursor: pointer; }

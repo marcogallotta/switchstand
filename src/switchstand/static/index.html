@@ -21,7 +21,17 @@
       <div id="error" class="error" hidden></div>
       <div id="native-surface" hidden>
         <section id="observer" class="observer" aria-live="polite"></section>
-        <section id="current-target" class="observer" aria-live="polite" hidden></section>
+        <section id="current-target" class="current-target" aria-live="polite" hidden>
+          <strong id="current-target-summary">No current target selected.</strong>
+          <form id="native-input-form" class="form" hidden>
+            <label for="native-input">Message current target</label>
+            <textarea id="native-input" data-focus-key="native-input" required></textarea>
+            <div class="actions">
+              <button id="native-input-submit" class="button button--primary" type="submit">Send exact message</button>
+              <span id="native-input-outcome" class="muted" aria-live="polite"></span>
+            </div>
+          </form>
+        </section>
         <section class="board-grid">
           <article class="panel">
             <h2>Agent tree</h2>

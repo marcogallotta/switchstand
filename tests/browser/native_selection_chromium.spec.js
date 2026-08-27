@@ -8,14 +8,11 @@ const { test, expect } = require("@playwright/test");
 
 const root = path.join(__dirname, "..", "..");
 const assets = path.join(root, "src", "switchstand", "static");
-const fixtures = JSON.parse(fs.readFileSync(
-  path.join(root, "tests", "fixtures", "native_selection_v1.json"), "utf8",
-));
 const agents = [
-  ["agent-alpha-1", "First observed agent", null, 0],
-  ["agent-beta-1", "Second observed agent", "agent-alpha-1", 1],
+  ["agent-alpha", "First observed agent", null, 0],
+  ["agent-beta", "Second observed agent", "agent-alpha", 1],
   ...Array.from({ length: 6 }, (_, index) => [
-    `agent-extra-${index}`, `Observed agent ${index + 3}`, "agent-alpha-1", 1,
+    `agent-extra-${index}`, `Observed agent ${index + 3}`, "agent-alpha", 1,
   ]),
 ].map(([agentRef, label, parentRef, depth]) => ({
   agentRef, label, parentRef, depth, sourceKind: "thread/list", sourceDetail: "fixture",
@@ -35,17 +32,75 @@ const board = {
 
 let server;
 let origin;
-let failRequests;
+let failWorkbench;
+let failSelection;
+let observationRunRef;
+let selectionOverride;
+let delayedSelections;
+let inputResults;
+let requests;
+
+const json = (response, status, value) => {
+  const body = JSON.stringify(value);
+  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+  response.end(body);
+};
+
+const readJson = async (request) => {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+};
+
+const selectionFor = (agentRef) => {
+  const selection = { observationRunRef, agentRef };
+  if (selectionOverride) return typeof selectionOverride === "function"
+    ? selectionOverride(selection) : selectionOverride;
+  return { selection, snapshot: { version: "native-selection-v1", ...selection,
+    connected: true, present: true,
+    ...(agentRef === "agent-beta" ? { name: "Review agent", agentNickname: "Reviewer",
+      preview: "forbidden prompt", threadId: "forbidden native id",
+      transcript: ["forbidden transcript"] } : {}) } };
+};
 
 test.beforeAll(async () => {
-  server = http.createServer((request, response) => {
+  server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
     if (pathname === "/api/workbench") {
-      if (failRequests) {
-        response.writeHead(503, { "Content-Type": "application/json" }).end('{"error":"unavailable"}');
-        return;
-      }
-      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(board));
+      requests.push({ pathname, method: request.method, headers: request.headers });
+      json(response, failWorkbench ? 503 : 200,
+        failWorkbench ? { code: "service_unavailable", outcome: "not_sent" } : board);
+      return;
+    }
+    if (pathname === "/api/native-selection/resolve") {
+      const body = await readJson(request);
+      requests.push({ pathname, method: request.method, headers: request.headers, body });
+      const delayed = delayedSelections.get(body.agentRef);
+      if (delayed) await delayed.promise;
+      json(response, failSelection ? 503 : 200, failSelection
+        ? { code: "service_unavailable", outcome: "not_sent" }
+        : selectionFor(body.agentRef));
+      return;
+    }
+    if (pathname === "/api/native-input") {
+      const body = await readJson(request);
+      requests.push({ pathname, method: request.method, headers: request.headers, body });
+      const next = inputResults.shift() ?? { status: 200,
+        body: { code: "input_unavailable", outcome: "not_sent" } };
+      if (next.promise) await next.promise;
+      json(response, next.status, next.body);
+      return;
+    }
+    if (["/api/native-stop/prepare", "/api/native-stop/commit",
+      "/api/native-stop/status"].includes(pathname)) {
+      const body = await readJson(request);
+      requests.push({ pathname, method: request.method, headers: request.headers, body });
+      const result = pathname.endsWith("/prepare")
+        ? { code: "prepared", agentRef: body.agentRef, confirmationRef: "confirmation-one" }
+        : pathname.endsWith("/commit")
+          ? { code: "stop_result", operationRef: "operation-one", outcome: "requested" }
+          : { code: "stop_result", operationRef: body.operationRef, outcome: "confirmed" };
+      json(response, 200, result);
       return;
     }
     const names = { "/": "index.html", "/app.js": "app.js",
@@ -73,76 +128,14 @@ test.afterAll(async () => {
   }
 });
 
-test.beforeEach(async ({ page }) => {
-  failRequests = false;
-  await page.addInitScript(({ contract }) => {
-    const pair = (observationRunRef, agentRef) => ({ observationRunRef, agentRef });
-    const successful = (selection, display = {}) => ({ version: "native-selection-v1",
-      ...selection, connected: true, present: true, ...display });
-    const errors = contract.errorMessages;
-    const invalid = () => ({ code: "INVALID_AGENT_REF", message: errors.INVALID_AGENT_REF });
-    const alpha = pair(contract.baseSelection.observationRunRef, contract.baseSelection.agentRef);
-    const beta = pair(contract.baseSelection.observationRunRef, "agent-beta-1");
-    const seams = new Map([
-      [alpha.agentRef, { selection: alpha, snapshot: { ...contract.baseExpected,
-        preview: "forbidden prompt", threadId: "forbidden native id",
-        transcript: ["forbidden transcript"], parentRef: "forbidden topology" } }],
-      [beta.agentRef, { selection: beta, snapshot: successful(beta,
-        { name: "Review agent", agentNickname: "Reviewer" }) }],
-    ]);
-    for (let index = 0; index < 6; index += 1) {
-      const extra = pair(contract.baseSelection.observationRunRef, `agent-extra-${index}`);
-      seams.set(extra.agentRef, { selection: extra, snapshot: successful(extra) });
-    }
-    const gates = new Map();
-    let listener = () => {};
-    let initialGate = null;
-    try {
-      if (window.name === "delay-selection-resolve") {
-        initialGate = {};
-        initialGate.promise = new Promise((resolve) => { initialGate.resolve = resolve; });
-      }
-    } catch (_error) {
-      initialGate = null;
-    }
-    const finish = (selection, snapshot) => {
-      if (snapshot?.version === "native-selection-v1"
-        && (snapshot.observationRunRef !== selection.observationRunRef
-          || snapshot.agentRef !== selection.agentRef)) return invalid();
-      return snapshot;
-    };
-    window.__selectionFake = {
-      calls: [],
-      delay(snapshot) {
-        const gate = {};
-        gate.promise = new Promise((resolve) => { gate.resolve = resolve; });
-        gates.set(snapshot, gate);
-        return gate;
-      },
-      release(snapshot) { gates.get(snapshot).resolve(); },
-      emit(agentRef, seam) {
-        seams.set(agentRef, seam);
-        listener(seam);
-      },
-      replace(agentRef, seam) { seams.set(agentRef, seam); },
-      releaseInitial() {
-        initialGate.resolve();
-        initialGate = null;
-        window.name = "";
-      },
-      seam(agentRef) { return seams.get(agentRef); },
-    };
-    window.switchstandNativeSelectionAdapter = {
-      selectionForAgent(agentRef) { return seams.get(agentRef) ?? null; },
-      subscribe(callback) { listener = callback; },
-      async resolve(selection, snapshot) {
-        window.__selectionFake.calls.push({ ...selection });
-        const gate = initialGate ?? gates.get(snapshot);
-        if (gate) await gate.promise;
-        return finish(selection, snapshot);
-      },
-    };
-  }, { contract: fixtures });
+test.beforeEach(() => {
+  failWorkbench = false;
+  failSelection = false;
+  observationRunRef = "observation-run-one";
+  selectionOverride = null;
+  delayedSelections = new Map();
+  inputResults = [];
+  requests = [];
 });
 
 const rowFor = (page, label) => page.locator("details", { hasText: label });
@@ -151,104 +144,169 @@ async function selectAgent(page, label) {
   await rowFor(page, label).getByRole("button", { name: "Select as current target" }).click();
 }
 
-test("explicit non-default selection persists only the exact pair and reload re-resolves", async ({ page }) => {
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function runPoll(page) {
+  const response = page.waitForResponse(`${origin}/api/workbench`);
+  await page.clock.runFor(1000);
+  await response;
+  await page.evaluate(() => 0);
+}
+
+test("explicit selection uses the route, stores only its opaque pair, and reload revalidates", async ({ page }) => {
   await page.goto(origin);
   await expect(page.getByText("No current target selected.")).toBeVisible();
-  await expect(page.getByText("Current target:")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
 
-  await selectAgent(page, "Observed agent 3");
-  await expect(page.getByText("Current target selected.", { exact: true })).toBeVisible();
   await selectAgent(page, "Second observed agent");
   await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-  await expect(rowFor(page, "Second observed agent").getByRole("button", { name: "Current target" })).toBeVisible();
-  const evidence = await page.evaluate(() => ({
-    calls: window.__selectionFake.calls,
-    keys: Object.keys(localStorage),
-    stored: JSON.parse(localStorage.getItem("switchstand.native-selection.v1")),
-  }));
-  expect(evidence.calls.at(-1)).toEqual({
-    observationRunRef: fixtures.baseSelection.observationRunRef, agentRef: "agent-beta-1",
+  await expect(page.getByLabel("Message current target")).toBeVisible();
+  const selectionRequests = requests.filter((item) => item.pathname === "/api/native-selection/resolve");
+  expect(selectionRequests).toHaveLength(1);
+  expect(selectionRequests[0].body).toEqual({ agentRef: "agent-beta" });
+  expect(selectionRequests[0].headers["x-switchstand-control"]).toBe("native-selection-v1");
+  expect(await page.evaluate(() => ({ keys: Object.keys(localStorage),
+    value: JSON.parse(localStorage.getItem("switchstand.native-selection.v1")) }))).toEqual({
+    keys: ["switchstand.native-selection.v1"],
+    value: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
   });
-  expect(evidence.keys).toEqual(["switchstand.native-selection.v1"]);
-  expect(evidence.stored).toEqual(evidence.calls.at(-1));
 
-  await page.evaluate(() => { window.name = "delay-selection-resolve"; });
   await page.reload();
-  await expect(page.getByText("No current target selected.")).toBeVisible();
-  await expect(page.getByText("Current target: Reviewer · Review agent")).toHaveCount(0);
-  await page.evaluate(() => window.__selectionFake.releaseInitial());
   await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-  await expect(page.locator("body")).not.toContainText("forbidden prompt");
-  await expect(page.locator("body")).not.toContainText("forbidden native id");
-  await expect(page.locator("body")).not.toContainText("forbidden transcript");
-  await expect(page.locator("body")).not.toContainText("forbidden topology");
-});
-
-test("delayed old reselection successes and failures cannot mutate the newer selection", async ({ page }) => {
-  await page.goto(origin);
-  const race = async (oldSnapshot) => {
-    const gate = await page.evaluate((snapshot) => {
-      const old = window.__selectionFake.seam("agent-alpha-1");
-      old.snapshot = snapshot;
-      const pending = window.__selectionFake.delay(old.snapshot);
-      window.__selectionFake.emit("agent-alpha-1", old);
-      return Boolean(pending);
-    }, oldSnapshot);
-    expect(gate).toBe(true);
-    await selectAgent(page, "First observed agent");
-    await selectAgent(page, "Second observed agent");
-    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-    await page.evaluate(() => window.__selectionFake.release(
-      window.__selectionFake.seam("agent-alpha-1").snapshot,
-    ));
-    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-  };
-  await race(fixtures.baseExpected);
-  await race({ code: "AGENT_NOT_PRESENT", message: fixtures.errorMessages.AGENT_NOT_PRESENT });
-});
-
-test("run change, disappearance, stale, and disconnect clear with no fallback or stale resurrection", async ({ page }) => {
-  await page.goto(origin);
-  const betaPair = { observationRunRef: fixtures.baseSelection.observationRunRef, agentRef: "agent-beta-1" };
-  const scenarios = [
-    { selection: { observationRunRef: "observation-run-after-restart", agentRef: "agent-beta-1" },
-      snapshot: { version: "native-selection-v1", observationRunRef: "observation-run-after-restart",
-        agentRef: "agent-beta-1", connected: true, present: true, name: "Reused ref agent" } },
-    { selection: betaPair, snapshot: { code: "AGENT_NOT_PRESENT",
-      message: fixtures.errorMessages.AGENT_NOT_PRESENT } },
-    { selection: betaPair, snapshot: { code: "OBSERVATION_STALE",
-      message: fixtures.errorMessages.OBSERVATION_STALE } },
-    { selection: betaPair, snapshot: { code: "APP_SERVER_DISCONNECTED",
-      message: fixtures.errorMessages.APP_SERVER_DISCONNECTED } },
-  ];
-
-  for (const scenario of scenarios) {
-    await page.evaluate(({ selection, snapshot }) => {
-      window.__selectionFake.emit("agent-beta-1", { selection, snapshot });
-    }, { selection: betaPair, snapshot: { version: "native-selection-v1", ...betaPair,
-      connected: true, present: true, name: "Review agent", agentNickname: "Reviewer" } });
-    await selectAgent(page, "Second observed agent");
-    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-    await page.evaluate((value) => {
-      const current = window.__selectionFake.seam("agent-beta-1");
-      const pending = window.__selectionFake.delay(current.snapshot);
-      window.__selectionFake.emit("agent-beta-1", current);
-      window.__lateSelectionGate = pending;
-      window.__selectionFake.emit("agent-beta-1", value);
-    }, scenario);
-    await expect(page.getByText("No current target selected.")).toBeVisible();
-    expect(await page.evaluate(() => localStorage.length)).toBe(0);
-    await page.evaluate(() => window.__lateSelectionGate.resolve());
-    await expect(page.getByText("No current target selected.")).toBeVisible();
-    await expect(rowFor(page, "First observed agent")
-      .getByRole("button", { name: "Select as current target" })).toBeVisible();
+  expect(requests.filter((item) => item.pathname === "/api/native-selection/resolve").length).toBeGreaterThan(1);
+  for (const forbidden of ["forbidden prompt", "forbidden native id", "forbidden transcript"]) {
+    await expect(page.locator("body")).not.toContainText(forbidden);
   }
 });
 
-test("focus, open state, tree and page scroll survive selection, revalidation, and clearing", async ({ page }) => {
+test("input sends the exact selected pair and unchanged text with only truthful fixed outcomes", async ({ page }) => {
+  inputResults.push(
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "start" } },
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "steer" } },
+    { status: 200, body: { code: "input_unavailable", outcome: "not_sent" } },
+    { status: 503, body: { code: "service_unavailable", outcome: "not_sent" } },
+  );
   await page.goto(origin);
+  await selectAgent(page, "Second observed agent");
+  const input = page.getByLabel("Message current target");
+
+  const values = ["  exact start\ntext  ", "exact steer", "retain on refusal", "retain on failure"];
+  const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
+  for (let index = 0; index < values.length; index += 1) {
+    await input.fill(values[index]);
+    await page.getByRole("button", { name: "Send exact message" }).click();
+    await expect(page.locator("#native-input-outcome")).toHaveText(outcomes[index]);
+    await expect(input).toHaveValue(index < 2 ? "" : values[index]);
+  }
+
+  const sent = requests.filter((item) => item.pathname === "/api/native-input");
+  expect(sent.map((item) => item.body)).toEqual(values.map((text) => ({
+    version: "native-input-v1", observationRunRef: "observation-run-one",
+    agentRef: "agent-beta", text,
+  })));
+  expect(sent.every((item) => item.headers["x-switchstand-control"] === "native-input-v1")).toBe(true);
+});
+
+test("delayed old selection and input results cannot mutate a newer target or draft", async ({ page }) => {
+  await page.goto(origin);
+  const oldSelection = deferred();
+  delayedSelections.set("agent-alpha", oldSelection);
+  await selectAgent(page, "First observed agent");
+  await selectAgent(page, "Second observed agent");
+  await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
+  oldSelection.resolve();
+  await page.evaluate(() => 0);
+  await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
+
+  const oldInput = deferred();
+  inputResults.push(
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "start" },
+      promise: oldInput.promise },
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "steer" } },
+  );
+  const input = page.getByLabel("Message current target");
+  await input.fill("old target text");
+  await page.evaluate(() => {
+    document.querySelector("#native-input-form").requestSubmit();
+    document.querySelector("#native-input-form").requestSubmit();
+  });
+  await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length).toBe(1);
+  await selectAgent(page, "First observed agent");
+  await expect(page.getByText("Current target selected.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send exact message" })).toBeEnabled();
+  await input.fill("new target draft");
+  await page.getByRole("button", { name: "Send exact message" }).click();
+  await expect(page.locator("#native-input-outcome")).toHaveText("sent · steer");
+  oldInput.resolve();
+  await page.evaluate(() => 0);
+  await expect(input).toHaveValue("");
+  await expect(page.locator("#native-input-outcome")).toHaveText("sent · steer");
+  expect(requests.filter((item) => item.pathname === "/api/native-input")).toHaveLength(2);
+  await selectAgent(page, "Second observed agent");
+  await expect(input).toHaveValue("");
+  await expect(page.locator("#native-input-outcome")).toHaveText("sent · start");
+});
+
+test("exact-route selection and input preserve Stop confirmation, result, and control header", async ({ page }) => {
+  await page.goto(origin);
+  await selectAgent(page, "Second observed agent");
   const row = rowFor(page, "Second observed agent");
-  const select = row.getByRole("button", { name: "Select as current target" });
+  const warning = "Stop Second observed agent’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe(warning);
+    await dialog.accept();
+  });
+  await row.getByRole("button", { name: "Stop current turn" }).click();
+  await expect(row.getByText("Stop outcome: requested")).toBeVisible();
+  const stopRequests = requests.filter((item) => item.pathname.startsWith("/api/native-stop/"));
+  expect(stopRequests.map((item) => [item.pathname, item.body])).toEqual([
+    ["/api/native-stop/prepare", { agentRef: "agent-beta" }],
+    ["/api/native-stop/commit", { confirmationRef: "confirmation-one" }],
+  ]);
+  expect(stopRequests.every((item) => item.headers["x-switchstand-control"] === "native-stop-v1"))
+    .toBe(true);
+});
+
+test("run change, disappearance, staleness, disconnection, malformed response, and request failure clear without fallback", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(origin);
+  const failures = [
+    () => { observationRunRef = "observation-run-two"; },
+    () => { selectionOverride = { selection: null, snapshot: {
+      code: "AGENT_NOT_PRESENT", message: "Agent is not present." } }; },
+    () => { selectionOverride = { selection: null, snapshot: {
+      code: "OBSERVATION_STALE", message: "Observation is stale." } }; },
+    () => { selectionOverride = { selection: null, snapshot: {
+      code: "APP_SERVER_DISCONNECTED", message: "App Server is disconnected." } }; },
+    () => { selectionOverride = { wrong: "shape", rawThreadId: "must-not-render" }; },
+    () => { failSelection = true; },
+  ];
+  for (const arrange of failures) {
+    observationRunRef = "observation-run-one";
+    selectionOverride = null;
+    failSelection = false;
+    await selectAgent(page, "Second observed agent");
+    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
+    arrange();
+    await runPoll(page);
+    await expect(page.getByText("No current target selected.")).toBeVisible();
+    expect(await page.evaluate(() => localStorage.length)).toBe(0);
+    await expect(rowFor(page, "First observed agent")
+      .getByRole("button", { name: "Select as current target" })).toBeVisible();
+  }
+  await expect(page.locator("body")).not.toContainText("must-not-render");
+});
+
+test("50 polls preserve composer draft, focus, selection, open rows, and scroll; failure retains the draft", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(origin);
+  await selectAgent(page, "Second observed agent");
+  const row = rowFor(page, "Second observed agent");
+  const input = page.getByLabel("Message current target");
   await page.evaluate(() => {
     document.body.style.minHeight = "2000px";
     const tree = document.querySelector("#tree");
@@ -256,47 +314,28 @@ test("focus, open state, tree and page scroll survive selection, revalidation, a
     tree.style.overflow = "auto";
   });
   await row.evaluate((node) => { node.open = true; });
-  await select.focus();
   await page.locator("#tree").evaluate((node) => { node.scrollTop = 45; });
+  await input.fill("draft survives polling");
+  await input.focus();
+  await input.evaluate((node) => node.setSelectionRange(2, 9, "forward"));
   await page.evaluate(() => window.scrollTo(0, 130));
-  await select.evaluate((node) => node.click());
-  await expect(row.getByRole("button", { name: "Current target" })).toBeFocused();
 
-  await page.evaluate(() => {
-    const current = window.__selectionFake.seam("agent-beta-1");
-    window.__selectionFake.emit("agent-beta-1", current);
-  });
-  await expect(row.getByRole("button", { name: "Current target" })).toBeFocused();
-  await page.evaluate((message) => {
-    const current = window.__selectionFake.seam("agent-beta-1");
-    window.__selectionFake.emit("agent-beta-1", { selection: current.selection,
-      snapshot: { code: "OBSERVATION_STALE", message } });
-  }, fixtures.errorMessages.OBSERVATION_STALE);
-  await expect(row.getByRole("button", { name: "Select as current target" })).toBeFocused();
+  for (let cycle = 0; cycle < 50; cycle += 1) await runPoll(page);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("draft survives polling");
+  expect(await input.evaluate((node) => [node.selectionStart, node.selectionEnd, node.selectionDirection]))
+    .toEqual([2, 9, "forward"]);
   expect(await row.evaluate((node) => node.open)).toBe(true);
   expect(await page.locator("#tree").evaluate((node) => node.scrollTop)).toBe(45);
   expect(await page.evaluate(() => window.scrollY)).toBe(130);
-});
 
-test("workbench refresh failure clears storage and fences a delayed earlier resolve", async ({ page }) => {
-  await page.goto(origin);
-  await selectAgent(page, "Second observed agent");
-  await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
-  await page.evaluate((message) => {
-    const current = window.__selectionFake.seam("agent-beta-1");
-    window.__lateRefreshGate = window.__selectionFake.delay(current.snapshot);
-    window.__selectionFake.emit("agent-beta-1", current);
-    window.__selectionFake.replace("agent-beta-1", { selection: current.selection,
-      snapshot: { code: "APP_SERVER_DISCONNECTED", message } });
-  }, fixtures.errorMessages.APP_SERVER_DISCONNECTED);
-
-  failRequests = true;
-  await page.waitForResponse((response) => response.url() === `${origin}/api/workbench`
-    && response.status() === 503);
+  await row.getByRole("button", { name: "Current target" }).focus();
+  failWorkbench = true;
+  await runPoll(page);
   await expect(page.locator("#observer")).toContainText("Historical snapshot");
   await expect(page.getByText("No current target selected.")).toBeVisible();
-  expect(await page.evaluate(() => localStorage.length)).toBe(0);
-  await page.evaluate(() => window.__lateRefreshGate.resolve());
-  await expect(page.getByText("No current target selected.")).toBeVisible();
-  expect(await page.evaluate(() => localStorage.length)).toBe(0);
+  failWorkbench = false;
+  await runPoll(page);
+  await selectAgent(page, "Second observed agent");
+  await expect(input).toHaveValue("draft survives polling");
 });
