@@ -6,7 +6,7 @@ import math
 import secrets
 import threading
 import time
-from typing import Any, Callable, Mapping, Protocol, cast
+from typing import Any, Callable, Mapping, Protocol, TypeVar, cast
 
 from .agent_tree import AgentTreeAdapter, AgentTreeClient
 from .current_target import (
@@ -37,6 +37,7 @@ DISCLOSURE = (
     "differences, not native events."
 )
 DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS = 5.0
+_T = TypeVar("_T")
 
 
 class NativeClient(Protocol):
@@ -229,6 +230,38 @@ class NativeBoard:
                 now=now,
                 maximum_observation_age_seconds=maximum_observation_age_seconds,
             )
+
+    def _with_current_native_target(
+        self,
+        target: object,
+        operation: Callable[[str], _T],
+    ) -> _T | None:
+        """Bind *target* from one locked snapshot, then run one private operation."""
+        with self._lock:
+            completed_at = self._completed_at
+            now = self._wall_clock()
+            fresh = (
+                completed_at is not None
+                and math.isfinite(completed_at)
+                and completed_at <= now
+                and now - completed_at <= self._maximum_observation_age
+            )
+            if (
+                self._closed
+                or not self._connected
+                or not fresh
+                or type(target) is not ExactCurrentTarget
+            ):
+                return None
+            exact_target = cast(ExactCurrentTarget, target)
+            matches = [
+                record for record in self._target_records
+                if record.target == exact_target
+            ]
+            native_id = self._native_ids_by_target.get(exact_target)
+            if len(matches) != 1 or type(native_id) is not str or not native_id:
+                return None
+        return operation(native_id)
 
     def browser_selection(
         self,
