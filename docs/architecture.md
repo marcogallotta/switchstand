@@ -4,7 +4,10 @@
 
 `service.py` owns the loopback HTTP process and serves the static operator UI. In default legacy
 mode it periodically asks the engine to reconcile; `engine.py` owns that mode's state transitions
-and persistence.
+and persistence. In native mode, the service constructs exactly one `NativeBoard`, one
+`NativeTargetTransport`, one `NativeInput`, one `NativeWorkbench`, and one
+`NativeHttpDispatcher`. Board, input, and facade receive the same configured complete-pass
+freshness limit.
 `app_server.py` is a dependency-free synchronous WebSocket/JSON-RPC client for the small
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
@@ -67,12 +70,21 @@ bounded read, and sends at most one interrupt. A later bounded read may move `re
 `confirmed`, `not_confirmed`, or `unknown`; it never retries or retargets. Receipts are capped,
 expiring, process-local tombstones and contain no transcript content.
 
-`native_selection.py` freezes the additive B3 `native-selection-v1` boundary without wiring it
-into production. It purely re-resolves an exact observation-run/agent-reference pair from a
+`native_selection.py` freezes the B3 `native-selection-v1` boundary. It purely re-resolves an
+exact observation-run/agent-reference pair from a
 supplied current B1 observation. Its closed output retains only the pair, connected/present
 truth, and display values whose provenance is explicitly safe. Freshness depends only on the
 supplied latest complete-pass completion time and configured maximum age. It owns no native
 read, cache, persistence, HTTP, browser, transcript/input, topology, or Stop behavior.
+Production composition uses that same resolver through `NativeBoard`; it does not add a second
+target registry.
+
+`NativeHttpDispatcher` alone validates native HTTP route, control, body, and closed result
+contracts. The `BaseHTTPRequestHandler` adapter passes the raw request path including query,
+all header tuples including duplicates, and one bounded raw body. It does not reparse native
+JSON. Handled responses are written with the dispatcher's exact status, ordered headers, and
+body. Native routes return immediately and never fall through to legacy behavior. Static and
+legacy requests retain their existing paths.
 
 Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
@@ -135,6 +147,7 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Native message/steer controls, stop beyond exact B2 cancellation, and inferred semantic status
+- Native input beyond exact current-target start/steer, Stop beyond exact B2 cancellation, and
+  inferred semantic status
 - Treating the poll-difference trail as complete history or durable audit evidence
 - Replacing or removing the fixed-role reliability spike outside explicitly selected native mode

@@ -1,8 +1,9 @@
 # Switchstand
 
 Switchstand is an experimental local operator surface for Codex work. Its explicitly selected
-native mode observes one real Codex root and its descendants and can request cancellation of one
-exact active turn after explicit confirmation.
+native mode observes one real Codex root and its descendants, lets the operator select one exact
+current agent for direct input, and can request cancellation of one exact active turn after
+explicit confirmation.
 The default legacy mode remains a fixed two-role reliability spike with durable messages,
 checkpoints, attempt controls, and conservative failure handling.
 
@@ -24,9 +25,10 @@ Issue #9 adds Stage B1 as an explicitly selected native view. It polls one exact
 `thread/list(useStateDbOnly=true)`. It displays native lineage, native status, observer
 freshness, consecutive observed-active time, and the latest 50 endpoint differences. It does not resume or
 subscribe to threads or mutate conversation history. The legacy two-role engine remains
-available as a reliability spike. Issue #12 adds one native-only emergency control: explicit
-two-step confirmation requests interruption of one exact active turn. It does not undo work or
-stop background processes or descendants.
+available as a reliability spike. The native operator candidate composes the current board,
+safe browser selection, exact start-or-steer input, and one emergency control through one closed
+HTTP dispatcher. Stop uses explicit two-step confirmation for one exact active turn. It does
+not undo work or stop background processes or descendants.
 
 ## Non-goals
 
@@ -45,10 +47,13 @@ packages or frontend build are required.
 cd switchstand
 PYTHONPATH=src python -m switchstand.service \
   --app-server-socket /path/to/codex-app-server.sock \
-  --native-root-thread-id EXACT_NATIVE_ROOT_ID
+  --native-root-thread-id EXACT_NATIVE_ROOT_ID \
+  --port 0
 ```
 
-Then open <http://127.0.0.1:4180/>. Switchstand never discovers or guesses the root. Omit
+Open the exact URL printed by the process. Port `0` asks the operating system for a free
+loopback port; an explicit port such as `--port 4180` also works. Switchstand never discovers
+or guesses the root. Omit
 `--native-root-thread-id` to run the legacy two-role reliability spike; its state defaults to
 `~/.local/state/switchstand/state.json`. Run
 `PYTHONPATH=src python -m switchstand.service --help` for all options. Both modes are
@@ -101,6 +106,8 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/native_stop.py` — exact-turn native stop receipts and outcome projection
 - `src/switchstand/native_selection.py` — pure closed `native-selection-v1` resolution boundary
+- `src/switchstand/native_http.py` — closed native HTTP routing and response contract
+- `src/switchstand/native_workbench.py` — in-process facade over the native ports
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `scripts/stage_b1_live_check.py` — exact-head, read-only native-board live evidence runner

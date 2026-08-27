@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import json
-import http.client
-from pathlib import Path
 import threading
-from typing import Any, cast
+from typing import Any
 import unittest
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from switchstand.current_target import ExactCurrentTarget
 from switchstand.native_board import NativeBoard
-from switchstand.native_contracts import NativeBrowserSelectionResult, NativeSelectionPair
-from switchstand.service import PACKAGE_ROOT, Server, _loopback
+from switchstand.native_contracts import (
+    NativeBrowserSelectionResult,
+    NativeSelectionPair,
+)
 
 
 def native_thread(
@@ -463,91 +461,6 @@ class NativeBoardTests(unittest.TestCase):
             release.set()
             worker.join(1)
         self.assertTrue(operation_done.is_set())
-
-    def test_http_api_serves_native_snapshot_and_rejects_controls(self):
-        board = NativeBoard(lambda: client_with_status(), "raw-root")
-        board.poll_once()
-        server = Server(("127.0.0.1", 0), board, Path(PACKAGE_ROOT / "static"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        base = f"http://127.0.0.1:{server.server_address[1]}"
-        try:
-            with urlopen(f"{base}/api/workbench") as response:
-                self.assertEqual(json.load(response)["mode"], "native")
-            with self.assertRaises(HTTPError) as raised:
-                urlopen(Request(f"{base}/api/workbench/reconcile", data=b"{}", method="POST"))
-            self.assertEqual(raised.exception.code, 404)
-            self.assertEqual(json.load(raised.exception)["error"], "operation_unavailable_in_native_mode")
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-
-    def test_native_control_http_boundary_rejects_simple_and_cross_origin_requests(self):
-        self.assertTrue(_loopback("127.0.0.1:4180"))
-        self.assertFalse(_loopback("0.0.0.0:4180"))
-        board = NativeBoard(lambda: client_with_status(), "raw-root")
-        board.poll_once()
-
-        class Stopper:
-            def __init__(self):
-                self.calls = []
-
-            def prepare(self, value):
-                self.calls.append(value)
-                return {"code": "prepared", "agentRef": value, "confirmationRef": "opaque"}
-
-        stopper = Stopper()
-        board._stopper = cast(Any, stopper)
-        server = Server(("127.0.0.1", 0), board, Path(PACKAGE_ROOT / "static"))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        port = server.server_address[1]
-        try:
-            valid = {
-                "Host": f"127.0.0.1:{port}",
-                "Origin": f"http://127.0.0.1:{port}",
-                "Content-Type": "application/json",
-                "X-Switchstand-Control": "native-stop-v1",
-            }
-            cases = [
-                {},
-                {**valid, "Content-Type": "text/plain"},
-                {**valid, "X-Switchstand-Control": "wrong"},
-                {**valid, "Host": "example.com"},
-                {**valid, "Host": f"user@127.0.0.1:{port}"},
-                {**valid, "Host": f"127.0.0.1:{port}/path"},
-                {**valid, "Origin": "null"},
-                {**valid, "Origin": "http://127.0.0.1:9"},
-                {**valid, "Origin": f"http://127.0.0.1:{port}/path"},
-            ]
-            for headers in cases:
-                connection = http.client.HTTPConnection("127.0.0.1", port)
-                connection.request("POST", "/api/native-stop/prepare", "{}", headers)
-                response = connection.getresponse()
-                self.assertEqual(response.status, 403)
-                self.assertEqual(json.load(response)["code"], "control_request_rejected")
-                connection.close()
-            self.assertEqual(stopper.calls, [])
-            connection = http.client.HTTPConnection("127.0.0.1", port)
-            connection.request("POST", "/api/native-stop/prepare", '{"agentRef":"agent-1"}', valid)
-            response = connection.getresponse()
-            self.assertEqual(response.status, 200)
-            self.assertEqual(json.load(response)["confirmationRef"], "opaque")
-            self.assertEqual(stopper.calls, ["agent-1"])
-            self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
-            connection.close()
-            connection = http.client.HTTPConnection("127.0.0.1", port)
-            connection.request("GET", "/api/native-stop/prepare")
-            response = connection.getresponse()
-            self.assertEqual(response.status, 405)
-            self.assertEqual(json.load(response)["outcome"], "not_sent")
-            connection.close()
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-
 
 if __name__ == "__main__":
     unittest.main()

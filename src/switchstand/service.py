@@ -12,16 +12,23 @@ from urllib.parse import unquote, urlsplit
 
 from .app_server import CodexAppServer
 from .engine import CodexAdapter, Engine
-from .native_board import NativeBoard
-from .native_http_contract import (
-    CONTROL_HEADER_NAME,
-    CONTROL_REQUEST_REJECTED_BODY,
-    INVALID_REQUEST_BODY,
-    MAX_BODY_BYTES,
-    NATIVE_STOP_CONTROL_VALUE as NATIVE_HEADER,
-    is_loopback_host as _loopback,
-    is_same_origin_http as _same_origin_http,
+from .native_board import (
+    DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS,
+    NativeBoard,
 )
+from .native_http import (
+    NativeHttpDispatcher,
+    NativeHttpRequest,
+    NativeHttpResponse,
+)
+from .native_http_contract import (
+    CONTROL_REQUEST_REJECTED_BODY,
+    MAX_BODY_BYTES,
+    is_loopback_host as _loopback,
+)
+from .native_input import NativeInput
+from .native_target_transport import NativeTargetTransport
+from .native_workbench import NativeWorkbench
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -62,6 +69,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _native_response(self, response: NativeHttpResponse) -> None:
+        self.send_response_only(response.status)
+        for name, value in response.headers:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(response.body)
+
+    def _native_request(self, body: bytes = b"") -> NativeHttpRequest:
+        return NativeHttpRequest(
+            method=self.command,
+            path=self.path,
+            headers=tuple(self.headers.raw_items()),
+            body=body,
+        )
+
+    def _bounded_raw_body(self) -> bytes:
+        lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(lengths) != 1:
+            if lengths:
+                self.close_connection = True
+            return b""
+        raw_length = lengths[0]
+        if (
+            not raw_length
+            or not raw_length.isascii()
+            or not raw_length.isdecimal()
+            or len(raw_length) > len(str(MAX_BODY_BYTES))
+        ):
+            self.close_connection = True
+            return b""
+        length = int(raw_length)
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            return b""
+        return self.rfile.read(length)
+
+    def _dispatch_native(self, body: bytes = b"") -> bool:
+        dispatcher = cast("Server", self.server).native_dispatcher
+        if dispatcher is None:
+            return False
+        response = dispatcher.dispatch(self._native_request(body))
+        if response is None:
+            return False
+        self._native_response(response)
+        return True
+
     def _read_json(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -70,6 +123,13 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_BODY_BYTES:
             raise ValueError("request body is too large")
         value = json.loads(self.rfile.read(length) or b"{}")
+        if not isinstance(value, dict):
+            raise ValueError("request body must be a JSON object")
+        return value
+
+    @staticmethod
+    def _decode_json(body: bytes) -> dict[str, Any]:
+        value = json.loads(body or b"{}")
         if not isinstance(value, dict):
             raise ValueError("request body must be a JSON object")
         return value
@@ -99,41 +159,43 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        if self._dispatch_native():
+            return
         pathname = urlsplit(self.path).path
-        if pathname.startswith("/api/native-stop/"):
+        runtime = cast("Server", self.server).runtime
+        if pathname.startswith("/api/native-stop/") and isinstance(runtime, Runtime):
             self._json(405, CONTROL_REQUEST_REJECTED_BODY)
             return
-        if pathname == "/api/workbench":
-            self._json(200, cast("Server", self.server).runtime.snapshot())
+        if pathname == "/api/workbench" and isinstance(runtime, Runtime):
+            self._json(200, runtime.snapshot())
             return
         self._static(pathname)
 
+    def do_OPTIONS(self) -> None:
+        if self._dispatch_native():
+            return
+        self.send_error(501, "Unsupported method ('OPTIONS')")
+
     def do_POST(self) -> None:
-        pathname = urlsplit(self.path).path
-        runtime = cast("Server", self.server).runtime
-        native_actions = {"/api/native-stop/prepare": "prepare_stop",
-            "/api/native-stop/commit": "commit_stop", "/api/native-stop/status": "stop_status"}
-        if isinstance(runtime, NativeBoard) and pathname in native_actions:
-            host, origin = self.headers.get("Host"), self.headers.get("Origin")
-            origin_ok = _same_origin_http(origin, host)
-            if (self.headers.get("Content-Type") != "application/json"
-                    or self.headers.get(CONTROL_HEADER_NAME) != NATIVE_HEADER
-                    or not _loopback(host) or not origin_ok):
-                self._json(403, CONTROL_REQUEST_REJECTED_BODY)
+        server = cast("Server", self.server)
+        if server.native_dispatcher is not None:
+            raw_body = self._bounded_raw_body()
+            if self._dispatch_native(raw_body):
                 return
             try:
-                body = self._read_json()
-            except (ValueError, json.JSONDecodeError):
-                self._json(400, INVALID_REQUEST_BODY)
+                body = self._decode_json(raw_body)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._json(409, {"error": str(exc)})
                 return
-            keys = {"prepare_stop": "agentRef", "commit_stop": "confirmationRef",
-                "stop_status": "operationRef"}
-            key = keys[native_actions[pathname]]
-            result = getattr(runtime, native_actions[pathname])(body.get(key))
-            self._json(200, result)
-            return
+        else:
+            try:
+                body = self._read_json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._json(409, {"error": str(exc)})
+                return
+        pathname = urlsplit(self.path).path
+        runtime = server.runtime
         try:
-            body = self._read_json()
             parts = [part for part in pathname.split("/") if part]
             if not isinstance(runtime, Runtime):
                 self._json(404, {"error": "operation_unavailable_in_native_mode"})
@@ -160,10 +222,52 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], runtime: Runtime | NativeBoard, static_root: Path) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        runtime: Runtime | NativeBoard,
+        static_root: Path,
+        *,
+        native_dispatcher: NativeHttpDispatcher | None = None,
+    ) -> None:
+        if isinstance(runtime, NativeBoard) and native_dispatcher is None:
+            raise ValueError("native runtime requires the native HTTP dispatcher")
         super().__init__(address, Handler)
         self.runtime = runtime
         self.static_root = static_root
+        self.native_dispatcher = native_dispatcher
+
+
+def build_native_runtime(
+    socket_path: Path,
+    root_thread_id: str,
+    *,
+    maximum_observation_age_seconds: float,
+) -> tuple[NativeBoard, NativeHttpDispatcher]:
+    """Compose the merged native ports with one shared freshness setting."""
+    board = NativeBoard(
+        lambda: CodexAppServer(
+            socket_path,
+            timeout_seconds=3,
+            bounded_stop=True,
+        ),
+        root_thread_id,
+        maximum_observation_age_seconds=maximum_observation_age_seconds,
+    )
+    transport = NativeTargetTransport(board, socket_path)
+    native_input = NativeInput(
+        board.resolve_current_target,
+        transport,
+        maximum_observation_age_seconds=maximum_observation_age_seconds,
+    )
+    workbench = NativeWorkbench(
+        board,
+        board,
+        native_input,
+        board,
+        maximum_observation_age_seconds=maximum_observation_age_seconds,
+    )
+    return board, NativeHttpDispatcher(workbench)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,6 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role-a", default="Role A")
     parser.add_argument("--role-b", default="Role B")
     parser.add_argument("--native-root-thread-id")
+    parser.add_argument(
+        "--maximum-observation-age-seconds",
+        type=float,
+        default=DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS,
+        help="native complete-pass freshness limit (default: %(default)s)",
+    )
     return parser
 
 
@@ -191,27 +301,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.native_root_thread_id:
         if not _loopback(args.host):
             parser.error("native mode requires a loopback --host")
-        runtime: Runtime | NativeBoard = NativeBoard(
-            lambda: CodexAppServer(
-                args.app_server_socket,
-                timeout_seconds=3,
-                bounded_stop=True,
-            ),
+        runtime, native_dispatcher = build_native_runtime(
+            args.app_server_socket,
             args.native_root_thread_id,
+            maximum_observation_age_seconds=args.maximum_observation_age_seconds,
         )
     else:
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
         runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
-    runtime.start()
-    server = Server((args.host, args.port), runtime, args.static_root)
-    print(f"Switchstand: http://{args.host}:{server.server_address[1]}/", flush=True)
+        native_dispatcher = None
+    server: Server | None = None
     try:
+        server = Server(
+            (args.host, args.port),
+            runtime,
+            args.static_root,
+            native_dispatcher=native_dispatcher,
+        )
+        runtime.start()
+        print(f"Switchstand: http://{args.host}:{server.server_address[1]}/", flush=True)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
-        runtime.close()
+        try:
+            if server is not None:
+                server.server_close()
+        finally:
+            runtime.close()
     return 0
 
 
