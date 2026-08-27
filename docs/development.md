@@ -84,6 +84,18 @@ The socket must already be provided by a Codex app-server daemon. The service do
 authenticate, or supervise that daemon. Bind to the default `127.0.0.1`; the prototype has no
 authentication or CSRF protection and is not designed for network exposure.
 
+Run the native flight board with an exact root id:
+
+```sh
+PYTHONPATH=src python -m switchstand.service \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --native-root-thread-id EXACT_ROOT_THREAD_ID
+```
+
+The native board is GET-only and does not resume or subscribe. Before claiming its live
+checkpoint, observe a real root and descendant change from active to idle within two poll
+intervals and record the exact reviewed head.
+
 ## Review expectations
 
 Review engine changes as state-machine changes. Check exact target validation, generation and

@@ -21,6 +21,17 @@ the checkpoint uses `turn/start` only for an observed idle thread and `turn/stee
 exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
+`native_observer.py` is the Stage B1 read-only projection. Each pass opens a fresh connection,
+reads the exact root without turns, exhausts descendant pagination through `AgentTreeAdapter`,
+and forces `useStateDbOnly:true` on every list request. Only a fully validated pass publishes
+safe run-local labels, computed parent depth, allowlisted source/status data, timestamps,
+observed-active duration, and capped endpoint differences. Raw identifiers, sessions, names,
+previews, turns, content, socket paths, and protocol errors remain server-private.
+
+Any pass failure clears active-duration continuity and retains the last complete pass as
+historical with one fixed error code. Durations advance only between completed passes that both
+observed the thread active; browser refresh time does not count.
+
 `stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
 owns bounded collection orchestration and the CLI over the same `CodexAppServer` and
 `AgentTreeAdapter`. Together they record local observation windows, the exact safe subset of
@@ -101,6 +112,5 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Replacing the fixed-role service or browser surface; historical live evidence observed the
-  native-tree protocol capability, but schema-v2 exact-head evidence remains pending external
-  receipt and no retained repository artifact currently proves this head
+- Historical live evidence observed the native-tree protocol capability, but exact-head Stage B1
+  evidence remains pending a real root/descendant run

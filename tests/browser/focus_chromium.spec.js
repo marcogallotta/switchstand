@@ -6,7 +6,7 @@ const path = require("node:path");
 const { test, expect } = require("@playwright/test");
 
 const assets = path.join(__dirname, "..", "..", "src", "switchstand", "static");
-const state = {
+const syntheticState = {
   roles: {
     design: {
       id: "design",
@@ -20,6 +20,44 @@ const state = {
   attempts: [],
   messages: [],
 };
+let currentState = syntheticState;
+
+function nativeState({ sequence, connected = true, historical = false, status = "active", activeSeconds = 5 }) {
+  const threads = Array.from({ length: 18 }, (_, index) => ({
+    ref: `thread-${index + 1}`,
+    label: index === 0 ? "Root" : `Agent ${index}`,
+    parentRef: index === 0 ? null : "thread-1",
+    depth: index === 0 ? 0 : 1,
+    source: index === 0 ? "cli" : "subAgent:review",
+    createdAt: 100 + index,
+    updatedAt: 180 + index,
+    status: index === 1
+      ? { type: status, ...(status === "active" ? { activeFlags: ["waitingOnUserInput"] } : {}) }
+      : { type: "idle" },
+    activeObservedSeconds: index === 1 && status === "active" ? activeSeconds : null,
+  }));
+  return {
+    mode: "native",
+    readOnly: true,
+    passSequence: sequence,
+    observation: {
+      connected,
+      historical,
+      errorCode: connected ? null : "native_observation_unavailable",
+      completedAt: 190,
+      kind: "completed multi-request observation pass",
+      caveat: "Polling may miss intermediate endpoint transitions.",
+    },
+    threads,
+    differences: Array.from({ length: 20 }, (_, index) => ({
+      observedAt: 190,
+      threadRef: `thread-${(index % 17) + 2}`,
+      field: "status",
+      before: { type: "active", activeFlags: [] },
+      after: { type: "idle" },
+    })),
+  };
+}
 
 let server;
 let origin;
@@ -31,7 +69,7 @@ test.beforeAll(async () => {
     const pathname = new URL(request.url, "http://localhost").pathname;
     if (pathname === "/api/workbench") {
       apiRequests += 1;
-      const body = Buffer.from(JSON.stringify(state));
+      const body = Buffer.from(JSON.stringify(currentState));
       response.writeHead(200, { "Content-Type": "application/json", "Content-Length": body.length });
       response.end(body);
       return;
@@ -79,6 +117,8 @@ async function waitForReplacement(page) {
 }
 
 test("real Chromium preserves draft, focus, and selection across 50 replaced textareas", async ({ page }) => {
+  currentState = syntheticState;
+  apiRequests = 0;
   await page.clock.install();
   await page.goto(origin);
   const textarea = page.locator("textarea[data-draft-key]").first();
@@ -104,6 +144,76 @@ test("real Chromium preserves draft, focus, and selection across 50 replaced tex
       direction: "forward",
     });
     expect(apiRequests).toBe(cycle + 1);
+  }
+  expect(apiRequests).toBe(51);
+});
+
+test("native flight board preserves focus, text selection, and scroll across 50 refreshes", async ({ page }) => {
+  currentState = nativeState({ sequence: 1 });
+  apiRequests = 0;
+  await page.clock.install({ time: 200000 });
+  await page.goto(origin);
+  const card = page.locator('[data-focus-key="thread-2"]');
+  await card.waitFor();
+  await expect(card).toContainText("Agent 1");
+  await expect(card).toContainText("waitingOnUserInput");
+  await expect(card).toContainText("consecutive observed active 5s");
+  await expect(page.locator(".flight-meta").first()).toContainText("multi-request observation pass");
+  const initial = await page.evaluate(() => {
+    const cardNode = document.querySelector('[data-focus-key="thread-2"]');
+    const selectionNode = document.querySelector('[data-selection-key="source:thread-2"]');
+    const trail = document.querySelector('[data-scroll-key="differences"]');
+    cardNode.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection.setBaseAndExtent(selectionNode.firstChild, 0, selectionNode.firstChild, selectionNode.textContent.length);
+    trail.scrollTop = 90;
+    window.scrollTo(0, 500);
+    window.__previousNativeCard = cardNode;
+    return { scrollY: window.scrollY, trailScroll: trail.scrollTop };
+  });
+  expect(initial.scrollY).toBeGreaterThan(0);
+  expect(initial.trailScroll).toBeGreaterThan(0);
+
+  for (let cycle = 1; cycle <= 50; cycle += 1) {
+    if (cycle === 20) currentState = nativeState({ sequence: 2, activeSeconds: 10 });
+    if (cycle === 30) currentState = nativeState({ sequence: 2, connected: false, historical: true });
+    if (cycle === 40) currentState = nativeState({ sequence: 3, status: "idle" });
+    if (cycle === 45) currentState = nativeState({ sequence: 4, activeSeconds: 0 });
+    const response = page.waitForResponse(`${origin}/api/workbench`);
+    await page.clock.runFor(1000);
+    await response;
+    const value = await expect.poll(() => page.evaluate(() => {
+      const current = document.querySelector('[data-focus-key="thread-2"]');
+      if (!current || current === window.__previousNativeCard) return null;
+      window.__previousNativeCard = current;
+      return {
+        focused: document.activeElement === current,
+        selection: window.getSelection().toString(),
+        scrollY: window.scrollY,
+        trailScroll: document.querySelector('[data-scroll-key="differences"]').scrollTop,
+      };
+    })).not.toBeNull();
+    void value;
+    const preserved = await page.evaluate(() => ({
+      focused: document.activeElement === document.querySelector('[data-focus-key="thread-2"]'),
+      selection: window.getSelection().toString(),
+      scrollY: window.scrollY,
+      trailScroll: document.querySelector('[data-scroll-key="differences"]').scrollTop,
+    }));
+    expect(preserved).toEqual({
+      focused: true,
+      selection: "subAgent:review",
+      scrollY: initial.scrollY,
+      trailScroll: initial.trailScroll,
+    });
+    if (cycle === 10) await expect(card).toContainText("consecutive observed active 5s");
+    if (cycle === 20) await expect(card).toContainText("consecutive observed active 10s");
+    if (cycle === 30) {
+      await expect(page.locator(".flight-meta").first()).toContainText("historical evidence");
+      await expect(card).toContainText("consecutive observed active unavailable");
+    }
+    if (cycle === 40) await expect(card).toContainText("consecutive observed active unavailable");
+    if (cycle === 45) await expect(card).toContainText("consecutive observed active 0s");
   }
   expect(apiRequests).toBe(51);
 });

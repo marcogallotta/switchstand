@@ -13,10 +13,9 @@ and result fencing by role generation plus attempt identity.
 ## Status and checkpoint
 
 The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are
-implemented and covered by local unit tests. The adapter speaks the real Codex app-server
-v2 thread/turn protocol. An earlier Stage A probe revision passed against a real local App
-Server socket, but its retained artifact predates the current evidence schema and has been
-removed. This exact head requires a fresh live capture before it can claim exact-head proof.
+implemented and covered by local unit tests. A separate native flight-board mode observes one
+exact root and its descendants without loading, resuming, messaging, or controlling them. It
+exposes only run-local structural labels and safe endpoint state.
 
 Issue #3's native-agent-tree checkpoint is complete at the probe boundary. The separate
 `agent_tree.py` protocol layer explicitly enumerates all documented root and subagent source
@@ -27,8 +26,8 @@ fixtures are documented protocol-shape fixtures, not live captures. The default 
 redacted machine-readable evidence or a nonzero fail-closed reason. Its separate notification
 mode requires an explicit runtime-loading subscription opt-in. The protocol capability was
 observed by the earlier revision, but the exact-head retained-evidence gate remains open until
-the current probe produces a fresh passing artifact. Stage B remains unimplemented and the
-synthetic two-role UI is unchanged.
+the current probe produces a fresh passing artifact. The Stage B1 implementation also requires
+an exact-head live root/descendant run before a live checkpoint can be claimed.
 
 ## Non-goals
 
@@ -53,6 +52,17 @@ PYTHONPATH=src python -m switchstand.service \
 Then open <http://127.0.0.1:4180/>. State defaults to
 `~/.local/state/switchstand/state.json`; use `--state` to choose another file. Run
 `PYTHONPATH=src python -m switchstand.service --help` for all options.
+
+For the read-only native flight board, supply one exact root instead of discovering or guessing:
+
+```sh
+PYTHONPATH=src python -m switchstand.service \
+  --app-server-socket /path/to/codex-app-server.sock \
+  --native-root-thread-id EXACT_ROOT_THREAD_ID
+```
+
+This mode reconnects for each completed multi-request observation pass and forces
+`useStateDbOnly:true` on every descendant-list page. Polling can miss intermediate transitions.
 
 Run the dependency-free checks:
 
@@ -97,6 +107,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
 - `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
+- `src/switchstand/native_observer.py` — read-only native flight-board projection and polling
 - `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation
 - `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/service.py` — local HTTP/API/static-file process
@@ -112,5 +123,6 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Prototype boundary decision](docs/decisions/0001-prototype-boundary.md)
 - [Native tree checkpoint decision](docs/decisions/0002-native-tree-checkpoint.md)
 - [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
+- [Read-only native flight-board decision](docs/decisions/0004-read-only-native-flight-board.md)
 
 Switchstand is available under the [MIT License](LICENSE).

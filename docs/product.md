@@ -22,6 +22,11 @@ message stream, accepted checkpoint, selected attempt, and attempt history. The 
 - distinguish accepted output from visible but fenced stale output; and
 - restart the local service without treating an interrupted mutation as known success.
 
+With one exact native root id, the primary surface instead becomes a read-only flight board of
+that root and its spawned descendants. It shows parent lineage, native status, safe source/depth,
+freshness, completed-pass-fenced observed-active time, and bounded endpoint differences. A
+disconnected board retains only the last complete pass and marks it historical.
+
 ## Boundaries
 
 The prototype has one local Work and exactly two roles. It stores a JSON snapshot and JSONL
@@ -33,3 +38,7 @@ coordinate releases, schedule background projects, manage multiple users, or cla
 distributed execution. It does not hide transport uncertainty: `unknown` means the available
 evidence does not prove the outcome, and `stale` means output was observed but was not eligible
 to update the selected generation's checkpoint.
+
+Native mode has no message, steer, stop, redirect, replacement, transcript, or persistence
+surface. It never discovers a root, loads or resumes a thread, or infers semantic progress,
+completion, failure, staleness, or intent from native status or silence.

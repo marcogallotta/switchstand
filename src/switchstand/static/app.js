@@ -145,6 +145,80 @@ function roleCard(state, role, refresh, reportError) {
   return card;
 }
 
+function age(value) {
+  if (value === null || value === undefined) return "unavailable";
+  return `${Math.max(0, Math.floor(Date.now() / 1000 - value))}s ago`;
+}
+
+function selectable(key, text) {
+  const node = el("span", null, text);
+  node.dataset.selectionKey = key;
+  return node;
+}
+
+function nativeThread(thread, labels, observation) {
+  const card = el("article", "native-thread");
+  card.dataset.focusKey = thread.ref;
+  card.tabIndex = 0;
+  card.style.setProperty("--depth", thread.depth);
+  const heading = el("div", "record__summary");
+  heading.append(el("h2", null, thread.label), badge(thread.status.type));
+  const facts = el("div", "native-thread__facts muted");
+  const source = el("span", null, "source ");
+  source.append(selectable(`source:${thread.ref}`, thread.source));
+  const updated = el("span", null, "updated ");
+  updated.append(selectable(`updated:${thread.ref}`, age(thread.updatedAt)));
+  facts.append(
+    el("span", null, `parent ${thread.parentRef ? labels.get(thread.parentRef) : "none"}`),
+    el("span", null, `depth ${thread.depth}`),
+    source,
+    updated,
+  );
+  const active = thread.status.type === "active" && observation.connected && !observation.historical
+    ? `${Math.floor(thread.activeObservedSeconds)}s`
+    : "unavailable";
+  facts.append(el("span", null, `consecutive observed active ${active}`));
+  const flags = thread.status.activeFlags ?? [];
+  if (flags.length) facts.append(el("span", null, `flags ${flags.join(", ")}`));
+  card.append(heading, facts);
+  return card;
+}
+
+function flightBoard(state) {
+  const board = el("section", "flight-board");
+  const observation = state.observation;
+  const meta = el("header", `flight-meta${observation.historical ? " historical" : ""}`);
+  meta.append(
+    el("p", "eyebrow", "Read-only native agent flight board"),
+    el("h2", null, observation.connected ? "Observer connected" : "Observer unavailable"),
+    el("p", null, `${observation.kind}; last complete pass ${age(observation.completedAt)}.`),
+    el("p", "muted", `${observation.caveat} Observed endpoint differences are neither atomic snapshots nor native events.`),
+  );
+  if (observation.errorCode) meta.append(el("p", "error", observation.errorCode));
+  if (observation.historical) meta.append(el("p", "error", "Showing the last complete pass as historical evidence."));
+  board.append(meta);
+
+  const labels = new Map(state.threads.map((thread) => [thread.ref, thread.label]));
+  const tree = el("section", "native-tree");
+  state.threads.forEach((thread) => tree.append(nativeThread(thread, labels, observation)));
+  if (!state.threads.length) tree.append(el("p", "muted", "No complete observation pass is available."));
+  board.append(tree);
+
+  const trail = el("section", "flight-meta difference-trail");
+  trail.dataset.scrollKey = "differences";
+  trail.append(el("h2", null, "Observed endpoint differences"));
+  const list = el("ol", "list");
+  [...state.differences].reverse().forEach((item) => {
+    const before = typeof item.before === "object" ? JSON.stringify(item.before) : item.before;
+    const after = typeof item.after === "object" ? JSON.stringify(item.after) : item.after;
+    list.append(el("li", "record", `${labels.get(item.threadRef) ?? item.threadRef}: ${item.field} · ${before} → ${after}`));
+  });
+  if (!state.differences.length) list.append(el("li", "muted", "No endpoint difference observed yet."));
+  trail.append(list);
+  board.append(trail);
+  return board;
+}
+
 const rolesHost = document.querySelector("#roles");
 const errorHost = document.querySelector("#error");
 function reportError(value) {
@@ -152,7 +226,7 @@ function reportError(value) {
   errorHost.hidden = false;
 }
 
-function captureDrafts() {
+function captureView() {
   const values = new Map();
   let focused = null;
   rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
@@ -167,28 +241,76 @@ function captureDrafts() {
       };
     }
   });
-  return { values, focused };
+  rolesHost.querySelectorAll("[data-focus-key]").forEach((node) => {
+    if (node === document.activeElement) focused = { key: node.dataset.focusKey };
+  });
+  let selection = null;
+  const browserSelection = window.getSelection?.();
+  if (browserSelection?.rangeCount) {
+    rolesHost.querySelectorAll("[data-selection-key]").forEach((node) => {
+      if (node.contains(browserSelection.anchorNode) && node.contains(browserSelection.focusNode)) {
+        selection = {
+          key: node.dataset.selectionKey,
+          anchor: browserSelection.anchorOffset,
+          focus: browserSelection.focusOffset,
+        };
+      }
+    });
+  }
+  const innerScroll = new Map();
+  rolesHost.querySelectorAll("[data-scroll-key]").forEach((node) => {
+    innerScroll.set(node.dataset.scrollKey, node.scrollTop);
+  });
+  return { values, focused, selection, innerScroll, scrollX: window.scrollX ?? 0, scrollY: window.scrollY ?? 0 };
 }
 
-function restoreDrafts(drafts) {
+function restoreView(view) {
   rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
     const key = input.dataset.draftKey;
-    if (drafts.values.has(key)) input.value = drafts.values.get(key);
-    if (drafts.focused?.key === key) {
+    if (view.values.has(key)) input.value = view.values.get(key);
+    if (view.focused?.key === key) {
       input.focus({ preventScroll: true });
-      input.setSelectionRange(drafts.focused.start, drafts.focused.end, drafts.focused.direction);
+      input.setSelectionRange(view.focused.start, view.focused.end, view.focused.direction);
     }
   });
+  rolesHost.querySelectorAll("[data-focus-key]").forEach((node) => {
+    if (view.focused?.key === node.dataset.focusKey) node.focus({ preventScroll: true });
+  });
+  rolesHost.querySelectorAll("[data-selection-key]").forEach((node) => {
+    if (view.selection?.key === node.dataset.selectionKey && node.firstChild) {
+      const limit = node.firstChild.textContent.length;
+      window.getSelection()?.setBaseAndExtent(
+        node.firstChild,
+        Math.min(view.selection.anchor, limit),
+        node.firstChild,
+        Math.min(view.selection.focus, limit),
+      );
+    }
+  });
+  rolesHost.querySelectorAll("[data-scroll-key]").forEach((node) => {
+    if (view.innerScroll.has(node.dataset.scrollKey)) node.scrollTop = view.innerScroll.get(node.dataset.scrollKey);
+  });
+  window.scrollTo?.(view.scrollX, view.scrollY);
 }
 
+let refreshing = false;
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const state = await request("/api/workbench");
     errorHost.hidden = true;
-    const drafts = captureDrafts();
-    rolesHost.replaceChildren(...Object.values(state.roles).map((role) => roleCard(state, role, refresh, reportError)));
-    restoreDrafts(drafts);
+    const view = captureView();
+    if (state.mode === "native") {
+      rolesHost.className = "role-grid role-grid--native";
+      rolesHost.replaceChildren(flightBoard(state));
+    } else {
+      rolesHost.className = "role-grid";
+      rolesHost.replaceChildren(...Object.values(state.roles).map((role) => roleCard(state, role, refresh, reportError)));
+    }
+    restoreView(view);
   } catch (error) { reportError(error); }
+  finally { refreshing = false; }
 }
 
 refresh();

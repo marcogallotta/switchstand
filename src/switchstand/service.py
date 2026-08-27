@@ -10,7 +10,9 @@ import threading
 from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
+from .app_server import CodexAppServer
 from .engine import CodexAdapter, Engine
+from .native_observer import NativeObserver
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -35,6 +37,33 @@ class Runtime:
     def _observe(self) -> None:
         while not self.stop_event.wait(0.5):
             self.engine.reconcile()
+
+    def snapshot(self) -> dict[str, Any]:
+        return self.engine.snapshot()
+
+
+class NativeRuntime:
+    """Poll one exact native tree without constructing the mutation engine."""
+
+    def __init__(self, observer: NativeObserver) -> None:
+        self.native_observer = observer
+        self.stop_event = threading.Event()
+        self.observer = threading.Thread(target=self._observe, name="switchstand-native-observer", daemon=True)
+
+    def start(self) -> None:
+        self.observer.start()
+
+    def close(self) -> None:
+        self.stop_event.set()
+        self.observer.join(timeout=2)
+
+    def snapshot(self) -> dict[str, Any]:
+        return self.native_observer.snapshot()
+
+    def _observe(self) -> None:
+        while not self.stop_event.is_set():
+            self.native_observer.observe_once()
+            self.stop_event.wait(1.0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -90,16 +119,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pathname = urlsplit(self.path).path
         if pathname == "/api/workbench":
-            self._json(200, cast("Server", self.server).runtime.engine.snapshot())
+            self._json(200, cast("Server", self.server).runtime.snapshot())
             return
         self._static(pathname)
 
     def do_POST(self) -> None:
         pathname = urlsplit(self.path).path
+        runtime = cast("Server", self.server).runtime
+        if isinstance(runtime, NativeRuntime):
+            self._json(405, {"error": "native_mode_read_only"})
+            return
         try:
             body = self._read_json()
             parts = [part for part in pathname.split("/") if part]
-            engine = cast("Server", self.server).runtime.engine
+            engine = runtime.engine
             if len(parts) == 5 and parts[:2] == ["api", "workbench"] and parts[2] == "roles" and parts[4] == "messages":
                 engine.enqueue(parts[3], str(body.get("text") or ""), kind=str(body.get("kind") or "message"))
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "stop":
@@ -121,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], runtime: Runtime, static_root: Path) -> None:
+    def __init__(self, address: tuple[str, int], runtime: Runtime | NativeRuntime, static_root: Path) -> None:
         super().__init__(address, Handler)
         self.runtime = runtime
         self.static_root = static_root
@@ -137,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT") or "4180"))
     parser.add_argument("--role-a", default="Role A")
     parser.add_argument("--role-b", default="Role B")
+    parser.add_argument("--native-root-thread-id", default=os.getenv("SWITCHSTAND_NATIVE_ROOT_THREAD_ID"))
     return parser
 
 
@@ -148,8 +182,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.static_root.is_dir():
         parser.error(f"static files are missing at {args.static_root}")
 
-    adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
-    runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
+    if args.native_root_thread_id:
+        observer = NativeObserver(
+            lambda: CodexAppServer(args.app_server_socket),
+            args.native_root_thread_id,
+        )
+        runtime: Runtime | NativeRuntime = NativeRuntime(observer)
+    else:
+        adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
+        runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
     runtime.start()
     server = Server((args.host, args.port), runtime, args.static_root)
     print(f"Switchstand: http://{args.host}:{server.server_address[1]}/", flush=True)

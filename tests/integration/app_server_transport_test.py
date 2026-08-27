@@ -11,6 +11,7 @@ import threading
 import unittest
 
 from switchstand.app_server import CodexAppServer
+from switchstand.native_observer import NativeObserver
 
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -53,13 +54,14 @@ def send_json(connection: socket.socket, value: object) -> None:
 
 
 class ScriptedPeer(threading.Thread):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, observer_status: str | None = None) -> None:
         super().__init__(daemon=True)
         self.path = path
         self.ready = threading.Event()
         self.error: BaseException | None = None
         self.requests: list[dict[str, object]] = []
         self.masked: list[bool] = []
+        self.observer_status = observer_status
 
     def message(self, connection: socket.socket) -> dict[str, object]:
         opcode, payload, masked = receive_frame(connection)
@@ -107,6 +109,9 @@ class ScriptedPeer(threading.Thread):
                 send_json(connection, {"id": initialize["id"], "result": {}})
                 initialized = self.message(connection)
                 self.assert_equal(initialized, {"method": "initialized", "params": {}})
+                if self.observer_status is not None:
+                    self.observer_pass(connection)
+                    return
                 listing = self.message(connection)
                 self.assert_equal(listing["method"], "thread/list")
                 send_json(
@@ -129,6 +134,64 @@ class ScriptedPeer(threading.Thread):
         finally:
             if server is not None:
                 server.close()
+
+    def observer_pass(self, connection: socket.socket) -> None:
+        reading = self.message(connection)
+        self.assert_equal(reading["method"], "thread/read")
+        self.assert_equal(reading["params"], {"threadId": "root-live", "includeTurns": False})
+        send_json(
+            connection,
+            {
+                "id": reading["id"],
+                "result": {
+                    "thread": {
+                        "id": "root-live",
+                        "sessionId": "session-root",
+                        "parentThreadId": None,
+                        "source": "cli",
+                        "createdAt": 10,
+                        "updatedAt": 20,
+                        "status": {"type": "idle"},
+                    }
+                },
+            },
+        )
+        listing = self.message(connection)
+        self.assert_equal(listing["method"], "thread/list")
+        self.assert_equal(listing["params"]["useStateDbOnly"], True)
+        if self.observer_status == "disconnect":
+            return
+        send_json(
+            connection,
+            {
+                "id": listing["id"],
+                "result": {
+                    "data": [
+                        {
+                            "id": "child-live",
+                            "sessionId": "session-child",
+                            "parentThreadId": "root-live",
+                            "source": {"subAgent": "review"},
+                            "createdAt": 11,
+                            "updatedAt": 25 if self.observer_status == "active" else 30,
+                            "status": {
+                                "type": self.observer_status,
+                                **({"activeFlags": ["waitingOnUserInput"]} if self.observer_status == "active" else {}),
+                            },
+                        }
+                    ],
+                    "nextCursor": "page-2",
+                },
+            },
+        )
+        final_page = self.message(connection)
+        self.assert_equal(final_page["method"], "thread/list")
+        self.assert_equal(final_page["params"]["cursor"], "page-2")
+        self.assert_equal(final_page["params"]["useStateDbOnly"], True)
+        send_json(connection, {"id": final_page["id"], "result": {"data": [], "nextCursor": None}})
+        opcode, _, masked = receive_frame(connection)
+        self.masked.append(masked)
+        self.assert_equal(opcode, 8)
 
 
 class AppServerTransportTest(unittest.TestCase):
@@ -160,6 +223,42 @@ class AppServerTransportTest(unittest.TestCase):
             )
             self.assertEqual([request["method"] for request in peer.requests], ["initialize", "initialized", "thread/list"])
             self.assertTrue(all(peer.masked), "every client frame must be masked")
+
+    def test_native_observer_recovers_real_socket_disconnect_and_exhausts_db_only_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "observer.sock"
+            peers = []
+            clock = iter([100.0, 105.0])
+            observer = NativeObserver(
+                lambda: CodexAppServer(socket_path),
+                "root-live",
+                clock=lambda: next(clock),
+            )
+            for status in ("disconnect", "active", "idle"):
+                peer = ScriptedPeer(socket_path, observer_status=status)
+                peers.append(peer)
+                peer.start()
+                self.assertTrue(peer.ready.wait(5), "scripted observer peer did not start")
+                observer.observe_once()
+                peer.join(5)
+                self.assertFalse(peer.is_alive(), "scripted observer peer did not shut down")
+                if peer.error:
+                    raise peer.error
+                if socket_path.exists():
+                    socket_path.unlink()
+
+            state = observer.snapshot()
+            self.assertTrue(state["observation"]["connected"])
+            self.assertEqual(state["passSequence"], 2)
+            self.assertEqual(state["threads"][1]["status"], {"type": "idle"})
+            methods = [[request["method"] for request in peer.requests] for peer in peers]
+            self.assertEqual(methods[0], ["initialize", "initialized", "thread/read", "thread/list"])
+            for method_list in methods[1:]:
+                self.assertEqual(
+                    method_list,
+                    ["initialize", "initialized", "thread/read", "thread/list", "thread/list"],
+                )
+            self.assertTrue(all(all(peer.masked) for peer in peers))
 
 
 if __name__ == "__main__":
