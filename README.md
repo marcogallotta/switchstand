@@ -83,7 +83,8 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
 - `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
-- `src/switchstand/stage_a_probe.py` — read-only machine-readable live checkpoint CLI
+- `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation
+- `src/switchstand/stage_a_probe.py` — bounded collection orchestration and checkpoint CLI
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `tests/` — standard-library unit tests

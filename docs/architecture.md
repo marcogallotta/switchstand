@@ -21,12 +21,15 @@ the checkpoint uses `turn/start` only for an observed idle thread and `turn/stee
 exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
-`stage_a_probe.py` defaults to read-only observation over the same `CodexAppServer` and
-`AgentTreeAdapter`. It records bounded local observation windows, the exact safe subset of
+`stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
+owns bounded collection orchestration and the CLI over the same `CodexAppServer` and
+`AgentTreeAdapter`. Together they record local observation windows, the exact safe subset of
 native thread evidence, and cursor/count/source-kind request facts for every exhausted page.
-It emits no previews, turns, prompt/output text, or socket paths, and redacts path-valued source
-metadata. Snapshot or poll evidence and actually received `thread/status/changed` notifications
-are separate fields.
+It emits no previews, turns, prompt/output text, or socket paths. Native source evidence is a
+strict projection of approved classification fields and bounded value shapes: unknown nested
+metadata is dropped, while an approved path field is retained only as the constant
+`[redacted]`. Snapshot or poll evidence and actually received
+`thread/status/changed` notifications are separate fields.
 
 `thread/read` and `thread/list` do not subscribe a new connection to thread events. Notification
 mode therefore requires an explicit opt-in that calls `thread/resume` for only the exact observed

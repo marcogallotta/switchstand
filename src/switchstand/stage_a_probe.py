@@ -1,21 +1,25 @@
-"""Read-only live evidence probe for the native Codex agent tree."""
+"""Transport orchestration and CLI for the native Codex agent-tree probe."""
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
-import re
 import socket
 import sys
 import time
 from typing import Any, Callable, Mapping, Sequence
 
-from .agent_tree import AgentTreeAdapter, AgentTreeEvidenceError, THREAD_SOURCE_KINDS
+from .agent_tree import AgentTreeAdapter, AgentTreeEvidenceError
 from .app_server import CodexAppServer
+from .stage_a_evidence import (
+    SCHEMA_VERSION,
+    ProbeEvidenceError,
+    ProbeExecutionError,
+    collect_notification,
+    snapshot,
+    utc_now,
+)
 
 
-SCHEMA_VERSION = 1
-_WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _SAFE_ERROR_PHASES = frozenset(
     {
         "root_read",
@@ -33,161 +37,6 @@ _SAFE_ERROR_PHASES = frozenset(
         "probe_runtime",
     }
 )
-
-
-class ProbeEvidenceError(RuntimeError):
-    """Raised when the requested live evidence is not available."""
-
-    def __init__(self, code: str, message: str, *, phase: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.phase = phase
-
-
-class ProbeExecutionError(RuntimeError):
-    """Sanitized probe failure with retained side-effect disclosure."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        exit_code: int,
-        side_effects: Mapping[str, Any],
-        *,
-        phase: str,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.exit_code = exit_code
-        self.side_effects = dict(side_effects)
-        self.phase = phase
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _is_sensitive_path(value: str) -> bool:
-    return value.startswith(("/", "~/")) or bool(_WINDOWS_ABSOLUTE_PATH.match(value))
-
-
-def _redact_source(value: Any) -> Any:
-    """Preserve source classification while removing path-valued metadata."""
-    if isinstance(value, Mapping):
-        redacted: dict[str, Any] = {}
-        for key, child in value.items():
-            key_text = str(key)
-            lowered = key_text.lower().replace("_", "")
-            if lowered.endswith("path") or lowered.endswith("paths") or lowered in {
-                "cwd",
-                "workingdirectory",
-                "workspace",
-            }:
-                redacted[key_text] = "[redacted]"
-            else:
-                redacted[key_text] = _redact_source(child)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_source(item) for item in value]
-    if isinstance(value, str) and _is_sensitive_path(value):
-        return "[redacted]"
-    return value
-
-
-def _status_evidence(status: Mapping[str, Any]) -> dict[str, Any]:
-    """Project native status to the only fields Switchstand has validated."""
-    projected = {"type": status["type"]}
-    if status["type"] == "active":
-        projected["activeFlags"] = list(status["activeFlags"])
-    return projected
-
-
-def _thread_evidence(thread: Mapping[str, Any]) -> dict[str, Any]:
-    source = thread.get("source")
-    if not isinstance(source, (str, Mapping)) or not source:
-        raise ProbeEvidenceError(
-            "missing_native_source",
-            "native source evidence is unavailable",
-            phase="source_validation",
-        )
-    timestamps: dict[str, int | float] = {}
-    for field in ("createdAt", "updatedAt"):
-        value = thread.get(field)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ProbeEvidenceError(
-                "missing_protocol_timestamp",
-                "a required protocol timestamp is unavailable",
-                phase="timestamp_validation",
-            )
-        timestamps[field] = value
-    return {
-        "id": thread["id"],
-        "parentThreadId": thread.get("parentThreadId"),
-        "sessionId": thread["sessionId"],
-        "source": _redact_source(source),
-        "status": _status_evidence(thread["status"]),
-        **timestamps,
-    }
-
-
-def _snapshot(adapter: AgentTreeAdapter, root_thread_id: str, now: Callable[[], str]) -> dict[str, Any]:
-    started_at = now()
-    tree = adapter.observe_tree(root_thread_id)
-    completed_at = now()
-    threads = [_thread_evidence(thread) for thread in tree["threads"]]
-    if len(threads) < 2:
-        raise ProbeEvidenceError(
-            "no_spawned_descendant",
-            "no spawned descendant was observed",
-            phase="lineage_validation",
-        )
-    pages = tree.get("pages")
-    if not isinstance(pages, list) or not pages:
-        raise ProbeEvidenceError(
-            "missing_pagination_evidence",
-            "descendant pagination evidence is unavailable",
-            phase="descendant_list",
-        )
-    if pages[-1].get("nextCursor") is not None:
-        raise ProbeEvidenceError(
-            "incomplete_pagination",
-            "descendant pagination was not exhausted",
-            phase="descendant_list",
-        )
-    if any(page.get("sourceKinds") != list(THREAD_SOURCE_KINDS) for page in pages):
-        raise ProbeEvidenceError(
-            "incomplete_source_kind_coverage",
-            "not every descendant page requested all source kinds",
-            phase="descendant_list",
-        )
-    return {
-        "observationWindow": {"startedAt": started_at, "completedAt": completed_at},
-        "rootThreadId": tree["rootThreadId"],
-        "sourceKindsRequested": tree["sourceKinds"],
-        "pagination": {
-            "complete": tree["paginationComplete"],
-            "pagesRead": tree["pagesRead"],
-            "pages": pages,
-        },
-        "threads": threads,
-    }
-
-
-def _collect_notification(
-    adapter: AgentTreeAdapter,
-    message: Mapping[str, Any],
-    observed_thread_ids: set[str],
-    now: Callable[[], str],
-) -> dict[str, Any] | None:
-    if message.get("method") != "thread/status/changed":
-        return None
-    change = adapter.status_change(message)
-    return {
-        "receivedAt": now(),
-        "threadId": change["threadId"],
-        "status": _status_evidence(change["status"]),
-        "belongsToObservedTree": change["threadId"] in observed_thread_ids,
-    }
 
 
 def _subscription_disclosure(
@@ -277,7 +126,7 @@ def collect_evidence(
     notification_wait_seconds: float = 0.0,
     require_status_notification: bool = False,
     subscribe_status_notifications: bool = False,
-    now: Callable[[], str] = _utc_now,
+    now: Callable[[], str] = utc_now,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -301,7 +150,7 @@ def collect_evidence(
             thread["id"] for snapshot in snapshots for thread in snapshot["threads"]
         }
         for message in client.drain_server_messages():
-            event = _collect_notification(adapter, message, observed_ids, now)
+            event = collect_notification(adapter, message, observed_ids, now)
             if event is None:
                 ignored_notification_count += 1
             else:
@@ -310,7 +159,7 @@ def collect_evidence(
     for index in range(poll_count):
         if index:
             sleep(poll_interval_seconds)
-        snapshots.append(_snapshot(adapter, root_thread_id, now))
+        snapshots.append(snapshot(adapter, root_thread_id, now))
         drain()
 
     if subscribe_status_notifications:
@@ -322,7 +171,7 @@ def collect_evidence(
                 subscription_attempted_count += 1
                 adapter.resume_exact(thread_id)
                 subscription_acknowledged_count += 1
-            subscription_revalidation = _snapshot(adapter, root_thread_id, now)
+            subscription_revalidation = snapshot(adapter, root_thread_id, now)
             revalidated_ids = [
                 thread["id"] for thread in subscription_revalidation["threads"]
             ]
@@ -360,7 +209,7 @@ def collect_evidence(
                     for snapshot in snapshots
                     for thread in snapshot["threads"]
                 }
-                event = _collect_notification(adapter, message, observed_ids, now)
+                event = collect_notification(adapter, message, observed_ids, now)
                 if event is None:
                     ignored_notification_count += 1
                 else:

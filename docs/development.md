@@ -141,8 +141,10 @@ descendant records with absent session evidence, selected non-roots, absent desc
 invalid pagination, duplicate threads, missing parent edges or intermediate parents, lineage
 cycles, invalid or unsupported native statuses, and missing protocol timestamps. They never
 include protocol ids, paths, raw statuses or flags, cursors, prompts/outputs, or exception
-strings. Run the following for the complete flag reference; an editable install also provides
-the `switchstand-stage-a` console command.
+strings. Successful evidence also projects source metadata through a fixed field allowlist:
+unknown nested fields are dropped rather than copied, and an approved path field retains only
+the constant `[redacted]`. Run the following for the complete flag reference; an editable
+install also provides the `switchstand-stage-a` console command.
 
 ```sh
 PYTHONPATH=src python -m switchstand.stage_a_probe --help

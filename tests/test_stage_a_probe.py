@@ -83,10 +83,25 @@ class ProbeClient:
 
 class StageAProbeTests(unittest.TestCase):
     def test_success_emits_bounded_redacted_snapshot_evidence(self):
+        sentinels = {
+            "prompt": "SENTINEL-PROMPT-4f371f",
+            "output": "SENTINEL-OUTPUT-b6b0fb",
+            "token": "SENTINEL-TOKEN-c6f753",
+            "credential": "SENTINEL-CREDENTIAL-85eb02",
+            "path": "/private/SENTINEL-PATH-31a914",
+        }
         client = ProbeClient()
-        client.pages[0]["data"][0]["source"]["subAgent"]["thread_spawn"][
-            "agent_path"
-        ] = "/private/operator/research.md"
+        source = client.pages[0]["data"][0]["source"]
+        spawn_source = source["subAgent"]["thread_spawn"]
+        spawn_source.update(sentinels)
+        spawn_source.update(
+            {
+                "agent_path": sentinels["path"],
+                "agent_nickname": sentinels["prompt"],
+                "agent_role": sentinels["credential"],
+            }
+        )
+        source["unknown"] = {"nested": sentinels}
         times = iter(
             [
                 "2026-08-26T19:00:00Z",
@@ -111,7 +126,8 @@ class StageAProbeTests(unittest.TestCase):
         )
         serialized = json.dumps(evidence)
         self.assertNotIn("Research App Server lineage", serialized)
-        self.assertNotIn("/private/operator", serialized)
+        for sentinel in sentinels.values():
+            self.assertNotIn(sentinel, serialized)
 
     def test_no_descendant_fails_closed(self):
         client = ProbeClient()
