@@ -17,12 +17,14 @@ from typing import (
 )
 
 from .native_contracts import (
-    NativeBoardSnapshot,
     NativeBrowserSelectionResult,
+    NativeEvidenceRequest,
+    NativeEvidenceResult,
     NativeInputResult,
     NativeStopCommitResult,
     NativeStopPrepareResult,
     NativeStopStatusResult,
+    NativeWorkbenchSnapshot,
 )
 from .native_http_contract import (
     CONTROL_HEADER_NAME,
@@ -30,6 +32,7 @@ from .native_http_contract import (
     INVALID_REQUEST_BODY,
     MAX_BODY_BYTES,
     METHOD_NOT_ALLOWED_BODY,
+    NATIVE_EVIDENCE_CONTROL_VALUE,
     NATIVE_INPUT_CONTROL_VALUE,
     NATIVE_SELECTION_CONTROL_VALUE,
     NATIVE_STOP_CONTROL_VALUE,
@@ -48,8 +51,16 @@ Action = Literal[
     "prepare_stop",
     "commit_stop",
     "stop_status",
+    "record_evidence",
 ]
-FieldKind = Literal["any", "string", "nonempty-string", "native-input-version"]
+FieldKind = Literal[
+    "any",
+    "string",
+    "nonempty-string",
+    "native-input-version",
+    "native-evidence-version",
+    "native-evidence-event",
+]
 
 
 @dataclass(frozen=True)
@@ -69,7 +80,7 @@ class NativeRoute:
 
 
 NATIVE_ROUTES = (
-    NativeRoute("GET", "/api/workbench", None, (), "workbench", NativeBoardSnapshot),
+    NativeRoute("GET", "/api/workbench", None, (), "workbench", NativeWorkbenchSnapshot),
     NativeRoute(
         "POST",
         "/api/native-selection/resolve",
@@ -90,6 +101,17 @@ NATIVE_ROUTES = (
         ),
         "send_input",
         NativeInputResult,
+    ),
+    NativeRoute(
+        "POST",
+        "/api/native-evidence",
+        NATIVE_EVIDENCE_CONTROL_VALUE,
+        (
+            RequestField("version", "native-evidence-version"),
+            RequestField("event", "native-evidence-event"),
+        ),
+        "record_evidence",
+        NativeEvidenceResult,
     ),
     NativeRoute(
         "POST",
@@ -232,6 +254,12 @@ def _request_body(route: NativeRoute, request: NativeHttpRequest, headers: dict[
             raise ValueError("invalid reference")
         if field.kind == "native-input-version" and value != NATIVE_INPUT_CONTROL_VALUE:
             raise ValueError("invalid version")
+        if field.kind == "native-evidence-version" and value != NATIVE_EVIDENCE_CONTROL_VALUE:
+            raise ValueError("invalid version")
+        if field.kind == "native-evidence-event" and value not in {
+            "focus_preservation_failed", "refresh_coalesced", "stop_cancelled"
+        }:
+            raise ValueError("invalid evidence event")
     return body
 
 
@@ -306,6 +334,8 @@ class NativeHttpDispatcher:
             return workbench.resolve_selection(body["agentRef"])
         if route.action == "send_input":
             return workbench.send_input(body)
+        if route.action == "record_evidence":
+            return workbench.record_browser_evidence(body)  # type: ignore[arg-type]
         if route.action == "prepare_stop":
             return workbench.prepare_stop(body["agentRef"])
         if route.action == "commit_stop":
