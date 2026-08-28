@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import unittest
 
+from switchstand.native_contracts import NativeAgent, NativeBoardSnapshot
 from switchstand.native_evidence import NativeEvidence, unavailable_evidence_summary
 
 
-def board(*, connected=True, pass_age=0.25, agents=None):
+def board(
+    *,
+    connected: bool = True,
+    pass_age: float | None = 0.25,
+    agents: list[NativeAgent] | None = None,
+) -> NativeBoardSnapshot:
     return {
         "mode": "native",
         "observation": {
