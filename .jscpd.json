@@ -3,7 +3,7 @@
   "minLines": 10,
   "minTokens": 80,
   "mode": "mild",
-  "reporters": ["consoleFull"],
+  "reporters": ["console"],
   "ignore": [
     "**/node_modules/**",
     "**/.venv*/**",
