@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
+from typing import cast
 
 from .native_contracts import (
     NativeBoardSnapshotPort,
@@ -124,12 +125,12 @@ class NativeWorkbench:
         if "code" not in snapshot:
             outcome = "selected"
         else:
-            outcome = {
+            outcome = cast(NativeEvidenceOutcome, {
                 "INVALID_AGENT_REF": "invalid_agent_ref",
                 "APP_SERVER_DISCONNECTED": "app_server_disconnected",
                 "OBSERVATION_STALE": "observation_stale",
                 "AGENT_NOT_PRESENT": "agent_not_present",
-            }[snapshot["code"]]
+            }[snapshot["code"]])
         self._record("selection", outcome, started=started)
         return result
 
@@ -156,11 +157,11 @@ class NativeWorkbench:
         except Exception:
             self._record("stop_prepare", "unavailable", started=started)
             raise
-        outcome: NativeEvidenceOutcome = {
+        outcome = cast(NativeEvidenceOutcome, {
             "prepared": "prepared",
             "target_unavailable": "not_sent_target_unavailable",
             "stop_capacity": "not_sent_capacity",
-        }[result["code"]]
+        }[result["code"]])
         self._record("stop_prepare", outcome, started=started)
         return result
 
