@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
-from typing import cast
+from typing import TypeVar, cast
 
 from .native_contracts import (
     NativeBoardSnapshotPort,
@@ -23,6 +23,9 @@ from .native_contracts import (
     NativeWorkbenchSnapshot,
 )
 from .native_evidence import NativeEvidence, unavailable_evidence_summary
+
+
+T = TypeVar("T")
 
 
 class NativeWorkbench:
@@ -57,16 +60,7 @@ class NativeWorkbench:
         self._evidence = evidence if evidence is not None else NativeEvidence()
         self._evidence_failed = False
 
-    def _duration_start(self) -> float | None:
-        try:
-            value = float(self._duration_clock())
-            return value if math.isfinite(value) else None
-        except Exception:
-            return None
-
-    def _duration_ms(self, started: float | None) -> float | None:
-        if started is None:
-            return None
+    def _duration(self, started: float) -> float | None:
         try:
             elapsed = (float(self._duration_clock()) - started) * 1000
             return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
@@ -78,18 +72,32 @@ class NativeWorkbench:
         kind: NativeEvidenceEventKind,
         outcome: NativeEvidenceOutcome,
         *,
-        started: float | None = None,
+        duration_ms: float | None = None,
     ) -> None:
         if self._evidence_failed:
             return
         try:
-            self._evidence.record(
-                kind,
-                outcome,
-                duration_ms=self._duration_ms(started),
-            )
+            self._evidence.record(kind, outcome, duration_ms=duration_ms)
         except Exception:
             self._evidence_failed = True
+
+    def _observed_call(
+        self,
+        kind: NativeEvidenceEventKind,
+        operation: Callable[[], T],
+        outcome_for: Callable[[T], NativeEvidenceOutcome],
+    ) -> T:
+        try:
+            started = float(self._duration_clock())
+        except Exception:
+            started = float("nan")
+        try:
+            result = operation()
+        except Exception:
+            self._record(kind, "unavailable", duration_ms=self._duration(started))
+            raise
+        self._record(kind, outcome_for(result), duration_ms=self._duration(started))
+        return result
 
     def workbench(self) -> NativeWorkbenchSnapshot:
         board = self._board.snapshot()
@@ -109,91 +117,82 @@ class NativeWorkbench:
             evidence = unavailable_evidence_summary()
         return {**board, "evidence": evidence}
 
+    @staticmethod
+    def _selection_outcome(result: NativeBrowserSelectionResult) -> NativeEvidenceOutcome:
+        snapshot = result["snapshot"]
+        if "code" not in snapshot:
+            return "selected"
+        return cast(NativeEvidenceOutcome, {
+            "INVALID_AGENT_REF": "invalid_agent_ref",
+            "APP_SERVER_DISCONNECTED": "app_server_disconnected",
+            "OBSERVATION_STALE": "observation_stale",
+            "AGENT_NOT_PRESENT": "agent_not_present",
+        }[snapshot["code"]])
+
     def resolve_selection(self, agent_ref: object) -> NativeBrowserSelectionResult:
-        started = self._duration_start()
-        try:
-            result = self._selection.browser_selection(
+        return self._observed_call(
+            "selection",
+            lambda: self._selection.browser_selection(
                 agent_ref,
                 now=self._clock(),
                 maximum_observation_age_seconds=self._maximum_observation_age_seconds,
-            )
-        except Exception:
-            self._record("selection", "unavailable", started=started)
-            raise
-        snapshot = result["snapshot"]
-        outcome: NativeEvidenceOutcome
-        if "code" not in snapshot:
-            outcome = "selected"
-        else:
-            outcome = cast(NativeEvidenceOutcome, {
-                "INVALID_AGENT_REF": "invalid_agent_ref",
-                "APP_SERVER_DISCONNECTED": "app_server_disconnected",
-                "OBSERVATION_STALE": "observation_stale",
-                "AGENT_NOT_PRESENT": "agent_not_present",
-            }[snapshot["code"]])
-        self._record("selection", outcome, started=started)
-        return result
+            ),
+            self._selection_outcome,
+        )
+
+    @staticmethod
+    def _input_outcome(result: NativeInputResult) -> NativeEvidenceOutcome:
+        if result["code"] != "input_sent":
+            return "not_sent"
+        return "sent_start" if result["mode"] == "start" else "sent_steer"
 
     def send_input(self, request: object) -> NativeInputResult:
-        started = self._duration_start()
-        try:
-            result = self._native_input.send(request)
-        except Exception:
-            self._record("input", "unavailable", started=started)
-            raise
-        if result["code"] == "input_sent":
-            outcome: NativeEvidenceOutcome = (
-                "sent_start" if result["mode"] == "start" else "sent_steer"
-            )
-        else:
-            outcome = "not_sent"
-        self._record("input", outcome, started=started)
-        return result
+        return self._observed_call(
+            "input",
+            lambda: self._native_input.send(request),
+            self._input_outcome,
+        )
 
-    def prepare_stop(self, agent_ref: object) -> NativeStopPrepareResult:
-        started = self._duration_start()
-        try:
-            result = self._stop.prepare_stop(agent_ref)
-        except Exception:
-            self._record("stop_prepare", "unavailable", started=started)
-            raise
-        outcome = cast(NativeEvidenceOutcome, {
+    @staticmethod
+    def _stop_prepare_outcome(result: NativeStopPrepareResult) -> NativeEvidenceOutcome:
+        return cast(NativeEvidenceOutcome, {
             "prepared": "prepared",
             "target_unavailable": "not_sent_target_unavailable",
             "stop_capacity": "not_sent_capacity",
         }[result["code"]])
-        self._record("stop_prepare", outcome, started=started)
-        return result
+
+    def prepare_stop(self, agent_ref: object) -> NativeStopPrepareResult:
+        return self._observed_call(
+            "stop_prepare",
+            lambda: self._stop.prepare_stop(agent_ref),
+            self._stop_prepare_outcome,
+        )
+
+    @staticmethod
+    def _stop_commit_outcome(result: NativeStopCommitResult) -> NativeEvidenceOutcome:
+        if result["code"] == "confirmation_unavailable":
+            return "not_sent_confirmation_unavailable"
+        return cast(NativeEvidenceOutcome, result["outcome"])
 
     def commit_stop(self, confirmation_ref: object) -> NativeStopCommitResult:
-        started = self._duration_start()
-        try:
-            result = self._stop.commit_stop(confirmation_ref)
-        except Exception:
-            self._record("stop_commit", "unavailable", started=started)
-            raise
-        outcome: NativeEvidenceOutcome = (
-            "not_sent_confirmation_unavailable"
-            if result["code"] == "confirmation_unavailable"
-            else result["outcome"]
+        return self._observed_call(
+            "stop_commit",
+            lambda: self._stop.commit_stop(confirmation_ref),
+            self._stop_commit_outcome,
         )
-        self._record("stop_commit", outcome, started=started)
-        return result
+
+    @staticmethod
+    def _stop_status_outcome(result: NativeStopStatusResult) -> NativeEvidenceOutcome:
+        if result["code"] == "operation_unavailable":
+            return "not_sent_operation_unavailable"
+        return cast(NativeEvidenceOutcome, result["outcome"])
 
     def stop_status(self, operation_ref: object) -> NativeStopStatusResult:
-        started = self._duration_start()
-        try:
-            result = self._stop.stop_status(operation_ref)
-        except Exception:
-            self._record("stop_status", "unavailable", started=started)
-            raise
-        outcome: NativeEvidenceOutcome = (
-            "not_sent_operation_unavailable"
-            if result["code"] == "operation_unavailable"
-            else result["outcome"]
+        return self._observed_call(
+            "stop_status",
+            lambda: self._stop.stop_status(operation_ref),
+            self._stop_status_outcome,
         )
-        self._record("stop_status", outcome, started=started)
-        return result
 
     def record_browser_evidence(self, request: NativeEvidenceRequest) -> NativeEvidenceResult:
         if self._evidence_failed:
