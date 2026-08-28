@@ -5,22 +5,6 @@ info:
 servers:
   - url: https://bounded-agent-coordinator.marco548453.chatgpt.site
 paths:
-  /v1/github/initialize:
-    post:
-      operationId: initializeBoundedGitRepository
-      x-openai-isConsequential: true
-      summary: Initialize main only while the allowlisted fixture has no refs.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/InitializeRequest'
-      responses:
-        '200': { description: Empty repository initialized or exact operation replayed. }
-        '403': { description: Repository policy rejected the request. }
-        '409': { description: Operation conflict or repository already initialized. }
-        '413': { description: Request limit exceeded. }
   /v1/github/commit:
     post:
       operationId: writeBoundedGitCommit
@@ -63,27 +47,34 @@ components:
       additionalProperties: false
       required: [path, content_base64]
       properties:
-        path: { type: string, maxLength: 240 }
-        content_base64: { type: string, maxLength: 5464 }
-    InitializeRequest:
-      type: object
-      additionalProperties: false
-      required: [operation_id, repository]
-      properties:
-        operation_id: { type: string, enum: [initialize-empty-fixture-v1] }
-        repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
-        test_fail_after_mutation: { type: boolean, default: false }
+        path:
+          type: string
+          maxLength: 240
+          pattern: '^experiments/gpt-actions-github/[A-Za-z0-9._/-]+$'
+        content_base64:
+          type: string
+          maxLength: 5464
+          contentEncoding: base64
+          contentMediaType: text/plain; charset=utf-8
     CommitRequest:
       type: object
       additionalProperties: false
       required: [operation_id, repository, branch, expected_head_sha, mode, message, files]
       properties:
-        operation_id: { type: string, minLength: 8, maxLength: 80 }
+        operation_id:
+          type: string
+          minLength: 8
+          maxLength: 80
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$'
         repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
         branch: { type: string, enum: [gpt-actions-controlled-github-feasibility] }
         expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }
         mode: { type: string, enum: [create, update] }
-        message: { type: string, minLength: 1, maxLength: 160 }
+        message:
+          type: string
+          minLength: 1
+          maxLength: 160
+          pattern: '^\S(?:[^\r\n]*\S)?$'
         files:
           type: array
           minItems: 1
@@ -95,16 +86,30 @@ components:
       additionalProperties: false
       required: [operation_id, repository, branch, base, expected_head_sha, mode, title, body]
       properties:
-        operation_id: { type: string, minLength: 8, maxLength: 80 }
+        operation_id:
+          type: string
+          minLength: 8
+          maxLength: 80
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$'
         repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
         branch: { type: string, enum: [gpt-actions-controlled-github-feasibility] }
         base: { type: string, enum: [main] }
         expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }
         mode: { type: string, enum: [create, update] }
         pull_number: { type: integer, minimum: 1 }
-        title: { type: string, minLength: 1, maxLength: 120 }
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^\S(?:[^\r\n]*\S)?$'
         body: { type: string, maxLength: 4000 }
         draft: { type: boolean, default: true }
         test_fail_after_mutation: { type: boolean, default: false }
+      allOf:
+        - if:
+            properties:
+              mode: { const: update }
+          then:
+            required: [pull_number]
 security:
   - bearerAuth: []

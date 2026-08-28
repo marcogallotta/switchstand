@@ -4,19 +4,19 @@ This isolated prototype implements the only GitHub mutation route admitted for t
 
 - implementation home: `marcogallotta/switchstand`;
 - fixed mutation target: `marcogallotta/gpt-actions-github-fixture`;
-- one safe Contents-API initialization of `main` while the repository has no refs;
 - exact candidate branch: `gpt-actions-controlled-github-feasibility`;
 - fixed path prefix: `experiments/gpt-actions-github/`;
 - blobs → tree → commit → non-force ref creation/update;
 - operation-ID idempotency and payload-conflict rejection;
 - expected-head fencing;
+- a 40-second request deadline inside a 60-second operation lease, with an active-attempt check before every GitHub mutation;
 - bounded request, file, total-content, and file-count limits;
 - UTF-8 text and exact request-shape validation;
 - retry recovery after orphaned Git objects without moving a ref early.
 
 The fixed limits are five files, 4 KiB per file, 16 KiB aggregate decoded content, and
-32 KiB per HTTP request. Initialization writes one fixed README and cannot update an
-existing `main`.
+32 KiB per HTTP request. The fixture's initial `main` commit is a separately recorded
+provisioning step and is not part of the Action capability evidence.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 
