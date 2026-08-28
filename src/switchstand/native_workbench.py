@@ -169,29 +169,31 @@ class NativeWorkbench:
         )
 
     @staticmethod
-    def _stop_commit_outcome(result: NativeStopCommitResult) -> NativeEvidenceOutcome:
-        if result["code"] == "confirmation_unavailable":
-            return "not_sent_confirmation_unavailable"
+    def _stop_result_outcome(
+        result: NativeStopCommitResult | NativeStopStatusResult,
+        unavailable_code: str,
+        unavailable_outcome: NativeEvidenceOutcome,
+    ) -> NativeEvidenceOutcome:
+        if result["code"] == unavailable_code:
+            return unavailable_outcome
         return cast(NativeEvidenceOutcome, result["outcome"])
 
     def commit_stop(self, confirmation_ref: object) -> NativeStopCommitResult:
         return self._observed_call(
             "stop_commit",
             lambda: self._stop.commit_stop(confirmation_ref),
-            self._stop_commit_outcome,
+            lambda result: self._stop_result_outcome(
+                result, "confirmation_unavailable", "not_sent_confirmation_unavailable"
+            ),
         )
-
-    @staticmethod
-    def _stop_status_outcome(result: NativeStopStatusResult) -> NativeEvidenceOutcome:
-        if result["code"] == "operation_unavailable":
-            return "not_sent_operation_unavailable"
-        return cast(NativeEvidenceOutcome, result["outcome"])
 
     def stop_status(self, operation_ref: object) -> NativeStopStatusResult:
         return self._observed_call(
             "stop_status",
             lambda: self._stop.stop_status(operation_ref),
-            self._stop_status_outcome,
+            lambda result: self._stop_result_outcome(
+                result, "operation_unavailable", "not_sent_operation_unavailable"
+            ),
         )
 
     def record_browser_evidence(self, request: NativeEvidenceRequest) -> NativeEvidenceResult:
