@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from switchstand.native_contracts import NativeAgent, NativeBoardSnapshot
+from switchstand.native_contracts import NativeAgent, NativeBoardSnapshot, NativeObservation
 from switchstand.native_evidence import NativeEvidence, unavailable_evidence_summary
 
 
@@ -12,7 +12,7 @@ def board(
     pass_age: float | None = 0.25,
     agents: list[NativeAgent] | None = None,
 ) -> NativeBoardSnapshot:
-    observation = {"connected": connected, "available": connected, "historical": not connected,
+    observation: NativeObservation = {"connected": connected, "available": connected, "historical": not connected,
         "errorCode": None, "completedAt": 10.0, "passAgeSeconds": pass_age,
         "kind": "completed_multi_request_pass"}
     return {"mode": "native", "observation": observation, "agents": agents or [],
