@@ -21,7 +21,7 @@ function request(overrides = {}) {
   return new Request("https://action.test/v1/github/commit", { method: "POST", body: JSON.stringify(body) });
 }
 
-function fakeGithub({ branchExists = false, failRefOnce = false } = {}) {
+function fakeGithub({ branchExists = false, failRefOnce = false, mainSha = expected } = {}) {
   const calls = [];
   let ref = branchExists ? expected : null;
   let shouldFail = failRefOnce;
@@ -29,6 +29,7 @@ function fakeGithub({ branchExists = false, failRefOnce = false } = {}) {
     calls.push({ url, method: init.method, body: init.body && JSON.parse(init.body) });
     const path = new URL(url).pathname;
     if (init.method === "GET" && path.includes("/git/ref/heads/")) {
+      if (path.endsWith("/heads/main")) return Response.json({ object: { sha: mainSha } });
       return ref ? Response.json({ object: { sha: ref } }) : Response.json({ message: "Not Found" }, { status: 404 });
     }
     if (init.method === "GET" && path.includes("/git/commits/")) return Response.json({ tree: { sha: "5".repeat(40) } });
@@ -165,6 +166,17 @@ test("rejects stale update without moving the ref", async () => {
   assert.equal((await body(response)).error, "stale_head");
   assert.equal(gh.getRef(), expected);
   assert.equal(gh.calls.some((c) => c.method === "PATCH"), false);
+});
+
+test("rejects branch creation from a stale base head", async () => {
+  const store = new MemoryOperationStore();
+  const gh = fakeGithub({ mainSha: "8".repeat(40) });
+  const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
+  const response = await action(request());
+  assert.equal(response.status, 409);
+  assert.equal((await body(response)).error, "stale_head");
+  assert.equal(gh.getRef(), null);
+  assert.equal(gh.calls.some((call) => call.method === "POST"), false);
 });
 
 test("recovers after a partial failure without corrupting the branch", async () => {

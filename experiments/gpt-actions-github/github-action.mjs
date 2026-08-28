@@ -152,6 +152,12 @@ async function executeCommit({ input, record, store, call, token, policy }) {
   if (input.mode === "create" ? current !== null : current !== input.expected_head_sha) {
     throw Object.assign(new Error("stale_head"), { status: 409, actual_head_sha: current });
   }
+  if (input.mode === "create") {
+    const baseHead = await refSha(call, token, repo, policy.baseBranch);
+    if (baseHead !== input.expected_head_sha) {
+      throw Object.assign(new Error("stale_head"), { status: 409, actual_head_sha: baseHead });
+    }
+  }
 
   if (record.commit_sha) {
     if (input.mode === "create") {
