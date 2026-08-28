@@ -168,6 +168,10 @@ class NativeHttpTests(unittest.TestCase):
                     RequestField("agentRef", "string"),
                     RequestField("text", "string"),
                 )),
+                ("POST", "/api/native-evidence", "native-evidence-v1", (
+                    RequestField("version", "native-evidence-version"),
+                    RequestField("event", "native-evidence-event"),
+                )),
                 ("POST", "/api/native-stop/prepare", "native-stop-v1",
                     (RequestField("agentRef", "any"),)),
                 ("POST", "/api/native-stop/commit", "native-stop-v1",
@@ -185,12 +189,17 @@ class NativeHttpTests(unittest.TestCase):
                 "version": "native-input-v1", "observationRunRef": "run-1",
                 "agentRef": "agent-1", "text": "exact text",
             }, control="native-input-v1"),
+            request("/api/native-evidence", {
+                "version": "native-evidence-v1", "event": "focus_preservation_failed",
+            }, control="native-evidence-v1"),
             request("/api/native-stop/prepare", {"agentRef": None}, control="native-stop-v1"),
             request("/api/native-stop/commit", {"confirmationRef": "confirm-1"}, control="native-stop-v1"),
             request("/api/native-stop/status", {"operationRef": "op-1"}, control="native-stop-v1"),
         )
         for expected, item in zip(
-            ("workbench", "selection", "input", "prepare", "commit", "status"), cases, strict=True
+            ("workbench", "selection", "input", "evidence", "prepare", "commit", "status"),
+            cases,
+            strict=True
         ):
             if expected == "workbench":
                 item = NativeHttpRequest(
@@ -202,8 +211,10 @@ class NativeHttpTests(unittest.TestCase):
             before = len(self.ports.calls)
             response = handled(self.dispatcher.dispatch(item))
             self.assertEqual(response.status, 200)
-            self.assertEqual(len(self.ports.calls), before + 1)
-            self.assertEqual(self.ports.calls[-1][0], expected)
+            expected_calls = before if expected == "evidence" else before + 1
+            self.assertEqual(len(self.ports.calls), expected_calls)
+            if expected != "evidence":
+                self.assertEqual(self.ports.calls[-1][0], expected)
             self.assertEqual(dict(response.headers), {
                 "Content-Type": "application/json; charset=utf-8",
                 "Content-Length": str(len(response.body)),
@@ -267,6 +278,12 @@ class NativeHttpTests(unittest.TestCase):
                 control="native-input-v1"), 400),
             (request("/api/native-selection/resolve", {"agentRef": ""},
                 control="native-selection-v1"), 400),
+            (request("/api/native-evidence", {
+                "version": "native-evidence-v1", "event": "arbitrary",
+            }, control="native-evidence-v1"), 400),
+            (request("/api/native-evidence", {
+                "version": "wrong", "event": "focus_preservation_failed",
+            }, control="native-evidence-v1"), 400),
             (request("/api/native-stop/prepare", {}, control="native-stop-v1"), 400),
             (request("/api/native-stop/prepare", {"agentRef": None, "extra": True},
                 control="native-stop-v1"), 400),
