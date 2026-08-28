@@ -53,6 +53,8 @@ class NativeEvidenceTests(unittest.TestCase):
 
     def test_invalid_values_and_kind_outcome_pairs_are_rejected(self):
         evidence = NativeEvidence(clock=lambda: 1.0)
+        self.assertTrue(evidence.record("stop_commit", "not_sent"))
+        self.assertTrue(evidence.record("stop_status", "not_sent"))
         for call in (
             lambda: evidence.record("input", "confirmed"),
             lambda: evidence.record("input", "sent_start", duration_ms=-1),
