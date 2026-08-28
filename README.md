@@ -23,7 +23,7 @@ ambiguous acknowledgement to confirmed/interrupted without retry or retarget. Th
 also passed Quality run #60, 133 Python tests, AF_UNIX suites, Node/JavaScript checks, and 11 real
 Chromium journeys.
 
-Issue #9 adds Stage B1 as an explicitly selected native view. It polls one exact root with
+Native mode includes Stage B1 as an explicitly selected view. It polls one exact root with
 `thread/read(includeTurns=false)` and all descendants with paginated
 `thread/list(useStateDbOnly=true)`. It displays native lineage, native status, observer
 freshness, consecutive observed-active time, and the latest 50 endpoint differences. It does not resume or
