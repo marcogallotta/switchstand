@@ -28,14 +28,11 @@ def request(text: Any = "input", **changes):
     return value
 
 
-def read_result(target, status="idle", turns=None, **thread_fields):
-    thread = {
-        "id": target,
-        "status": {"type": status},
-        "turns": [] if turns is None else turns,
-    }
-    thread.update(thread_fields)
-    return {"thread": thread}
+def read_result(target, status="none", turns=None, **fields):
+    data = [] if turns is None else [
+        {**turn, "items": [], "itemsView": "notLoaded"} for turn in turns
+    ]
+    return {"target": target, "data": data, **fields}
 
 
 class Resolver:
@@ -69,7 +66,7 @@ class Transport:
             return value
         return "ok", value
 
-    def thread_read(self, target, **limits):
+    def turns_list(self, target, **limits):
         self.events.append("read")
         self.calls.append(("read", target, limits))
         value = self.read if self.read is not None else read_result(target)
@@ -168,7 +165,7 @@ class NativeInputDispatchTests(unittest.TestCase):
         events = []
         target = OpaqueTarget("same")
         turns = [{"id": "active-turn", "status": "inProgress"}]
-        transport = Transport(events, read=read_result(target, "active", turns))
+        transport = Transport(events, read=read_result(target, turns=turns))
         native_input, _ = service([target, OpaqueTarget("same")], transport, events)
 
         result = native_input.send(request("focus"))
@@ -204,10 +201,15 @@ class NativeInputDispatchTests(unittest.TestCase):
             RuntimeError("TRANSPORT-SENTINEL"),
             {},
             read_result(OpaqueTarget("wrong")),
-            read_result(target, "systemError"),
-            read_result(target, "notLoaded"),
-            read_result(target, "active", []),
-            read_result(target, "idle", [{"id": "turn", "status": "inProgress"}]),
+            {"target": target, "data": [], "nextCursor": 17},
+            {"target": target, "data": [], "nextCursor": "older"},
+            {"target": target, "data": [{"id": "turn", "status": "inProgress",
+                "items": [{"text": "forbidden"}], "itemsView": "notLoaded"}]},
+            {"target": target, "data": [{"id": "turn", "status": "unknown",
+                "items": [], "itemsView": "notLoaded"}]},
+            {"target": target, "data": [{"id": "one", "status": "inProgress",
+                "items": [], "itemsView": "notLoaded"}, {"id": "two",
+                "status": "inProgress", "items": [], "itemsView": "notLoaded"}]},
         )
         for read in reads:
             with self.subTest(read=type(read).__name__):
@@ -235,7 +237,7 @@ class NativeInputDispatchTests(unittest.TestCase):
             with self.subTest(status=status, acknowledgement=type(acknowledgement).__name__):
                 events = []
                 kwargs = {"start": acknowledgement} if status == "idle" else {"steer": acknowledgement}
-                transport = Transport(events, read=read_result(target, status, turns), **kwargs)
+                transport = Transport(events, read=read_result(target, turns=turns), **kwargs)
                 native_input, _ = service([target, target], transport, events)
                 self.assertEqual(native_input.send(request()), NOT_SENT)
                 action_calls = [call for call in transport.calls if call[0] in {"start", "steer"}]
@@ -249,8 +251,7 @@ class NativeInputDispatchTests(unittest.TestCase):
         )
         target = OpaqueTarget(sentinels[4])
         events = []
-        transport = Transport(events, read=read_result(
-            target, content=sentinels[1], socketPath=sentinels[6]))
+        transport = Transport(events, read=read_result(target))
         resolver = Resolver([target, target], events)
         native_input = NativeInput(
             resolver, transport, maximum_observation_age_seconds=3, clock=lambda: 1)

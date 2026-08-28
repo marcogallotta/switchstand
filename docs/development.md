@@ -61,15 +61,19 @@ Run the two real local boundaries separately:
 
 ```sh
 PYTHONPATH=src python tests/integration/app_server_transport_test.py -v
+PYTHONPATH=src python tests/integration/native_input_transport_test.py -v
 ./node_modules/.bin/playwright install chromium
-./node_modules/.bin/playwright test tests/browser/focus_chromium.spec.js
+./node_modules/.bin/playwright test \
+  tests/browser/focus_chromium.spec.js \
+  tests/browser/native_selection_chromium.spec.js
 ```
 
-The transport test uses a temporary local Unix socket and a scripted WebSocket/JSON-RPC peer; it
-does not launch Codex or use a network. The Chromium journey serves the production browser assets
-on loopback, forces 50 one-second textarea-replacing refreshes, and verifies draft, focus, and
-selection every time. Playwright is pinned, Chromium-only, one-worker, and zero-retry. Setup,
-timeout, or assertion failure is nonzero; neither boundary retries to green.
+The transport tests use temporary local Unix sockets and scripted WebSocket/JSON-RPC peers; they
+do not launch Codex or use a network. The Chromium journeys serve the production browser assets
+on loopback and cover Stop, selection, exact input, request failure, and 50 refresh cycles that
+preserve draft, focus, selection, open state, and scroll. Playwright is pinned, Chromium-only,
+one-worker, and zero-retry. Setup, timeout, or assertion failure is nonzero; neither boundary
+retries to green.
 
 ## Run
 
@@ -79,13 +83,27 @@ Run the read-only native flight board for one exact root:
 PYTHONPATH=src python -m switchstand.service \
   --app-server-socket /path/to/codex-app-server.sock \
   --native-root-thread-id EXACT_NATIVE_ROOT_ID \
-  --port 4180
+  --maximum-observation-age-seconds 5 \
+  --port 0
 ```
+
+Open the exact loopback URL printed after the server binds and the native board starts. Port
+`0` selects a free user-owned port and the printed URL contains the actual bound port. The one
+freshness value applies to the board's private target binding, browser selection resolution,
+and exact input resolution.
 
 Omit `--native-root-thread-id` to run the default legacy reliability spike; that mode also
 accepts `--workspace` and `--state`. Native mode never discovers a root or resumes a thread. Its
-emergency stop requires active current board evidence, browser confirmation, JSON plus
+emergency stop requires current present board evidence plus an exact in-progress turn, browser confirmation, JSON plus
 `X-Switchstand-Control: native-stop-v1`, and same-origin loopback Host/Origin.
+
+Native thread and latest-turn statuses are separate. The board spends at most one global
+content-free `thread/turns/list` probe per completed pass; Input and Stop revalidate only their
+one exact target and never read transcript items.
+
+Native HTTP requests go through one closed dispatcher. The HTTP adapter preserves the raw path,
+duplicate headers, and one bounded raw body; it does not independently parse or validate native
+JSON. Exact input is one start-or-steer attempt with no retry, fallback, or retargeting.
 
 The socket must already be provided by a Codex app-server daemon. The service does not launch,
 authenticate, or supervise that daemon. Native startup rejects non-loopback binding. Bind to the

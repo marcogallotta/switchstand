@@ -17,7 +17,9 @@ const agents = [
 ].map(([agentRef, label, parentRef, depth]) => ({
   agentRef, label, parentRef, depth, sourceKind: "thread/list", sourceDetail: "fixture",
   createdAt: "2026-08-27T11:00:00Z", updatedAt: "2026-08-27T12:00:00Z",
-  updatedAgeSeconds: 0, status: "active", activeFlags: [], activeObservedSeconds: 10,
+  updatedAgeSeconds: 0, status: depth === 1 ? "idle" : "active",
+  turnStatus: depth === 1 ? "inProgress" : "none",
+  activeFlags: [], activeObservedSeconds: 10,
 }));
 const board = {
   mode: "native",
@@ -138,10 +140,19 @@ test.beforeEach(() => {
   requests = [];
 });
 
-const rowFor = (page, label) => page.locator("details", { hasText: label });
+const rowFor = (page, agentRef) => page.locator(`details[data-node-key="${agentRef}"]`);
 
-async function selectAgent(page, label) {
-  await rowFor(page, label).getByRole("button", { name: "Select as current target" }).click();
+async function beginSelection(page, agentRef) {
+  const row = rowFor(page, agentRef);
+  await row.getByRole("button", { name: "Select as current target" }).click();
+}
+
+async function selectAgent(page, agentRef) {
+  await beginSelection(page, agentRef);
+  const row = rowFor(page, agentRef);
+  const confirmed = row.getByRole("button", { name: "Current target" });
+  await expect(confirmed).toBeVisible();
+  await expect(confirmed).toHaveAttribute("aria-pressed", "true");
 }
 
 function deferred() {
@@ -151,10 +162,7 @@ function deferred() {
 }
 
 async function runPoll(page) {
-  const response = page.waitForResponse(`${origin}/api/workbench`);
-  await page.clock.runFor(1000);
-  await response;
-  await page.evaluate(() => 0);
+  await page.evaluate(() => refresh());
 }
 
 test("explicit selection uses the route, stores only its opaque pair, and reload revalidates", async ({ page }) => {
@@ -162,7 +170,7 @@ test("explicit selection uses the route, stores only its opaque pair, and reload
   await expect(page.getByText("No current target selected.")).toBeVisible();
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
 
-  await selectAgent(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
   await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
   await expect(page.getByLabel("Message current target")).toBeVisible();
   const selectionRequests = requests.filter((item) => item.pathname === "/api/native-selection/resolve");
@@ -191,14 +199,35 @@ test("input sends the exact selected pair and unchanged text with only truthful 
     { status: 503, body: { code: "service_unavailable", outcome: "not_sent" } },
   );
   await page.goto(origin);
-  await selectAgent(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
   const input = page.getByLabel("Message current target");
 
   const values = ["  exact start\ntext  ", "exact steer", "retain on refusal", "retain on failure"];
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
+  const statuses = [200, 200, 200, 503];
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
-    await page.getByRole("button", { name: "Send exact message" }).click();
+    await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue(values[index]);
+    expect(requests.filter((item) => item.pathname === "/api/native-input")).toHaveLength(index);
+    const submit = page.getByRole("button", { name: "Send exact message" });
+    await expect(submit).toBeVisible();
+    await expect(submit).toBeEnabled();
+    const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
+    const sentResponse = page.waitForResponse(`${origin}/api/native-input`);
+    await submit.click();
+    await sentRequest;
+    expect((await sentResponse).status()).toBe(statuses[index]);
+    await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length)
+      .toBe(index + 1);
+    expect(requests.filter((item) => item.pathname === "/api/native-input").at(-1).body)
+      .toEqual({
+        version: "native-input-v1",
+        observationRunRef: "observation-run-one",
+        agentRef: "agent-beta",
+        text: values[index],
+      });
     await expect(page.locator("#native-input-outcome")).toHaveText(outcomes[index]);
     await expect(input).toHaveValue(index < 2 ? "" : values[index]);
   }
@@ -211,12 +240,64 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   expect(sent.every((item) => item.headers["x-switchstand-control"] === "native-input-v1")).toBe(true);
 });
 
+test("real timer coalesces one pending cycle and preserves one exact submission", async ({ page }) => {
+  inputResults.push(
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "steer" } },
+  );
+  await page.goto(origin);
+  await selectAgent(page, "agent-beta");
+  const input = page.getByLabel("Message current target");
+  await input.fill("one exact draft");
+  await input.focus();
+  await input.evaluate((node) => node.setSelectionRange(4, 9, "forward"));
+  const gate = deferred();
+  const initialSelectionCount = requests.filter(
+    (item) => item.pathname === "/api/native-selection/resolve",
+  ).length;
+  delayedSelections.set("agent-beta", gate);
+  await expect.poll(() => requests.filter(
+    (item) => item.pathname === "/api/native-selection/resolve",
+  ).length).toBe(initialSelectionCount + 1);
+  const pendingCount = requests.filter((item) => item.pathname === "/api/workbench").length;
+  const completion = page.evaluate(() => refresh());
+  try {
+    await page.waitForTimeout(1200);
+    expect(requests.filter((item) => item.pathname === "/api/workbench")).toHaveLength(
+      pendingCount,
+    );
+  } finally {
+    gate.resolve();
+    await completion;
+  }
+  expect(requests.filter((item) => item.pathname === "/api/workbench")).toHaveLength(
+    pendingCount + 1,
+  );
+  expect(requests.filter((item) => item.pathname === "/api/native-selection/resolve"))
+    .toHaveLength(initialSelectionCount + 2);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("one exact draft");
+  expect(await input.evaluate((node) => [
+    node.selectionStart, node.selectionEnd, node.selectionDirection,
+  ])).toEqual([4, 9, "forward"]);
+
+  const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
+  await page.getByRole("button", { name: "Send exact message" }).click();
+  await sentRequest;
+  const sent = requests.filter((item) => item.pathname === "/api/native-input");
+  expect(sent).toHaveLength(1);
+  expect(sent[0].body).toEqual({
+    version: "native-input-v1", observationRunRef: "observation-run-one",
+    agentRef: "agent-beta", text: "one exact draft",
+  });
+  await expect(page.locator("#native-input-outcome")).toHaveText("sent · steer");
+});
+
 test("delayed old selection and input results cannot mutate a newer target or draft", async ({ page }) => {
   await page.goto(origin);
   const oldSelection = deferred();
   delayedSelections.set("agent-alpha", oldSelection);
-  await selectAgent(page, "First observed agent");
-  await selectAgent(page, "Second observed agent");
+  await beginSelection(page, "agent-alpha");
+  await selectAgent(page, "agent-beta");
   await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
   oldSelection.resolve();
   await page.evaluate(() => 0);
@@ -235,7 +316,7 @@ test("delayed old selection and input results cannot mutate a newer target or dr
     document.querySelector("#native-input-form").requestSubmit();
   });
   await expect.poll(() => requests.filter((item) => item.pathname === "/api/native-input").length).toBe(1);
-  await selectAgent(page, "First observed agent");
+  await selectAgent(page, "agent-alpha");
   await expect(page.getByText("Current target selected.", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Send exact message" })).toBeEnabled();
   await input.fill("new target draft");
@@ -246,15 +327,17 @@ test("delayed old selection and input results cannot mutate a newer target or dr
   await expect(input).toHaveValue("");
   await expect(page.locator("#native-input-outcome")).toHaveText("sent · steer");
   expect(requests.filter((item) => item.pathname === "/api/native-input")).toHaveLength(2);
-  await selectAgent(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
   await expect(input).toHaveValue("");
   await expect(page.locator("#native-input-outcome")).toHaveText("sent · start");
 });
 
 test("exact-route selection and input preserve Stop confirmation, result, and control header", async ({ page }) => {
   await page.goto(origin);
-  await selectAgent(page, "Second observed agent");
-  const row = rowFor(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
+  const row = rowFor(page, "agent-beta");
+  await expect(row.getByText("thread statusidle")).toBeVisible();
+  await expect(row.getByText("exact turn statusinProgress")).toBeVisible();
   const warning = "Stop Second observed agent’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toBe(warning);
@@ -289,13 +372,13 @@ test("run change, disappearance, staleness, disconnection, malformed response, a
     observationRunRef = "observation-run-one";
     selectionOverride = null;
     failSelection = false;
-    await selectAgent(page, "Second observed agent");
+    await selectAgent(page, "agent-beta");
     await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
     arrange();
     await runPoll(page);
     await expect(page.getByText("No current target selected.")).toBeVisible();
     expect(await page.evaluate(() => localStorage.length)).toBe(0);
-    await expect(rowFor(page, "First observed agent")
+    await expect(rowFor(page, "agent-alpha")
       .getByRole("button", { name: "Select as current target" })).toBeVisible();
   }
   await expect(page.locator("body")).not.toContainText("must-not-render");
@@ -304,8 +387,8 @@ test("run change, disappearance, staleness, disconnection, malformed response, a
 test("50 polls preserve composer draft, focus, selection, open rows, and scroll; failure retains the draft", async ({ page }) => {
   await page.clock.install();
   await page.goto(origin);
-  await selectAgent(page, "Second observed agent");
-  const row = rowFor(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
+  const row = rowFor(page, "agent-beta");
   const input = page.getByLabel("Message current target");
   await page.evaluate(() => {
     document.body.style.minHeight = "2000px";
@@ -336,6 +419,6 @@ test("50 polls preserve composer draft, focus, selection, open rows, and scroll;
   await expect(page.getByText("No current target selected.")).toBeVisible();
   failWorkbench = false;
   await runPoll(page);
-  await selectAgent(page, "Second observed agent");
+  await selectAgent(page, "agent-beta");
   await expect(input).toHaveValue("draft survives polling");
 });

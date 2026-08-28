@@ -40,6 +40,7 @@ class DeterministicBoard:
                 "createdAt": 10.0,
                 "updatedAt": 12.0,
                 "status": "idle",
+                "turnStatus": "none",
                 "activeFlags": [],
                 "activeObservedSeconds": 0.0,
                 "updatedAgeSeconds": 0.75,

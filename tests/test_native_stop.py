@@ -6,21 +6,16 @@ import unittest
 
 from switchstand.native_contracts import NativeStopCommitResult
 from switchstand.native_stop import NativeStop
-from switchstand.native_turns import NativeTurnProjection, project_native_turns
+from switchstand.native_turns import ExactTurnProjection, project_exact_turn_list
 
 
 SENTINEL = "PRIVATE-TRANSCRIPT-SENTINEL"
 
 
 def read_result(turn: str = "turn-1", status: str = "inProgress", *, thread="thread-1"):
-    return {
-        "thread": {
-            "id": thread,
-            "status": {"type": "active" if status == "inProgress" else "idle"},
-            "turns": [{"id": turn, "status": status, "items": [{"text": SENTINEL}]}],
-            "preview": SENTINEL,
-        }
-    }
+    del thread
+    return {"data": [{"id": turn, "status": status, "items": [],
+        "itemsView": "notLoaded"}], "nextCursor": None}
 
 
 class Replies:
@@ -68,43 +63,50 @@ class NativeStopTests(unittest.TestCase):
 
     def test_exact_projection_rejects_coercion_duplicates_and_inconsistent_state(self):
         valid = read_result()
-        projected = project_native_turns(valid, "thread-1")
+        rebound = {**valid, "target": "thread-1"}
+        projected = project_exact_turn_list(rebound, "thread-1")
         self.assertIsNotNone(projected)
         self.assertEqual(
             projected if projected else None,
-            NativeTurnProjection("active", "turn-1"),
+            ExactTurnProjection("inProgress", "turn-1"),
         )
         mutations = []
         for value in (1, "", "x" * 257):
             case = read_result()
-            case["thread"]["turns"][0]["id"] = value
+            case["data"][0]["id"] = value
             mutations.append(case)
         case = read_result()
-        case["thread"]["id"] = 1
+        case["target"] = 1
         mutations.append(case)
         case = read_result()
-        case["thread"]["status"] = {"type": "busy"}
+        case["data"][0]["items"] = [{"text": SENTINEL}]
         mutations.append(case)
         case = read_result()
-        case["thread"]["turns"].append({"id": "turn-2", "status": "inProgress"})
+        case["data"].append({"id": "turn-2", "status": "inProgress",
+            "items": [], "itemsView": "notLoaded"})
         mutations.append(case)
         case = read_result(status="completed")
-        case["thread"]["status"] = {"type": "active"}
+        case["data"][0]["itemsView"] = "loaded"
         mutations.append(case)
         case = read_result()
-        case["thread"]["turns"].append({"id": "turn-1", "status": "completed"})
+        case["data"][0]["extra"] = True
         mutations.append(case)
         case = read_result()
-        del case["thread"]["turns"]
+        del case["data"]
         mutations.append(case)
         case = read_result()
-        case["thread"]["turns"][0]["status"] = "cancelled"
+        case["data"][0]["status"] = "cancelled"
         mutations.append(case)
         case = read_result()
-        case["thread"]["turns"] *= 257
+        case["data"] *= 257
+        mutations.append(case)
+        case = {"data": [], "nextCursor": 17}
+        mutations.append(case)
+        case = {"data": [], "nextCursor": "older"}
         mutations.append(case)
         self.assertTrue(
-            all(project_native_turns(case, "thread-1") is None for case in mutations)
+            all(project_exact_turn_list({**case, "target": case.get("target", "thread-1")},
+                "thread-1") is None for case in mutations)
         )
 
     def test_prepare_commit_and_later_status_keep_content_out_of_all_retained_surfaces(self):
@@ -122,7 +124,8 @@ class NativeStopTests(unittest.TestCase):
         self.assertEqual(confirmed["outcome"], "confirmed")
         self.assertEqual(
             [method for method, _ in replies.calls],
-            ["thread/read", "thread/read", "turn/interrupt", "thread/read"],
+            ["thread/turns/list", "thread/turns/list", "turn/interrupt",
+                "thread/turns/list"],
         )
         self.assertEqual(replies.calls[2][1], {"threadId": "thread-1", "turnId": "turn-1"})
         retained = json.dumps([requested, confirmed, replies.calls]) + repr(stop._receipts)
@@ -136,6 +139,29 @@ class NativeStopTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "not_sent")
         self.assertNotIn("turn/interrupt", [method for method, _ in replies.calls])
+
+    def test_raw_response_target_field_is_rejected_before_private_binding(self):
+        replies = Replies(("ok", {**read_result(), "target": "untrusted"}))
+        stop = NativeStop(replies, lambda _ref: "thread-1")
+
+        self.assertEqual(
+            stop.prepare("agent-1"),
+            {"code": "target_unavailable", "outcome": "not_sent"},
+        )
+
+    def test_target_disappearance_after_prepare_is_not_sent_without_revalidation_read(self):
+        replies = Replies(("ok", read_result()))
+        resolutions = iter(("thread-1", "thread-1", None))
+        stop = NativeStop(replies, lambda _ref: next(resolutions))
+        prepared = stop.prepare("agent-1")
+        self.assertEqual(prepared["code"], "prepared")
+        if prepared["code"] != "prepared":
+            raise AssertionError("expected prepared")
+
+        result = stop.commit(prepared["confirmationRef"])
+
+        self.assertEqual(result["outcome"], "not_sent")
+        self.assertEqual([method for method, _ in replies.calls], ["thread/turns/list"])
 
     def test_later_exact_evidence_maps_every_terminal_and_active_outcome(self):
         for status, expected in (("inProgress", "requested"), ("completed", "not_confirmed"),
@@ -161,7 +187,7 @@ class NativeStopTests(unittest.TestCase):
 
         def blocked(
             thread_id: str, *, terminal_turn_id: str | None = None
-        ) -> tuple[str, NativeTurnProjection | None]:
+        ) -> tuple[str, ExactTurnProjection | None]:
             del terminal_turn_id
             entered.set()
             release.wait(2)
@@ -195,14 +221,14 @@ class NativeStopTests(unittest.TestCase):
 
         def racing_read(
             thread_id: str, *, terminal_turn_id: str | None = None
-        ) -> tuple[str, NativeTurnProjection | None]:
+        ) -> tuple[str, ExactTurnProjection | None]:
             del thread_id
             index = both_reading.wait()
             if index == 0:
-                return "ok", project_native_turns(
-                    read_result(status="interrupted"),
+                del terminal_turn_id
+                return "ok", project_exact_turn_list(
+                    {**read_result(status="interrupted"), "target": "thread-1"},
                     "thread-1",
-                    terminal_turn_id=terminal_turn_id,
                 )
             confirmed.wait(1)
             return "unavailable", None

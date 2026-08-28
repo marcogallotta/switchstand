@@ -32,5 +32,9 @@ jobs:
       - run: PYTHONPATH=src python -m compileall -q src tests scripts
       - run: node --test tests/browser_focus.test.js
       - run: PYTHONPATH=src python tests/integration/app_server_transport_test.py -v
-      - run: ./node_modules/.bin/playwright test tests/browser/focus_chromium.spec.js
+      - run: PYTHONPATH=src python tests/integration/native_input_transport_test.py -v
+      - run: >-
+          ./node_modules/.bin/playwright test
+          tests/browser/focus_chromium.spec.js
+          tests/browser/native_selection_chromium.spec.js
       - run: node --check src/switchstand/static/app.js

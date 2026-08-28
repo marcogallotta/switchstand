@@ -21,7 +21,7 @@ async function request(path, body, controlValue = null) {
 
 const stopState = new Map();
 const stopEpoch = new Map();
-const observedStatus = new Map();
+const observedTurnStatus = new Map();
 async function stopAgent(agent) {
   const epoch = stopEpoch.get(agent.agentRef) ?? 0;
   try {
@@ -168,12 +168,13 @@ function renderNative(model) {
   const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
   const selectionState = nativeSelectionController?.getState();
   const agents = model.agents.map((agent) => {
-    const previousStatus = observedStatus.get(agent.agentRef);
-    if (previousStatus === "active" && agent.status !== "active") {
+    const previousTurnStatus = observedTurnStatus.get(agent.agentRef);
+    if (previousTurnStatus === "inProgress"
+      && !["inProgress", "unknown"].includes(agent.turnStatus)) {
       stopEpoch.set(agent.agentRef, (stopEpoch.get(agent.agentRef) ?? 0) + 1);
       stopState.delete(agent.agentRef);
     }
-    observedStatus.set(agent.agentRef, agent.status);
+    observedTurnStatus.set(agent.agentRef, agent.turnStatus);
     const row = el("details", "agent");
     row.dataset.nodeKey = agent.agentRef;
     row.dataset.focusKey = `agent:${agent.agentRef}`;
@@ -184,6 +185,7 @@ function renderNative(model) {
     row.append(summary, factList([["parent", agent.parentRef === null ? "none" : labels.get(agent.parentRef) ?? "unavailable"], ["depth", agent.depth],
       ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
       ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
+      ["thread status", agent.status], ["exact turn status", agent.turnStatus],
       ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
     const selected = selectionState?.currentTarget?.agentRef === agent.agentRef;
     const select = el("button", selected ? "button button--primary" : "button",
@@ -195,7 +197,7 @@ function renderNative(model) {
     row.append(select);
     const stop = stopState.get(agent.agentRef);
     if (stop) row.append(el("p", "muted", `Stop outcome: ${stop.outcome}`));
-    if (agent.status === "active" && !["requested", "confirmed"].includes(stop?.outcome)) {
+    if (agent.turnStatus === "inProgress" && !["requested", "confirmed"].includes(stop?.outcome)) {
       const button = el("button", "button button--danger", "Stop current turn");
       button.type = "button";
       button.addEventListener("click", () => stopAgent(agent));
@@ -397,6 +399,8 @@ let visibleInputTargetKey = null;
 let nextInputRequest = 0;
 let selectionEpoch = 0;
 let refreshEpoch = 0;
+let refreshPromise = null;
+let refreshQueued = false;
 
 function pairKey(pair) {
   return pair ? `${pair.observationRunRef}\u0000${pair.agentRef}` : null;
@@ -428,7 +432,7 @@ async function selectAgent(agentRef) {
       "native-selection-v1",
     );
     if (epoch !== selectionEpoch) return;
-    nativeSelectionController?.select(seam);
+    await nativeSelectionController?.select(seam);
   } catch (_error) {
     if (epoch === selectionEpoch) nativeSelectionController?.clear();
   }
@@ -446,7 +450,7 @@ async function revalidateSelection() {
     );
     if (epoch !== selectionEpoch
       || !samePair(candidate, nativeSelectionController?.getState().candidate)) return;
-    nativeSelectionController.supplySeam(seam);
+    await nativeSelectionController.supplySeam(seam);
   } catch (_error) {
     if (epoch === selectionEpoch) {
       nativeSelectionController?.clear();
@@ -500,7 +504,7 @@ function reportError(value) {
   errorHost.hidden = false;
 }
 let lastModel = null;
-async function refresh() {
+async function refreshOnce() {
   const epoch = ++refreshEpoch;
   try {
     const model = await request("/api/workbench");
@@ -509,7 +513,7 @@ async function refresh() {
     errorHost.hidden = true;
     if (lastModel.mode === "native") {
       renderNative(lastModel);
-      void revalidateSelection();
+      await revalidateSelection();
     } else renderLegacy(lastModel);
   } catch (_error) {
     if (epoch !== refreshEpoch) return;
@@ -524,6 +528,24 @@ async function refresh() {
   }
 }
 
-refresh();
+async function drainRefreshes() {
+  do {
+    refreshQueued = false;
+    await refreshOnce();
+  } while (refreshQueued);
+}
+
+function refresh() {
+  refreshQueued = true;
+  if (!refreshPromise) {
+    refreshPromise = drainRefreshes().finally(() => {
+      refreshPromise = null;
+      if (refreshQueued) void refresh();
+    });
+  }
+  return refreshPromise;
+}
+
+void refresh();
 const timer = window.setInterval(refresh, 1000);
 window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });

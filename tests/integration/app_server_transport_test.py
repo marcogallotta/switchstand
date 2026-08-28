@@ -154,6 +154,18 @@ class ScriptedPeer(threading.Thread):
             connection,
             {"id": second_page["id"], "result": {"data": [], "nextCursor": None}},
         )
+        turn_list = self.message(connection)
+        self.assert_equal(turn_list["method"], "thread/turns/list")
+        turn_params = turn_list.get("params")
+        if not isinstance(turn_params, dict):
+            raise AssertionError("thread/turns/list params are unavailable")
+        self.assert_equal(
+            {key: turn_params.get(key) for key in ("limit", "sortDirection", "itemsView")},
+            {"limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"},
+        )
+        send_json(connection, {"id": turn_list["id"], "result": {"data": [{
+            "id": "PRIVATE-TURN", "status": "inProgress", "items": [],
+            "itemsView": "notLoaded"}], "nextCursor": None}})
         opcode, _, masked = receive_frame(connection)
         self.masked.append(masked)
         self.assert_equal(opcode, 8)
@@ -212,11 +224,11 @@ class StopPeer(ScriptedPeer):
                         self.assert_equal(request["params"], {"threadId": "root-1", "turnId": "turn-1"})
                         result = {}
                     else:
-                        self.assert_equal(request["method"], "thread/read")
-                        result = {"thread": {"id": "root-1", "status": {
-                            "type": "active" if status == "inProgress" else "idle"},
-                            "turns": [{"id": "turn-1", "status": status,
-                                "items": [{"text": "PRIVATE-TRANSCRIPT-SENTINEL"}]}]}}
+                        self.assert_equal(request["method"], "thread/turns/list")
+                        self.assert_equal(request["params"], {"threadId": "root-1",
+                            "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"})
+                        result = {"data": [{"id": "turn-1", "status": status,
+                            "items": [], "itemsView": "notLoaded"}], "nextCursor": None}
                     send_json(connection, {"id": request["id"], "result": result})
                     receive_frame(connection)
         except BaseException as exc:
@@ -330,7 +342,8 @@ class AppServerTransportTest(unittest.TestCase):
             self.assertEqual((requested["outcome"], confirmed["outcome"]), ("requested", "confirmed"))
             methods = [request["method"] for request in peer.requests]
             self.assertEqual(methods.count("turn/interrupt"), 1)
-            self.assertEqual(methods[2::3], ["thread/read", "thread/read", "turn/interrupt", "thread/read"])
+            self.assertEqual(methods[2::3], ["thread/turns/list", "thread/turns/list",
+                "turn/interrupt", "thread/turns/list"])
 
     def test_stop_seam_rejects_complete_and_cumulative_oversize_before_decode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -400,6 +413,7 @@ class AppServerTransportTest(unittest.TestCase):
             self.assertEqual(
                 [agent["status"] for agent in idle["agents"]], ["idle", "idle"]
             )
+            self.assertIn("inProgress", [agent["turnStatus"] for agent in idle["agents"]])
             self.assertEqual(
                 [entry["changes"] for entry in trail_after_transition[-2:]],
                 [
@@ -425,7 +439,8 @@ class AppServerTransportTest(unittest.TestCase):
             )
             self.assertEqual(
                 [request["method"] for request in peer.requests],
-                ["initialize", "initialized", "thread/read", "thread/list", "thread/list"] * 3,
+                ["initialize", "initialized", "thread/read", "thread/list", "thread/list",
+                    "thread/turns/list"] * 3,
             )
 
 

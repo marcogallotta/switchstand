@@ -4,7 +4,10 @@
 
 `service.py` owns the loopback HTTP process and serves the static operator UI. In default legacy
 mode it periodically asks the engine to reconcile; `engine.py` owns that mode's state transitions
-and persistence.
+and persistence. In native mode, the service constructs exactly one `NativeBoard`, one
+`NativeTargetTransport`, one `NativeInput`, one `NativeWorkbench`, and one
+`NativeHttpDispatcher`. Board, input, and facade receive the same configured complete-pass
+freshness limit.
 `app_server.py` is a dependency-free synchronous WebSocket/JSON-RPC client for the small
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
@@ -16,10 +19,11 @@ every page, follows `nextCursor` to exhaustion, and validates ancestry only thro
 `parentThreadId`. Every thread must carry a nonempty `sessionId`, but the value is opaque
 per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
 
-Native runtime state remains exactly `active` (with documented flags), `idle`, `systemError`,
-or `notLoaded`. In particular, `idle` is not renamed to semantic completion. For direct input,
-the checkpoint uses `turn/start` only for an observed idle thread and `turn/steer` with the
-exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
+Native thread state remains exactly `active` (with documented flags), `idle`, `systemError`,
+or `notLoaded`. Exact latest-turn state is represented separately; `idle` plus `inProgress` is
+valid and neither field rewrites the other. For direct input, the checkpoint uses `turn/start`
+only when exact metadata has no in-progress turn and `turn/steer` with the exact in-progress
+turn id otherwise. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
 `stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
@@ -55,26 +59,39 @@ Absence of a notification never changes a native status or implies stale work.
 Stage B1 is enabled only by `--native-root-thread-id EXACT_NATIVE_ROOT_ID`. It polls
 `thread/read(includeTurns=false)` for that root and fully paginated `thread/list` requests for
 descendants, forcing `useStateDbOnly=true`. It does not call resume, subscribe, or any control
-method. The existing `/api/workbench` endpoint projects native lineage/status, observer
+method. A fixed global budget probes one exact thread's content-free newest-turn metadata per
+completed pass and rotates fairly; it never adds an O(agent-count) request loop. The existing
+`/api/workbench` endpoint projects native lineage/thread status, separate turn status, observer
 freshness, safe run-local agent references, and the latest 50 in-memory endpoint differences
 instead of the legacy Work model. It exposes no raw native ids or transcripts.
 
 `native_stop.py` adds the B2-only control path. Prepare resolves a run-local agent reference
-only from current connected, present, active board evidence, performs one byte-capped
-`thread/read(includeTurns=true)`, and binds the sole active exact turn into a short-lived opaque
-receipt. Commit atomically consumes the receipt, revalidates the same exact turn with another
-bounded read, and sends at most one interrupt. A later bounded read may move `requested` to
+only from current connected and present board evidence, performs one byte-capped
+`thread/turns/list(limit=1, sortDirection=desc, itemsView=notLoaded)`, and binds the sole
+in-progress exact turn into a short-lived opaque receipt. Commit atomically consumes the
+receipt, revalidates the same exact turn with another bounded metadata read, and sends at most
+one interrupt. A later bounded metadata read may move `requested` to
 `confirmed`, `not_confirmed`, or `unknown`; it never retries or retargets. Receipts are capped,
 expiring, process-local tombstones and contain no transcript content.
 
-`native_selection.py` freezes the additive B3 `native-selection-v1` boundary without wiring it
-into production. It purely re-resolves an exact observation-run/agent-reference pair from a
+`native_selection.py` freezes the B3 `native-selection-v1` boundary. It purely re-resolves an
+exact observation-run/agent-reference pair from a
 supplied current B1 observation. Its closed output retains only the pair, connected/present
 truth, and display values whose provenance is explicitly safe. Freshness depends only on the
 supplied latest complete-pass completion time and configured maximum age. It owns no native
 read, cache, persistence, HTTP, browser, transcript/input, topology, or Stop behavior.
+Production composition uses that same resolver through `NativeBoard`; it does not add a second
+target registry.
 
-Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
+`NativeHttpDispatcher` alone validates native HTTP route, control, body, and closed result
+contracts. The `BaseHTTPRequestHandler` adapter passes the raw request path including query,
+all header tuples including duplicates, and one bounded raw body. It does not reparse native
+JSON. Handled responses are written with the dispatcher's exact status, ordered headers, and
+body. Native routes return immediately and never fall through to legacy behavior. Static and
+legacy requests retain their existing paths.
+
+Each poll spans the tree endpoints plus at most one exact-turn metadata request and is not an
+atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
 changes may be missed or collapsed. It is not a native event stream, and elapsed time is age
 since observation; consecutive observed-active time is not time spent working. Transport failure affects observer truth without
@@ -135,6 +152,7 @@ service per state path.
 - Configurable Works/role counts, role lifecycle, search, attachments, and rich streaming
 - Push updates, durable external queues, retry policy, telemetry, and database storage
 - Compatibility layers for alternative Codex transports or model providers
-- Native message/steer controls, stop beyond exact B2 cancellation, and inferred semantic status
+- Native input beyond exact current-target start/steer, Stop beyond exact B2 cancellation, and
+  inferred semantic status
 - Treating the poll-difference trail as complete history or durable audit evidence
 - Replacing or removing the fixed-role reliability spike outside explicitly selected native mode

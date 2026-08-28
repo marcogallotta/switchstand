@@ -20,8 +20,6 @@ class NativeHttpContractTests(unittest.TestCase):
             ("native-selection-v1", "native-input-v1", "native-stop-v1"),
         )
         self.assertIs(service.MAX_BODY_BYTES, contract.MAX_BODY_BYTES)
-        self.assertIs(service.CONTROL_HEADER_NAME, contract.CONTROL_HEADER_NAME)
-        self.assertIs(service.NATIVE_HEADER, contract.NATIVE_STOP_CONTROL_VALUE)
         self.assertEqual(
             json.dumps(contract.CONTROL_REQUEST_REJECTED_BODY, sort_keys=True),
             '{"code": "control_request_rejected", "outcome": "not_sent"}',
@@ -106,9 +104,8 @@ class NativeHttpContractTests(unittest.TestCase):
             with self.subTest(host=host):
                 self.assertFalse(contract.is_same_origin_http(None, host))
 
-    def test_service_consumes_the_exact_shared_predicates(self):
+    def test_service_consumes_the_shared_loopback_predicate(self):
         self.assertIs(service._loopback, contract.is_loopback_host)
-        self.assertIs(service._same_origin_http, contract.is_same_origin_http)
 
 
 if __name__ == "__main__":

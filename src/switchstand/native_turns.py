@@ -20,6 +20,14 @@ class NativeTurnProjection:
     requested_terminal_status: Literal["completed", "failed", "interrupted"] | None = None
 
 
+@dataclass(frozen=True)
+class ExactTurnProjection:
+    """Content-free newest-turn evidence for one privately rebound target."""
+
+    status: Literal["none", "inProgress", "completed", "failed", "interrupted"]
+    turn_id: str | None
+
+
 ThreadStatus = Literal["active", "idle", "systemError", "notLoaded"]
 
 
@@ -94,3 +102,50 @@ def _project_native_turns(
         active_turn_id=active_turn_id,
         requested_terminal_status=requested_terminal_status,
     )
+
+
+def project_exact_turn_list(
+    response: Any,
+    expected_target: object,
+) -> ExactTurnProjection | None:
+    """Fail closed on anything except one content-free newest-turn result."""
+    try:
+        if not isinstance(response, Mapping) or response.get("target") != expected_target:
+            return None
+        if set(response) - {"target", "data", "nextCursor", "backwardsCursor"}:
+            return None
+        for cursor_name in ("nextCursor", "backwardsCursor"):
+            cursor = response.get(cursor_name)
+            if cursor_name in response and cursor is not None and (
+                type(cursor) is not str or not cursor
+            ):
+                return None
+        data = response.get("data")
+        if not isinstance(data, list) or len(data) > 1:
+            return None
+        if not data:
+            if response.get("nextCursor") is not None or response.get("backwardsCursor") is not None:
+                return None
+            return ExactTurnProjection("none", None)
+        turn = data[0]
+        if not isinstance(turn, Mapping):
+            return None
+        if set(turn) - {
+            "id", "status", "items", "itemsView", "startedAt", "completedAt",
+            "durationMs", "error",
+        }:
+            return None
+        turn_id, status = turn.get("id"), turn.get("status")
+        if (
+            type(turn_id) is not str
+            or not turn_id
+            or len(turn_id) > MAX_TURN_ID_CHARACTERS
+            or type(status) is not str
+            or status not in TURN_STATUSES
+            or turn.get("itemsView") != "notLoaded"
+            or turn.get("items") != []
+        ):
+            return None
+        return ExactTurnProjection(cast(Any, status), turn_id)
+    except Exception:
+        return None

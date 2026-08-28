@@ -29,6 +29,7 @@ from .native_contracts import (
     NativeStopStatusResult,
 )
 from .native_stop import NativeStop, StopClient
+from .native_turns import project_exact_turn_list
 
 
 SAFE_ERROR = "native_observation_unavailable"
@@ -43,6 +44,10 @@ _T = TypeVar("_T")
 class NativeClient(Protocol):
     def thread_read(self, thread_id: str, *, include_turns: bool = True) -> Mapping[str, Any]: ...
     def thread_list(self, params: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def stop_request(self, method: str, params: Mapping[str, Any], *,
+        max_response_bytes: int = 256 * 1024, timeout_seconds: float = 3.0,
+        _close_after: bool = True,
+    ) -> tuple[str, Mapping[str, Any] | None]: ...
     def close(self) -> None: ...
 
 
@@ -105,7 +110,9 @@ class NativeBoard:
         self._target_identities: dict[str, ExactCurrentTarget] = {}
         self._native_ids_by_target: dict[ExactCurrentTarget, str] = {}
         self._target_records: list[PrivateTargetRecord] = []
-        self._stopper = NativeStop(cast(Callable[[], StopClient], client_factory), self._resolve_active)
+        self._turn_observations: dict[str, tuple[str, float]] = {}
+        self._turn_probe_offset = 0
+        self._stopper = NativeStop(cast(Callable[[], StopClient], client_factory), self._resolve_present)
 
     def start(self) -> None:
         self.poll_once()
@@ -154,15 +161,38 @@ class NativeBoard:
             completed_mono = self._monotonic()
             threads = list(tree["threads"])
             with self._lock:
+                prior = self._projection
+            projection = project_complete_tree(
+                threads,
+                prior_projection=prior,
+                completed_at=completed_wall,
+                completed_monotonic=completed_mono,
+                trail_limit=self._trail_limit,
+            )
+            _, _, _, projected_targets = _private_projection_state(projection)
+            probe: tuple[str, str, float] | None = None
+            if projected_targets:
+                index = self._turn_probe_offset % len(projected_targets)
+                agent_ref, native_id = projected_targets[index]
+                self._turn_probe_offset += 1
+                try:
+                    classification, response = client.stop_request(
+                        "thread/turns/list",
+                        {"threadId": native_id, "limit": 1, "sortDirection": "desc",
+                            "itemsView": "notLoaded"},
+                    )
+                except Exception:
+                    classification, response = "unavailable", None
+                if classification == "ok" and response is not None:
+                    if "target" not in response:
+                        rebound = dict(response)
+                        rebound["target"] = native_id
+                        exact_turn = project_exact_turn_list(rebound, native_id)
+                        if exact_turn is not None:
+                            probe = (agent_ref, exact_turn.status, completed_wall)
+            with self._lock:
                 if self._closed:
                     return
-                projection = project_complete_tree(
-                    threads,
-                    prior_projection=self._projection,
-                    completed_at=completed_wall,
-                    completed_monotonic=completed_mono,
-                    trail_limit=self._trail_limit,
-                )
                 target_records = []
                 _, _, _, targets = _private_projection_state(projection)
                 for agent_ref, native_id in targets:
@@ -174,6 +204,16 @@ class NativeBoard:
                     target_records.append(PrivateTargetRecord(agent_ref, target))
                 self._projection = projection
                 self._target_records = target_records
+                present_refs = {record.agent_ref for record in target_records}
+                self._turn_observations = {
+                    ref: value for ref, value in self._turn_observations.items()
+                    if ref in present_refs
+                }
+                if projected_targets:
+                    queried_ref = projected_targets[(self._turn_probe_offset - 1) % len(projected_targets)][0]
+                    self._turn_observations.pop(queried_ref, None)
+                if probe is not None:
+                    self._turn_observations[probe[0]] = (probe[1], probe[2])
                 self._completed_at = completed_wall
                 self._connected = True
                 self._error_code = None
@@ -181,6 +221,7 @@ class NativeBoard:
             with self._lock:
                 self._connected = False
                 self._error_code = SAFE_ERROR
+                self._turn_observations.clear()
                 if self._projection is not None:
                     self._projection = reset_projection_activity(self._projection)
         finally:
@@ -197,6 +238,13 @@ class NativeBoard:
             agents = [] if self._projection is None else deepcopy(self._projection.agents)
             for agent in agents:
                 agent["updatedAgeSeconds"] = round(max(0.0, now - agent["updatedAt"]), 3)
+                observed = self._turn_observations.get(agent["agentRef"])
+                agent["turnStatus"] = (
+                    observed[0] if observed is not None
+                    and now >= observed[1]
+                    and now - observed[1] <= self._maximum_observation_age
+                    else "unknown"
+                )
             return cast(NativeBoardSnapshot, {
                 "mode": "native",
                 "observation": {
@@ -283,7 +331,7 @@ class NativeBoard:
                 maximum_observation_age_seconds=maximum_observation_age_seconds,
             ))
 
-    def _resolve_active(self, agent_ref: str) -> str | None:
+    def _resolve_present(self, agent_ref: str) -> str | None:
         with self._lock:
             selection = {
                 "observationRunRef": self._observation_run_ref,
@@ -298,10 +346,7 @@ class NativeBoard:
             )
             if not isinstance(target, ExactCurrentTarget):
                 return None
-            agents = [] if self._projection is None else self._projection.agents
-            matches = [agent for agent in agents
-                if agent.get("agentRef") == agent_ref and agent.get("status") == "active"]
-            return self._native_ids_by_target.get(target) if len(matches) == 1 else None
+            return self._native_ids_by_target.get(target)
 
     def prepare_stop(self, agent_ref: Any) -> NativeStopPrepareResult:
         return self._stopper.prepare(agent_ref)

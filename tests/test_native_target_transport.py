@@ -30,16 +30,10 @@ class BoundBoard:
 class Client:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
-        self.read_response: Any = {
-            "thread": {
-                "id": "PRIVATE-RAW-THREAD",
-                "status": {"type": "idle"},
-                "turns": [],
-            }
-        }
+        self.read_response: Any = {"data": [], "nextCursor": None}
 
-    def bounded_thread_read(self, thread_id: str, **limits: Any):
-        self.calls.append(("read", thread_id, limits))
+    def stop_request(self, method: str, params: Any, **limits: Any):
+        self.calls.append(("read", method, params, limits))
         return ("ok", self.read_response)
 
     def bounded_turn_start_text_native(self, thread_id: str, text: str, **limits: Any):
@@ -82,7 +76,7 @@ class NativeTargetTransportTests(unittest.TestCase):
         transport = self.transport(board)
 
         with patch("switchstand.native_target_transport.CodexAppServer", factory):
-            read_classification, read_response = transport.thread_read(
+            read_classification, read_response = transport.turns_list(
                 target, max_response_bytes=1234, timeout_seconds=1.25
             )
             start = transport.turn_start(
@@ -102,14 +96,15 @@ class NativeTargetTransportTests(unittest.TestCase):
         self.assertEqual(read_classification, "ok")
         self.assertIsNotNone(read_response)
         read_response = cast(dict[str, Any], read_response)
-        self.assertIs(read_response["thread"]["id"], target)
+        self.assertIs(read_response["target"], target)
         self.assertNotIn("PRIVATE-RAW-THREAD", repr(read_response))
         self.assertEqual(start, ("ok", {"turn": {"id": "new-turn"}}))
         self.assertEqual(steer, ("ok", {"turnId": "active-turn"}))
         self.assertEqual(board.calls, [target, target, target])
         self.assertEqual([client.calls[0][0] for client in clients], ["read", "start", "steer"])
         self.assertEqual(clients[0].calls[0], (
-            "read", "PRIVATE-RAW-THREAD",
+            "read", "thread/turns/list", {"threadId": "PRIVATE-RAW-THREAD", "limit": 1,
+                "sortDirection": "desc", "itemsView": "notLoaded"},
             {"max_response_bytes": 1234, "timeout_seconds": 1.25},
         ))
         self.assertEqual(clients[1].calls[0][1:3], (
@@ -132,7 +127,7 @@ class NativeTargetTransportTests(unittest.TestCase):
         transport = self.transport(board)
 
         with patch("switchstand.native_target_transport.CodexAppServer", factory):
-            unavailable = transport.thread_read(
+            unavailable = transport.turns_list(
                 target, max_response_bytes=100, timeout_seconds=1
             )
             changed = transport.turn_start(
@@ -151,12 +146,12 @@ class NativeTargetTransportTests(unittest.TestCase):
         target = ExactCurrentTarget()
         board = BoundBoard(target)
         mismatch = Client()
-        mismatch.read_response["thread"]["id"] = "DIFFERENT-PRIVATE-THREAD"
+        mismatch.read_response = {"data": [], "target": "DIFFERENT-PRIVATE-THREAD"}
         factory = ClientFactory([mismatch, RuntimeError("PRIVATE-SETUP-FAILURE")])
         transport = self.transport(board)
 
         with patch("switchstand.native_target_transport.CodexAppServer", factory):
-            malformed = transport.thread_read(
+            malformed = transport.turns_list(
                 target, max_response_bytes=100, timeout_seconds=1
             )
             ambiguous = transport.turn_start(
