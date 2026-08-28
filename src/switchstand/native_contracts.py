@@ -154,23 +154,19 @@ class NativeTurnStatusCounts(TypedDict):
     interrupted: int
 
 
-class NativeEvidenceSummary(TypedDict):
-    available: bool
-    storage: Literal["bounded_process_memory"]
-    capacity: int
-    retainedCount: int
-    droppedCount: int
-    duplicateCount: int
-    refreshCount: int
-    coalescedRefreshCount: int
-    observationConnected: bool | None
-    passAgeSeconds: float | None
-    agentCount: int
-    statusCounts: NativeStatusCounts
-    turnStatusCounts: NativeTurnStatusCounts
-    lastObservedActivityAgeSeconds: float | None
-    recentEvents: list[NativeEvidenceEvent]
-    disclosure: str
+NativeEvidenceSummary = TypedDict(
+    "NativeEvidenceSummary",
+    {
+        "available": bool, "storage": Literal["bounded_process_memory"], "capacity": int,
+        "retainedCount": int, "droppedCount": int, "duplicateCount": int,
+        "refreshCount": int, "coalescedRefreshCount": int,
+        "observationConnected": bool | None, "passAgeSeconds": float | None,
+        "agentCount": int, "statusCounts": NativeStatusCounts,
+        "turnStatusCounts": NativeTurnStatusCounts,
+        "lastObservedActivityAgeSeconds": float | None,
+        "recentEvents": list[NativeEvidenceEvent], "disclosure": str,
+    },
+)
 
 
 class NativeWorkbenchSnapshot(NativeBoardSnapshot):
