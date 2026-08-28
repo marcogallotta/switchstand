@@ -397,6 +397,8 @@ let visibleInputTargetKey = null;
 let nextInputRequest = 0;
 let selectionEpoch = 0;
 let refreshEpoch = 0;
+let refreshPromise = null;
+let refreshQueued = false;
 
 function pairKey(pair) {
   return pair ? `${pair.observationRunRef}\u0000${pair.agentRef}` : null;
@@ -428,7 +430,7 @@ async function selectAgent(agentRef) {
       "native-selection-v1",
     );
     if (epoch !== selectionEpoch) return;
-    nativeSelectionController?.select(seam);
+    await nativeSelectionController?.select(seam);
   } catch (_error) {
     if (epoch === selectionEpoch) nativeSelectionController?.clear();
   }
@@ -446,7 +448,7 @@ async function revalidateSelection() {
     );
     if (epoch !== selectionEpoch
       || !samePair(candidate, nativeSelectionController?.getState().candidate)) return;
-    nativeSelectionController.supplySeam(seam);
+    await nativeSelectionController.supplySeam(seam);
   } catch (_error) {
     if (epoch === selectionEpoch) {
       nativeSelectionController?.clear();
@@ -500,7 +502,7 @@ function reportError(value) {
   errorHost.hidden = false;
 }
 let lastModel = null;
-async function refresh() {
+async function refreshOnce() {
   const epoch = ++refreshEpoch;
   try {
     const model = await request("/api/workbench");
@@ -509,7 +511,7 @@ async function refresh() {
     errorHost.hidden = true;
     if (lastModel.mode === "native") {
       renderNative(lastModel);
-      void revalidateSelection();
+      await revalidateSelection();
     } else renderLegacy(lastModel);
   } catch (_error) {
     if (epoch !== refreshEpoch) return;
@@ -524,6 +526,24 @@ async function refresh() {
   }
 }
 
-refresh();
+async function drainRefreshes() {
+  do {
+    refreshQueued = false;
+    await refreshOnce();
+  } while (refreshQueued);
+}
+
+function refresh() {
+  refreshQueued = true;
+  if (!refreshPromise) {
+    refreshPromise = drainRefreshes().finally(() => {
+      refreshPromise = null;
+      if (refreshQueued) void refresh();
+    });
+  }
+  return refreshPromise;
+}
+
+void refresh();
 const timer = window.setInterval(refresh, 1000);
 window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });

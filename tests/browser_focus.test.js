@@ -246,6 +246,7 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
   let releaseDelayed;
   const delayed = new Promise((resolve) => { releaseDelayed = resolve; });
   const selectionRequests = [];
+  let workbenchRequests = 0;
   const view = { scrollX: 0, scrollY: 0 };
   const window = { addEventListener() {}, clearInterval() {}, getSelection() { return { rangeCount: 0 }; },
     localStorage: storage, scrollX: 0, scrollY: 0, scrollTo(x, y) { view.scrollX = x; view.scrollY = y; },
@@ -257,6 +258,7 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
       if (delaySelection) await delayed;
       return { ok: true, json: async () => seam };
     }
+    workbenchRequests += 1;
     return failRefresh ? { ok: false, json: async () => ({ error: "unavailable" }) }
       : { ok: true, json: async () => state };
   },
@@ -275,12 +277,15 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
   assert.deepEqual(JSON.parse(selectionRequests[0].body), { agentRef: "agent-2" });
   assert.equal(selectionRequests[0].headers["X-Switchstand-Control"], "native-selection-v1");
   delaySelection = true;
-  await intervalCallback();
+  const pendingRefresh = intervalCallback();
   await new Promise(setImmediate);
   failRefresh = true;
-  await intervalCallback();
+  const coalescedRefresh = intervalCallback();
+  assert.strictEqual(coalescedRefresh, pendingRefresh);
+  assert.equal(workbenchRequests, 2);
   releaseDelayed();
-  await new Promise(setImmediate);
+  await pendingRefresh;
+  assert.equal(workbenchRequests, 3);
   const after = document.tree.querySelectorAll("[data-focus-key]")
     .find((node) => node.dataset.focusKey === "select:agent-2");
   assert.strictEqual(document.activeElement, after);

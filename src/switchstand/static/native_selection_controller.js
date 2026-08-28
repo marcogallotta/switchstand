@@ -104,7 +104,7 @@
       const seam = seamParts(value);
       if (!seam) {
         clear();
-        return;
+        return Promise.resolve();
       }
       requestGeneration += 1;
       candidate = seam.selection;
@@ -113,19 +113,19 @@
       currentTarget = null;
       removeStoredPair();
       emit();
-      void revalidate();
+      return revalidate();
     }
 
     function supplySeam(value) {
       const seam = seamParts(value);
       if (!seam) {
         clear();
-        return;
+        return Promise.resolve();
       }
       suppliedSnapshot = seam.snapshot;
       snapshotGeneration += 1;
       requestGeneration += 1;
-      if (candidate) void revalidate();
+      return candidate ? revalidate() : Promise.resolve();
     }
 
     function invalidate(value) {

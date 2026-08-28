@@ -151,10 +151,7 @@ function deferred() {
 }
 
 async function runPoll(page) {
-  const response = page.waitForResponse(`${origin}/api/workbench`);
-  await page.clock.runFor(1000);
-  await response;
-  await page.evaluate(() => 0);
+  await page.evaluate(() => refresh());
 }
 
 test("explicit selection uses the route, stores only its opaque pair, and reload revalidates", async ({ page }) => {
@@ -199,9 +196,11 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   const statuses = [200, 200, 200, 503];
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
+    await page.evaluate(() => refresh());
     await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
     await expect(input).toBeVisible();
     await expect(input).toHaveValue(values[index]);
+    expect(requests.filter((item) => item.pathname === "/api/native-input")).toHaveLength(index);
     const submit = page.getByRole("button", { name: "Send exact message" });
     await expect(submit).toBeVisible();
     await expect(submit).toBeEnabled();
@@ -229,6 +228,58 @@ test("input sends the exact selected pair and unchanged text with only truthful 
     agentRef: "agent-beta", text,
   })));
   expect(sent.every((item) => item.headers["x-switchstand-control"] === "native-input-v1")).toBe(true);
+});
+
+test("real timer coalesces one pending cycle and preserves one exact submission", async ({ page }) => {
+  inputResults.push(
+    { status: 200, body: { code: "input_sent", outcome: "sent", mode: "steer" } },
+  );
+  await page.goto(origin);
+  await selectAgent(page, "agent-beta");
+  const input = page.getByLabel("Message current target");
+  await input.fill("one exact draft");
+  await input.focus();
+  await input.evaluate((node) => node.setSelectionRange(4, 9, "forward"));
+  const gate = deferred();
+  const initialSelectionCount = requests.filter(
+    (item) => item.pathname === "/api/native-selection/resolve",
+  ).length;
+  delayedSelections.set("agent-beta", gate);
+  await expect.poll(() => requests.filter(
+    (item) => item.pathname === "/api/native-selection/resolve",
+  ).length).toBe(initialSelectionCount + 1);
+  const pendingCount = requests.filter((item) => item.pathname === "/api/workbench").length;
+  const completion = page.evaluate(() => refresh());
+  try {
+    await page.waitForTimeout(1200);
+    expect(requests.filter((item) => item.pathname === "/api/workbench")).toHaveLength(
+      pendingCount,
+    );
+  } finally {
+    gate.resolve();
+    await completion;
+  }
+  expect(requests.filter((item) => item.pathname === "/api/workbench")).toHaveLength(
+    pendingCount + 1,
+  );
+  expect(requests.filter((item) => item.pathname === "/api/native-selection/resolve"))
+    .toHaveLength(initialSelectionCount + 2);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("one exact draft");
+  expect(await input.evaluate((node) => [
+    node.selectionStart, node.selectionEnd, node.selectionDirection,
+  ])).toEqual([4, 9, "forward"]);
+
+  const sentRequest = page.waitForRequest(`${origin}/api/native-input`);
+  await page.getByRole("button", { name: "Send exact message" }).click();
+  await sentRequest;
+  const sent = requests.filter((item) => item.pathname === "/api/native-input");
+  expect(sent).toHaveLength(1);
+  expect(sent[0].body).toEqual({
+    version: "native-input-v1", observationRunRef: "observation-run-one",
+    agentRef: "agent-beta", text: "one exact draft",
+  });
+  await expect(page.locator("#native-input-outcome")).toHaveText("sent · steer");
 });
 
 test("delayed old selection and input results cannot mutate a newer target or draft", async ({ page }) => {

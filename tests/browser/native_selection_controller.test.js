@@ -57,8 +57,10 @@ test("selection is explicit, persists only the exact pair, and projects only saf
   const selection = pair(fixtures.baseSelection.observationRunRef, fixtures.baseSelection.agentRef);
   const snapshot = { ...fixtures.baseExpected, preview: "prompt secret", threadId: "native secret",
     transcript: ["content secret"], parentRef: "topology secret" };
-  created.controller.select(seam(selection, snapshot));
-  await tick();
+  const completion = created.controller.select(seam(selection, snapshot));
+  assert.equal(typeof completion.then, "function");
+  assert.equal(created.controller.getState().currentTarget, null);
+  await completion;
 
   assert.deepEqual(plain(created.controller.getState().currentTarget), fixtures.baseExpected);
   assert.deepEqual(JSON.parse(storage.getItem(created.key)), fixtures.baseSelection);
@@ -91,6 +93,13 @@ test("reload restores only an unresolved candidate and fails closed without fall
   await tick();
   assert.deepEqual(plain(restored.controller.getState()), { candidate: null, currentTarget: null });
   assert.equal(storage.getItem(restored.key), null);
+  const noOp = restored.controller.supplySeam(seam(selection, fixtures.baseExpected));
+  assert.equal(typeof noOp.then, "function");
+  await noOp;
+  const cleared = restored.controller.select({ wrong: "shape" });
+  assert.equal(typeof cleared.then, "function");
+  await cleared;
+  assert.deepEqual(plain(restored.controller.getState()), { candidate: null, currentTarget: null });
 });
 
 test("delayed old selection success and failure cannot mutate a newer exact selection", async () => {
@@ -118,28 +127,84 @@ test("delayed old selection success and failure cannot mutate a newer exact sele
   }
 });
 
-test("same-target revalidation retains the last validated target until failure is known", async () => {
+test("same-target success and failure complete only after their deferred result commits", async () => {
   const storage = new Storage();
   const pending = new Map();
   const created = controller(storage, pending);
   const selection = pair("observation-run-one", "agent-current");
   const validated = success(selection, { name: "Current target" });
-  created.controller.select(seam(selection, validated));
-  await tick();
+  const delayedResults = [
+    success(selection, { name: "Revalidated target" }),
+    failure("OBSERVATION_STALE"),
+  ];
+  for (const delayedResult of delayedResults) {
+    await created.controller.select(seam(selection, validated));
+    const gate = deferred();
+    pending.set(delayedResult, gate);
+    const priorChanges = created.changes.length;
+    let settled = false;
+    const completion = created.controller.supplySeam(seam(selection, delayedResult))
+      .then(() => { settled = true; });
+    assert.equal(created.changes.length, priorChanges);
+    assert.deepEqual(plain(created.controller.getState().currentTarget), validated);
+    assert.deepEqual(JSON.parse(storage.getItem(created.key)), selection);
+    await tick();
+    assert.equal(settled, false);
 
-  const delayedFailure = failure("OBSERVATION_STALE");
-  const gate = deferred();
-  pending.set(delayedFailure, gate);
-  const priorChanges = created.changes.length;
-  created.controller.supplySeam(seam(selection, delayedFailure));
-  assert.equal(created.changes.length, priorChanges);
-  assert.deepEqual(plain(created.controller.getState().currentTarget), validated);
-  assert.deepEqual(JSON.parse(storage.getItem(created.key)), selection);
+    gate.resolve(delayedResult);
+    await completion;
+    assert.equal(settled, true);
+    if (delayedResult.code) {
+      assert.deepEqual(plain(created.controller.getState()), { candidate: null, currentTarget: null });
+      assert.equal(storage.getItem(created.key), null);
+    } else {
+      assert.deepEqual(plain(created.controller.getState().currentTarget), delayedResult);
+      assert.deepEqual(JSON.parse(storage.getItem(created.key)), selection);
+    }
+  }
+});
 
-  gate.resolve(delayedFailure);
-  await tick();
-  assert.deepEqual(plain(created.controller.getState()), { candidate: null, currentTarget: null });
+test("deferred explicit switch clears confirmed A and a delayed A cannot resurrect", async () => {
+  const storage = new Storage();
+  const pending = new Map();
+  const created = controller(storage, pending);
+  const selectionA = pair("observation-run-one", "agent-a");
+  const selectionB = pair("observation-run-one", "agent-b");
+  const confirmedA = success(selectionA, { name: "Agent A" });
+  const lateA = success(selectionA, { name: "Late Agent A" });
+  const confirmedB = success(selectionB, { name: "Agent B" });
+  await created.controller.select(seam(selectionA, confirmedA));
+
+  const gateA = deferred();
+  pending.set(lateA, gateA);
+  const completionA = created.controller.supplySeam(seam(selectionA, lateA));
+  const gateB = deferred();
+  pending.set(confirmedB, gateB);
+  let settledB = false;
+  const completionB = created.controller.select(seam(selectionB, confirmedB))
+    .then(() => { settledB = true; });
+  assert.deepEqual(plain(created.controller.getState()), {
+    candidate: selectionB,
+    currentTarget: null,
+  });
   assert.equal(storage.getItem(created.key), null);
+  await tick();
+  assert.equal(settledB, false);
+
+  gateA.resolve(lateA);
+  await completionA;
+  assert.equal(settledB, false);
+  assert.deepEqual(plain(created.controller.getState()), {
+    candidate: selectionB,
+    currentTarget: null,
+  });
+  assert.equal(storage.getItem(created.key), null);
+
+  gateB.resolve(confirmedB);
+  await completionB;
+  assert.equal(settledB, true);
+  assert.deepEqual(plain(created.controller.getState().currentTarget), confirmedB);
+  assert.deepEqual(JSON.parse(storage.getItem(created.key)), selectionB);
 });
 
 test("every clearing result fences a delayed older success and never chooses another agent", async () => {
