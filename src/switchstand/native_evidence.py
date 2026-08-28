@@ -30,10 +30,11 @@ _ALLOWED: dict[NativeEvidenceEventKind, frozenset[NativeEvidenceOutcome]] = {
         "prepared", "not_sent_target_unavailable", "not_sent_capacity", "unavailable",
     }),
     "stop_commit": frozenset({
-        "requested", "rejected", "unknown", "not_sent_confirmation_unavailable", "unavailable",
+        "requested", "rejected", "unknown", "not_sent",
+        "not_sent_confirmation_unavailable", "unavailable",
     }),
     "stop_status": frozenset({
-        "requested", "rejected", "confirmed", "not_confirmed", "unknown",
+        "requested", "rejected", "confirmed", "not_confirmed", "unknown", "not_sent",
         "not_sent_operation_unavailable", "unavailable",
     }),
     "focus_invariant": frozenset({"failed"}),
