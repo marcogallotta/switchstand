@@ -32,24 +32,30 @@ let delayStopResponse;
 let pendingStopResponses;
 let evidenceRequests;
 
+async function readBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+function json(response, value) {
+  response.writeHead(200, { "Content-Type": "application/json" })
+    .end(JSON.stringify(value));
+}
+
 test.beforeAll(async () => {
   apiRequests = 0;
   failRequests = false;
   stopRequests = [];
   evidenceRequests = [];
-  server = http.createServer((request, response) => {
+  server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
     if (pathname === "/api/native-evidence") {
-      const chunks = [];
-      request.on("data", (chunk) => chunks.push(chunk));
-      request.on("end", () => {
-        evidenceRequests.push({
-          body: Buffer.concat(chunks).toString("utf-8"),
-          control: request.headers["x-switchstand-control"],
-        });
-        response.writeHead(200, { "Content-Type": "application/json" })
-          .end('{"code":"evidence_recorded","outcome":"recorded"}');
+      evidenceRequests.push({
+        body: await readBody(request),
+        control: request.headers["x-switchstand-control"],
       });
+      json(response, { code: "evidence_recorded", outcome: "recorded" });
       return;
     }
     if (pathname.startsWith("/api/native-stop/")) {
