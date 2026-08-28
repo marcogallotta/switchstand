@@ -212,12 +212,13 @@ objects are JSON for runtime failures and omit the socket path. Their `code`, fi
 and allowlisted `phase` distinguish safe categories including invalid/missing roots or
 descendant records with absent session evidence, selected non-roots, absent descendants,
 invalid pagination, duplicate threads, missing parent edges or intermediate parents, lineage
-cycles, invalid or unsupported native statuses, and missing protocol timestamps. They never
-include protocol ids, paths, raw statuses or flags, cursors, prompts/outputs, or exception
-strings. Successful evidence also projects source metadata through a fixed field allowlist:
-unknown nested fields are dropped rather than copied, and an approved path field retains only
-the constant `[redacted]`. Run the following for the complete flag reference; an editable
-install also provides the `switchstand-stage-a` console command.
+cycles, invalid or unsupported native statuses, and missing or invalid protocol timestamps.
+Protocol timestamps accept finite nonnegative integers or floats, including zero. Failure
+evidence never includes protocol ids, paths, raw statuses or flags, cursors, prompts/outputs,
+or exception strings. Successful evidence also projects source metadata through a fixed field
+allowlist: unknown nested fields are dropped rather than copied, and an approved path field
+retains only the constant `[redacted]`. Run the following for the complete flag reference; an
+editable install also provides the `switchstand-stage-a` console command.
 
 ```sh
 PYTHONPATH=src python -m switchstand.stage_a_probe --help

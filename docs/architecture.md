@@ -18,6 +18,9 @@ lists descendants with `ancestorThreadId`, supplies every documented `sourceKind
 every page, follows `nextCursor` to exhaustion, and validates ancestry only through
 `parentThreadId`. Every thread must carry a nonempty `sessionId`, but the value is opaque
 per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
+Every root and descendant must also carry finite nonnegative numeric `createdAt` and
+`updatedAt` protocol timestamps. Booleans, negative values, NaN, and infinities make the
+complete pass unavailable without changing the last-good board or selection state.
 
 Native thread state remains exactly `active` (with documented flags), `idle`, `systemError`,
 or `notLoaded`. Exact latest-turn state is represented separately; `idle` plus `inProgress` is

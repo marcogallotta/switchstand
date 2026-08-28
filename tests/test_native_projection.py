@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import unittest
 
+from switchstand.agent_tree import AgentTreeEvidenceError
 from switchstand.native_projection import _private_projection_state, project_complete_tree
 
 
@@ -28,6 +29,40 @@ def thread(
 
 
 class NativeProjectionTests(unittest.TestCase):
+    def test_projection_reuses_strict_protocol_timestamp_validation(self):
+        for field in ("createdAt", "updatedAt"):
+            for invalid in (True, -1, float("nan"), float("inf"), float("-inf")):
+                with self.subTest(field=field, invalid=invalid):
+                    invalid_thread = thread("root")
+                    invalid_thread[field] = invalid
+                    with self.assertRaises(AgentTreeEvidenceError) as raised:
+                        project_complete_tree(
+                            [invalid_thread],
+                            prior_projection=None,
+                            completed_at=100.0,
+                            completed_monotonic=50.0,
+                            trail_limit=50,
+                        )
+                    self.assertEqual(
+                        raised.exception.code, "missing_protocol_timestamp"
+                    )
+                    self.assertEqual(
+                        raised.exception.phase, "timestamp_validation"
+                    )
+
+        zero_thread = thread("root")
+        zero_thread["createdAt"] = 0
+        zero_thread["updatedAt"] = 0.0
+        projection = project_complete_tree(
+            [zero_thread],
+            prior_projection=None,
+            completed_at=100.0,
+            completed_monotonic=50.0,
+            trail_limit=50,
+        )
+        self.assertEqual(projection.agents[0]["createdAt"], 0.0)
+        self.assertEqual(projection.agents[0]["updatedAt"], 0.0)
+
     def test_identical_complete_inputs_and_prior_state_are_deterministic_and_pure(self):
         threads = [thread("raw-root"), thread("raw-child", parent="raw-root")]
         original = deepcopy(threads)

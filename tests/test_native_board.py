@@ -203,16 +203,61 @@ class NativeBoardTests(unittest.TestCase):
 
         for agent in before:
             agent.pop("updatedAgeSeconds")
-            agent["activeObservedSeconds"] = 0.0
         retained = after["agents"]
         for agent in retained:
             agent.pop("updatedAgeSeconds")
-        self.assertEqual(
-            [{**agent, "turnStatus": "unknown"} for agent in before], retained
-        )
+        self.assertEqual(before, retained)
         self.assertEqual(board._target_identities, identities_before)
         self.assertEqual(board._native_ids_by_target, reverse_before)
         self.assertFalse(after["observation"]["connected"])
+
+    def test_nonfinite_later_pass_preserves_exact_last_good_board_and_selection_identity(self):
+        first = client_with_status(updated=100.0)
+        second = client_with_status(updated=105.0)
+        invalid = client_with_status(updated=106.0)
+        invalid.pages[0]["data"][0]["updatedAt"] = float("nan")
+        clock = Clock()
+        board = NativeBoard(
+            ClientFactory(first, second, invalid),
+            "raw-root",
+            wall_clock=clock,
+            monotonic=clock,
+        )
+
+        board.poll_once()
+        clock.value = 105.0
+        board.poll_once()
+        before = board.snapshot()
+        projection_before = board._projection
+        before_selection = board.browser_selection(
+            "agent-2", now=105.0, maximum_observation_age_seconds=5.0
+        )
+        identities_before = dict(board._target_identities)
+        reverse_before = dict(board._native_ids_by_target)
+
+        board.poll_once()
+        after = board.snapshot()
+        after_selection = board.browser_selection(
+            "agent-2", now=105.0, maximum_observation_age_seconds=5.0
+        )
+
+        self.assertEqual(board._projection, projection_before)
+        self.assertEqual(after["agents"], before["agents"])
+        self.assertEqual(after["trail"], before["trail"])
+        self.assertEqual(
+            after["observation"]["completedAt"],
+            before["observation"]["completedAt"],
+        )
+        self.assertFalse(after["observation"]["connected"])
+        self.assertFalse(after["observation"]["available"])
+        self.assertTrue(after["observation"]["historical"])
+        self.assertEqual(board._target_identities, identities_before)
+        self.assertEqual(board._native_ids_by_target, reverse_before)
+        self.assertEqual(after_selection["selection"], before_selection["selection"])
+        self.assertEqual(
+            selection_error_code(after_selection), "APP_SERVER_DISCONNECTED"
+        )
+        json.dumps(after, allow_nan=False)
 
     def test_stop_resolution_requires_current_connected_active_board_evidence(self):
         board = NativeBoard(ClientFactory(client_with_status(), OSError("gone")), "raw-root")

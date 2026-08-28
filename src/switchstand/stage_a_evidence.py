@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
-from .agent_tree import AgentTreeAdapter, THREAD_SOURCE_KINDS
+from .agent_tree import AgentTreeAdapter, THREAD_SOURCE_KINDS, validate_protocol_timestamp
 
 
 SCHEMA_VERSION = 2
@@ -117,14 +117,7 @@ def _thread_evidence(
 ) -> dict[str, Any]:
     timestamps: dict[str, int | float] = {}
     for field in ("createdAt", "updatedAt"):
-        value = thread.get(field)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ProbeEvidenceError(
-                "missing_protocol_timestamp",
-                "a required protocol timestamp is unavailable",
-                phase="timestamp_validation",
-            )
-        timestamps[field] = value
+        timestamps[field] = validate_protocol_timestamp(thread.get(field))
     return {
         "threadRef": identifiers.thread_ref(thread["id"]),
         "parentThreadRef": identifiers.thread_ref(thread.get("parentThreadId")),

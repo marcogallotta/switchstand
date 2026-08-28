@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Protocol, TypeVar, cast
 
-from .agent_tree import AgentTreeAdapter, AgentTreeClient
+from .agent_tree import AgentTreeAdapter, AgentTreeClient, AgentTreeEvidenceError
 from .current_target import (
     ExactCurrentTarget,
     PrivateTargetRecord,
@@ -251,6 +251,14 @@ class NativeBoard:
                 self._completed_at = completed_wall
                 self._connected = True
                 self._error_code = None
+        except AgentTreeEvidenceError as exc:
+            with self._lock:
+                self._connected = False
+                self._error_code = SAFE_ERROR
+                if exc.phase != "timestamp_validation":
+                    self._turn_observations.clear()
+                    if self._projection is not None:
+                        self._projection = reset_projection_activity(self._projection)
         except Exception:
             with self._lock:
                 self._connected = False
