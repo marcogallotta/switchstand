@@ -2,7 +2,7 @@ const OP_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 
 export const DEFAULT_POLICY = Object.freeze({
-  repository: "marcogallotta/switchstand",
+  repository: "marcogallotta/gpt-actions-github-fixture",
   baseBranch: "main",
   branchPrefix: "agent/gpt-actions-github-",
   pathPrefix: "experiments/gpt-actions-github/",
@@ -147,7 +147,7 @@ async function executeCommit({ input, record, store, call, token, policy }) {
   }
 
   if (record.commit_sha && current === record.commit_sha) {
-    return store.complete(input.operation_id, { commit_sha: record.commit_sha, branch: input.branch, recovered: true });
+    return store.complete(input.operation_id, { commit_sha: record.commit_sha, branch: input.branch, recovered: true }, record.attempt);
   }
   if (input.mode === "create" ? current !== null : current !== input.expected_head_sha) {
     throw Object.assign(new Error("stale_head"), { status: 409, actual_head_sha: current });
@@ -165,7 +165,7 @@ async function executeCommit({ input, record, store, call, token, policy }) {
     } else {
       await gh(call, token, "PATCH", ghPath(repo, `/git/refs/heads/${encodeURIComponent(input.branch)}`), { sha: record.commit_sha, force: false });
     }
-    return store.complete(input.operation_id, { commit_sha: record.commit_sha, branch: input.branch, recovered: true });
+    return store.complete(input.operation_id, { commit_sha: record.commit_sha, branch: input.branch, recovered: true }, record.attempt);
   }
 
   const baseCommit = await gh(call, token, "GET", ghPath(repo, `/git/commits/${input.expected_head_sha}`));
@@ -180,7 +180,7 @@ async function executeCommit({ input, record, store, call, token, policy }) {
     tree: tree.sha,
     parents: [input.expected_head_sha],
   });
-  await store.saveCommit(input.operation_id, commit.sha);
+  await store.saveCommit(input.operation_id, commit.sha, record.attempt);
   if (input.test_fail_after_commit) throw Object.assign(new Error("injected_after_commit"), { status: 503 });
 
   if (input.mode === "create") {
@@ -195,10 +195,10 @@ async function executeCommit({ input, record, store, call, token, policy }) {
       throw error;
     }
   }
-  return store.complete(input.operation_id, { commit_sha: commit.sha, tree_sha: tree.sha, branch: input.branch, recovered: false });
+  return store.complete(input.operation_id, { commit_sha: commit.sha, tree_sha: tree.sha, branch: input.branch, recovered: false }, record.attempt);
 }
 
-async function executePull({ input, store, call, token, policy }) {
+async function executePull({ input, record, store, call, token, policy }) {
   const repo = policy.repository;
   if (input.mode === "create") {
     const head = await refSha(call, token, repo, input.branch);
@@ -212,7 +212,7 @@ async function executePull({ input, store, call, token, policy }) {
         url: existing[0].html_url,
         head_sha: existing[0].head.sha,
         recovered: true,
-      });
+      }, record.attempt);
     }
     const created = await gh(call, token, "POST", ghPath(repo, "/pulls"), {
       title: input.title,
@@ -228,11 +228,16 @@ async function executePull({ input, store, call, token, policy }) {
       url: created.html_url,
       head_sha: created.head.sha,
       recovered: false,
-    });
+    }, record.attempt);
   }
 
   const current = await gh(call, token, "GET", ghPath(repo, `/pulls/${input.pull_number}`));
-  if (current.head.ref !== input.branch || current.base.ref !== input.base) {
+  if (
+    current.head.ref !== input.branch ||
+    current.base.ref !== input.base ||
+    current.head.repo?.full_name !== repo ||
+    current.base.repo?.full_name !== repo
+  ) {
     throw Object.assign(new Error("forbidden_pull"), { status: 403 });
   }
   if (current.head.sha !== input.expected_head_sha) {
@@ -247,7 +252,7 @@ async function executePull({ input, store, call, token, policy }) {
     url: updated.html_url,
     head_sha: updated.head.sha,
     recovered: false,
-  });
+  }, record.attempt);
 }
 
 export function createGithubAction({ store, githubFetch = fetch, token, policy = DEFAULT_POLICY }) {
@@ -273,7 +278,7 @@ export function createGithubAction({ store, githubFetch = fetch, token, policy =
           : await executePull({ input, record: started.record, store, call: githubFetch, token, policy });
         return json(200, { ...result, created: started.created });
       } catch (error) {
-        await store.release(input.operation_id);
+        await store.release(input.operation_id, started.record.attempt);
         throw error;
       }
     } catch (error) {
@@ -294,15 +299,27 @@ export class MemoryOperationStore {
       if (existing.status === "complete") return { created: false, record: existing };
       if (existing.leased) return { busy: true };
       existing.leased = true;
+      existing.attempt += 1;
       return { created: false, record: existing };
     }
-    const record = { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result: null, leased: true };
+    const record = { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result: null, leased: true, attempt: 1 };
     this.records.set(id, record);
     return { created: true, record };
   }
-  async saveCommit(id, sha) { this.records.get(id).commit_sha = sha; }
-  async complete(id, result) { const record = this.records.get(id); record.status = "complete"; record.result = result; return result; }
-  async release(id) { const record = this.records.get(id); if (record && record.status === "running") record.leased = false; }
+  async saveCommit(id, sha, attempt) {
+    const record = this.records.get(id);
+    if (!record || record.status !== "running" || record.attempt !== attempt) throw Object.assign(new Error("stale_operation_attempt"), { status: 409 });
+    record.commit_sha = sha;
+  }
+  async complete(id, result, attempt) {
+    const record = this.records.get(id);
+    if (!record || record.status !== "running" || record.attempt !== attempt) throw Object.assign(new Error("stale_operation_attempt"), { status: 409 });
+    record.status = "complete"; record.result = result; return result;
+  }
+  async release(id, attempt) {
+    const record = this.records.get(id);
+    if (record && record.status === "running" && record.attempt === attempt) record.leased = false;
+  }
 }
 
 export class D1OperationStore {
@@ -311,7 +328,7 @@ export class D1OperationStore {
     const inserted = await this.db.prepare(
       "INSERT OR IGNORE INTO github_operations(operation_id,payload_hash,status,lease_until,attempt) VALUES(?,?,'running',unixepoch()+30,1)",
     ).bind(id, hash).run();
-    const row = await this.db.prepare(
+    let row = await this.db.prepare(
       "SELECT operation_id,payload_hash,status,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
     ).bind(id).first();
     if (!row) throw new Error("operation_store_unavailable");
@@ -325,6 +342,9 @@ export class D1OperationStore {
         "UPDATE github_operations SET lease_until=unixepoch()+30,attempt=attempt+1,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND lease_until<=unixepoch()",
       ).bind(id).run();
       if (Number(claimed.meta?.changes || 0) !== 1) return { busy: true };
+      row = await this.db.prepare(
+        "SELECT operation_id,payload_hash,status,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
+      ).bind(id).first();
     }
     return {
       created,
@@ -334,15 +354,17 @@ export class D1OperationStore {
       },
     };
   }
-  async saveCommit(id, sha) {
-    await this.db.prepare("UPDATE github_operations SET commit_sha=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running'").bind(sha, id).run();
+  async saveCommit(id, sha, attempt) {
+    const result = await this.db.prepare("UPDATE github_operations SET commit_sha=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND attempt=?").bind(sha, id, attempt).run();
+    if (Number(result.meta?.changes || 0) !== 1) throw Object.assign(new Error("stale_operation_attempt"), { status: 409 });
   }
-  async complete(id, result) {
-    await this.db.prepare("UPDATE github_operations SET status='complete',result_json=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=?").bind(JSON.stringify(result), id).run();
+  async complete(id, result, attempt) {
+    const updated = await this.db.prepare("UPDATE github_operations SET status='complete',result_json=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND attempt=?").bind(JSON.stringify(result), id, attempt).run();
+    if (Number(updated.meta?.changes || 0) !== 1) throw Object.assign(new Error("stale_operation_attempt"), { status: 409 });
     return result;
   }
-  async release(id) {
-    await this.db.prepare("UPDATE github_operations SET lease_until=0,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running'").bind(id).run();
+  async release(id, attempt) {
+    await this.db.prepare("UPDATE github_operations SET lease_until=0,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND attempt=?").bind(id, attempt).run();
   }
 }
 

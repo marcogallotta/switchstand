@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createGithubAction, MemoryOperationStore } from "./github-action.mjs";
+import { createGithubAction, D1OperationStore, MemoryOperationStore } from "./github-action.mjs";
 
 const expected = "1".repeat(40);
 const commit = "2".repeat(40);
@@ -10,7 +10,7 @@ const blob = "4".repeat(40);
 function request(overrides = {}) {
   const body = {
     operation_id: "op-github-0001",
-    repository: "marcogallotta/switchstand",
+    repository: "marcogallotta/gpt-actions-github-fixture",
     branch: "agent/gpt-actions-github-proof",
     expected_head_sha: expected,
     mode: "create",
@@ -51,7 +51,7 @@ function pullRequest(overrides = {}) {
     method: "POST",
     body: JSON.stringify({
       operation_id: "op-pull-000001",
-      repository: "marcogallotta/switchstand",
+      repository: "marcogallotta/gpt-actions-github-fixture",
       branch: "agent/gpt-actions-github-proof",
       base: "main",
       expected_head_sha: commit,
@@ -74,7 +74,12 @@ function fakePullGithub() {
     if (init.method === "GET" && path.includes("/git/ref/heads/")) return Response.json({ object: { sha: commit } });
     if (init.method === "GET" && path.includes("/pulls?")) return Response.json(pull ? [pull] : []);
     if (init.method === "POST" && path.endsWith("/pulls")) {
-      pull = { number: 7, html_url: "https://github.com/marcogallotta/switchstand/pull/7", head: { ref: bodyValue.head, sha: commit }, base: { ref: bodyValue.base } };
+      pull = {
+        number: 7,
+        html_url: "https://github.com/marcogallotta/gpt-actions-github-fixture/pull/7",
+        head: { ref: bodyValue.head, sha: commit, repo: { full_name: "marcogallotta/gpt-actions-github-fixture" } },
+        base: { ref: bodyValue.base, repo: { full_name: "marcogallotta/gpt-actions-github-fixture" } },
+      };
       return Response.json(pull);
     }
     if (init.method === "GET" && path.endsWith("/pulls/7")) return Response.json(pull);
@@ -143,7 +148,7 @@ test("rejects forbidden repository, branch, path, and changed retry", async () =
   const gh = fakeGithub();
   const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
   for (const [change, error] of [
-    [{ repository: "marcogallotta/ai-tools" }, "forbidden_repository"],
+    [{ repository: "marcogallotta/switchstand" }, "forbidden_repository"],
     [{ branch: "main" }, "forbidden_branch"],
     [{ files: [{ path: "README.md", content_base64: "YQ==" }] }, "forbidden_path"],
   ]) {
@@ -254,4 +259,62 @@ test("updates only an allowlisted PR at the fenced head", async () => {
   }));
   assert.equal(updated.status, 200);
   assert.equal(gh.getPull().title, "Updated bounded proof");
+});
+
+test("rejects a matching branch name when the PR head comes from a fork", async () => {
+  const store = new MemoryOperationStore();
+  const gh = fakePullGithub();
+  const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
+  assert.equal((await action(pullRequest())).status, 200);
+  gh.getPull().head.repo.full_name = "outsider/fork";
+  const response = await action(pullRequest({ operation_id: "op-pull-fork-01", mode: "update", pull_number: 7 }));
+  assert.equal(response.status, 403);
+  assert.equal((await body(response)).error, "forbidden_pull");
+});
+
+class FakeD1 {
+  constructor() { this.rows = new Map(); this.now = 1000; }
+  prepare(sql) {
+    return { bind: (...args) => ({ run: () => this.run(sql, args), first: () => this.first(sql, args) }) };
+  }
+  async first(sql, [id]) { return sql.startsWith("SELECT") ? structuredClone(this.rows.get(id) || null) : null; }
+  async run(sql, args) {
+    let changes = 0;
+    if (sql.startsWith("INSERT OR IGNORE")) {
+      const [id, hash] = args;
+      if (!this.rows.has(id)) {
+        this.rows.set(id, { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result_json: null, lease_until: this.now + 30, attempt: 1 });
+        changes = 1;
+      }
+    } else if (sql.includes("attempt=attempt+1")) {
+      const row = this.rows.get(args[0]);
+      if (row?.status === "running" && row.lease_until <= this.now) { row.attempt += 1; row.lease_until = this.now + 30; changes = 1; }
+    } else if (sql.startsWith("UPDATE github_operations SET commit_sha")) {
+      const [sha, id, attempt] = args; const row = this.rows.get(id);
+      if (row?.status === "running" && row.attempt === attempt) { row.commit_sha = sha; changes = 1; }
+    } else if (sql.startsWith("UPDATE github_operations SET status='complete'")) {
+      const [result, id, attempt] = args; const row = this.rows.get(id);
+      if (row?.status === "running" && row.attempt === attempt) { row.status = "complete"; row.result_json = result; changes = 1; }
+    } else if (sql.startsWith("UPDATE github_operations SET lease_until=0")) {
+      const [id, attempt] = args; const row = this.rows.get(id);
+      if (row?.status === "running" && row.attempt === attempt) { row.lease_until = 0; changes = 1; }
+    }
+    return { meta: { changes } };
+  }
+}
+
+test("D1 reclaim fences every stale writer mutation", async () => {
+  const db = new FakeD1();
+  const store = new D1OperationStore(db);
+  const first = await store.begin("op-d1-fence-001", "a".repeat(64));
+  assert.equal(first.record.attempt, 1);
+  db.now += 31;
+  const second = await store.begin("op-d1-fence-001", "a".repeat(64));
+  assert.equal(second.record.attempt, 2);
+  await assert.rejects(store.saveCommit("op-d1-fence-001", "1".repeat(40), 1), /stale_operation_attempt/);
+  await store.release("op-d1-fence-001", 1);
+  assert.equal(db.rows.get("op-d1-fence-001").lease_until, db.now + 30);
+  await store.saveCommit("op-d1-fence-001", "2".repeat(40), 2);
+  await store.complete("op-d1-fence-001", { ok: true }, 2);
+  assert.equal(db.rows.get("op-d1-fence-001").status, "complete");
 });

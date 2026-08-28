@@ -55,7 +55,7 @@ components:
       required: [operation_id, repository, branch, expected_head_sha, mode, message, files]
       properties:
         operation_id: { type: string, minLength: 8, maxLength: 80 }
-        repository: { type: string, enum: [marcogallotta/switchstand] }
+        repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
         branch: { type: string, pattern: '^agent/gpt-actions-github-' }
         expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }
         mode: { type: string, enum: [create, update] }
@@ -72,7 +72,7 @@ components:
       required: [operation_id, repository, branch, base, expected_head_sha, mode, title, body]
       properties:
         operation_id: { type: string, minLength: 8, maxLength: 80 }
-        repository: { type: string, enum: [marcogallotta/switchstand] }
+        repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
         branch: { type: string, pattern: '^agent/gpt-actions-github-' }
         base: { type: string, enum: [main] }
         expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }

@@ -2,7 +2,8 @@
 
 This isolated prototype implements the only GitHub mutation route admitted for the first experiment:
 
-- fixed repository: `marcogallotta/switchstand`;
+- implementation home: `marcogallotta/switchstand`;
+- fixed mutation target: `marcogallotta/gpt-actions-github-fixture`;
 - fixed branch prefix: `agent/gpt-actions-github-`;
 - fixed path prefix: `experiments/gpt-actions-github/`;
 - blobs → tree → commit → non-force ref creation/update;
