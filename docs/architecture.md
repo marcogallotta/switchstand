@@ -126,6 +126,11 @@ snapshot is authoritative; the event log is inspectable transition history, not 
 This ordering can leave a snapshot transition without its diagnostic event after a crash, but
 never makes the JSONL log more authoritative than the snapshot.
 
+On the currently verified Ubuntu/POSIX boundary, the legacy snapshot and event are current-user
+regular files normalized to mode `0600` and opened without following their final path component.
+Persistence orders snapshot-file fsync, atomic replace, parent-directory fsync, then event append
+and fsync; failure of the directory barrier stops before the event is opened.
+
 ## Key invariants
 
 - Each role's message sequence is increasing and dispatch is FIFO.

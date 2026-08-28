@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import stat
+import subprocess
+import sys
 import tempfile
 from typing import cast
 import unittest
+from unittest.mock import patch
 
 from switchstand.engine import CodexAdapter, Engine, _message_marker, _submitted_message_text
+
+
+CHILD_ENGINE = """
+import sys
+from pathlib import Path
+from switchstand.engine import Engine
+try:
+    engine = Engine(Path(sys.argv[1]), object())
+    if sys.argv[2] == "event":
+        engine.enqueue("role-a", "must not reach the event object")
+except Exception as exc:
+    print(f"{type(exc).__name__}:{exc}")
+else:
+    raise SystemExit("unsafe persistence object was accepted")
+"""
 
 
 class FakeAdapter:
@@ -143,6 +163,169 @@ class EngineTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def run_engine_child(self, state_path: Path, operation: str) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+        return subprocess.run(
+            [sys.executable, "-c", CHILD_ENGINE, str(state_path), operation],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=3,
+        )
+
+    def test_persistence_fsync_order_and_directory_failure_barrier(self):
+        state_path = self.root / "ordered" / "state.json"
+        calls: list[str] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def audited_fsync(fd):
+            calls.append("directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync")
+            return real_fsync(fd)
+
+        def audited_replace(source, destination):
+            calls.append("replace")
+            return real_replace(source, destination)
+
+        with patch("switchstand.engine.os.fsync", side_effect=audited_fsync), patch(
+            "switchstand.engine.os.replace", side_effect=audited_replace
+        ):
+            Engine(state_path, FakeAdapter())
+        self.assertEqual(calls[:4], ["file_fsync", "replace", "directory_fsync", "file_fsync"])
+
+        blocked_state = self.root / "blocked" / "state.json"
+
+        def fail_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("injected directory fsync failure")
+            return real_fsync(fd)
+
+        with patch("switchstand.engine.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaisesRegex(OSError, "injected directory fsync failure"):
+                Engine(blocked_state, FakeAdapter())
+        self.assertTrue(blocked_state.is_file())
+        self.assertFalse(blocked_state.with_suffix(".jsonl").exists())
+
+    def test_persistence_creation_and_existing_files_are_exactly_private(self):
+        state_path = self.root / "state.json"
+        previous_umask = os.umask(0)
+        try:
+            Engine(state_path, FakeAdapter())
+        finally:
+            os.umask(previous_umask)
+        event_path = state_path.with_suffix(".jsonl")
+        self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(event_path.stat().st_mode), 0o600)
+
+        state_bytes, event_bytes = state_path.read_bytes(), event_path.read_bytes()
+        state_path.chmod(0o644)
+        event_path.chmod(0o666)
+        restarted = Engine(state_path, FakeAdapter())
+        self.assertEqual(state_path.read_bytes(), state_bytes)
+        self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+        restarted.enqueue("role-a", "normalize the existing event")
+        self.assertTrue(event_path.read_bytes().startswith(event_bytes))
+        self.assertEqual(stat.S_IMODE(event_path.stat().st_mode), 0o600)
+
+    def test_state_symlink_is_rejected_without_reading_or_changing_target(self):
+        seed_path = self.root / "seed.json"
+        Engine(seed_path, FakeAdapter())
+        sentinel = self.root / "sentinel.json"
+        sentinel.write_bytes(seed_path.read_bytes())
+        sentinel.chmod(0o644)
+        state_path = self.root / "state.json"
+        state_path.symlink_to(sentinel)
+        before = sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)
+        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+            Engine(state_path, FakeAdapter())
+        self.assertEqual((sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)), before)
+
+    def test_event_symlink_is_rejected_without_writing_or_changing_target(self):
+        state_path = self.root / "state.json"
+        engine = Engine(state_path, FakeAdapter())
+        engine.events_path.unlink()
+        sentinel = self.root / "sentinel.jsonl"
+        sentinel.write_bytes(b"sentinel\n")
+        sentinel.chmod(0o644)
+        engine.events_path.symlink_to(sentinel)
+        before = sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)
+        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+            engine.enqueue("role-a", "must not reach the symlink target")
+        self.assertEqual((sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)), before)
+
+    def test_state_and_event_directories_are_rejected_without_content_changes(self):
+        state_path = self.root / "state.json"
+        state_path.mkdir()
+        state_marker = state_path / "marker"
+        state_marker.write_text("state-directory", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+            Engine(state_path, FakeAdapter())
+        self.assertEqual(state_marker.read_text(encoding="utf-8"), "state-directory")
+
+        event_state = self.root / "event-state.json"
+        engine = Engine(event_state, FakeAdapter())
+        engine.events_path.unlink()
+        engine.events_path.mkdir()
+        event_marker = engine.events_path / "marker"
+        event_marker.write_text("event-directory", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+            engine.enqueue("role-a", "must not reach the event directory")
+        self.assertEqual(event_marker.read_text(encoding="utf-8"), "event-directory")
+
+    def test_state_and_event_fifos_fail_bounded_without_stream_io(self):
+        state_fifo = self.root / "state.json"
+        os.mkfifo(state_fifo, 0o600)
+        state_reader = os.open(state_fifo, os.O_RDONLY | os.O_NONBLOCK)
+        state_writer = os.open(state_fifo, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(state_writer, b"private-stream-content")
+            result = self.run_engine_child(state_fifo, "state")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "RuntimeError:Switchstand persistence path is unsafe")
+            self.assertEqual(os.read(state_reader, 4096), b"private-stream-content")
+        finally:
+            os.close(state_writer)
+            os.close(state_reader)
+
+        event_state = self.root / "event-state.json"
+        engine = Engine(event_state, FakeAdapter())
+        engine.events_path.unlink()
+        os.mkfifo(engine.events_path, 0o600)
+        event_reader = os.open(engine.events_path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            result = self.run_engine_child(event_state, "event")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "RuntimeError:Switchstand persistence path is unsafe")
+            self.assertEqual(os.read(event_reader, 4096), b"")
+        finally:
+            os.close(event_reader)
+
+    def test_wrong_owner_logic_rejects_state_and_event_before_touching_them(self):
+        state_path = self.root / "state.json"
+        engine = Engine(state_path, FakeAdapter())
+        event_path = engine.events_path
+        state_path.chmod(0o644)
+        event_path.chmod(0o666)
+        state_before = state_path.read_bytes(), stat.S_IMODE(state_path.stat().st_mode)
+        with patch("switchstand.engine.os.geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+                Engine(state_path, FakeAdapter())
+        self.assertEqual((state_path.read_bytes(), stat.S_IMODE(state_path.stat().st_mode)), state_before)
+
+        event_before = event_path.read_bytes(), stat.S_IMODE(event_path.stat().st_mode)
+        with patch("switchstand.engine.os.geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+                engine.enqueue("role-a", "must not reach the wrong-owner event")
+        self.assertEqual((event_path.read_bytes(), stat.S_IMODE(event_path.stat().st_mode)), event_before)
+
+    def test_missing_required_posix_primitive_fails_before_mutation(self):
+        state_path = self.root / "missing" / "state.json"
+        with patch("switchstand.engine.os.O_NOFOLLOW", None):
+            with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+                Engine(state_path, FakeAdapter())
+        self.assertFalse(state_path.parent.exists())
 
     def test_checkpoint_order_fencing_and_restart_restoration(self):
         adapter = FakeAdapter()
