@@ -104,7 +104,11 @@ class NativeWorkbenchTests(unittest.TestCase):
             self.workbench.stop_status("operation-1"),
         )
 
-        self.assertEqual(results[0], board_snapshot())
+        self.assertEqual(
+            {key: results[0][key] for key in board_snapshot()},
+            board_snapshot(),
+        )
+        self.assertTrue(results[0]["evidence"]["available"])
         selection = results[1]["selection"]
         self.assertIsNotNone(selection)
         assert selection is not None
@@ -115,6 +119,50 @@ class NativeWorkbenchTests(unittest.TestCase):
         ])
         self.assertEqual(self.ports.calls[1], ("selection", "agent-1", 12.25, 4.5))
         self.assertIs(self.ports.calls[2][1], input_request)
+
+    def test_evidence_failure_never_blocks_product_action_or_false_greens(self):
+        class BrokenEvidence:
+            def record(self, *args, **kwargs):
+                raise RuntimeError("PRIVATE RECORDER FAILURE")
+
+            def observe_board(self, _board):
+                raise RuntimeError("PRIVATE RECORDER FAILURE")
+
+            def snapshot(self):
+                raise RuntimeError("PRIVATE RECORDER FAILURE")
+
+            def record_browser_event(self, _event):
+                raise RuntimeError("PRIVATE RECORDER FAILURE")
+
+        workbench = NativeWorkbench(
+            self.ports,
+            self.ports,
+            self.ports,
+            self.ports,
+            maximum_observation_age_seconds=4.5,
+            evidence=BrokenEvidence(),  # type: ignore[arg-type]
+        )
+        secret_request = {
+            "version": "native-input-v1",
+            "observationRunRef": "PRIVATE-RUN",
+            "agentRef": "PRIVATE-AGENT",
+            "text": "PRIVATE DRAFT",
+        }
+        self.assertEqual(
+            workbench.send_input(secret_request),
+            {"code": "input_sent", "outcome": "sent", "mode": "steer"},
+        )
+        summary = workbench.workbench()["evidence"]
+        self.assertFalse(summary["available"])
+        self.assertEqual(summary["recentEvents"], [])
+        self.assertNotIn("PRIVATE", repr(summary))
+        self.assertEqual(
+            workbench.record_browser_evidence({
+                "version": "native-evidence-v1",
+                "event": "focus_preservation_failed",
+            }),
+            {"code": "evidence_unavailable", "outcome": "not_recorded"},
+        )
 
     def test_constructor_rejects_only_invalid_freshness_configuration(self):
         for value in (True, -1, float("nan"), float("inf")):
