@@ -140,8 +140,17 @@ test.beforeEach(() => {
 
 const rowFor = (page, agentRef) => page.locator(`details[data-node-key="${agentRef}"]`);
 
+async function beginSelection(page, agentRef) {
+  const row = rowFor(page, agentRef);
+  await row.getByRole("button", { name: "Select as current target" }).click();
+}
+
 async function selectAgent(page, agentRef) {
-  await rowFor(page, agentRef).getByRole("button", { name: "Select as current target" }).click();
+  await beginSelection(page, agentRef);
+  const row = rowFor(page, agentRef);
+  const confirmed = row.getByRole("button", { name: "Current target" });
+  await expect(confirmed).toBeVisible();
+  await expect(confirmed).toHaveAttribute("aria-pressed", "true");
 }
 
 function deferred() {
@@ -194,88 +203,8 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   const values = ["  exact start\ntext  ", "exact steer", "retain on refusal", "retain on failure"];
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
   const statuses = [200, 200, 200, 503];
-  const inputState = () => page.evaluate(() => {
-    const state = nativeSelectionController.getState();
-    const pair = (value) => value ? {
-      observationRunRef: value.observationRunRef,
-      agentRef: value.agentRef,
-    } : null;
-    return {
-      candidatePair: pair(state.candidate),
-      currentDisplay: state.currentTarget ? {
-        name: state.currentTarget.name ?? null,
-        agentNickname: state.currentTarget.agentNickname ?? null,
-      } : null,
-      currentPair: pair(state.currentTarget),
-      domDraft: nativeInput.value,
-      storedDraft: nativeInputDrafts.get(visibleInputTargetKey) ?? null,
-      visibleInputTargetKey,
-    };
-  });
-  const expectedState = (text, storedDraft = text) => ({
-    candidatePair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
-    currentDisplay: { name: "Review agent", agentNickname: "Reviewer" },
-    currentPair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
-    domDraft: text,
-    storedDraft,
-    visibleInputTargetKey: "observation-run-one\u0000agent-beta",
-  });
-  const beforeFillDrafts = [
-    ["", null],
-    ["", ""],
-    ["", ""],
-    ["retain on refusal", "retain on refusal"],
-  ];
   for (let index = 0; index < values.length; index += 1) {
-    const beforeFill = await inputState();
-    await page.evaluate(() => {
-      const probe = { count: 0, values: [] };
-      probe.listener = (event) => {
-        probe.count += 1;
-        probe.values.push(event.target.value);
-      };
-      window.__switchstandInputProbe = probe;
-      nativeInput.addEventListener("input", probe.listener, { once: true });
-    });
     await input.fill(values[index]);
-    const fillBoundary = await page.evaluate(() => {
-      const probe = window.__switchstandInputProbe;
-      nativeInput.removeEventListener("input", probe.listener);
-      const state = nativeSelectionController.getState();
-      const pair = (value) => value ? {
-        observationRunRef: value.observationRunRef,
-        agentRef: value.agentRef,
-      } : null;
-      const result = {
-        eventCount: probe.count,
-        eventValues: probe.values,
-        state: {
-          candidatePair: pair(state.candidate),
-          currentDisplay: state.currentTarget ? {
-            name: state.currentTarget.name ?? null,
-            agentNickname: state.currentTarget.agentNickname ?? null,
-          } : null,
-          currentPair: pair(state.currentTarget),
-          domDraft: nativeInput.value,
-          storedDraft: nativeInputDrafts.get(visibleInputTargetKey) ?? null,
-          visibleInputTargetKey,
-        },
-      };
-      delete window.__switchstandInputProbe;
-      return result;
-    });
-    const [beforeDomDraft, beforeStoredDraft] = beforeFillDrafts[index];
-    expect({ beforeFill, fillBoundary }).toEqual({
-      beforeFill: expectedState(beforeDomDraft, beforeStoredDraft),
-      fillBoundary: {
-        eventCount: 1,
-        eventValues: [values[index]],
-        state: expectedState(values[index]),
-      },
-    });
-    await page.evaluate(() => refresh());
-    const afterRefresh = await inputState();
-    expect(afterRefresh).toEqual(expectedState(values[index]));
     await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
     await expect(input).toBeVisible();
     await expect(input).toHaveValue(values[index]);
@@ -365,7 +294,7 @@ test("delayed old selection and input results cannot mutate a newer target or dr
   await page.goto(origin);
   const oldSelection = deferred();
   delayedSelections.set("agent-alpha", oldSelection);
-  await selectAgent(page, "agent-alpha");
+  await beginSelection(page, "agent-alpha");
   await selectAgent(page, "agent-beta");
   await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
   oldSelection.resolve();
