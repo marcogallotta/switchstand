@@ -12,6 +12,8 @@ from .native_contracts import (
     NativeEvidenceEventKind,
     NativeEvidenceOutcome,
     NativeEvidenceSummary,
+    NativeStatusCounts,
+    NativeTurnStatusCounts,
 )
 
 _MAX_COUNTER = 2_147_483_647
@@ -86,10 +88,10 @@ class NativeEvidence:
         self._observation_connected: bool | None = None
         self._pass_age_seconds: float | None = None
         self._agent_count = 0
-        self._status_counts = {
+        self._status_counts: NativeStatusCounts = {
             "active": 0, "idle": 0, "systemError": 0, "notLoaded": 0,
         }
-        self._turn_status_counts = {
+        self._turn_status_counts: NativeTurnStatusCounts = {
             "unknown": 0, "none": 0, "inProgress": 0,
             "completed": 0, "failed": 0, "interrupted": 0,
         }
@@ -123,9 +125,10 @@ class NativeEvidence:
         now = self._now()
         key = (kind, outcome)
         if (
-            self._last_event_key == key
+            kind in {"observation", "focus_invariant", "refresh", "stop_cancel"}
+            and self._last_event_key == key
             and self._last_event_at is not None
-            and now - self._last_event_at <= self._duplicate_window_seconds
+            and 0 <= now - self._last_event_at <= self._duplicate_window_seconds
         ):
             self._duplicate_count = _increment(self._duplicate_count)
             if kind == "refresh":
@@ -162,8 +165,13 @@ class NativeEvidence:
         self._observation_connected = connected
         self._pass_age_seconds = pass_age
 
-        statuses = {key: 0 for key in self._status_counts}
-        turn_statuses = {key: 0 for key in self._turn_status_counts}
+        statuses: NativeStatusCounts = {
+            "active": 0, "idle": 0, "systemError": 0, "notLoaded": 0,
+        }
+        turn_statuses: NativeTurnStatusCounts = {
+            "unknown": 0, "none": 0, "inProgress": 0,
+            "completed": 0, "failed": 0, "interrupted": 0,
+        }
         ages: list[float] = []
         for agent in board["agents"]:
             statuses[agent["status"]] += 1
@@ -199,10 +207,10 @@ class NativeEvidence:
             "observationConnected": self._observation_connected,
             "passAgeSeconds": self._pass_age_seconds,
             "agentCount": self._agent_count,
-            "statusCounts": dict(self._status_counts),
-            "turnStatusCounts": dict(self._turn_status_counts),
+            "statusCounts": self._status_counts.copy(),
+            "turnStatusCounts": self._turn_status_counts.copy(),
             "lastObservedActivityAgeSeconds": self._last_observed_activity_age_seconds,
-            "recentEvents": [dict(event) for event in self._events],
+            "recentEvents": [event.copy() for event in self._events],
             "disclosure": (
                 "Bounded process-local objective evidence only; restart clears it. "
                 "No text, identifiers, paths, raw errors, screenshots, or inferred intent."
