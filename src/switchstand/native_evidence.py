@@ -226,21 +226,10 @@ class NativeEvidence:
 
 def unavailable_evidence_summary() -> NativeEvidenceSummary:
     """Return the fixed fail-closed summary used after recorder failure."""
-    return {
-        "available": False,
-        "storage": "bounded_process_memory",
-        "capacity": 0,
-        "retainedCount": 0,
-        "droppedCount": 0,
-        "duplicateCount": 0,
-        "refreshCount": 0,
-        "coalescedRefreshCount": 0,
-        "observationConnected": None,
-        "passAgeSeconds": None,
-        "agentCount": 0,
-        "statusCounts": _empty_status_counts(),
-        "turnStatusCounts": _empty_turn_status_counts(),
-        "lastObservedActivityAgeSeconds": None,
-        "recentEvents": [],
-        "disclosure": "Evidence recording is unavailable; no positive evidence claim is made.",
-    }
+    summary = NativeEvidence(capacity=1).snapshot()
+    summary["available"] = False
+    summary["capacity"] = 0
+    summary["disclosure"] = (
+        "Evidence recording is unavailable; no positive evidence claim is made."
+    )
+    return summary
