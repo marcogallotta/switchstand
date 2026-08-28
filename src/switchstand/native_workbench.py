@@ -9,6 +9,8 @@ from .native_contracts import (
     NativeBoardSnapshotPort,
     NativeBrowserSelectionPort,
     NativeBrowserSelectionResult,
+    NativeEvidenceEventKind,
+    NativeEvidenceOutcome,
     NativeEvidenceRequest,
     NativeEvidenceResult,
     NativeInputPort,
@@ -70,11 +72,17 @@ class NativeWorkbench:
         except Exception:
             return None
 
-    def _record(self, kind: object, outcome: object, *, started: float | None = None) -> None:
+    def _record(
+        self,
+        kind: NativeEvidenceEventKind,
+        outcome: NativeEvidenceOutcome,
+        *,
+        started: float | None = None,
+    ) -> None:
         if self._evidence_failed:
             return
         try:
-            self._evidence.record(  # type: ignore[arg-type]
+            self._evidence.record(
                 kind,
                 outcome,
                 duration_ms=self._duration_ms(started),
@@ -112,6 +120,7 @@ class NativeWorkbench:
             self._record("selection", "unavailable", started=started)
             raise
         snapshot = result["snapshot"]
+        outcome: NativeEvidenceOutcome
         if "code" not in snapshot:
             outcome = "selected"
         else:
@@ -131,11 +140,12 @@ class NativeWorkbench:
         except Exception:
             self._record("input", "unavailable", started=started)
             raise
-        outcome = (
-            f"sent_{result['mode']}"
-            if result["code"] == "input_sent"
-            else "not_sent"
-        )
+        if result["code"] == "input_sent":
+            outcome: NativeEvidenceOutcome = (
+                "sent_start" if result["mode"] == "start" else "sent_steer"
+            )
+        else:
+            outcome = "not_sent"
         self._record("input", outcome, started=started)
         return result
 
@@ -146,7 +156,7 @@ class NativeWorkbench:
         except Exception:
             self._record("stop_prepare", "unavailable", started=started)
             raise
-        outcome = {
+        outcome: NativeEvidenceOutcome = {
             "prepared": "prepared",
             "target_unavailable": "not_sent_target_unavailable",
             "stop_capacity": "not_sent_capacity",
@@ -161,7 +171,7 @@ class NativeWorkbench:
         except Exception:
             self._record("stop_commit", "unavailable", started=started)
             raise
-        outcome = (
+        outcome: NativeEvidenceOutcome = (
             "not_sent_confirmation_unavailable"
             if result["code"] == "confirmation_unavailable"
             else result["outcome"]
@@ -176,7 +186,7 @@ class NativeWorkbench:
         except Exception:
             self._record("stop_status", "unavailable", started=started)
             raise
-        outcome = (
+        outcome: NativeEvidenceOutcome = (
             "not_sent_operation_unavailable"
             if result["code"] == "operation_unavailable"
             else result["outcome"]
