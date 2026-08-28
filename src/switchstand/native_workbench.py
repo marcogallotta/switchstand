@@ -168,32 +168,33 @@ class NativeWorkbench:
             self._stop_prepare_outcome,
         )
 
-    @staticmethod
-    def _stop_result_outcome(
-        result: NativeStopCommitResult | NativeStopStatusResult,
+    def _stop_operation(
+        self,
+        kind: NativeEvidenceEventKind,
+        operation: Callable[[], T],
         unavailable_code: str,
         unavailable_outcome: NativeEvidenceOutcome,
-    ) -> NativeEvidenceOutcome:
-        if result["code"] == unavailable_code:
-            return unavailable_outcome
-        return cast(NativeEvidenceOutcome, result["outcome"])
+    ) -> T:
+        def outcome_for(result: NativeStopCommitResult | NativeStopStatusResult) -> NativeEvidenceOutcome:
+            if result["code"] == unavailable_code:
+                return unavailable_outcome
+            return cast(NativeEvidenceOutcome, result["outcome"])
+
+        return self._observed_call(kind, operation, outcome_for)
 
     def commit_stop(self, confirmation_ref: object) -> NativeStopCommitResult:
-        return self._observed_call(
-            "stop_commit",
-            lambda: self._stop.commit_stop(confirmation_ref),
-            lambda result: self._stop_result_outcome(
-                result, "confirmation_unavailable", "not_sent_confirmation_unavailable"
-            ),
+        operation = lambda: self._stop.commit_stop(confirmation_ref)
+        return self._stop_operation(
+            "stop_commit", operation,
+            "confirmation_unavailable", "not_sent_confirmation_unavailable",
         )
 
     def stop_status(self, operation_ref: object) -> NativeStopStatusResult:
-        return self._observed_call(
+        return self._stop_operation(
             "stop_status",
             lambda: self._stop.stop_status(operation_ref),
-            lambda result: self._stop_result_outcome(
-                result, "operation_unavailable", "not_sent_operation_unavailable"
-            ),
+            "operation_unavailable",
+            "not_sent_operation_unavailable",
         )
 
     def record_browser_evidence(self, request: NativeEvidenceRequest) -> NativeEvidenceResult:
