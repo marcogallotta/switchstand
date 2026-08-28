@@ -106,8 +106,9 @@ duplicate headers, and one bounded raw body; it does not independently parse or 
 JSON. Exact input is one start-or-steer attempt with no retry, fallback, or retargeting.
 
 The socket must already be provided by a Codex app-server daemon. The service does not launch,
-authenticate, or supervise that daemon. Native startup rejects non-loopback binding. Bind to the
-default `127.0.0.1`; the prototype is not designed for network exposure. The native boundary
+authenticate, or supervise that daemon. Startup in either mode rejects non-loopback binding
+before constructing a runtime or server. Bind to the default `127.0.0.1`; the prototype is not
+designed for network exposure. The native boundary
 rejects simple/cross-origin requests and permissive CORS but does not authenticate same-user
 local processes or browser automation.
 

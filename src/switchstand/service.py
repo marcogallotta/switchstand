@@ -297,10 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--app-server-socket or SWITCHSTAND_APP_SERVER_SOCKET is required")
     if not args.static_root.is_dir():
         parser.error(f"static files are missing at {args.static_root}")
+    if not _loopback(args.host):
+        parser.error("Switchstand requires a loopback --host")
 
     if args.native_root_thread_id:
-        if not _loopback(args.host):
-            parser.error("native mode requires a loopback --host")
         runtime, native_dispatcher = build_native_runtime(
             args.app_server_socket,
             args.native_root_thread_id,
