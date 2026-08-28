@@ -181,6 +181,7 @@ test("enforces exact request shape, exact branch, and UTF-8 text", async () => {
     [{ operation_id: "bad id" }, "invalid_operation_id", 400],
     [{ branch: "agent/gpt-actions-github-proof" }, "forbidden_branch", 403],
     [{ message: " padded" }, "invalid_message", 400],
+    [{ test_fail_after_commit: "yes" }, "invalid_request", 400],
     [{ files: [{ path: "experiments/gpt-actions-github/sp ace.txt", content_base64: "YQ==" }] }, "invalid_path", 400],
     [{ files: [{ path: "experiments/gpt-actions-github/bad.txt", content_base64: "/w==" }] }, "invalid_utf8", 400],
   ]) {
@@ -277,6 +278,15 @@ test("creates a draft PR and makes exact retries idempotent", async () => {
   assert.equal(gh.calls.length, count);
 });
 
+test("PR create defaults draft to true and counts Unicode code points", async () => {
+  const gh = fakePullGithub();
+  const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+  const response = await action(pullRequest({ draft: undefined, title: "😀".repeat(120) }));
+  assert.equal(response.status, 200);
+  const create = gh.calls.find((call) => call.method === "POST" && call.path.endsWith("/pulls"));
+  assert.equal(create.body.draft, true);
+});
+
 test("PR policy rejects forbidden base and stale head", async () => {
   const store = new MemoryOperationStore();
   const gh = fakePullGithub();
@@ -293,6 +303,8 @@ test("PR validation requires exact text and a pull number for updates", async ()
   for (const [change, error] of [
     [{ operation_id: "bad id" }, "invalid_operation_id"],
     [{ title: " padded" }, "invalid_title"],
+    [{ draft: "yes" }, "invalid_request"],
+    [{ test_fail_after_mutation: 1 }, "invalid_request"],
     [{ mode: "update" }, "invalid_pull_number"],
   ]) {
     const gh = fakePullGithub();
@@ -310,6 +322,8 @@ test("OpenAPI exposes only runtime routes and mirrors generated-call constraints
   assert.match(schema, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{7,79\}\$/);
   assert.match(schema, /gpt-actions-controlled-github-feasibility/);
   assert.match(schema, /maxItems: 5/);
+  assert.match(schema, /x-decodedAggregateMaxBytes: 16384/);
+  assert.match(schema, /x-bodyMaxBytes: 32768/);
   assert.match(schema, /contentEncoding: base64/);
   assert.match(schema, /const: update/);
   assert.match(schema, /required: \[pull_number\]/);
@@ -326,6 +340,21 @@ test("recovers a PR create after the mutation response is lost", async () => {
   assert.equal(recovered.status, 200);
   assert.equal((await body(recovered)).recovered, true);
   assert.equal(gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls")).length, 1);
+});
+
+test("PR create recovery rejects a fork or unexpected head SHA", async () => {
+  const gh = fakePullGithub();
+  const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+  assert.equal((await action(pullRequest())).status, 200);
+  gh.getPull().head.repo.full_name = "outsider/fork";
+  const fork = await action(pullRequest({ operation_id: "op-pull-recover-fork" }));
+  assert.equal(fork.status, 403);
+  assert.equal((await body(fork)).error, "forbidden_pull");
+  gh.getPull().head.repo.full_name = "marcogallotta/gpt-actions-github-fixture";
+  gh.getPull().head.sha = "9".repeat(40);
+  const stale = await action(pullRequest({ operation_id: "op-pull-recover-stale" }));
+  assert.equal(stale.status, 409);
+  assert.equal((await body(stale)).error, "stale_head");
 });
 
 test("updates only an allowlisted PR at the fenced head", async () => {

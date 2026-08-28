@@ -1,6 +1,6 @@
 const OP_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
-const PATH_RE = /^experiments\/gpt-actions-github\/[A-Za-z0-9._/-]+$/;
+const PATH_RE = /^experiments\/gpt-actions-github\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$/;
 const ONE_LINE_RE = /^\S(?:[^\r\n]*\S)?$/;
 
 export const DEFAULT_POLICY = Object.freeze({
@@ -43,6 +43,10 @@ async function digest(value) {
 
 function byteLength(value) {
   return new TextEncoder().encode(value).length;
+}
+
+function codePointLength(value) {
+  return [...value].length;
 }
 
 function exactKeys(value, allowed, required) {
@@ -99,7 +103,8 @@ function validateCommit(input, policy, bodyBytes) {
     throw Object.assign(new Error("content_too_large"), { status: 413 });
   }
   const message = typeof input.message === "string" ? input.message : "";
-  if (!ONE_LINE_RE.test(message) || message.length > 160) throw Object.assign(new Error("invalid_message"), { status: 400 });
+  if (!ONE_LINE_RE.test(message) || codePointLength(message) > 160) throw Object.assign(new Error("invalid_message"), { status: 400 });
+  if (input.test_fail_after_commit !== undefined && typeof input.test_fail_after_commit !== "boolean") invalid("invalid_request");
   if (input.test_fail_after_commit && !policy.allowFaultInjection) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
@@ -120,16 +125,30 @@ function validatePull(input, policy, bodyBytes) {
   if (input.mode === "update" && (!Number.isInteger(input.pull_number) || input.pull_number < 1)) {
     throw Object.assign(new Error("invalid_pull_number"), { status: 400 });
   }
-  if (typeof input.title !== "string" || !ONE_LINE_RE.test(input.title) || input.title.length > 120) {
+  if (typeof input.title !== "string" || !ONE_LINE_RE.test(input.title) || codePointLength(input.title) > 120) {
     throw Object.assign(new Error("invalid_title"), { status: 400 });
   }
-  if (typeof input.body !== "string" || input.body.length > 4000) {
+  if (typeof input.body !== "string" || codePointLength(input.body) > 4000) {
     throw Object.assign(new Error("invalid_body"), { status: 400 });
   }
+  if (input.draft !== undefined && typeof input.draft !== "boolean") invalid("invalid_request");
+  if (input.test_fail_after_mutation !== undefined && typeof input.test_fail_after_mutation !== "boolean") invalid("invalid_request");
   if (input.test_fail_after_mutation && !policy.allowFaultInjection) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
-  return { ...input, draft: input.mode === "create" ? Boolean(input.draft) : undefined };
+  return { ...input, draft: input.mode === "create" ? input.draft !== false : undefined };
+}
+
+function validatePullTarget(pull, input, repo) {
+  if (
+    pull.head?.ref !== input.branch ||
+    pull.base?.ref !== input.base ||
+    pull.head?.repo?.full_name !== repo ||
+    pull.base?.repo?.full_name !== repo
+  ) invalid("forbidden_pull", 403);
+  if (pull.head.sha !== input.expected_head_sha) {
+    throw Object.assign(new Error("stale_head"), { status: 409, actual_head_sha: pull.head.sha });
+  }
 }
 
 function ghPath(repo, suffix) {
@@ -236,6 +255,7 @@ async function executePull(context) {
     const query = new URLSearchParams({ state: "open", head: `${owner}:${input.branch}`, base: input.base });
     const existing = await gh(call, token, "GET", ghPath(repo, `/pulls?${query}`), undefined, signal);
     if (Array.isArray(existing) && existing.length) {
+      validatePullTarget(existing[0], input, repo);
       return store.complete(input.operation_id, {
         pull_number: existing[0].number,
         url: existing[0].html_url,
@@ -261,17 +281,7 @@ async function executePull(context) {
   }
 
   const current = await gh(call, token, "GET", ghPath(repo, `/pulls/${input.pull_number}`), undefined, signal);
-  if (
-    current.head.ref !== input.branch ||
-    current.base.ref !== input.base ||
-    current.head.repo?.full_name !== repo ||
-    current.base.repo?.full_name !== repo
-  ) {
-    throw Object.assign(new Error("forbidden_pull"), { status: 403 });
-  }
-  if (current.head.sha !== input.expected_head_sha) {
-    throw Object.assign(new Error("stale_head"), { status: 409, actual_head_sha: current.head.sha });
-  }
+  validatePullTarget(current, input, repo);
   const updated = await mutateGh(context, "PATCH", ghPath(repo, `/pulls/${input.pull_number}`), {
     title: input.title,
     body: input.body,
