@@ -5,6 +5,9 @@ from typing import Literal, NotRequired, Protocol, TypedDict
 
 
 NativeStatus = Literal["active", "idle", "systemError", "notLoaded"]
+NativeTurnStatus = Literal[
+    "unknown", "none", "inProgress", "completed", "failed", "interrupted"
+]
 NativeSourceKind = Literal[
     "cli",
     "vscode",
@@ -39,6 +42,7 @@ class NativeAgent(TypedDict):
     createdAt: float
     updatedAt: float
     status: NativeStatus
+    turnStatus: NativeTurnStatus
     activeFlags: list[str]
     activeObservedSeconds: float
     updatedAgeSeconds: float

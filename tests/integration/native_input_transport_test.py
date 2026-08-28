@@ -111,21 +111,20 @@ class BoundTransport:
             bounded_response_bytes=max_response_bytes,
         )
 
-    def thread_read(self, target, *, max_response_bytes, timeout_seconds):
+    def turns_list(self, target, *, max_response_bytes, timeout_seconds):
         if target != self.target:
             return "malformed", None
         client = self._client(max_response_bytes, timeout_seconds)
-        classification, response = client.bounded_thread_read(
-            "native-thread", max_response_bytes=max_response_bytes,
+        classification, response = client.stop_request(
+            "thread/turns/list", {"threadId": "native-thread", "limit": 1,
+                "sortDirection": "desc", "itemsView": "notLoaded"},
+            max_response_bytes=max_response_bytes,
             timeout_seconds=timeout_seconds,
         )
         if classification != "ok" or response is None:
             return classification, None
         bound = deepcopy(dict(response))
-        thread = bound.get("thread")
-        if not isinstance(thread, dict) or thread.get("id") != "native-thread":
-            return "malformed", None
-        thread["id"] = target
+        bound["target"] = target
         return "ok", bound
 
     def turn_start(self, target, text, *, max_response_bytes, timeout_seconds):
@@ -182,9 +181,9 @@ def input_request(text="  wire input\n"):
 
 
 def read_response(status, turns):
-    return {"thread": {
-        "id": "native-thread", "status": {"type": status}, "turns": turns,
-        "content": "PRIVATE-READ-SENTINEL"}}
+    del status
+    return {"data": [{**turn, "items": [], "itemsView": "notLoaded"}
+        for turn in turns], "nextCursor": None}
 
 
 class NativeInputTransportTest(unittest.TestCase):
@@ -217,7 +216,7 @@ class NativeInputTransportTest(unittest.TestCase):
         cases = (
             (
                 (
-                    {"method": "thread/read", "response": read_response("idle", [])},
+                    {"method": "thread/turns/list", "response": read_response("idle", [])},
                     {"method": "turn/start", "response": {"turn": {"id": "new-turn"}}},
                 ),
                 "start",
@@ -226,7 +225,7 @@ class NativeInputTransportTest(unittest.TestCase):
             ),
             (
                 (
-                    {"method": "thread/read", "response": read_response("active", [
+                    {"method": "thread/turns/list", "response": read_response("active", [
                         {"id": "active-turn", "status": "inProgress"}])},
                     {"method": "turn/steer", "response": {"turnId": "active-turn"}},
                 ),
@@ -244,7 +243,7 @@ class NativeInputTransportTest(unittest.TestCase):
                 self.assertEqual(calls, 2)
                 methods = [item["method"] for item in requests]
                 self.assertEqual(methods, [
-                    "initialize", "initialized", "thread/read",
+                    "initialize", "initialized", "thread/turns/list",
                     "initialize", "initialized", f"turn/{mode}"])
                 self.assertEqual(requests[-1]["params"], action_params)
                 self.assertNotIn("approvalPolicy", repr(requests[-1]))
@@ -252,17 +251,17 @@ class NativeInputTransportTest(unittest.TestCase):
 
     def test_target_drift_sends_no_action_or_retry(self):
         first = OpaqueTarget("first")
-        plans = ({"method": "thread/read", "response": read_response("idle", [])},)
+        plans = ({"method": "thread/turns/list", "response": read_response("idle", [])},)
         result, calls, requests = self.run_case(plans, [first, OpaqueTarget("second")])
         self.assertEqual(result, NOT_SENT)
         self.assertEqual(calls, 2)
         self.assertEqual([item["method"] for item in requests], [
-            "initialize", "initialized", "thread/read"])
+            "initialize", "initialized", "thread/turns/list"])
 
     def test_native_rejection_or_ack_race_never_switches_mode(self):
         target = OpaqueTarget("stable")
         plans = (
-            {"method": "thread/read", "response": read_response("idle", [])},
+            {"method": "thread/turns/list", "response": read_response("idle", [])},
             {"method": "turn/start", "error": {"code": -1, "message": "race"}},
         )
         result, _, requests = self.run_case(plans, [target, target])
@@ -274,13 +273,13 @@ class NativeInputTransportTest(unittest.TestCase):
     def test_malformed_oversize_timeout_and_setup_failures_are_safe_and_single_shot(self):
         target = OpaqueTarget("stable")
         cases = (
-            ({"method": "thread/read", "response": "malformed"}, 1.0, 4096),
-            ({"method": "thread/read", "response": "oversize"}, 1.0, 512),
-            ({"method": "thread/read", "response": read_response("idle", []),
+            ({"method": "thread/turns/list", "response": "malformed"}, 1.0, 4096),
+            ({"method": "thread/turns/list", "response": "oversize"}, 1.0, 512),
+            ({"method": "thread/turns/list", "response": read_response("idle", []),
                 "delay": 0.08}, 0.03, 4096),
-            ({"method": "thread/read", "response": read_response("idle", []),
+            ({"method": "thread/turns/list", "response": read_response("idle", []),
                 "delay_initialize": 0.08}, 0.03, 4096),
-            ({"method": "thread/read", "response": read_response("idle", []),
+            ({"method": "thread/turns/list", "response": read_response("idle", []),
                 "oversize_initialize": True}, 1.0, 512),
         )
         for plan, timeout_seconds, max_response_bytes in cases:
@@ -292,7 +291,7 @@ class NativeInputTransportTest(unittest.TestCase):
                 self.assertEqual(result, NOT_SENT)
                 self.assertEqual(calls, 1)
                 self.assertLessEqual(
-                    sum(item["method"] == "thread/read" for item in requests), 1)
+                    sum(item["method"] == "thread/turns/list" for item in requests), 1)
                 self.assertFalse(any(
                     isinstance(item["method"], str) and item["method"].startswith("turn/")
                     for item in requests
@@ -322,7 +321,7 @@ class NativeInputTransportTest(unittest.TestCase):
 
     def test_production_transport_binds_opaque_target_on_scripted_unix_socket(self):
         result, calls, requests = self.run_production_case((
-            {"method": "thread/read", "response": read_response("idle", [])},
+            {"method": "thread/turns/list", "response": read_response("idle", [])},
             {"method": "turn/start", "response": {"turn": {"id": "new-turn"}}},
         ))
         self.assertEqual(result, {
@@ -330,18 +329,18 @@ class NativeInputTransportTest(unittest.TestCase):
         })
         self.assertEqual(calls, 2)
         self.assertEqual([request["method"] for request in requests], [
-            "initialize", "initialized", "thread/read",
+            "initialize", "initialized", "thread/turns/list",
             "initialize", "initialized", "turn/start",
         ])
 
     def test_production_transport_disappearance_before_action_fails_closed(self):
         result, calls, requests = self.run_production_case((
-            {"method": "thread/read", "response": read_response("idle", [])},
+            {"method": "thread/turns/list", "response": read_response("idle", [])},
         ), maximum_bindings=1)
         self.assertEqual(result, NOT_SENT)
         self.assertEqual(calls, 2)
         self.assertEqual([request["method"] for request in requests], [
-            "initialize", "initialized", "thread/read",
+            "initialize", "initialized", "thread/turns/list",
         ])
 
 

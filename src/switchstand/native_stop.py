@@ -12,7 +12,7 @@ from .native_contracts import (
     NativeStopPrepareResult,
     NativeStopStatusResult,
 )
-from .native_turns import NativeTurnProjection, project_native_turns
+from .native_turns import ExactTurnProjection, project_exact_turn_list
 
 
 TERMINAL_OUTCOMES = frozenset({"confirmed", "not_confirmed", "rejected", "not_sent"})
@@ -57,27 +57,30 @@ class NativeStop:
 
     def _read(
         self, thread_id: str, *, terminal_turn_id: str | None = None
-    ) -> tuple[str, NativeTurnProjection | None]:
+    ) -> tuple[str, ExactTurnProjection | None]:
         try:
             client = self._client_factory()
             classification, response = client.stop_request(
-                "thread/read", {"threadId": thread_id, "includeTurns": True}
+                "thread/turns/list", {"threadId": thread_id, "limit": 1,
+                    "sortDirection": "desc", "itemsView": "notLoaded"}
             )
         except Exception:
             return "unavailable", None
         if classification != "ok" or response is None:
             return classification, None
-        projected = project_native_turns(
-            response, thread_id, terminal_turn_id=terminal_turn_id
-        )
+        if "target" in response:
+            return "malformed", None
+        rebound = dict(response)
+        rebound["target"] = thread_id
+        projected = project_exact_turn_list(rebound, thread_id)
         response = None
         return ("ok", projected) if projected is not None else ("malformed", None)
 
     @staticmethod
-    def _sole_active(projection: NativeTurnProjection | None) -> str | None:
-        if projection is None or projection.status != "active":
+    def _sole_active(projection: ExactTurnProjection | None) -> str | None:
+        if projection is None or projection.status != "inProgress":
             return None
-        return projection.active_turn_id
+        return projection.turn_id
 
     def prepare(self, agent_ref: Any) -> NativeStopPrepareResult:
         if not isinstance(agent_ref, str) or not agent_ref:
@@ -91,7 +94,11 @@ class NativeStop:
             return {"code": "target_unavailable", "outcome": "not_sent"}
         classification, projection = self._read(thread_id)
         turn_id = self._sole_active(projection)
-        if classification != "ok" or turn_id is None:
+        try:
+            still_current = self._resolve_agent(agent_ref) == thread_id
+        except Exception:
+            still_current = False
+        if classification != "ok" or turn_id is None or not still_current:
             return {"code": "target_unavailable", "outcome": "not_sent"}
         now = self._clock()
         with self._lock:
@@ -113,7 +120,13 @@ class NativeStop:
                 return {"code": "confirmation_unavailable", "outcome": "not_sent"}
             receipt.used, receipt.outcome = True, "in_flight"
             receipt.expires_at = now + self._operation_ttl
-        classification, projection = self._read(receipt.thread_id)
+        try:
+            still_current = self._resolve_agent(receipt.agent_ref) == receipt.thread_id
+        except Exception:
+            still_current = False
+        classification, projection = self._read(receipt.thread_id) if still_current else (
+            "unavailable", None
+        )
         if classification != "ok" or self._sole_active(projection) != receipt.turn_id:
             outcome = "not_sent"
         else:
@@ -160,10 +173,10 @@ class NativeStop:
         )
         if projection is None:
             observed = None
-        elif projection.active_turn_id == receipt.turn_id:
+        elif projection.turn_id == receipt.turn_id and projection.status == "inProgress":
             observed = "inProgress"
         else:
-            observed = projection.requested_terminal_status
+            observed = projection.status if projection.turn_id == receipt.turn_id else None
         if classification != "ok" or observed is None:
             outcome = "unknown"
         elif observed == "interrupted":

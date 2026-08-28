@@ -50,6 +50,10 @@ class FakeClient:
         page = 0 if "cursor" not in request else 1
         return self.pages[page]
 
+    def stop_request(self, method, params, **_limits):
+        self.turn_request = (method, dict(params))
+        return ("ok", {"data": [], "nextCursor": None})
+
     def close(self):
         self.closed = True
 
@@ -201,16 +205,18 @@ class NativeBoardTests(unittest.TestCase):
         retained = after["agents"]
         for agent in retained:
             agent.pop("updatedAgeSeconds")
-        self.assertEqual(retained, before)
+        self.assertEqual(
+            [{**agent, "turnStatus": "unknown"} for agent in before], retained
+        )
         self.assertFalse(after["observation"]["connected"])
 
     def test_stop_resolution_requires_current_connected_active_board_evidence(self):
         board = NativeBoard(ClientFactory(client_with_status(), OSError("gone")), "raw-root")
         board.poll_once()
-        self.assertEqual(board._resolve_active("agent-1"), "raw-root")
-        self.assertIsNone(board._resolve_active("unknown"))
+        self.assertEqual(board._resolve_present("agent-1"), "raw-root")
+        self.assertIsNone(board._resolve_present("unknown"))
         board.poll_once()
-        self.assertIsNone(board._resolve_active("agent-1"))
+        self.assertIsNone(board._resolve_present("agent-1"))
 
     def test_run_identity_is_stable_within_run_and_old_pair_cannot_retarget(self):
         clock = Clock()
@@ -366,7 +372,7 @@ class NativeBoardTests(unittest.TestCase):
             "OBSERVATION_STALE",
         )
         clock.value = 102.001
-        self.assertIsNone(board._resolve_active("agent-1"))
+        self.assertIsNone(board._resolve_present("agent-1"))
         board.close()
         self.assertEqual(
             target_error_code(board.resolve_current_target(

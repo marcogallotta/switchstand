@@ -94,8 +94,12 @@ and exact input resolution.
 
 Omit `--native-root-thread-id` to run the default legacy reliability spike; that mode also
 accepts `--workspace` and `--state`. Native mode never discovers a root or resumes a thread. Its
-emergency stop requires active current board evidence, browser confirmation, JSON plus
+emergency stop requires current present board evidence plus an exact in-progress turn, browser confirmation, JSON plus
 `X-Switchstand-Control: native-stop-v1`, and same-origin loopback Host/Origin.
+
+Native thread and latest-turn statuses are separate. The board spends at most one global
+content-free `thread/turns/list` probe per completed pass; Input and Stop revalidate only their
+one exact target and never read transcript items.
 
 Native HTTP requests go through one closed dispatcher. The HTTP adapter preserves the raw path,
 duplicate headers, and one bounded raw body; it does not independently parse or validate native

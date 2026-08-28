@@ -17,7 +17,9 @@ const agents = [
 ].map(([agentRef, label, parentRef, depth]) => ({
   agentRef, label, parentRef, depth, sourceKind: "thread/list", sourceDetail: "fixture",
   createdAt: "2026-08-27T11:00:00Z", updatedAt: "2026-08-27T12:00:00Z",
-  updatedAgeSeconds: 0, status: "active", activeFlags: [], activeObservedSeconds: 10,
+  updatedAgeSeconds: 0, status: depth === 1 ? "idle" : "active",
+  turnStatus: depth === 1 ? "inProgress" : "none",
+  activeFlags: [], activeObservedSeconds: 10,
 }));
 const board = {
   mode: "native",
@@ -334,6 +336,8 @@ test("exact-route selection and input preserve Stop confirmation, result, and co
   await page.goto(origin);
   await selectAgent(page, "agent-beta");
   const row = rowFor(page, "agent-beta");
+  await expect(row.getByText("thread statusidle")).toBeVisible();
+  await expect(row.getByText("exact turn statusinProgress")).toBeVisible();
   const warning = "Stop Second observed agent’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toBe(warning);

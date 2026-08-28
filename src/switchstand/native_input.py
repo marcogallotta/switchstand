@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, cast
 
 from .native_contracts import NativeInputResult
-from .native_turns import MAX_TURN_ID_CHARACTERS, project_native_turns
+from .native_turns import MAX_TURN_ID_CHARACTERS, project_exact_turn_list
 
 
 INPUT_VERSION = "native-input-v1"
@@ -31,14 +31,14 @@ class ResolveCurrentTarget(Protocol):
 class TargetTransport(Protocol):
     """Bounded transport operations over an opaque exact-current-target handle."""
 
-    def thread_read(
+    def turns_list(
         self,
         target: object,
         *,
         max_response_bytes: int,
         timeout_seconds: float,
     ) -> tuple[str, Mapping[str, Any] | None]:
-        """Return a result whose exact thread id is rebound to *target*."""
+        """Return content-free newest-turn evidence rebound to *target*."""
         ...
 
     def turn_start(
@@ -175,7 +175,7 @@ class NativeInput:
         if first_target is None:
             return cast(NativeInputResult, dict(_NOT_SENT))
         try:
-            classification, response = self._transport.thread_read(
+            classification, response = self._transport.turns_list(
                 first_target,
                 max_response_bytes=self._max_response_bytes,
                 timeout_seconds=self._timeout_seconds,
@@ -184,14 +184,14 @@ class NativeInput:
             return cast(NativeInputResult, dict(_NOT_SENT))
         try:
             projection = (
-                project_native_turns(response, first_target)
+                project_exact_turn_list(response, first_target)
                 if classification == "ok" and response is not None
                 else None
             )
         except Exception:
             projection = None
         response = None
-        if projection is None or projection.status not in {"active", "idle"}:
+        if projection is None:
             return cast(NativeInputResult, dict(_NOT_SENT))
         second_target = self._resolve(selection)
         try:
@@ -201,7 +201,7 @@ class NativeInput:
         if not targets_match:
             return cast(NativeInputResult, dict(_NOT_SENT))
         try:
-            if projection.status == "idle":
+            if projection.status != "inProgress":
                 classification, acknowledgement = self._transport.turn_start(
                     second_target,
                     text,
@@ -211,7 +211,7 @@ class NativeInput:
                 acknowledged = classification == "ok" and _start_acknowledged(acknowledgement)
                 mode = "start"
             else:
-                expected_turn_id = projection.active_turn_id
+                expected_turn_id = projection.turn_id
                 if not _valid_turn_id(expected_turn_id):
                     return cast(NativeInputResult, dict(_NOT_SENT))
                 expected_turn_id = cast(str, expected_turn_id)

@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping
 from .app_server import CodexAppServer
 from .current_target import ExactCurrentTarget
 from .native_board import NativeBoard
+from .native_turns import project_exact_turn_list
 
 
 TransportResult = tuple[str, Mapping[str, Any] | None]
@@ -47,30 +48,30 @@ class NativeTargetTransport:
             return ("ambiguous", None)
         return _UNAVAILABLE if result is None else result
 
-    def thread_read(
+    def turns_list(
         self,
         target: object,
         *,
         max_response_bytes: int,
         timeout_seconds: float,
     ) -> TransportResult:
-        """Read one current target and replace its raw id with the opaque handle."""
+        """Read content-free newest-turn metadata for one current target."""
 
         def read(client: CodexAppServer, native_thread_id: str) -> TransportResult:
-            classification, response = client.bounded_thread_read(
-                native_thread_id,
+            classification, response = client.stop_request(
+                "thread/turns/list", {"threadId": native_thread_id, "limit": 1,
+                    "sortDirection": "desc", "itemsView": "notLoaded"},
                 max_response_bytes=max_response_bytes,
                 timeout_seconds=timeout_seconds,
             )
             if classification != "ok" or response is None:
                 return classification, None
-            thread = response.get("thread")
-            if not isinstance(thread, Mapping) or thread.get("id") != native_thread_id:
+            if "target" in response:
                 return ("malformed", None)
             rebound_response = dict(response)
-            rebound_thread = dict(thread)
-            rebound_thread["id"] = target
-            rebound_response["thread"] = rebound_thread
+            rebound_response["target"] = target
+            if project_exact_turn_list(rebound_response, target) is None:
+                return ("malformed", None)
             return ("ok", rebound_response)
 
         return self._perform(

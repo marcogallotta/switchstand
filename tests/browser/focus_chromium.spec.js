@@ -15,7 +15,7 @@ const state = {
   agents: [{ agentRef: "agent-1", label: "Root", parentRef: null, depth: 0,
     sourceKind: "thread/read", sourceDetail: "root", createdAt: "2026-08-27T11:00:00Z",
     updatedAt: "2026-08-27T12:00:00Z", updatedAgeSeconds: 0, status: "active",
-    activeFlags: ["waiting"], activeObservedSeconds: 10 }],
+    turnStatus: "inProgress", activeFlags: ["waiting"], activeObservedSeconds: 10 }],
   trail: [{ observedAt: "2026-08-27T12:00:00Z", agentRef: "agent-1",
     changes: { status: { from: "idle", to: "active" } } }],
   trailLimit: 50,
@@ -92,6 +92,7 @@ test.beforeEach(() => {
   delayStopResponse = false;
   pendingStopResponses = [];
   state.agents[0].status = "active";
+  state.agents[0].turnStatus = "inProgress";
 });
 
 async function waitForReplacement(page) {
@@ -111,6 +112,15 @@ async function waitForReplacement(page) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("tree row was not replaced after refresh");
+}
+
+async function observeLaterTurn(page) {
+  state.agents[0].status = "idle";
+  state.agents[0].turnStatus = "interrupted";
+  await page.waitForResponse(`${origin}/api/workbench`);
+  state.agents[0].status = "active";
+  state.agents[0].turnStatus = "inProgress";
+  await page.waitForResponse(`${origin}/api/workbench`);
 }
 
 test("real Chromium preserves tree focus, selection, open state, and scroll across 50 refreshes", async ({ page }) => {
@@ -192,10 +202,7 @@ test("a later active turn can be stopped without reloading", async ({ page }) =>
   await expect(page.getByText("Stop outcome: confirmed")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop current turn" })).toHaveCount(0);
 
-  state.agents[0].status = "idle";
-  await page.waitForResponse(`${origin}/api/workbench`);
-  state.agents[0].status = "active";
-  await page.waitForResponse(`${origin}/api/workbench`);
+  await observeLaterTurn(page);
 
   await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
   page.once("dialog", (dialog) => dialog.dismiss());
@@ -213,10 +220,7 @@ test("a delayed old-turn result cannot hide Stop for a later turn", async ({ pag
   await page.getByRole("button", { name: "Stop current turn" }).click();
   await expect.poll(() => pendingStopResponses.length).toBe(1);
 
-  state.agents[0].status = "idle";
-  await page.waitForResponse(`${origin}/api/workbench`);
-  state.agents[0].status = "active";
-  await page.waitForResponse(`${origin}/api/workbench`);
+  await observeLaterTurn(page);
   await expect(page.getByRole("button", { name: "Stop current turn" })).toBeVisible();
 
   const oldResponse = page.waitForResponse(`${origin}/api/native-stop/commit`);

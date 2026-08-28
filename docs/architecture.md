@@ -19,10 +19,11 @@ every page, follows `nextCursor` to exhaustion, and validates ancestry only thro
 `parentThreadId`. Every thread must carry a nonempty `sessionId`, but the value is opaque
 per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
 
-Native runtime state remains exactly `active` (with documented flags), `idle`, `systemError`,
-or `notLoaded`. In particular, `idle` is not renamed to semantic completion. For direct input,
-the checkpoint uses `turn/start` only for an observed idle thread and `turn/steer` with the
-exact in-progress turn id for an observed active thread. Concurrent changes fail at App Server;
+Native thread state remains exactly `active` (with documented flags), `idle`, `systemError`,
+or `notLoaded`. Exact latest-turn state is represented separately; `idle` plus `inProgress` is
+valid and neither field rewrites the other. For direct input, the checkpoint uses `turn/start`
+only when exact metadata has no in-progress turn and `turn/steer` with the exact in-progress
+turn id otherwise. Concurrent changes fail at App Server;
 they are not retried through another mode. Stop uses the exact thread and turn ids.
 
 `stage_a_evidence.py` owns retained-evidence projection and validation. `stage_a_probe.py`
@@ -58,15 +59,18 @@ Absence of a notification never changes a native status or implies stale work.
 Stage B1 is enabled only by `--native-root-thread-id EXACT_NATIVE_ROOT_ID`. It polls
 `thread/read(includeTurns=false)` for that root and fully paginated `thread/list` requests for
 descendants, forcing `useStateDbOnly=true`. It does not call resume, subscribe, or any control
-method. The existing `/api/workbench` endpoint projects native lineage/status, observer
+method. A fixed global budget probes one exact thread's content-free newest-turn metadata per
+completed pass and rotates fairly; it never adds an O(agent-count) request loop. The existing
+`/api/workbench` endpoint projects native lineage/thread status, separate turn status, observer
 freshness, safe run-local agent references, and the latest 50 in-memory endpoint differences
 instead of the legacy Work model. It exposes no raw native ids or transcripts.
 
 `native_stop.py` adds the B2-only control path. Prepare resolves a run-local agent reference
-only from current connected, present, active board evidence, performs one byte-capped
-`thread/read(includeTurns=true)`, and binds the sole active exact turn into a short-lived opaque
-receipt. Commit atomically consumes the receipt, revalidates the same exact turn with another
-bounded read, and sends at most one interrupt. A later bounded read may move `requested` to
+only from current connected and present board evidence, performs one byte-capped
+`thread/turns/list(limit=1, sortDirection=desc, itemsView=notLoaded)`, and binds the sole
+in-progress exact turn into a short-lived opaque receipt. Commit atomically consumes the
+receipt, revalidates the same exact turn with another bounded metadata read, and sends at most
+one interrupt. A later bounded metadata read may move `requested` to
 `confirmed`, `not_confirmed`, or `unknown`; it never retries or retargets. Receipts are capped,
 expiring, process-local tombstones and contain no transcript content.
 
@@ -86,7 +90,8 @@ JSON. Handled responses are written with the dispatcher's exact status, ordered 
 body. Native routes return immediately and never fall through to legacy behavior. Static and
 legacy requests retain their existing paths.
 
-Each poll spans two App Server endpoint families and is not an atomic global snapshot. The
+Each poll spans the tree endpoints plus at most one exact-turn metadata request and is not an
+atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
 changes may be missed or collapsed. It is not a native event stream, and elapsed time is age
 since observation; consecutive observed-active time is not time spent working. Transport failure affects observer truth without

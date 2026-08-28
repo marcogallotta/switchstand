@@ -11,7 +11,8 @@ only what App Server actually exposes and distinguish observed activity from sem
 When native mode is explicitly selected, Switchstand presents one exact root and every observed
 spawned descendant as a read-only flight board. The operator can see:
 
-- `parentThreadId` lineage and exact native status/flags;
+- `parentThreadId` lineage, exact native thread status/flags, and a separately labelled
+  content-free latest-turn status observation;
 - whether the observer is connected, available, current or historical, or reporting an error;
 - age since the last successful observation; and
 - a chronological trail of differences Switchstand actually observed between polls.
@@ -23,7 +24,8 @@ observed-active time is observation evidence, not measured execution time.
 
 The operator may select one agent from current connected observation evidence. The browser
 stores only the opaque observation/agent reference pair. Exact input starts a turn when the
-current target is observed idle or steers the sole exact in-progress turn when it is active.
+current target has no in-progress turn, or steers the sole exact in-progress turn. Thread
+status remains independent: `idle` plus `inProgress` is valid.
 It does not retry, retarget, or fall back when evidence changes.
 
 The default legacy mode retains the original fixed two-role experience and its message,
@@ -35,14 +37,15 @@ primary surface only while native mode is explicitly selected.
 Native mode observes one exact local root and its descendants over a Unix socket. It keeps only
 bounded in-memory observation state and exposes exact current-target input plus one Stop action.
 It exposes no redirect, replace, resume, subscription, transcript, or general lifecycle action.
-Stop prepares and confirms cancellation of the exact active turn mapped from current connected
+Stop prepares and confirms cancellation of the exact in-progress turn mapped from current connected
 board evidence. A request does not undo completed work or promise to stop background processes
 or descendants.
 
-Exact-turn resolution uses a bounded `thread/read(includeTurns=true)`. The full response,
-including transcript content, passes transiently through local process memory, is immediately
-reduced to status and turn identity/status, and is never logged, persisted, retained in a stop
-receipt, or returned to the browser. The UI is unauthenticated loopback-only and must not be
+Exact-turn resolution uses bounded `thread/turns/list` requests with `limit: 1`, descending
+order, and `itemsView: notLoaded`. Item-bearing or ambiguous evidence fails closed. One fair
+global probe per completed board pass supplies display-only status; Input and Stop independently
+revalidate their one exact action target. Turn and thread ids are never returned to the browser.
+The UI is unauthenticated loopback-only and must not be
 exposed to a network. It does not authenticate against same-user local processes or browser
 automation; stronger authentication is outside this checkpoint.
 
