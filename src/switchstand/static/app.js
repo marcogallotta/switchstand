@@ -549,7 +549,9 @@ async function drainRefreshes() {
 
 function refresh() {
   refreshQueued = true;
-  if (refreshPromise) void reportEvidence("refresh_coalesced");
+  if (refreshPromise && lastModel?.mode === "native") {
+    void reportEvidence("refresh_coalesced");
+  }
   if (!refreshPromise) {
     refreshPromise = drainRefreshes().finally(() => {
       refreshPromise = null;
