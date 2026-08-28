@@ -7,18 +7,21 @@ explicit confirmation.
 The default legacy mode remains a fixed two-role reliability spike with durable messages,
 checkpoints, attempt controls, and conservative failure handling.
 
-This repository is a clean prototype, not a production orchestrator. It keeps two bounded
-slices easy to inspect: truthful native-tree observation with one emergency control, and the legacy
-flat-file reliability mechanisms for ordered messages, restart reconciliation, controls, and
-result fencing.
+This repository is a bounded supervised-agent infrastructure build, not a throwaway
+prototype or production orchestrator. It keeps two slices easy to inspect: truthful native-tree
+observation with exact current-target input and one emergency control, and the legacy flat-file
+reliability mechanisms for ordered messages, restart reconciliation, controls, and result
+fencing.
 
 ## Status and checkpoint
 
 The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are covered by
-local tests. Stage A passed live on exact PR4 head `8670f50b629ae3f201d5eed3aa04fc92afa9888b`
-and was merged: one root plus one descendant, native `active` to `idle` notifications, exit 0,
-and no conversation-history mutation. That proves the tested PR4 head, not a fresh live run of
-this later main head.
+local tests. PR #37 passed the exact-head live coordinator-worker journey and was merged as
+`c593a3479033b09712874b4898a08b33e92d7a7e`: one exact spawned descendant, content-free exact
+turn observation, independent native thread/turn status, and one exact Stop that reconciled an
+ambiguous acknowledgement to confirmed/interrupted without retry or retarget. The reviewed head
+also passed Quality run #60, 133 Python tests, AF_UNIX suites, Node/JavaScript checks, and 11 real
+Chromium journeys.
 
 Issue #9 adds Stage B1 as an explicitly selected native view. It polls one exact root with
 `thread/read(includeTurns=false)` and all descendants with paginated
@@ -28,7 +31,10 @@ subscribe to threads or mutate conversation history. The legacy two-role engine 
 available as a reliability spike. The native operator candidate composes the current board,
 safe browser selection, exact start-or-steer input, and one emergency control through one closed
 HTTP dispatcher. Stop uses explicit two-step confirmation for one exact active turn. It does
-not undo work or stop background processes or descendants.
+not undo work or stop background processes or descendants. The live PR #37 run also showed a
+current App Server limitation: direct `turn/steer` to the active spawned v2 worker was rejected.
+Switchstand reported `not_sent` and did not retry, fall back, or retarget; accepted active-worker
+steering is not currently claimed.
 
 ## Non-goals
 
