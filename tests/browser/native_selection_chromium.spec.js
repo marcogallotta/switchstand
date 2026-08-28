@@ -194,9 +194,41 @@ test("input sends the exact selected pair and unchanged text with only truthful 
   const values = ["  exact start\ntext  ", "exact steer", "retain on refusal", "retain on failure"];
   const outcomes = ["sent · start", "sent · steer", "not sent", "not sent"];
   const statuses = [200, 200, 200, 503];
+  const inputState = () => page.evaluate(() => {
+    const state = nativeSelectionController.getState();
+    const pair = (value) => value ? {
+      observationRunRef: value.observationRunRef,
+      agentRef: value.agentRef,
+    } : null;
+    return {
+      candidatePair: pair(state.candidate),
+      currentDisplay: state.currentTarget ? {
+        name: state.currentTarget.name ?? null,
+        agentNickname: state.currentTarget.agentNickname ?? null,
+      } : null,
+      currentPair: pair(state.currentTarget),
+      domDraft: nativeInput.value,
+      storedDraft: nativeInputDrafts.get(visibleInputTargetKey) ?? null,
+      visibleInputTargetKey,
+    };
+  });
+  const expectedState = (text) => ({
+    candidatePair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
+    currentDisplay: { name: "Review agent", agentNickname: "Reviewer" },
+    currentPair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
+    domDraft: text,
+    storedDraft: text,
+    visibleInputTargetKey: "observation-run-one\u0000agent-beta",
+  });
   for (let index = 0; index < values.length; index += 1) {
     await input.fill(values[index]);
+    const beforeRefresh = await inputState();
     await page.evaluate(() => refresh());
+    const afterRefresh = await inputState();
+    expect({ beforeRefresh, afterRefresh }).toEqual({
+      beforeRefresh: expectedState(values[index]),
+      afterRefresh: expectedState(values[index]),
+    });
     await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
     await expect(input).toBeVisible();
     await expect(input).toHaveValue(values[index]);
