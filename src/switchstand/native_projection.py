@@ -13,16 +13,24 @@ _SAFE_SUBAGENT_DETAILS = frozenset({"review", "compact", "thread_spawn", "other"
 class _ProjectionState:
     """Opaque board-only continuation state; never part of the public projection."""
 
-    __slots__ = ("__labels", "__active_since", "__endpoints", "__targets")
+    __slots__ = (
+        "__labels",
+        "__issuance_watermark",
+        "__active_since",
+        "__endpoints",
+        "__targets",
+    )
 
     def __init__(
         self,
         labels: dict[str, str],
+        issuance_watermark: int,
         active_since: dict[str, float],
         endpoints: dict[str, dict[str, Any]],
         targets: list[tuple[str, str]],
     ) -> None:
         self.__labels = labels
+        self.__issuance_watermark = issuance_watermark
         self.__active_since = active_since
         self.__endpoints = endpoints
         self.__targets = targets
@@ -63,6 +71,7 @@ def _private_projection_state(
     projection: NativeProjection,
 ) -> tuple[
     dict[str, str],
+    int,
     dict[str, float],
     dict[str, dict[str, Any]],
     list[tuple[str, str]],
@@ -74,6 +83,10 @@ def _private_projection_state(
     )
     return (
         cast(dict[str, str], object.__getattribute__(state, "_ProjectionState__labels")),
+        cast(
+            int,
+            object.__getattribute__(state, "_ProjectionState__issuance_watermark"),
+        ),
         cast(
             dict[str, float],
             object.__getattribute__(state, "_ProjectionState__active_since"),
@@ -91,14 +104,16 @@ def _private_projection_state(
 
 def reset_projection_activity(projection: NativeProjection) -> NativeProjection:
     """Preserve historical projection while ending consecutive active evidence."""
-    labels, _, endpoints, targets = _private_projection_state(projection)
+    labels, issuance_watermark, _, endpoints, targets = _private_projection_state(projection)
     agents = deepcopy(projection.agents)
     for agent in agents:
         agent["activeObservedSeconds"] = 0.0
     return NativeProjection(
         agents,
         deepcopy(projection.trail),
-        _ProjectionState(dict(labels), {}, deepcopy(endpoints), list(targets)),
+        _ProjectionState(
+            dict(labels), issuance_watermark, {}, deepcopy(endpoints), list(targets)
+        ),
     )
 
 
@@ -146,20 +161,19 @@ def project_complete_tree(
         raise ValueError("trail limit must be positive")
     if prior_projection is None:
         prior_labels: Mapping[str, str] = {}
+        issuance_watermark = 1
         prior_active_since: Mapping[str, float] = {}
         prior_endpoints: Mapping[str, Mapping[str, Any]] = {}
         prior_trail: Sequence[Mapping[str, Any]] = []
     else:
-        prior_labels, prior_active_since, prior_endpoints, _ = _private_projection_state(
-            prior_projection
-        )
+        (
+            prior_labels,
+            issuance_watermark,
+            prior_active_since,
+            prior_endpoints,
+            _,
+        ) = _private_projection_state(prior_projection)
         prior_trail = prior_projection.trail
-    labels = dict(prior_labels)
-
-    def label(thread_id: str) -> str:
-        if thread_id not in labels:
-            labels[thread_id] = f"agent-{len(labels) + 1}"
-        return labels[thread_id]
 
     by_id: dict[str, Mapping[str, Any]] = {}
     for thread in threads:
@@ -167,6 +181,13 @@ def project_complete_tree(
         if thread_id in by_id:
             raise ValueError("duplicate native target")
         by_id[thread_id] = thread
+    labels: dict[str, str] = {}
+    for thread_id in by_id:
+        ref = prior_labels.get(thread_id)
+        if ref is None:
+            ref = f"agent-{issuance_watermark}"
+            issuance_watermark += 1
+        labels[thread_id] = ref
     depth_cache: dict[str, int] = {}
 
     def depth(thread_id: str) -> int:
@@ -177,16 +198,17 @@ def project_complete_tree(
         depth_cache[thread_id] = result
         return result
 
+    present_refs = set(labels.values())
     active_since = {
         ref: started
         for ref, started in prior_active_since.items()
-        if ref in {label(thread_id) for thread_id in by_id}
+        if ref in present_refs
     }
     agents: list[dict[str, Any]] = []
     targets: list[tuple[str, str]] = []
     for thread in threads:
         thread_id = str(thread["id"])
-        ref = label(thread_id)
+        ref = labels[thread_id]
         targets.append((ref, thread_id))
         parent_id = thread.get("parentThreadId")
         status = dict(thread["status"])
@@ -204,7 +226,7 @@ def project_complete_tree(
             {
                 "agentRef": ref,
                 "label": f"Agent {ref.removeprefix('agent-')}",
-                "parentRef": label(str(parent_id)) if parent_id is not None else None,
+                "parentRef": labels[str(parent_id)] if parent_id is not None else None,
                 "depth": depth(thread_id),
                 "sourceKind": source_kind,
                 "sourceDetail": source_detail,
@@ -241,5 +263,5 @@ def project_complete_tree(
     return NativeProjection(
         agents,
         trail,
-        _ProjectionState(labels, active_since, endpoints, targets),
+        _ProjectionState(labels, issuance_watermark, active_since, endpoints, targets),
     )
