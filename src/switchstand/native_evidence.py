@@ -55,6 +55,21 @@ def _bounded_number(value: object, maximum: float) -> float | None:
     return min(number, maximum)
 
 
+def _empty_status_counts() -> NativeStatusCounts:
+    return {"active": 0, "idle": 0, "systemError": 0, "notLoaded": 0}
+
+
+def _empty_turn_status_counts() -> NativeTurnStatusCounts:
+    return {
+        "unknown": 0,
+        "none": 0,
+        "inProgress": 0,
+        "completed": 0,
+        "failed": 0,
+        "interrupted": 0,
+    }
+
+
 class NativeEvidence:
     """Keep a fixed-schema, bounded, process-local evidence window."""
 
@@ -88,13 +103,8 @@ class NativeEvidence:
         self._observation_connected: bool | None = None
         self._pass_age_seconds: float | None = None
         self._agent_count = 0
-        self._status_counts: NativeStatusCounts = {
-            "active": 0, "idle": 0, "systemError": 0, "notLoaded": 0,
-        }
-        self._turn_status_counts: NativeTurnStatusCounts = {
-            "unknown": 0, "none": 0, "inProgress": 0,
-            "completed": 0, "failed": 0, "interrupted": 0,
-        }
+        self._status_counts = _empty_status_counts()
+        self._turn_status_counts = _empty_turn_status_counts()
         self._last_observed_activity_age_seconds: float | None = None
 
     def _now(self) -> float:
@@ -165,13 +175,8 @@ class NativeEvidence:
         self._observation_connected = connected
         self._pass_age_seconds = pass_age
 
-        statuses: NativeStatusCounts = {
-            "active": 0, "idle": 0, "systemError": 0, "notLoaded": 0,
-        }
-        turn_statuses: NativeTurnStatusCounts = {
-            "unknown": 0, "none": 0, "inProgress": 0,
-            "completed": 0, "failed": 0, "interrupted": 0,
-        }
+        statuses = _empty_status_counts()
+        turn_statuses = _empty_turn_status_counts()
         ages: list[float] = []
         for agent in board["agents"]:
             statuses[agent["status"]] += 1
@@ -232,11 +237,8 @@ def unavailable_evidence_summary() -> NativeEvidenceSummary:
         "observationConnected": None,
         "passAgeSeconds": None,
         "agentCount": 0,
-        "statusCounts": {"active": 0, "idle": 0, "systemError": 0, "notLoaded": 0},
-        "turnStatusCounts": {
-            "unknown": 0, "none": 0, "inProgress": 0,
-            "completed": 0, "failed": 0, "interrupted": 0,
-        },
+        "statusCounts": _empty_status_counts(),
+        "turnStatusCounts": _empty_turn_status_counts(),
         "lastObservedActivityAgeSeconds": None,
         "recentEvents": [],
         "disclosure": "Evidence recording is unavailable; no positive evidence claim is made.",
