@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping, Sequence, cast
 
-from .agent_tree import THREAD_SOURCE_KINDS
+from .agent_tree import THREAD_SOURCE_KINDS, validate_protocol_timestamp
 
 
 _SAFE_SUBAGENT_DETAILS = frozenset({"review", "compact", "thread_spawn", "other", "unknown"})
@@ -131,10 +131,7 @@ def _source(value: Any) -> tuple[str, str | None]:
 
 
 def _timestamp(thread: Mapping[str, Any], field: str) -> float:
-    value = thread.get(field)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("native timestamp unavailable")
-    return float(value)
+    return float(validate_protocol_timestamp(thread.get(field)))
 
 
 def _endpoint(agent: Mapping[str, Any]) -> dict[str, Any]:

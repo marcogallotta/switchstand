@@ -116,6 +116,8 @@ class AgentTreeProtocolTests(unittest.TestCase):
                         "sessionId": "root-1",
                         "forkedFromId": "root-1",
                         "parentThreadId": None,
+                        "createdAt": 0,
+                        "updatedAt": 0.0,
                         "status": {"type": "idle"},
                     }
                 ],
@@ -138,6 +140,8 @@ class AgentTreeProtocolTests(unittest.TestCase):
                         "sessionId": "root-1",
                         "forkedFromId": None,
                         "parentThreadId": "missing-child",
+                        "createdAt": 0,
+                        "updatedAt": 0.0,
                         "status": {"type": "notLoaded"},
                     }
                 ],
@@ -167,6 +171,44 @@ class AgentTreeProtocolTests(unittest.TestCase):
                     AgentTreeAdapter(client).observe_tree("root-1")
                 self.assertEqual(raised.exception.code, expected_code)
                 self.assertEqual(raised.exception.phase, expected_phase)
+
+    def test_root_and_descendant_protocol_timestamps_are_finite_nonnegative_numbers(self):
+        invalid_values = (True, -1, float("nan"), float("inf"), float("-inf"))
+        for location in ("root", "descendant"):
+            for field in ("createdAt", "updatedAt"):
+                for invalid in invalid_values:
+                    with self.subTest(location=location, field=field, invalid=invalid):
+                        client = FixtureClient()
+                        record = (
+                            client.reads["root-1"]["thread"]
+                            if location == "root"
+                            else client.pages[0]["data"][0]
+                        )
+                        record[field] = invalid
+
+                        with self.assertRaises(AgentTreeEvidenceError) as raised:
+                            AgentTreeAdapter(client).observe_tree("root-1")
+
+                        self.assertEqual(
+                            raised.exception.code, "missing_protocol_timestamp"
+                        )
+                        self.assertEqual(
+                            raised.exception.phase, "timestamp_validation"
+                        )
+
+    def test_zero_integer_and_float_protocol_timestamps_are_preserved(self):
+        client = FixtureClient()
+        client.reads["root-1"]["thread"]["createdAt"] = 0
+        client.reads["root-1"]["thread"]["updatedAt"] = 0.0
+        client.pages[0]["data"][0]["createdAt"] = 0.0
+        client.pages[0]["data"][0]["updatedAt"] = 0
+
+        observed = AgentTreeAdapter(client).observe_tree("root-1")
+
+        self.assertEqual(observed["threads"][0]["createdAt"], 0)
+        self.assertEqual(observed["threads"][0]["updatedAt"], 0.0)
+        self.assertEqual(observed["threads"][1]["createdAt"], 0.0)
+        self.assertEqual(observed["threads"][1]["updatedAt"], 0)
 
     def test_native_status_event_projects_exact_supported_cases_and_rejects_others(self):
         adapter = AgentTreeAdapter(FixtureClient())
@@ -200,6 +242,8 @@ class AgentTreeProtocolTests(unittest.TestCase):
                 "id": "idle-1",
                 "sessionId": "idle-1",
                 "parentThreadId": None,
+                "createdAt": 0,
+                "updatedAt": 0,
                 "status": {"type": "idle"},
                 "turns": [],
             }
@@ -220,6 +264,8 @@ class AgentTreeProtocolTests(unittest.TestCase):
                 "id": "active-1",
                 "sessionId": "active-1",
                 "parentThreadId": None,
+                "createdAt": 0,
+                "updatedAt": 0,
                 "status": {"type": "active", "activeFlags": []},
                 "turns": [
                     {"id": "turn-old", "status": "completed", "items": []},
@@ -249,6 +295,8 @@ class AgentTreeProtocolTests(unittest.TestCase):
                         "id": "target",
                         "sessionId": "target",
                         "parentThreadId": None,
+                        "createdAt": 0,
+                        "updatedAt": 0,
                         "status": status,
                         "turns": turns,
                     }

@@ -6,6 +6,7 @@ It does not persist, rename, replace, or reinterpret native Codex threads.
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping, Protocol
 
 
@@ -35,6 +36,23 @@ class AgentTreeEvidenceError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.phase = phase
+
+
+def validate_protocol_timestamp(value: Any) -> int | float:
+    """Return one finite nonnegative native protocol timestamp or fail closed."""
+    valid = not isinstance(value, bool) and isinstance(value, (int, float))
+    if valid:
+        try:
+            valid = value >= 0 and math.isfinite(value)
+        except OverflowError:
+            valid = False
+    if not valid:
+        raise AgentTreeEvidenceError(
+            "missing_protocol_timestamp",
+            "a required protocol timestamp is unavailable",
+            phase="timestamp_validation",
+        )
+    return value
 
 
 class AgentTreeClient(Protocol):
@@ -110,6 +128,8 @@ def validate_thread(
         raise AgentTreeEvidenceError(
             invalid_code, "native thread evidence is unavailable or invalid", phase=phase
         )
+    for field in ("createdAt", "updatedAt"):
+        validate_protocol_timestamp(thread.get(field))
     validate_native_status(thread.get("status"), context=f"thread {thread_id}", phase=phase)
     return thread
 
