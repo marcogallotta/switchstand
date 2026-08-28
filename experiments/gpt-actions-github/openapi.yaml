@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: Bounded GitHub Development Prototype
+  version: 0.1.0
+servers:
+  - url: https://bounded-agent-coordinator.marco548453.chatgpt.site
+paths:
+  /v1/github/commit:
+    post:
+      operationId: writeBoundedGitCommit
+      x-openai-isConsequential: true
+      summary: Create or update the allowlisted experiment branch using Git objects.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitRequest'
+      responses:
+        '200': { description: Commit and ref update completed or replayed. }
+        '403': { description: Repository, branch, path, or fault policy rejected the request. }
+        '409': { description: Operation conflict or stale head. }
+        '413': { description: Request or content limit exceeded. }
+  /v1/github/pull:
+    post:
+      operationId: createOrUpdateBoundedPullRequest
+      x-openai-isConsequential: true
+      summary: Create or update a PR for the allowlisted experiment branch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PullRequest'
+      responses:
+        '200': { description: Pull request mutation completed or replayed. }
+        '403': { description: Repository, branch, base, or PR policy rejected the request. }
+        '409': { description: Operation conflict or stale head. }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    File:
+      type: object
+      additionalProperties: false
+      required: [path, content_base64]
+      properties:
+        path: { type: string, maxLength: 240 }
+        content_base64: { type: string, maxLength: 23000 }
+    CommitRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id, repository, branch, expected_head_sha, mode, message, files]
+      properties:
+        operation_id: { type: string, minLength: 8, maxLength: 80 }
+        repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
+        branch: { type: string, pattern: '^agent/gpt-actions-github-' }
+        expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        mode: { type: string, enum: [create, update] }
+        message: { type: string, minLength: 1, maxLength: 160 }
+        files:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/File' }
+        test_fail_after_commit: { type: boolean, default: false }
+    PullRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id, repository, branch, base, expected_head_sha, mode, title, body]
+      properties:
+        operation_id: { type: string, minLength: 8, maxLength: 80 }
+        repository: { type: string, enum: [marcogallotta/gpt-actions-github-fixture] }
+        branch: { type: string, pattern: '^agent/gpt-actions-github-' }
+        base: { type: string, enum: [main] }
+        expected_head_sha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        mode: { type: string, enum: [create, update] }
+        pull_number: { type: integer, minimum: 1 }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        body: { type: string, maxLength: 4000 }
+        draft: { type: boolean, default: true }
+        test_fail_after_mutation: { type: boolean, default: false }
+security:
+  - bearerAuth: []
