@@ -18,7 +18,13 @@ from typing import Any, Mapping
 from switchstand.app_server import CodexAppServer
 
 
-ALLOWED_METHODS = {"initialize", "initialized", "thread/read", "thread/list"}
+ALLOWED_METHODS = {
+    "initialize",
+    "initialized",
+    "thread/read",
+    "thread/list",
+    "thread/turns/list",
+}
 
 
 def observer_api() -> tuple[type[Any], str, str]:
@@ -79,6 +85,16 @@ def safe_params(method: str, params: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(params.get("sourceKinds"), list)
             else None,
         }
+    if method == "thread/turns/list":
+        return {
+            "hasExactThreadId": isinstance(params.get("threadId"), str)
+            and bool(params.get("threadId")),
+            "limit": params.get("limit"),
+            "sortDirection": params.get("sortDirection"),
+            "itemsView": params.get("itemsView"),
+            "exactParameterNames": set(params)
+            == {"threadId", "limit", "sortDirection", "itemsView"},
+        }
     return {}
 
 
@@ -109,6 +125,44 @@ class AuditedClient(CodexAppServer):
     def _notify(self, method: str, params: Mapping[str, Any]) -> None:
         self._record(method, params)
         super()._notify(method, params)
+
+    def bounded_request(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+        _close_after: bool = True,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        self._record(method, params)
+        return super().bounded_request(
+            method,
+            params,
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+            _close_after=_close_after,
+        )
+
+    def stop_request(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 3.0,
+        _close_after: bool = True,
+    ) -> tuple[str, Mapping[str, Any] | None]:
+        self._record(method, params)
+        # Call the base transport directly so the compatibility entry point is
+        # audited once rather than dispatching through our audited bounded method.
+        return super().bounded_request(
+            method,
+            params,
+            max_response_bytes=max_response_bytes,
+            timeout_seconds=timeout_seconds,
+            _close_after=_close_after,
+        )
 
 
 def write_result(path: Path, value: Mapping[str, Any]) -> None:
@@ -249,9 +303,13 @@ def main() -> int:
     forbidden = [method for method in methods if method not in ALLOWED_METHODS]
     list_records = [entry for entry in audit if entry["method"] == "thread/list"]
     read_records = [entry for entry in audit if entry["method"] == "thread/read"]
+    turn_list_records = [
+        entry for entry in audit if entry["method"] == "thread/turns/list"
+    ]
     list_flags_valid = bool(list_records) and all(
         entry["params"].get("useStateDbOnly") is True
         and entry["params"].get("ancestorFilterPresent") is True
+        and type(entry["params"].get("limit")) is int
         and entry["params"].get("limit") == 100
         and isinstance(entry["params"].get("sourceKindCount"), int)
         and entry["params"]["sourceKindCount"] > 0
@@ -261,6 +319,19 @@ def main() -> int:
         entry["params"].get("includeTurns") is False
         and entry["params"].get("hasExactThreadId") is True
         for entry in read_records
+    )
+    turn_list_flags_valid = len(turn_list_records) == len(passes) and all(
+        entry["params"].get("hasExactThreadId") is True
+        and type(entry["params"].get("limit")) is int
+        and entry["params"].get("limit") == 1
+        and entry["params"].get("sortDirection") == "desc"
+        and entry["params"].get("itemsView") == "notLoaded"
+        and entry["params"].get("exactParameterNames") is True
+        and sum(
+            candidate["pass"] == entry["pass"] for candidate in turn_list_records
+        )
+        == 1
+        for entry in turn_list_records
     )
     pagination_complete = bool(list_records) and all(
         any(
@@ -276,9 +347,10 @@ def main() -> int:
         for pass_number in range(1, len(passes) + 1)
     ]
     sequence_valid = all(
-        len(sequence) >= 4
+        len(sequence) >= 5
         and sequence[:3] == ["initialize", "initialized", "thread/read"]
-        and all(method == "thread/list" for method in sequence[3:])
+        and sequence[-1] == "thread/turns/list"
+        and all(method == "thread/list" for method in sequence[3:-1])
         for sequence in sequences
     )
     if transition is None:
@@ -294,6 +366,7 @@ def main() -> int:
         forbidden
         or not list_flags_valid
         or not read_flags_valid
+        or not turn_list_flags_valid
         or not pagination_complete
         or not sequence_valid
     ):
@@ -346,6 +419,7 @@ def main() -> int:
                 "includeTurnsFalse": True,
                 "useStateDbOnlyTrue": True,
                 "paginationCompleteEveryPass": True,
+                "oneContentFreeTurnListPerPass": True,
                 "requestSequenceValidEveryPass": True,
                 "descendantActiveToIdleWithinTwoPollIntervals": True,
             },

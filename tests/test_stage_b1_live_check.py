@@ -11,6 +11,8 @@ from typing import Any
 import unittest
 from unittest.mock import patch
 
+from switchstand.app_server import CodexAppServer
+
 
 REPO = Path(__file__).parents[1]
 RUNNER_PATH = REPO / "scripts" / "stage_b1_live_check.py"
@@ -37,6 +39,10 @@ def native_thread(thread_id: str, parent: str | None, status: str) -> dict[str, 
 
 class FakeAuditedClient:
     forbidden_method: str | None = None
+    bounded_method: str | None = None
+    record_turn_probe = True
+    turn_probe_copies = 1
+    turn_probe_overrides: dict[str, Any] | None = None
     statuses = ("active", "idle")
 
     def __init__(self, socket_path: Path, pass_number: int, audit: list[dict[str, Any]]) -> None:
@@ -78,11 +84,71 @@ class FakeAuditedClient:
         status = self.statuses[min(self.pass_number - 1, len(self.statuses) - 1)]
         return {"data": [native_thread(CHILD_ID, ROOT_ID, status)], "nextCursor": None}
 
+    def stop_request(self, method, params, **kwargs):
+        del kwargs
+        if self.bounded_method is not None:
+            self.audit.append(
+                {
+                    "pass": self.pass_number,
+                    "method": self.bounded_method,
+                    "params": {},
+                }
+            )
+        if self.record_turn_probe:
+            turn_params = dict(params)
+            if self.turn_probe_overrides is not None:
+                turn_params.update(self.turn_probe_overrides)
+            for _ in range(self.turn_probe_copies):
+                self.audit.append(
+                    {
+                        "pass": self.pass_number,
+                        "method": method,
+                        "params": runner.safe_params(method, turn_params),
+                    }
+                )
+        return "ok", {"data": []}
+
     def close(self):
         return None
 
 
 class StageB1LiveCheckTests(unittest.TestCase):
+    def test_audits_each_bounded_transport_entry_once_without_sensitive_ids(self):
+        audit = []
+        client = runner.AuditedClient.__new__(runner.AuditedClient)
+        client._pass_number = 7
+        client._audit = audit
+        turn_params = {
+            "threadId": ROOT_ID,
+            "limit": 1,
+            "sortDirection": "desc",
+            "itemsView": "notLoaded",
+        }
+
+        with patch.object(
+            CodexAppServer, "bounded_request", return_value=("ok", {})
+        ) as transport:
+            client.stop_request("thread/turns/list", turn_params)
+            client.bounded_request("turn/start", {"threadId": CHILD_ID})
+
+        self.assertEqual(transport.call_count, 2)
+        self.assertEqual(
+            [entry["method"] for entry in audit],
+            ["thread/turns/list", "turn/start"],
+        )
+        self.assertEqual(
+            audit[0]["params"],
+            {
+                "hasExactThreadId": True,
+                "limit": 1,
+                "sortDirection": "desc",
+                "itemsView": "notLoaded",
+                "exactParameterNames": True,
+            },
+        )
+        self.assertNotIn(ROOT_ID, json.dumps(audit))
+        self.assertNotIn(CHILD_ID, json.dumps(audit))
+
     def test_rejects_resolved_repository_output_without_writing_or_mutation(self):
         invalid_output = REPO / ".stage-b1-invalid-evidence.json"
         self.assertFalse(invalid_output.exists())
@@ -181,6 +247,58 @@ class StageB1LiveCheckTests(unittest.TestCase):
         self.assertEqual(evidence["result"], "BLOCKED")
         self.assertEqual(evidence["code"], "observer_method_contract_failed")
         self.assertGreater(evidence["forbiddenMethodCount"], 0)
+
+    def test_unauthorized_bounded_method_fails_closed(self):
+        class ForbiddenBoundedClient(FakeAuditedClient):
+            bounded_method = "turn/start"
+
+        exit_code, evidence, _ = self.run_check(ForbiddenBoundedClient)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(evidence["code"], "observer_method_contract_failed")
+        self.assertEqual(evidence["forbiddenMethodCount"], 2)
+
+    def test_missing_authorized_turn_probe_fails_closed(self):
+        class MissingTurnProbeClient(FakeAuditedClient):
+            record_turn_probe = False
+
+        exit_code, evidence, _ = self.run_check(MissingTurnProbeClient)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(evidence["code"], "observer_method_contract_failed")
+        self.assertEqual(evidence["forbiddenMethodCount"], 0)
+
+    def test_duplicate_authorized_turn_probe_fails_closed(self):
+        class DuplicateTurnProbeClient(FakeAuditedClient):
+            turn_probe_copies = 2
+
+        exit_code, evidence, _ = self.run_check(DuplicateTurnProbeClient)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(evidence["code"], "observer_method_contract_failed")
+        self.assertEqual(evidence["forbiddenMethodCount"], 0)
+
+    def test_inexact_turn_probe_params_fail_closed(self):
+        class InexactTurnProbeClient(FakeAuditedClient):
+            turn_probe_overrides = {"limit": 2}
+
+        exit_code, evidence, _ = self.run_check(InexactTurnProbeClient)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(evidence["code"], "observer_method_contract_failed")
+        self.assertEqual(evidence["forbiddenMethodCount"], 0)
+
+    def test_non_integer_turn_probe_limits_fail_closed(self):
+        for malformed_limit in (True, 1.0):
+            with self.subTest(limit=repr(malformed_limit)):
+                class InexactTurnProbeClient(FakeAuditedClient):
+                    turn_probe_overrides = {"limit": malformed_limit}
+
+                exit_code, evidence, _ = self.run_check(InexactTurnProbeClient)
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(evidence["code"], "observer_method_contract_failed")
+                self.assertEqual(evidence["forbiddenMethodCount"], 0)
 
     def test_root_loaded_by_another_server_fails_after_first_pass(self):
         class NotLoadedClient(FakeAuditedClient):
