@@ -212,23 +212,70 @@ test("input sends the exact selected pair and unchanged text with only truthful 
       visibleInputTargetKey,
     };
   });
-  const expectedState = (text) => ({
+  const expectedState = (text, storedDraft = text) => ({
     candidatePair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
     currentDisplay: { name: "Review agent", agentNickname: "Reviewer" },
     currentPair: { observationRunRef: "observation-run-one", agentRef: "agent-beta" },
     domDraft: text,
-    storedDraft: text,
+    storedDraft,
     visibleInputTargetKey: "observation-run-one\u0000agent-beta",
   });
+  const beforeFillDrafts = [
+    ["", null],
+    ["", ""],
+    ["", ""],
+    ["retain on refusal", "retain on refusal"],
+  ];
   for (let index = 0; index < values.length; index += 1) {
+    const beforeFill = await inputState();
+    await page.evaluate(() => {
+      const probe = { count: 0, values: [] };
+      probe.listener = (event) => {
+        probe.count += 1;
+        probe.values.push(event.target.value);
+      };
+      window.__switchstandInputProbe = probe;
+      nativeInput.addEventListener("input", probe.listener, { once: true });
+    });
     await input.fill(values[index]);
-    const beforeRefresh = await inputState();
+    const fillBoundary = await page.evaluate(() => {
+      const probe = window.__switchstandInputProbe;
+      nativeInput.removeEventListener("input", probe.listener);
+      const state = nativeSelectionController.getState();
+      const pair = (value) => value ? {
+        observationRunRef: value.observationRunRef,
+        agentRef: value.agentRef,
+      } : null;
+      const result = {
+        eventCount: probe.count,
+        eventValues: probe.values,
+        state: {
+          candidatePair: pair(state.candidate),
+          currentDisplay: state.currentTarget ? {
+            name: state.currentTarget.name ?? null,
+            agentNickname: state.currentTarget.agentNickname ?? null,
+          } : null,
+          currentPair: pair(state.currentTarget),
+          domDraft: nativeInput.value,
+          storedDraft: nativeInputDrafts.get(visibleInputTargetKey) ?? null,
+          visibleInputTargetKey,
+        },
+      };
+      delete window.__switchstandInputProbe;
+      return result;
+    });
+    const [beforeDomDraft, beforeStoredDraft] = beforeFillDrafts[index];
+    expect({ beforeFill, fillBoundary }).toEqual({
+      beforeFill: expectedState(beforeDomDraft, beforeStoredDraft),
+      fillBoundary: {
+        eventCount: 1,
+        eventValues: [values[index]],
+        state: expectedState(values[index]),
+      },
+    });
     await page.evaluate(() => refresh());
     const afterRefresh = await inputState();
-    expect({ beforeRefresh, afterRefresh }).toEqual({
-      beforeRefresh: expectedState(values[index]),
-      afterRefresh: expectedState(values[index]),
-    });
+    expect(afterRefresh).toEqual(expectedState(values[index]));
     await expect(page.getByText("Current target: Reviewer · Review agent")).toBeVisible();
     await expect(input).toBeVisible();
     await expect(input).toHaveValue(values[index]);
