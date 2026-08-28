@@ -258,7 +258,6 @@ test("a delayed old-turn result cannot hide Stop for a later turn", async ({ pag
   ]);
 });
 
-
 test("forced focus restoration failure emits only one fixed privacy-safe signal", async ({ page }) => {
   await page.clock.install();
   await page.goto(origin);
