@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import http.client
 import io
 import json
@@ -363,6 +363,76 @@ class ServiceLifecycleTests(unittest.TestCase):
         self.assertEqual(events, [
             "server.bind", "runtime.start", "server.serve", "server.close", "runtime.close"
         ])
+
+    def test_legacy_default_and_explicit_loopback_reach_construction(self) -> None:
+        for host_args in ([], ["--host", "localhost"]):
+            with self.subTest(host_args=host_args):
+                events: list[str] = []
+                output = io.StringIO()
+                runtime = LifecycleRuntime(events)
+                argv = [
+                    "--app-server-socket",
+                    "/private/app-server.sock",
+                    "--port",
+                    "0",
+                    *host_args,
+                ]
+                with (
+                    patch("switchstand.service.CodexAdapter", return_value=object()) as adapter,
+                    patch("switchstand.service.Engine", return_value=object()) as engine,
+                    patch("switchstand.service.Runtime", return_value=runtime) as runtime_type,
+                    patch(
+                        "switchstand.service.Server",
+                        lifecycle_server_type(events, None, interrupt=True),
+                    ),
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(main(argv), 0)
+
+                adapter.assert_called_once()
+                engine.assert_called_once()
+                runtime_type.assert_called_once()
+                self.assertEqual(events, [
+                    "server.bind", "runtime.start", "server.serve", "server.close", "runtime.close"
+                ])
+
+    def test_every_mode_rejects_unsafe_hosts_before_runtime_or_server_construction(self) -> None:
+        unsafe_hosts = (
+            ("wildcard", "0.0.0.0"),
+            ("IPv6 wildcard", "::"),
+            ("nonloopback", "192.0.2.10"),
+            ("hostname", "example.com"),
+            ("malformed", "localhost/path"),
+        )
+        for native_args in ([], ["--native-root-thread-id", "private-root"]):
+            for label, host in unsafe_hosts:
+                with self.subTest(mode="native" if native_args else "legacy", label=label):
+                    stderr = io.StringIO()
+                    argv = [
+                        "--app-server-socket",
+                        "/private/app-server.sock",
+                        "--host",
+                        host,
+                        *native_args,
+                    ]
+                    with (
+                        patch("switchstand.service.CodexAdapter") as adapter,
+                        patch("switchstand.service.Engine") as engine,
+                        patch("switchstand.service.Runtime") as runtime_type,
+                        patch("switchstand.service.build_native_runtime") as native_runtime,
+                        patch("switchstand.service.Server") as server,
+                        redirect_stderr(stderr),
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main(argv)
+
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertIn("Switchstand requires a loopback --host", stderr.getvalue())
+                    adapter.assert_not_called()
+                    engine.assert_not_called()
+                    runtime_type.assert_not_called()
+                    native_runtime.assert_not_called()
+                    server.assert_not_called()
 
     def test_runtime_closes_once_after_bind_start_or_serve_failure(self) -> None:
         for failure_stage in ("bind", "start", "serve"):
