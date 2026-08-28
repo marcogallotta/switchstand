@@ -26,6 +26,7 @@ from .native_evidence import NativeEvidence, unavailable_evidence_summary
 
 
 T = TypeVar("T")
+S = TypeVar("S", NativeStopCommitResult, NativeStopStatusResult)
 
 
 class NativeWorkbench:
@@ -171,10 +172,10 @@ class NativeWorkbench:
     def _stop_operation(
         self,
         kind: NativeEvidenceEventKind,
-        operation: Callable[[], T],
+        operation: Callable[[], S],
         unavailable_code: str,
         unavailable_outcome: NativeEvidenceOutcome,
-    ) -> T:
+    ) -> S:
         def outcome_for(result: NativeStopCommitResult | NativeStopStatusResult) -> NativeEvidenceOutcome:
             if result["code"] == unavailable_code:
                 return unavailable_outcome
