@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 import threading
 from typing import Any, Mapping, Protocol
@@ -26,6 +27,7 @@ ROLE_CONTEXT_SCHEMA = "switchstand-role-context-v1"
 TERMINAL_TURN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 MESSAGE_MARKER_PREFIX = "switchstand-message:"
 MESSAGE_MARKER_PATTERN = re.compile(r"\[\[switchstand-message:[A-Za-z0-9._-]+\]\]")
+PERSISTENCE_ERROR = "Switchstand persistence path is unsafe"
 
 
 def _now() -> str:
@@ -36,7 +38,58 @@ def _id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex}"
 
 
+def _persistence_flags(*names: str) -> int:
+    flags = 0
+    for name in names:
+        value = getattr(os, name, None)
+        if not isinstance(value, int):
+            raise RuntimeError(PERSISTENCE_ERROR)
+        flags |= value
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    return flags | (cloexec if isinstance(cloexec, int) else 0)
+
+
+def _require_posix_persistence() -> None:
+    if os.name != "posix" or not all(callable(getattr(os, name, None)) for name in ("geteuid", "fstat", "fchmod", "fsync")):
+        raise RuntimeError(PERSISTENCE_ERROR)
+    _persistence_flags("O_NOFOLLOW", "O_NONBLOCK", "O_DIRECTORY")
+
+
+def _private_fd(path: Path, flags: int) -> int:
+    try:
+        fd = os.open(path, flags | _persistence_flags("O_NOFOLLOW", "O_NONBLOCK"), 0o600)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(PERSISTENCE_ERROR) from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise RuntimeError(PERSISTENCE_ERROR)
+        os.fchmod(fd, 0o600)
+    except Exception as exc:
+        os.close(fd)
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(PERSISTENCE_ERROR) from exc
+    return fd
+
+
+def _read_private_json(path: Path) -> Any:
+    with os.fdopen(_private_fd(path, os.O_RDONLY), "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _append_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    with os.fdopen(_private_fd(path, flags), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(value, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
+    _require_posix_persistence()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     tmp = Path(raw)
@@ -48,6 +101,11 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | _persistence_flags("O_DIRECTORY"))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -242,19 +300,17 @@ class CodexAdapter:
 
 
 class Engine:
-    def __init__(
-        self,
-        state_path: Path | str,
-        adapter: Adapter,
-        *,
-        role_names: tuple[str, str] = ("Role A", "Role B"),
-    ) -> None:
+    def __init__(self, state_path: Path | str, adapter: Adapter, *, role_names: tuple[str, str] = ("Role A", "Role B")) -> None:
         self.state_path = Path(state_path)
         self.events_path = self.state_path.with_suffix(".jsonl")
         self.adapter = adapter
         self._lock = threading.RLock()
-        if self.state_path.exists():
-            value = json.loads(self.state_path.read_text(encoding="utf-8"))
+        _require_posix_persistence()
+        try:
+            value = _read_private_json(self.state_path)
+        except FileNotFoundError:
+            value = None
+        if value is not None:
             if not isinstance(value, dict) or value.get("schema") != STATE_SCHEMA:
                 raise ValueError("Switchstand state has an unsupported schema")
             self.state: dict[str, Any] = value
@@ -273,12 +329,8 @@ class Engine:
             self.state = {
                 "schema": STATE_SCHEMA,
                 "work": {"id": "local-work", "name": "Local Work"},
-                "roles": {
-                    "role-a": self._new_role("role-a", role_names[0]),
-                    "role-b": self._new_role("role-b", role_names[1]),
-                },
-                "messages": [],
-                "attempts": [],
+                "roles": {"role-a": self._new_role("role-a", role_names[0]), "role-b": self._new_role("role-b", role_names[1])},
+                "messages": [], "attempts": [],
                 "updated_at": _now(),
             }
             self._save("work_created", work_id="local-work")
@@ -286,15 +338,9 @@ class Engine:
     @staticmethod
     def _new_role(role_id: str, name: str) -> dict[str, Any]:
         return {
-            "id": role_id,
-            "name": name,
-            "generation": 1,
-            "current_attempt_id": None,
+            "id": role_id, "name": name, "generation": 1, "current_attempt_id": None,
             "checkpoint": {
-                "accepted_message_ids": [],
-                "latest_correction": None,
-                "latest_result": None,
-                "updated_at": None,
+                "accepted_message_ids": [], "latest_correction": None, "latest_result": None, "updated_at": None,
             },
         }
 
@@ -303,10 +349,7 @@ class Engine:
         _atomic_json(self.state_path, self.state)
         record = {"schema": EVENT_SCHEMA, "at": _now(), "event": event, **values}
         self.events_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        _append_private_json(self.events_path, record)
 
     def _role(self, role_id: str) -> dict[str, Any]:
         role = self.state["roles"].get(role_id)
@@ -328,8 +371,7 @@ class Engine:
 
     def _messages_for(self, role_id: str) -> list[dict[str, Any]]:
         return sorted(
-            (item for item in self.state["messages"] if item["role_id"] == role_id),
-            key=lambda item: int(item["sequence"]),
+            (item for item in self.state["messages"] if item["role_id"] == role_id), key=lambda item: int(item["sequence"])
         )
 
     def _context(self, role: Mapping[str, Any]) -> dict[str, Any]:
@@ -353,13 +395,8 @@ class Engine:
         queued = any(item["status"] == "queued" for item in self._messages_for(str(role["id"])))
         if attempt is None:
             return "queued" if queued else "idle"
-        return {
-            "running": "busy",
-            "waiting": "queued" if queued else "waiting",
-            "starting": "busy",
-            "stop_pending": "busy",
-            "stopped": "dead",
-        }.get(str(attempt["status"]), str(attempt["status"]))
+        statuses = {"running": "busy", "waiting": "queued" if queued else "waiting", "starting": "busy"}
+        return {**statuses, "stop_pending": "busy", "stopped": "dead"}.get(str(attempt["status"]), str(attempt["status"]))
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -367,9 +404,7 @@ class Engine:
             for role in value["roles"].values():
                 source = self._role(str(role["id"]))
                 role["status"] = self._role_status(source)
-                role["queued_count"] = sum(
-                    item["status"] == "queued" for item in self._messages_for(str(role["id"]))
-                )
+                role["queued_count"] = sum(item["status"] == "queued" for item in self._messages_for(str(role["id"])))
             return value
 
     def enqueue(self, role_id: str, text: str, *, kind: str = "message") -> dict[str, Any]:
@@ -381,18 +416,9 @@ class Engine:
         with self._lock:
             role = self._role(role_id)
             message = {
-                "id": _id("message"),
-                "role_id": role_id,
-                "sequence": len(self._messages_for(role_id)) + 1,
-                "kind": kind,
-                "text": text,
-                "status": "queued",
-                "accepted_at": _now(),
-                "delivered_at": None,
-                "completed_at": None,
-                "attempt_id": None,
-                "turn_id": None,
-                "result": None,
+                "id": _id("message"), "role_id": role_id, "sequence": len(self._messages_for(role_id)) + 1,
+                "kind": kind, "text": text, "status": "queued", "accepted_at": _now(),
+                "delivered_at": None, "completed_at": None, "attempt_id": None, "turn_id": None, "result": None,
             }
             self.state["messages"].append(message)
             if kind == "correction":
@@ -406,21 +432,10 @@ class Engine:
 
     def _create_attempt_locked(self, role: dict[str, Any]) -> dict[str, Any]:
         attempt = {
-            "id": _id("attempt"),
-            "role_id": role["id"],
-            "generation": role["generation"],
-            "thread_id": None,
-            "turn_id": None,
-            "message_id": None,
-            "status": "starting",
-            "fence_closed": False,
-            "created_at": _now(),
-            "started_at": None,
-            "finished_at": None,
-            "output": None,
-            "stale_output": None,
-            "error": None,
-            "terminal_observed": False,
+            "id": _id("attempt"), "role_id": role["id"], "generation": role["generation"],
+            "thread_id": None, "turn_id": None, "message_id": None, "status": "starting",
+            "fence_closed": False, "created_at": _now(), "started_at": None, "finished_at": None,
+            "output": None, "stale_output": None, "error": None, "terminal_observed": False,
         }
         self.state["attempts"].append(attempt)
         role["current_attempt_id"] = attempt["id"]
@@ -514,15 +529,10 @@ class Engine:
             self.stop(attempt_id)
             return self.replace(attempt_id)
 
-    def _accept_completion_locked(
-        self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any
-    ) -> None:
+    def _accept_completion_locked(self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any) -> None:
         role = self._role(attempt["role_id"])
-        current = (
-            role.get("current_attempt_id") == attempt["id"]
-            and int(role["generation"]) == int(attempt["generation"])
-            and not attempt["fence_closed"]
-        )
+        current = role.get("current_attempt_id") == attempt["id"] and int(role["generation"]) == int(attempt["generation"])
+        current = current and not attempt["fence_closed"]
         attempt["finished_at"] = _now()
         attempt["terminal_observed"] = True
         if status == "completed" and current:
@@ -586,11 +596,9 @@ class Engine:
                 self._save("delivery_reconciled", message_id=message["id"], attempt_id=attempt["id"], turn_id=attempt["turn_id"])
 
             for attempt in list(self.state["attempts"]):
-                if (
-                    not attempt.get("turn_id")
-                    or attempt.get("terminal_observed")
-                    or attempt["status"] not in {"running", "stopped", "stop_pending", "unknown"}
-                ):
+                if not attempt.get("turn_id") or attempt.get("terminal_observed"):
+                    continue
+                if attempt["status"] not in {"running", "stopped", "stop_pending", "unknown"}:
                     continue
                 message = self._message(attempt["message_id"])
                 try:
