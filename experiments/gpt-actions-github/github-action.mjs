@@ -4,14 +4,21 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 export const DEFAULT_POLICY = Object.freeze({
   repository: "marcogallotta/gpt-actions-github-fixture",
   baseBranch: "main",
-  branchPrefix: "agent/gpt-actions-github-",
+  candidateBranch: "gpt-actions-controlled-github-feasibility",
   pathPrefix: "experiments/gpt-actions-github/",
-  maxBodyBytes: 64 * 1024,
-  maxFileBytes: 16 * 1024,
-  maxTotalBytes: 48 * 1024,
-  maxFiles: 20,
+  initializeOperationId: "initialize-empty-fixture-v1",
+  initializePath: "experiments/gpt-actions-github/README.md",
+  initializeContent: "# GPT Actions GitHub fixture\n",
+  maxBodyBytes: 32 * 1024,
+  maxFileBytes: 4 * 1024,
+  maxTotalBytes: 16 * 1024,
+  maxFiles: 5,
   allowFaultInjection: true,
 });
+
+const COMMIT_KEYS = ["operation_id", "repository", "branch", "expected_head_sha", "mode", "message", "files", "test_fail_after_commit"];
+const PULL_KEYS = ["operation_id", "repository", "branch", "base", "expected_head_sha", "mode", "pull_number", "title", "body", "draft", "test_fail_after_mutation"];
+const INIT_KEYS = ["operation_id", "repository", "test_fail_after_mutation"];
 
 function json(status, body) {
   return new Response(JSON.stringify(body), {
@@ -38,10 +45,20 @@ function byteLength(value) {
   return new TextEncoder().encode(value).length;
 }
 
+function exactKeys(value, allowed, required) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key)) && keys.every((key) => allowed.includes(key));
+}
+
+function invalid(error, status = 400) {
+  throw Object.assign(new Error(error), { status });
+}
+
 function decodeFile(file, policy) {
-  if (!file || typeof file.path !== "string" || typeof file.content_base64 !== "string") {
-    throw Object.assign(new Error("invalid_file"), { status: 400 });
-  }
+  if (!exactKeys(file, ["path", "content_base64"], ["path", "content_base64"]) ||
+      typeof file.path !== "string" || typeof file.content_base64 !== "string") invalid("invalid_file");
+  if (byteLength(file.path) > 240) invalid("invalid_path");
   if (file.path.includes("\\") || file.path.startsWith("/") || file.path.split("/").some((p) => !p || p === "." || p === "..")) {
     throw Object.assign(new Error("forbidden_path"), { status: 403 });
   }
@@ -58,14 +75,16 @@ function decodeFile(file, policy) {
   if (bytes.length > policy.maxFileBytes) {
     throw Object.assign(new Error("file_too_large"), { status: 413 });
   }
+  try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { invalid("invalid_utf8"); }
   return { path: file.path, bytes, content_base64: normalized };
 }
 
 function validateCommit(input, policy, bodyBytes) {
   if (bodyBytes > policy.maxBodyBytes) throw Object.assign(new Error("request_too_large"), { status: 413 });
+  if (!exactKeys(input, COMMIT_KEYS, COMMIT_KEYS.slice(0, 7))) invalid("invalid_request");
   if (!input || !OP_RE.test(input.operation_id || "")) throw Object.assign(new Error("invalid_operation_id"), { status: 400 });
   if (input.repository !== policy.repository) throw Object.assign(new Error("forbidden_repository"), { status: 403 });
-  if (typeof input.branch !== "string" || !input.branch.startsWith(policy.branchPrefix)) {
+  if (input.branch !== policy.candidateBranch) {
     throw Object.assign(new Error("forbidden_branch"), { status: 403 });
   }
   if (!SHA_RE.test(input.expected_head_sha || "")) throw Object.assign(new Error("invalid_expected_head_sha"), { status: 400 });
@@ -88,10 +107,11 @@ function validateCommit(input, policy, bodyBytes) {
 
 function validatePull(input, policy, bodyBytes) {
   if (bodyBytes > policy.maxBodyBytes) throw Object.assign(new Error("request_too_large"), { status: 413 });
+  if (!exactKeys(input, PULL_KEYS, ["operation_id", "repository", "branch", "base", "expected_head_sha", "mode", "title", "body"])) invalid("invalid_request");
   if (!input || !OP_RE.test(input.operation_id || "")) throw Object.assign(new Error("invalid_operation_id"), { status: 400 });
   if (input.repository !== policy.repository) throw Object.assign(new Error("forbidden_repository"), { status: 403 });
   if (input.base !== policy.baseBranch) throw Object.assign(new Error("forbidden_base"), { status: 403 });
-  if (typeof input.branch !== "string" || !input.branch.startsWith(policy.branchPrefix)) {
+  if (input.branch !== policy.candidateBranch) {
     throw Object.assign(new Error("forbidden_branch"), { status: 403 });
   }
   if (!SHA_RE.test(input.expected_head_sha || "")) throw Object.assign(new Error("invalid_expected_head_sha"), { status: 400 });
@@ -109,6 +129,15 @@ function validatePull(input, policy, bodyBytes) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
   return { ...input, title: input.title.trim(), draft: input.mode === "create" ? Boolean(input.draft) : undefined };
+}
+
+function validateInitialize(input, policy, bodyBytes) {
+  if (bodyBytes > policy.maxBodyBytes) invalid("request_too_large", 413);
+  if (!exactKeys(input, INIT_KEYS, ["operation_id", "repository"])) invalid("invalid_request");
+  if (input.operation_id !== policy.initializeOperationId) invalid("invalid_operation_id");
+  if (input.repository !== policy.repository) invalid("forbidden_repository", 403);
+  if (input.test_fail_after_mutation && !policy.allowFaultInjection) invalid("fault_injection_disabled", 403);
+  return input;
 }
 
 function ghPath(repo, suffix) {
@@ -134,6 +163,70 @@ async function gh(call, token, method, url, body) {
 async function refSha(call, token, repo, branch) {
   const value = await gh(call, token, "GET", ghPath(repo, `/git/ref/heads/${encodeURIComponent(branch)}`));
   return value.object.sha;
+}
+
+async function allRefs(call, token, repo) {
+  try {
+    const value = await gh(call, token, "GET", ghPath(repo, "/git/refs"));
+    return Array.isArray(value) ? value : [];
+  } catch (error) {
+    if (error.status === 409) return [];
+    throw error;
+  }
+}
+
+function encodedPath(path) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+async function reconcileInitialization({ input, record, store, call, token, policy }) {
+  const suffix = `/contents/${encodedPath(policy.initializePath)}?ref=${encodeURIComponent(policy.baseBranch)}`;
+  let existing;
+  try { existing = await gh(call, token, "GET", ghPath(policy.repository, suffix)); }
+  catch (error) {
+    if (error.status === 404) invalid("already_initialized", 409);
+    throw error;
+  }
+  const expected = btoa(policy.initializeContent).replace(/=+$/, "");
+  const actual = typeof existing.content === "string" ? existing.content.replace(/\s/g, "").replace(/=+$/, "") : "";
+  if (existing.type !== "file" || actual !== expected) invalid("already_initialized", 409);
+  const commitSha = await refSha(call, token, policy.repository, policy.baseBranch);
+  if (!SHA_RE.test(commitSha)) throw new Error("github_invalid_response");
+  await store.saveCommit(input.operation_id, commitSha, record.attempt);
+  return store.complete(input.operation_id, { commit_sha: commitSha, branch: policy.baseBranch, recovered: true }, record.attempt);
+}
+
+async function executeInitialize({ input, record, created, store, call, token, policy }) {
+  const repository = await gh(call, token, "GET", ghPath(policy.repository, ""));
+  if (repository.default_branch !== policy.baseBranch) invalid("forbidden_base", 403);
+  const refs = await allRefs(call, token, policy.repository);
+  if (record.commit_sha) {
+    const current = await refSha(call, token, policy.repository, policy.baseBranch);
+    if (current !== record.commit_sha) invalid("already_initialized", 409);
+    return store.complete(input.operation_id, { commit_sha: current, branch: policy.baseBranch, recovered: true }, record.attempt);
+  }
+  if (refs.length) {
+    if (created || !record.mutation_started) invalid("already_initialized", 409);
+    return reconcileInitialization({ input, record, store, call, token, policy });
+  }
+  await store.markMutationStarted(input.operation_id, record.attempt);
+  let initialized;
+  try {
+    initialized = await gh(call, token, "PUT", ghPath(policy.repository, `/contents/${encodedPath(policy.initializePath)}`), {
+      message: "Initialize GPT Actions GitHub fixture",
+      content: btoa(policy.initializeContent),
+    });
+  } catch (error) {
+    if (error.status === 409 || error.status === 422) {
+      return reconcileInitialization({ input, record, store, call, token, policy });
+    }
+    throw error;
+  }
+  const commitSha = initialized.commit?.sha;
+  if (!SHA_RE.test(commitSha || "")) throw new Error("github_invalid_response");
+  await store.saveCommit(input.operation_id, commitSha, record.attempt);
+  if (input.test_fail_after_mutation) invalid("injected_after_mutation", 503);
+  return store.complete(input.operation_id, { commit_sha: commitSha, branch: policy.baseBranch, recovered: false }, record.attempt);
 }
 
 async function executeCommit({ input, record, store, call, token, policy }) {
@@ -255,27 +348,43 @@ async function executePull({ input, record, store, call, token, policy }) {
   }, record.attempt);
 }
 
+async function requestValue(request, limit) {
+  const declared = request.headers.get("content-length");
+  if (/^\d+$/.test(declared || "") && Number(declared) > limit) invalid("request_too_large", 413);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > limit) invalid("request_too_large", 413);
+  let raw;
+  try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { invalid("invalid_json"); }
+  try { return { input: JSON.parse(raw), bodyBytes: bytes.length }; }
+  catch { invalid("invalid_json"); }
+}
+
 export function createGithubAction({ store, githubFetch = fetch, token, policy = DEFAULT_POLICY }) {
   if (!token) throw new Error("missing_server_github_token");
   return async function handle(request) {
     const pathname = new URL(request.url).pathname;
-    if (request.method !== "POST" || !["/v1/github/commit", "/v1/github/pull"].includes(pathname)) return json(404, { error: "not_found" });
+    const routes = ["/v1/github/initialize", "/v1/github/commit", "/v1/github/pull"];
+    if (request.method !== "POST" || !routes.includes(pathname)) return json(404, { error: "not_found" });
     try {
-      const raw = await request.text();
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch { return json(400, { error: "invalid_json" }); }
-      const input = pathname.endsWith("/commit")
-        ? validateCommit(parsed, policy, byteLength(raw))
-        : validatePull(parsed, policy, byteLength(raw));
+      const value = await requestValue(request, policy.maxBodyBytes);
+      const input = pathname.endsWith("/initialize")
+        ? validateInitialize(value.input, policy, value.bodyBytes)
+        : pathname.endsWith("/commit")
+          ? validateCommit(value.input, policy, value.bodyBytes)
+          : validatePull(value.input, policy, value.bodyBytes);
       const payloadHash = await digest(input);
       const started = await store.begin(input.operation_id, payloadHash);
       if (started.conflict) return json(409, { error: "idempotency_conflict" });
       if (started.busy) return json(409, { error: "operation_in_progress" });
       if (started.record.status === "complete") return json(200, { ...started.record.result, created: false });
       try {
-        const result = pathname.endsWith("/commit")
-          ? await executeCommit({ input, record: started.record, store, call: githubFetch, token, policy })
-          : await executePull({ input, record: started.record, store, call: githubFetch, token, policy });
+        const context = { input, record: started.record, store, call: githubFetch, token, policy };
+        const result = pathname.endsWith("/initialize")
+          ? await executeInitialize({ ...context, created: started.created })
+          : pathname.endsWith("/commit")
+            ? await executeCommit(context)
+            : await executePull(context);
         return json(200, { ...result, created: started.created });
       } catch (error) {
         await store.release(input.operation_id, started.record.attempt);
@@ -302,9 +411,14 @@ export class MemoryOperationStore {
       existing.attempt += 1;
       return { created: false, record: existing };
     }
-    const record = { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result: null, leased: true, attempt: 1 };
+    const record = { operation_id: id, payload_hash: hash, status: "running", mutation_started: 0, commit_sha: null, result: null, leased: true, attempt: 1 };
     this.records.set(id, record);
     return { created: true, record };
+  }
+  async markMutationStarted(id, attempt) {
+    const record = this.records.get(id);
+    if (!record || record.status !== "running" || record.attempt !== attempt) invalid("stale_operation_attempt", 409);
+    record.mutation_started = 1;
   }
   async saveCommit(id, sha, attempt) {
     const record = this.records.get(id);
@@ -329,7 +443,7 @@ export class D1OperationStore {
       "INSERT OR IGNORE INTO github_operations(operation_id,payload_hash,status,lease_until,attempt) VALUES(?,?,'running',unixepoch()+30,1)",
     ).bind(id, hash).run();
     let row = await this.db.prepare(
-      "SELECT operation_id,payload_hash,status,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
+      "SELECT operation_id,payload_hash,status,mutation_started,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
     ).bind(id).first();
     if (!row) throw new Error("operation_store_unavailable");
     if (row.payload_hash !== hash) return { conflict: true };
@@ -343,7 +457,7 @@ export class D1OperationStore {
       ).bind(id).run();
       if (Number(claimed.meta?.changes || 0) !== 1) return { busy: true };
       row = await this.db.prepare(
-        "SELECT operation_id,payload_hash,status,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
+        "SELECT operation_id,payload_hash,status,mutation_started,commit_sha,result_json,lease_until,attempt FROM github_operations WHERE operation_id=?",
       ).bind(id).first();
     }
     return {
@@ -353,6 +467,10 @@ export class D1OperationStore {
         result: row.result_json ? JSON.parse(row.result_json) : null,
       },
     };
+  }
+  async markMutationStarted(id, attempt) {
+    const result = await this.db.prepare("UPDATE github_operations SET mutation_started=1,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND attempt=?").bind(id, attempt).run();
+    if (Number(result.meta?.changes || 0) !== 1) invalid("stale_operation_attempt", 409);
   }
   async saveCommit(id, sha, attempt) {
     const result = await this.db.prepare("UPDATE github_operations SET commit_sha=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status='running' AND attempt=?").bind(sha, id, attempt).run();
@@ -369,17 +487,17 @@ export class D1OperationStore {
 }
 
 export function createHostedGithubHandler(env, options = {}) {
-  const action = createGithubAction({
-    store: new D1OperationStore(env.DB),
-    githubFetch: options.githubFetch || fetch,
-    token: env.GITHUB_TOKEN,
-    policy: options.policy || DEFAULT_POLICY,
-  });
   return async (request) => {
     const authorization = request.headers.get("authorization") || "";
     if (!env.ACTION_KEY || authorization !== `Bearer ${env.ACTION_KEY}`) {
       return json(401, { error: "unauthorized" });
     }
+    const action = createGithubAction({
+      store: new D1OperationStore(env.DB),
+      githubFetch: options.githubFetch || fetch,
+      token: env.GITHUB_TOKEN,
+      policy: options.policy || DEFAULT_POLICY,
+    });
     return action(request);
   };
 }
