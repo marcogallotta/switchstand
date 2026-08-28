@@ -102,15 +102,10 @@ NATIVE_ROUTES = (
         NativeInputResult,
     ),
     NativeRoute(
-        "POST",
-        "/api/native-evidence",
-        NATIVE_EVIDENCE_CONTROL_VALUE,
-        (
-            RequestField("version", "native-evidence-version"),
-            RequestField("event", "native-evidence-event"),
-        ),
-        "record_evidence",
-        NativeEvidenceResult,
+        "POST", "/api/native-evidence", NATIVE_EVIDENCE_CONTROL_VALUE,
+        (RequestField("version", "native-evidence-version"),
+            RequestField("event", "native-evidence-event")),
+        "record_evidence", NativeEvidenceResult,
     ),
     NativeRoute(
         "POST",
