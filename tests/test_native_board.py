@@ -196,6 +196,8 @@ class NativeBoardTests(unittest.TestCase):
 
         board.poll_once()
         before = board.snapshot()["agents"]
+        identities_before = dict(board._target_identities)
+        reverse_before = dict(board._native_ids_by_target)
         board.poll_once()
         after = board.snapshot()
 
@@ -208,6 +210,8 @@ class NativeBoardTests(unittest.TestCase):
         self.assertEqual(
             [{**agent, "turnStatus": "unknown"} for agent in before], retained
         )
+        self.assertEqual(board._target_identities, identities_before)
+        self.assertEqual(board._native_ids_by_target, reverse_before)
         self.assertFalse(after["observation"]["connected"])
 
     def test_stop_resolution_requires_current_connected_active_board_evidence(self):
@@ -307,6 +311,8 @@ class NativeBoardTests(unittest.TestCase):
             pair, now=100.0, maximum_observation_age_seconds=10.0
         )
         records_before = tuple(board._target_records)
+        identities_before = dict(board._target_identities)
+        reverse_before = dict(board._native_ids_by_target)
 
         clock.value = 105.0
         board.poll_once()
@@ -320,6 +326,8 @@ class NativeBoardTests(unittest.TestCase):
         self.assertEqual(failed["observation"]["completedAt"], before["observation"]["completedAt"])
         self.assertEqual(failed["trail"], before["trail"])
         self.assertEqual(tuple(board._target_records), records_before)
+        self.assertEqual(board._target_identities, identities_before)
+        self.assertEqual(board._native_ids_by_target, reverse_before)
         self.assertEqual(failed_shape["selection"], pair)
         self.assertEqual(selection_error_code(failed_shape), "APP_SERVER_DISCONNECTED")
         self.assertEqual(

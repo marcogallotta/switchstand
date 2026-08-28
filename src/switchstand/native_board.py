@@ -98,6 +98,7 @@ class NativeBoard:
         self._maximum_observation_age = float(maximum_observation_age_seconds)
         self._wall_clock = wall_clock
         self._monotonic = monotonic
+        self._poll_lock = threading.Lock()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -131,24 +132,53 @@ class NativeBoard:
         while not self._stop.wait(self._poll_interval):
             self.poll_once()
 
-    def _selection_observation(self) -> dict[str, Any]:
+    @staticmethod
+    def _previously_issued(agent_ref: Any, issuance_watermark: int) -> bool:
+        """Recognize one canonical run-local ref without parsing hostile integers."""
+        if not isinstance(agent_ref, str) or not agent_ref.startswith("agent-"):
+            return False
+        suffix = agent_ref.removeprefix("agent-")
+        maximum_digits = len(str(max(1, issuance_watermark - 1)))
+        if (
+            not suffix
+            or len(suffix) > maximum_digits
+            or suffix[0] == "0"
+            or any(character < "0" or character > "9" for character in suffix)
+        ):
+            return False
+        return int(suffix) < issuance_watermark
+
+    def _selection_observation(self, agent_ref: Any = None) -> dict[str, Any]:
         if self._projection is None:
             labels: Mapping[str, str] = {}
+            issuance_watermark = 1
             endpoints: Mapping[str, Mapping[str, Any]] = {}
         else:
-            labels, _, endpoints, _ = _private_projection_state(self._projection)
+            labels, issuance_watermark, _, endpoints, _ = _private_projection_state(
+                self._projection
+            )
         present = set(endpoints)
+        records = [
+            {"agentRef": ref, "present": ref in present}
+            for ref in labels.values()
+        ]
+        if (
+            self._previously_issued(agent_ref, issuance_watermark)
+            and agent_ref not in present
+        ):
+            records.append({"agentRef": agent_ref, "present": False})
         return {
             "observationRunRef": self._observation_run_ref,
             "connected": self._connected and not self._closed,
             "latestCompletePassCompletedAt": self._completed_at,
-            "agentRecords": [
-                {"agentRef": ref, "present": ref in present}
-                for ref in labels.values()
-            ],
+            "agentRecords": records,
         }
 
     def poll_once(self) -> None:
+        with self._poll_lock:
+            self._poll_once_serialized()
+
+    def _poll_once_serialized(self) -> None:
         with self._lock:
             if self._closed:
                 return
@@ -169,7 +199,7 @@ class NativeBoard:
                 completed_monotonic=completed_mono,
                 trail_limit=self._trail_limit,
             )
-            _, _, _, projected_targets = _private_projection_state(projection)
+            _, _, _, _, projected_targets = _private_projection_state(projection)
             probe: tuple[str, str, float] | None = None
             if projected_targets:
                 index = self._turn_probe_offset % len(projected_targets)
@@ -194,15 +224,19 @@ class NativeBoard:
                 if self._closed:
                     return
                 target_records = []
-                _, _, _, targets = _private_projection_state(projection)
+                target_identities: dict[str, ExactCurrentTarget] = {}
+                native_ids_by_target: dict[ExactCurrentTarget, str] = {}
+                _, _, _, _, targets = _private_projection_state(projection)
                 for agent_ref, native_id in targets:
                     target = self._target_identities.get(native_id)
                     if target is None:
                         target = ExactCurrentTarget()
-                        self._target_identities[native_id] = target
-                        self._native_ids_by_target[target] = native_id
+                    target_identities[native_id] = target
+                    native_ids_by_target[target] = native_id
                     target_records.append(PrivateTargetRecord(agent_ref, target))
                 self._projection = projection
+                self._target_identities = target_identities
+                self._native_ids_by_target = native_ids_by_target
                 self._target_records = target_records
                 present_refs = {record.agent_ref for record in target_records}
                 self._turn_observations = {
@@ -273,7 +307,9 @@ class NativeBoard:
         with self._lock:
             return resolve_exact_current_target(
                 selection,
-                self._selection_observation(),
+                self._selection_observation(
+                    selection.get("agentRef") if isinstance(selection, Mapping) else None
+                ),
                 tuple(self._target_records),
                 now=now,
                 maximum_observation_age_seconds=maximum_observation_age_seconds,
@@ -326,7 +362,7 @@ class NativeBoard:
             }
             return cast(NativeBrowserSelectionResult, browser_selection_shape(
                 selection,
-                self._selection_observation(),
+                self._selection_observation(agent_ref),
                 now=now,
                 maximum_observation_age_seconds=maximum_observation_age_seconds,
             ))
@@ -339,7 +375,7 @@ class NativeBoard:
             }
             target = resolve_exact_current_target(
                 selection,
-                self._selection_observation(),
+                self._selection_observation(agent_ref),
                 tuple(self._target_records),
                 now=self._wall_clock(),
                 maximum_observation_age_seconds=self._maximum_observation_age,

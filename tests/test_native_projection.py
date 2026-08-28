@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import unittest
 
-from switchstand.native_projection import project_complete_tree
+from switchstand.native_projection import _private_projection_state, project_complete_tree
 
 
 def thread(
@@ -93,6 +93,41 @@ class NativeProjectionTests(unittest.TestCase):
         self.assertEqual(result.agents[0]["activeFlags"], [])
         self.assertNotIn("done", result.agents[0])
         self.assertNotIn("completed", result.agents[0])
+
+    def test_labels_are_current_only_stable_while_present_and_never_reused(self):
+        first = project_complete_tree(
+            [thread("root"), thread("child-a", parent="root")],
+            prior_projection=None,
+            completed_at=100.0,
+            completed_monotonic=50.0,
+            trail_limit=2,
+        )
+        second = project_complete_tree(
+            [thread("root", updated_at=101.0), thread("child-b", parent="root")],
+            prior_projection=first,
+            completed_at=101.0,
+            completed_monotonic=51.0,
+            trail_limit=2,
+        )
+        third = project_complete_tree(
+            [thread("root", updated_at=102.0), thread("child-a", parent="root")],
+            prior_projection=second,
+            completed_at=102.0,
+            completed_monotonic=52.0,
+            trail_limit=2,
+        )
+
+        first_labels, first_watermark, _, _, _ = _private_projection_state(first)
+        second_labels, second_watermark, _, _, _ = _private_projection_state(second)
+        third_labels, third_watermark, _, _, _ = _private_projection_state(third)
+        self.assertEqual(first_labels, {"root": "agent-1", "child-a": "agent-2"})
+        self.assertEqual(second_labels, {"root": "agent-1", "child-b": "agent-3"})
+        self.assertEqual(third_labels, {"root": "agent-1", "child-a": "agent-4"})
+        self.assertEqual((first_watermark, second_watermark, third_watermark), (3, 4, 5))
+        self.assertTrue(all(len(labels) == 2 for labels in (
+            first_labels, second_labels, third_labels
+        )))
+        self.assertLessEqual(len(third.trail), 2)
 
 
 if __name__ == "__main__":
