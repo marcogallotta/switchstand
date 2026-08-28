@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { createGithubAction, D1OperationStore, MemoryOperationStore } from "./github-action.mjs";
+import { createGithubAction, createHostedGithubHandler, DEFAULT_POLICY, D1OperationStore, MemoryOperationStore } from "./github-action.mjs";
 
 const expected = "1".repeat(40);
 const commit = "2".repeat(40);
 const tree = "3".repeat(40);
 const blob = "4".repeat(40);
 
+test("hosted authentication rejects requests before requiring GitHub authority", async () => {
+  const handler = createHostedGithubHandler({ ACTION_KEY: "action-only" });
+  const missing = await handler(new Request("https://action.test/v1/github/commit", { method: "POST" }));
+  const wrong = await handler(new Request("https://action.test/v1/github/commit", {
+    method: "POST",
+    headers: { authorization: "Bearer wrong" },
+  }));
+  assert.equal(missing.status, 401);
+  assert.equal(wrong.status, 401);
+});
+
 function request(overrides = {}) {
   const body = {
     operation_id: "op-github-0001",
     repository: "marcogallotta/gpt-actions-github-fixture",
-    branch: "agent/gpt-actions-github-proof",
+    branch: "gpt-actions-controlled-github-feasibility",
     expected_head_sha: expected,
     mode: "create",
     message: "Add GPT Action feasibility fixture",
@@ -52,7 +64,7 @@ function pullRequest(overrides = {}) {
     body: JSON.stringify({
       operation_id: "op-pull-000001",
       repository: "marcogallotta/gpt-actions-github-fixture",
-      branch: "agent/gpt-actions-github-proof",
+      branch: "gpt-actions-controlled-github-feasibility",
       base: "main",
       expected_head_sha: commit,
       mode: "create",
@@ -162,6 +174,52 @@ test("rejects forbidden repository, branch, path, and changed retry", async () =
   assert.equal((await body(conflict)).error, "idempotency_conflict");
 });
 
+test("enforces exact request shape, exact branch, and UTF-8 text", async () => {
+  let index = 0;
+  for (const [change, error, status] of [
+    [{ unexpected: true }, "invalid_request", 400],
+    [{ operation_id: "bad id" }, "invalid_operation_id", 400],
+    [{ branch: "agent/gpt-actions-github-proof" }, "forbidden_branch", 403],
+    [{ message: " padded" }, "invalid_message", 400],
+    [{ test_fail_after_commit: "yes" }, "invalid_request", 400],
+    [{ files: [{ path: "experiments/gpt-actions-github/sp ace.txt", content_base64: "YQ==" }] }, "invalid_path", 400],
+    [{ files: [{ path: "experiments/gpt-actions-github/bad.txt", content_base64: "/w==" }] }, "invalid_utf8", 400],
+  ]) {
+    const gh = fakeGithub();
+    const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+    const response = await action(request({ operation_id: `shape-test-000${index++}`, ...change }));
+    assert.equal(response.status, status);
+    assert.equal((await body(response)).error, error);
+    assert.equal(gh.calls.length, 0);
+  }
+});
+
+test("enforces file-count, total-content, and request limits before GitHub", async () => {
+  const cases = [
+    {
+      operation_id: "limit-files-0001",
+      files: Array.from({ length: 6 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: "YQ==" })),
+      error: "invalid_file_count",
+      status: 400,
+    },
+    {
+      operation_id: "limit-total-0001",
+      files: Array.from({ length: 5 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: Buffer.alloc(3400, "a").toString("base64") })),
+      error: "content_too_large",
+      status: 413,
+    },
+    { operation_id: "limit-body-00001", message: "x".repeat(33000), error: "request_too_large", status: 413 },
+  ];
+  for (const { error, status, ...change } of cases) {
+    const gh = fakeGithub();
+    const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+    const response = await action(request(change));
+    assert.equal(response.status, status);
+    assert.equal((await body(response)).error, error);
+    assert.equal(gh.calls.length, 0);
+  }
+});
+
 test("rejects stale update without moving the ref", async () => {
   const store = new MemoryOperationStore();
   const gh = fakeGithub({ branchExists: true });
@@ -201,7 +259,7 @@ test("rejects oversized files before any GitHub call", async () => {
   const store = new MemoryOperationStore();
   const gh = fakeGithub();
   const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
-  const response = await action(request({ files: [{ path: "experiments/gpt-actions-github/big.bin", content_base64: Buffer.alloc(16 * 1024 + 1).toString("base64") }] }));
+  const response = await action(request({ files: [{ path: "experiments/gpt-actions-github/big.txt", content_base64: Buffer.alloc(4 * 1024 + 1, "a").toString("base64") }] }));
   assert.equal(response.status, 413);
   assert.equal((await body(response)).error, "file_too_large");
   assert.equal(gh.calls.length, 0);
@@ -220,6 +278,15 @@ test("creates a draft PR and makes exact retries idempotent", async () => {
   assert.equal(gh.calls.length, count);
 });
 
+test("PR create defaults draft to true and counts Unicode code points", async () => {
+  const gh = fakePullGithub();
+  const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+  const response = await action(pullRequest({ draft: undefined, title: "😀".repeat(120) }));
+  assert.equal(response.status, 200);
+  const create = gh.calls.find((call) => call.method === "POST" && call.path.endsWith("/pulls"));
+  assert.equal(create.body.draft, true);
+});
+
 test("PR policy rejects forbidden base and stale head", async () => {
   const store = new MemoryOperationStore();
   const gh = fakePullGithub();
@@ -230,6 +297,36 @@ test("PR policy rejects forbidden base and stale head", async () => {
   const stale = await action(pullRequest({ expected_head_sha: "9".repeat(40) }));
   assert.equal(stale.status, 409);
   assert.equal((await body(stale)).error, "stale_head");
+});
+
+test("PR validation requires exact text and a pull number for updates", async () => {
+  for (const [change, error] of [
+    [{ operation_id: "bad id" }, "invalid_operation_id"],
+    [{ title: " padded" }, "invalid_title"],
+    [{ draft: "yes" }, "invalid_request"],
+    [{ test_fail_after_mutation: 1 }, "invalid_request"],
+    [{ mode: "update" }, "invalid_pull_number"],
+  ]) {
+    const gh = fakePullGithub();
+    const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+    const response = await action(pullRequest(change));
+    assert.equal(response.status, 400);
+    assert.equal((await body(response)).error, error);
+    assert.equal(gh.calls.length, 0);
+  }
+});
+
+test("OpenAPI exposes only runtime routes and mirrors generated-call constraints", async () => {
+  const schema = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+  assert.equal(schema.includes("/v1/github/initialize"), false);
+  assert.match(schema, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{7,79\}\$/);
+  assert.match(schema, /gpt-actions-controlled-github-feasibility/);
+  assert.match(schema, /maxItems: 5/);
+  assert.match(schema, /x-decodedAggregateMaxBytes: 16384/);
+  assert.match(schema, /x-bodyMaxBytes: 32768/);
+  assert.match(schema, /contentEncoding: base64/);
+  assert.match(schema, /const: update/);
+  assert.match(schema, /required: \[pull_number\]/);
 });
 
 test("recovers a PR create after the mutation response is lost", async () => {
@@ -243,6 +340,21 @@ test("recovers a PR create after the mutation response is lost", async () => {
   assert.equal(recovered.status, 200);
   assert.equal((await body(recovered)).recovered, true);
   assert.equal(gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls")).length, 1);
+});
+
+test("PR create recovery rejects a fork or unexpected head SHA", async () => {
+  const gh = fakePullGithub();
+  const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
+  assert.equal((await action(pullRequest())).status, 200);
+  gh.getPull().head.repo.full_name = "outsider/fork";
+  const fork = await action(pullRequest({ operation_id: "op-pull-recover-fork" }));
+  assert.equal(fork.status, 403);
+  assert.equal((await body(fork)).error, "forbidden_pull");
+  gh.getPull().head.repo.full_name = "marcogallotta/gpt-actions-github-fixture";
+  gh.getPull().head.sha = "9".repeat(40);
+  const stale = await action(pullRequest({ operation_id: "op-pull-recover-stale" }));
+  assert.equal(stale.status, 409);
+  assert.equal((await body(stale)).error, "stale_head");
 });
 
 test("updates only an allowlisted PR at the fenced head", async () => {
@@ -277,18 +389,25 @@ class FakeD1 {
   prepare(sql) {
     return { bind: (...args) => ({ run: () => this.run(sql, args), first: () => this.first(sql, args) }) };
   }
-  async first(sql, [id]) { return sql.startsWith("SELECT") ? structuredClone(this.rows.get(id) || null) : null; }
+  async first(sql, [id, attempt]) {
+    if (!sql.startsWith("SELECT")) return null;
+    const row = this.rows.get(id);
+    if (!row) return null;
+    if (sql.includes("lease_until>unixepoch()") &&
+        (row.status !== "running" || row.attempt !== attempt || row.lease_until <= this.now)) return null;
+    return structuredClone(row);
+  }
   async run(sql, args) {
     let changes = 0;
     if (sql.startsWith("INSERT OR IGNORE")) {
-      const [id, hash] = args;
+      const [id, hash, leaseSeconds] = args;
       if (!this.rows.has(id)) {
-        this.rows.set(id, { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result_json: null, lease_until: this.now + 30, attempt: 1 });
+        this.rows.set(id, { operation_id: id, payload_hash: hash, status: "running", commit_sha: null, result_json: null, lease_until: this.now + leaseSeconds, attempt: 1 });
         changes = 1;
       }
     } else if (sql.includes("attempt=attempt+1")) {
-      const row = this.rows.get(args[0]);
-      if (row?.status === "running" && row.lease_until <= this.now) { row.attempt += 1; row.lease_until = this.now + 30; changes = 1; }
+      const [leaseSeconds, id] = args; const row = this.rows.get(id);
+      if (row?.status === "running" && row.lease_until <= this.now) { row.attempt += 1; row.lease_until = this.now + leaseSeconds; changes = 1; }
     } else if (sql.startsWith("UPDATE github_operations SET commit_sha")) {
       const [sha, id, attempt] = args; const row = this.rows.get(id);
       if (row?.status === "running" && row.attempt === attempt) { row.commit_sha = sha; changes = 1; }
@@ -303,17 +422,54 @@ class FakeD1 {
   }
 }
 
+test("an expired request cannot mutate GitHub after its operation is reclaimed", async () => {
+  assert.ok(DEFAULT_POLICY.operationLeaseSeconds * 1000 > DEFAULT_POLICY.maxRequestMs);
+  const db = new FakeD1();
+  const store = new D1OperationStore(db);
+  const calls = [];
+  let reclaimed = false;
+  const githubFetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push({ method: init.method, path });
+    if (init.method === "GET" && path.includes("/git/ref/heads/")) {
+      return path.endsWith("/heads/main")
+        ? Response.json({ object: { sha: expected } })
+        : Response.json({ message: "Not Found" }, { status: 404 });
+    }
+    if (init.method === "GET" && path.includes("/git/commits/")) {
+      db.now += DEFAULT_POLICY.operationLeaseSeconds + 1;
+      const row = db.rows.get("op-github-0001");
+      const next = await store.begin(row.operation_id, row.payload_hash, DEFAULT_POLICY.operationLeaseSeconds);
+      assert.equal(next.record.attempt, 2);
+      reclaimed = true;
+      return Response.json({ tree: { sha: "5".repeat(40) } });
+    }
+    throw new Error(`stale request attempted ${init.method} ${path}`);
+  };
+  const action = createGithubAction({
+    store,
+    githubFetch,
+    token: "server-only",
+    now: () => db.now * 1000,
+  });
+  const response = await action(request());
+  assert.equal(reclaimed, true);
+  assert.equal(response.status, 503);
+  assert.equal((await body(response)).error, "operation_deadline_exceeded");
+  assert.equal(calls.some((call) => call.method !== "GET"), false);
+});
+
 test("D1 reclaim fences every stale writer mutation", async () => {
   const db = new FakeD1();
   const store = new D1OperationStore(db);
   const first = await store.begin("op-d1-fence-001", "a".repeat(64));
   assert.equal(first.record.attempt, 1);
-  db.now += 31;
+  db.now += 61;
   const second = await store.begin("op-d1-fence-001", "a".repeat(64));
   assert.equal(second.record.attempt, 2);
   await assert.rejects(store.saveCommit("op-d1-fence-001", "1".repeat(40), 1), /stale_operation_attempt/);
   await store.release("op-d1-fence-001", 1);
-  assert.equal(db.rows.get("op-d1-fence-001").lease_until, db.now + 30);
+  assert.equal(db.rows.get("op-d1-fence-001").lease_until, db.now + 60);
   await store.saveCommit("op-d1-fence-001", "2".repeat(40), 2);
   await store.complete("op-d1-fence-001", { ok: true }, 2);
   assert.equal(db.rows.get("op-d1-fence-001").status, "complete");
