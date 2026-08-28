@@ -18,7 +18,6 @@ from typing import (
 
 from .native_contracts import (
     NativeBrowserSelectionResult,
-    NativeEvidenceRequest,
     NativeEvidenceResult,
     NativeInputResult,
     NativeStopCommitResult,
