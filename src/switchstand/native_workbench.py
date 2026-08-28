@@ -51,14 +51,14 @@ class NativeWorkbench:
         self._maximum_observation_age_seconds = float(maximum_observation_age_seconds)
         self._clock = clock
         self._duration_clock = duration_clock
-        self._evidence = evidence or NativeEvidence()
+        self._evidence = evidence if evidence is not None else NativeEvidence()
         self._evidence_failed = False
 
     def _duration_start(self) -> float | None:
         try:
             value = float(self._duration_clock())
             return value if math.isfinite(value) else None
-        except (TypeError, ValueError):
+        except Exception:
             return None
 
     def _duration_ms(self, started: float | None) -> float | None:
@@ -67,7 +67,7 @@ class NativeWorkbench:
         try:
             elapsed = (float(self._duration_clock()) - started) * 1000
             return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
-        except (TypeError, ValueError):
+        except Exception:
             return None
 
     def _record(self, kind: object, outcome: object, *, started: float | None = None) -> None:
