@@ -92,6 +92,105 @@ class NativeBoardSnapshot(TypedDict):
     disclosure: str
 
 
+NativeEvidenceEventKind = Literal[
+    "observation",
+    "selection",
+    "input",
+    "stop_prepare",
+    "stop_commit",
+    "stop_status",
+    "focus_invariant",
+    "refresh",
+    "stop_cancel",
+]
+NativeEvidenceOutcome = Literal[
+    "connected",
+    "disconnected",
+    "selected",
+    "invalid_agent_ref",
+    "app_server_disconnected",
+    "observation_stale",
+    "agent_not_present",
+    "unavailable",
+    "sent_start",
+    "sent_steer",
+    "not_sent",
+    "prepared",
+    "not_sent_target_unavailable",
+    "not_sent_capacity",
+    "requested",
+    "rejected",
+    "unknown",
+    "not_sent_confirmation_unavailable",
+    "confirmed",
+    "not_confirmed",
+    "not_sent_operation_unavailable",
+    "failed",
+    "coalesced",
+]
+
+
+class NativeEvidenceEvent(TypedDict):
+    observedAt: float
+    kind: NativeEvidenceEventKind
+    outcome: NativeEvidenceOutcome
+    durationMs: int | None
+    passAgeSeconds: float | None
+
+
+class NativeStatusCounts(TypedDict):
+    active: int
+    idle: int
+    systemError: int
+    notLoaded: int
+
+
+class NativeTurnStatusCounts(TypedDict):
+    unknown: int
+    none: int
+    inProgress: int
+    completed: int
+    failed: int
+    interrupted: int
+
+
+NativeEvidenceSummary = TypedDict(
+    "NativeEvidenceSummary",
+    {
+        "available": bool, "storage": Literal["bounded_process_memory"], "capacity": int,
+        "retainedCount": int, "droppedCount": int, "duplicateCount": int,
+        "refreshCount": int, "coalescedRefreshCount": int,
+        "observationConnected": bool | None, "passAgeSeconds": float | None,
+        "agentCount": int, "statusCounts": NativeStatusCounts,
+        "turnStatusCounts": NativeTurnStatusCounts,
+        "lastObservedActivityAgeSeconds": float | None,
+        "recentEvents": list[NativeEvidenceEvent], "disclosure": str,
+    },
+)
+
+
+class NativeWorkbenchSnapshot(NativeBoardSnapshot):
+    evidence: NativeEvidenceSummary
+
+
+class NativeEvidenceRequest(TypedDict):
+    version: Literal["native-evidence-v1"]
+    event: Literal["focus_preservation_failed", "refresh_coalesced", "stop_cancelled"]
+
+
+class NativeEvidenceRecorded(TypedDict):
+    code: Literal["evidence_recorded"]
+    outcome: Literal["recorded"]
+
+
+class NativeEvidenceUnavailable(TypedDict):
+    code: Literal["evidence_unavailable"]
+    outcome: Literal["not_recorded"]
+
+
+NativeEvidenceResult = NativeEvidenceRecorded | NativeEvidenceUnavailable
+
+
 class NativeSelectionPair(TypedDict):
     observationRunRef: str
     agentRef: str

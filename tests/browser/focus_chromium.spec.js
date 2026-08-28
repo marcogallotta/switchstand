@@ -30,13 +30,34 @@ let stopRequests;
 let stopOutcome;
 let delayStopResponse;
 let pendingStopResponses;
+let evidenceRequests;
+
+async function readBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+function json(response, value) {
+  response.writeHead(200, { "Content-Type": "application/json" })
+    .end(JSON.stringify(value));
+}
 
 test.beforeAll(async () => {
   apiRequests = 0;
   failRequests = false;
   stopRequests = [];
-  server = http.createServer((request, response) => {
+  evidenceRequests = [];
+  server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
+    if (pathname === "/api/native-evidence") {
+      evidenceRequests.push({
+        body: await readBody(request),
+        control: request.headers["x-switchstand-control"],
+      });
+      json(response, { code: "evidence_recorded", outcome: "recorded" });
+      return;
+    }
     if (pathname.startsWith("/api/native-stop/")) {
       stopRequests.push({ pathname, header: request.headers["x-switchstand-control"] });
       const value = pathname.endsWith("prepare")
@@ -91,6 +112,7 @@ test.beforeEach(() => {
   stopOutcome = "requested";
   delayStopResponse = false;
   pendingStopResponses = [];
+  evidenceRequests = [];
   state.agents[0].status = "active";
   state.agents[0].turnStatus = "inProgress";
 });
@@ -234,4 +256,37 @@ test("a delayed old-turn result cannot hide Stop for a later turn", async ({ pag
   expect(stopRequests.map((value) => value.pathname)).toEqual([
     "/api/native-stop/prepare", "/api/native-stop/commit", "/api/native-stop/prepare",
   ]);
+});
+
+test("forced focus restoration failure emits only one fixed privacy-safe signal", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(origin);
+  const row = page.locator("details[data-focus-key]").first();
+  await row.waitFor();
+  await page.evaluate(() => {
+    const current = document.querySelector("details[data-focus-key]");
+    current.focus();
+    window.__originalFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function blockedFocus() {};
+  });
+
+  const refreshResponse = page.waitForResponse(`${origin}/api/workbench`);
+  const evidenceResponse = page.waitForResponse(`${origin}/api/native-evidence`);
+  await page.clock.runFor(1000);
+  await refreshResponse;
+  await evidenceResponse;
+  await expect.poll(() => evidenceRequests.length).toBe(1);
+
+  expect(evidenceRequests).toEqual([{
+    body: JSON.stringify({
+      version: "native-evidence-v1",
+      event: "focus_preservation_failed",
+    }),
+    control: "native-evidence-v1",
+  }]);
+  expect(evidenceRequests[0].body).not.toContain("Root");
+  await page.evaluate(() => {
+    HTMLElement.prototype.focus = window.__originalFocus;
+    delete window.__originalFocus;
+  });
 });

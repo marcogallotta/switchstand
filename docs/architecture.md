@@ -90,6 +90,15 @@ JSON. Handled responses are written with the dispatcher's exact status, ordered 
 body. Native routes return immediately and never fall through to legacy behavior. Static and
 legacy requests retain their existing paths.
 
+`native_evidence.py` owns C1's bounded process-local evidence window. The workbench derives
+identifier-free observation and status counts from its existing board snapshot and records only
+closed action/outcome enums plus bounded duration. The browser can report only three fixed
+same-origin signals: failed focus restoration, refresh coalescing, and user-cancelled Stop.
+Events contain no prompt, output, draft text, native identifiers, paths, raw errors, screenshots,
+or inferred intent. Consecutive identical transition/browser signals are coalesced, retention is
+capped, restart clears the window, and recorder failure leaves product actions running while the
+read-only summary reports evidence unavailable.
+
 Each poll spans the tree endpoints plus at most one exact-turn metadata request and is not an
 atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate

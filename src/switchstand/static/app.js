@@ -19,6 +19,14 @@ async function request(path, body, controlValue = null) {
   return value;
 }
 
+function reportEvidence(event) {
+  return request(
+    "/api/native-evidence",
+    { version: "native-evidence-v1", event },
+    "native-evidence-v1",
+  ).catch(() => null);
+}
+
 const stopState = new Map();
 const stopEpoch = new Map();
 const observedTurnStatus = new Map();
@@ -41,6 +49,7 @@ async function stopAgent(agent) {
       stopState.set(agent.agentRef, prepared);
     } else if (!window.confirm(warning)) {
       stopState.set(agent.agentRef, { outcome: "not_sent" });
+      void reportEvidence("stop_cancelled");
     } else {
       const result = await request(
         "/api/native-stop/commit",
@@ -151,6 +160,9 @@ function restoreView(view) {
   }
   treeHost.scrollTop = view.treeScroll;
   window.scrollTo(...view.windowScroll);
+  if (view.focus && document.activeElement?.dataset.focusKey !== view.focus) {
+    void reportEvidence("focus_preservation_failed");
+  }
 }
 
 function renderNative(model) {
@@ -537,6 +549,9 @@ async function drainRefreshes() {
 
 function refresh() {
   refreshQueued = true;
+  if (refreshPromise && lastModel?.mode === "native") {
+    void reportEvidence("refresh_coalesced");
+  }
   if (!refreshPromise) {
     refreshPromise = drainRefreshes().finally(() => {
       refreshPromise = null;

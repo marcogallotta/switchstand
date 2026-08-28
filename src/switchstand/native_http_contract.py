@@ -10,6 +10,7 @@ CONTROL_HEADER_NAME: Final = "X-Switchstand-Control"
 NATIVE_SELECTION_CONTROL_VALUE: Final = "native-selection-v1"
 NATIVE_INPUT_CONTROL_VALUE: Final = "native-input-v1"
 NATIVE_STOP_CONTROL_VALUE: Final = "native-stop-v1"
+NATIVE_EVIDENCE_CONTROL_VALUE: Final = "native-evidence-v1"
 
 
 class NativeHttpFailureBody(TypedDict):

@@ -258,6 +258,11 @@ test("fake-DOM refresh failure clears selection and fences its delayed prior res
       if (delaySelection) await delayed;
       return { ok: true, json: async () => seam };
     }
+    if (url === "/api/native-evidence") {
+      return { ok: true, json: async () => ({
+        code: "evidence_recorded", outcome: "recorded",
+      }) };
+    }
     workbenchRequests += 1;
     return failRefresh ? { ok: false, json: async () => ({ error: "unavailable" }) }
       : { ok: true, json: async () => state };
