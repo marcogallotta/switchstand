@@ -12,18 +12,11 @@ def board(
     pass_age: float | None = 0.25,
     agents: list[NativeAgent] | None = None,
 ) -> NativeBoardSnapshot:
-    return {
-        "mode": "native",
-        "observation": {
-            "connected": connected, "available": connected, "historical": not connected,
-            "errorCode": None, "completedAt": 10.0, "passAgeSeconds": pass_age,
-            "kind": "completed_multi_request_pass",
-        },
-        "agents": agents or [],
-        "trail": [],
-        "trailLimit": 50,
-        "disclosure": "Observed differences only.",
-    }
+    observation = {"connected": connected, "available": connected, "historical": not connected,
+        "errorCode": None, "completedAt": 10.0, "passAgeSeconds": pass_age,
+        "kind": "completed_multi_request_pass"}
+    return {"mode": "native", "observation": observation, "agents": agents or [],
+        "trail": [], "trailLimit": 50, "disclosure": "Observed differences only."}
 
 
 class NativeEvidenceTests(unittest.TestCase):
