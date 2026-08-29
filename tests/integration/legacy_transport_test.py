@@ -248,7 +248,11 @@ def attempt(state: dict[str, Any]) -> dict[str, Any]:
 
 class LegacyTransportIntegrationTests(unittest.TestCase):
     def run_case(
-        self, actions: tuple[str, ...], *, stalled_method: str | None = None
+        self,
+        actions: tuple[str, ...],
+        *,
+        stalled_method: str | None = None,
+        stalled_occurrence: int = 1,
     ) -> tuple[Engine, DeadlinePeer, dict[str, Any]]:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -268,12 +272,16 @@ class LegacyTransportIntegrationTests(unittest.TestCase):
             state = engine.enqueue_snapshot("role-a", "bounded")
         else:
             original_send = CodexAppServer._send_frame
+            matching_sends = 0
 
             def send_or_stall(client: CodexAppServer, opcode: int, payload: bytes) -> None:
+                nonlocal matching_sends
                 method = "close" if opcode == 8 else str(json.loads(payload).get("method") or "")
                 if method == stalled_method:
-                    client.socket.sendall(b"x" * (32 * 1024 * 1024))
-                    return
+                    matching_sends += 1
+                    if matching_sends == stalled_occurrence:
+                        client.socket.sendall(b"x" * (32 * 1024 * 1024))
+                        return
                 original_send(client, opcode, payload)
 
             with patch.object(CodexAppServer, "_send_frame", send_or_stall):
@@ -363,7 +371,10 @@ class LegacyTransportIntegrationTests(unittest.TestCase):
             with self.subTest(action=action):
                 actions = (action,) if connections == 1 else ("creation_success", action)
                 started = time.monotonic()
-                _engine, peer, state = self.run_case(actions, stalled_method=method)
+                occurrence = 2 if action == "target_success_close_stall" else 1
+                _engine, peer, state = self.run_case(
+                    actions, stalled_method=method, stalled_occurrence=occurrence
+                )
                 self.assertLess(time.monotonic() - started, 0.7)
                 record = attempt(state)
                 self.assertEqual((record["status"], record["thread_id"]), expected)
