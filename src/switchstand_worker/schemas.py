@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import PurePosixPath
 import re
@@ -92,6 +93,10 @@ def string(value: Any, maximum: int, *, minimum: int = 0, printable: bool = Fals
 def timestamp(value: Any) -> str:
     if not isinstance(value, str) or not TIMESTAMP.fullmatch(value):
         raise ProtocolError("invalid_request")
+    try:
+        datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError:
+        raise ProtocolError("invalid_request") from None
     return value
 
 
@@ -102,7 +107,7 @@ def prefix(value: Any) -> str:
         result != unicodedata.normalize("NFC", result)
         or pure.is_absolute()
         or "\\" in result
-        or any(part in {"", ".", ".."} for part in pure.parts)
+        or any(part in {"", ".", ".."} for part in result.split("/"))
         or any(ord(character) < 32 or ord(character) == 127 for character in result)
     ):
         raise ProtocolError("invalid_request")
@@ -119,7 +124,7 @@ def branch(value: Any) -> str:
         or "@{" in result
         or "//" in result
         or any(character in forbidden or ord(character) < 32 or ord(character) == 127 for character in result)
-        or any(part.endswith(".lock") for part in result.split("/"))
+        or any(part.startswith(".") or part.endswith(".lock") for part in result.split("/"))
     ):
         raise ProtocolError("invalid_request")
     return result

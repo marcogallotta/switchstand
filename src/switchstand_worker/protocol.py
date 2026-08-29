@@ -288,14 +288,12 @@ class CoordinatorClient:
             raise ProtocolError("invalid_request")
         _branch(repository["candidate_branch"])
         prefixes = repository["allowed_path_prefixes"]
-        if (
-            not isinstance(prefixes, list)
-            or not 1 <= len(prefixes) <= 8
-            or prefixes != sorted(set(prefixes), key=lambda item: item.encode())
-        ):
+        if not isinstance(prefixes, list) or not 1 <= len(prefixes) <= 8:
             raise ProtocolError("invalid_request")
         for prefix in prefixes:
             _prefix(prefix)
+        if prefixes != sorted(set(prefixes), key=lambda item: item.encode()):
+            raise ProtocolError("invalid_request")
 
     def _validate_checkpoint(self, checkpoint: Any, thread_id: Any) -> None:
         if checkpoint is None:
@@ -306,13 +304,22 @@ class CoordinatorClient:
             raise ProtocolError("invalid_request")
         _exact(checkpoint, {"sequence", "phase", "codex_thread_id", "checkpoint_state"})
         _integer(checkpoint["sequence"], 1)
-        if checkpoint["phase"] not in {"checkout_ready", "codex_started", "working", "testing", "candidate_ready"}:
+        phase = checkpoint["phase"]
+        if not isinstance(phase, str) or phase not in {
+            "checkout_ready",
+            "codex_started",
+            "working",
+            "testing",
+            "candidate_ready",
+        }:
             raise ProtocolError("invalid_request")
         _string(checkpoint["checkpoint_state"], 4096)
         if checkpoint["codex_thread_id"] != thread_id:
             raise ProtocolError("invalid_request")
         if thread_id is not None:
             _string(thread_id, 256, minimum=1, printable=True)
+        elif phase != "checkout_ready":
+            raise ProtocolError("invalid_request")
 
     def _validate_candidate(self, candidate: Any) -> None:
         if candidate is None:

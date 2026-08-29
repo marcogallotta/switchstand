@@ -163,6 +163,12 @@ class BlockingRunner(FakeRunner):
         self.claim_guard = guard
 
 
+class FailedResumeRunner(FakeRunner):
+    def task_turn(self, workspace, thread_id):
+        self.task_thread = thread_id
+        return ProcessResult(1, thread_id, None)
+
+
 def config(root, executable=Path("/bin/true"), auth=Path("/dev/null")):
     return WorkerConfig(
         "http://coordinator.invalid",
@@ -253,6 +259,27 @@ class WorkerLifecycleTests(unittest.TestCase):
         completion = next(call for call in client.calls if call[0] == "complete")
         self.assertEqual(completion[2]["review_verdict"], "PASS")
 
+    def test_failed_post_adoption_resume_returns_scope_without_replacement(self):
+        prior = {
+            "sequence": 7,
+            "phase": "working",
+            "codex_thread_id": THREAD,
+            "checkpoint_state": "finite_turn_started",
+        }
+        client = self.run_worker(
+            make_claim(thread_id=THREAD, prior=prior, fence=2),
+            runner=FailedResumeRunner,
+        )
+        runner = FakeRunner.instances[-1]
+        self.assertFalse(runner.bootstrap_called)
+        self.assertEqual(runner.task_thread, THREAD)
+        self.assertNotIn("candidate", [call[0] for call in client.calls])
+        completion = [call for call in client.calls if call[0] == "complete"][-1]
+        self.assertEqual(
+            (completion[2]["status"], completion[2]["summary_code"]),
+            ("scope_return", "codex_exact_resume_failed"),
+        )
+
     def test_no_claim_is_a_clean_poll(self):
         client = FakeClient(None)
         worker = Worker(config(self.root), client=client, runner_factory=FakeRunner)
@@ -270,6 +297,26 @@ class WorkerLifecycleTests(unittest.TestCase):
 
 
 class LeaseAndIsolationTests(unittest.TestCase):
+    def test_group_cleanup_kills_descendant_after_leader_exits(self):
+        script = (
+            "import subprocess,time; "
+            "p=subprocess.Popen(['/usr/bin/python3','-c',"
+            "'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)']); "
+            "print(p.pid,flush=True); time.sleep(30)"
+        )
+        process = subprocess.Popen(
+            ["/usr/bin/python3", "-c", script],
+            stdout=subprocess.PIPE,
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        child_pid = int(process.stdout.readline())
+        LeaseGuard._kill(process)
+        process.stdout.close()
+        self.assertIsNotNone(process.poll())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+
     def test_stale_renewal_kills_real_process_group_and_forbids_writes(self):
         client = FakeClient(make_claim(), renew_error="stale_or_invalid_lease")
         guard = LeaseGuard(client, make_claim())
@@ -321,6 +368,66 @@ class LeaseAndIsolationTests(unittest.TestCase):
             os.environ.pop("SWITCHSTAND_WORKER_KEY")
             os.environ.pop("GITHUB_TOKEN")
             os.environ.pop("OPENAI_API_KEY")
+
+    def test_state_db_adoption_requires_complete_paginated_listing(self):
+        class FakeAppServer:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = []
+
+            def thread_list(self, params):
+                self.calls.append(params)
+                return self.responses.pop(0)
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            auth = root / "auth.json"
+            auth.write_text("{}")
+            claim = make_claim()
+            guard = LeaseGuard(FakeClient(claim), claim)
+            runner = CodexRunner(config(root, auth=auth), claim, guard)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            socket_path = runner.job_state / "state-fixed.sock"
+            socket_path.touch()
+            process = mock.Mock(pid=999999)
+            process.poll.return_value = None
+
+            complete = FakeAppServer(
+                [
+                    {"data": [{"id": THREAD}], "nextCursor": "page-2"},
+                    {"data": [], "nextCursor": None},
+                ]
+            )
+            with (
+                mock.patch("switchstand_worker.supervisor.uuid.uuid4", return_value=mock.Mock(hex="fixed")),
+                mock.patch("switchstand_worker.supervisor.subprocess.Popen", return_value=process),
+                mock.patch("switchstand_worker.supervisor.CodexAppServer", return_value=complete),
+                mock.patch("switchstand_worker.supervisor.LeaseGuard._kill"),
+            ):
+                self.assertTrue(runner.thread_in_state_db(THREAD, workspace))
+            self.assertEqual(len(complete.calls), 2)
+            self.assertTrue(all(call["useStateDbOnly"] is True for call in complete.calls))
+            self.assertNotIn("cursor", complete.calls[0])
+            self.assertEqual(complete.calls[1]["cursor"], "page-2")
+
+            socket_path.touch()
+            incomplete = FakeAppServer(
+                [
+                    {"data": [{"id": THREAD}], "nextCursor": "repeat"},
+                    {"data": [], "nextCursor": "repeat"},
+                ]
+            )
+            with (
+                mock.patch("switchstand_worker.supervisor.uuid.uuid4", return_value=mock.Mock(hex="fixed")),
+                mock.patch("switchstand_worker.supervisor.subprocess.Popen", return_value=process),
+                mock.patch("switchstand_worker.supervisor.CodexAppServer", return_value=incomplete),
+                mock.patch("switchstand_worker.supervisor.LeaseGuard._kill"),
+            ):
+                self.assertFalse(runner.thread_in_state_db(THREAD, workspace))
 
     def test_cli_reports_only_fixed_failure_without_raw_details(self):
         os.environ["SWITCHSTAND_WORKER_KEY"] = "worker-secret"

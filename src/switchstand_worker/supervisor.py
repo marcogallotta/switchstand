@@ -1,5 +1,3 @@
-"""Fail-closed supervisor for one finite local Codex assignment."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 from switchstand.agent_tree import THREAD_SOURCE_KINDS
@@ -73,23 +71,13 @@ class ProcessResult:
     review_verdict: str | None
 
 
-class RunnerPort(Protocol):
-    def bootstrap(self) -> str: ...
-
-    def task_turn(self, workspace: Path, thread_id: str) -> ProcessResult: ...
-
-
 class LeaseGuard:
-    """Renew independently and kill the attached process when authority is lost."""
-
     def __init__(self, client: CoordinatorPort, claim: Claim, clock: Callable[[], float] = time.monotonic) -> None:
-        self.client = client
-        self.claim = claim
+        self.client, self.claim = client, claim
         self.clock = clock
         self._last_success = clock()
         self._unavailable = 0
-        self._lost = threading.Event()
-        self._stopped = threading.Event()
+        self._lost, self._stopped = threading.Event(), threading.Event()
         self._lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
         self._thread = threading.Thread(target=self._loop, name="lease-renewal", daemon=True)
@@ -146,28 +134,38 @@ class LeaseGuard:
 
     @staticmethod
     def _kill(process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is not None:
-            return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             return
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            process.poll()
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            try:
-                process.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                pass
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                process.poll()
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            return
 
 
 class CodexRunner:
-    """Run Codex in the qualified selective-mount bubblewrap boundary."""
-
     def __init__(self, config: WorkerConfig, claim: Claim, guard: LeaseGuard) -> None:
         self.config = config
         self.claim = claim
@@ -409,14 +407,12 @@ def _task_input(claim: Claim) -> str:
 
 
 class Worker:
-    """Poll and execute at most one claim per ``run_once`` call."""
-
     def __init__(
         self,
         config: WorkerConfig,
         *,
         client: CoordinatorPort | None = None,
-        runner_factory: Callable[[WorkerConfig, Claim, LeaseGuard], RunnerPort] = CodexRunner,
+        runner_factory: Callable[[WorkerConfig, Claim, LeaseGuard], Any] = CodexRunner,
     ) -> None:
         self.config = config
         config.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)

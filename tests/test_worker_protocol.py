@@ -14,6 +14,7 @@ INSTANCE = "20000000-0000-4000-8000-000000000002"
 WORK = "work:test-0001"
 TOKEN = "A" * 43
 BASE = "a" * 40
+THREAD_ID = "30000000-0000-4000-8000-000000000003"
 
 
 def claim_response(**updates):
@@ -197,6 +198,49 @@ class ProtocolClientTests(unittest.TestCase):
             value = claim_response(**update)
             self.route("POST", "/v2/work/claim", 200, value)
             with self.subTest(update=update), self.assertRaises(ProtocolError):
+                self.client.claim(WORKER, INSTANCE)
+
+    def test_rejects_invalid_claim_authority_state_and_malformed_nested_values(self):
+        invalid_checkpoint = {
+            "sequence": 2,
+            "phase": "working",
+            "codex_thread_id": None,
+            "checkpoint_state": "finite_turn_started",
+        }
+        cases = (
+            {"lease_expires_at": "2026-99-99T99:99:99Z"},
+            {"prior_checkpoint": invalid_checkpoint},
+            {
+                "repository": {
+                    **claim_response()["repository"],
+                    "allowed_path_prefixes": ["allowed//nested"],
+                }
+            },
+            {
+                "repository": {
+                    **claim_response()["repository"],
+                    "candidate_branch": "candidate/.hidden",
+                }
+            },
+            {
+                "repository": {
+                    **claim_response()["repository"],
+                    "allowed_path_prefixes": [{"not": "a string"}],
+                }
+            },
+            {
+                "prior_checkpoint": {
+                    "sequence": 2,
+                    "phase": [],
+                    "codex_thread_id": THREAD_ID,
+                    "checkpoint_state": "bad",
+                },
+                "codex_thread_id": THREAD_ID,
+            },
+        )
+        for update in cases:
+            self.route("POST", "/v2/work/claim", 200, claim_response(**update))
+            with self.subTest(update=update), self.assertRaisesRegex(ProtocolError, "invalid_request"):
                 self.client.claim(WORKER, INSTANCE)
 
     def test_outbound_body_limit_fails_before_request(self):
