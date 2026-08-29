@@ -52,3 +52,9 @@ automation; stronger authentication is outside this checkpoint.
 Switchstand does not decide what agents should build, infer semantic progress or intent, grant
 remote-system authority, coordinate releases, schedule projects, manage users, or claim
 durable distributed execution. It requires no elevated privileges.
+
+The headless local-worker experiment is not part of the operator interface. A separate
+coordinator must admit and lease its exact task and repository authority. The worker can only
+materialize the coordinator-provided frozen checkout, run one finite Codex implementation or
+review turn, and submit a bounded inert candidate. It cannot publish, push, open a pull request,
+call GitHub, change admission, replace an adopted thread, or expand repository/path authority.

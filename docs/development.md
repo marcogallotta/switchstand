@@ -58,6 +58,33 @@ node --test tests/native_selection_contract.test.js
 node --check src/switchstand/static/app.js
 ```
 
+The worker protocol, archive, manifest, process-group, and isolation tests are included in full
+Python discovery. They can also be run directly:
+
+```sh
+PYTHONPATH=src python -m unittest \
+  tests.test_worker_protocol \
+  tests.test_worker_candidate \
+  tests.test_worker_supervisor -v
+```
+
+Run the worker as the invoking user with a private state directory. Supply its workspace-scoped
+bearer through the environment or the interactive prompt; the CLI removes the environment entry
+before constructing a Codex child:
+
+```sh
+SWITCHSTAND_WORKER_KEY=ONE_WORKSPACE_SCOPED_KEY \
+  PYTHONPATH=src python -m switchstand_worker \
+  --coordinator-url https://coordinator.example \
+  --state-root /path/to/private-worker-state
+```
+
+The coordinator must implement the frozen `worker-v2` routes. HTTP is accepted only for a
+loopback deterministic fixture; non-loopback coordinators require HTTPS. The child needs the
+already-installed user-owned Codex binary, existing Codex authentication mounted read-only,
+and bubblewrap. Do not install system packages, put worker/GitHub secrets in the child
+environment, or treat fixture tests as PostgreSQL integration evidence.
+
 The first two commands are required for every code change. Run the JavaScript syntax check when
 Node is available and for every browser-code change. The Node regression is an honest fake-DOM
 seam. `./scripts/quality` also rejects disabled, focused, or retried tests.
