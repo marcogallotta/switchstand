@@ -268,11 +268,11 @@ class LegacyTransportIntegrationTests(unittest.TestCase):
             CodexAdapter(path, cwd=root),
             operation_deadline_seconds=0.05,
         )
+        matching_sends = 0
         if stalled_method is None:
             state = engine.enqueue_snapshot("role-a", "bounded")
         else:
             original_send = CodexAppServer._send_frame
-            matching_sends = 0
 
             def send_or_stall(client: CodexAppServer, opcode: int, payload: bytes) -> None:
                 nonlocal matching_sends
@@ -290,6 +290,8 @@ class LegacyTransportIntegrationTests(unittest.TestCase):
         self.assertFalse(peer.is_alive())
         if peer.error:
             raise peer.error
+        if stalled_method is not None:
+            self.assertEqual(matching_sends, stalled_occurrence)
         return engine, peer, state
 
     def run_followup(self, action: str, operation: str) -> tuple[Engine, DeadlinePeer, dict[str, Any]]:
