@@ -48,10 +48,6 @@ async function digest(value) {
   return [...new Uint8Array(hash)].map((n) => n.toString(16).padStart(2, "0")).join("");
 }
 
-function byteLength(value) {
-  return new TextEncoder().encode(value).length;
-}
-
 function codePointLength(value) {
   return [...value].length;
 }
@@ -219,11 +215,18 @@ async function validateCommit(input, policy, bodyBytes, fileFetch, signal) {
   if (input.test_fail_after_commit && !policy.allowFaultInjection) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
-  const { file_manifest, openaiFileIdRefs, ...normalized } = input;
+  const normalized = { ...input };
+  delete normalized.file_manifest;
+  delete normalized.openaiFileIdRefs;
   return {
     ...normalized,
     message,
-    files: files.map(({ bytes, ...file }) => file),
+    files: files.map((file) => ({
+      path: file.path,
+      content_base64: file.content_base64,
+      expected_bytes: file.expected_bytes,
+      expected_sha256: file.expected_sha256,
+    })),
   };
 }
 

@@ -19,7 +19,7 @@ paths:
               $ref: '#/components/schemas/CommitRequest'
       responses:
         '200': { description: Commit and ref update completed or replayed. }
-        '403': { description: Repository, branch, path, or fault policy rejected the request. }
+        '403': { description: 'Repository, branch, path, or fault policy rejected the request.' }
         '409':
           description: Content integrity mismatch, operation conflict, or stale head.
         '422': { description: Referenced file could not be fetched safely. }
@@ -38,7 +38,7 @@ paths:
               $ref: '#/components/schemas/PullRequest'
       responses:
         '200': { description: Pull request mutation completed or replayed. }
-        '403': { description: Repository, branch, base, or PR policy rejected the request. }
+        '403': { description: 'Repository, branch, base, or PR policy rejected the request.' }
         '409': { description: Operation conflict or stale head. }
 components:
   securitySchemes:
