@@ -386,7 +386,10 @@ class AppServerTransportTest(unittest.TestCase):
                     }
                 ],
             )
-            self.assertEqual([request["method"] for request in peer.requests], ["initialize", "initialized", "thread/list"])
+            self.assertEqual(
+                [request["method"] for request in peer.requests],
+                ["initialize", "initialized", "thread/list"],
+            )
             self.assertTrue(all(peer.masked), "every client frame must be masked")
 
     def test_native_board_polls_complete_read_only_passes_over_new_connections(self):

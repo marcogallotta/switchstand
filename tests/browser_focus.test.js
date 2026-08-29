@@ -137,9 +137,16 @@ const state = {
     updatedAt: "2026-08-27T12:00:00Z", status: "active", activeFlags: ["waiting"],
     activeObservedSeconds: 10, updatedAgeSeconds: 0, turnStatus: "inProgress",
   }],
-  trail: [{ observedAt: "2026-08-27T12:00:00Z", agentRef: "agent-1", changes: { status: { from: "idle", to: "active" } } }],
+  trail: [{
+    observedAt: "2026-08-27T12:00:00Z",
+    agentRef: "agent-1",
+    changes: { status: { from: "idle", to: "active" } },
+  }],
   trailLimit: 50,
-  disclosure: "Polling may miss intermediate transitions; trail entries are observed endpoint differences, not native events.",
+  disclosure: [
+    "Polling may miss intermediate transitions;",
+    "trail entries are observed endpoint differences, not native events.",
+  ].join(" "),
 };
 
 async function runNativeApp(context) {

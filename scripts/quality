@@ -12,5 +12,6 @@ test "$(./node_modules/.bin/jscpd --version)" = "4.2.5"
 $PYTHON -m ruff check src tests scripts
 ./node_modules/.bin/pyright
 ./node_modules/.bin/jscpd src tests scripts --config .jscpd.json --silent
+$PYTHON scripts/check_line_length.py
 $PYTHON scripts/check_sizes.py
 $PYTHON scripts/check_test_policy.py

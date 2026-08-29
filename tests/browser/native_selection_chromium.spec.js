@@ -29,7 +29,10 @@ const board = {
   agents,
   trail: [],
   trailLimit: 50,
-  disclosure: "Polling may miss intermediate transitions; trail entries are observed endpoint differences, not native events.",
+  disclosure: [
+    "Polling may miss intermediate transitions;",
+    "trail entries are observed endpoint differences, not native events.",
+  ].join(" "),
 };
 
 let server;
@@ -338,7 +341,10 @@ test("exact-route selection and input preserve Stop confirmation, result, and co
   const row = rowFor(page, "agent-beta");
   await expect(row.getByText("thread statusidle")).toBeVisible();
   await expect(row.getByText("exact turn statusinProgress")).toBeVisible();
-  const warning = "Stop Second observed agent’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
+  const warning = [
+    "Stop Second observed agent’s current turn? Switchstand will request cancellation of that exact turn only.",
+    "Work already performed is not undone. Background processes and descendant agents may continue.",
+  ].join(" ");
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toBe(warning);
     await dialog.accept();
@@ -354,7 +360,11 @@ test("exact-route selection and input preserve Stop confirmation, result, and co
     .toBe(true);
 });
 
-test("run change, disappearance, staleness, disconnection, malformed response, and request failure clear without fallback", async ({ page }) => {
+const invalidEvidenceTestName = [
+  "run change, disappearance, staleness, disconnection, malformed response,",
+  "and request failure clear without fallback",
+].join(" ");
+test(invalidEvidenceTestName, async ({ page }) => {
   await page.clock.install();
   await page.goto(origin);
   const failures = [
@@ -384,7 +394,11 @@ test("run change, disappearance, staleness, disconnection, malformed response, a
   await expect(page.locator("body")).not.toContainText("must-not-render");
 });
 
-test("50 polls preserve composer draft, focus, selection, open rows, and scroll; failure retains the draft", async ({ page }) => {
+const pollingTestName = [
+  "50 polls preserve composer draft, focus, selection, open rows, and scroll;",
+  "failure retains the draft",
+].join(" ");
+test(pollingTestName, async ({ page }) => {
   await page.clock.install();
   await page.goto(origin);
   await selectAgent(page, "agent-beta");

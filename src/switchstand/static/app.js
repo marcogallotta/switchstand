@@ -174,9 +174,17 @@ function renderNative(model) {
   const view = captureView();
   const observation = model.observation;
   const title = observation.historical ? "Historical snapshot" : "Current observation";
-  observerHost.replaceChildren(el("strong", null, title), badge(observation.connected ? "connected" : "disconnected", "Observer"),
-    factList([["available", observation.available], ["pass", observation.kind], ["completed", observation.completedAt],
-      ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`], ["error", observation.errorCode]]));
+  observerHost.replaceChildren(
+    el("strong", null, title),
+    badge(observation.connected ? "connected" : "disconnected", "Observer"),
+    factList([
+      ["available", observation.available],
+      ["pass", observation.kind],
+      ["completed", observation.completedAt],
+      ["age", observation.passAgeSeconds === null ? null : `${observation.passAgeSeconds}s`],
+      ["error", observation.errorCode],
+    ]),
+  );
   const labels = new Map(model.agents.map((agent) => [agent.agentRef, agent.label]));
   const selectionState = nativeSelectionController?.getState();
   const agents = model.agents.map((agent) => {
@@ -194,11 +202,21 @@ function renderNative(model) {
     row.style.setProperty("--depth", agent.depth);
     const summary = el("summary", "agent__summary");
     summary.append(el("strong", null, agent.label), badge(agent.status));
-    row.append(summary, factList([["parent", agent.parentRef === null ? "none" : labels.get(agent.parentRef) ?? "unavailable"], ["depth", agent.depth],
-      ["flags", agent.activeFlags], ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
-      ["created", agent.createdAt], ["updated", agent.updatedAt], ["updated age", `${agent.updatedAgeSeconds}s`],
-      ["thread status", agent.status], ["exact turn status", agent.turnStatus],
-      ["consecutive observed active", agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`]]));
+    row.append(summary, factList([
+      ["parent", agent.parentRef === null ? "none" : labels.get(agent.parentRef) ?? "unavailable"],
+      ["depth", agent.depth],
+      ["flags", agent.activeFlags],
+      ["source", `${agent.sourceKind}${agent.sourceDetail ? ` · ${agent.sourceDetail}` : ""}`],
+      ["created", agent.createdAt],
+      ["updated", agent.updatedAt],
+      ["updated age", `${agent.updatedAgeSeconds}s`],
+      ["thread status", agent.status],
+      ["exact turn status", agent.turnStatus],
+      [
+        "consecutive observed active",
+        agent.activeObservedSeconds === null ? null : `${agent.activeObservedSeconds}s`,
+      ],
+    ]));
     const selected = selectionState?.currentTarget?.agentRef === agent.agentRef;
     const select = el("button", selected ? "button button--primary" : "button",
       selected ? "Current target" : "Select as current target");
@@ -231,12 +249,16 @@ function renderNative(model) {
     row.append(el("strong", null, labels.get(entry.agentRef) ?? "Unknown observed agent"),
       el("div", "muted", entry.observedAt));
     Object.entries(entry.changes).forEach(([field, change]) => {
-      const value = (item) => field === "parentRef" ? item === null ? "none" : labels.get(item) ?? "unavailable" : shown(item);
+      const value = (item) => field === "parentRef"
+        ? item === null ? "none" : labels.get(item) ?? "unavailable"
+        : shown(item);
       row.append(factList([[field, `${value(change.from)} → ${value(change.to)}`]]));
     });
     return row;
   });
-  trailHost.replaceChildren(...(trail.length ? trail : [el("li", "muted", "No endpoint differences observed in the retained window.")]));
+  trailHost.replaceChildren(...(trail.length ? trail : [
+    el("li", "muted", "No endpoint differences observed in the retained window."),
+  ]));
   disclosureHost.textContent = model.disclosure;
   renderCurrentTarget(selectionState);
   restoreView(view);
@@ -309,7 +331,11 @@ function roleCard(state, role) {
   send.append(input, sendButton);
   send.addEventListener("submit", async (event) => {
     event.preventDefault();
-    try { await request(`/api/workbench/roles/${role.id}/messages`, { text: input.value, kind: "message" }); input.value = ""; await refresh(); }
+    try {
+      await request(`/api/workbench/roles/${role.id}/messages`, { text: input.value, kind: "message" });
+      input.value = "";
+      await refresh();
+    }
     catch (error) { reportError(error); }
   });
   card.append(send);
@@ -330,7 +356,12 @@ function roleCard(state, role) {
       actions.append(button);
     };
     if (["running", "waiting"].includes(current.status)) {
-      addAction("Redirect", "button", `/api/workbench/attempts/${current.id}/redirect`, () => ({ text: correction.value }));
+      addAction(
+        "Redirect",
+        "button",
+        `/api/workbench/attempts/${current.id}/redirect`,
+        () => ({ text: correction.value }),
+      );
       addAction("Stop", "button button--danger", `/api/workbench/attempts/${current.id}/stop`);
     }
     if (["stopped", "stale", "failed", "unknown"].includes(current.status)) {
@@ -369,7 +400,10 @@ function renderLegacy(model) {
   nativeSurface.hidden = true;
   rolesHost.hidden = false;
   eyebrowHost.textContent = "Experimental local prototype";
-  descriptionHost.textContent = "Direct conversation with two durable roles, with exact attempt identity and truthful state.";
+  descriptionHost.textContent = [
+    "Direct conversation with two durable roles,",
+    "with exact attempt identity and truthful state.",
+  ].join(" ");
   headlineFactsHost.textContent = "One Work · two roles · flat JSON/JSONL · Codex app-server";
   rolesHost.replaceChildren(...Object.values(model.roles).map((role) => roleCard(model, role)));
   rolesHost.querySelectorAll("textarea[data-draft-key]").forEach((input) => {
@@ -535,8 +569,17 @@ async function refreshOnce() {
       ? "Observation request failed. The displayed board is a historical snapshot."
       : "Workbench request failed. Existing input has been retained.";
     errorHost.hidden = false;
-    if (lastModel?.mode === "native") renderNative({ ...lastModel, observation: { ...lastModel.observation, connected: false, available: false,
-      historical: true, errorCode: "board_request_failed", passAgeSeconds: null } });
+    if (lastModel?.mode === "native") renderNative({
+      ...lastModel,
+      observation: {
+        ...lastModel.observation,
+        connected: false,
+        available: false,
+        historical: true,
+        errorCode: "board_request_failed",
+        passAgeSeconds: null,
+      },
+    });
   }
 }
 

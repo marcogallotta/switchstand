@@ -25,5 +25,8 @@ pythonVersion = "3.11"
 include = ["src", "tests", "scripts"]
 extraPaths = ["src"]
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
-select = ["E9", "F", "B"]
+select = ["E9", "E501", "F", "B"]
