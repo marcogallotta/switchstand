@@ -44,6 +44,26 @@ function request(overrides = {}) {
   return new Request("https://action.test/v1/github/commit", { method: "POST", body: JSON.stringify(body) });
 }
 
+function referencedRequest(content, overrides = {}) {
+  const file = encodedFile("experiments/gpt-actions-github/referenced.txt", content);
+  return request({
+    files: undefined,
+    file_manifest: [{
+      file_id: "file-test-001",
+      path: file.path,
+      expected_bytes: file.expected_bytes,
+      expected_sha256: file.expected_sha256,
+    }],
+    openaiFileIdRefs: [{
+      name: "referenced.txt",
+      id: "file-test-001",
+      mime_type: "text/plain",
+      download_link: "https://files.oaiusercontent.com/file-test-001?sig=temporary",
+    }],
+    ...overrides,
+  });
+}
+
 function fakeGithub({ branchExists = false, failRefOnce = false, mainSha = expected } = {}) {
   const calls = [];
   let ref = branchExists ? expected : null;
@@ -325,6 +345,102 @@ test("rejects byte-count and SHA-256 mismatches before any GitHub call", async (
   }
 });
 
+test("fetches an official Action file reference and commits its exact verified bytes", async () => {
+  const content = Buffer.alloc(5 * 1024, "a");
+  const gh = fakeGithub();
+  const fileCalls = [];
+  const action = createGithubAction({
+    store: new MemoryOperationStore(),
+    githubFetch: gh.fn,
+    fileFetch: async (url, init) => {
+      fileCalls.push({ url, init });
+      return new Response(content, { headers: { "content-length": String(content.length) } });
+    },
+    token: "server-only",
+  });
+  const response = await action(referencedRequest(content));
+  assert.equal(response.status, 200);
+  assert.equal(fileCalls.length, 1);
+  assert.equal(fileCalls[0].init.redirect, "error");
+  assert.equal(new URL(fileCalls[0].url).hostname, "files.oaiusercontent.com");
+  const blobCall = gh.calls.find((call) => call.url.endsWith("/git/blobs"));
+  assert.deepEqual(Buffer.from(blobCall.body.content, "base64"), content);
+});
+
+test("file references reject unsafe targets, oversized content, and integrity drift before GitHub", async () => {
+  const content = Buffer.from("shortened");
+  const cases = [
+    {
+      request: referencedRequest(content, {
+        openaiFileIdRefs: [{
+          name: "bad.txt", id: "file-test-001", mime_type: "text/plain",
+          download_link: "https://example.com/file",
+        }],
+      }),
+      fileFetch: async () => { throw new Error("must not fetch"); },
+      status: 403,
+      error: "invalid_file_reference",
+    },
+    {
+      request: referencedRequest(Buffer.alloc(64 * 1024, "a")),
+      fileFetch: async () => new Response(Buffer.alloc(64 * 1024 + 1, "a")),
+      status: 413,
+      error: "file_too_large",
+    },
+    {
+      request: referencedRequest(Buffer.alloc(5 * 1024, "a")),
+      fileFetch: async () => new Response(content),
+      status: 409,
+      error: "content_integrity_mismatch",
+      actualBytes: content.length,
+      hint: /Regenerate and reattach the complete file/,
+    },
+  ];
+  for (const item of cases) {
+    const store = new MemoryOperationStore();
+    const gh = fakeGithub();
+    const action = createGithubAction({ store, githubFetch: gh.fn, fileFetch: item.fileFetch, token: "server-only" });
+    const response = await action(item.request);
+    const result = await body(response);
+    assert.equal(response.status, item.status);
+    assert.equal(result.error, item.error);
+    if (item.actualBytes !== undefined) assert.equal(result.actual_bytes, item.actualBytes);
+    if (item.hint) {
+      assert.match(result.hint, item.hint);
+      assert.equal(result.received_base64_characters, undefined);
+    }
+    assert.equal(gh.calls.length, 0);
+    assert.equal(store.records.size, 0);
+  }
+});
+
+test("file-reference IDs must map one-to-one before any download", async () => {
+  const content = Buffer.from("content");
+  const store = new MemoryOperationStore();
+  const gh = fakeGithub();
+  let fetches = 0;
+  const action = createGithubAction({
+    store,
+    githubFetch: gh.fn,
+    fileFetch: async () => { fetches += 1; return new Response(content); },
+    token: "server-only",
+  });
+  const expectedFile = encodedFile("experiments/gpt-actions-github/referenced.txt", content);
+  const response = await action(referencedRequest(content, {
+    file_manifest: [{
+      file_id: "different-id",
+      path: expectedFile.path,
+      expected_bytes: expectedFile.expected_bytes,
+      expected_sha256: expectedFile.expected_sha256,
+    }],
+  }));
+  assert.equal(response.status, 409);
+  assert.equal((await body(response)).error, "file_reference_mismatch");
+  assert.equal(fetches, 0);
+  assert.equal(gh.calls.length, 0);
+  assert.equal(store.records.size, 0);
+});
+
 test("rejects malformed integrity declarations before operation storage or GitHub", async () => {
   const valid = encodedFile("experiments/gpt-actions-github/integrity.txt", "content\n");
   for (const file of [
@@ -407,6 +523,10 @@ test("OpenAPI exposes only runtime routes and mirrors generated-call constraints
   assert.match(schema, /required: \[path, content_base64, expected_bytes, expected_sha256\]/);
   assert.match(schema, /maximum: 65536/);
   assert.match(schema, /pattern: '\^\[0-9a-f\]\{64\}\$'/);
+  assert.match(schema, /openaiFileIdRefs:/);
+  assert.match(schema, /maxItems: 10/);
+  assert.match(schema, /file_manifest:/);
+  assert.match(schema, /oneOf:/);
   assert.match(schema, /const: update/);
   assert.match(schema, /required: \[pull_number\]/);
 });

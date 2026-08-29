@@ -13,12 +13,18 @@ export const DEFAULT_POLICY = Object.freeze({
   maxFileBytes: 64 * 1024,
   maxTotalBytes: 256 * 1024,
   maxFiles: 32,
+  maxReferencedFiles: 10,
+  fileReferenceHost: "files.oaiusercontent.com",
   maxRequestMs: 40 * 1000,
   operationLeaseSeconds: 60,
   allowFaultInjection: true,
 });
 
-const COMMIT_KEYS = ["operation_id", "repository", "branch", "expected_head_sha", "mode", "message", "files", "test_fail_after_commit"];
+const COMMIT_KEYS = [
+  "operation_id", "repository", "branch", "expected_head_sha", "mode", "message",
+  "files", "file_manifest", "openaiFileIdRefs", "test_fail_after_commit",
+];
+const COMMIT_REQUIRED_KEYS = ["operation_id", "repository", "branch", "expected_head_sha", "mode", "message"];
 const PULL_KEYS = ["operation_id", "repository", "branch", "base", "expected_head_sha", "mode", "pull_number", "title", "body", "draft", "test_fail_after_mutation"];
 
 function json(status, body) {
@@ -60,21 +66,26 @@ function invalid(error, status = 400) {
   throw Object.assign(new Error(error), { status });
 }
 
-async function decodeFile(file, policy) {
+function validatePath(path, policy) {
+  if (typeof path !== "string" || path.length > 240) invalid("invalid_path");
+  if (path.includes("\\") || path.startsWith("/") || path.split("/").some((part) => !part || part === "." || part === "..")) {
+    invalid("forbidden_path", 403);
+  }
+  if (!path.startsWith(policy.pathPrefix)) invalid("forbidden_path", 403);
+  if (!PATH_RE.test(path)) invalid("invalid_path");
+}
+
+function validIntegrityDeclaration(file, policy) {
+  return Number.isInteger(file.expected_bytes) && file.expected_bytes >= 0 &&
+    file.expected_bytes <= policy.maxFileBytes && typeof file.expected_sha256 === "string" &&
+    SHA256_RE.test(file.expected_sha256);
+}
+
+async function decodeFile(file, policy, source = "inline") {
   const keys = ["path", "content_base64", "expected_bytes", "expected_sha256"];
   if (!exactKeys(file, keys, keys) || typeof file.path !== "string" ||
-      typeof file.content_base64 !== "string" || !Number.isInteger(file.expected_bytes) ||
-      file.expected_bytes < 0 || file.expected_bytes > policy.maxFileBytes ||
-      typeof file.expected_sha256 !== "string" ||
-      !SHA256_RE.test(file.expected_sha256 || "")) invalid("invalid_file");
-  if (file.path.length > 240) invalid("invalid_path");
-  if (file.path.includes("\\") || file.path.startsWith("/") || file.path.split("/").some((p) => !p || p === "." || p === "..")) {
-    throw Object.assign(new Error("forbidden_path"), { status: 403 });
-  }
-  if (!file.path.startsWith(policy.pathPrefix)) {
-    throw Object.assign(new Error("forbidden_path"), { status: 403 });
-  }
-  if (!PATH_RE.test(file.path)) invalid("invalid_path");
+      typeof file.content_base64 !== "string" || !validIntegrityDeclaration(file, policy)) invalid("invalid_file");
+  validatePath(file.path, policy);
   let binary;
   try { binary = atob(file.content_base64); } catch { throw Object.assign(new Error("invalid_base64"), { status: 400 }); }
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -89,12 +100,16 @@ async function decodeFile(file, policy) {
   const actualSha256 = await crypto.subtle.digest("SHA-256", bytes);
   const actualHex = [...new Uint8Array(actualSha256)].map((n) => n.toString(16).padStart(2, "0")).join("");
   if (bytes.length !== file.expected_bytes || actualHex !== file.expected_sha256) {
-    throw Object.assign(new Error("content_integrity_mismatch"), {
+    const correction = source === "reference"
+      ? { hint: "Regenerate and reattach the complete file; send its exact byte count and SHA-256 in file_manifest." }
+      : {
+          received_base64_characters: file.content_base64.length,
+          hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
+        };
+    throw Object.assign(new Error("content_integrity_mismatch"), correction, {
       status: 409,
       expected_bytes: file.expected_bytes,
       actual_bytes: bytes.length,
-      received_base64_characters: file.content_base64.length,
-      hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
     });
   }
   return {
@@ -106,9 +121,86 @@ async function decodeFile(file, policy) {
   };
 }
 
-async function validateCommit(input, policy, bodyBytes) {
+function validateFileReference(reference, policy) {
+  const keys = ["name", "id", "mime_type", "download_link"];
+  if (!exactKeys(reference, keys, keys) || keys.some((key) => typeof reference[key] !== "string") ||
+      reference.id.length < 1 || reference.id.length > 200) invalid("invalid_file_reference");
+  let url;
+  try { url = new URL(reference.download_link); } catch { invalid("invalid_file_reference"); }
+  if (url.protocol !== "https:" || url.hostname !== policy.fileReferenceHost || url.port ||
+      url.username || url.password) invalid("invalid_file_reference", 403);
+  return { id: reference.id, download_link: url.href };
+}
+
+async function readReferencedFile(reference, manifest, policy, fileFetch, signal) {
+  let response;
+  try {
+    response = await fileFetch(reference.download_link, { method: "GET", redirect: "error", signal });
+  } catch { invalid("file_reference_fetch_failed", 422); }
+  if (!response.ok || !response.body || response.redirected) invalid("file_reference_fetch_failed", 422);
+  const declared = response.headers.get("content-length");
+  if (/^\d+$/.test(declared || "") && Number(declared) > policy.maxFileBytes) invalid("file_too_large", 413);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  while (true) {
+    let item;
+    try { item = await reader.read(); } catch { invalid("file_reference_fetch_failed", 422); }
+    const { done, value } = item;
+    if (done) break;
+    length += value.length;
+    if (length > policy.maxFileBytes) {
+      try { await reader.cancel(); } catch { /* rejection is already fixed and sanitized */ }
+      invalid("file_too_large", 413);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return decodeFile({
+    path: manifest.path,
+    content_base64: btoa(String.fromCharCode(...bytes)),
+    expected_bytes: manifest.expected_bytes,
+    expected_sha256: manifest.expected_sha256,
+  }, policy, "reference");
+}
+
+async function resolveCommitFiles(input, policy, fileFetch, signal) {
+  const inline = input.files !== undefined;
+  const referenced = input.file_manifest !== undefined || input.openaiFileIdRefs !== undefined;
+  if (inline === referenced) invalid("invalid_request");
+  if (inline) {
+    if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > policy.maxFiles) {
+      invalid("invalid_file_count");
+    }
+    return Promise.all(input.files.map((file) => decodeFile(file, policy)));
+  }
+  if (!Array.isArray(input.file_manifest) || !Array.isArray(input.openaiFileIdRefs) ||
+      input.file_manifest.length < 1 || input.file_manifest.length > policy.maxReferencedFiles ||
+      input.file_manifest.length !== input.openaiFileIdRefs.length) invalid("invalid_file_count");
+  const manifestKeys = ["file_id", "path", "expected_bytes", "expected_sha256"];
+  for (const item of input.file_manifest) {
+    if (!exactKeys(item, manifestKeys, manifestKeys) || typeof item.file_id !== "string" ||
+        item.file_id.length < 1 || item.file_id.length > 200 ||
+        !validIntegrityDeclaration(item, policy)) invalid("invalid_file");
+    validatePath(item.path, policy);
+  }
+  const references = input.openaiFileIdRefs.map((item) => validateFileReference(item, policy));
+  const byId = new Map(references.map((item) => [item.id, item]));
+  if (byId.size !== references.length || new Set(input.file_manifest.map((item) => item.file_id)).size !== references.length) {
+    invalid("duplicate_file_reference", 409);
+  }
+  return Promise.all(input.file_manifest.map((item) => {
+    const reference = byId.get(item.file_id);
+    if (!reference) invalid("file_reference_mismatch", 409);
+    return readReferencedFile(reference, item, policy, fileFetch, signal);
+  }));
+}
+
+async function validateCommit(input, policy, bodyBytes, fileFetch, signal) {
   if (bodyBytes > policy.maxBodyBytes) throw Object.assign(new Error("request_too_large"), { status: 413 });
-  if (!exactKeys(input, COMMIT_KEYS, COMMIT_KEYS.slice(0, 7))) invalid("invalid_request");
+  if (!exactKeys(input, COMMIT_KEYS, COMMIT_REQUIRED_KEYS)) invalid("invalid_request");
   if (!input || !OP_RE.test(input.operation_id || "")) throw Object.assign(new Error("invalid_operation_id"), { status: 400 });
   if (input.repository !== policy.repository) throw Object.assign(new Error("forbidden_repository"), { status: 403 });
   if (input.branch !== policy.candidateBranch) {
@@ -116,10 +208,7 @@ async function validateCommit(input, policy, bodyBytes) {
   }
   if (!SHA_RE.test(input.expected_head_sha || "")) throw Object.assign(new Error("invalid_expected_head_sha"), { status: 400 });
   if (!['create', 'update'].includes(input.mode)) throw Object.assign(new Error("invalid_mode"), { status: 400 });
-  if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > policy.maxFiles) {
-    throw Object.assign(new Error("invalid_file_count"), { status: 400 });
-  }
-  const files = await Promise.all(input.files.map((file) => decodeFile(file, policy)));
+  const files = await resolveCommitFiles(input, policy, fileFetch, signal);
   if (new Set(files.map((f) => f.path)).size !== files.length) throw Object.assign(new Error("duplicate_path"), { status: 409 });
   if (files.reduce((n, f) => n + f.bytes.length, 0) > policy.maxTotalBytes) {
     throw Object.assign(new Error("content_too_large"), { status: 413 });
@@ -130,8 +219,9 @@ async function validateCommit(input, policy, bodyBytes) {
   if (input.test_fail_after_commit && !policy.allowFaultInjection) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
+  const { file_manifest, openaiFileIdRefs, ...normalized } = input;
   return {
-    ...input,
+    ...normalized,
     message,
     files: files.map(({ bytes, ...file }) => file),
   };
@@ -332,7 +422,9 @@ async function requestValue(request, limit) {
   catch { invalid("invalid_json"); }
 }
 
-export function createGithubAction({ store, githubFetch = fetch, token, policy = DEFAULT_POLICY, now = Date.now }) {
+export function createGithubAction({
+  store, githubFetch = fetch, fileFetch = fetch, token, policy = DEFAULT_POLICY, now = Date.now,
+}) {
   if (!token) throw new Error("missing_server_github_token");
   return async function handle(request) {
     const pathname = new URL(request.url).pathname;
@@ -343,7 +435,7 @@ export function createGithubAction({ store, githubFetch = fetch, token, policy =
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(policy.maxRequestMs)]);
       const value = await requestValue(request, policy.maxBodyBytes);
       const input = pathname.endsWith("/commit")
-        ? await validateCommit(value.input, policy, value.bodyBytes)
+        ? await validateCommit(value.input, policy, value.bodyBytes, fileFetch, signal)
         : validatePull(value.input, policy, value.bodyBytes);
       const payloadHash = await digest(input);
       const started = await store.begin(input.operation_id, payloadHash, policy.operationLeaseSeconds);
@@ -472,6 +564,7 @@ export function createHostedGithubHandler(env, options = {}) {
     const action = createGithubAction({
       store: new D1OperationStore(env.DB),
       githubFetch: options.githubFetch || fetch,
+      fileFetch: options.fileFetch || fetch,
       token: env.GITHUB_TOKEN,
       policy: options.policy || DEFAULT_POLICY,
     });
