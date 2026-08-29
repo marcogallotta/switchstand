@@ -81,7 +81,7 @@ function validIntegrityDeclaration(file, policy) {
     SHA256_RE.test(file.expected_sha256);
 }
 
-async function decodeFile(file, policy) {
+async function decodeFile(file, policy, source = "inline") {
   const keys = ["path", "content_base64", "expected_bytes", "expected_sha256"];
   if (!exactKeys(file, keys, keys) || typeof file.path !== "string" ||
       typeof file.content_base64 !== "string" || !validIntegrityDeclaration(file, policy)) invalid("invalid_file");
@@ -100,12 +100,16 @@ async function decodeFile(file, policy) {
   const actualSha256 = await crypto.subtle.digest("SHA-256", bytes);
   const actualHex = [...new Uint8Array(actualSha256)].map((n) => n.toString(16).padStart(2, "0")).join("");
   if (bytes.length !== file.expected_bytes || actualHex !== file.expected_sha256) {
-    throw Object.assign(new Error("content_integrity_mismatch"), {
+    const correction = source === "reference"
+      ? { hint: "Regenerate and reattach the complete file; send its exact byte count and SHA-256 in file_manifest." }
+      : {
+          received_base64_characters: file.content_base64.length,
+          hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
+        };
+    throw Object.assign(new Error("content_integrity_mismatch"), correction, {
       status: 409,
       expected_bytes: file.expected_bytes,
       actual_bytes: bytes.length,
-      received_base64_characters: file.content_base64.length,
-      hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
     });
   }
   return {
@@ -159,7 +163,7 @@ async function readReferencedFile(reference, manifest, policy, fileFetch, signal
     content_base64: btoa(String.fromCharCode(...bytes)),
     expected_bytes: manifest.expected_bytes,
     expected_sha256: manifest.expected_sha256,
-  }, policy);
+  }, policy, "reference");
 }
 
 async function resolveCommitFiles(input, policy, fileFetch, signal) {

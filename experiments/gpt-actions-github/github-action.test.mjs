@@ -393,6 +393,7 @@ test("file references reject unsafe targets, oversized content, and integrity dr
       status: 409,
       error: "content_integrity_mismatch",
       actualBytes: content.length,
+      hint: /Regenerate and reattach the complete file/,
     },
   ];
   for (const item of cases) {
@@ -404,6 +405,10 @@ test("file references reject unsafe targets, oversized content, and integrity dr
     assert.equal(response.status, item.status);
     assert.equal(result.error, item.error);
     if (item.actualBytes !== undefined) assert.equal(result.actual_bytes, item.actualBytes);
+    if (item.hint) {
+      assert.match(result.hint, item.hint);
+      assert.equal(result.received_base64_characters, undefined);
+    }
     assert.equal(gh.calls.length, 0);
     assert.equal(store.records.size, 0);
   }
