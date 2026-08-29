@@ -123,6 +123,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `scripts/stage_b1_live_check.py` — exact-head, read-only native-board live evidence runner
 - `src/switchstand_worker/` — bounded coordinator client, checkout/candidate boundary, and supervisor
+- `experiments/worker-coordinator/` — PostgreSQL g5 coordinator and publication reconciliation experiment
 - `tests/` — standard-library unit tests
 - `docs/` — product boundary, architecture, development workflow, and decisions
 

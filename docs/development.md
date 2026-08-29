@@ -85,6 +85,17 @@ already-installed user-owned Codex binary, existing Codex authentication mounted
 and bubblewrap. Do not install system packages, put worker/GitHub secrets in the child
 environment, or treat fixture tests as PostgreSQL integration evidence.
 
+Run the focused PostgreSQL g5 coordinator test with the pinned PGlite engine:
+
+```sh
+node --test experiments/worker-coordinator/worker-coordinator.test.mjs
+```
+
+This verifies migrations, fixed routines, authority separation, fencing, reconciliation, and the
+merged Python worker client's exact HTTP contract. PGlite reports PostgreSQL 17.5 and is test-
+only; acceptance deployment must rerun the migration and live integration against durable
+PostgreSQL 17.11.
+
 The first two commands are required for every code change. Run the JavaScript syntax check when
 Node is available and for every browser-code change. The Node regression is an honest fake-DOM
 seam. `./scripts/quality` also rejects disabled, focused, or retried tests.

@@ -16,6 +16,13 @@ coordinator or GitHub credential. Git diffs become one canonical, bounded files/
 manifest; publication remains coordinator-owned. No PostgreSQL implementation or hosted
 coordinator state lives in this package.
 
+`experiments/worker-coordinator` is the separate PostgreSQL g5 authority consumed by that
+worker. Immutable admission supplies claim-time task and repository authority. PostgreSQL
+server time owns leases, fences, cancellation, candidate receipts, and terminal state. Candidate
+submission makes no GitHub call. A coordinator-owned publication ledger reconstructs exact Git
+objects after restart and uses an atomic expected-head plus immutable-marker compare-and-swap;
+provider readback, never elapsed time, decides an ambiguous external effect.
+
 `service.py` owns the loopback HTTP process and serves the static operator UI. In default legacy
 mode it periodically asks the engine to reconcile; `engine.py` owns that mode's state transitions
 and persistence. In native mode, the service constructs exactly one `NativeBoard`, one
