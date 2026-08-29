@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createGithubAction, createHostedGithubHandler, DEFAULT_POLICY, D1OperationStore, MemoryOperationStore } from "./github-action.mjs";
@@ -7,6 +8,16 @@ const expected = "1".repeat(40);
 const commit = "2".repeat(40);
 const tree = "3".repeat(40);
 const blob = "4".repeat(40);
+
+function encodedFile(path, content) {
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
+  return {
+    path,
+    content_base64: bytes.toString("base64"),
+    expected_bytes: bytes.length,
+    expected_sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
 
 test("hosted authentication rejects requests before requiring GitHub authority", async () => {
   const handler = createHostedGithubHandler({ ACTION_KEY: "action-only" });
@@ -27,7 +38,7 @@ function request(overrides = {}) {
     expected_head_sha: expected,
     mode: "create",
     message: "Add GPT Action feasibility fixture",
-    files: [{ path: "experiments/gpt-actions-github/a.txt", content_base64: Buffer.from("alpha\n").toString("base64") }],
+    files: [encodedFile("experiments/gpt-actions-github/a.txt", "alpha\n")],
     ...overrides,
   };
   return new Request("https://action.test/v1/github/commit", { method: "POST", body: JSON.stringify(body) });
@@ -145,9 +156,9 @@ test("creates multiple files as one tree without upload transport", async () => 
   const response = await action(request({
     operation_id: "op-github-bundle-1",
     files: [
-      { path: "experiments/gpt-actions-github/a.txt", content_base64: btoa("alpha\n") },
-      { path: "experiments/gpt-actions-github/nested/b.txt", content_base64: btoa("beta\n") },
-      { path: "experiments/gpt-actions-github/manifest.json", content_base64: btoa('{"files":2}\n') },
+      encodedFile("experiments/gpt-actions-github/a.txt", "alpha\n"),
+      encodedFile("experiments/gpt-actions-github/nested/b.txt", "beta\n"),
+      encodedFile("experiments/gpt-actions-github/manifest.json", '{"files":2}\n'),
     ],
   }));
   assert.equal(response.status, 200);
@@ -162,7 +173,7 @@ test("rejects forbidden repository, branch, path, and changed retry", async () =
   for (const [change, error] of [
     [{ repository: "marcogallotta/switchstand" }, "forbidden_repository"],
     [{ branch: "main" }, "forbidden_branch"],
-    [{ files: [{ path: "README.md", content_base64: "YQ==" }] }, "forbidden_path"],
+    [{ files: [encodedFile("README.md", "a")] }, "forbidden_path"],
   ]) {
     const response = await action(request(change));
     assert.equal(response.status, 403);
@@ -182,8 +193,10 @@ test("enforces exact request shape, exact branch, and UTF-8 text", async () => {
     [{ branch: "agent/gpt-actions-github-proof" }, "forbidden_branch", 403],
     [{ message: " padded" }, "invalid_message", 400],
     [{ test_fail_after_commit: "yes" }, "invalid_request", 400],
-    [{ files: [{ path: "experiments/gpt-actions-github/sp ace.txt", content_base64: "YQ==" }] }, "invalid_path", 400],
-    [{ files: [{ path: "experiments/gpt-actions-github/bad.txt", content_base64: "/w==" }] }, "invalid_utf8", 400],
+    [{ files: [encodedFile("experiments/gpt-actions-github/sp ace.txt", "a")] }, "invalid_path", 400],
+    [{ files: [{
+      ...encodedFile("experiments/gpt-actions-github/bad.txt", Buffer.from([255])),
+    }] }, "invalid_utf8", 400],
   ]) {
     const gh = fakeGithub();
     const action = createGithubAction({ store: new MemoryOperationStore(), githubFetch: gh.fn, token: "server-only" });
@@ -198,13 +211,15 @@ test("enforces file-count, total-content, and request limits before GitHub", asy
   const cases = [
     {
       operation_id: "limit-files-0001",
-      files: Array.from({ length: 33 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: "YQ==" })),
+      files: Array.from({ length: 33 }, (_, i) => encodedFile(`experiments/gpt-actions-github/${i}.txt`, "a")),
       error: "invalid_file_count",
       status: 400,
     },
     {
       operation_id: "limit-total-0001",
-      files: Array.from({ length: 5 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: Buffer.alloc(53 * 1024, "a").toString("base64") })),
+      files: Array.from({ length: 5 }, (_, i) => (
+        encodedFile(`experiments/gpt-actions-github/${i}.txt`, Buffer.alloc(53 * 1024, "a"))
+      )),
       error: "content_too_large",
       status: 413,
     },
@@ -264,10 +279,7 @@ test("accepts exactly 64 KiB and rejects one byte more before any GitHub call", 
   });
   const accepted = await acceptedAction(request({
     operation_id: "limit-file-exact-64k",
-    files: [{
-      path: "experiments/gpt-actions-github/exact.txt",
-      content_base64: Buffer.alloc(64 * 1024, "a").toString("base64"),
-    }],
+    files: [encodedFile("experiments/gpt-actions-github/exact.txt", Buffer.alloc(64 * 1024, "a"))],
   }));
   assert.equal(accepted.status, 200);
   const blobCall = acceptedGithub.calls.find((call) => call.url.endsWith("/git/blobs"));
@@ -276,10 +288,31 @@ test("accepts exactly 64 KiB and rejects one byte more before any GitHub call", 
   const store = new MemoryOperationStore();
   const gh = fakeGithub();
   const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
-  const response = await action(request({ files: [{ path: "experiments/gpt-actions-github/big.txt", content_base64: Buffer.alloc(64 * 1024 + 1, "a").toString("base64") }] }));
+  const response = await action(request({
+    files: [encodedFile("experiments/gpt-actions-github/big.txt", Buffer.alloc(64 * 1024 + 1, "a"))],
+  }));
   assert.equal(response.status, 413);
   assert.equal((await body(response)).error, "file_too_large");
   assert.equal(gh.calls.length, 0);
+});
+
+test("rejects byte-count and SHA-256 mismatches before any GitHub call", async () => {
+  const correct = encodedFile("experiments/gpt-actions-github/integrity.txt", "actual content\n");
+  for (const file of [
+    { ...correct, expected_bytes: correct.expected_bytes + 1 },
+    { ...correct, expected_sha256: "0".repeat(64) },
+  ]) {
+    const gh = fakeGithub();
+    const action = createGithubAction({
+      store: new MemoryOperationStore(),
+      githubFetch: gh.fn,
+      token: "server-only",
+    });
+    const response = await action(request({ files: [file] }));
+    assert.equal(response.status, 409);
+    assert.equal((await body(response)).error, "content_integrity_mismatch");
+    assert.equal(gh.calls.length, 0);
+  }
 });
 
 test("creates a draft PR and makes exact retries idempotent", async () => {
@@ -343,6 +376,9 @@ test("OpenAPI exposes only runtime routes and mirrors generated-call constraints
   assert.match(schema, /x-decodedAggregateMaxBytes: 262144/);
   assert.match(schema, /x-bodyMaxBytes: 393216/);
   assert.match(schema, /contentEncoding: base64/);
+  assert.match(schema, /required: \[path, content_base64, expected_bytes, expected_sha256\]/);
+  assert.match(schema, /maximum: 65536/);
+  assert.match(schema, /pattern: '\^\[0-9a-f\]\{64\}\$'/);
   assert.match(schema, /const: update/);
   assert.match(schema, /required: \[pull_number\]/);
 });

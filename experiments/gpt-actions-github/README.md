@@ -11,13 +11,15 @@ This isolated prototype implements the only GitHub mutation route admitted for t
 - expected-head fencing;
 - a 40-second request deadline inside a 60-second operation lease, with an active-attempt check before every GitHub mutation;
 - bounded request, file, total-content, and file-count limits;
-- UTF-8 text and exact request-shape validation;
+- UTF-8 text, exact request-shape validation, and mandatory decoded byte-count and SHA-256 checks;
 - retry recovery after orphaned Git objects without moving a ref early.
 
 The fixed limits are 32 files, 64 KiB per file, 256 KiB aggregate decoded content, and
 384 KiB per HTTP request. The file-count bound limits the sequential GitHub calls made within
-the 40-second request deadline. The fixture's initial `main` commit is a separately recorded
-provisioning step and is not part of the Action capability evidence.
+the 40-second request deadline. Every file must include its exact decoded byte count and
+lowercase SHA-256; a mismatch is rejected before any GitHub call. The fixture's initial `main`
+commit is a separately recorded provisioning step and is not part of the Action capability
+evidence.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 
