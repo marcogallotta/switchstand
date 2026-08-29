@@ -12,6 +12,7 @@ This isolated prototype implements the only GitHub mutation route admitted for t
 - a 40-second request deadline inside a 60-second operation lease, with an active-attempt check before every GitHub mutation;
 - bounded request, file, total-content, and file-count limits;
 - UTF-8 text, exact request-shape validation, and mandatory decoded byte-count and SHA-256 checks;
+- bounded OpenAI Action file references for payloads that should not be serialized inline;
 - retry recovery after orphaned Git objects without moving a ref early.
 
 The fixed limits are 32 files, 64 KiB per file, 256 KiB aggregate decoded content, and
@@ -28,6 +29,12 @@ not from a shortened call argument. The integrity fields make shortening visible
 increase the caller's own tool-call payload capacity. An integrity mismatch returns the declared
 and decoded byte counts, the received Base64 character count, and a fixed correction hint without
 echoing file content or digests.
+
+For larger content, use the reserved `openaiFileIdRefs` Action parameter with `file_manifest`.
+ChatGPT sends an attached or Code Interpreter-created file as a short-lived download reference;
+the coordinator accepts only `https://files.oaiusercontent.com`, rejects redirects, reads at most
+64 KiB per referenced file, verifies the manifest byte count and SHA-256, and discards the URL.
+At most ten referenced files are accepted, matching the GPT Actions file-reference boundary.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 

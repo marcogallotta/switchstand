@@ -22,6 +22,7 @@ paths:
         '403': { description: Repository, branch, path, or fault policy rejected the request. }
         '409':
           description: Content integrity mismatch, operation conflict, or stale head.
+        '422': { description: Referenced file could not be fetched safely. }
         '413': { description: Request or content limit exceeded. }
   /v1/github/pull:
     post:
@@ -68,10 +69,22 @@ components:
           type: string
           pattern: '^[0-9a-f]{64}$'
           description: Lowercase SHA-256 of the exact decoded content_base64 bytes.
+    FileManifestEntry:
+      type: object
+      additionalProperties: false
+      required: [file_id, path, expected_bytes, expected_sha256]
+      properties:
+        file_id: { type: string, minLength: 1, maxLength: 200 }
+        path:
+          type: string
+          maxLength: 240
+          pattern: '^experiments/gpt-actions-github/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$'
+        expected_bytes: { type: integer, minimum: 0, maximum: 65536 }
+        expected_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     CommitRequest:
       type: object
       additionalProperties: false
-      required: [operation_id, repository, branch, expected_head_sha, mode, message, files]
+      required: [operation_id, repository, branch, expected_head_sha, mode, message]
       properties:
         operation_id:
           type: string
@@ -94,7 +107,22 @@ components:
           description: Decoded file content is limited to 262144 bytes in aggregate.
           x-decodedAggregateMaxBytes: 262144
           items: { $ref: '#/components/schemas/File' }
+        file_manifest:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: Maps each attached Action file ID to its exact destination and integrity values.
+          items: { $ref: '#/components/schemas/FileManifestEntry' }
+        openaiFileIdRefs:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: Attach the exact text files named in file_manifest. Runtime values are OpenAI file-reference objects.
+          items: { type: string }
         test_fail_after_commit: { type: boolean, default: false }
+      oneOf:
+        - required: [files]
+        - required: [file_manifest, openaiFileIdRefs]
     PullRequest:
       type: object
       additionalProperties: false
