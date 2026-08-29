@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "base_sha": "00357f9db56e0784644657d19595285bc9a2c8cd",
-  "kind": "registration",
+  "base_sha": "8e517e344380fdd3da2813d922ee90ad6b8ace35",
+  "kind": "gate_repair",
   "finding_ids": [],
   "runnable_blocker_id": null,
   "gate_repair_receipts": [],
-  "rationale": "Introduce the canonical register and enforcement gate while recovery freeze is active."
+  "rationale": "Add a two-review path-extension mechanism and bind the exact omitted R1b containment paths."
 }

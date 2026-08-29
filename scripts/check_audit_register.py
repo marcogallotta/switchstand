@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -32,8 +31,8 @@ GOVERNANCE_PATHS = set(
     "scripts/quality tests/test_audit_register.py tests/test_audit_register_adversarial.py".split()
 )
 RECOVERY_METADATA_PATHS = {"audit/change-scope.json", "audit/findings.json", "docs/development.md"}
-GATE_REPAIR_PATHS = GOVERNANCE_PATHS - {"audit/findings.json"}
-GATE_AUTHORITY_PATHS = GATE_REPAIR_PATHS - {"audit/change-scope.json", "docs/development.md"}
+GATE_REPAIR_PATHS = GOVERNANCE_PATHS
+GATE_AUTHORITY_PATHS = GATE_REPAIR_PATHS - {"audit/change-scope.json", "audit/findings.json", "docs/development.md"}
 
 
 class ValidationError(ValueError):
@@ -271,18 +270,10 @@ def _validate_finding(finding: object, index: int) -> None:
 
 
 def validate_register(register: dict[str, Any]) -> list[dict[str, Any]]:
-    _exact_keys(
-        register,
-        {
-            "schema_version",
-            "findings",
-            "audit_runs",
-            "runnable_surface_paths",
-            "runnable_blockers",
-            "capability_protections",
-        },
-        "register",
-    )
+    try:
+        policy.validate_register_keys(register)
+    except policy.PolicyError as exc:
+        raise ValidationError(str(exc)) from exc
     if register["schema_version"] != SCHEMA_VERSION:
         raise ValidationError(f"unsupported register schema_version: {register['schema_version']!r}")
     findings = register["findings"]
@@ -295,6 +286,11 @@ def validate_register(register: dict[str, Any]) -> list[dict[str, Any]]:
         if finding_id in ids:
             raise ValidationError(f"duplicate finding id: {finding_id}")
         ids.add(finding_id)
+    try:
+        policy.validate_path_extensions(register, _validate_paths, _nonempty)
+        policy.validate_gate_repair_history(register, ROOT)
+    except policy.PolicyError as exc:
+        raise ValidationError(str(exc)) from exc
     audit_runs = register["audit_runs"]
     if not isinstance(audit_runs, list):
         raise ValidationError("audit_runs must be an array")
@@ -405,23 +401,11 @@ def _load_base_register(base: str) -> dict[str, Any] | None:
 
 
 def _base_revision(argument: str | None) -> str:
-    requested = argument or os.environ.get("QUALITY_BASE_REF")
-    if requested:
-        try:
-            return _git("rev-parse", "--verify", f"{requested}^{{commit}}")
-        except subprocess.CalledProcessError as exc:
-            raise ValidationError(f"base ref is not a commit: {requested}") from exc
-    for candidate in ("main", "origin/main"):
-        resolved = _git("rev-parse", "--verify", f"{candidate}^{{commit}}", check=False)
-        if resolved:
-            return resolved
-    return _git("rev-parse", "HEAD")
+    return policy.base_revision(ROOT, argument)
 
 
 def _changed_paths(base: str) -> set[str]:
-    output = _git("diff", "--name-only", base, "--")
-    untracked = _git("ls-files", "--others", "--exclude-standard")
-    return {line for line in (*output.splitlines(), *untracked.splitlines()) if line and line != "node_modules"}
+    return policy.changed_paths(ROOT, base)
 
 
 def validate_scope(
@@ -432,12 +416,18 @@ def validate_scope(
     runnable_blockers: list[dict[str, Any]],
     reasons: list[str],
     transition_receipts: set[str] | None = None,
+    current_register: dict[str, Any] | None = None,
 ) -> None:
     changed = _changed_paths(base)
     if not changed:
         return
     gate_authority_changed = changed & GATE_AUTHORITY_PATHS
-    if not reasons and not gate_authority_changed:
+    if current_register is None:
+        current_register = base_register or {"findings": findings, "affected_path_extensions": []}
+    old_extensions = (base_register or {}).get("affected_path_extensions", [])
+    new_extensions = current_register.get("affected_path_extensions", [])
+    extensions_changed = old_extensions != new_extensions
+    if not reasons and not gate_authority_changed and not extensions_changed:
         return
     scope = _load_json(ROOT / SCOPE_PATH)
     _exact_keys(
@@ -472,12 +462,21 @@ def validate_scope(
         raise ValidationError("change scope runnable_blocker_id is only valid for runnable_repair")
     if scope["kind"] == "revert" and not finding_ids:
         raise ValidationError("revert requires at least one finding id")
-    policy.validate_gate_repair(scope, base, ROOT)
+    extension_sha256 = policy.added_extension_digest(old_extensions, new_extensions)
+    policy.validate_gate_repair(scope, base, ROOT, extension_sha256)
     policy.reserve_gate_authority(scope, base_register is not None, bool(gate_authority_changed))
+    if extensions_changed:
+        if scope["kind"] != "gate_repair":
+            raise ValidationError("affected path extensions require a two-review gate_repair")
+        policy.validate_gate_register_repair(base_register, current_register)
+        assert base_register is not None
+        policy.validate_extension_gate_link(base, base_register, current_register, scope)
+    elif scope["kind"] == "gate_repair" and "audit/findings.json" in changed:
+        raise ValidationError("gate_repair cannot mutate finding state or immutable fields")
     allowed_receipts = (transition_receipts or set()) | policy.transition_receipt_paths(scope)
     allowed = RECOVERY_METADATA_PATHS | allowed_receipts
     if scope["kind"] in {"containment", "remediation", "revert"}:
-        patterns = [pattern for finding_id in finding_ids for pattern in by_id[finding_id]["affected_paths"]]
+        patterns = policy.affected_paths(current_register, finding_ids)
         disallowed = sorted(path for path in changed if path not in allowed and path not in patterns)
     elif scope["kind"] == "registration":
         registration_paths = GOVERNANCE_PATHS if base_register is None else RECOVERY_METADATA_PATHS | allowed_receipts
@@ -521,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             reasons,
             policy.transition_receipt_paths(register)
             - policy.transition_receipt_paths(base_register or {}),
+            current_register=register,
         )
     except (ValidationError, policy.PolicyError, subprocess.CalledProcessError) as exc:
         print(f"AUDIT REGISTER FAIL: {exc}", file=sys.stderr)

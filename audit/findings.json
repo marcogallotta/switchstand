@@ -1,5 +1,42 @@
 {
   "schema_version": 1,
+  "affected_path_extensions": [
+    {
+      "finding_id": "A-01",
+      "paths": [
+        "README.md",
+        "src/switchstand/native_contracts.py",
+        "src/switchstand/native_http.py",
+        "src/switchstand/native_http_contract.py",
+        "src/switchstand/native_workbench.py",
+        "src/switchstand/service.py",
+        "src/switchstand/static/index.html",
+        "tests/browser/focus_chromium.spec.js",
+        "tests/browser/native_selection_chromium.spec.js",
+        "tests/browser_focus.test.js",
+        "tests/test_native_http.py",
+        "tests/test_native_http_contract.py",
+        "tests/test_native_workbench.py",
+        "tests/test_service.py",
+        "tests/test_service_request_targets.py"
+      ],
+      "rationale": "Exact composition, dispatcher, browser, docs, and test paths needed to quarantine native Input."
+    },
+    {
+      "finding_id": "TE-002",
+      "paths": [
+        "docs/decisions/0001-prototype-boundary.md"
+      ],
+      "rationale": "Exact legacy service boundary ADR changed when the unqualified legacy mutation mode is quarantined."
+    }
+  ],
+  "gate_repair_history": [
+    {
+      "base_sha": "8e517e344380fdd3da2813d922ee90ad6b8ace35",
+      "extensions_sha256": "feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
+      "review_receipts": []
+    }
+  ],
   "runnable_surface_paths": [
     "src/switchstand/service.py",
     "src/switchstand/app_server.py",

@@ -131,6 +131,12 @@ registration, containment, scoped remediation, cited reverts, two-review gate re
 immutable runnable-surface path map and one registered open runnable blocker. It rejects
 unrelated paths and self-edits to the gate after bootstrap. Finding scope, discovery evidence,
 audit history, capability-protection paths, and runnable paths are append-only or immutable.
+An omitted exact path is repaired only by appending an `affected_path_extensions` record under a
+two-review `gate_repair`. Existing finding fields remain immutable, extensions cannot be removed
+or repointed, and the gate uses their union with the finding's discovery-time paths only for a
+later candidate that cites that finding. An append-only gate-repair history binds each extension
+batch digest and exact base into its two durable independent review receipt subjects, so later changes
+cannot orphan the authorization. This keeps register correction separate from product code.
 Durable evidence lives under `audit/receipts/` at its SHA-256 filename. Only receipt files newly
 referenced by the declared transition are admitted. Each receipt is role-, subject-, producer-,
 externally verifiable GitHub-provenance-, and exact implementation-head-bound. Closure roles
