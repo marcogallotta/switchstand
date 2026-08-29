@@ -1,0 +1,12 @@
+{
+"created_at":"2026-08-29T20:48:49Z",
+"evidence_kind":"github_issue_comment",
+"evidence_reference":"https://github.com/marcogallotta/switchstand/pull/59#issuecomment-5464803672",
+"head_sha":"c7cc114cde662b086ec8d079d3a9bc957332bd3a",
+"producer":"codex-agent:/root/repair_r0_for_r1b/review_r0_pr59_remote_b",
+"role":"gate_repair_review",
+"schema_version":1,
+"subject":
+"gate-repair:8e517e344380fdd3da2813d922ee90ad6b8ace35:feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
+"summary":"Blind exact-head review passed the durable fail-closed gate repair."
+}
