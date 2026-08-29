@@ -2,6 +2,20 @@
 
 ## Components
 
+`switchstand_worker` is a separate headless experiment consuming the frozen `worker-v2` HTTP
+contract. Its strict client carries one workspace-scoped worker bearer only in the supervisor.
+The checkout boundary validates the claimed base and archive digest, rejects hostile tar input,
+and atomically publishes a private disposable workspace. The supervisor checkpoints a task-free
+Codex bootstrap only after full state-database pagination proves that the thread is resumable.
+Every later turn resumes that exact adopted thread.
+
+An independent one-second renewal loop owns current lease truth. Stale authority, cancellation,
+or two unavailable renewals kill the entire attached Codex process group and permanently disable
+later writes from that attempt. Codex runs through selective bubblewrap mounts and receives no
+coordinator or GitHub credential. Git diffs become one canonical, bounded files/deletions
+manifest; publication remains coordinator-owned. No PostgreSQL implementation or hosted
+coordinator state lives in this package.
+
 `service.py` owns the loopback HTTP process and serves the static operator UI. In default legacy
 mode it periodically asks the engine to reconcile; `engine.py` owns that mode's state transitions
 and persistence. In native mode, the service constructs exactly one `NativeBoard`, one
@@ -116,6 +130,11 @@ failure affects observer truth without rewriting the last native status. No poll
 promoted to done, progress, stale, wedged, failure, or intent.
 
 ## State model
+
+The local worker keeps only user-owned disposable checkouts and the minimum isolated Codex state
+needed for exact provider resume. PostgreSQL remains authoritative for admission, lease/fence,
+checkpoint, adopted thread identity, accepted candidate, cancellation, and terminal state. A
+candidate-ready reclaim performs no Codex work and completes only the exact stored candidate.
 
 Native mode has no durable product state. It holds the latest successful observation and a
 bounded trail in memory; restarting the service resets both. Native thread records remain the

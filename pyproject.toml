@@ -15,6 +15,7 @@ dependencies = []
 [project.scripts]
 switchstand = "switchstand.service:main"
 switchstand-stage-a = "switchstand.stage_a_probe:main"
+switchstand-worker = "switchstand_worker.__main__:main"
 
 [tool.setuptools.package-data]
 switchstand = ["static/*.html", "static/*.js", "static/*.css"]

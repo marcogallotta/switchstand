@@ -13,6 +13,11 @@ observation with exact current-target input and one emergency control, and the l
 reliability mechanisms for ordered messages, restart reconciliation, controls, and result
 fencing.
 
+The separately packaged `switchstand_worker` experiment is a headless local executor for the
+frozen `worker-v2` coordinator protocol. It does not change either operator surface. It accepts
+only immutable admitted work from a coordinator, runs one finite Codex turn in a user-owned
+bubblewrap boundary, and returns a bounded candidate manifest without GitHub authority.
+
 ## Status and checkpoint
 
 The dependency-free engine, service, browser UI, and Codex Unix-socket adapter are covered by
@@ -117,6 +122,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - `src/switchstand/service.py` — local HTTP/API/static-file process
 - `src/switchstand/static/` — vanilla HTML, CSS, and JavaScript operator UI
 - `scripts/stage_b1_live_check.py` — exact-head, read-only native-board live evidence runner
+- `src/switchstand_worker/` — bounded coordinator client, checkout/candidate boundary, and supervisor
 - `tests/` — standard-library unit tests
 - `docs/` — product boundary, architecture, development workflow, and decisions
 
@@ -130,6 +136,7 @@ explicit notification-subscription consequence, output fields, and exit codes.
 - [Deterministic code-quality decision](docs/decisions/0003-code-quality.md)
 - [Native read-only flight-board decision](docs/decisions/0004-native-read-only-flight-board.md)
 - [Exact-turn native stop decision](docs/decisions/0005-exact-turn-native-stop.md)
+- [Bounded local worker decision](docs/decisions/0006-bounded-local-worker.md)
 - [Native selection v1 contract](docs/native-selection-v1.md)
 
 Switchstand is available under the [MIT License](LICENSE).
