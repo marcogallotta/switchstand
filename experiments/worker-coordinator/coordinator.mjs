@@ -105,13 +105,9 @@ function parseStrict(text) {
   return parsed;
 }
 
-async function requestBody(request, limit) {
-  const declared = Number(request.headers.get('content-length') || 0);
-  if (!Number.isSafeInteger(declared) || declared < 0 || declared > limit) {
-    throw Object.assign(new Error('request_too_large'), { status: 413 });
-  }
-  if (!request.body) throw Object.assign(new Error('invalid_request'), { status: 400 });
-  const reader = request.body.getReader();
+async function boundedBytes(stream, limit) {
+  if (!stream) throw Object.assign(new Error('invalid_request'), { status: 400 });
+  const reader = stream.getReader();
   const chunks = [];
   let length = 0;
   while (true) {
@@ -129,6 +125,27 @@ async function requestBody(request, limit) {
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function requestBody(request, limit, allowGzip = false) {
+  const declared = Number(request.headers.get('content-length') || 0);
+  if (!Number.isSafeInteger(declared) || declared < 0 || declared > limit) {
+    throw Object.assign(new Error('request_too_large'), { status: 413 });
+  }
+  let bytes = await boundedBytes(request.body, limit);
+  const encoding = request.headers.get('content-encoding');
+  if (encoding !== null) {
+    if (!allowGzip || encoding !== 'gzip') {
+      throw Object.assign(new Error('invalid_request'), { status: 400 });
+    }
+    try {
+      const decompressed = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+      bytes = await boundedBytes(decompressed, limit);
+    } catch {
+      throw Object.assign(new Error('invalid_request'), { status: 400 });
+    }
   }
   try {
     return parseStrict(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -212,9 +229,9 @@ export function createCoordinator({
   checkoutProvider,
   clock = () => new Date(),
 }) {
-  async function workerMutation(request, workId, kind, keys, limit) {
+  async function workerMutation(request, workId, kind, keys, limit, allowGzip = false) {
     if (!authorized(request, workerKey)) return failure('unauthorized', 401);
-    const value = await requestBody(request, limit);
+    const value = await requestBody(request, limit, allowGzip);
     if (!exact(value, keys)) return failure('invalid_request', 400);
     authority(value, workId);
     return json(await store.call(kind, [value]));
@@ -300,7 +317,7 @@ export function createCoordinator({
           'operation_id', 'sequence', 'phase', 'codex_thread_id', 'checkpoint_state'], 8192);
         if (route[2] === 'candidate') return workerMutation(request, workId, 'candidate', [...common,
           'operation_id', 'base_sha', 'expected_branch_head', 'message', 'files', 'deletions',
-          'check_summaries', 'request_digest'], 393216);
+          'check_summaries', 'request_digest'], 393216, true);
         return workerMutation(request, workId, 'complete', [...common, 'operation_id', 'status',
           'candidate_id', 'review_verdict', 'summary_code', 'checks'], 16384);
       }
@@ -317,11 +334,30 @@ export function createCoordinator({
       if (request.method === 'POST' && publication) {
         if (!authorized(request, publisherKey)) return failure('unauthorized', 401);
         const value = await requestBody(request, 8192);
+        if (!UUID.test(publication[1]) || !UUID.test(value.publisher_instance || '') ||
+            !Number.isSafeInteger(value.attempt) || value.attempt < 1 ||
+            !/^[A-Za-z0-9_-]{43}$/.test(value.publisher_token || '')) {
+          return failure('invalid_request', 400);
+        }
         const prefix = [publication[1], value.attempt, value.publisher_instance, value.publisher_token];
-        if (publication[2] === 'objects') return json(await store.call('recordObjects', [...prefix,
-          value.tree_sha, value.commit_sha]));
+        if (publication[2] === 'objects') {
+          if (!exact(value, ['attempt', 'publisher_instance', 'publisher_token', 'tree_sha', 'commit_sha']) ||
+              !/^[0-9a-f]{40}$/.test(value.tree_sha || '') ||
+              !/^[0-9a-f]{40}$/.test(value.commit_sha || '')) {
+            return failure('invalid_request', 400);
+          }
+          return json(await store.call('recordObjects', [...prefix, value.tree_sha, value.commit_sha]));
+        }
+        if (!exact(value, [
+          'attempt', 'publisher_instance', 'publisher_token', 'marker_sha',
+          'target_sha', 'permanent_error',
+        ]) || (value.marker_sha !== null && !/^[0-9a-f]{40}$/.test(value.marker_sha || '')) ||
+          (value.target_sha !== null && !/^[0-9a-f]{40}$/.test(value.target_sha || '')) ||
+          typeof value.permanent_error !== 'boolean') {
+          return failure('invalid_request', 400);
+        }
         return json(await store.call('observePublication', [...prefix, value.marker_sha,
-          value.target_sha, Boolean(value.permanent_error)]));
+          value.target_sha, value.permanent_error]));
       }
       const control = path.match(/^\/v2\/work\/([^/]+)\/(cancel|authorize-publication)$/);
       if (request.method === 'POST' && control) {

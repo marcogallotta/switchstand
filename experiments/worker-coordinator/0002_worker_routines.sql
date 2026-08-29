@@ -415,6 +415,11 @@ BEGIN
         all_paths := array_append(all_paths, path_value);
         prior_path := path_value;
     END LOOP;
+    IF cardinality(all_paths) <> (
+        SELECT count(DISTINCT lower(value)) FROM unnest(all_paths) AS path(value)
+    ) THEN
+        PERFORM coordinator_v2.fail('policy_denied');
+    END IF;
 
     FOR item IN SELECT value FROM jsonb_array_elements(request_value -> 'check_summaries') AS entry(value)
     LOOP
@@ -571,6 +576,15 @@ BEGIN
                 WHERE NOT coordinator_v2.exact_keys(item, ARRAY['name', 'outcome'])
                    OR octet_length(item ->> 'name') NOT BETWEEN 1 AND 80
                    OR item ->> 'outcome' NOT IN ('PASS', 'FAIL')
+           ) OR EXISTS (
+                SELECT 1 FROM (
+                    SELECT item ->> 'name' AS name,
+                        lag(item ->> 'name') OVER (ORDER BY ordinality) AS prior
+                    FROM jsonb_array_elements(request_value -> 'checks')
+                        WITH ORDINALITY AS entry(item, ordinality)
+                ) AS ordered
+                WHERE prior IS NOT NULL
+                  AND convert_to(name, 'UTF8') <= convert_to(prior, 'UTF8')
            ) THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;

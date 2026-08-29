@@ -378,6 +378,23 @@ test('HTTP adapter rejects duplicate keys and keeps worker/coordinator authority
   }));
   assert.equal(register.status, 200);
   assert.equal(calls.length, 0);
+  const zippedCandidate = {
+    protocol: 'worker-v2', work_id: 'work:http-zip', worker_id: WORKER, instance_id: INSTANCE,
+    fence: 1, lease_token: 'A'.repeat(43), cancellation_version: 0,
+    operation_id: 'candidate:http-zip', base_sha: BASE, expected_branch_head: BASE,
+    message: 'zip', files: [], deletions: [{ path: 'experiments/worker-coordinator/old.txt' }],
+    check_summaries: [], request_digest: '0'.repeat(64),
+  };
+  const zipped = await handler(new Request(
+    'https://coordinator.example/v2/work/work%3Ahttp-zip/candidate',
+    {
+      method: 'POST',
+      headers: { authorization: 'Bearer worker', 'content-encoding': 'gzip' },
+      body: gzipSync(JSON.stringify(zippedCandidate)),
+    },
+  ));
+  assert.equal(zipped.status, 200);
+  assert.equal(calls.at(-1)[0], 'candidate');
 });
 
 test('publisher emits deterministic objects, sha:null deletion, and atomic target plus marker CAS', async () => {
