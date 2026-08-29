@@ -34,26 +34,7 @@
     {
       "base_sha": "8e517e344380fdd3da2813d922ee90ad6b8ace35",
       "extensions_sha256": "feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
-      "review_receipts": [
-        {
-          "kind": "content_addressed_receipt",
-          "role": "gate_repair_review",
-          "subject":
-"gate-repair:8e517e344380fdd3da2813d922ee90ad6b8ace35:feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
-          "producer": "codex-agent:/root/repair_r0_for_r1b/review_r0_r1b_scope_a",
-          "reference": "audit/receipts/e976cedfeccc21705d30525adcd7445105e8dcef36837cf14674d42e96ffe1e3.json",
-          "sha256": "e976cedfeccc21705d30525adcd7445105e8dcef36837cf14674d42e96ffe1e3"
-        },
-        {
-          "kind": "content_addressed_receipt",
-          "role": "gate_repair_review",
-          "subject":
-"gate-repair:8e517e344380fdd3da2813d922ee90ad6b8ace35:feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
-          "producer": "codex-agent:/root/repair_r0_for_r1b/review_r0_pr59_remote_b",
-          "reference": "audit/receipts/a12bee6955d11e1faab8ad0ed7e0a797dfda514f34190d29ac8c24d4b1cb0926.json",
-          "sha256": "a12bee6955d11e1faab8ad0ed7e0a797dfda514f34190d29ac8c24d4b1cb0926"
-        }
-      ]
+      "review_receipts": []
     }
   ],
   "runnable_surface_paths": [
