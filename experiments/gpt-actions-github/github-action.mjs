@@ -1,5 +1,6 @@
 const OP_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 const PATH_RE = /^experiments\/gpt-actions-github\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$/;
 const ONE_LINE_RE = /^\S(?:[^\r\n]*\S)?$/;
 
@@ -59,9 +60,13 @@ function invalid(error, status = 400) {
   throw Object.assign(new Error(error), { status });
 }
 
-function decodeFile(file, policy) {
-  if (!exactKeys(file, ["path", "content_base64"], ["path", "content_base64"]) ||
-      typeof file.path !== "string" || typeof file.content_base64 !== "string") invalid("invalid_file");
+async function decodeFile(file, policy) {
+  const keys = ["path", "content_base64", "expected_bytes", "expected_sha256"];
+  if (!exactKeys(file, keys, keys) || typeof file.path !== "string" ||
+      typeof file.content_base64 !== "string" || !Number.isInteger(file.expected_bytes) ||
+      file.expected_bytes < 0 || file.expected_bytes > policy.maxFileBytes ||
+      typeof file.expected_sha256 !== "string" ||
+      !SHA256_RE.test(file.expected_sha256 || "")) invalid("invalid_file");
   if (file.path.length > 240) invalid("invalid_path");
   if (file.path.includes("\\") || file.path.startsWith("/") || file.path.split("/").some((p) => !p || p === "." || p === "..")) {
     throw Object.assign(new Error("forbidden_path"), { status: 403 });
@@ -81,10 +86,27 @@ function decodeFile(file, policy) {
     throw Object.assign(new Error("file_too_large"), { status: 413 });
   }
   try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { invalid("invalid_utf8"); }
-  return { path: file.path, bytes, content_base64: normalized };
+  const actualSha256 = await crypto.subtle.digest("SHA-256", bytes);
+  const actualHex = [...new Uint8Array(actualSha256)].map((n) => n.toString(16).padStart(2, "0")).join("");
+  if (bytes.length !== file.expected_bytes || actualHex !== file.expected_sha256) {
+    throw Object.assign(new Error("content_integrity_mismatch"), {
+      status: 409,
+      expected_bytes: file.expected_bytes,
+      actual_bytes: bytes.length,
+      received_base64_characters: file.content_base64.length,
+      hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
+    });
+  }
+  return {
+    path: file.path,
+    bytes,
+    content_base64: normalized,
+    expected_bytes: file.expected_bytes,
+    expected_sha256: file.expected_sha256,
+  };
 }
 
-function validateCommit(input, policy, bodyBytes) {
+async function validateCommit(input, policy, bodyBytes) {
   if (bodyBytes > policy.maxBodyBytes) throw Object.assign(new Error("request_too_large"), { status: 413 });
   if (!exactKeys(input, COMMIT_KEYS, COMMIT_KEYS.slice(0, 7))) invalid("invalid_request");
   if (!input || !OP_RE.test(input.operation_id || "")) throw Object.assign(new Error("invalid_operation_id"), { status: 400 });
@@ -97,7 +119,7 @@ function validateCommit(input, policy, bodyBytes) {
   if (!Array.isArray(input.files) || input.files.length < 1 || input.files.length > policy.maxFiles) {
     throw Object.assign(new Error("invalid_file_count"), { status: 400 });
   }
-  const files = input.files.map((file) => decodeFile(file, policy));
+  const files = await Promise.all(input.files.map((file) => decodeFile(file, policy)));
   if (new Set(files.map((f) => f.path)).size !== files.length) throw Object.assign(new Error("duplicate_path"), { status: 409 });
   if (files.reduce((n, f) => n + f.bytes.length, 0) > policy.maxTotalBytes) {
     throw Object.assign(new Error("content_too_large"), { status: 413 });
@@ -108,7 +130,11 @@ function validateCommit(input, policy, bodyBytes) {
   if (input.test_fail_after_commit && !policy.allowFaultInjection) {
     throw Object.assign(new Error("fault_injection_disabled"), { status: 403 });
   }
-  return { ...input, message, files: files.map(({ path, content_base64 }) => ({ path, content_base64 })) };
+  return {
+    ...input,
+    message,
+    files: files.map(({ bytes, ...file }) => file),
+  };
 }
 
 function validatePull(input, policy, bodyBytes) {
@@ -317,7 +343,7 @@ export function createGithubAction({ store, githubFetch = fetch, token, policy =
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(policy.maxRequestMs)]);
       const value = await requestValue(request, policy.maxBodyBytes);
       const input = pathname.endsWith("/commit")
-        ? validateCommit(value.input, policy, value.bodyBytes)
+        ? await validateCommit(value.input, policy, value.bodyBytes)
         : validatePull(value.input, policy, value.bodyBytes);
       const payloadHash = await digest(input);
       const started = await store.begin(input.operation_id, payloadHash, policy.operationLeaseSeconds);
@@ -343,6 +369,9 @@ export function createGithubAction({ store, githubFetch = fetch, token, policy =
       const status = error.status || 502;
       const body = { error: error.message || "internal_error" };
       if (error.actual_head_sha !== undefined) body.actual_head_sha = error.actual_head_sha;
+      for (const key of ["expected_bytes", "actual_bytes", "received_base64_characters", "hint"]) {
+        if (error[key] !== undefined) body[key] = error[key];
+      }
       return json(status, body);
     }
   };

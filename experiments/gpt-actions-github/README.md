@@ -11,13 +11,23 @@ This isolated prototype implements the only GitHub mutation route admitted for t
 - expected-head fencing;
 - a 40-second request deadline inside a 60-second operation lease, with an active-attempt check before every GitHub mutation;
 - bounded request, file, total-content, and file-count limits;
-- UTF-8 text and exact request-shape validation;
+- UTF-8 text, exact request-shape validation, and mandatory decoded byte-count and SHA-256 checks;
 - retry recovery after orphaned Git objects without moving a ref early.
 
 The fixed limits are 32 files, 64 KiB per file, 256 KiB aggregate decoded content, and
 384 KiB per HTTP request. The file-count bound limits the sequential GitHub calls made within
-the 40-second request deadline. The fixture's initial `main` commit is a separately recorded
-provisioning step and is not part of the Action capability evidence.
+the 40-second request deadline. Every file must include its exact decoded byte count and
+lowercase SHA-256; a mismatch is rejected before any GitHub call. The fixture's initial `main`
+commit is a separately recorded provisioning step and is not part of the Action capability
+evidence.
+
+The caller must place the complete Base64 payload inline in `content_base64`; a local filename,
+preview, or placeholder is not file transfer. Before calling the Action, it must verify the
+Base64 character count and derive `expected_bytes` and `expected_sha256` from the intended file,
+not from a shortened call argument. The integrity fields make shortening visible, but do not
+increase the caller's own tool-call payload capacity. An integrity mismatch returns the declared
+and decoded byte counts, the received Base64 character count, and a fixed correction hint without
+echoing file content or digests.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 

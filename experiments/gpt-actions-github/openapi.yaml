@@ -20,7 +20,8 @@ paths:
       responses:
         '200': { description: Commit and ref update completed or replayed. }
         '403': { description: Repository, branch, path, or fault policy rejected the request. }
-        '409': { description: Operation conflict or stale head. }
+        '409':
+          description: Content integrity mismatch, operation conflict, or stale head.
         '413': { description: Request or content limit exceeded. }
   /v1/github/pull:
     post:
@@ -47,7 +48,7 @@ components:
     File:
       type: object
       additionalProperties: false
-      required: [path, content_base64]
+      required: [path, content_base64, expected_bytes, expected_sha256]
       properties:
         path:
           type: string
@@ -58,6 +59,15 @@ components:
           maxLength: 87384
           contentEncoding: base64
           contentMediaType: text/plain; charset=utf-8
+        expected_bytes:
+          type: integer
+          minimum: 0
+          maximum: 65536
+          description: Exact decoded byte count of content_base64.
+        expected_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Lowercase SHA-256 of the exact decoded content_base64 bytes.
     CommitRequest:
       type: object
       additionalProperties: false
