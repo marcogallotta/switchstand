@@ -50,7 +50,8 @@ def _persistence_flags(*names: str) -> int:
 
 
 def _require_posix_persistence() -> None:
-    if os.name != "posix" or not all(callable(getattr(os, name, None)) for name in ("geteuid", "fstat", "fchmod", "fsync")):
+    required = ("geteuid", "fstat", "fchmod", "fsync")
+    if os.name != "posix" or not all(callable(getattr(os, name, None)) for name in required):
         raise RuntimeError(PERSISTENCE_ERROR)
     _persistence_flags("O_NOFOLLOW", "O_NONBLOCK", "O_DIRECTORY")
 
@@ -300,7 +301,13 @@ class CodexAdapter:
 
 
 class Engine:
-    def __init__(self, state_path: Path | str, adapter: Adapter, *, role_names: tuple[str, str] = ("Role A", "Role B")) -> None:
+    def __init__(
+        self,
+        state_path: Path | str,
+        adapter: Adapter,
+        *,
+        role_names: tuple[str, str] = ("Role A", "Role B"),
+    ) -> None:
         self.state_path = Path(state_path)
         self.events_path = self.state_path.with_suffix(".jsonl")
         self.adapter = adapter
@@ -329,7 +336,10 @@ class Engine:
             self.state = {
                 "schema": STATE_SCHEMA,
                 "work": {"id": "local-work", "name": "Local Work"},
-                "roles": {"role-a": self._new_role("role-a", role_names[0]), "role-b": self._new_role("role-b", role_names[1])},
+                "roles": {
+                    "role-a": self._new_role("role-a", role_names[0]),
+                    "role-b": self._new_role("role-b", role_names[1]),
+                },
                 "messages": [], "attempts": [],
                 "updated_at": _now(),
             }
@@ -371,7 +381,8 @@ class Engine:
 
     def _messages_for(self, role_id: str) -> list[dict[str, Any]]:
         return sorted(
-            (item for item in self.state["messages"] if item["role_id"] == role_id), key=lambda item: int(item["sequence"])
+            (item for item in self.state["messages"] if item["role_id"] == role_id),
+            key=lambda item: int(item["sequence"]),
         )
 
     def _context(self, role: Mapping[str, Any]) -> dict[str, Any]:
@@ -396,7 +407,9 @@ class Engine:
         if attempt is None:
             return "queued" if queued else "idle"
         statuses = {"running": "busy", "waiting": "queued" if queued else "waiting", "starting": "busy"}
-        return {**statuses, "stop_pending": "busy", "stopped": "dead"}.get(str(attempt["status"]), str(attempt["status"]))
+        return {**statuses, "stop_pending": "busy", "stopped": "dead"}.get(
+            str(attempt["status"]), str(attempt["status"])
+        )
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -518,7 +531,12 @@ class Engine:
                 role["generation"] += 1
             replacement = self._create_attempt_locked(role)
             self._dispatch_locked(role)
-            self._save("attempt_replaced", previous_attempt_id=attempt_id, attempt_id=replacement["id"], role_id=role["id"])
+            self._save(
+                "attempt_replaced",
+                previous_attempt_id=attempt_id,
+                attempt_id=replacement["id"],
+                role_id=role["id"],
+            )
             return str(replacement["id"])
 
     def redirect(self, attempt_id: str, text: str) -> str:
@@ -529,9 +547,13 @@ class Engine:
             self.stop(attempt_id)
             return self.replace(attempt_id)
 
-    def _accept_completion_locked(self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any) -> None:
+    def _accept_completion_locked(
+        self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any
+    ) -> None:
         role = self._role(attempt["role_id"])
-        current = role.get("current_attempt_id") == attempt["id"] and int(role["generation"]) == int(attempt["generation"])
+        current = role.get("current_attempt_id") == attempt["id"] and int(role["generation"]) == int(
+            attempt["generation"]
+        )
         current = current and not attempt["fence_closed"]
         attempt["finished_at"] = _now()
         attempt["terminal_observed"] = True
@@ -546,7 +568,12 @@ class Engine:
                 checkpoint["accepted_message_ids"].append(message["id"])
             checkpoint["latest_result"] = output
             checkpoint["updated_at"] = _now()
-            self._save("result_accepted", attempt_id=attempt["id"], message_id=message["id"], turn_id=attempt["turn_id"])
+            self._save(
+                "result_accepted",
+                attempt_id=attempt["id"],
+                message_id=message["id"],
+                turn_id=attempt["turn_id"],
+            )
             self._dispatch_locked(role)
             return
         if status == "completed":
@@ -593,7 +620,12 @@ class Engine:
                 message["turn_id"] = str(observed.get("turn_id") or "")
                 attempt["turn_id"] = message["turn_id"]
                 attempt["status"] = "running"
-                self._save("delivery_reconciled", message_id=message["id"], attempt_id=attempt["id"], turn_id=attempt["turn_id"])
+                self._save(
+                    "delivery_reconciled",
+                    message_id=message["id"],
+                    attempt_id=attempt["id"],
+                    turn_id=attempt["turn_id"],
+                )
 
             for attempt in list(self.state["attempts"]):
                 if not attempt.get("turn_id") or attempt.get("terminal_observed"):

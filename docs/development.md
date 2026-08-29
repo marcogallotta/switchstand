@@ -37,10 +37,15 @@ Then run the same command used by CI:
 ```
 
 It requires Ruff 0.16.2, Pyright 1.1.411 in basic mode, and jscpd 4.2.5. It rejects Ruff
-E9/F/B findings, Pyright diagnostics, and qualifying duplication of at least 10 lines and 80
-tokens. New or newly oversized Python files cannot exceed 500 physical nonblank lines; legacy
-files already above that threshold cannot grow. Nonignored files above 100,000 bytes warn and
-those above 200,000 bytes fail. Gate, config, lock, and workflow changes require human review.
+E9/E501/F/B findings with a 120-character line length, Pyright diagnostics, and qualifying
+duplication of at least 10 lines and 80 tokens. A deterministic companion check applies the
+same physical character limit to human-maintained first-party source, tests, scripts,
+documentation, and configuration outside generated fixtures and generated lock data. The
+separately owned GPT Actions experiment is excluded from both new checks. New or newly oversized
+Python files cannot exceed 500 physical nonblank lines; legacy files already above that
+threshold cannot grow. Source files cannot exceed 60 KiB (61,440 bytes). Non-source native
+Switchstand files cannot exceed the external GPT Actions limit of 64 KiB (65,536 bytes). Gate,
+config, lock, and workflow changes require human review.
 
 ### Full verification
 

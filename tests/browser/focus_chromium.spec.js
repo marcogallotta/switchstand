@@ -19,7 +19,10 @@ const state = {
   trail: [{ observedAt: "2026-08-27T12:00:00Z", agentRef: "agent-1",
     changes: { status: { from: "idle", to: "active" } } }],
   trailLimit: 50,
-  disclosure: "Polling may miss intermediate transitions; trail entries are observed endpoint differences, not native events.",
+  disclosure: [
+    "Polling may miss intermediate transitions;",
+    "trail entries are observed endpoint differences, not native events.",
+  ].join(" "),
 };
 
 let server;
@@ -191,7 +194,10 @@ test("real Chromium preserves tree focus, selection, open state, and scroll acro
 test("confirmation cancel, confirm, and refresh never replay a native stop", async ({ page }) => {
   await page.goto(origin);
   const stop = page.getByRole("button", { name: "Stop current turn" });
-  const prompt = "Stop Root’s current turn? Switchstand will request cancellation of that exact turn only. Work already performed is not undone. Background processes and descendant agents may continue.";
+  const prompt = [
+    "Stop Root’s current turn? Switchstand will request cancellation of that exact turn only.",
+    "Work already performed is not undone. Background processes and descendant agents may continue.",
+  ].join(" ");
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toBe(prompt);
     await dialog.dismiss();

@@ -111,9 +111,9 @@ Each poll spans the tree endpoints plus at most one exact-turn metadata request 
 atomic global snapshot. The
 difference trail records only changes visible in successive successful polls; intermediate
 changes may be missed or collapsed. It is not a native event stream, and elapsed time is age
-since observation; consecutive observed-active time is not time spent working. Transport failure affects observer truth without
-rewriting the last native status. No poll result is promoted to done, progress, stale, wedged,
-failure, or intent.
+since observation; consecutive observed-active time is not time spent working. Transport
+failure affects observer truth without rewriting the last native status. No poll result is
+promoted to done, progress, stale, wedged, failure, or intent.
 
 ## State model
 

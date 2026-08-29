@@ -12,7 +12,10 @@ class TestPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             files = {
-                "test_ok.py": "import unittest\nclass T(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n",
+                "test_ok.py": (
+                    "import unittest\nclass T(unittest.TestCase):\n"
+                    " def test_ok(self): self.assertTrue(True)\n"
+                ),
                 "ok.test.js": 'test("works", () => {});\n',
                 "playwright.config.js": "module.exports = { retries: 0 };\n",
             }
