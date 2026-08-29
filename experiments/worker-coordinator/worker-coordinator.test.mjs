@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 
@@ -544,4 +544,88 @@ print('PYTHON_CLIENT_PASS')
   await database.close();
   assert.equal(exit, 0, errors);
   assert.match(output, /PYTHON_CLIENT_PASS/);
+});
+
+test('merged worker supervisor completes one implementation against PGlite over HTTP', async () => {
+  const database = await migrated();
+  await seed(database);
+  const archiveProcess = spawnSync('python', ['-c', `
+import io, sys, tarfile
+payload = io.BytesIO()
+with tarfile.open(fileobj=payload, mode='w:gz') as archive:
+    root = tarfile.TarInfo('repo')
+    root.type = tarfile.DIRTYPE
+    root.mode = 0o700
+    archive.addfile(root)
+    content = b'bounded checkout\\n'
+    readme = tarfile.TarInfo('repo/README.md')
+    readme.size = len(content)
+    readme.mode = 0o600
+    archive.addfile(readme, io.BytesIO(content))
+sys.stdout.buffer.write(payload.getvalue())
+`]);
+  assert.equal(archiveProcess.status, 0, archiveProcess.stderr.toString());
+  const archive = archiveProcess.stdout;
+  const archiveDigest = createHash('sha256').update(archive).digest('hex');
+  const store = new PostgresStore(database);
+  const handler = createCoordinator({
+    store,
+    workerKey: 'worker-secret', coordinatorKey: 'coordinator-secret', publisherKey: 'publisher-secret',
+    checkoutProvider: async () => ({ body: archive, sha256: archiveDigest }),
+  });
+  const server = createCoordinatorServer(handler);
+  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', (error) => error ? reject(error) : resolve()));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const admitted = await store.call('admit', [admission('admission:worker-live')]);
+  const stateRoot = await mkdtemp(join(process.env.TMPDIR || process.cwd(), '.worker-live-'));
+  const script = `
+import os
+from pathlib import Path
+from switchstand_worker.supervisor import ProcessResult, Worker, WorkerConfig
+
+class FiniteRunner:
+    def __init__(self, config, claim, guard):
+        self.claim = claim
+    def bootstrap(self):
+        return '${THREAD}'
+    def task_turn(self, workspace, thread_id):
+        target = workspace / 'experiments' / 'worker-coordinator' / 'live.txt'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('merged worker integration\\n', encoding='utf-8')
+        return ProcessResult(0, thread_id, None)
+
+config = WorkerConfig(
+    os.environ['BASE_URL'], 'worker-secret', Path(os.environ['STATE_ROOT']),
+    '${WORKER}', '${INSTANCE}', Path('/unused/codex'), Path('/unused/auth'), Path('/usr/bin/bwrap')
+)
+assert Worker(config, runner_factory=FiniteRunner).run_once()
+print('MERGED_WORKER_PASS')
+`;
+  try {
+    const child = spawn('python', ['-c', script], {
+      cwd: new URL('../..', import.meta.url).pathname,
+      env: { ...process.env, BASE_URL: baseUrl, STATE_ROOT: stateRoot, PYTHONPATH: 'src' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let errors = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { errors += chunk; });
+    const exit = await new Promise((resolve) => child.on('close', resolve));
+    assert.equal(exit, 0, errors);
+    assert.match(output, /MERGED_WORKER_PASS/);
+    const result = await store.call('exportWork', [admitted.work_id, true]);
+    assert.equal(result.state, 'terminal');
+    assert.equal(result.terminal_outcome, 'succeeded');
+    assert.equal(result.codex_thread_id, THREAD);
+    const manifest = JSON.parse(Buffer.from(
+      result.accepted_candidate.canonical_manifest_base64, 'base64',
+    ).toString('utf8'));
+    assert.deepEqual(manifest.files.map((file) => file.path), ['experiments/worker-coordinator/live.txt']);
+  } finally {
+    server.close();
+    await database.close();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 });
