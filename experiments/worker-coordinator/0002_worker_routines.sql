@@ -549,6 +549,7 @@ DECLARE
     decoded_total integer;
     admission coordinator_v2.work_admission%ROWTYPE;
     validation jsonb;
+    accepted_value jsonb;
 BEGIN
     IF kind_value NOT IN ('checkpoint', 'submit_candidate', 'complete')
        OR operation_value IS NULL OR operation_value !~ '^[A-Za-z0-9._:-]{8,80}$'
@@ -585,6 +586,12 @@ BEGIN
     WHERE workspace_id = workspace AND work_id = selected.work_id AND admission_sha = selected.admission_sha;
     IF NOT FOUND THEN
         RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'invalid_admission_binding';
+    END IF;
+    IF selected.accepted_candidate_id IS NOT NULL THEN
+        SELECT jsonb_build_object('candidate_id', candidate_id, 'manifest_sha', manifest_sha)
+        INTO accepted_value FROM coordinator_v2.candidate
+        WHERE workspace_id = workspace AND work_id = selected.work_id
+          AND candidate_id = selected.accepted_candidate_id;
     END IF;
 
     IF kind_value = 'checkpoint' THEN
@@ -623,7 +630,7 @@ BEGIN
             'prior_checkpoint', jsonb_build_object('sequence', (request_value ->> 'sequence')::bigint,
                 'phase', request_value ->> 'phase', 'codex_thread_id', request_value -> 'codex_thread_id',
                 'checkpoint_state', request_value ->> 'checkpoint_state'),
-            'codex_thread_id', request_value -> 'codex_thread_id', 'accepted_candidate', NULL,
+            'codex_thread_id', request_value -> 'codex_thread_id', 'accepted_candidate', accepted_value,
             'limits', jsonb_build_object('max_files', 32, 'max_file_bytes', 65536,
                 'max_total_bytes', 262144, 'max_deletions', 32, 'max_json_bytes', 393216)
         )::text) > 16384 THEN

@@ -240,6 +240,33 @@ test('claim, checkpoint replay, expiry fencing, and candidate durability follow 
   await database.close();
 });
 
+test('candidate-ready checkpoint sizing includes the accepted candidate on reclaim', async () => {
+  const database = await migrated();
+  await seed(database);
+  const store = new PostgresStore(database);
+  const large = admission('admission:candidate-ready-size', 'x'.repeat(4096));
+  large.acceptance = Array.from({ length: 16 }, (_, index) => `${index}`.padEnd(512, 'x'));
+  await store.call('admit', [large]);
+  const claim = await store.call('claim', [WORKER, INSTANCE]);
+  await store.call('candidate', [candidate(claim, 'candidate:ready-size')]);
+  await assert.rejects(() => store.call('checkpoint', [withAuthority(claim, {
+    operation_id: 'checkpoint:ready-too-large', sequence: 1, phase: 'candidate_ready',
+    codex_thread_id: THREAD, checkpoint_state: '"'.repeat(2000),
+  })]), /request_too_large/);
+  await store.call('checkpoint', [withAuthority(claim, {
+    operation_id: 'checkpoint:ready-bounded', sequence: 1, phase: 'candidate_ready',
+    codex_thread_id: THREAD, checkpoint_state: 'bounded',
+  })]);
+  await database.query(
+    `UPDATE coordinator_v2.work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE work_id=$1`,
+    [claim.work_id],
+  );
+  const reclaimed = await store.call('claim', [WORKER, INSTANCE]);
+  assert.ok(reclaimed.accepted_candidate);
+  assert.ok(Buffer.byteLength(JSON.stringify(reclaimed)) <= 16384);
+  await database.close();
+});
+
 test('authorization is ordered against cancellation and publication remains reconcilable', async () => {
   const database = await migrated();
   await seed(database);
@@ -462,6 +489,23 @@ test('provider marker is the close fence for stale heads and delayed publication
   const sealed = await store.call('observePublication', [attempt.publication_id, attempt.attempt,
     PUBLISHER, attempt.publisher_token, BASE, 'd'.repeat(40), false]);
   assert.equal(sealed.state, 'stale_head');
+
+  const missingWork = await store.call('admit', [admission(
+    'admission:missing-target', 'Missing target regression.',
+  )]);
+  const missingClaim = await store.call('claim', [WORKER, INSTANCE]);
+  await store.call('candidate', [candidate(missingClaim, 'candidate:missing-target')]);
+  await store.call('authorize', [missingWork.work_id]);
+  const missingAttempt = await store.call('claimPublication', [PUBLISHER]);
+  await store.call('recordObjects', [missingAttempt.publication_id, missingAttempt.attempt,
+    PUBLISHER, missingAttempt.publisher_token, 'e'.repeat(40), 'f'.repeat(40)]);
+  const missingClose = await store.call('observePublication', [missingAttempt.publication_id,
+    missingAttempt.attempt, PUBLISHER, missingAttempt.publisher_token, null, null, false]);
+  assert.equal(missingClose.directive, 'close_expected');
+  assert.equal(missingClose.close_target_sha, null);
+  const missingSealed = await store.call('observePublication', [missingAttempt.publication_id,
+    missingAttempt.attempt, PUBLISHER, missingAttempt.publisher_token, BASE, null, false]);
+  assert.equal(missingSealed.state, 'stale_head');
   await database.close();
 });
 
@@ -651,15 +695,27 @@ test('publisher emits deterministic objects, sha:null deletion, and atomic targe
   assert.deepEqual(objects, { treeSha: 'c'.repeat(40), commitSha: 'd'.repeat(40) });
   plan.desired_commit_sha = objects.commitSha;
   await publisher.publish(plan);
+  await publisher.close({ ...plan, close_target_sha: objects.commitSha }, objects.commitSha);
+  await publisher.close({ ...plan, close_target_sha: 'e'.repeat(40) }, BASE);
   const tree = bodies.find(([path]) => path.endsWith('/git/trees'))[1].tree;
   assert.equal(bodies.find(([path]) => path.endsWith('/git/trees'))[1].base_tree, 'a'.repeat(40));
   assert.deepEqual(tree[1], {
     path: 'experiments/worker-coordinator/old.txt', mode: '100644', type: 'blob', sha: null,
   });
-  const mutation = bodies.find(([path]) => path === '/graphql')[1].variables.input.refUpdates;
+  const mutations = bodies.filter(([path]) => path === '/graphql')
+    .map(([, body]) => body.variables.input.refUpdates);
+  const mutation = mutations[0];
   assert.equal(mutation.length, 2);
   assert.equal(mutation[0].beforeOid, BASE);
   assert.equal(mutation[1].beforeOid, '0'.repeat(40));
+  assert.deepEqual(mutations[1][0], {
+    name: 'refs/heads/codex/postgres-g5-live', beforeOid: objects.commitSha,
+    afterOid: objects.commitSha, force: false,
+  });
+  assert.deepEqual(mutations[2][0], {
+    name: 'refs/heads/codex/postgres-g5-live', beforeOid: 'e'.repeat(40),
+    afterOid: 'e'.repeat(40), force: false,
+  });
 });
 
 test('GraphQL errors fail closed and permanent rejection uses fresh ref evidence', async () => {
@@ -676,6 +732,15 @@ test('GraphQL errors fail closed and permanent rejection uses fresh ref evidence
   });
   await assert.rejects(() => graphPublisher.publish(plan), (error) => (
     error.message === 'provider_error' && error.permanent === true
+  ));
+  const limitedPublisher = new GitHubPublisher({
+    token: 'secret',
+    fetch: async (url) => new URL(url).pathname === '/graphql'
+      ? Response.json({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'retry' }] })
+      : Response.json({ node_id: 'R_node' }),
+  });
+  await assert.rejects(() => limitedPublisher.publish(plan), (error) => (
+    error.message === 'provider_error' && error.permanent === false
   ));
 
   const observations = [];
@@ -701,6 +766,103 @@ test('GraphQL errors fail closed and permanent rejection uses fresh ref evidence
   assert.deepEqual(observations[1], {
     observed: { marker: null, target: 'f'.repeat(40) }, permanent: true,
   });
+});
+
+test('close CAS rejects target movement before both desired and expected markers', async () => {
+  for (const marker of ['d'.repeat(40), BASE]) {
+    let markerCreated = false;
+    const plan = {
+      plan_sha: '8'.repeat(64), close_target_sha: 'c'.repeat(40),
+      repository_full_name: 'marcogallotta/switchstand', candidate_branch: 'codex/postgres-g5-live',
+      marker_ref: 'refs/tags/switchstand-publications/marker',
+    };
+    const publisher = new GitHubPublisher({
+      token: 'secret',
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (path !== '/graphql') return Response.json({ node_id: 'R_node' });
+        const updates = JSON.parse(init.body).variables.input.refUpdates;
+        assert.equal(updates[0].beforeOid, plan.close_target_sha);
+        const movedTarget = 'f'.repeat(40);
+        if (updates[0].beforeOid !== movedTarget) {
+          return Response.json({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'stale target' }] });
+        }
+        markerCreated = true;
+        return Response.json({ data: { updateRefs: { clientMutationId: plan.plan_sha } } });
+      },
+    });
+    await assert.rejects(() => publisher.close(plan, marker), (error) => error.permanent === true);
+    assert.equal(markerCreated, false);
+  }
+
+  const missingPlan = {
+    plan_sha: '8'.repeat(64), close_target_sha: null,
+    repository_full_name: 'marcogallotta/switchstand', candidate_branch: 'codex/postgres-g5-live',
+    marker_ref: 'refs/tags/switchstand-publications/marker',
+  };
+  const missingPublisher = new GitHubPublisher({
+    token: 'secret',
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path !== '/graphql') return Response.json({ node_id: 'R_node' });
+      const updates = JSON.parse(init.body).variables.input.refUpdates;
+      assert.deepEqual(updates, [{
+        name: missingPlan.marker_ref, beforeOid: '0'.repeat(40), afterOid: BASE, force: false,
+      }]);
+      return Response.json({ data: { updateRefs: { clientMutationId: missingPlan.plan_sha } } });
+    },
+  });
+  await missingPublisher.close(missingPlan, BASE);
+});
+
+test('HTTP and GraphQL rate limits remain reconciling and later readback can prove success', async () => {
+  const httpPublisher = new GitHubPublisher({
+    token: 'secret',
+    fetch: async () => new Response('{"message":"rate limited"}', {
+      status: 403, headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '0' },
+    }),
+  });
+  let throttled;
+  try {
+    await httpPublisher.github('/rate-limited');
+  } catch (error) {
+    throttled = error;
+  }
+  assert.equal(throttled.permanent, false);
+  const tooMany = new GitHubPublisher({
+    token: 'secret', fetch: async () => new Response('{}', { status: 429, headers: { 'retry-after': '1' } }),
+  });
+  await assert.rejects(() => tooMany.github('/rate-limited'), (error) => error.permanent === false);
+  for (const status of [408, 425]) {
+    const retryable = new GitHubPublisher({
+      token: 'secret', fetch: async () => new Response('{}', { status }),
+    });
+    await assert.rejects(() => retryable.github('/retryable'), (error) => error.permanent === false);
+  }
+
+  const plan = { desired_commit_sha: 'd'.repeat(40), expected_head: BASE };
+  const first = await runPublicationAttempt({
+    claim: plan,
+    coordinator: {
+      recordObjects: async () => assert.fail(),
+      observe: async (selected) => ({ ...selected, directive: 'publish', state: 'reconciling' }),
+    },
+    publisher: {
+      readRefs: async () => ({ marker: null, target: BASE }),
+      publish: async () => { throw throttled; },
+    },
+  });
+  assert.equal(first.outcome, 'reconciling');
+
+  const second = await runPublicationAttempt({
+    claim: plan,
+    coordinator: {
+      recordObjects: async () => assert.fail(),
+      observe: async (selected) => ({ ...selected, directive: 'terminal', state: 'applied' }),
+    },
+    publisher: { readRefs: async () => ({ marker: plan.desired_commit_sha, target: plan.desired_commit_sha }) },
+  });
+  assert.equal(second.outcome, 'applied');
 });
 
 test('lost provider response stays reconciling and never becomes not-applied by time', async () => {

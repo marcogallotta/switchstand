@@ -26,9 +26,16 @@ function compareUtf8(left, right) {
 async function responseJson(response) {
   const body = await response.text();
   if (!response.ok) {
+    const retryableStatus = new Set([408, 409, 425, 429]);
+    const throttled = response.status === 429 || (
+      response.status === 403 && (
+        response.headers.has('retry-after') || response.headers.get('x-ratelimit-remaining') === '0'
+      )
+    );
     throw Object.assign(new Error('provider_error'), {
       status: response.status,
-      permanent: response.status >= 400 && response.status < 500 && response.status !== 409,
+      permanent: response.status >= 400 && response.status < 500 &&
+        !retryableStatus.has(response.status) && !throttled,
     });
   }
   try {
@@ -134,7 +141,9 @@ export class GitHubPublisher {
       }),
     });
     if (Array.isArray(result?.errors) && result.errors.length > 0) {
-      throw Object.assign(new Error('provider_error'), { permanent: true });
+      const definitive = new Set(['BAD_USER_INPUT', 'FORBIDDEN', 'NOT_FOUND', 'UNPROCESSABLE']);
+      const permanent = result.errors.every((error) => definitive.has(error?.type));
+      throw Object.assign(new Error('provider_error'), { permanent });
     }
     if (result?.data?.updateRefs?.clientMutationId !== plan.plan_sha) {
       throw Object.assign(new Error('provider_invalid_response'), { permanent: true });
@@ -155,9 +164,21 @@ export class GitHubPublisher {
   }
 
   close(plan, desired) {
-    return this.updateRefs(plan, [
-      { name: plan.marker_ref, beforeOid: ZERO_SHA, afterOid: desired, force: false },
-    ]);
+    if (plan.close_target_sha !== null
+      && !/^[0-9a-f]{40}$/.test(plan.close_target_sha || '')) {
+      throw Object.assign(new Error('provider_invalid_response'), { permanent: true });
+    }
+    const updates = [];
+    if (plan.close_target_sha !== null) {
+      updates.push({
+        name: `refs/heads/${plan.candidate_branch}`,
+        beforeOid: plan.close_target_sha,
+        afterOid: plan.close_target_sha,
+        force: false,
+      });
+    }
+    updates.push({ name: plan.marker_ref, beforeOid: ZERO_SHA, afterOid: desired, force: false });
+    return this.updateRefs(plan, updates);
   }
 }
 

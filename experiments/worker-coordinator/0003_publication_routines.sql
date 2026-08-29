@@ -309,7 +309,10 @@ BEGIN
     END IF;
     SELECT * INTO selected FROM coordinator_v2.publication
     WHERE workspace_id = workspace AND publication_id = publication_id_value;
-    RETURN coordinator_v2.publication_plan(selected) || jsonb_build_object('directive', directive);
+    RETURN coordinator_v2.publication_plan(selected) || jsonb_build_object(
+        'directive', directive,
+        'close_target_sha', CASE WHEN directive IN ('close_desired', 'close_expected')
+            THEN target_sha_value ELSE NULL END);
 END;
 $$;
 
