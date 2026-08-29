@@ -111,6 +111,49 @@ PYTHONPATH=src python tests/integration/native_input_transport_test.py -v
   tests/browser/native_selection_chromium.spec.js
 ```
 
+### Audit register and recovery freeze
+
+`audit/findings.json` is the canonical machine-readable audit register. Asana mirrors the
+human-readable state but is not a CI dependency. Each finding has one immutable ID, discovery
+SHA and source audit, plus severity rationale, affected capability and paths, owner, successor,
+next action, UTC deadline, reachability, state, and evidence references. The architecture audit
+that did not execute is recorded separately as `NOT_EXECUTED`; it is not a code finding.
+
+The only finding states are `OPEN`, `CONTAINED`, `FIXED_AWAITING_VERIFICATION`, and `CLOSED`.
+Containment requires content-addressed evidence and disabled or removed reachability. Closure
+requires separate content-addressed reproducer, regression, exact-head CI, independent review,
+and final receipt evidence. Findings cannot be deleted, and severity changes require two durable
+review receipts.
+
+During an audit freeze, each candidate replaces `audit/change-scope.json` with its exact base SHA,
+one allowed recovery kind, cited finding IDs where applicable, and a bounded rationale. CI admits
+registration, containment, scoped remediation, cited reverts, two-review gate repairs, and repairs limited to the
+immutable runnable-surface path map and one registered open runnable blocker. It rejects
+unrelated paths and self-edits to the gate after bootstrap. Finding scope, discovery evidence,
+audit history, capability-protection paths, and runnable paths are append-only or immutable.
+Durable evidence lives under `audit/receipts/` at its SHA-256 filename. Only receipt files newly
+referenced by the declared transition are admitted. Each receipt is role-, subject-, producer-,
+externally verifiable GitHub-provenance-, and exact implementation-head-bound. Closure roles
+cannot reuse a receipt, independent review is producer-separated from fix and final receipt, and
+severity changes need two new distinct reviewer receipts.
+A review receipt resolves its GitHub object, requires an authorized repository publisher, and
+binds the body to the exact `codex-agent:/...` producer, role, subject, and implementation SHA.
+CI supplies a read-only `GITHUB_TOKEN`; nonexistent or mismatched shared evidence fails closed.
+A contained worker Critical additionally requires the versioned
+capability state to be disabled and the gate's `worker_quarantine_v1` AST assertion to match all
+worker entrypoints. Exact-head semantic review remains required because a deterministic gate
+cannot decide whether logic hidden inside an allowed remediation file is a feature. The current
+register intentionally reports the open reachable Critical and excessive High WIP while
+admitting only the declared recovery work.
+
+Run the deterministic gate directly with:
+
+```sh
+QUALITY_BASE_REF=EXACT_BASE_SHA python scripts/check_audit_register.py
+```
+
+Tests may inject a UTC clock with `--now`; production CI always uses the current UTC time.
+
 The transport tests use temporary local Unix sockets and scripted WebSocket/JSON-RPC peers; they
 do not launch Codex or use a network. The Chromium journeys serve the production browser assets
 on loopback and cover Stop, selection, exact input, request failure, and 50 refresh cycles that
