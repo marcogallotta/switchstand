@@ -12,6 +12,26 @@ freshness limit.
 Codex app-server protocol surface used by `CodexAdapter`. The browser performs polling and
 submits narrow message and attempt-control requests.
 
+The legacy `Runtime` creates one absolute monotonic deadline before its outer `RLock`
+acquisition. Startup owns 10 seconds through startup reconciliation; every mutation, explicit
+reconcile or snapshot, and observer pass owns a fresh five seconds. Nested creation, setup,
+target, close, redirect, and multi-record reconciliation reuse that same shrinking deadline.
+Lock and remote-wait admission stop at the cutoff. Already-admitted synchronous persistence and
+forced local cleanup complete afterward when necessary, so the values are not end-to-end HTTP
+latency promises.
+
+`legacy_transport.py` keeps the deadline-aware legacy connection separate from native/P4. It
+classifies request phases as `not_sent`, `acknowledged`, `rejected`, or `ambiguous`; the one-way
+`initialized` notification is only `not_sent`, `sent`, or `ambiguous`. A target begins only after
+the notification was fully sent. One connection may perform setup, its exact target, optional
+naming, and graceful close while time remains. Cutoff skips the graceful close frame but always
+forces reader and socket cleanup. No setup or mutation failure authorizes reconnect, retry,
+fallback, or retargeting. Acknowledgement requires an exact matching integer JSON-RPC response
+id, a mapping result, and exact string thread or turn identities; malformed or coercible values
+remain ambiguous. Legacy response decoding rejects duplicate keys, nonstandard or non-finite
+numbers, excessive nesting, parser-limit failures, and malformed notification envelopes; every
+post-send decode failure is ambiguous and the owning session still forces descriptor cleanup.
+
 `agent_tree.py` is a separate, fail-closed Stage A protocol layer. It does not adapt native
 threads into the engine's roles or write a duplicate source of truth. It reads one exact root,
 lists descendants with `ancestorThreadId`, supplies every documented `sourceKinds` value on
@@ -134,6 +154,13 @@ snapshot is authoritative; the event log is inspectable transition history, not 
 This ordering can leave a snapshot transition without its diagnostic event after a crash, but
 never makes the JSONL log more authoritative than the snapshot.
 
+Any legacy save failure sets a process-lifetime persistence latch before a sanitized failure
+escapes. Once latched, mutations, reconciliation, snapshots, and adapter-producing helpers make
+zero App Server calls and return no possibly uncommitted in-memory snapshot. Startup failure is
+fatal. A running observer wake becomes a zero-external no-op. Restart reads the last authoritative
+snapshot: pre-call intents recover conservatively, while a snapshot that succeeded before an
+event-append failure retains its exact committed closure.
+
 On the currently verified Ubuntu/POSIX boundary, the legacy snapshot and event are current-user
 regular files normalized to mode `0600` and opened without following their final path component.
 Persistence orders snapshot-file fsync, atomic replace, parent-directory fsync, then event append
@@ -153,6 +180,17 @@ and fsync; failure of the directory barrier stops before the event is opened.
   using documented `userMessage.content` has no matching marker and the thread is idle.
 - Restart converts interrupted `dispatching`, `starting`, and `stop_pending` mutations to
   `unknown`, then reconciliation uses app-server evidence without optimistic replay.
+- Legacy initial creation may be deferred only when the current generation has no attempt, or
+  its latest creation was exactly `thread_start_not_sent/setup_cutoff` and selection was cleared.
+  Exact creation, rejection, or ambiguity consumes automatic creation authority.
+- An exact thread id is saved before optional naming on the same client. If naming is admitted,
+  that save carries a conservative `thread_name_pending` intent until the exact naming outcome
+  is durably closed. Cutoff before naming records `thread_name_not_sent`; a closure-write failure
+  can recover pending but never falsely recover not-sent after a possible naming call. Naming or
+  close failure cannot erase or downgrade the exact thread acknowledgement.
+- A waiting attempt without an exact turn stops locally with no interrupt. Redirect durably
+  prepares the correction, one generation advance, the old fence, and the selected replacement
+  before any external call, so the correction cannot reach the old target.
 
 ## Failure truth
 
