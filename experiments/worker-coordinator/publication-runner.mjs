@@ -120,7 +120,7 @@ export class GitHubPublisher {
   async updateRefs(plan, updates) {
     const query = `mutation UpdateRefs($input:UpdateRefsInput!){updateRefs(input:$input){clientMutationId}}`;
     const repositoryId = await this.repositoryId(plan.repository_full_name);
-    return this.github('/graphql', {
+    const result = await this.github('/graphql', {
       method: 'POST',
       body: JSON.stringify({
         query,
@@ -133,6 +133,13 @@ export class GitHubPublisher {
         },
       }),
     });
+    if (Array.isArray(result?.errors) && result.errors.length > 0) {
+      throw Object.assign(new Error('provider_error'), { permanent: true });
+    }
+    if (result?.data?.updateRefs?.clientMutationId !== plan.plan_sha) {
+      throw Object.assign(new Error('provider_invalid_response'), { permanent: true });
+    }
+    return result.data.updateRefs;
   }
 
   publish(plan) {
@@ -154,11 +161,44 @@ export class GitHubPublisher {
   }
 }
 
+async function applyDirective(publisher, selected) {
+  if (selected.directive === 'publish') await publisher.publish(selected);
+  else if (selected.directive === 'close_desired') {
+    await publisher.close(selected, selected.desired_commit_sha);
+  } else if (selected.directive === 'close_expected') {
+    await publisher.close(selected, selected.expected_head);
+  }
+}
+
+async function reconcilePermanent(coordinator, publisher, plan) {
+  try {
+    const observed = await publisher.readRefs(plan);
+    const decision = await coordinator.observe(plan, observed, true);
+    if (decision.directive === 'terminal') return { outcome: decision.state, plan: decision };
+    await applyDirective(publisher, decision);
+    const readback = await publisher.readRefs(decision);
+    const terminal = await coordinator.observe(decision, readback, false);
+    return { outcome: terminal.state, plan: terminal };
+  } catch {
+    return { outcome: 'reconciling', plan };
+  }
+}
+
 export async function runPublicationAttempt({ coordinator, publisher, claim }) {
   let plan = claim;
   if (!plan.desired_commit_sha) {
-    const objects = await publisher.objects(plan);
-    plan = await coordinator.recordObjects(claim, objects);
+    try {
+      const objects = await publisher.objects(plan);
+      plan = await coordinator.recordObjects(claim, objects);
+    } catch (error) {
+      if (!error.permanent) return { outcome: 'reconciling', plan };
+      try {
+        const failed = await coordinator.failPublication(plan);
+        return { outcome: failed.state, plan: failed };
+      } catch {
+        return { outcome: 'reconciling', plan };
+      }
+    }
   }
   let observed;
   try {
@@ -169,22 +209,10 @@ export async function runPublicationAttempt({ coordinator, publisher, claim }) {
   let decision = await coordinator.observe(plan, observed, false);
   if (decision.directive === 'terminal') return { outcome: decision.state, plan: decision };
   try {
-    if (decision.directive === 'publish') await publisher.publish(decision);
-    else if (decision.directive === 'close_desired') await publisher.close(decision, decision.desired_commit_sha);
-    else if (decision.directive === 'close_expected') await publisher.close(decision, decision.expected_head);
+    await applyDirective(publisher, decision);
   } catch (error) {
-    if (error.permanent) {
-      decision = await coordinator.observe(decision, observed, true);
-      if (decision.directive === 'close_expected') {
-        try {
-          await publisher.close(decision, decision.expected_head);
-        } catch {
-          return { outcome: 'reconciling', plan: decision };
-        }
-      }
-    } else {
-      return { outcome: 'reconciling', plan: decision };
-    }
+    if (!error.permanent) return { outcome: 'reconciling', plan: decision };
+    return reconcilePermanent(coordinator, publisher, decision);
   }
   try {
     const readback = await publisher.readRefs(decision);

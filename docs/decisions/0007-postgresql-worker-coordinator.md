@@ -18,6 +18,12 @@ the expected candidate ref together with a unique immutable marker. The marker i
 side close fence for lost responses, delayed requests, stale heads, and process death. Time alone
 never proves that a GitHub request did not apply.
 
+This coordinator accepts only printable-ASCII path prefixes and candidate paths. That is a
+deliberately stricter repository policy than the worker-v2 wire shape: otherwise-valid Unicode
+paths fail with `policy_denied`. Exact Unicode casefold parity on PostgreSQL 17 would require a
+separately reviewed casefold table or extension. Admission and checkpoint writes also fail before
+commit if the resulting claim would exceed the merged worker's 16,384-byte response limit.
+
 PGlite is pinned only for local/CI PostgreSQL-compatible tests. It does not replace the required
 durable PostgreSQL 17.11 deployment or count as live persistence evidence.
 

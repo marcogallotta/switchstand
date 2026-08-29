@@ -104,6 +104,7 @@ DECLARE
     selected coordinator_v2.publication%ROWTYPE;
     token text := coordinator_v2.new_lease_token();
 BEGIN
+    IF publisher_instance_value IS NULL THEN PERFORM coordinator_v2.fail('invalid_request'); END IF;
     SELECT * INTO selected FROM coordinator_v2.publication
     WHERE workspace_id = workspace AND state IN ('authorized', 'reconciling')
     ORDER BY created_at, publication_id FOR UPDATE SKIP LOCKED LIMIT 1;
@@ -159,7 +160,8 @@ DECLARE
 BEGIN
     attempt_value_row := coordinator_v2.load_attempt(publication_id_value, attempt_value,
         publisher_instance_value, publisher_token_value);
-    IF tree_sha_value !~ '^[0-9a-f]{40}$' OR commit_sha_value !~ '^[0-9a-f]{40}$' THEN
+    IF tree_sha_value IS NULL OR tree_sha_value !~ '^[0-9a-f]{40}$'
+       OR commit_sha_value IS NULL OR commit_sha_value !~ '^[0-9a-f]{40}$' THEN
         PERFORM coordinator_v2.fail('invalid_request');
     END IF;
     SELECT * INTO selected FROM coordinator_v2.publication
@@ -191,6 +193,42 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION coordinator_v2.fail_publication_v2(
+    publication_id_value uuid, attempt_value bigint,
+    publisher_instance_value uuid, publisher_token_value text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, coordinator_v2 AS $$
+DECLARE
+    workspace uuid := coordinator_v2.current_workspace();
+    attempt_value_row coordinator_v2.publication_attempt%ROWTYPE;
+    selected coordinator_v2.publication%ROWTYPE;
+    next_sequence bigint;
+BEGIN
+    attempt_value_row := coordinator_v2.load_attempt(publication_id_value, attempt_value,
+        publisher_instance_value, publisher_token_value);
+    SELECT * INTO selected FROM coordinator_v2.publication
+    WHERE workspace_id = workspace AND publication_id = publication_id_value FOR UPDATE;
+    IF selected.state <> 'authorized' OR selected.plan_sha <> attempt_value_row.plan_sha
+       OR selected.desired_tree_sha IS NOT NULL OR selected.desired_commit_sha IS NOT NULL THEN
+        PERFORM coordinator_v2.fail('terminal_immutable');
+    END IF;
+    SELECT COALESCE(max(sequence), 0) + 1 INTO next_sequence
+    FROM coordinator_v2.publication_observation
+    WHERE workspace_id = workspace AND publication_id = publication_id_value AND attempt = attempt_value;
+    INSERT INTO coordinator_v2.publication_observation (
+        workspace_id, publication_id, attempt, sequence, phase, error_code
+    ) VALUES (workspace, publication_id_value, attempt_value, next_sequence,
+        'provider_error', 'provider_rejected_before_ref');
+    UPDATE coordinator_v2.publication SET state = 'failed',
+        result = jsonb_build_object('code', 'provider_rejected_before_ref'),
+        terminal_at = clock_timestamp(), updated_at = clock_timestamp()
+    WHERE workspace_id = workspace AND publication_id = publication_id_value
+    RETURNING * INTO selected;
+    RETURN coordinator_v2.publication_plan(selected);
+END;
+$$;
+
 CREATE FUNCTION coordinator_v2.observe_publication_v2(
     publication_id_value uuid, attempt_value bigint,
     publisher_instance_value uuid, publisher_token_value text,
@@ -211,6 +249,10 @@ BEGIN
     WHERE workspace_id = workspace AND publication_id = publication_id_value FOR UPDATE;
     IF selected.plan_sha <> attempt_value_row.plan_sha THEN
         PERFORM coordinator_v2.fail('stale_or_invalid_lease');
+    END IF;
+    IF permanent_error_value IS NULL OR selected.desired_tree_sha IS NULL
+       OR selected.desired_commit_sha IS NULL THEN
+        PERFORM coordinator_v2.fail('invalid_request');
     END IF;
     IF marker_sha_value IS NOT NULL AND marker_sha_value !~ '^[0-9a-f]{40}$' THEN
         PERFORM coordinator_v2.fail('invalid_request');
@@ -250,15 +292,15 @@ BEGIN
         directive := 'terminal';
     ELSIF selected.seal_reason IS NOT NULL THEN
         directive := 'close_expected';
-    ELSIF permanent_error_value THEN
+    ELSIF target_sha_value = selected.desired_commit_sha THEN
+        directive := 'close_desired';
+    ELSIF target_sha_value = selected.expected_head AND permanent_error_value THEN
         UPDATE coordinator_v2.publication SET seal_reason = 'permanent_failure',
             seal_observed_ref = target_sha_value, updated_at = clock_timestamp()
         WHERE workspace_id = workspace AND publication_id = publication_id_value;
         directive := 'close_expected';
     ELSIF target_sha_value = selected.expected_head THEN
         directive := 'publish';
-    ELSIF target_sha_value = selected.desired_commit_sha THEN
-        directive := 'close_desired';
     ELSE
         UPDATE coordinator_v2.publication SET seal_reason = 'stale_head',
             seal_observed_ref = target_sha_value, updated_at = clock_timestamp()

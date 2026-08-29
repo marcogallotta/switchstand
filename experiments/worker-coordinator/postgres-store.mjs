@@ -13,6 +13,10 @@ const CALLS = Object.freeze({
     'SELECT coordinator_v2.record_objects_v2($1::uuid,$2::bigint,$3::uuid,$4::text,$5::text,$6::text) AS value',
     6,
   ],
+  failPublication: [
+    'SELECT coordinator_v2.fail_publication_v2($1::uuid,$2::bigint,$3::uuid,$4::text) AS value',
+    4,
+  ],
   observePublication: [
     'SELECT coordinator_v2.observe_publication_v2(' +
       '$1::uuid,$2::bigint,$3::uuid,$4::text,$5::text,$6::text,$7::boolean) AS value',

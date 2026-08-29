@@ -27,7 +27,7 @@ function exact(value, keys) {
 function parseStrict(text) {
   let offset = 0;
   const whitespace = () => {
-    while (/\s/.test(text[offset] || '')) offset += 1;
+    while (/[ \t\r\n]/.test(text[offset] || '')) offset += 1;
   };
   const string = () => {
     const start = offset;
@@ -48,7 +48,7 @@ function parseStrict(text) {
     whitespace();
     if (text[offset] === '"') return string();
     if (text[offset] === '{') {
-      const result = {};
+      const result = Object.create(null);
       const seen = new Set();
       offset += 1;
       whitespace();
@@ -198,6 +198,17 @@ function checkoutAuthority(request, workId) {
   return authority(value, workId);
 }
 
+async function checkoutArchive(value) {
+  if (!exact(value, ['body', 'sha256']) || !(value.body instanceof Uint8Array) ||
+      value.body.byteLength > 8 * 1024 * 1024 || !/^[0-9a-f]{64}$/.test(value.sha256 || '')) {
+    throw new Error('checkout_provider_invalid');
+  }
+  const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', value.body))]
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  if (digest !== value.sha256) throw new Error('checkout_provider_invalid');
+  return value;
+}
+
 const ERROR_STATUS = Object.freeze({
   unauthorized: 401,
   invalid_request: 400,
@@ -229,6 +240,10 @@ export function createCoordinator({
   checkoutProvider,
   clock = () => new Date(),
 }) {
+  const keys = [workerKey, coordinatorKey, publisherKey];
+  if (keys.some((key) => typeof key !== 'string' || key.length === 0) || new Set(keys).size !== keys.length) {
+    throw new Error('invalid_authority_configuration');
+  }
   async function workerMutation(request, workId, kind, keys, limit, allowGzip = false) {
     if (!authorized(request, workerKey)) return failure('unauthorized', 401);
     const value = await requestBody(request, limit, allowGzip);
@@ -239,7 +254,9 @@ export function createCoordinator({
 
   return async (request) => {
     try {
-      const path = new URL(request.url).pathname;
+      const url = new URL(request.url);
+      if (url.search || url.hash) return failure('invalid_request', 400);
+      const path = url.pathname;
       if (request.method === 'POST' && path === '/v2/work/admit') {
         if (!authorized(request, coordinatorKey)) return failure('unauthorized', 401);
         const value = await requestBody(request, 16384);
@@ -283,7 +300,7 @@ export function createCoordinator({
         if (route[2] === 'checkout' && request.method === 'GET') {
           if (!authorized(request, workerKey)) return failure('unauthorized', 401);
           const permission = await store.call('checkout', [checkoutAuthority(request, workId)]);
-          const archive = await checkoutProvider(permission);
+          const archive = await checkoutArchive(await checkoutProvider(permission));
           return new Response(archive.body, {
             status: 200,
             headers: {
@@ -330,7 +347,7 @@ export function createCoordinator({
         const result = await store.call('claimPublication', [value.publisher_instance]);
         return result === null ? new Response(null, { status: 204 }) : json(result);
       }
-      const publication = path.match(/^\/v2\/publications\/([0-9a-f-]+)\/(objects|observe)$/);
+      const publication = path.match(/^\/v2\/publications\/([0-9a-f-]+)\/(objects|observe|fail)$/);
       if (request.method === 'POST' && publication) {
         if (!authorized(request, publisherKey)) return failure('unauthorized', 401);
         const value = await requestBody(request, 8192);
@@ -340,6 +357,12 @@ export function createCoordinator({
           return failure('invalid_request', 400);
         }
         const prefix = [publication[1], value.attempt, value.publisher_instance, value.publisher_token];
+        if (publication[2] === 'fail') {
+          if (!exact(value, ['attempt', 'publisher_instance', 'publisher_token'])) {
+            return failure('invalid_request', 400);
+          }
+          return json(await store.call('failPublication', prefix));
+        }
         if (publication[2] === 'objects') {
           if (!exact(value, ['attempt', 'publisher_instance', 'publisher_token', 'tree_sha', 'commit_sha']) ||
               !/^[0-9a-f]{40}$/.test(value.tree_sha || '') ||
@@ -364,6 +387,10 @@ export function createCoordinator({
         if (!authorized(request, coordinatorKey)) return failure('unauthorized', 401);
         const workId = decodeURIComponent(control[1]);
         if (!WORK_ID.test(workId)) return failure('invalid_request', 400);
+        const declared = Number(request.headers.get('content-length') || 0);
+        if (!Number.isSafeInteger(declared) || declared !== 0 || request.body !== null) {
+          return failure('request_too_large', 413);
+        }
         return json(await store.call(control[2] === 'cancel' ? 'cancel' : 'authorize', [workId]));
       }
       return failure('not_found', 404);

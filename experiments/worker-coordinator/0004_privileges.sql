@@ -42,6 +42,8 @@ GRANT EXECUTE ON FUNCTION coordinator_v2.authorize_publication_v2(text) TO switc
 GRANT EXECUTE ON FUNCTION coordinator_v2.claim_publication_v2(uuid) TO switchstand_coordinator_runtime;
 GRANT EXECUTE ON FUNCTION coordinator_v2.record_objects_v2(uuid, bigint, uuid, text, text, text)
     TO switchstand_coordinator_runtime;
+GRANT EXECUTE ON FUNCTION coordinator_v2.fail_publication_v2(uuid, bigint, uuid, text)
+    TO switchstand_coordinator_runtime;
 GRANT EXECUTE ON FUNCTION coordinator_v2.observe_publication_v2(uuid, bigint, uuid, text, text, text, boolean)
     TO switchstand_coordinator_runtime;
 GRANT EXECUTE ON FUNCTION coordinator_v2.export_work_v2(text, boolean) TO switchstand_coordinator_runtime;

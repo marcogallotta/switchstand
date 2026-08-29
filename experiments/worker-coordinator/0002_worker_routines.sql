@@ -57,6 +57,7 @@ LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
            SELECT 1 FROM unnest(prefixes) AS p(value)
            WHERE octet_length(value) NOT BETWEEN 1 AND 240
               OR value <> normalize(value, NFC)
+              OR value !~ '^[ -~]+$'
               OR value ~ '(^/|/$|//|(^|/)\.\.?(/|$)|\\|[[:cntrl:]])'
        )
        AND cardinality(prefixes) = (SELECT count(DISTINCT value) FROM unnest(prefixes) AS p(value))
@@ -67,10 +68,27 @@ CREATE FUNCTION coordinator_v2.path_allowed(path text, prefixes text[]) RETURNS 
 LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
     SELECT octet_length(path) BETWEEN 1 AND 240
        AND path = normalize(path, NFC)
+       AND path ~ '^[ -~]+$'
        AND path !~ '(^/|/$|//|(^|/)\.\.?(/|$)|\\|[[:cntrl:]])'
        AND EXISTS (
            SELECT 1 FROM unnest(prefixes) AS p(prefix)
-           WHERE path = prefix OR path LIKE prefix || '/%'
+           WHERE path = prefix OR starts_with(path, prefix || '/')
+       )
+$$;
+
+CREATE FUNCTION coordinator_v2.valid_branch(value text) RETURNS boolean
+LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
+    SELECT octet_length(value) BETWEEN 1 AND 100
+       AND value !~ '^[-./]'
+       AND NOT starts_with(value, 'refs/')
+       AND value !~ '[./]$'
+       AND strpos(value, '..') = 0
+       AND strpos(value, '@{') = 0
+       AND strpos(value, '//') = 0
+       AND value !~ '[[:cntrl:] ~^:?*\[\\]'
+       AND NOT EXISTS (
+           SELECT 1 FROM unnest(string_to_array(value, '/')) AS component(part)
+           WHERE starts_with(part, '.') OR right(part, 5) = '.lock'
        )
 $$;
 
@@ -80,8 +98,8 @@ LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
        AND jsonb_array_length(value) BETWEEN 0 AND 16
        AND NOT EXISTS (
            SELECT 1 FROM jsonb_array_elements(value) AS item
-           WHERE jsonb_typeof(item) <> 'string'
-              OR octet_length(item #>> '{}') NOT BETWEEN 1 AND 512
+           WHERE jsonb_typeof(item) IS DISTINCT FROM 'string'
+              OR octet_length(item #>> '{}') NOT BETWEEN 1 AND 512 IS NOT FALSE
        )
 $$;
 
@@ -90,6 +108,26 @@ LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
     SELECT jsonb_typeof(value) = 'object'
        AND ARRAY(SELECT key FROM jsonb_object_keys(value) AS key ORDER BY key)
            = ARRAY(SELECT key FROM unnest(keys) AS key ORDER BY key)
+$$;
+
+CREATE FUNCTION coordinator_v2.valid_authority(value jsonb) RETURNS boolean
+LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
+    SELECT jsonb_typeof(value -> 'protocol') = 'string'
+       AND value ->> 'protocol' = 'worker-v2'
+       AND jsonb_typeof(value -> 'work_id') = 'string'
+       AND value ->> 'work_id' ~ '^[A-Za-z0-9._:-]{8,80}$'
+       AND jsonb_typeof(value -> 'worker_id') = 'string'
+       AND value ->> 'worker_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+       AND jsonb_typeof(value -> 'instance_id') = 'string'
+       AND value ->> 'instance_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+       AND jsonb_typeof(value -> 'fence') = 'number'
+       AND value ->> 'fence' ~ '^[1-9][0-9]*$'
+       AND (value ->> 'fence')::numeric <= 9007199254740991
+       AND jsonb_typeof(value -> 'lease_token') = 'string'
+       AND value ->> 'lease_token' ~ '^[A-Za-z0-9_-]{43}$'
+       AND jsonb_typeof(value -> 'cancellation_version') = 'number'
+       AND value ->> 'cancellation_version' ~ '^(0|[1-9][0-9]*)$'
+       AND (value ->> 'cancellation_version')::numeric <= 9007199254740991
 $$;
 
 CREATE FUNCTION coordinator_v2.admit_work_v2(input jsonb) RETURNS jsonb
@@ -120,8 +158,11 @@ BEGIN
     source_value := input ->> 'source_text';
     acceptance_value := input -> 'acceptance';
     repository_value := input -> 'repository';
-    IF admission_id_value IS NULL OR admission_id_value !~ '^[A-Za-z0-9._:-]{8,80}$'
+    IF jsonb_typeof(input -> 'admission_id') IS DISTINCT FROM 'string'
+       OR admission_id_value IS NULL OR admission_id_value !~ '^[A-Za-z0-9._:-]{8,80}$'
+       OR jsonb_typeof(input -> 'work_type') IS DISTINCT FROM 'string'
        OR work_type_value NOT IN ('implementation', 'review')
+       OR jsonb_typeof(input -> 'source_text') IS DISTINCT FROM 'string'
        OR source_value IS NULL OR octet_length(source_value) > 4096
        OR acceptance_value IS NULL OR NOT coordinator_v2.valid_acceptance(acceptance_value)
        OR repository_value IS NULL OR NOT coordinator_v2.exact_keys(repository_value,
@@ -131,22 +172,40 @@ BEGIN
     repository_name := repository_value ->> 'full_name';
     base_value := repository_value ->> 'base_sha';
     branch_value := repository_value ->> 'candidate_branch';
-    IF jsonb_typeof(repository_value -> 'allowed_path_prefixes') <> 'array' THEN
+    IF jsonb_typeof(repository_value -> 'allowed_path_prefixes') IS DISTINCT FROM 'array' THEN
         PERFORM coordinator_v2.fail('invalid_request');
     END IF;
     IF EXISTS (SELECT 1 FROM jsonb_array_elements(repository_value -> 'allowed_path_prefixes') AS item
-        WHERE jsonb_typeof(item) <> 'string') THEN
+        WHERE jsonb_typeof(item) IS DISTINCT FROM 'string') THEN
         PERFORM coordinator_v2.fail('invalid_request');
     END IF;
     SELECT array_agg(item #>> '{}' ORDER BY ordinality) INTO prefixes_value
     FROM jsonb_array_elements(repository_value -> 'allowed_path_prefixes') WITH ORDINALITY AS p(item, ordinality);
-    IF repository_name IS NULL OR octet_length(repository_name) NOT BETWEEN 3 AND 200
+    IF jsonb_typeof(repository_value -> 'full_name') IS DISTINCT FROM 'string'
+       OR repository_name IS NULL OR octet_length(repository_name) NOT BETWEEN 3 AND 200
        OR repository_name !~ '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+       OR jsonb_typeof(repository_value -> 'base_sha') IS DISTINCT FROM 'string'
        OR base_value IS NULL OR base_value !~ '^[0-9a-f]{40}$'
-       OR branch_value IS NULL OR octet_length(branch_value) NOT BETWEEN 1 AND 100
-       OR branch_value ~ '(^/|/$|//|\.\.|@\{|\\|[[:cntrl:] ~^:?*\[])'
+       OR jsonb_typeof(repository_value -> 'candidate_branch') IS DISTINCT FROM 'string'
+       OR branch_value IS NULL OR NOT coordinator_v2.valid_branch(branch_value)
        OR prefixes_value IS NULL OR NOT coordinator_v2.valid_prefixes(prefixes_value) THEN
         PERFORM coordinator_v2.fail('invalid_request');
+    END IF;
+    IF octet_length(jsonb_build_object(
+        'protocol', 'worker-v2', 'work_id', 'work:00000000-0000-4000-8000-000000000000',
+        'work_type', work_type_value, 'worker_id', '00000000-0000-4000-8000-000000000000',
+        'instance_id', '00000000-0000-4000-8000-000000000000', 'fence', 9007199254740991,
+        'lease_token', repeat('A', 43), 'lease_expires_at', '2000-01-01T00:00:00.000000Z',
+        'cancellation_version', 9007199254740991, 'admission_sha', repeat('a', 64),
+        'source_text', source_value, 'acceptance', acceptance_value,
+        'repository', jsonb_build_object('full_name', repository_name, 'base_sha', base_value,
+            'candidate_branch', branch_value, 'allowed_path_prefixes', to_jsonb(prefixes_value)),
+        'checkout_path', '/v2/work/work:00000000-0000-4000-8000-000000000000/checkout',
+        'prior_checkpoint', NULL, 'codex_thread_id', NULL, 'accepted_candidate', NULL,
+        'limits', jsonb_build_object('max_files', 32, 'max_file_bytes', 65536,
+            'max_total_bytes', 262144, 'max_deletions', 32, 'max_json_bytes', 393216)
+    )::text) > 16384 THEN
+        PERFORM coordinator_v2.fail('request_too_large');
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM coordinator_v2.repository_policy AS policy
@@ -287,9 +346,12 @@ DECLARE
     selected coordinator_v2.work%ROWTYPE;
     expiry timestamptz := clock_timestamp() + interval '15 seconds';
 BEGIN
+    IF coordinator_v2.valid_authority(authority) IS DISTINCT FROM TRUE THEN
+        PERFORM coordinator_v2.fail('stale_or_invalid_lease');
+    END IF;
     SELECT * INTO selected FROM coordinator_v2.work
     WHERE workspace_id = workspace AND work_id = authority ->> 'work_id' FOR UPDATE;
-    IF NOT FOUND OR NOT coordinator_v2.authority_matches(selected, authority) THEN
+    IF NOT FOUND OR coordinator_v2.authority_matches(selected, authority) IS DISTINCT FROM TRUE THEN
         PERFORM coordinator_v2.fail('stale_or_invalid_lease');
     END IF;
     UPDATE coordinator_v2.work SET lease_expires_at = expiry, updated_at = clock_timestamp()
@@ -311,7 +373,7 @@ BEGIN
     SELECT * INTO selected FROM coordinator_v2.work
     WHERE workspace_id = workspace AND work_id = authority ->> 'work_id';
     IF NOT FOUND THEN PERFORM coordinator_v2.fail('not_found'); END IF;
-    IF NOT coordinator_v2.authority_matches(selected, authority) THEN
+    IF coordinator_v2.authority_matches(selected, authority) IS DISTINCT FROM TRUE THEN
         PERFORM coordinator_v2.fail('stale_or_invalid_lease');
     END IF;
     SELECT * INTO admission FROM coordinator_v2.work_admission
@@ -341,12 +403,14 @@ DECLARE
     decoded_total integer := 0;
     prior_check text;
 BEGIN
-    IF NOT coordinator_v2.exact_keys(request_value, ARRAY[
+    IF (NOT coordinator_v2.exact_keys(request_value, ARRAY[
         'base_sha', 'cancellation_version', 'check_summaries', 'deletions',
         'expected_branch_head', 'fence', 'files', 'instance_id', 'lease_token',
         'message', 'operation_id', 'protocol', 'request_digest', 'work_id', 'worker_id'
     ]) OR request_value ->> 'base_sha' <> base_value
        OR request_value ->> 'expected_branch_head' <> base_value
+       OR jsonb_typeof(request_value -> 'base_sha') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(request_value -> 'expected_branch_head') IS DISTINCT FROM 'string'
        OR jsonb_typeof(request_value -> 'files') <> 'array'
        OR jsonb_typeof(request_value -> 'deletions') <> 'array'
        OR jsonb_typeof(request_value -> 'check_summaries') <> 'array'
@@ -355,29 +419,37 @@ BEGIN
        OR jsonb_array_length(request_value -> 'check_summaries') > 32
        OR jsonb_array_length(request_value -> 'files')
             + jsonb_array_length(request_value -> 'deletions') = 0
+       OR jsonb_typeof(request_value -> 'message') IS DISTINCT FROM 'string'
        OR request_value ->> 'message' IS NULL
        OR request_value ->> 'message' <> btrim(request_value ->> 'message')
        OR request_value ->> 'message' ~ '[\r\n]'
        OR octet_length(request_value ->> 'message') NOT BETWEEN 1 AND 160
+       OR jsonb_typeof(request_value -> 'request_digest') IS DISTINCT FROM 'string'
        OR request_value ->> 'request_digest' !~ '^[0-9a-f]{64}$'
        OR request_value ->> 'request_digest' <> coordinator_v2.sha256_text(
-            coordinator_v2.canonical_json(request_value - 'request_digest')) THEN
+            coordinator_v2.canonical_json(request_value - 'request_digest'))) IS NOT FALSE THEN
         PERFORM coordinator_v2.fail('invalid_request');
     END IF;
 
     FOR item IN SELECT value FROM jsonb_array_elements(request_value -> 'files') AS entry(value)
     LOOP
-        IF NOT coordinator_v2.exact_keys(item,
+        IF (NOT coordinator_v2.exact_keys(item,
             ARRAY['content_base64', 'decoded_bytes', 'mode', 'path', 'sha256', 'type'])
            OR item ->> 'mode' <> '100644' OR item ->> 'type' <> 'blob'
+           OR jsonb_typeof(item -> 'mode') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(item -> 'type') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(item -> 'path') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(item -> 'content_base64') IS DISTINCT FROM 'string'
            OR jsonb_typeof(item -> 'decoded_bytes') <> 'number'
+           OR jsonb_typeof(item -> 'sha256') IS DISTINCT FROM 'string'
            OR item ->> 'decoded_bytes' !~ '^(0|[1-9][0-9]*)$'
-           OR item ->> 'sha256' !~ '^[0-9a-f]{64}$' THEN
+           OR item ->> 'sha256' !~ '^[0-9a-f]{64}$') IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;
         path_value := item ->> 'path';
-        IF NOT coordinator_v2.path_allowed(path_value, prefixes_value)
-           OR (prior_path IS NOT NULL AND convert_to(path_value, 'UTF8') <= convert_to(prior_path, 'UTF8')) THEN
+        IF (NOT coordinator_v2.path_allowed(path_value, prefixes_value)
+           OR (prior_path IS NOT NULL AND convert_to(path_value, 'UTF8') <= convert_to(prior_path, 'UTF8')))
+           IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('policy_denied');
         END IF;
         BEGIN
@@ -386,10 +458,10 @@ BEGIN
         EXCEPTION WHEN OTHERS THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END;
-        IF replace(encode(bytes, 'base64'), E'\n', '') <> item ->> 'content_base64'
+        IF (replace(encode(bytes, 'base64'), E'\n', '') <> item ->> 'content_base64'
            OR octet_length(bytes) <> (item ->> 'decoded_bytes')::integer
            OR octet_length(bytes) > 65536
-           OR encode(sha256(bytes), 'hex') <> item ->> 'sha256' THEN
+           OR encode(sha256(bytes), 'hex') <> item ->> 'sha256') IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;
         decoded_total := decoded_total + octet_length(bytes);
@@ -402,13 +474,14 @@ BEGIN
     prior_path := NULL;
     FOR item IN SELECT value FROM jsonb_array_elements(request_value -> 'deletions') AS entry(value)
     LOOP
-        IF NOT coordinator_v2.exact_keys(item, ARRAY['path']) THEN
+        IF coordinator_v2.exact_keys(item, ARRAY['path']) IS DISTINCT FROM TRUE
+           OR jsonb_typeof(item -> 'path') IS DISTINCT FROM 'string' THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;
         path_value := item ->> 'path';
-        IF NOT coordinator_v2.path_allowed(path_value, prefixes_value)
+        IF (NOT coordinator_v2.path_allowed(path_value, prefixes_value)
            OR (prior_path IS NOT NULL AND convert_to(path_value, 'UTF8') <= convert_to(prior_path, 'UTF8'))
-           OR path_value = ANY(all_paths) THEN
+           OR path_value = ANY(all_paths)) IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('policy_denied');
         END IF;
         deletion_paths := array_append(deletion_paths, path_value);
@@ -416,19 +489,31 @@ BEGIN
         prior_path := path_value;
     END LOOP;
     IF cardinality(all_paths) <> (
-        SELECT count(DISTINCT lower(value)) FROM unnest(all_paths) AS path(value)
+        SELECT count(DISTINCT translate(value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))
+        FROM unnest(all_paths) AS path(value)
     ) THEN
         PERFORM coordinator_v2.fail('policy_denied');
     END IF;
 
     FOR item IN SELECT value FROM jsonb_array_elements(request_value -> 'check_summaries') AS entry(value)
     LOOP
-        IF NOT coordinator_v2.exact_keys(item, ARRAY['name', 'outcome', 'summary'])
+        IF (NOT coordinator_v2.exact_keys(item, ARRAY['name', 'outcome', 'summary'])
+           OR jsonb_typeof(item -> 'name') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(item -> 'outcome') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(item -> 'summary') IS DISTINCT FROM 'string'
            OR octet_length(item ->> 'name') NOT BETWEEN 1 AND 80
            OR item ->> 'outcome' NOT IN ('PASS', 'FAIL')
            OR octet_length(item ->> 'summary') > 1024
+           OR strpos(item ->> 'summary', '/') > 0
+           OR strpos(translate(item ->> 'summary', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                'abcdefghijklmnopqrstuvwxyz'), 'prompt') > 0
+           OR strpos(translate(item ->> 'summary', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                'abcdefghijklmnopqrstuvwxyz'), 'output') > 0
+           OR strpos(translate(item ->> 'summary', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                'abcdefghijklmnopqrstuvwxyz'), 'error') > 0
            OR (prior_check IS NOT NULL
-               AND convert_to(item ->> 'name', 'UTF8') <= convert_to(prior_check, 'UTF8')) THEN
+               AND convert_to(item ->> 'name', 'UTF8') <= convert_to(prior_check, 'UTF8')))
+           IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;
         prior_check := item ->> 'name';
@@ -466,7 +551,16 @@ DECLARE
     validation jsonb;
 BEGIN
     IF kind_value NOT IN ('checkpoint', 'submit_candidate', 'complete')
-       OR operation_value IS NULL OR operation_value !~ '^[A-Za-z0-9._:-]{8,80}$' THEN
+       OR operation_value IS NULL OR operation_value !~ '^[A-Za-z0-9._:-]{8,80}$'
+       OR coordinator_v2.valid_authority(request_value) IS DISTINCT FROM TRUE THEN
+        PERFORM coordinator_v2.fail('invalid_request');
+    END IF;
+    IF kind_value = 'submit_candidate' AND (
+        jsonb_typeof(request_value -> 'request_digest') IS DISTINCT FROM 'string'
+        OR request_value ->> 'request_digest' !~ '^[0-9a-f]{64}$'
+        OR request_value ->> 'request_digest' IS DISTINCT FROM coordinator_v2.sha256_text(
+            coordinator_v2.canonical_json(request_value - 'request_digest'))
+    ) THEN
         PERFORM coordinator_v2.fail('invalid_request');
     END IF;
     SELECT * INTO selected FROM coordinator_v2.work
@@ -484,12 +578,17 @@ BEGIN
     END IF;
     IF NOT FOUND AND selected.work_id IS NULL THEN PERFORM coordinator_v2.fail('not_found'); END IF;
     IF selected.state = 'terminal' THEN PERFORM coordinator_v2.fail('terminal_immutable'); END IF;
-    IF NOT coordinator_v2.authority_matches(selected, request_value) THEN
+    IF coordinator_v2.authority_matches(selected, request_value) IS DISTINCT FROM TRUE THEN
         PERFORM coordinator_v2.fail('stale_or_invalid_lease');
+    END IF;
+    SELECT * INTO admission FROM coordinator_v2.work_admission
+    WHERE workspace_id = workspace AND work_id = selected.work_id AND admission_sha = selected.admission_sha;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'invalid_admission_binding';
     END IF;
 
     IF kind_value = 'checkpoint' THEN
-        IF NOT coordinator_v2.exact_keys(request_value, ARRAY[
+        IF (NOT coordinator_v2.exact_keys(request_value, ARRAY[
             'cancellation_version', 'checkpoint_state', 'codex_thread_id', 'fence',
             'instance_id', 'lease_token', 'operation_id', 'phase', 'protocol',
             'sequence', 'work_id', 'worker_id'
@@ -498,15 +597,37 @@ BEGIN
            OR (request_value ->> 'sequence')::bigint <= selected.checkpoint_sequence
            OR request_value ->> 'phase' NOT IN (
                 'checkout_ready', 'codex_started', 'working', 'testing', 'candidate_ready')
+           OR jsonb_typeof(request_value -> 'checkpoint_state') IS DISTINCT FROM 'string'
            OR octet_length(COALESCE(request_value ->> 'checkpoint_state', '')) > 4096
+           OR jsonb_typeof(request_value -> 'codex_thread_id') NOT IN ('null', 'string')
            OR (request_value -> 'codex_thread_id' <> 'null'::jsonb AND (
                 octet_length(request_value ->> 'codex_thread_id') NOT BETWEEN 1 AND 256
                 OR request_value ->> 'codex_thread_id' !~ '^[ -~]+$'))
            OR (request_value ->> 'phase' <> 'checkout_ready'
                 AND request_value -> 'codex_thread_id' = 'null'::jsonb)
            OR (selected.codex_thread_id IS NOT NULL
-                AND request_value ->> 'codex_thread_id' <> selected.codex_thread_id) THEN
+                AND request_value ->> 'codex_thread_id' <> selected.codex_thread_id)) IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('invalid_request');
+        END IF;
+        IF octet_length(jsonb_build_object(
+            'protocol', 'worker-v2', 'work_id', selected.work_id, 'work_type', selected.work_type,
+            'worker_id', selected.worker_id, 'instance_id', selected.instance_id, 'fence', selected.fence,
+            'lease_token', selected.lease_token, 'lease_expires_at', to_char(
+                selected.lease_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+            'cancellation_version', selected.cancellation_version, 'admission_sha', selected.admission_sha,
+            'source_text', admission.source_text, 'acceptance', admission.acceptance,
+            'repository', jsonb_build_object('full_name', admission.repository_full_name,
+                'base_sha', admission.base_sha, 'candidate_branch', admission.candidate_branch,
+                'allowed_path_prefixes', to_jsonb(admission.allowed_path_prefixes)),
+            'checkout_path', '/v2/work/' || selected.work_id || '/checkout',
+            'prior_checkpoint', jsonb_build_object('sequence', (request_value ->> 'sequence')::bigint,
+                'phase', request_value ->> 'phase', 'codex_thread_id', request_value -> 'codex_thread_id',
+                'checkpoint_state', request_value ->> 'checkpoint_state'),
+            'codex_thread_id', request_value -> 'codex_thread_id', 'accepted_candidate', NULL,
+            'limits', jsonb_build_object('max_files', 32, 'max_file_bytes', 65536,
+                'max_total_bytes', 262144, 'max_deletions', 32, 'max_json_bytes', 393216)
+        )::text) > 16384 THEN
+            PERFORM coordinator_v2.fail('request_too_large');
         END IF;
         UPDATE coordinator_v2.work SET
             checkpoint = jsonb_build_object('sequence', (request_value ->> 'sequence')::bigint,
@@ -522,10 +643,8 @@ BEGIN
         IF selected.work_type <> 'implementation' OR selected.state <> 'leased' THEN
             PERFORM coordinator_v2.fail('work_type_forbidden');
         END IF;
-        SELECT * INTO admission FROM coordinator_v2.work_admission
-        WHERE workspace_id = workspace AND work_id = selected.work_id AND admission_sha = selected.admission_sha;
-        IF request_value ->> 'base_sha' <> admission.base_sha
-           OR request_value ->> 'expected_branch_head' <> admission.base_sha THEN
+        IF (request_value ->> 'base_sha' <> admission.base_sha
+           OR request_value ->> 'expected_branch_head' <> admission.base_sha) IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('stale_head');
         END IF;
         validation := coordinator_v2.validate_candidate_v2(
@@ -563,17 +682,21 @@ BEGIN
         response_value := jsonb_build_object('candidate_id', candidate_value,
             'manifest_sha', manifest_sha_value, 'status', 'candidate_ready');
     ELSE
-        IF NOT coordinator_v2.exact_keys(request_value, ARRAY[
+        IF (NOT coordinator_v2.exact_keys(request_value, ARRAY[
             'cancellation_version', 'candidate_id', 'checks', 'fence', 'instance_id',
             'lease_token', 'operation_id', 'protocol', 'review_verdict', 'status',
             'summary_code', 'work_id', 'worker_id'
         ]) OR request_value ->> 'status' NOT IN ('succeeded', 'failed', 'scope_return')
+           OR jsonb_typeof(request_value -> 'status') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(request_value -> 'summary_code') IS DISTINCT FROM 'string'
            OR request_value ->> 'summary_code' !~ '^[a-z0-9_]{1,80}$'
            OR jsonb_typeof(request_value -> 'checks') <> 'array'
            OR jsonb_array_length(request_value -> 'checks') > 32
            OR EXISTS (
                 SELECT 1 FROM jsonb_array_elements(request_value -> 'checks') AS item
                 WHERE NOT coordinator_v2.exact_keys(item, ARRAY['name', 'outcome'])
+                   OR jsonb_typeof(item -> 'name') IS DISTINCT FROM 'string'
+                   OR jsonb_typeof(item -> 'outcome') IS DISTINCT FROM 'string'
                    OR octet_length(item ->> 'name') NOT BETWEEN 1 AND 80
                    OR item ->> 'outcome' NOT IN ('PASS', 'FAIL')
            ) OR EXISTS (
@@ -585,27 +708,27 @@ BEGIN
                 ) AS ordered
                 WHERE prior IS NOT NULL
                   AND convert_to(name, 'UTF8') <= convert_to(prior, 'UTF8')
-           ) THEN
+           )) IS NOT FALSE THEN
             PERFORM coordinator_v2.fail('invalid_request');
         END IF;
         IF request_value ->> 'status' = 'succeeded' THEN
-            IF selected.work_type = 'implementation' AND
-               (selected.state <> 'candidate_ready'
-                OR request_value ->> 'candidate_id' <> selected.accepted_candidate_id::text
-                OR request_value -> 'review_verdict' <> 'null'::jsonb) THEN
+            IF selected.work_type = 'implementation' AND (
+                selected.state <> 'candidate_ready'
+                OR request_value ->> 'candidate_id' IS DISTINCT FROM selected.accepted_candidate_id::text
+                OR request_value -> 'review_verdict' IS DISTINCT FROM 'null'::jsonb) THEN
                 PERFORM coordinator_v2.fail('invalid_request');
             END IF;
             IF selected.work_type = 'review' AND (
-                selected.state <> 'leased' OR request_value -> 'candidate_id' <> 'null'::jsonb
+                selected.state <> 'leased' OR request_value -> 'candidate_id' IS DISTINCT FROM 'null'::jsonb
                 OR request_value ->> 'review_verdict' IS NULL
                 OR request_value ->> 'review_verdict' NOT IN ('PASS', 'BLOCK')) THEN
                 PERFORM coordinator_v2.fail('invalid_request');
             END IF;
-        ELSIF request_value -> 'candidate_id' <> 'null'::jsonb
+        ELSIF request_value -> 'candidate_id' IS DISTINCT FROM 'null'::jsonb
            AND (selected.state <> 'candidate_ready'
-                OR request_value ->> 'candidate_id' <> selected.accepted_candidate_id::text) THEN
+                OR request_value ->> 'candidate_id' IS DISTINCT FROM selected.accepted_candidate_id::text) THEN
             PERFORM coordinator_v2.fail('invalid_request');
-        ELSIF request_value -> 'review_verdict' <> 'null'::jsonb THEN
+        ELSIF request_value -> 'review_verdict' IS DISTINCT FROM 'null'::jsonb THEN
             PERFORM coordinator_v2.fail('invalid_request');
         ELSIF request_value ->> 'status' IN ('failed', 'scope_return') AND selected.state = 'candidate_ready' THEN
             IF EXISTS (SELECT 1 FROM coordinator_v2.publication
@@ -653,11 +776,26 @@ BEGIN
         WHERE workspace_id = workspace AND candidate_id = selected.accepted_candidate_id FOR UPDATE;
     END IF;
     IF selected.state = 'terminal' THEN
-        RETURN jsonb_build_object('work_id', selected.work_id, 'result', selected.terminal_outcome,
+        IF publication_value.state = 'pending' THEN
+            UPDATE coordinator_v2.publication SET state = 'failed',
+                result = jsonb_build_object('code', 'cancelled_before_authorization'),
+                terminal_at = clock_timestamp(), updated_at = clock_timestamp()
+            WHERE workspace_id = workspace AND publication_id = publication_value.publication_id;
+            outcome := 'cancelled_before_authorization';
+        ELSIF publication_value.state IN ('authorized', 'reconciling') THEN
+            outcome := 'publication_already_authorized';
+        ELSIF publication_value.state IN ('applied', 'stale_head', 'failed') THEN
+            outcome := COALESCE(publication_value.result ->> 'code', publication_value.state);
+        ELSE
+            outcome := selected.terminal_outcome;
+        END IF;
+        RETURN jsonb_build_object('work_id', selected.work_id, 'result', outcome,
             'cancellation_version', selected.cancellation_version);
     END IF;
-    IF publication_value.state IN ('authorized', 'reconciling', 'applied', 'stale_head') THEN
+    IF publication_value.state IN ('authorized', 'reconciling') THEN
         outcome := 'publication_already_authorized';
+    ELSIF publication_value.state IN ('applied', 'stale_head', 'failed') THEN
+        outcome := COALESCE(publication_value.result ->> 'code', publication_value.state);
     ELSIF publication_value.publication_id IS NOT NULL AND publication_value.state = 'pending' THEN
         UPDATE coordinator_v2.publication SET state = 'failed',
             result = jsonb_build_object('code', 'cancelled_before_authorization'),

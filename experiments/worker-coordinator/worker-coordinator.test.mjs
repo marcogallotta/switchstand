@@ -139,6 +139,12 @@ test('admission is exact, idempotent, policy-bound, and atomically rolled back',
     /policy_denied/,
   );
   await assert.rejects(
+    () => store.call('admit', [{ ...admission('admission:unicode-prefix'), repository: {
+      ...admission().repository, allowed_path_prefixes: ['experiments/café'],
+    } }]),
+    /invalid_request/,
+  );
+  await assert.rejects(
     database.transaction(async (transaction) => {
       const nested = new PostgresStore({ transaction: (run) => run(transaction) });
       await nested.call('admit', [admission('admission:test-rollback')]);
@@ -150,6 +156,39 @@ test('admission is exact, idempotent, policy-bound, and atomically rolled back',
     `SELECT count(*)::int AS count FROM coordinator_v2.work_admission WHERE admission_id='admission:test-rollback'`,
   );
   assert.equal(rolledBack.rows[0].count, 0);
+  await database.close();
+});
+
+test('every accepted checkpoint remains reclaimable within the merged client response cap', async () => {
+  const database = await migrated();
+  await seed(database);
+  const store = new PostgresStore(database);
+  const maximum = admission('admission:max-shape', 'x'.repeat(4096));
+  maximum.acceptance = Array.from({ length: 16 }, (_, index) => `${index}`.padEnd(512, 'x'));
+  const maximumWork = await store.call('admit', [maximum]);
+  const maximumClaim = await store.call('claim', [WORKER, INSTANCE]);
+  assert.ok(Buffer.byteLength(JSON.stringify(maximumClaim)) <= 16384);
+  await assert.rejects(() => store.call('checkpoint', [withAuthority(maximumClaim, {
+    operation_id: 'checkpoint:max-shape', sequence: 1, phase: 'codex_started',
+    codex_thread_id: THREAD, checkpoint_state: '"'.repeat(2000),
+  })]), /request_too_large/);
+  await store.call('cancel', [maximumWork.work_id]);
+
+  const bounded = admission('admission:bounded-shape', 'x'.repeat(2000));
+  bounded.acceptance = Array.from({ length: 4 }, (_, index) => `${index}`.padEnd(256, 'x'));
+  await store.call('admit', [bounded]);
+  const first = await store.call('claim', [WORKER, INSTANCE]);
+  await store.call('checkpoint', [withAuthority(first, {
+    operation_id: 'checkpoint:bounded-shape', sequence: 1, phase: 'codex_started',
+    codex_thread_id: THREAD, checkpoint_state: '"'.repeat(4096),
+  })]);
+  await database.query(
+    `UPDATE coordinator_v2.work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE work_id=$1`,
+    [first.work_id],
+  );
+  const reclaimed = await store.call('claim', [WORKER, INSTANCE]);
+  assert.equal(Number(reclaimed.fence), 2);
+  assert.ok(Buffer.byteLength(JSON.stringify(reclaimed)) <= 16384);
   await database.close();
 });
 
@@ -214,6 +253,11 @@ test('authorization is ordered against cancellation and publication remains reco
   assert.equal(cancelled.result, 'publication_already_authorized');
   const attempt = await store.call('claimPublication', [PUBLISHER]);
   assert.equal(Number(attempt.attempt), 1);
+  await assert.rejects(
+    () => store.call('observePublication', [attempt.publication_id, attempt.attempt,
+      PUBLISHER, attempt.publisher_token, null, BASE, false]),
+    /invalid_request/,
+  );
   const objects = await store.call('recordObjects', [attempt.publication_id, attempt.attempt,
     PUBLISHER, attempt.publisher_token, 'b'.repeat(40), 'c'.repeat(40)]);
   assert.equal(objects.state, 'reconciling');
@@ -234,6 +278,27 @@ test('authorization is ordered against cancellation and publication remains reco
 test('server rejects forged digests, oversized files, and paths outside admission', async () => {
   const database = await migrated();
   await seed(database);
+  const literalPrefix = await database.query(
+    `SELECT coordinator_v2.path_allowed(
+       'experiments/workerXcoordinator/escape.txt', ARRAY['experiments/worker_coordinator']) AS allowed`,
+  );
+  assert.equal(literalPrefix.rows[0].allowed, false);
+  const exactPrefix = await database.query(
+    `SELECT coordinator_v2.path_allowed(
+       'experiments/worker_coordinator/file.txt', ARRAY['experiments/worker_coordinator']) AS allowed`,
+  );
+  assert.equal(exactPrefix.rows[0].allowed, true);
+  const closedPolicy = await database.query(
+    `SELECT
+       coordinator_v2.path_allowed(
+         'experiments/worker-coordinator/Straße.txt', ARRAY['experiments/worker-coordinator']) AS unicode_path,
+       coordinator_v2.valid_branch('-forbidden') AS leading_dash,
+       coordinator_v2.valid_branch('topic/.hidden') AS hidden_component,
+       coordinator_v2.valid_branch('codex/postgres-g5-live') AS allowed_branch`,
+  );
+  assert.deepEqual(closedPolicy.rows[0], {
+    unicode_path: false, leading_dash: false, hidden_component: false, allowed_branch: true,
+  });
   const store = new PostgresStore(database);
   await store.call('admit', [admission()]);
   const claim = await store.call('claim', [WORKER, INSTANCE]);
@@ -243,15 +308,40 @@ test('server rejects forged digests, oversized files, and paths outside admissio
   const wrongFile = candidate(claim, 'candidate:bad-file');
   wrongFile.files[0].sha256 = '0'.repeat(64);
   await assert.rejects(() => store.call('candidate', [redigest(wrongFile)]), /invalid_request/);
+  for (const [operation, mutate] of [
+    ['candidate:null-mode', (value) => { value.files[0].mode = null; }],
+    ['candidate:null-bytes', (value) => { value.files[0].decoded_bytes = null; }],
+    ['candidate:null-sha', (value) => { value.files[0].sha256 = null; }],
+    ['candidate:null-check-name', (value) => { value.check_summaries[0].name = null; }],
+    ['candidate:null-check-outcome', (value) => { value.check_summaries[0].outcome = null; }],
+    ['candidate:null-check-summary', (value) => { value.check_summaries[0].summary = null; }],
+  ]) {
+    const value = candidate(claim, operation);
+    mutate(value);
+    await assert.rejects(() => store.call('candidate', [redigest(value)]), /invalid_request/);
+  }
+  const nullDigest = candidate(claim, 'candidate:null-digest');
+  nullDigest.request_digest = null;
+  await assert.rejects(() => store.call('candidate', [nullDigest]), /invalid_request/);
   const outside = candidate(claim, 'candidate:outside');
   outside.files[0].path = 'outside.txt';
   await assert.rejects(() => store.call('candidate', [redigest(outside)]), /policy_denied/);
+  const collision = candidate(claim, 'candidate:collision');
+  collision.deletions = [{ path: 'experiments/worker-coordinator/FIXTURE.txt' }];
+  await assert.rejects(() => store.call('candidate', [redigest(collision)]), /policy_denied/);
+  const unsafeSummary = candidate(claim, 'candidate:unsafe-summary');
+  unsafeSummary.check_summaries[0].summary = 'raw output retained';
+  await assert.rejects(() => store.call('candidate', [redigest(unsafeSummary)]), /invalid_request/);
   const oversized = candidate(claim, 'candidate:oversized');
   const content = Buffer.alloc(65537, 97);
   oversized.files[0].content_base64 = content.toString('base64');
   oversized.files[0].decoded_bytes = content.byteLength;
   oversized.files[0].sha256 = createHash('sha256').update(content).digest('hex');
   await assert.rejects(() => store.call('candidate', [redigest(oversized)]), /invalid_request/);
+  const accepted = candidate(claim, 'candidate:accepted-replay');
+  await store.call('candidate', [accepted]);
+  accepted.request_digest = null;
+  await assert.rejects(() => store.call('candidate', [accepted]), /invalid_request/);
   await database.close();
 });
 
@@ -267,6 +357,10 @@ test('review work cannot submit a candidate and requires an explicit verdict', a
     review_verdict: null, summary_code: 'reviewed', checks: [{ name: 'review', outcome: 'PASS' }],
   });
   await assert.rejects(() => store.call('complete', [complete]), /invalid_request/);
+  await assert.rejects(
+    () => store.call('complete', [{ ...complete, operation_id: 'complete:null-summary', summary_code: null }]),
+    /invalid_request/,
+  );
   complete.review_verdict = 'PASS';
   const result = await store.call('complete', [complete]);
   assert.equal(result.status, 'succeeded');
@@ -282,6 +376,47 @@ test('cancel before authorization permanently prevents publication', async () =>
   await store.call('candidate', [candidate(claim)]);
   assert.equal((await store.call('cancel', [work.work_id])).result, 'cancelled');
   await assert.rejects(() => store.call('authorize', [work.work_id]), /invalid_request/);
+  assert.equal(await store.call('claimPublication', [PUBLISHER]), null);
+  await database.close();
+});
+
+test('cancel after worker success seals a still-pending publication without changing worker truth', async () => {
+  const database = await migrated();
+  await seed(database);
+  const store = new PostgresStore(database);
+  const work = await store.call('admit', [admission('admission:terminal-cancel')]);
+  const claim = await store.call('claim', [WORKER, INSTANCE]);
+  const accepted = await store.call('candidate', [candidate(claim, 'candidate:terminal-cancel')]);
+  await store.call('complete', [withAuthority(claim, {
+    operation_id: 'complete:terminal-cancel', status: 'succeeded', candidate_id: accepted.candidate_id,
+    review_verdict: null, summary_code: 'candidate_complete', checks: [{ name: 'focused', outcome: 'PASS' }],
+  })]);
+  const cancelled = await store.call('cancel', [work.work_id]);
+  assert.equal(cancelled.result, 'cancelled_before_authorization');
+  const exported = await store.call('exportWork', [work.work_id, false]);
+  assert.equal(exported.terminal_outcome, 'succeeded');
+  assert.equal(exported.publication.state, 'failed');
+  await assert.rejects(() => store.call('authorize', [work.work_id]), /terminal_immutable/);
+  await database.close();
+});
+
+test('definitive object failure is durable and normal observations require recorded objects', async () => {
+  const database = await migrated();
+  await seed(database);
+  const store = new PostgresStore(database);
+  const work = await store.call('admit', [admission('admission:object-failure')]);
+  const claim = await store.call('claim', [WORKER, INSTANCE]);
+  await store.call('candidate', [candidate(claim, 'candidate:object-failure')]);
+  await store.call('authorize', [work.work_id]);
+  const attempt = await store.call('claimPublication', [PUBLISHER]);
+  await assert.rejects(
+    () => store.call('observePublication', [attempt.publication_id, attempt.attempt,
+      PUBLISHER, attempt.publisher_token, null, BASE, false]),
+    /invalid_request/,
+  );
+  const failed = await store.call('failPublication', [attempt.publication_id, attempt.attempt,
+    PUBLISHER, attempt.publisher_token]);
+  assert.equal(failed.state, 'failed');
   assert.equal(await store.call('claimPublication', [PUBLISHER]), null);
   await database.close();
 });
@@ -386,6 +521,19 @@ test('runtime has execute-only authority and cross-workspace reads disclose noth
 
 test('HTTP adapter rejects duplicate keys and keeps worker/coordinator authority separate', async () => {
   const calls = [];
+  const configuration = {
+    store: { call: async () => null },
+    workerKey: 'worker', coordinatorKey: 'coordinator', publisherKey: 'publisher',
+    checkoutProvider: async () => ({ body: new Uint8Array(), sha256: '0'.repeat(64) }),
+  };
+  for (const keys of [
+    { workerKey: '', coordinatorKey: 'coordinator', publisherKey: 'publisher' },
+    { workerKey: 'same', coordinatorKey: 'same', publisherKey: 'publisher' },
+    { workerKey: 'same', coordinatorKey: 'coordinator', publisherKey: 'same' },
+    { workerKey: 'worker', coordinatorKey: 'same', publisherKey: 'same' },
+  ]) {
+    assert.throws(() => createCoordinator({ ...configuration, ...keys }), /invalid_authority_configuration/);
+  }
   const handler = createCoordinator({
     store: { call: async (name, values) => { calls.push([name, values]); return null; } },
     workerKey: 'worker', coordinatorKey: 'coordinator', publisherKey: 'publisher',
@@ -396,6 +544,16 @@ test('HTTP adapter rejects duplicate keys and keeps worker/coordinator authority
     body: `{"protocol":"worker-v2","protocol":"worker-v2","worker_id":"${WORKER}","instance_id":"${INSTANCE}"}`,
   }));
   assert.equal(duplicate.status, 400);
+  const prototypeKey = await handler(new Request('https://coordinator.example/v2/work/claim', {
+    method: 'POST', headers: { authorization: 'Bearer worker' },
+    body: `{"protocol":"worker-v2","worker_id":"${WORKER}","instance_id":"${INSTANCE}","__proto__":{}}`,
+  }));
+  assert.equal(prototypeKey.status, 400);
+  const nonJsonWhitespace = await handler(new Request('https://coordinator.example/v2/work/claim', {
+    method: 'POST', headers: { authorization: 'Bearer worker' },
+    body: `\u00a0{"protocol":"worker-v2","worker_id":"${WORKER}","instance_id":"${INSTANCE}"}`,
+  }));
+  assert.equal(nonJsonWhitespace.status, 400);
   const wrongKey = await handler(new Request('https://coordinator.example/v2/work/admit', {
     method: 'POST', headers: { authorization: 'Bearer worker' }, body: JSON.stringify(admission()),
   }));
@@ -412,6 +570,35 @@ test('HTTP adapter rejects duplicate keys and keeps worker/coordinator authority
   }));
   assert.equal(register.status, 200);
   assert.equal(calls.length, 0);
+  const queryVariant = await handler(new Request(
+    'https://coordinator.example/v2/work/claim?unexpected=true',
+    { method: 'POST', headers: { authorization: 'Bearer worker' }, body: '{}' },
+  ));
+  assert.equal(queryVariant.status, 400);
+  const controlBody = await handler(new Request(
+    'https://coordinator.example/v2/work/work%3Acontrol/cancel',
+    { method: 'POST', headers: { authorization: 'Bearer coordinator' }, body: '{}' },
+  ));
+  assert.equal(controlBody.status, 413);
+  assert.equal(calls.length, 0);
+  const checkoutRequest = () => new Request(
+    'https://coordinator.example/v2/work/work%3Acheckout/checkout',
+    { headers: {
+      authorization: 'Bearer worker', 'x-worker-id': WORKER, 'x-instance-id': INSTANCE,
+      'x-lease-fence': '1', 'x-lease-token': 'A'.repeat(43), 'x-cancellation-version': '0',
+    } },
+  );
+  for (const archive of [
+    { body: new Uint8Array([1]), sha256: '0'.repeat(64) },
+    { body: new Uint8Array(8 * 1024 * 1024 + 1), sha256: '0'.repeat(64) },
+  ]) {
+    const checkoutHandler = createCoordinator({
+      ...configuration,
+      store: { call: async () => ({ base_sha: BASE }) },
+      checkoutProvider: async () => archive,
+    });
+    assert.equal((await checkoutHandler(checkoutRequest())).status, 503);
+  }
   const zippedCandidate = {
     protocol: 'worker-v2', work_id: 'work:http-zip', worker_id: WORKER, instance_id: INSTANCE,
     fence: 1, lease_token: 'A'.repeat(43), cancellation_version: 0,
@@ -475,6 +662,47 @@ test('publisher emits deterministic objects, sha:null deletion, and atomic targe
   assert.equal(mutation[1].beforeOid, '0'.repeat(40));
 });
 
+test('GraphQL errors fail closed and permanent rejection uses fresh ref evidence', async () => {
+  const plan = {
+    plan_sha: '8'.repeat(64), desired_commit_sha: 'd'.repeat(40), expected_head: BASE,
+    repository_full_name: 'marcogallotta/switchstand', candidate_branch: 'codex/postgres-g5-live',
+    marker_ref: 'refs/tags/switchstand-publications/marker',
+  };
+  const graphPublisher = new GitHubPublisher({
+    token: 'secret',
+    fetch: async (url) => new URL(url).pathname === '/graphql'
+      ? Response.json({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'rejected' }] })
+      : Response.json({ node_id: 'R_node' }),
+  });
+  await assert.rejects(() => graphPublisher.publish(plan), (error) => (
+    error.message === 'provider_error' && error.permanent === true
+  ));
+
+  const observations = [];
+  let reads = 0;
+  const result = await runPublicationAttempt({
+    claim: plan,
+    coordinator: {
+      recordObjects: async () => assert.fail(),
+      observe: async (selected, observed, permanent) => {
+        observations.push({ observed, permanent });
+        if (observations.length === 1) return { ...selected, directive: 'publish', state: 'reconciling' };
+        return { ...selected, directive: 'terminal', state: 'stale_head' };
+      },
+    },
+    publisher: {
+      readRefs: async () => (++reads === 1
+        ? { marker: null, target: BASE }
+        : { marker: null, target: 'f'.repeat(40) }),
+      publish: async () => { throw Object.assign(new Error('provider_error'), { permanent: true }); },
+    },
+  });
+  assert.equal(result.outcome, 'stale_head');
+  assert.deepEqual(observations[1], {
+    observed: { marker: null, target: 'f'.repeat(40) }, permanent: true,
+  });
+});
+
 test('lost provider response stays reconciling and never becomes not-applied by time', async () => {
   const claim = { desired_commit_sha: 'd'.repeat(40), expected_head: BASE };
   const result = await runPublicationAttempt({
@@ -483,6 +711,36 @@ test('lost provider response stays reconciling and never becomes not-applied by 
     publisher: { readRefs: async () => { throw new Error('lost'); } },
   });
   assert.equal(result.outcome, 'reconciling');
+});
+
+test('object-stage rejection is durably failed while a lost response remains retryable', async () => {
+  const claim = { desired_commit_sha: null, expected_head: BASE };
+  let durableFailures = 0;
+  const failed = await runPublicationAttempt({
+    claim,
+    coordinator: {
+      recordObjects: async () => assert.fail(),
+      failPublication: async (plan) => {
+        durableFailures += 1;
+        return { ...plan, state: 'failed' };
+      },
+    },
+    publisher: {
+      objects: async () => { throw Object.assign(new Error('provider_error'), { permanent: true }); },
+    },
+  });
+  assert.equal(failed.outcome, 'failed');
+  assert.equal(durableFailures, 1);
+
+  const lost = await runPublicationAttempt({
+    claim,
+    coordinator: {
+      recordObjects: async () => assert.fail(), failPublication: async () => assert.fail(),
+      observe: async () => assert.fail(),
+    },
+    publisher: { objects: async () => { throw new Error('lost_response'); } },
+  });
+  assert.equal(lost.outcome, 'reconciling');
 });
 
 test('merged Python worker client completes the exact HTTP journey against PGlite', async () => {

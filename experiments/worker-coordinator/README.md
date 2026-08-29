@@ -9,6 +9,10 @@ Apply `0001_schema.sql`, `0002_worker_routines.sql`, `0003_publication_routines.
 `0004_privileges.sql`. The fixed routines run in `SERIALIZABLE` transactions through
 `PostgresStore`. Worker, coordinator, and publisher bearer authority stay separate.
 
+The admitted repository policy is intentionally printable-ASCII for prefixes and candidate
+paths. PostgreSQL therefore uses literal prefix matching and deterministic ASCII folding rather
+than locale-sensitive `LIKE` or `lower`; Unicode paths are rejected without creating work.
+
 The publisher reconstructs the stored manifest, creates deterministic Git blobs/tree/commit,
 records those object IDs, and then uses one atomic target-ref plus immutable-marker compare-and-
 swap. A lost provider response remains `reconciling` until marker readback proves `applied` or
