@@ -12,7 +12,7 @@ paths:
       summary: Create or update the allowlisted experiment branch using Git objects.
       requestBody:
         required: true
-        x-bodyMaxBytes: 32768
+        x-bodyMaxBytes: 393216
         content:
           application/json:
             schema:
@@ -29,7 +29,7 @@ paths:
       summary: Create or update a PR for the allowlisted experiment branch.
       requestBody:
         required: true
-        x-bodyMaxBytes: 32768
+        x-bodyMaxBytes: 393216
         content:
           application/json:
             schema:
@@ -55,7 +55,7 @@ components:
           pattern: '^experiments/gpt-actions-github/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$'
         content_base64:
           type: string
-          maxLength: 5464
+          maxLength: 87384
           contentEncoding: base64
           contentMediaType: text/plain; charset=utf-8
     CommitRequest:
@@ -80,9 +80,9 @@ components:
         files:
           type: array
           minItems: 1
-          maxItems: 5
-          description: Decoded file content is limited to 16384 bytes in aggregate.
-          x-decodedAggregateMaxBytes: 16384
+          maxItems: 32
+          description: Decoded file content is limited to 262144 bytes in aggregate.
+          x-decodedAggregateMaxBytes: 262144
           items: { $ref: '#/components/schemas/File' }
         test_fail_after_commit: { type: boolean, default: false }
     PullRequest:
