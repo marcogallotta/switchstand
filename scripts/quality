@@ -15,3 +15,4 @@ $PYTHON -m ruff check src tests scripts
 $PYTHON scripts/check_line_length.py
 $PYTHON scripts/check_sizes.py
 $PYTHON scripts/check_test_policy.py
+$PYTHON scripts/check_audit_register.py
