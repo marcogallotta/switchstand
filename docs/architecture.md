@@ -21,6 +21,11 @@ per-thread evidence: neither it nor `forkedFromId` establishes spawned lineage.
 Every root and descendant must also carry finite nonnegative numeric `createdAt` and
 `updatedAt` protocol timestamps. Booleans, negative values, NaN, and infinities make the
 complete pass unavailable without changing the last-good board or selection state.
+One complete descendant pass is internally bounded to 100 requested records per page, 100
+pages, and 10,000 descendant records. Required and optional protocol identities and pagination
+cursors are limited to 1,024 characters. An over-limit response fails the complete pass rather
+than truncating it. In the native production composition, connection setup, root read, and all
+descendant pages share one three-second, 256-KiB response budget.
 
 Native thread state remains exactly `active` (with documented flags), `idle`, `systemError`,
 or `notLoaded`. Exact latest-turn state is represented separately; `idle` plus `inProgress` is

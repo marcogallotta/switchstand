@@ -8,6 +8,10 @@ import unittest
 from switchstand.agent_tree import (
     AgentTreeAdapter,
     AgentTreeEvidenceError,
+    MAX_DESCENDANT_PAGES,
+    MAX_DESCENDANT_RECORDS,
+    MAX_PAGINATION_CURSOR_CHARACTERS,
+    MAX_PROTOCOL_IDENTITY_CHARACTERS,
     THREAD_SOURCE_KINDS,
 )
 
@@ -52,6 +56,29 @@ class FixtureClient:
     def turn_interrupt(self, thread_id, turn_id):
         self.interrupts.append((thread_id, turn_id))
         return {}
+
+
+def native_record(
+    thread_id: str, *, parent: str | None, session_id: str = "session"
+) -> dict[str, object]:
+    return {
+        "id": thread_id,
+        "sessionId": session_id,
+        "parentThreadId": parent,
+        "createdAt": 0,
+        "updatedAt": 0,
+        "status": {"type": "idle"},
+    }
+
+
+class GeneratedPaginationClient(FixtureClient):
+    def __init__(self, page_factory):
+        super().__init__()
+        self.page_factory = page_factory
+
+    def thread_list(self, params):
+        self.list_requests.append(deepcopy(dict(params)))
+        return self.page_factory(len(self.list_requests), params)
 
 
 class AgentTreeProtocolTests(unittest.TestCase):
@@ -209,6 +236,104 @@ class AgentTreeProtocolTests(unittest.TestCase):
         self.assertEqual(observed["threads"][0]["updatedAt"], 0.0)
         self.assertEqual(observed["threads"][1]["createdAt"], 0.0)
         self.assertEqual(observed["threads"][1]["updatedAt"], 0)
+
+    def test_unique_cursor_page_101_fails_after_exactly_100_requests(self):
+        secret = "private-cursor"
+        client = GeneratedPaginationClient(
+            lambda page, _params: {
+                "data": [],
+                "nextCursor": f"{secret}-{page}",
+            }
+        )
+
+        with self.assertRaises(AgentTreeEvidenceError) as raised:
+            AgentTreeAdapter(client).observe_tree("root-1")
+
+        self.assertEqual(len(client.list_requests), MAX_DESCENDANT_PAGES)
+        self.assertEqual(raised.exception.code, "invalid_pagination")
+        self.assertEqual(raised.exception.phase, "descendant_list")
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_record_and_response_page_overflow_fail_before_validation(self):
+        record = native_record("repeated-private-id", parent="root-1")
+        cases = (
+            ([record] * (MAX_DESCENDANT_RECORDS + 1), "record_limit"),
+            ([record] * 101, "requested_page_limit"),
+        )
+        for data, label in cases:
+            with self.subTest(label=label):
+                client = GeneratedPaginationClient(
+                    lambda _page, _params, data=data: {
+                        "data": data,
+                        "nextCursor": None,
+                    }
+                )
+                with self.assertRaises(AgentTreeEvidenceError) as raised:
+                    AgentTreeAdapter(client).observe_tree("root-1")
+                self.assertEqual(raised.exception.code, "invalid_pagination")
+                self.assertNotIn("repeated-private-id", str(raised.exception))
+
+    def test_overlength_cursor_and_protocol_identities_fail_without_disclosure(self):
+        secret = "x" * (MAX_PROTOCOL_IDENTITY_CHARACTERS + 1)
+        cursor_client = GeneratedPaginationClient(
+            lambda _page, _params: {"data": [], "nextCursor": secret}
+        )
+        with self.assertRaises(AgentTreeEvidenceError) as raised:
+            AgentTreeAdapter(cursor_client).observe_tree("root-1")
+        self.assertEqual(raised.exception.code, "invalid_pagination")
+        self.assertNotIn(secret, str(raised.exception))
+
+        cases = []
+        for field in ("id", "sessionId", "parentThreadId", "forkedFromId"):
+            root_client = FixtureClient()
+            root_client.reads["root-1"]["thread"][field] = secret
+            cases.append((root_client, "root_not_found_or_invalid"))
+
+            descendant_client = FixtureClient()
+            descendant_client.pages[0]["data"][0][field] = secret
+            cases.append((descendant_client, "invalid_descendant_record"))
+
+        for client, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(AgentTreeEvidenceError) as raised:
+                    AgentTreeAdapter(client).observe_tree("root-1")
+                self.assertEqual(raised.exception.code, code)
+                self.assertNotIn(secret, str(raised.exception))
+
+    def test_exact_identity_cursor_page_and_record_limits_complete(self):
+        root_id = "r" * MAX_PROTOCOL_IDENTITY_CHARACTERS
+        session_id = "s" * MAX_PROTOCOL_IDENTITY_CHARACTERS
+        child_id = "c" * MAX_PROTOCOL_IDENTITY_CHARACTERS
+        fork_id = "f" * MAX_PROTOCOL_IDENTITY_CHARACTERS
+        cursor = "p" * MAX_PAGINATION_CURSOR_CHARACTERS
+        client = FixtureClient()
+        client.reads = {
+            root_id: {"thread": native_record(root_id, parent=None, session_id=session_id)}
+        }
+        child = native_record(child_id, parent=root_id, session_id=session_id)
+        child["forkedFromId"] = fork_id
+        client.pages = [
+            {"data": [child], "nextCursor": cursor},
+            {"data": [], "nextCursor": None},
+        ]
+
+        observed = AgentTreeAdapter(client).observe_tree(root_id)
+
+        self.assertEqual([item["id"] for item in observed["threads"]], [root_id, child_id])
+        self.assertEqual(observed["pagesRead"], 2)
+
+        def full_page(page, _params):
+            data = [
+                native_record(f"child-{page}-{item}", parent="root-1")
+                for item in range(100)
+            ]
+            next_cursor = f"page-{page + 1}" if page < MAX_DESCENDANT_PAGES else None
+            return {"data": data, "nextCursor": next_cursor}
+
+        full_client = GeneratedPaginationClient(full_page)
+        full = AgentTreeAdapter(full_client).observe_tree("root-1")
+        self.assertEqual(len(full["threads"]) - 1, MAX_DESCENDANT_RECORDS)
+        self.assertEqual(full["pagesRead"], MAX_DESCENDANT_PAGES)
 
     def test_native_status_event_projects_exact_supported_cases_and_rejects_others(self):
         adapter = AgentTreeAdapter(FixtureClient())

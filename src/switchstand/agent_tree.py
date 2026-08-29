@@ -27,6 +27,11 @@ THREAD_SOURCE_KINDS = (
 )
 NATIVE_THREAD_STATUS_TYPES = frozenset({"active", "idle", "systemError", "notLoaded"})
 NATIVE_ACTIVE_FLAGS = frozenset({"waitingOnApproval", "waitingOnUserInput"})
+DESCENDANT_PAGE_SIZE = 100
+MAX_DESCENDANT_PAGES = 100
+MAX_DESCENDANT_RECORDS = 10_000
+MAX_PROTOCOL_IDENTITY_CHARACTERS = 1_024
+MAX_PAGINATION_CURSOR_CHARACTERS = 1_024
 
 
 class AgentTreeEvidenceError(RuntimeError):
@@ -75,8 +80,33 @@ def _required_text(
     phase: str = "protocol_validation",
 ) -> str:
     result = value.get(field)
-    if not isinstance(result, str) or not result:
+    if (
+        not isinstance(result, str)
+        or not result
+        or len(result) > MAX_PROTOCOL_IDENTITY_CHARACTERS
+    ):
         raise AgentTreeEvidenceError(code, "required protocol identity is unavailable", phase=phase)
+    return result
+
+
+def _optional_identity(
+    value: Mapping[str, Any],
+    field: str,
+    *,
+    code: str,
+    phase: str,
+) -> str | None:
+    result = value.get(field)
+    if result is None:
+        return None
+    if (
+        not isinstance(result, str)
+        or not result
+        or len(result) > MAX_PROTOCOL_IDENTITY_CHARACTERS
+    ):
+        raise AgentTreeEvidenceError(
+            code, "native thread evidence is unavailable or invalid", phase=phase
+        )
     return result
 
 
@@ -123,11 +153,8 @@ def validate_thread(
     _required_text(
         thread, "sessionId", context=f"thread {thread_id}", code=invalid_code, phase=phase
     )
-    parent_id = thread.get("parentThreadId")
-    if parent_id is not None and (not isinstance(parent_id, str) or not parent_id):
-        raise AgentTreeEvidenceError(
-            invalid_code, "native thread evidence is unavailable or invalid", phase=phase
-        )
+    _optional_identity(thread, "parentThreadId", code=invalid_code, phase=phase)
+    _optional_identity(thread, "forkedFromId", code=invalid_code, phase=phase)
     for field in ("createdAt", "updatedAt"):
         validate_protocol_timestamp(thread.get(field))
     validate_native_status(thread.get("status"), context=f"thread {thread_id}", phase=phase)
@@ -148,9 +175,15 @@ class AgentTreeAdapter:
         threads: list[dict[str, Any]] = []
         pages: list[dict[str, Any]] = []
         while True:
+            if len(pages) >= MAX_DESCENDANT_PAGES:
+                raise AgentTreeEvidenceError(
+                    "invalid_pagination",
+                    "descendant pagination evidence is invalid or incomplete",
+                    phase="descendant_list",
+                )
             request = dict(params)
             request["sourceKinds"] = list(THREAD_SOURCE_KINDS)
-            request["limit"] = 100
+            request["limit"] = DESCENDANT_PAGE_SIZE
             if cursor is not None:
                 request["cursor"] = cursor
             response = self.client.thread_list(request)
@@ -162,7 +195,19 @@ class AgentTreeAdapter:
                     "descendant pagination evidence is invalid or incomplete",
                     phase="descendant_list",
                 )
-            threads.extend(
+            if len(threads) + len(data) > MAX_DESCENDANT_RECORDS:
+                raise AgentTreeEvidenceError(
+                    "invalid_pagination",
+                    "descendant pagination evidence is invalid or incomplete",
+                    phase="descendant_list",
+                )
+            if len(data) > DESCENDANT_PAGE_SIZE:
+                raise AgentTreeEvidenceError(
+                    "invalid_pagination",
+                    "descendant pagination evidence is invalid or incomplete",
+                    phase="descendant_list",
+                )
+            validated = [
                 validate_thread(
                     item,
                     context=f"thread/list page {page_number}",
@@ -170,8 +215,20 @@ class AgentTreeAdapter:
                     invalid_code="invalid_descendant_record",
                 )
                 for item in data
-            )
+            ]
             next_cursor = response.get("nextCursor")
+            if next_cursor is not None and (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or len(next_cursor) > MAX_PAGINATION_CURSOR_CHARACTERS
+                or next_cursor in seen_cursors
+            ):
+                raise AgentTreeEvidenceError(
+                    "invalid_pagination",
+                    "descendant pagination evidence is invalid or incomplete",
+                    phase="descendant_list",
+                )
+            threads.extend(validated)
             pages.append(
                 {
                     "page": page_number,
@@ -183,18 +240,6 @@ class AgentTreeAdapter:
             )
             if next_cursor is None:
                 return threads, pages
-            if not isinstance(next_cursor, str) or not next_cursor:
-                raise AgentTreeEvidenceError(
-                    "invalid_pagination",
-                    "descendant pagination evidence is invalid or incomplete",
-                    phase="descendant_list",
-                )
-            if next_cursor in seen_cursors:
-                raise AgentTreeEvidenceError(
-                    "invalid_pagination",
-                    "descendant pagination evidence is invalid or incomplete",
-                    phase="descendant_list",
-                )
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
