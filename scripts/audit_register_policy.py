@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
+import os
 from pathlib import Path
+import subprocess
 from typing import Any, Callable
 
 from audit_evidence import EvidenceError, verify_evidence
@@ -10,6 +14,148 @@ from audit_evidence import EvidenceError, verify_evidence
 
 class PolicyError(ValueError):
     """A cross-revision audit policy violation."""
+
+
+def validate_path_extensions(
+    register: dict[str, Any],
+    validate_paths: Callable[[object, str], list[str]],
+    nonempty: Callable[[object, str], str],
+) -> None:
+    findings = register["findings"]
+    extensions = register.get("affected_path_extensions", [])
+    if not isinstance(extensions, list):
+        raise PolicyError("affected_path_extensions must be an array")
+    paths_by_finding = {finding["id"]: set(finding["affected_paths"]) for finding in findings}
+    for index, extension in enumerate(extensions):
+        field = f"affected_path_extensions[{index}]"
+        if not isinstance(extension, dict) or set(extension) != {"finding_id", "paths", "rationale"}:
+            raise PolicyError(f"{field} has wrong shape")
+        finding_id = nonempty(extension["finding_id"], f"{field}.finding_id")
+        if finding_id not in paths_by_finding:
+            raise PolicyError(f"{field} cites unknown finding: {finding_id}")
+        paths = validate_paths(extension["paths"], f"{field}.paths")
+        overlap = sorted(paths_by_finding[finding_id] & set(paths))
+        if overlap:
+            raise PolicyError(f"{field}.paths duplicate existing scope: {overlap}")
+        paths_by_finding[finding_id].update(paths)
+        nonempty(extension["rationale"], f"{field}.rationale")
+
+
+def validate_register_keys(register: dict[str, Any]) -> None:
+    required = {
+        "schema_version", "findings", "audit_runs", "runnable_surface_paths",
+        "runnable_blockers", "capability_protections",
+    }
+    allowed = required | {"affected_path_extensions", "gate_repair_history"}
+    actual = set(register)
+    if not required.issubset(actual) or not actual.issubset(allowed):
+        raise PolicyError(
+            f"register has wrong keys; missing={sorted(required - actual)}, "
+            f"extra={sorted(actual - allowed)}"
+        )
+
+
+def extension_digest(extensions: list[dict[str, Any]]) -> str:
+    raw = json.dumps(extensions, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def added_extension_digest(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> str | None:
+    return extension_digest(new[len(old) :]) if old != new else None
+
+
+def validate_gate_repair_history(register: dict[str, Any], root: Path) -> None:
+    history = register.get("gate_repair_history", [])
+    if not isinstance(history, list):
+        raise PolicyError("gate_repair_history must be an array")
+    for index, record in enumerate(history):
+        field = f"gate_repair_history[{index}]"
+        if not isinstance(record, dict) or set(record) != {
+            "base_sha", "extensions_sha256", "review_receipts",
+        }:
+            raise PolicyError(f"{field} has wrong shape")
+        for name in ("base_sha", "extensions_sha256"):
+            value = record[name]
+            if not isinstance(value, str) or len(value) != 64 and name == "extensions_sha256":
+                raise PolicyError(f"{field}.{name} is invalid")
+        if len(record["base_sha"]) != 40 or any(c not in "0123456789abcdef" for c in record["base_sha"]):
+            raise PolicyError(f"{field}.base_sha is invalid")
+        digest = record["extensions_sha256"]
+        if any(c not in "0123456789abcdef" for c in digest):
+            raise PolicyError(f"{field}.extensions_sha256 is invalid")
+        if not isinstance(record["review_receipts"], list):
+            raise PolicyError(f"{field}.review_receipts must be an array")
+        receipts = record["review_receipts"]
+        if len(receipts) != 2:
+            raise PolicyError(f"{field} requires exactly two reviews")
+        subject = f"gate-repair:{record['base_sha']}:{record['extensions_sha256']}"
+        evidence = [
+            _evidence(
+                receipt,
+                f"{field}.review_receipts[{receipt_index}]",
+                root,
+                role="gate_repair_review",
+                subject=subject,
+            )
+            for receipt_index, receipt in enumerate(receipts)
+        ]
+        identities = {(item["reference"], item["sha256"]) for item in evidence}
+        producers = {item["producer"] for item in evidence}
+        if len(identities) != 2 or len(producers) != 2:
+            raise PolicyError(f"{field} requires two independent reviews")
+
+
+def affected_paths(register: dict[str, Any], finding_ids: list[str]) -> list[str]:
+    selected = set(finding_ids)
+    paths = {
+        path
+        for finding in register["findings"]
+        if finding["id"] in selected
+        for path in finding["affected_paths"]
+    }
+    paths.update(
+        path
+        for extension in register.get("affected_path_extensions", [])
+        if extension["finding_id"] in selected
+        for path in extension["paths"]
+    )
+    return sorted(paths)
+
+
+def base_revision(root: Path, argument: str | None) -> str:
+    requested = argument or os.environ.get("QUALITY_BASE_REF")
+    if requested:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{requested}^{{commit}}"],
+            cwd=root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode:
+            raise PolicyError(f"base ref is not a commit: {requested}")
+        return result.stdout.strip()
+    for candidate in ("main", "origin/main"):
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+            cwd=root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.stdout.strip():
+            return result.stdout.strip()
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+
+
+def changed_paths(root: Path, base: str) -> set[str]:
+    output = subprocess.check_output(["git", "diff", "--name-only", base, "--"], cwd=root, text=True)
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=root, text=True
+    )
+    return {line for line in (*output.splitlines(), *untracked.splitlines()) if line and line != "node_modules"}
 
 
 def transition_receipt_paths(value: object) -> set[str]:
@@ -26,7 +172,9 @@ def transition_receipt_paths(value: object) -> set[str]:
     return paths
 
 
-def validate_gate_repair(scope: dict[str, Any], base: str, root: Path) -> None:
+def validate_gate_repair(
+    scope: dict[str, Any], base: str, root: Path, extension_sha256: str | None = None
+) -> None:
     receipts = scope["gate_repair_receipts"]
     if not isinstance(receipts, list):
         raise PolicyError("change scope gate_repair_receipts must be an array")
@@ -37,6 +185,8 @@ def validate_gate_repair(scope: dict[str, Any], base: str, root: Path) -> None:
     if scope["finding_ids"] or scope["runnable_blocker_id"] is not None or len(receipts) != 2:
         raise PolicyError("gate_repair requires exactly two reviews and no finding or blocker")
     subject = f"gate-repair:{base}"
+    if extension_sha256 is not None:
+        subject += f":{extension_sha256}"
     evidence = [
         _evidence(
             receipt,
@@ -175,6 +325,24 @@ def validate_transitions(
         raise PolicyError("audit_runs must be append-only")
     if current_register["runnable_surface_paths"] != base["runnable_surface_paths"]:
         raise PolicyError("runnable_surface_paths is immutable")
+    old_extensions = base.get("affected_path_extensions", [])
+    new_extensions = current_register.get("affected_path_extensions", [])
+    if new_extensions[: len(old_extensions)] != old_extensions:
+        raise PolicyError("affected_path_extensions must be append-only")
+    old_history = base.get("gate_repair_history", [])
+    new_history = current_register.get("gate_repair_history", [])
+    if new_history[: len(old_history)] != old_history:
+        raise PolicyError("gate_repair_history must be append-only")
+    added_extensions = new_extensions[len(old_extensions) :]
+    added_history = new_history[len(old_history) :]
+    if added_extensions:
+        if len(added_history) != 1:
+            raise PolicyError("new affected path extensions require one durable gate repair record")
+        record = added_history[0]
+        if record["extensions_sha256"] != extension_digest(added_extensions):
+            raise PolicyError("gate repair history does not bind the appended extensions")
+    elif added_history:
+        raise PolicyError("gate_repair_history cannot grow without path extensions")
     old_protections = {item["capability"]: item for item in base["capability_protections"]}
     new_protections = {
         item["capability"]: item for item in current_register["capability_protections"]
@@ -213,6 +381,40 @@ def validate_transitions(
 
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
+def validate_gate_register_repair(
+    base: dict[str, Any] | None,
+    current: dict[str, Any],
+) -> None:
+    if base is None:
+        raise PolicyError("gate_repair cannot bootstrap the audit register")
+    base_without_extensions = dict(base)
+    current_without_extensions = dict(current)
+    base_without_extensions.pop("affected_path_extensions", None)
+    current_without_extensions.pop("affected_path_extensions", None)
+    base_without_extensions.pop("gate_repair_history", None)
+    current_without_extensions.pop("gate_repair_history", None)
+    if base_without_extensions != current_without_extensions:
+        raise PolicyError("gate_repair may only append affected_path_extensions in the register")
+    old_extensions = base.get("affected_path_extensions", [])
+    new_extensions = current.get("affected_path_extensions", [])
+    if len(new_extensions) <= len(old_extensions):
+        raise PolicyError("gate_repair register change must append an affected path extension")
+
+
+def validate_extension_gate_link(
+    base_sha: str,
+    base: dict[str, Any],
+    current: dict[str, Any],
+    scope: dict[str, Any],
+) -> None:
+    old_history = base.get("gate_repair_history", [])
+    added_history = current.get("gate_repair_history", [])[len(old_history) :]
+    if len(added_history) != 1 or added_history[0]["base_sha"] != base_sha:
+        raise PolicyError("path extensions require one exact-base gate repair history record")
+    if added_history[0]["review_receipts"] != scope["gate_repair_receipts"]:
+        raise PolicyError("gate repair history reviews must match change scope")
 
 
 def freeze_reasons(findings: list[dict[str, Any]], now: datetime) -> list[str]:
