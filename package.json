@@ -2,6 +2,7 @@
   "name": "switchstand-quality-tools",
   "private": true,
   "devDependencies": {
+    "@electric-sql/pglite": "0.4.0",
     "@playwright/test": "1.62.1",
     "jscpd": "4.2.5",
     "pyright": "1.1.411"
