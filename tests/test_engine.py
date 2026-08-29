@@ -189,8 +189,8 @@ class EngineTests(unittest.TestCase):
             calls.append("replace")
             return real_replace(source, destination)
 
-        with patch("switchstand.engine.os.fsync", side_effect=audited_fsync), patch(
-            "switchstand.engine.os.replace", side_effect=audited_replace
+        with patch("switchstand.legacy_persistence.os.fsync", side_effect=audited_fsync), patch(
+            "switchstand.legacy_persistence.os.replace", side_effect=audited_replace
         ):
             Engine(state_path, FakeAdapter())
         self.assertEqual(calls[:4], ["file_fsync", "replace", "directory_fsync", "file_fsync"])
@@ -202,8 +202,8 @@ class EngineTests(unittest.TestCase):
                 raise OSError("injected directory fsync failure")
             return real_fsync(fd)
 
-        with patch("switchstand.engine.os.fsync", side_effect=fail_directory_fsync):
-            with self.assertRaisesRegex(OSError, "injected directory fsync failure"):
+        with patch("switchstand.legacy_persistence.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaisesRegex(RuntimeError, "legacy persistence is unavailable"):
                 Engine(blocked_state, FakeAdapter())
         self.assertTrue(blocked_state.is_file())
         self.assertFalse(blocked_state.with_suffix(".jsonl").exists())
@@ -251,7 +251,7 @@ class EngineTests(unittest.TestCase):
         sentinel.chmod(0o644)
         engine.events_path.symlink_to(sentinel)
         before = sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)
-        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+        with self.assertRaisesRegex(RuntimeError, "legacy persistence is unavailable"):
             engine.enqueue("role-a", "must not reach the symlink target")
         self.assertEqual((sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode)), before)
 
@@ -270,7 +270,7 @@ class EngineTests(unittest.TestCase):
         engine.events_path.mkdir()
         event_marker = engine.events_path / "marker"
         event_marker.write_text("event-directory", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+        with self.assertRaisesRegex(RuntimeError, "legacy persistence is unavailable"):
             engine.enqueue("role-a", "must not reach the event directory")
         self.assertEqual(event_marker.read_text(encoding="utf-8"), "event-directory")
 
@@ -297,7 +297,7 @@ class EngineTests(unittest.TestCase):
         try:
             result = self.run_engine_child(event_state, "event")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), "RuntimeError:Switchstand persistence path is unsafe")
+            self.assertEqual(result.stdout.strip(), "PersistenceUnavailable:legacy persistence is unavailable")
             self.assertEqual(os.read(event_reader, 4096), b"")
         finally:
             os.close(event_reader)
@@ -309,20 +309,20 @@ class EngineTests(unittest.TestCase):
         state_path.chmod(0o644)
         event_path.chmod(0o666)
         state_before = state_path.read_bytes(), stat.S_IMODE(state_path.stat().st_mode)
-        with patch("switchstand.engine.os.geteuid", return_value=os.geteuid() + 1):
+        with patch("switchstand.legacy_persistence.os.geteuid", return_value=os.geteuid() + 1):
             with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
                 Engine(state_path, FakeAdapter())
         self.assertEqual((state_path.read_bytes(), stat.S_IMODE(state_path.stat().st_mode)), state_before)
 
         event_before = event_path.read_bytes(), stat.S_IMODE(event_path.stat().st_mode)
-        with patch("switchstand.engine.os.geteuid", return_value=os.geteuid() + 1):
-            with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
+        with patch("switchstand.legacy_persistence.os.geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(RuntimeError, "legacy persistence is unavailable"):
                 engine.enqueue("role-a", "must not reach the wrong-owner event")
         self.assertEqual((event_path.read_bytes(), stat.S_IMODE(event_path.stat().st_mode)), event_before)
 
     def test_missing_required_posix_primitive_fails_before_mutation(self):
         state_path = self.root / "missing" / "state.json"
-        with patch("switchstand.engine.os.O_NOFOLLOW", None):
+        with patch("switchstand.legacy_persistence.os.O_NOFOLLOW", None):
             with self.assertRaisesRegex(RuntimeError, "persistence path is unsafe"):
                 Engine(state_path, FakeAdapter())
         self.assertFalse(state_path.parent.exists())

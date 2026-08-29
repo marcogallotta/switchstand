@@ -32,6 +32,13 @@ The default legacy mode retains the original fixed two-role experience and its m
 stop, redirect, and replace controls as a reliability spike. Issue #9 supersedes it as the
 primary surface only while native mode is explicitly selected.
 
+Legacy operations bound admission to their outer lock and App Server waits. Startup receives one
+10-second monotonic cutoff through reconciliation; mutations, explicit reconciliation, reads,
+and individual observer passes receive one five-second cutoff. A cutoff before durable acceptance
+is unavailable. After durable acceptance, Switchstand records the exact acknowledged, rejected,
+not-sent, or ambiguous prefix and returns that partial state. It never retries a failed setup or
+mutation phase through a reconnect, fallback, or different target.
+
 ## Boundaries
 
 Native mode observes one exact local root and its descendants over a Unix socket. It keeps only
@@ -52,3 +59,9 @@ automation; stronger authentication is outside this checkpoint.
 Switchstand does not decide what agents should build, infer semantic progress or intent, grant
 remote-system authority, coordinate releases, schedule projects, manage users, or claim
 durable distributed execution. It requires no elevated privileges.
+
+The legacy cutoff is not a hard total-wall response deadline. Scheduler delay, JSON work,
+synchronous snapshot and event persistence, directory barriers, and forced descriptor cleanup
+are outside that claim. Required durable closure may therefore finish after the configured
+cutoff. A persistence failure latches the running legacy process unavailable instead of exposing
+possibly uncommitted memory or performing more App Server calls.

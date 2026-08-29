@@ -12,6 +12,14 @@ from urllib.parse import unquote, urlsplit
 
 from .app_server import CodexAppServer
 from .engine import CodexAdapter, Engine
+from .legacy_deadline import (
+    DEFAULT_OPERATION_DEADLINE_SECONDS,
+    DEFAULT_STARTUP_DEADLINE_SECONDS,
+    LegacyDeadline,
+    LegacyDeadlineExceeded,
+    PersistenceUnavailable,
+    parse_deadline_seconds,
+)
 from .native_board import (
     DEFAULT_MAXIMUM_OBSERVATION_AGE_SECONDS,
     NativeBoard,
@@ -40,7 +48,11 @@ class Runtime:
         self.observer = threading.Thread(target=self._observe, name="switchstand-observer", daemon=True)
 
     def start(self) -> None:
-        self.engine.reconcile()
+        deadline = LegacyDeadline.after(
+            self.engine.startup_deadline_seconds,
+            clock=self.engine._clock,
+        )
+        self.engine.reconcile_startup(deadline)
         self.observer.start()
 
     def close(self) -> None:
@@ -49,7 +61,10 @@ class Runtime:
 
     def _observe(self) -> None:
         while not self.stop_event.wait(0.5):
-            self.engine.reconcile()
+            try:
+                self.engine.reconcile_background()
+            except PersistenceUnavailable:
+                continue
 
     def snapshot(self) -> dict[str, Any]:
         return self.engine.snapshot()
@@ -167,7 +182,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(405, CONTROL_REQUEST_REJECTED_BODY)
             return
         if pathname == "/api/workbench" and isinstance(runtime, Runtime):
-            self._json(200, runtime.snapshot())
+            try:
+                self._json(200, runtime.snapshot())
+            except LegacyDeadlineExceeded:
+                self._json(503, {"error": "legacy_deadline_exceeded"})
+            except PersistenceUnavailable:
+                self._json(503, {"error": "legacy_persistence_unavailable"})
             return
         self._static(pathname)
 
@@ -202,21 +222,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             engine = runtime.engine
             if len(parts) == 5 and parts[:2] == ["api", "workbench"] and parts[2] == "roles" and parts[4] == "messages":
-                engine.enqueue(parts[3], str(body.get("text") or ""), kind=str(body.get("kind") or "message"))
+                snapshot = engine.enqueue_snapshot(
+                    parts[3], str(body.get("text") or ""), kind=str(body.get("kind") or "message")
+                )
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "stop":
-                engine.stop(parts[3])
+                snapshot = engine.stop_snapshot(parts[3])
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "replace":
-                engine.replace(parts[3])
+                snapshot = engine.replace_snapshot(parts[3])
             elif len(parts) == 5 and parts[:3] == ["api", "workbench", "attempts"] and parts[4] == "redirect":
-                engine.redirect(parts[3], str(body.get("text") or ""))
+                snapshot = engine.redirect_snapshot(parts[3], str(body.get("text") or ""))
             elif pathname == "/api/workbench/reconcile":
-                engine.reconcile()
+                snapshot = engine.reconcile_snapshot()
             else:
                 self._json(404, {"error": "not_found"})
                 return
-            self._json(200, engine.snapshot())
+            self._json(200, snapshot)
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             self._json(409, {"error": str(exc)})
+        except LegacyDeadlineExceeded:
+            self._json(503, {"error": "legacy_deadline_exceeded"})
+        except PersistenceUnavailable:
+            self._json(503, {"error": "legacy_persistence_unavailable"})
         except Exception as exc:
             self._json(503, {"error": str(exc)})
 
@@ -281,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role-a", default="Role A")
     parser.add_argument("--role-b", default="Role B")
     parser.add_argument("--native-root-thread-id")
+    parser.add_argument("--legacy-startup-deadline-seconds")
+    parser.add_argument("--legacy-operation-deadline-seconds")
     parser.add_argument(
         "--maximum-observation-age-seconds",
         type=float,
@@ -301,14 +329,39 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Switchstand requires a loopback --host")
 
     if args.native_root_thread_id:
+        if args.legacy_startup_deadline_seconds is not None or args.legacy_operation_deadline_seconds is not None:
+            parser.error("legacy deadline flags are unavailable in native mode")
         runtime, native_dispatcher = build_native_runtime(
             args.app_server_socket,
             args.native_root_thread_id,
             maximum_observation_age_seconds=args.maximum_observation_age_seconds,
         )
     else:
+        try:
+            startup_deadline_seconds = parse_deadline_seconds(
+                args.legacy_startup_deadline_seconds
+                if args.legacy_startup_deadline_seconds is not None
+                else os.getenv("SWITCHSTAND_LEGACY_STARTUP_DEADLINE_SECONDS", DEFAULT_STARTUP_DEADLINE_SECONDS),
+                option="--legacy-startup-deadline-seconds",
+            )
+            operation_deadline_seconds = parse_deadline_seconds(
+                args.legacy_operation_deadline_seconds
+                if args.legacy_operation_deadline_seconds is not None
+                else os.getenv("SWITCHSTAND_LEGACY_OPERATION_DEADLINE_SECONDS", DEFAULT_OPERATION_DEADLINE_SECONDS),
+                option="--legacy-operation-deadline-seconds",
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         adapter = CodexAdapter(args.app_server_socket, cwd=args.workspace)
-        runtime = Runtime(Engine(args.state, adapter, role_names=(args.role_a, args.role_b)))
+        runtime = Runtime(
+            Engine(
+                args.state,
+                adapter,
+                role_names=(args.role_a, args.role_b),
+                startup_deadline_seconds=startup_deadline_seconds,
+                operation_deadline_seconds=operation_deadline_seconds,
+            )
+        )
         native_dispatcher = None
     server: Server | None = None
     try:

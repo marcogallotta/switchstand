@@ -5,7 +5,8 @@ native mode observes one real Codex root and its descendants, lets the operator 
 current agent for direct input, and can request cancellation of one exact active turn after
 explicit confirmation.
 The default legacy mode remains a fixed two-role reliability spike with durable messages,
-checkpoints, attempt controls, and conservative failure handling.
+checkpoints, attempt controls, conservative failure handling, and bounded admission to lock and
+App Server waits.
 
 This repository is a bounded supervised-agent infrastructure build, not a throwaway
 prototype or production orchestrator. It keeps two slices easy to inspect: truthful native-tree
@@ -65,6 +66,15 @@ or guesses the root. Omit
 `PYTHONPATH=src python -m switchstand.service --help` for all options. Both modes are
 loopback-only and run as the invoking user; no `sudo` or system service is required.
 
+Legacy startup uses a 10-second external-wait/admission cutoff and each mutation, explicit read,
+or observer pass uses a fresh five-second cutoff. Override them with
+`--legacy-startup-deadline-seconds` and `--legacy-operation-deadline-seconds`, or the matching
+`SWITCHSTAND_LEGACY_STARTUP_DEADLINE_SECONDS` and
+`SWITCHSTAND_LEGACY_OPERATION_DEADLINE_SECONDS` environment variables. These values do not set a
+hard response-time SLA: already-admitted persistence and forced local cleanup still finish
+truthfully after the cutoff when necessary. Native mode ignores the environment variables and
+rejects the legacy-only flags.
+
 Run the dependency-free checks:
 
 ```sh
@@ -106,6 +116,9 @@ explicit notification-subscription consequence, output fields, and exit codes.
 ## Repository layout
 
 - `src/switchstand/engine.py` — flat-file state machine and reconciliation
+- `src/switchstand/legacy_adapter.py` — exact legacy App Server phase receipts
+- `src/switchstand/legacy_transport.py` — legacy absolute-deadline socket sessions
+- `src/switchstand/legacy_persistence.py` — fail-stop current-user persistence primitives
 - `src/switchstand/app_server.py` — minimal Codex app-server Unix WebSocket client
 - `src/switchstand/agent_tree.py` — fail-closed native tree observation/control checkpoint
 - `src/switchstand/stage_a_evidence.py` — strict retained-evidence projection and validation

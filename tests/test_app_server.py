@@ -319,7 +319,7 @@ class AppServerProtocolTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            with patch("switchstand.engine.CodexAppServer", Client):
+            with patch("switchstand.legacy_adapter.CodexAppServer", Client):
                 adapter = CodexAdapter(root / "app-server.sock", cwd=root)
                 thread_id = adapter.create_attempt(
                     role={"id": "role-a", "name": "Design"},

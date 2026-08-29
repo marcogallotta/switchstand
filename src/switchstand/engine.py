@@ -1,33 +1,43 @@
-"""Durable two-role message and attempt engine for Switchstand.
-
-The JSON snapshot is authoritative for the bounded local slice. JSONL records
-transitions for inspection. A role generation plus exact attempt id fences every
-result before it can become an accepted checkpoint.
-"""
+"""Durable two-role legacy engine with bounded external-wait admission."""
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
-import os
 from pathlib import Path
-import re
-import stat
-import tempfile
 import threading
-from typing import Any, Mapping, Protocol
+import time
+from typing import Any, Callable, cast, Mapping, Protocol
 import uuid
 
-from .app_server import CodexAppServer
+from .legacy_adapter import (
+    AdapterReceipt,
+    CodexAdapter,
+    message_marker as _message_marker,
+    submitted_message_text as _submitted_message_text,
+)
+from .legacy_deadline import (
+    DEFAULT_OPERATION_DEADLINE_SECONDS,
+    DEFAULT_STARTUP_DEADLINE_SECONDS,
+    LegacyDeadline,
+    LegacyDeadlineExceeded,
+    PersistenceUnavailable,
+    PhaseResult,
+)
+from .legacy_persistence import (
+    append_private_json as _append_private_json,
+    atomic_json as _atomic_json,
+    read_private_json as _read_private_json,
+    require_posix_persistence as _require_posix_persistence,
+)
+
+__all__ = ["CodexAdapter", "Engine", "_message_marker", "_submitted_message_text"]
 
 
 STATE_SCHEMA = "switchstand-state-v1"
 EVENT_SCHEMA = "switchstand-event-v1"
 ROLE_CONTEXT_SCHEMA = "switchstand-role-context-v1"
 TERMINAL_TURN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
-MESSAGE_MARKER_PREFIX = "switchstand-message:"
-MESSAGE_MARKER_PATTERN = re.compile(r"\[\[switchstand-message:[A-Za-z0-9._-]+\]\]")
-PERSISTENCE_ERROR = "Switchstand persistence path is unsafe"
 
 
 def _now() -> str:
@@ -38,121 +48,6 @@ def _id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex}"
 
 
-def _persistence_flags(*names: str) -> int:
-    flags = 0
-    for name in names:
-        value = getattr(os, name, None)
-        if not isinstance(value, int):
-            raise RuntimeError(PERSISTENCE_ERROR)
-        flags |= value
-    cloexec = getattr(os, "O_CLOEXEC", 0)
-    return flags | (cloexec if isinstance(cloexec, int) else 0)
-
-
-def _require_posix_persistence() -> None:
-    required = ("geteuid", "fstat", "fchmod", "fsync")
-    if os.name != "posix" or not all(callable(getattr(os, name, None)) for name in required):
-        raise RuntimeError(PERSISTENCE_ERROR)
-    _persistence_flags("O_NOFOLLOW", "O_NONBLOCK", "O_DIRECTORY")
-
-
-def _private_fd(path: Path, flags: int) -> int:
-    try:
-        fd = os.open(path, flags | _persistence_flags("O_NOFOLLOW", "O_NONBLOCK"), 0o600)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise RuntimeError(PERSISTENCE_ERROR) from exc
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-            raise RuntimeError(PERSISTENCE_ERROR)
-        os.fchmod(fd, 0o600)
-    except Exception as exc:
-        os.close(fd)
-        if isinstance(exc, RuntimeError):
-            raise
-        raise RuntimeError(PERSISTENCE_ERROR) from exc
-    return fd
-
-
-def _read_private_json(path: Path) -> Any:
-    with os.fdopen(_private_fd(path, os.O_RDONLY), "r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def _append_private_json(path: Path, value: Mapping[str, Any]) -> None:
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-    with os.fdopen(_private_fd(path, flags), "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(value, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-
-
-def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
-    _require_posix_persistence()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp = Path(raw)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | _persistence_flags("O_DIRECTORY"))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-
-
-def _message_text(item: Mapping[str, Any]) -> str:
-    direct = item.get("text")
-    if isinstance(direct, str):
-        return direct
-    pieces: list[str] = []
-    for part in item.get("content") or []:
-        if isinstance(part, Mapping) and isinstance(part.get("text"), str):
-            pieces.append(str(part["text"]))
-    return "\n".join(pieces)
-
-
-def _message_marker(message_id: str) -> str:
-    return f"[[{MESSAGE_MARKER_PREFIX}{message_id}]]"
-
-
-def _submitted_message_text(message: Mapping[str, Any]) -> str:
-    return f"{message['text']}\n\n{_message_marker(str(message['id']))}"
-
-
-def _official_user_texts(item: Mapping[str, Any]) -> list[str] | None:
-    """Return documented userMessage text content, or None for incomplete history."""
-    if str(item.get("type") or "") != "userMessage":
-        return []
-    content = item.get("content")
-    if not isinstance(content, list):
-        return None
-    texts: list[str] = []
-    for part in content:
-        if not isinstance(part, Mapping):
-            return None
-        part_type = str(part.get("type") or "")
-        if part_type not in {"text", "image", "localImage"}:
-            return None
-        if part_type == "text":
-            text = part.get("text")
-            if not isinstance(text, str):
-                return None
-            texts.append(text)
-    return texts
-
-
 class Adapter(Protocol):
     def create_attempt(self, *, role: Mapping[str, Any], context: Mapping[str, Any]) -> str: ...
     def start_message(self, *, thread_id: str, message: Mapping[str, Any]) -> str: ...
@@ -161,143 +56,14 @@ class Adapter(Protocol):
     def inspect_message(self, *, thread_id: str, message_id: str) -> Mapping[str, Any]: ...
 
 
-class CodexAdapter:
-    """Explicit adapter from Switchstand operations to Codex app-server calls."""
+@dataclass
+class _Operation:
+    deadline: LegacyDeadline
+    accepted: bool = False
+    cutoff_finalized: bool = False
 
-    def __init__(self, socket_path: Path | str, *, cwd: Path | str) -> None:
-        self.socket_path = Path(socket_path)
-        self.cwd = Path(cwd).resolve()
-
-    def _client(self) -> CodexAppServer:
-        return CodexAppServer(self.socket_path)
-
-    def create_attempt(self, *, role: Mapping[str, Any], context: Mapping[str, Any]) -> str:
-        client = self._client()
-        try:
-            response = client.thread_start(
-                {
-                    "cwd": str(self.cwd),
-                    "ephemeral": False,
-                    "serviceName": "Switchstand",
-                    "developerInstructions": (
-                        "You are one directly addressable Switchstand logical role. Work only from "
-                        "the durable context below and the operator's direct messages. Do not "
-                        "delegate, create tasks, mutate remote systems, release, deploy, or infer "
-                        "authority outside a direct message. State uncertainty plainly.\n\n"
-                        "DURABLE ROLE CONTEXT\n" + json.dumps(context, sort_keys=True)
-                    ),
-                }
-            )
-            thread = value if isinstance(value := response.get("thread"), Mapping) else {}
-            thread_id = str(thread.get("id") or "")
-            if not thread_id:
-                raise RuntimeError("Codex thread/start returned no thread id")
-            client.thread_name_set(thread_id, f"Switchstand — {role['name']}")
-            return thread_id
-        finally:
-            client.close()
-
-    def start_message(self, *, thread_id: str, message: Mapping[str, Any]) -> str:
-        client = self._client()
-        try:
-            client.thread_resume(thread_id)
-            response = client.turn_start_text(
-                thread_id,
-                _submitted_message_text(message),
-                approval_policy="never",
-                sandbox_policy={"type": "workspaceWrite", "writableRoots": [str(self.cwd)]},
-            )
-            turn = value if isinstance(value := response.get("turn"), Mapping) else {}
-            turn_id = str(turn.get("id") or "")
-            if not turn_id:
-                raise RuntimeError("Codex turn/start returned no turn id")
-            return turn_id
-        finally:
-            client.close()
-
-    def interrupt(self, *, thread_id: str, turn_id: str) -> None:
-        client = self._client()
-        try:
-            client.thread_resume(thread_id)
-            client.turn_interrupt(thread_id, turn_id)
-        finally:
-            client.close()
-
-    def _read(self, thread_id: str) -> Mapping[str, Any]:
-        client = self._client()
-        try:
-            return client.thread_read(thread_id, include_turns=True)
-        finally:
-            client.close()
-
-    @staticmethod
-    def _turn_result(turn: Mapping[str, Any]) -> Mapping[str, Any]:
-        markers: set[str] = set()
-        for item in turn.get("items") or []:
-            if not isinstance(item, Mapping):
-                continue
-            texts = _official_user_texts(item)
-            if texts is not None:
-                for text in texts:
-                    markers.update(MESSAGE_MARKER_PATTERN.findall(text))
-        messages = [
-            _message_text(item)
-            for item in turn.get("items") or []
-            if isinstance(item, Mapping)
-            and str(item.get("type") or "") in {"agentMessage", "agent_message"}
-            and str(item.get("phase") or "final_answer") == "final_answer"
-        ]
-        output = messages[-1] if messages else None
-        if output is not None:
-            for marker in markers:
-                output = output.replace(marker, "")
-            output = output.strip()
-        return {"status": str(turn.get("status") or "unknown"), "output": output}
-
-    def inspect_turn(self, *, thread_id: str, turn_id: str) -> Mapping[str, Any]:
-        response = self._read(thread_id)
-        thread = value if isinstance(value := response.get("thread"), Mapping) else {}
-        for turn in thread.get("turns") or []:
-            if isinstance(turn, Mapping) and str(turn.get("id") or "") == turn_id:
-                return self._turn_result(turn)
-        return {"status": "unknown", "output": None}
-
-    def inspect_message(self, *, thread_id: str, message_id: str) -> Mapping[str, Any]:
-        response = self._read(thread_id)
-        thread = value if isinstance(value := response.get("thread"), Mapping) else {}
-        turns = thread.get("turns")
-        complete_history = isinstance(turns, list)
-        for turn in turns if isinstance(turns, list) else []:
-            if not isinstance(turn, Mapping):
-                complete_history = False
-                continue
-            turn_id = turn.get("id")
-            if not isinstance(turn_id, str) or not turn_id or not isinstance(turn.get("status"), str):
-                complete_history = False
-            items = turn.get("items")
-            if not isinstance(items, list):
-                complete_history = False
-                continue
-            for item in items:
-                if not isinstance(item, Mapping):
-                    complete_history = False
-                    continue
-                if not isinstance(item.get("id"), str) or not item.get("id") or not isinstance(item.get("type"), str):
-                    complete_history = False
-                texts = _official_user_texts(item)
-                if texts is None:
-                    complete_history = False
-                    continue
-                if any(_message_marker(message_id) in text for text in texts) and isinstance(turn_id, str) and turn_id:
-                    return {"found": True, "turn_id": turn_id, **self._turn_result(turn)}
-        status = value if isinstance(value := thread.get("status"), Mapping) else {}
-        status_type = str(status.get("type") or "unknown")
-        return {
-            "found": False,
-            "absence_proven": status_type == "idle" and complete_history,
-            "thread_status": status_type,
-            "history_complete": complete_history,
-        }
+    def can_admit(self) -> bool:
+        return not self.cutoff_finalized and not self.deadline.expired()
 
 
 class Engine:
@@ -307,11 +73,18 @@ class Engine:
         adapter: Adapter,
         *,
         role_names: tuple[str, str] = ("Role A", "Role B"),
+        startup_deadline_seconds: float = DEFAULT_STARTUP_DEADLINE_SECONDS,
+        operation_deadline_seconds: float = DEFAULT_OPERATION_DEADLINE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.state_path = Path(state_path)
         self.events_path = self.state_path.with_suffix(".jsonl")
         self.adapter = adapter
+        self.startup_deadline_seconds = startup_deadline_seconds
+        self.operation_deadline_seconds = operation_deadline_seconds
+        self._clock = clock
         self._lock = threading.RLock()
+        self.persistence_failed = False
         _require_posix_persistence()
         try:
             value = _read_private_json(self.state_path)
@@ -340,7 +113,8 @@ class Engine:
                     "role-a": self._new_role("role-a", role_names[0]),
                     "role-b": self._new_role("role-b", role_names[1]),
                 },
-                "messages": [], "attempts": [],
+                "messages": [],
+                "attempts": [],
                 "updated_at": _now(),
             }
             self._save("work_created", work_id="local-work")
@@ -348,18 +122,64 @@ class Engine:
     @staticmethod
     def _new_role(role_id: str, name: str) -> dict[str, Any]:
         return {
-            "id": role_id, "name": name, "generation": 1, "current_attempt_id": None,
+            "id": role_id,
+            "name": name,
+            "generation": 1,
+            "current_attempt_id": None,
             "checkpoint": {
-                "accepted_message_ids": [], "latest_correction": None, "latest_result": None, "updated_at": None,
+                "accepted_message_ids": [],
+                "latest_correction": None,
+                "latest_result": None,
+                "updated_at": None,
             },
         }
 
-    def _save(self, event: str, **values: Any) -> None:
-        self.state["updated_at"] = _now()
-        _atomic_json(self.state_path, self.state)
-        record = {"schema": EVENT_SCHEMA, "at": _now(), "event": event, **values}
-        self.events_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _append_private_json(self.events_path, record)
+    def _deadline(self, seconds: float | None = None) -> LegacyDeadline:
+        return LegacyDeadline.after(seconds or self.operation_deadline_seconds, clock=self._clock)
+
+    def _ensure_persistence(self) -> None:
+        if self.persistence_failed:
+            raise PersistenceUnavailable("legacy persistence is unavailable")
+
+    def _save(
+        self,
+        event: str,
+        *,
+        _prepare: Callable[[], Mapping[str, Any] | None] | None = None,
+        **values: Any,
+    ) -> None:
+        self._ensure_persistence()
+        try:
+            if _prepare is not None:
+                values.update(_prepare() or {})
+            self.state["updated_at"] = _now()
+            _atomic_json(self.state_path, self.state)
+            record = {"schema": EVENT_SCHEMA, "at": _now(), "event": event, **values}
+            self.events_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _append_private_json(self.events_path, record)
+        except BaseException as exc:
+            self.persistence_failed = True
+            raise PersistenceUnavailable("legacy persistence is unavailable") from exc
+
+    def _acquire(self, operation: _Operation, *, mode: str) -> bool:
+        self._ensure_persistence()
+        remaining = operation.deadline.remaining()
+        acquired = remaining > 0.0 and self._lock.acquire(timeout=remaining)
+        if acquired:
+            try:
+                self._ensure_persistence()
+                if operation.deadline.expired():
+                    if mode in {"startup", "background"}:
+                        self._lock.release()
+                        return False
+                    raise LegacyDeadlineExceeded("legacy deadline exceeded")
+            except BaseException:
+                self._lock.release()
+                raise
+            return True
+        if mode in {"startup", "background"}:
+            return False
+        raise LegacyDeadlineExceeded("legacy deadline exceeded")
 
     def _role(self, role_id: str) -> dict[str, Any]:
         role = self.state["roles"].get(role_id)
@@ -411,65 +231,222 @@ class Engine:
             str(attempt["status"]), str(attempt["status"])
         )
 
-    def snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            value = deepcopy(self.state)
-            for role in value["roles"].values():
-                source = self._role(str(role["id"]))
-                role["status"] = self._role_status(source)
-                role["queued_count"] = sum(item["status"] == "queued" for item in self._messages_for(str(role["id"])))
-            return value
+    def _snapshot_locked(self) -> dict[str, Any]:
+        value = deepcopy(self.state)
+        for role in value["roles"].values():
+            source = self._role(str(role["id"]))
+            role["status"] = self._role_status(source)
+            role["queued_count"] = sum(
+                item["status"] == "queued" for item in self._messages_for(str(role["id"]))
+            )
+        return value
 
-    def enqueue(self, role_id: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
+        operation = _Operation(self._deadline())
+        self._acquire(operation, mode="explicit")
+        try:
+            return self._snapshot_locked()
+        finally:
+            self._lock.release()
+
+    def _new_message(self, role_id: str, text: str, kind: str) -> dict[str, Any]:
+        return {
+            "id": _id("message"),
+            "role_id": role_id,
+            "sequence": len(self._messages_for(role_id)) + 1,
+            "kind": kind,
+            "text": text,
+            "status": "queued",
+            "accepted_at": _now(),
+            "delivered_at": None,
+            "completed_at": None,
+            "attempt_id": None,
+            "turn_id": None,
+            "result": None,
+        }
+
+    def _enqueue_locked(self, role_id: str, text: str, kind: str, operation: _Operation) -> dict[str, Any]:
+        role = self._role(role_id)
+        if not operation.can_admit():
+            raise LegacyDeadlineExceeded("legacy deadline exceeded")
+        message = self._new_message(role_id, text, kind)
+        if not operation.can_admit():
+            raise LegacyDeadlineExceeded("legacy deadline exceeded")
+        self.state["messages"].append(message)
+        if kind == "correction":
+            role["checkpoint"]["latest_correction"] = text
+            role["checkpoint"]["updated_at"] = _now()
+        self._save("message_queued", message_id=message["id"], role_id=role_id, sequence=message["sequence"])
+        operation.accepted = True
+        creation_eligible = False
+        if operation.can_admit() and role.get("current_attempt_id") is None:
+            creation_eligible = self._creation_eligible(role)
+        if operation.can_admit() and creation_eligible:
+            self._create_attempt_locked(role, operation, mode="enqueue")
+        if operation.can_admit():
+            self._dispatch_locked(role, operation)
+        return message
+
+    def _enqueue_operation(self, role_id: str, text: str, kind: str) -> tuple[dict[str, Any], dict[str, Any]]:
         text = str(text).strip()
         if not text:
             raise ValueError("message text is required")
         if kind not in {"message", "correction"}:
             raise ValueError("message kind must be message or correction")
-        with self._lock:
-            role = self._role(role_id)
-            message = {
-                "id": _id("message"), "role_id": role_id, "sequence": len(self._messages_for(role_id)) + 1,
-                "kind": kind, "text": text, "status": "queued", "accepted_at": _now(),
-                "delivered_at": None, "completed_at": None, "attempt_id": None, "turn_id": None, "result": None,
-            }
-            self.state["messages"].append(message)
-            if kind == "correction":
-                role["checkpoint"]["latest_correction"] = text
-                role["checkpoint"]["updated_at"] = _now()
-            self._save("message_queued", message_id=message["id"], role_id=role_id, sequence=message["sequence"])
-            if role.get("current_attempt_id") is None:
-                self._create_attempt_locked(role)
-            self._dispatch_locked(role)
-            return deepcopy(message)
+        operation = _Operation(self._deadline())
+        self._acquire(operation, mode="explicit")
+        try:
+            message = self._enqueue_locked(role_id, text, kind, operation)
+            return deepcopy(message), self._snapshot_locked()
+        finally:
+            self._lock.release()
 
-    def _create_attempt_locked(self, role: dict[str, Any]) -> dict[str, Any]:
-        attempt = {
+    def enqueue(self, role_id: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+        return self._enqueue_operation(role_id, text, kind)[0]
+
+    def enqueue_snapshot(self, role_id: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+        return self._enqueue_operation(role_id, text, kind)[1]
+
+    def _new_attempt(self, role: Mapping[str, Any]) -> dict[str, Any]:
+        return {
             "id": _id("attempt"), "role_id": role["id"], "generation": role["generation"],
             "thread_id": None, "turn_id": None, "message_id": None, "status": "starting",
             "fence_closed": False, "created_at": _now(), "started_at": None, "finished_at": None,
             "output": None, "stale_output": None, "error": None, "terminal_observed": False,
         }
+
+    def _creation_eligible(self, role: Mapping[str, Any]) -> bool:
+        current_generation = [
+            attempt for attempt in self.state["attempts"]
+            if attempt["role_id"] == role["id"] and int(attempt["generation"]) == int(role["generation"])
+        ]
+        if not current_generation:
+            return True
+        latest = current_generation[-1]
+        return latest.get("error") == "thread_start_not_sent/setup_cutoff" and not role.get("current_attempt_id")
+
+    def _adapter_create(
+        self, role: dict[str, Any], attempt: dict[str, Any], operation: _Operation
+    ) -> AdapterReceipt:
+        self._ensure_persistence()
+        bounded = getattr(self.adapter, "create_attempt_bounded", None)
+
+        def on_thread_id(thread_id: str) -> None:
+            if type(thread_id) is not str or not thread_id:
+                raise ValueError("missing exact thread id")
+            from .legacy_operations import persist_thread_identity
+
+            persist_thread_identity(self, attempt, thread_id, operation)
+
+        owns_bounded = "create_attempt_bounded" in type(self.adapter).__dict__
+        configured = hasattr(self.adapter, "socket_path") and hasattr(self.adapter, "cwd")
+        role_value = deepcopy(role)
+        context = self._context(role)
+        if not operation.can_admit():
+            return AdapterReceipt(PhaseResult("not_sent", "thread/start", code="setup_cutoff"), "not_sent")
+        if callable(bounded) and (owns_bounded or configured):
+            return cast(AdapterReceipt, bounded(
+                role=role_value, context=context,
+                deadline=operation.deadline, on_thread_id=on_thread_id,
+            ))
+        try:
+            on_thread_id(self.adapter.create_attempt(role=role_value, context=context))
+            return AdapterReceipt(PhaseResult("acknowledged", "thread/start", {}), "sent", "acknowledged")
+        except PersistenceUnavailable:
+            raise
+        except Exception:
+            return AdapterReceipt(
+                PhaseResult("ambiguous", "thread/start", code="acknowledgement_unavailable"), "ambiguous"
+            )
+
+    @staticmethod
+    def _phase_error(prefix: str, phase: PhaseResult) -> str:
+        if phase.disposition == "not_sent":
+            return f"{prefix}_not_sent/setup_cutoff"
+        if phase.phase in {"connect", "setup", "initialize", "initialized", "thread/resume"}:
+            return f"setup_{phase.disposition}"
+        return f"{prefix}_{phase.disposition}"
+
+    def _create_attempt_locked(
+        self,
+        role: dict[str, Any],
+        operation: _Operation,
+        *,
+        mode: str,
+        advance_generation: bool = False,
+    ) -> dict[str, Any] | None:
+        if not operation.can_admit():
+            return None
+        attempt = self._new_attempt(role)
+        if not operation.can_admit():
+            return None
+        if advance_generation:
+            role["generation"] += 1
+            attempt["generation"] = role["generation"]
         self.state["attempts"].append(attempt)
         role["current_attempt_id"] = attempt["id"]
         self._save("attempt_starting", attempt_id=attempt["id"], role_id=role["id"], generation=attempt["generation"])
-        try:
-            attempt["thread_id"] = self.adapter.create_attempt(role=deepcopy(role), context=self._context(role))
-            attempt["status"] = "waiting"
-            attempt["started_at"] = _now()
-            self._save("attempt_waiting", attempt_id=attempt["id"], thread_id=attempt["thread_id"])
-        except Exception as exc:
-            attempt["status"] = "unknown"
-            attempt["error"] = f"thread start acknowledgement unavailable: {exc}"
-            self._save("attempt_unknown", attempt_id=attempt["id"], reason=attempt["error"])
+        receipt = (
+            self._adapter_create(role, attempt, operation)
+            if operation.can_admit()
+            else AdapterReceipt(PhaseResult("not_sent", "thread/start", code="setup_cutoff"), "not_sent")
+        )
+        if receipt.phase.disposition != "acknowledged":
+            attempt["status"] = "failed" if receipt.phase.disposition in {"not_sent", "rejected"} else "unknown"
+            attempt["error"] = self._phase_error("thread_start", receipt.phase)
+            if mode == "enqueue" and receipt.phase.disposition == "not_sent":
+                role["current_attempt_id"] = None
+            self._save("attempt_start_closed", attempt_id=attempt["id"], disposition=attempt["error"])
+        elif receipt.name_disposition and not operation.cutoff_finalized:
+            attempt["error"] = (
+                None if receipt.name_disposition == "acknowledged"
+                else f"thread_name_{receipt.name_disposition}"
+            )
+            cutoff = operation.deadline.expired()
+            if cutoff:
+                operation.cutoff_finalized = True
+            event = "attempt_waiting_cutoff_finalized" if cutoff else "attempt_name_closed"
+            self._save(
+                event, attempt_id=attempt["id"], thread_id=attempt["thread_id"],
+                disposition=attempt["error"],
+            )
         return attempt
 
-    def _dispatch_locked(self, role: dict[str, Any]) -> None:
+    def _adapter_target(
+        self, bounded_name: str, fallback_name: str, operation: _Operation, **kwargs: Any
+    ) -> AdapterReceipt:
+        self._ensure_persistence()
+        bounded = getattr(self.adapter, bounded_name, None)
+        owns_bounded = bounded_name in type(self.adapter).__dict__
+        configured = hasattr(self.adapter, "socket_path") and hasattr(self.adapter, "cwd")
+        if not operation.can_admit():
+            return AdapterReceipt(PhaseResult("not_sent", fallback_name, code="setup_cutoff"), "not_sent")
+        if callable(bounded) and (owns_bounded or configured):
+            return cast(AdapterReceipt, bounded(deadline=operation.deadline, **kwargs))
+        try:
+            result = getattr(self.adapter, fallback_name)(**kwargs)
+            mapping = {"value": result} if isinstance(result, str) else (
+                dict(result) if isinstance(result, Mapping) else {}
+            )
+            return AdapterReceipt(PhaseResult("acknowledged", fallback_name, mapping), "sent")
+        except Exception:
+            return AdapterReceipt(
+                PhaseResult("ambiguous", fallback_name, code="acknowledgement_unavailable"), "ambiguous"
+            )
+
+    def _dispatch_locked(self, role: dict[str, Any], operation: _Operation) -> None:
         attempt = self._current_attempt(role)
-        if attempt is None or attempt["status"] != "waiting" or not attempt.get("thread_id"):
+        if (
+            not operation.can_admit()
+            or attempt is None
+            or attempt["status"] != "waiting"
+            or not attempt.get("thread_id")
+        ):
             return
         queued = [item for item in self._messages_for(role["id"]) if item["status"] == "queued"]
         if not queued:
+            return
+        if not operation.can_admit():
             return
         message = queued[0]
         message["status"] = "dispatching"
@@ -478,37 +455,43 @@ class Engine:
         attempt["terminal_observed"] = False
         attempt["finished_at"] = None
         self._save("message_dispatching", message_id=message["id"], attempt_id=attempt["id"])
-        try:
-            turn_id = self.adapter.start_message(thread_id=attempt["thread_id"], message=deepcopy(message))
-            message["turn_id"] = turn_id
-            message["status"] = "delivered"
-            message["delivered_at"] = _now()
-            attempt["turn_id"] = turn_id
-            attempt["status"] = "running"
-            self._save("message_delivered", message_id=message["id"], attempt_id=attempt["id"], turn_id=turn_id)
-        except Exception as exc:
+        receipt = (
+            self._adapter_target(
+                "start_message_bounded", "start_message", operation,
+                thread_id=attempt["thread_id"], message=deepcopy(message),
+            )
+            if operation.can_admit()
+            else AdapterReceipt(PhaseResult("not_sent", "turn/start", code="setup_cutoff"), "not_sent")
+        )
+        phase = receipt.phase
+        if phase.disposition == "acknowledged":
+            result = phase.result or {}
+            raw_turn = result.get("turn")
+            turn = raw_turn if isinstance(raw_turn, Mapping) else {}
+            raw_turn_id = turn.get("id") if isinstance(raw_turn, Mapping) else result.get("value")
+            turn_id = raw_turn_id if type(raw_turn_id) is str else ""
+            if turn_id:
+                message["turn_id"] = turn_id
+                message["status"] = "delivered"
+                message["delivered_at"] = _now()
+                attempt["turn_id"] = turn_id
+                attempt["status"] = "running"
+                attempt["error"] = None
+                self._save("message_delivered", message_id=message["id"], attempt_id=attempt["id"], turn_id=turn_id)
+                return
+            phase = PhaseResult("ambiguous", "turn/start", code="missing_exact_acknowledgement")
+        error = self._phase_error("turn_start", phase)
+        attempt["error"] = error
+        if phase.disposition == "not_sent":
+            message["status"] = "queued"
+            attempt["status"] = "waiting"
+        elif phase.disposition == "rejected":
+            message["status"] = "queued"
+            attempt["status"] = "failed"
+        else:
             message["status"] = "unknown"
             attempt["status"] = "unknown"
-            attempt["error"] = f"turn start acknowledgement unavailable: {exc}"
-            self._save("delivery_unknown", message_id=message["id"], attempt_id=attempt["id"], reason=attempt["error"])
-
-    def stop(self, attempt_id: str) -> None:
-        with self._lock:
-            attempt, role = self._stoppable_target_locked(attempt_id)
-            role["generation"] += 1
-            attempt["fence_closed"] = True
-            attempt["status"] = "stop_pending"
-            self._save("attempt_stop_requested", attempt_id=attempt_id, generation=role["generation"])
-            try:
-                if attempt.get("turn_id"):
-                    self.adapter.interrupt(thread_id=attempt["thread_id"], turn_id=attempt["turn_id"])
-                attempt["status"] = "stopped"
-                attempt["finished_at"] = _now()
-                self._save("attempt_stopped", attempt_id=attempt_id)
-            except Exception as exc:
-                attempt["status"] = "unknown"
-                attempt["error"] = f"interrupt acknowledgement unavailable: {exc}"
-                self._save("attempt_stop_unknown", attempt_id=attempt_id, reason=attempt["error"])
+        self._save("delivery_closed", message_id=message["id"], attempt_id=attempt["id"], disposition=error)
 
     def _stoppable_target_locked(self, attempt_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         attempt = self._attempt(attempt_id)
@@ -519,136 +502,149 @@ class Engine:
             raise ValueError("selected attempt is not stoppable")
         return attempt, role
 
-    def replace(self, attempt_id: str) -> str:
-        with self._lock:
-            previous = self._attempt(attempt_id)
-            role = self._role(previous["role_id"])
-            if role.get("current_attempt_id") != attempt_id:
-                raise ValueError("replace target is not the role's selected current attempt")
-            if previous["status"] in {"running", "waiting", "starting", "stop_pending"}:
-                raise ValueError("stop the selected live attempt before replacement")
-            if int(previous["generation"]) == int(role["generation"]):
-                role["generation"] += 1
-            replacement = self._create_attempt_locked(role)
-            self._dispatch_locked(role)
-            self._save(
-                "attempt_replaced",
-                previous_attempt_id=attempt_id,
-                attempt_id=replacement["id"],
-                role_id=role["id"],
+    def _stop_locked(self, attempt_id: str, operation: _Operation) -> None:
+        attempt, role = self._stoppable_target_locked(attempt_id)
+        if not operation.can_admit():
+            raise LegacyDeadlineExceeded("legacy deadline exceeded")
+        role["generation"] += 1
+        attempt["fence_closed"] = True
+        if not attempt.get("turn_id"):
+            attempt["status"] = "stopped"
+            attempt["finished_at"] = _now()
+            self._save("attempt_stopped_local", attempt_id=attempt_id, generation=role["generation"])
+            operation.accepted = True
+            return
+        attempt["status"] = "stop_pending"
+        self._save("attempt_stop_requested", attempt_id=attempt_id, generation=role["generation"])
+        operation.accepted = True
+        receipt = (
+            self._adapter_target(
+                "interrupt_bounded", "interrupt", operation,
+                thread_id=attempt["thread_id"], turn_id=attempt["turn_id"],
             )
-            return str(replacement["id"])
+            if operation.can_admit()
+            else AdapterReceipt(PhaseResult("not_sent", "turn/interrupt", code="setup_cutoff"), "not_sent")
+        )
+        if receipt.phase.disposition == "acknowledged":
+            attempt["status"] = "stopped"
+            attempt["finished_at"] = _now()
+            attempt["error"] = None
+            event = "attempt_stopped"
+        else:
+            attempt["status"] = "unknown"
+            attempt["error"] = self._phase_error("interrupt", receipt.phase)
+            event = "attempt_stop_unknown"
+        self._save(event, attempt_id=attempt_id, disposition=attempt.get("error"))
+
+    def _stop_operation(self, attempt_id: str) -> dict[str, Any]:
+        operation = _Operation(self._deadline())
+        self._acquire(operation, mode="explicit")
+        try:
+            self._stop_locked(attempt_id, operation)
+            return self._snapshot_locked()
+        finally:
+            self._lock.release()
+
+    def stop(self, attempt_id: str) -> None:
+        self._stop_operation(attempt_id)
+
+    def stop_snapshot(self, attempt_id: str) -> dict[str, Any]:
+        return self._stop_operation(attempt_id)
+
+    def _replace_locked(self, attempt_id: str, operation: _Operation) -> str:
+        previous = self._attempt(attempt_id)
+        role = self._role(previous["role_id"])
+        if role.get("current_attempt_id") != attempt_id:
+            raise ValueError("replace target is not the role's selected current attempt")
+        if previous["status"] in {"running", "waiting", "starting", "stop_pending"}:
+            raise ValueError("stop the selected live attempt before replacement")
+        if not operation.can_admit():
+            raise LegacyDeadlineExceeded("legacy deadline exceeded")
+        replacement = self._create_attempt_locked(
+            role,
+            operation,
+            mode="replace",
+            advance_generation=int(previous["generation"]) == int(role["generation"]),
+        )
+        if replacement is None:
+            raise LegacyDeadlineExceeded("legacy deadline exceeded")
+        operation.accepted = True
+        if operation.can_admit():
+            self._dispatch_locked(role, operation)
+        if operation.can_admit():
+            self._save(
+                "attempt_replaced", previous_attempt_id=attempt_id,
+                attempt_id=replacement["id"], role_id=role["id"],
+            )
+        return str(replacement["id"])
+
+    def _replace_operation(self, attempt_id: str) -> tuple[str, dict[str, Any]]:
+        operation = _Operation(self._deadline())
+        self._acquire(operation, mode="explicit")
+        try:
+            replacement_id = self._replace_locked(attempt_id, operation)
+            return replacement_id, self._snapshot_locked()
+        finally:
+            self._lock.release()
+
+    def replace(self, attempt_id: str) -> str:
+        return self._replace_operation(attempt_id)[0]
+
+    def replace_snapshot(self, attempt_id: str) -> dict[str, Any]:
+        return self._replace_operation(attempt_id)[1]
 
     def redirect(self, attempt_id: str, text: str) -> str:
-        with self._lock:
-            attempt, _role = self._stoppable_target_locked(attempt_id)
-            role_id = str(attempt["role_id"])
-            self.enqueue(role_id, text, kind="correction")
-            self.stop(attempt_id)
-            return self.replace(attempt_id)
+        return self._redirect_operation(attempt_id, text)[0]
 
-    def _accept_completion_locked(
-        self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any
-    ) -> None:
-        role = self._role(attempt["role_id"])
-        current = role.get("current_attempt_id") == attempt["id"] and int(role["generation"]) == int(
-            attempt["generation"]
-        )
-        current = current and not attempt["fence_closed"]
-        attempt["finished_at"] = _now()
-        attempt["terminal_observed"] = True
-        if status == "completed" and current:
-            attempt["status"] = "waiting"
-            attempt["output"] = output
-            message["status"] = "completed"
-            message["completed_at"] = _now()
-            message["result"] = output
-            checkpoint = role["checkpoint"]
-            if message["id"] not in checkpoint["accepted_message_ids"]:
-                checkpoint["accepted_message_ids"].append(message["id"])
-            checkpoint["latest_result"] = output
-            checkpoint["updated_at"] = _now()
-            self._save(
-                "result_accepted",
-                attempt_id=attempt["id"],
-                message_id=message["id"],
-                turn_id=attempt["turn_id"],
-            )
-            self._dispatch_locked(role)
-            return
-        if status == "completed":
-            attempt["status"] = "stale"
-            attempt["stale_output"] = output
-            self._save("result_stale", attempt_id=attempt["id"], message_id=message["id"], turn_id=attempt["turn_id"])
-            return
-        if status in {"interrupted", "cancelled"}:
-            attempt["status"] = "stopped" if attempt["fence_closed"] else "failed"
-            self._save("turn_interrupted", attempt_id=attempt["id"], turn_id=attempt["turn_id"])
-            return
-        if status == "failed":
-            attempt["status"] = "failed" if current else "stale"
-            attempt["error"] = "Codex turn failed"
-            self._save("turn_failed", attempt_id=attempt["id"], turn_id=attempt["turn_id"])
-            return
-        attempt["status"] = "unknown"
-        self._save("turn_unknown", attempt_id=attempt["id"], turn_id=attempt["turn_id"])
+    def redirect_snapshot(self, attempt_id: str, text: str) -> dict[str, Any]:
+        return self._redirect_operation(attempt_id, text)[1]
+
+    def _redirect_operation(self, attempt_id: str, text: str) -> tuple[str, dict[str, Any]]:
+        from .legacy_operations import redirect_locked
+
+        text = str(text).strip()
+        if not text:
+            raise ValueError("message text is required")
+        operation = _Operation(self._deadline())
+        self._acquire(operation, mode="explicit")
+        try:
+            replacement_id = redirect_locked(self, attempt_id, text, operation)
+            return replacement_id, self._snapshot_locked()
+        finally:
+            self._lock.release()
 
     def reconcile(self) -> None:
-        """Reconcile ambiguous deliveries and observed turns without unsafe replay."""
-        with self._lock:
-            for message in list(self.state["messages"]):
-                if message["status"] != "unknown" or not message.get("attempt_id"):
-                    continue
-                attempt = self._attempt(message["attempt_id"])
-                if not attempt.get("thread_id"):
-                    continue
-                try:
-                    observed = self.adapter.inspect_message(thread_id=attempt["thread_id"], message_id=message["id"])
-                except Exception:
-                    continue
-                if not observed.get("found") and observed.get("absence_proven"):
-                    message["status"] = "queued"
-                    attempt["status"] = "waiting"
-                    attempt["error"] = None
-                    self._save("delivery_proven_absent", message_id=message["id"], attempt_id=attempt["id"])
-                    self._dispatch_locked(self._role(attempt["role_id"]))
-                    continue
-                if not observed.get("found"):
-                    continue
-                message["status"] = "delivered"
-                message["delivered_at"] = message["delivered_at"] or _now()
-                message["turn_id"] = str(observed.get("turn_id") or "")
-                attempt["turn_id"] = message["turn_id"]
-                attempt["status"] = "running"
-                self._save(
-                    "delivery_reconciled",
-                    message_id=message["id"],
-                    attempt_id=attempt["id"],
-                    turn_id=attempt["turn_id"],
-                )
+        self._reconcile_operation(mode="explicit", want_snapshot=False)
 
-            for attempt in list(self.state["attempts"]):
-                if not attempt.get("turn_id") or attempt.get("terminal_observed"):
-                    continue
-                if attempt["status"] not in {"running", "stopped", "stop_pending", "unknown"}:
-                    continue
-                message = self._message(attempt["message_id"])
-                try:
-                    observed = self.adapter.inspect_turn(thread_id=attempt["thread_id"], turn_id=attempt["turn_id"])
-                except Exception:
-                    if attempt["status"] in {"running", "stop_pending"}:
-                        attempt["status"] = "unknown"
-                        self._save("turn_observation_unknown", attempt_id=attempt["id"], turn_id=attempt["turn_id"])
-                    continue
-                status = str(observed.get("status") or "unknown")
-                if status in {"inProgress", "in_progress", "running"}:
-                    if not attempt["fence_closed"]:
-                        attempt["status"] = "running"
-                    continue
-                if status not in TERMINAL_TURN_STATES:
-                    attempt["status"] = "unknown"
-                    continue
-                self._accept_completion_locked(attempt, message, status, observed.get("output"))
+    def reconcile_snapshot(self) -> dict[str, Any]:
+        value = self._reconcile_operation(mode="explicit", want_snapshot=True)
+        assert isinstance(value, dict)
+        return value
 
-            for role in self.state["roles"].values():
-                self._dispatch_locked(role)
+    def reconcile_startup(self, deadline: LegacyDeadline) -> str:
+        return str(self._reconcile_operation(mode="startup", want_snapshot=False, deadline=deadline))
+
+    def reconcile_background(self) -> str:
+        return str(self._reconcile_operation(mode="background", want_snapshot=False))
+
+    def _reconcile_operation(
+        self, *, mode: str, want_snapshot: bool, deadline: LegacyDeadline | None = None
+    ) -> dict[str, Any] | str | None:
+        from .legacy_operations import reconcile_locked
+
+        operation = _Operation(deadline or self._deadline())
+        if not self._acquire(operation, mode=mode):
+            return "skipped_lock_timeout"
+        try:
+            reconcile_locked(self, operation)
+            return self._snapshot_locked() if want_snapshot else "completed"
+        finally:
+            self._lock.release()
+
+    def _accept_completion_locked(
+        self, attempt: dict[str, Any], message: dict[str, Any], status: str, output: Any,
+        operation: _Operation,
+    ) -> None:
+        from .legacy_operations import accept_completion_locked
+
+        accept_completion_locked(self, attempt, message, status, output, operation)

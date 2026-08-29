@@ -57,9 +57,20 @@ class DelegatingDispatcher(RecordingDispatcher):
 class EngineSpy:
     def __init__(self) -> None:
         self.reconciles = 0
+        self.startup_deadline_seconds = 10.0
+        self._clock = __import__("time").monotonic
 
-    def reconcile(self) -> None:
+    def reconcile_startup(self, _deadline: object) -> str:
         self.reconciles += 1
+        return "completed"
+
+    def reconcile_background(self) -> str:
+        self.reconciles += 1
+        return "completed"
+
+    def reconcile_snapshot(self) -> dict[str, object]:
+        self.reconciles += 1
+        return self.snapshot()
 
     def snapshot(self) -> dict[str, object]:
         return {"mode": "legacy", "reconciles": self.reconciles}

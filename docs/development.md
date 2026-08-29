@@ -67,6 +67,7 @@ Run the two real local boundaries separately:
 ```sh
 PYTHONPATH=src python tests/integration/app_server_transport_test.py -v
 PYTHONPATH=src python tests/integration/native_input_transport_test.py -v
+PYTHONPATH=src python tests/integration/legacy_transport_test.py -v
 ./node_modules/.bin/playwright install chromium
 ./node_modules/.bin/playwright test \
   tests/browser/focus_chromium.spec.js \
@@ -101,6 +102,15 @@ Omit `--native-root-thread-id` to run the default legacy reliability spike; that
 accepts `--workspace` and `--state`. Native mode never discovers a root or resumes a thread. Its
 emergency stop requires current present board evidence plus an exact in-progress turn, browser confirmation, JSON plus
 `X-Switchstand-Control: native-stop-v1`, and same-origin loopback Host/Origin.
+
+Legacy mode also accepts `--legacy-startup-deadline-seconds` and
+`--legacy-operation-deadline-seconds`. Their environment equivalents are
+`SWITCHSTAND_LEGACY_STARTUP_DEADLINE_SECONDS` and
+`SWITCHSTAND_LEGACY_OPERATION_DEADLINE_SECONDS`; CLI wins over environment, then defaults are
+10 and 5 seconds. Values must be finite, greater than zero, and at most 300. There is no disable
+value. Native mode ignores both environment variables and rejects either explicit legacy flag.
+These cutoffs bound lock and App Server wait admission, not scheduler work, JSON processing,
+synchronous durable persistence, forced cleanup, or total HTTP response time.
 
 Native thread and latest-turn statuses are separate. The board spends at most one global
 content-free `thread/turns/list` probe per completed pass; Input and Stop revalidate only their
