@@ -239,7 +239,8 @@ class CoordinatorClient:
     def _validate_claim(self, value: Mapping[str, Any], worker_id: str, instance_id: str) -> Authority:
         if value["protocol"] != PROTOCOL or value["worker_id"] != worker_id or value["instance_id"] != instance_id:
             raise ProtocolError("invalid_request")
-        if value["work_type"] not in {"implementation", "review"}:
+        work_type = value["work_type"]
+        if not isinstance(work_type, str) or work_type not in {"implementation", "review"}:
             raise ProtocolError("invalid_request")
         work_id = value["work_id"]
         if not isinstance(work_id, str) or not WORK_ID.fullmatch(work_id):

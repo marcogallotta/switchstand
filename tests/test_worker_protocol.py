@@ -208,6 +208,8 @@ class ProtocolClientTests(unittest.TestCase):
             "checkpoint_state": "finite_turn_started",
         }
         cases = (
+            {"work_type": []},
+            {"work_type": {}},
             {"lease_expires_at": "2026-99-99T99:99:99Z"},
             {"prior_checkpoint": invalid_checkpoint},
             {
@@ -242,6 +244,15 @@ class ProtocolClientTests(unittest.TestCase):
             self.route("POST", "/v2/work/claim", 200, claim_response(**update))
             with self.subTest(update=update), self.assertRaisesRegex(ProtocolError, "invalid_request"):
                 self.client.claim(WORKER, INSTANCE)
+
+    def test_malformed_error_code_returns_fixed_protocol_failure(self):
+        self.route("POST", "/v2/work/claim", 409, {"error": []})
+        with self.assertRaises(ProtocolError) as context:
+            self.client.claim(WORKER, INSTANCE)
+        self.assertEqual(
+            (context.exception.code, context.exception.status),
+            ("temporary_failure", 409),
+        )
 
     def test_outbound_body_limit_fails_before_request(self):
         with self.assertRaisesRegex(ProtocolError, "request_too_large"):
