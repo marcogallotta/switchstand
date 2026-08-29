@@ -293,8 +293,10 @@ class AuditRegisterAdversarialTests(unittest.TestCase):
             check_audit_register.validate_register(missing)
 
     def test_repository_gate_accepts_completed_receipt_fixture(self):
-        register = json.loads((ROOT / "audit" / "findings.json").read_text(encoding="utf-8"))
+        register = load_register(include_gate_history=True)
         scope = json.loads((ROOT / "audit" / "change-scope.json").read_text(encoding="utf-8"))
+        if not scope["gate_repair_receipts"]:
+            scope["gate_repair_receipts"] = register["gate_repair_history"][0]["review_receipts"]
         real_load = check_audit_register._load_json
 
         def completed_candidate(path: Path) -> dict[str, Any]:

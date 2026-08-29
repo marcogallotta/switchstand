@@ -29,11 +29,12 @@ def load_register(*, include_gate_history: bool = False) -> dict[str, Any]:
     register = json.loads((ROOT / "audit" / "findings.json").read_text(encoding="utf-8"))
     if include_gate_history:
         record = register["gate_repair_history"][0]
-        subject = f"gate-repair:{record['base_sha']}:{record['extensions_sha256']}"
-        record["review_receipts"] = [
-            durable("gate_repair_review", subject, "reviewer-a", "a"),
-            durable("gate_repair_review", subject, "reviewer-b", "b"),
-        ]
+        if not record["review_receipts"]:
+            subject = f"gate-repair:{record['base_sha']}:{record['extensions_sha256']}"
+            record["review_receipts"] = [
+                durable("gate_repair_review", subject, "reviewer-a", "a"),
+                durable("gate_repair_review", subject, "reviewer-b", "b"),
+            ]
     else:
         register.pop("gate_repair_history", None)
     return register
