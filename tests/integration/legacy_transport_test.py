@@ -139,7 +139,11 @@ class DeadlinePeer(threading.Thread):
                 return
             request = self.message(connection)
             method = str(request["method"])
-            if action == "creation_success":
+            if action == "read_stall":
+                if method != "thread/read":
+                    raise AssertionError(method)
+                time.sleep(0.12)
+            elif action == "creation_success":
                 if method != "thread/start":
                     raise AssertionError(method)
                 send_json(connection, {"id": request["id"], "result": {"thread": {"id": "thread-1"}}})
@@ -161,7 +165,6 @@ class DeadlinePeer(threading.Thread):
                 "target_success_close_stall",
                 "target_send_stall",
                 "interrupt_stall",
-                "read_stall",
                 "resume_stall",
                 "target_malformed",
                 "target_decode",
@@ -183,11 +186,10 @@ class DeadlinePeer(threading.Thread):
                 target = self.message(connection)
                 expected = {
                     "interrupt_stall": "turn/interrupt",
-                    "read_stall": "thread/read",
                 }.get(action, "turn/start")
                 if target["method"] != expected:
                     raise AssertionError(target)
-                if action in {"target_stall", "interrupt_stall", "read_stall"}:
+                if action in {"target_stall", "interrupt_stall"}:
                     time.sleep(0.12)
                 elif action == "target_malformed":
                     send_raw(connection, b"not-json")
