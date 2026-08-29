@@ -104,6 +104,35 @@ class AppServerProtocolTests(unittest.TestCase):
             ],
         )
 
+    def test_bounded_observation_reads_and_lists_share_bounded_request_path(self):
+        client = object.__new__(CodexAppServer)
+        client._bounded_response_bytes_remaining = 256 * 1024
+        calls = []
+        client._request = lambda method, params: (_ for _ in ()).throw(
+            AssertionError(f"unbounded request used for {method}: {params}")
+        )
+        client.bounded_request = lambda method, params, **limits: (
+            calls.append((method, params, limits)) or ("ok", {})
+        )
+
+        self.assertEqual(client.thread_read("root", include_turns=False), {})
+        self.assertEqual(client.thread_list({"cursor": "next"}), {})
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "thread/read",
+                    {"threadId": "root", "includeTurns": False},
+                    {"_close_after": False},
+                ),
+                ("thread/list", {"cursor": "next"}, {"_close_after": False}),
+            ],
+        )
+
+        client.bounded_request = lambda method, params, **limits: ("oversize", None)
+        with self.assertRaisesRegex(RuntimeError, "observation is unavailable"):
+            client.thread_list({})
+
     def test_client_constructs_tree_list_native_start_and_exact_steer_requests(self):
         client = object.__new__(CodexAppServer)
         calls = []

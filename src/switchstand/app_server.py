@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Any, Mapping
 
+from .bounded_observation import observation_request
+
 
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_MESSAGE_BYTES = 16 * 1024 * 1024
@@ -478,10 +480,12 @@ class CodexAppServer:
             return messages
 
     def thread_read(self, thread_id: str, *, include_turns: bool = True) -> Mapping[str, Any]:
-        return self._request("thread/read", {"threadId": thread_id, "includeTurns": include_turns})
+        return observation_request(
+            self, "thread/read", {"threadId": thread_id, "includeTurns": include_turns}
+        )
 
     def thread_list(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self._request("thread/list", params)
+        return observation_request(self, "thread/list", params)
 
     def thread_start(self, params: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._request("thread/start", params)
