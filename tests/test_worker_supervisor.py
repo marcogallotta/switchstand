@@ -169,7 +169,12 @@ class FailedResumeRunner(FakeRunner):
         return ProcessResult(1, thread_id, None)
 
 
-def config(root, executable=Path("/bin/true"), auth=Path("/dev/null")):
+def config(
+    root,
+    executable=Path("/bin/true"),
+    auth=Path("/dev/null"),
+    bwrap=Path("/usr/bin/bwrap"),
+):
     return WorkerConfig(
         "http://coordinator.invalid",
         "worker-secret",
@@ -178,7 +183,7 @@ def config(root, executable=Path("/bin/true"), auth=Path("/dev/null")):
         "20000000-0000-4000-8000-000000000002",
         executable,
         auth,
-        Path("/usr/bin/bwrap"),
+        bwrap,
     )
 
 
@@ -342,9 +347,23 @@ class LeaseAndIsolationTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "stale_or_invalid_lease"):
             guard.require_live()
 
-    def test_bubblewrap_child_has_no_worker_or_github_secret_and_cannot_read_outside(self):
+    def test_isolation_boundary_clears_secrets_and_has_no_root_mount(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            bwrap = root / "fake-bwrap"
+            bwrap.write_text(
+                "#!/usr/bin/python3\n"
+                "import os,sys\n"
+                "a=sys.argv[1:]; env={}; codex=None; workspace=None; i=0\n"
+                "while i < len(a):\n"
+                " if a[i]=='--ro-bind' and a[i+2]=='/codex': codex=a[i+1]\n"
+                " if a[i]=='--bind' and a[i+2]=='/workspace': workspace=a[i+1]\n"
+                " if a[i]=='--setenv': env[a[i+1]]=a[i+2]; i+=2\n"
+                " if a[i]=='--': break\n"
+                " i+=1\n"
+                "os.chdir(workspace); os.execve(codex,[codex,*a[i+2:]],env)\n"
+            )
+            bwrap.chmod(0o700)
             fake = root / "fake-codex"
             fake.write_text(
                 "#!/bin/sh\nread ignored\n"
@@ -362,7 +381,10 @@ class LeaseAndIsolationTests(unittest.TestCase):
             os.environ["OPENAI_API_KEY"] = "parent-openai-secret"
             client = FakeClient(make_claim())
             guard = LeaseGuard(client, make_claim())
-            runner = CodexRunner(config(root, fake, auth), make_claim(), guard)
+            runner = CodexRunner(config(root, fake, auth, bwrap), make_claim(), guard)
+            boundary = runner._boundary(workspace, ["ignored"])
+            self.assertIn("--unshare-all", boundary)
+            self.assertNotIn(["--ro-bind", "/", "/"], [boundary[index : index + 3] for index in range(len(boundary))])
             result = runner._run(workspace, ["ignored"], "private input")
             self.assertEqual((result.exit_code, result.thread_id), (0, THREAD))
             os.environ.pop("SWITCHSTAND_WORKER_KEY")
