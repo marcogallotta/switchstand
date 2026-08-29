@@ -21,6 +21,12 @@ lowercase SHA-256; a mismatch is rejected before any GitHub call. The fixture's 
 commit is a separately recorded provisioning step and is not part of the Action capability
 evidence.
 
+The caller must place the complete Base64 payload inline in `content_base64`; a local filename,
+preview, or placeholder is not file transfer. Before calling the Action, it must verify the
+Base64 character count and derive `expected_bytes` and `expected_sha256` from the intended file,
+not from a shortened call argument. The integrity fields make shortening visible, but do not
+increase the caller's own tool-call payload capacity.
+
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 
 Run locally with Node 20+:
