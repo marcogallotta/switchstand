@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
@@ -327,6 +328,39 @@ test('provider marker is the close fence for stale heads and delayed publication
     PUBLISHER, attempt.publisher_token, BASE, 'd'.repeat(40), false]);
   assert.equal(sealed.state, 'stale_head');
   await database.close();
+});
+
+test('filesystem restart reconstructs admission, checkpoint, candidate, and publication bytes', async () => {
+  const directory = await mkdtemp(join(process.env.TMPDIR || process.cwd(), '.pglite-test-'));
+  try {
+    let database = new PGlite(directory);
+    for (const file of ['0001_schema.sql', '0002_worker_routines.sql', '0003_publication_routines.sql']) {
+      await database.exec(await readFile(new URL(file, ROOT), 'utf8'));
+    }
+    await seed(database);
+    let store = new PostgresStore(database);
+    const work = await store.call('admit', [admission()]);
+    const claim = await store.call('claim', [WORKER, INSTANCE]);
+    await store.call('checkpoint', [withAuthority(claim, {
+      operation_id: 'checkpoint:restart', sequence: 1, phase: 'codex_started',
+      codex_thread_id: THREAD, checkpoint_state: 'thread_adopted',
+    })]);
+    const accepted = await store.call('candidate', [candidate(claim, 'candidate:restart')]);
+    await store.call('authorize', [work.work_id]);
+    await database.close();
+
+    database = new PGlite(directory);
+    store = new PostgresStore(database);
+    const restored = await store.call('exportWork', [work.work_id, true]);
+    assert.equal(restored.source_text, admission().source_text);
+    assert.equal(restored.codex_thread_id, THREAD);
+    assert.equal(restored.accepted_candidate.manifest_sha, accepted.manifest_sha);
+    assert.equal(restored.publication.state, 'authorized');
+    assert.ok(restored.accepted_candidate.canonical_manifest_base64.length > 100);
+    await database.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('runtime has execute-only authority and cross-workspace reads disclose nothing', async () => {
