@@ -289,7 +289,10 @@ test("accepts exactly 64 KiB and rejects one byte more before any GitHub call", 
   const gh = fakeGithub();
   const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
   const response = await action(request({
-    files: [encodedFile("experiments/gpt-actions-github/big.txt", Buffer.alloc(64 * 1024 + 1, "a"))],
+    files: [{
+      ...encodedFile("experiments/gpt-actions-github/big.txt", Buffer.alloc(64 * 1024 + 1, "a")),
+      expected_bytes: 64 * 1024,
+    }],
   }));
   assert.equal(response.status, 413);
   assert.equal((await body(response)).error, "file_too_large");
@@ -303,15 +306,40 @@ test("rejects byte-count and SHA-256 mismatches before any GitHub call", async (
     { ...correct, expected_sha256: "0".repeat(64) },
   ]) {
     const gh = fakeGithub();
+    const store = new MemoryOperationStore();
     const action = createGithubAction({
-      store: new MemoryOperationStore(),
+      store,
       githubFetch: gh.fn,
       token: "server-only",
     });
     const response = await action(request({ files: [file] }));
     assert.equal(response.status, 409);
-    assert.equal((await body(response)).error, "content_integrity_mismatch");
+    const result = await body(response);
+    assert.equal(result.error, "content_integrity_mismatch");
+    assert.equal(result.expected_bytes, file.expected_bytes);
+    assert.equal(result.actual_bytes, correct.expected_bytes);
+    assert.equal(result.received_base64_characters, correct.content_base64.length);
+    assert.match(result.hint, /complete Base64 payload inline/);
     assert.equal(gh.calls.length, 0);
+    assert.equal(store.records.size, 0);
+  }
+});
+
+test("rejects malformed integrity declarations before operation storage or GitHub", async () => {
+  const valid = encodedFile("experiments/gpt-actions-github/integrity.txt", "content\n");
+  for (const file of [
+    { ...valid, expected_bytes: 64 * 1024 + 1 },
+    { ...valid, expected_sha256: 7 },
+    { ...valid, expected_sha256: "A".repeat(64) },
+  ]) {
+    const gh = fakeGithub();
+    const store = new MemoryOperationStore();
+    const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
+    const response = await action(request({ files: [file] }));
+    assert.equal(response.status, 400);
+    assert.equal((await body(response)).error, "invalid_file");
+    assert.equal(gh.calls.length, 0);
+    assert.equal(store.records.size, 0);
   }
 });
 

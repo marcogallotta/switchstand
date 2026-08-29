@@ -64,7 +64,8 @@ async function decodeFile(file, policy) {
   const keys = ["path", "content_base64", "expected_bytes", "expected_sha256"];
   if (!exactKeys(file, keys, keys) || typeof file.path !== "string" ||
       typeof file.content_base64 !== "string" || !Number.isInteger(file.expected_bytes) ||
-      file.expected_bytes < 0 ||
+      file.expected_bytes < 0 || file.expected_bytes > policy.maxFileBytes ||
+      typeof file.expected_sha256 !== "string" ||
       !SHA256_RE.test(file.expected_sha256 || "")) invalid("invalid_file");
   if (file.path.length > 240) invalid("invalid_path");
   if (file.path.includes("\\") || file.path.startsWith("/") || file.path.split("/").some((p) => !p || p === "." || p === "..")) {
@@ -88,7 +89,13 @@ async function decodeFile(file, policy) {
   const actualSha256 = await crypto.subtle.digest("SHA-256", bytes);
   const actualHex = [...new Uint8Array(actualSha256)].map((n) => n.toString(16).padStart(2, "0")).join("");
   if (bytes.length !== file.expected_bytes || actualHex !== file.expected_sha256) {
-    invalid("content_integrity_mismatch", 409);
+    throw Object.assign(new Error("content_integrity_mismatch"), {
+      status: 409,
+      expected_bytes: file.expected_bytes,
+      actual_bytes: bytes.length,
+      received_base64_characters: file.content_base64.length,
+      hint: "Send the complete Base64 payload inline; do not use a filename, preview, or placeholder.",
+    });
   }
   return {
     path: file.path,
@@ -362,6 +369,9 @@ export function createGithubAction({ store, githubFetch = fetch, token, policy =
       const status = error.status || 502;
       const body = { error: error.message || "internal_error" };
       if (error.actual_head_sha !== undefined) body.actual_head_sha = error.actual_head_sha;
+      for (const key of ["expected_bytes", "actual_bytes", "received_base64_characters", "hint"]) {
+        if (error[key] !== undefined) body[key] = error[key];
+      }
       return json(status, body);
     }
   };

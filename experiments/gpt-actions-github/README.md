@@ -25,7 +25,9 @@ The caller must place the complete Base64 payload inline in `content_base64`; a 
 preview, or placeholder is not file transfer. Before calling the Action, it must verify the
 Base64 character count and derive `expected_bytes` and `expected_sha256` from the intended file,
 not from a shortened call argument. The integrity fields make shortening visible, but do not
-increase the caller's own tool-call payload capacity.
+increase the caller's own tool-call payload capacity. An integrity mismatch returns the declared
+and decoded byte counts, the received Base64 character count, and a fixed correction hint without
+echoing file content or digests.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.
 
