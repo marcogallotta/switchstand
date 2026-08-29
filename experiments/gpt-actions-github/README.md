@@ -14,8 +14,9 @@ This isolated prototype implements the only GitHub mutation route admitted for t
 - UTF-8 text and exact request-shape validation;
 - retry recovery after orphaned Git objects without moving a ref early.
 
-The fixed limits are five files, 4 KiB per file, 16 KiB aggregate decoded content, and
-32 KiB per HTTP request. The fixture's initial `main` commit is a separately recorded
+The fixed limits are 32 files, 64 KiB per file, 256 KiB aggregate decoded content, and
+384 KiB per HTTP request. The file-count bound limits the sequential GitHub calls made within
+the 40-second request deadline. The fixture's initial `main` commit is a separately recorded
 provisioning step and is not part of the Action capability evidence.
 
 `github-action.mjs` is Action-side code. The GitHub token is injected only as a hosted secret and is never accepted from the Action request.

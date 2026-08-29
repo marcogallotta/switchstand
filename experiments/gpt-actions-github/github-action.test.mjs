@@ -198,17 +198,17 @@ test("enforces file-count, total-content, and request limits before GitHub", asy
   const cases = [
     {
       operation_id: "limit-files-0001",
-      files: Array.from({ length: 6 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: "YQ==" })),
+      files: Array.from({ length: 33 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: "YQ==" })),
       error: "invalid_file_count",
       status: 400,
     },
     {
       operation_id: "limit-total-0001",
-      files: Array.from({ length: 5 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: Buffer.alloc(3400, "a").toString("base64") })),
+      files: Array.from({ length: 5 }, (_, i) => ({ path: `experiments/gpt-actions-github/${i}.txt`, content_base64: Buffer.alloc(53 * 1024, "a").toString("base64") })),
       error: "content_too_large",
       status: 413,
     },
-    { operation_id: "limit-body-00001", message: "x".repeat(33000), error: "request_too_large", status: 413 },
+    { operation_id: "limit-body-00001", message: "x".repeat(384 * 1024), error: "request_too_large", status: 413 },
   ];
   for (const { error, status, ...change } of cases) {
     const gh = fakeGithub();
@@ -255,11 +255,28 @@ test("recovers after a partial failure without corrupting the branch", async () 
   assert.equal((await body(recovered)).recovered, true);
 });
 
-test("rejects oversized files before any GitHub call", async () => {
+test("accepts exactly 64 KiB and rejects one byte more before any GitHub call", async () => {
+  const acceptedGithub = fakeGithub();
+  const acceptedAction = createGithubAction({
+    store: new MemoryOperationStore(),
+    githubFetch: acceptedGithub.fn,
+    token: "server-only",
+  });
+  const accepted = await acceptedAction(request({
+    operation_id: "limit-file-exact-64k",
+    files: [{
+      path: "experiments/gpt-actions-github/exact.txt",
+      content_base64: Buffer.alloc(64 * 1024, "a").toString("base64"),
+    }],
+  }));
+  assert.equal(accepted.status, 200);
+  const blobCall = acceptedGithub.calls.find((call) => call.url.endsWith("/git/blobs"));
+  assert.equal(Buffer.from(blobCall.body.content, "base64").length, 64 * 1024);
+
   const store = new MemoryOperationStore();
   const gh = fakeGithub();
   const action = createGithubAction({ store, githubFetch: gh.fn, token: "server-only" });
-  const response = await action(request({ files: [{ path: "experiments/gpt-actions-github/big.txt", content_base64: Buffer.alloc(4 * 1024 + 1, "a").toString("base64") }] }));
+  const response = await action(request({ files: [{ path: "experiments/gpt-actions-github/big.txt", content_base64: Buffer.alloc(64 * 1024 + 1, "a").toString("base64") }] }));
   assert.equal(response.status, 413);
   assert.equal((await body(response)).error, "file_too_large");
   assert.equal(gh.calls.length, 0);
@@ -321,9 +338,10 @@ test("OpenAPI exposes only runtime routes and mirrors generated-call constraints
   assert.equal(schema.includes("/v1/github/initialize"), false);
   assert.match(schema, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{7,79\}\$/);
   assert.match(schema, /gpt-actions-controlled-github-feasibility/);
-  assert.match(schema, /maxItems: 5/);
-  assert.match(schema, /x-decodedAggregateMaxBytes: 16384/);
-  assert.match(schema, /x-bodyMaxBytes: 32768/);
+  assert.match(schema, /maxItems: 32/);
+  assert.match(schema, /maxLength: 87384/);
+  assert.match(schema, /x-decodedAggregateMaxBytes: 262144/);
+  assert.match(schema, /x-bodyMaxBytes: 393216/);
   assert.match(schema, /contentEncoding: base64/);
   assert.match(schema, /const: update/);
   assert.match(schema, /required: \[pull_number\]/);
