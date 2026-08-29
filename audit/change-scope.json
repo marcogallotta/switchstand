@@ -4,6 +4,27 @@
   "kind": "gate_repair",
   "finding_ids": [],
   "runnable_blocker_id": null,
-  "gate_repair_receipts": [],
+  "gate_repair_receipts": [
+    {
+      "kind": "content_addressed_receipt",
+      "role": "gate_repair_review",
+      "subject":
+"gate-repair:8e517e344380fdd3da2813d922ee90ad6b8ace35:feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
+      "producer": "codex-agent:/root/repair_r0_for_r1b/review_r0_r1b_scope_a",
+      "reference":
+        "audit/receipts/1baa62041ce3449455a5d42cbee95386ba29ee52733631dd5ff3d0a68a21de9f.json",
+      "sha256": "1baa62041ce3449455a5d42cbee95386ba29ee52733631dd5ff3d0a68a21de9f"
+    },
+    {
+      "kind": "content_addressed_receipt",
+      "role": "gate_repair_review",
+      "subject":
+"gate-repair:8e517e344380fdd3da2813d922ee90ad6b8ace35:feccc74d74a42fc9be7b2ac1a28b1feb8d43a192591c22ed569fdb4a32f63e5d",
+      "producer": "codex-agent:/root/repair_r0_for_r1b/review_r0_pr59_remote_b",
+      "reference":
+        "audit/receipts/936e1d7547c8256249aff54f3f64c8ebb3056632fbfd4074fc25bc9e8555854b.json",
+      "sha256": "936e1d7547c8256249aff54f3f64c8ebb3056632fbfd4074fc25bc9e8555854b"
+    }
+  ],
   "rationale": "Add a two-review path-extension mechanism and bind the exact omitted R1b containment paths."
 }
