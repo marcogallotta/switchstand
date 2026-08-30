@@ -21,8 +21,7 @@ file already above that limit may not grow. The companion text check applies the
 120-character physical line limit to human-maintained first-party source, tests, scripts,
 documentation, and configuration. Generated fixtures and generated lock data are excluded from
 line-length enforcement. Source files have a separate 60 KiB (61,440-byte) ceiling. Every
-non-source native Switchstand file has a hard 64 KiB (65,536-byte) ceiling matching the external
-GPT Actions limit. The separately owned GPT Actions experiment is excluded from both checks.
+non-source Switchstand file has a hard 64 KiB (65,536-byte) ceiling.
 
 The gate, its configuration, dependency locks, and workflow remain human-review surfaces. This
 decision adds evidence for review; it is not a policy engine or an autonomous merge authority.
