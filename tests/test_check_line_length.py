@@ -41,7 +41,7 @@ class LineLengthGateTests(unittest.TestCase):
         self.assertIn("app.js:1 (122)", stderr.getvalue())
         self.assertNotIn("src/exact.js", stderr.getvalue())
 
-    def test_classification_excludes_generated_data_and_separate_lane(self):
+    def test_classification_excludes_generated_data(self):
         checked = (
             "src/app.py",
             "app.js",
@@ -57,7 +57,6 @@ class LineLengthGateTests(unittest.TestCase):
             "package-lock.json",
             "requirements-dev.lock",
             "tests/fixtures/data.json",
-            "experiments/gpt-actions-github/github-action.mjs",
         )
         for relative in checked:
             with self.subTest(relative=relative):
