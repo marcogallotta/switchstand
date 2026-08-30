@@ -30,7 +30,6 @@ SOURCE_SUFFIXES = {
     ".tsx",
 }
 SOURCE_PATHS_WITHOUT_SUFFIX = {"scripts/quality"}
-EXCLUDED_PREFIXES: set[str] = set()
 # Blob identity lets an unchanged legacy baseline survive unrelated main commits. Once the
 # reflow lands, its new blob is governed by the ordinary no-growth rule.
 ONE_TIME_PYTHON_REFLOW_ALLOWANCES = {
@@ -71,10 +70,6 @@ def is_source_file(relative: str) -> bool:
     return relative in SOURCE_PATHS_WITHOUT_SUFFIX or Path(relative).suffix.lower() in SOURCE_SUFFIXES
 
 
-def is_excluded_path(relative: str) -> bool:
-    return any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in EXCLUDED_PREFIXES)
-
-
 def legacy_line_limit(base_blob: str, relative: str, base_lines: int) -> int:
     return max(base_lines, ONE_TIME_PYTHON_REFLOW_ALLOWANCES.get((base_blob, relative), base_lines))
 
@@ -97,8 +92,6 @@ def main() -> int:
 
     failures: list[str] = []
     for relative in current_paths():
-        if is_excluded_path(relative):
-            continue
         path = ROOT / relative
         size = path.lstat().st_size
         source = is_source_file(relative)
