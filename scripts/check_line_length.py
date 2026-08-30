@@ -44,7 +44,6 @@ CHECKED_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-EXCLUDED_PREFIXES = {"experiments/gpt-actions-github"}
 EXCLUDED_PARTS = {"fixtures"}
 
 
@@ -60,8 +59,6 @@ def current_paths() -> list[str]:
 
 def is_checked_text(relative: str) -> bool:
     path = Path(relative)
-    if any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in EXCLUDED_PREFIXES):
-        return False
     if any(part in EXCLUDED_PARTS for part in path.parts):
         return False
     if len(path.parts) == 1 and relative in EXCLUDED_ROOT_FILES:
