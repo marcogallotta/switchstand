@@ -30,7 +30,7 @@ SOURCE_SUFFIXES = {
     ".tsx",
 }
 SOURCE_PATHS_WITHOUT_SUFFIX = {"scripts/quality"}
-EXCLUDED_PREFIXES = {"experiments/gpt-actions-github"}
+EXCLUDED_PREFIXES: set[str] = set()
 # Blob identity lets an unchanged legacy baseline survive unrelated main commits. Once the
 # reflow lands, its new blob is governed by the ordinary no-growth rule.
 ONE_TIME_PYTHON_REFLOW_ALLOWANCES = {
