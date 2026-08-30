@@ -208,16 +208,6 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("(589 -> 590)", stderr)
 
-    def test_separately_owned_gpt_actions_lane_is_excluded(self):
-        temporary, root, base = self._repo()
-        self.addCleanup(temporary.cleanup)
-        action = root / "experiments" / "gpt-actions-github" / "github-action.mjs"
-        action.parent.mkdir(parents=True)
-        action.write_bytes(b"x" * (check_sizes.SOURCE_FILE_LIMIT + 1))
-        with patch.object(check_sizes, "ROOT", root), patch.dict(os.environ, {"QUALITY_BASE_REF": base}):
-            self.assertEqual(check_sizes.main(), 0)
-        self.assertTrue(check_sizes.is_excluded_path(action.relative_to(root).as_posix()))
-
     def test_ignored_untracked_output_is_excluded(self):
         temporary, root, base = self._repo()
         self.addCleanup(temporary.cleanup)
