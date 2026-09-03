@@ -1,0 +1,9 @@
+{
+  "acquisition_id": "1218153920973114-bootstrap-sync-20260903T130000Z-a1",
+  "agent": "Codex /root/implement_subdoc_sync",
+  "owning_task_change": "Asana 1218153920973114 — Keep active Canary agents synchronized with changed Contract subdocuments",
+  "environment": "Canary",
+  "work": "Replace the approved Bootstrap procedure-loading bullet with the exact active-agent re-read rule",
+  "exact_target_task_gid": "1218111374882635",
+  "acquired_at": "2026-09-03T13:00:00Z"
+}
