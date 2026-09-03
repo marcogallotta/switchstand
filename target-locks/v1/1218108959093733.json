@@ -1,0 +1,9 @@
+{
+  "acquisition_id": "codex-finish-serialization-1218151012773523-20260903T125102Z",
+  "agent": "Codex /root/finish_serialization_guard",
+  "owning_task_change": "Asana task 1218151012773523 — P0 CRITICAL — Prevent parallel Contract-change write collisions",
+  "environment": "canary Asana Contract documents; no production mutation; no Project Settings mutation",
+  "work": "Verify or minimally implement the serialization guard in CANARY — SWITCHSTAND — Agent dispatch, authorship and durable handoff; then verify and complete only owning task",
+  "target_task_gid": "1218108959093733",
+  "acquired_at": "2026-09-03T12:51:02Z"
+}
