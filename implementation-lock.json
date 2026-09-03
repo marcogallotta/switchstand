@@ -1,0 +1,13 @@
+{
+  "schema": "switchstand-implementation-lock-v1",
+  "acquisition_id": "a7999537cbcdfcc38215017899679e6a",
+  "agent": "/root/implement_one_change_per_agent (Codex)",
+  "owning_task_gid": "1218152843477073",
+  "environment": "Canary",
+  "work": "Implement the one-Contract-change-per-implementing-agent rule in the live Canary Agent Dispatch procedure only; verify it; update and complete only the owning Contract Changes task; release and stop.",
+  "mutation_targets": [
+    "Asana task 1218108959093733: notes and html_notes, replacing only Step 5a",
+    "Asana task 1218152843477073: notes/html_notes completion record and completed state"
+  ],
+  "acquired_at": "2026-09-03T11:55:15Z"
+}
