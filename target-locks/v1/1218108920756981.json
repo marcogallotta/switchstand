@@ -1,0 +1,10 @@
+{
+  "acquisition_id": "codex-mtlka6ua-n39ubpaf3d",
+  "agent": "Codex /root/implement_exact_review_preflight",
+  "owning_task": "1218156282101585",
+  "change": "Human Review exact-text preflight",
+  "environment": "Canary",
+  "work": "Strengthen exact-document review readiness and require one concrete behavior/effect sentence",
+  "target_task_gid": "1218108920756981",
+  "acquired_at": "2026-09-03T13:29:15.298Z"
+}
