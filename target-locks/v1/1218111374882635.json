@@ -1,0 +1,9 @@
+{
+  "acquisition_id": "p0-pass-fail-1218143273192160-20260903",
+  "agent": "/root",
+  "owning_task_change": "1218143273192160",
+  "environment": "Canary Asana Contract documents only",
+  "work": "Add minimal actual-outcome PASS/FAIL rule",
+  "target_task_gid": "1218111374882635",
+  "acquired_at": "2026-09-03T13:21:34.888Z"
+}
