@@ -1,0 +1,9 @@
+{
+  "acquisition_id": "p0-8000-main-1218155306158209-20260903",
+  "agent": "/root",
+  "owning_task_change": "1218155306158209",
+  "environment": "Canary Asana Contract documents only",
+  "work": "Reduce Canary Main Contract below 8000 characters without dropping governing behavior",
+  "target_task_gid": "1218104742369545",
+  "acquired_at": "2026-09-03T13:05:55.618Z"
+}
