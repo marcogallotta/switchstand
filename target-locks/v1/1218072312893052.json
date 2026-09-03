@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "codex-backlog-scope-1218147883923860-20260903T125444Z",
-  "agent": "Codex /root/finish_backlog_scope",
-  "owning_task_change": "Asana task 1218147883923860 — Scope Contract Changes startup and blocking to affected work",
-  "environment": "canary Asana Contract documents; no production mutation; no Project Settings mutation",
-  "work": "Verify prior scoped-backlog Router and Lifecycle wording, complete only owning task, and make no additional Contract text change",
-  "target_task_gid": "1218072312893052",
-  "acquired_at": "2026-09-03T12:54:44Z"
-}
