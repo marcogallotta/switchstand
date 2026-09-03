@@ -1,0 +1,10 @@
+{
+  "schema": "switchstand-contract-target-lock-v1",
+  "acquisition_id": "f5378a16-1d1a-4a56-8460-4fea1e6d24a8",
+  "agent": "Dish Agent: Implementation | ChatGPT Work | /root/implement_fine_grained_locks",
+  "owning_task_or_change": "Asana task 1218151048715674 / fine-grained target locks",
+  "environment": "canary",
+  "work": "Apply the shared task-GID lock protocol and only the required Canary dispatch/mutation rules; verify and close the owning change.",
+  "exact_target_task_gid": "1218108937925065",
+  "acquired_at": "2026-09-03T12:44:44.590Z"
+}
