@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "codex-canary-prereq-1218147902514337-20260903T",
-  "agent": "Codex",
-  "owning_task_change": "1218147902514337 / routing dependency 1218140932905005",
-  "environment": "canary",
-  "work": "Reviewed Canary prerequisite for production recovery; no production/Project Settings",
-  "target_task_gid": "1218144890672220",
-  "acquired_at": "2026-09-03T13:35:00Z"
-}
