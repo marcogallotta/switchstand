@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "finish-human-trigger-1218147864593408-20260903T130000Z",
-  "agent": "Codex /root/finish_human_trigger",
-  "owning_task_change": "1218147864593408 — Resolve Main Contract and Human-review trigger conflict",
-  "environment": "Canary",
-  "work": "Remove the obsolete Canary Bootstrap human-review trigger override after Main Contract trigger alignment",
-  "exact_target_task_gid": "1218111374882635",
-  "acquired_at": "2026-09-03T13:00:00Z"
-}
