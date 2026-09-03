@@ -1,0 +1,10 @@
+{
+  "acquisition_id": "takeover-1218143273293463-20260903T130000Z",
+  "agent": "/root/finish_takeover_rule",
+  "owning_task": "1218143273293463",
+  "change": "current takeover",
+  "environment": "Canary",
+  "work": "Verify the existing Canary Dispatch CURRENT TAKEOVER rule, complete only owning task 1218143273293463, then release",
+  "target_task_gid": "1218108959093733",
+  "acquired_at": "2026-09-03T13:00:00Z"
+}
