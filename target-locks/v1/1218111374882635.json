@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "revert-unapproved-pass-fail-1218143273192160-20260903",
-  "agent": "/root",
-  "owning_task_change": "1218143273192160",
-  "environment": "Canary Asana Contract documents only",
-  "work": "Revert unauthorized pass-fail change falsely inferred from non-approval wording",
-  "target_task_gid": "1218111374882635",
-  "acquired_at": "2026-09-03T13:24:16.485Z"
-}
