@@ -1,0 +1,14 @@
+{
+  "schema": "switchstand-implementation-lock/v1",
+  "acquisition_id": "canary-1218146071527577-20260903T120332501Z-f58obtyk",
+  "agent": "Codex /root/implement_fast_mode_deployment",
+  "session": "/root/implement_fast_mode_deployment",
+  "owning_task_gid": "1218146071527577",
+  "environment": "Canary",
+  "work": "Implement the Canary deployment-only Fast Mode default/collision rule from Marco's controlling definition.",
+  "mutation_targets": [
+    "Asana task 1218104742369545 — CANARY — SWITCHSTAND Main Contract; notes/html_notes Fast Mode paragraph only",
+    "Asana task 1218146071527577 — implementation outcome/status and completion only"
+  ],
+  "acquired_at": "2026-09-03T12:03:32.501Z"
+}
