@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "20260903T130300Z-1218141839450350-finish-communication-rule",
-  "agent": "/root/finish_communication_rule",
-  "owning_task_change": "1218141839450350 — Make Canary communication terse by default",
-  "environment": "Canary Asana Contract documents only; no production or Project Settings",
-  "work": "Verify and, only if absent, apply the approved communication/action-visibility clause; then complete only owning task",
-  "target_task_gid": "1218104742369545",
-  "acquired_at": "2026-09-03T13:03:00Z"
-}
