@@ -1,0 +1,9 @@
+{
+  "acquisition_id": "codex-missing-inputs-1218147864593504-20260903T125313Z",
+  "agent": "Codex /root/finish_missing_inputs",
+  "owning_task_change": "Asana task 1218147864593504 — Resolve missing live-state inputs in Canary Dispatch and Lifecycle",
+  "environment": "canary Asana Contract documents; no production mutation; no Project Settings mutation",
+  "work": "Verify the already-applied missing-input handling in Canary Lifecycle and Dispatch; complete only owning task; no Contract text mutation unless canonical wording is absent",
+  "target_task_gid": "1218108818229957",
+  "acquired_at": "2026-09-03T12:53:13Z"
+}
