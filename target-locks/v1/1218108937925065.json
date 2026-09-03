@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "p0-pass-fail-1218143273192160-20260903",
-  "agent": "/root",
-  "owning_task_change": "1218143273192160",
-  "environment": "Canary Asana Contract documents only",
-  "work": "Add completion exception for actual-outcome PASS gate",
-  "target_task_gid": "1218108937925065",
-  "acquired_at": "2026-09-03T13:21:33.134Z"
-}
