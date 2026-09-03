@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "copyable-handoffs-1218143366331826-20260903T125234232Z",
-  "agent": "/root/finish_copyable_handoff",
-  "owning_task_change": "1218143366331826 — Render Marco-copyable handoffs in copy blocks",
-  "environment": "Canary Asana Contract documents only; no production or Project Settings",
-  "work": "Verify existing canonical copyable-handoff sentence in CANARY Main Contract and complete only owning change task",
-  "target_task_gid": "1218104742369545",
-  "acquired_at": "2026-09-03T12:52:34.232Z"
-}
