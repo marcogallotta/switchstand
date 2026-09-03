@@ -1,9 +1,0 @@
-{
-  "acquisition_id": "p0-8000-guard-1218155252054088-20260903",
-  "agent": "/root",
-  "owning_task_change": "1218155252054088",
-  "environment": "Canary mutation procedure only",
-  "work": "Enforce 8000-character ceiling on every Main Contract change",
-  "target_task_gid": "1218108937925065",
-  "acquired_at": "2026-09-03T13:07:08.594Z"
-}
