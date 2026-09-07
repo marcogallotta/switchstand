@@ -6,6 +6,7 @@ from .contracts import Routing, WorkPatch
 from .core import ProviderError, ProviderWork, UnknownEffect
 
 PROJECT = "1218210259719507"
+ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
     "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
@@ -37,6 +38,7 @@ class AsanaProvider:
                 return True
             if (parent := self._gid(task.get("parent"))) is None or parent in seen: return False
             seen.add(parent)
+            if len(seen) >= ANCESTRY_GETS: return False
             if (ancestor := await self._task(parent)) is None: return False
             task = ancestor
     @staticmethod
@@ -46,32 +48,25 @@ class AsanaProvider:
                 if isinstance(fields, list) else [])
     async def get(self, provider_work_id: str) -> ProviderWork | None:
         task = await self._task(provider_work_id)
-        if task is None:
-            return None
+        if task is None: return None
         fields = self._custom_fields(task)
-        values = {
-            name: next((f.get("display_value") for f in fields if f.get("gid") == gid), None)
-            for name, gid in FIELDS.items()
-        }
+        values = {name: next((f.get("display_value") for f in fields
+                  if f.get("gid") == gid), None) for name, gid in FIELDS.items()}
         try:
-            route = {key: value if isinstance(value, str) else None
-                     for key, value in values.items()}
-            routing = Routing(**route)
-            return ProviderWork(
-                task["name"], task["notes"], task["completed"], task["modified_at"],
-                routing, await self._canonical(task),
-            )
+            title, notes, completed, revision = (task[key] for key in ("name", "notes", "completed", "modified_at"))
+            if not all(isinstance(value, str) for value in (title, notes, revision)) or not isinstance(completed, bool): raise TypeError
+            routing = Routing(**{key: value if isinstance(value, str) else None
+                               for key, value in values.items()})
+            return ProviderWork(title, notes, completed, revision, routing, await self._canonical(task))
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
     async def _write(self, method: str, path: str, data: JSON) -> httpx.Response:
         try:
             response = await self.client.request(method, path, json={"data": data})
-        except httpx.RequestError:
-            raise UnknownEffect("provider effect unknown") from None
+        except httpx.RequestError: raise UnknownEffect("provider effect unknown") from None
         try:
             response.raise_for_status()
-        except httpx.HTTPStatusError:
-            raise ProviderError("provider write failed") from None
+        except httpx.HTTPStatusError: raise ProviderError("provider write failed") from None
         return response
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
@@ -85,17 +80,15 @@ class AsanaProvider:
                 matches = [field for field in fields if field.get("gid") == FIELDS[name]]
                 enabled = len(matches) == 1 and matches[0].get("enabled") is True
                 options: object = matches[0].get("enum_options", []) if enabled else []
-                choices = [option for option in self._custom_fields({"custom_fields": options})
-                           if option.get("name") == getattr(patch, name)
-                           and option.get("enabled") is True]
+                choices = [o for o in self._custom_fields({"custom_fields": options})
+                           if o.get("name") == getattr(patch, name) and o.get("enabled") is True]
                 if len(choices) != 1 or not isinstance(choices[0].get("gid"), str):
                     raise ProviderError("routing write denied")
                 custom[FIELDS[name]] = choices[0]["gid"]
             data["custom_fields"] = custom
         await self._write("PUT", f"/tasks/{provider_work_id}", data)
     async def append(self, provider_work_id: str, text: str) -> bool:
-        path = f"/tasks/{provider_work_id}/stories"
-        response = await self._write("POST", path, {"text": text})
+        response = await self._write("POST", f"/tasks/{provider_work_id}/stories", {"text": text})
         try:
             data = response.json()["data"]
             return isinstance(data, dict) and isinstance(cast(JSON, data).get("gid"), str)

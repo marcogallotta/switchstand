@@ -5,7 +5,7 @@ import pytest
 
 from switchstand.contracts import WorkPatch
 from switchstand.core import ProviderError, UnknownEffect
-from switchstand.provider import FIELDS, OPT_FIELDS, PROJECT, AsanaProvider
+from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, AsanaProvider
 
 
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
@@ -41,13 +41,17 @@ async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
     fields = [field(gid, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
-    result = await subject.get("t"); assert result and result.routing.priority == "priority"
+    result = await subject.get("t"); assert result and result.routing.model_dump() == {name: name for name in FIELDS}
+async def test_ancestry_is_bounded():
+    subject, api = provider(*[(200, task(parent=str(i))) for i in range(ANCESTRY_GETS)])
+    result = await subject.get("t"); assert result and not result.canonical and len(api.requests) == ANCESTRY_GETS
 async def test_routing_mapping_minimal_update_and_readback():
     before, after = field(), field(display="Stage 3")
     subject, api = provider((200, task(fields=[before])), (200, {}),
                             (200, task(project=PROJECT, fields=[after])))
     await subject.update("t", WorkPatch(notes="new", horizon="Stage 3"))
     result = await subject.get("t")
+    assert (api.requests[1].method, api.requests[1].url.path) == ("PUT", "/api/1.0/tasks/t")
     assert json.loads(api.requests[1].content) == {"data": {"notes": "new", "custom_fields": {
         FIELDS["horizon"]: "option-gid"}}}
     assert result and result.routing.horizon == "Stage 3"
@@ -64,6 +68,7 @@ async def test_bad_routing_settings_deny_without_put(fields):
     assert len(api.requests) == 1
 async def test_append_once_and_ambiguous_response_is_not_retried():
     subject, api = provider((201, {"data": {"gid": "s"}})); assert await subject.append("t", "x")
+    assert (api.requests[0].method, api.requests[0].url.path) == ("POST", "/api/1.0/tasks/t/stories")
     assert json.loads(api.requests[0].content) == {"data": {"text": "x"}}
     subject, _ = provider((201, {"data": {}})); assert not await subject.append("t", "x")
     error = httpx.ReadTimeout("lost", request=httpx.Request("POST", "https://a"))
@@ -75,4 +80,6 @@ async def test_failures_are_sanitized():
     with pytest.raises(ProviderError) as read_error: await subject.get("t")
     subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
     with pytest.raises(ProviderError) as write_error: await subject.update("t", WorkPatch(notes="x"))
-    assert "secret" not in str(read_error.value) + str(write_error.value)
+    malformed = task(project=PROJECT); malformed["data"]["notes"] = {"secret": True}
+    with pytest.raises(ProviderError) as malformed_error: await provider((200, malformed))[0].get("t")
+    assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
