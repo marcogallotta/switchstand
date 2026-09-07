@@ -1,4 +1,5 @@
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 from uuid import UUID
 
 from mcp.server import MCPServer
@@ -21,6 +22,14 @@ class UnavailableController:
     async def append(self, request: WorkAppendRequest) -> AppendResult:
         return AppendResult(status="provider_error")
 
+def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
+    server.tool(name=name)(function)
+    tool = server._tool_manager.get_tool(name)  # pyright: ignore[reportPrivateUsage]
+    assert tool is not None
+    tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+    tool.fn_metadata.arg_model.model_rebuild(force=True)
+    tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
+
 def build_server(controller: object | None = None) -> MCPServer:
     service = controller or UnavailableController()
     server = MCPServer("Switchstand")
@@ -36,9 +45,9 @@ def build_server(controller: object | None = None) -> MCPServer:
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
-    server.tool(name="work_get")(_work_get)
-    server.tool(name="work_update")(_work_update)
-    server.tool(name="work_append")(_work_append)
+    _closed_tool(server, "work_get", _work_get)
+    _closed_tool(server, "work_update", _work_update)
+    _closed_tool(server, "work_append", _work_append)
     return server
 
 def main() -> None:
