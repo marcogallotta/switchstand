@@ -27,6 +27,7 @@ class FakeProvider:
     def __init__(self, work):
         self.work, self.updates, self.appends = work, [], []
         self.ignore_update = self.unknown_append = self.fail_get = False
+        self.confirm_append = True
     async def get(self, provider_work_id):
         if self.fail_get:
             raise ProviderError("secret provider detail")
@@ -49,7 +50,7 @@ class FakeProvider:
         self.appends.append(text)
         if self.unknown_append:
             raise UnknownEffect("lost response")
-        return True
+        return self.confirm_append
 
 @pytest.fixture
 def setup_controller():
@@ -98,6 +99,9 @@ async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_cont
     provider.unknown_append = True
     result = await controller.append(WorkAppendRequest(api_version="1", work_id=active, text="history"))
     assert result.status == "unknown" and provider.appends == ["history"]
+    provider.unknown_append, provider.confirm_append = False, False
+    result = await controller.append(WorkAppendRequest(api_version="1", work_id=active, text="again"))
+    assert result.status == "unknown" and provider.appends == ["history", "again"]
     provider.fail_get = True
     result = await controller.get(WorkGetRequest(api_version="1", work_id=active))
     assert result.status == "provider_error" and "secret" not in str(result.model_dump())
