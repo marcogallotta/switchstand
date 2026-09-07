@@ -45,7 +45,7 @@ class State(Protocol):
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
-    async def append(self, provider_work_id: str, text: str) -> None: ...
+    async def append(self, provider_work_id: str, text: str) -> bool: ...
 
 class Controller:
     def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
@@ -53,6 +53,14 @@ class Controller:
 
     def _item(self, work_id: UUID, work: ProviderWork) -> WorkItem:
         return WorkItem(id=work_id, title=work.title, notes=work.notes, completed=work.completed, revision=work.revision, routing=work.routing)
+
+    @staticmethod
+    def _matches(item: WorkItem, patch: WorkPatch) -> bool:
+        routing = {"horizon", "review_next_action", "stage3_gate"}
+        return all(
+            getattr(item.routing if field in routing else item, field) == getattr(patch, field)
+            for field in patch.model_fields_set
+        )
 
     async def _read(self, work_id: UUID, handle: Handle) -> WorkResult:
         provider = self.providers.get(handle.provider)
@@ -96,7 +104,10 @@ class Controller:
                 if current.item.revision != request.observed_revision:
                     return WorkResult(status="stale", item=current.item)
                 await self.providers[handle.provider].update(handle.provider_work_id, request.patch)
-                return await self._read(request.work_id, handle)
+                readback = await self._read(request.work_id, handle)
+                if readback.status != "ok" or readback.item is None:
+                    return readback
+                return readback if self._matches(readback.item, request.patch) else WorkResult(status="unknown")
         except UnknownEffect:
             return WorkResult(status="unknown")
         except ProviderError:
@@ -114,7 +125,9 @@ class Controller:
                     if current.status == "stale":
                         return AppendResult(status="provider_error")
                     return AppendResult(status=current.status)
-                await self.providers[handle.provider].append(handle.provider_work_id, request.text)
+                confirmed = await self.providers[handle.provider].append(handle.provider_work_id, request.text)
+                if not confirmed:
+                    return AppendResult(status="unknown")
                 readback = await self._read(request.work_id, handle)
                 if readback.status == "ok":
                     return AppendResult(status="ok")

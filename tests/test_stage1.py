@@ -12,7 +12,7 @@ from switchstand.contracts import (
     WorkPatch,
     WorkUpdateRequest,
 )
-from switchstand.core import Controller, Handle, ProviderWork
+from switchstand.core import Controller, Handle, ProviderError, ProviderWork, UnknownEffect
 
 
 class FakeState:
@@ -24,12 +24,32 @@ class FakeState:
         handle = Handle(uuid4(), provider, provider_work_id); self.handles[handle.id] = handle; return handle
 
 class FakeProvider:
-    def __init__(self, work): self.work, self.updates, self.appends = work, [], []
-    async def get(self, provider_work_id): return self.work
+    def __init__(self, work):
+        self.work, self.updates, self.appends = work, [], []
+        self.ignore_update = self.unknown_append = self.fail_get = False
+    async def get(self, provider_work_id):
+        if self.fail_get:
+            raise ProviderError("secret provider detail")
+        return self.work
     async def update(self, provider_work_id, patch):
         self.updates.append(patch)
-        self.work = ProviderWork(self.work.title, patch.notes or self.work.notes, patch.completed if patch.completed is not None else self.work.completed, "r2", self.work.routing, self.work.canonical)
-    async def append(self, provider_work_id, text): self.appends.append(text)
+        if self.ignore_update:
+            return
+        fields = patch.model_fields_set
+        routing = self.work.routing.model_dump()
+        for field in {"horizon", "review_next_action", "stage3_gate"} & fields:
+            routing[field] = getattr(patch, field)
+        self.work = ProviderWork(
+            self.work.title,
+            patch.notes if "notes" in fields else self.work.notes,
+            patch.completed if "completed" in fields else self.work.completed,
+            "r2", Routing(**routing), self.work.canonical,
+        )
+    async def append(self, provider_work_id, text):
+        self.appends.append(text)
+        if self.unknown_append:
+            raise UnknownEffect("lost response")
+        return True
 
 @pytest.fixture
 def setup_controller():
@@ -59,14 +79,25 @@ async def test_reference_write_denied_and_stale_update_has_no_effect(setup_contr
 
 async def test_update_returns_authoritative_readback(setup_controller):
     active, _, provider, controller = setup_controller
-    result = await controller.update(WorkUpdateRequest(api_version="1", work_id=active, observed_revision="r1", patch=WorkPatch(notes="new")))
-    assert result.status == "ok" and result.item and result.item.notes == "new" and result.item.revision == "r2"
+    patch = WorkPatch(notes="new", horizon="Stage 3")
+    result = await controller.update(WorkUpdateRequest(api_version="1", work_id=active, observed_revision="r1", patch=patch))
+    assert result.status == "ok" and result.item and result.item.routing.horizon == "Stage 3"
     assert len(provider.updates) == 1
 
-async def test_noncanonical_work_denies_and_append_is_once(setup_controller):
+async def test_write_denial_and_readback_mismatch_are_not_success(setup_controller):
     active, _, provider, controller = setup_controller
     provider.work = ProviderWork("T", "N", False, "r1", Routing(), False)
-    assert (await controller.get(WorkGetRequest(api_version="1", work_id=active))).status == "denied"
+    request = WorkUpdateRequest(api_version="1", work_id=active, observed_revision="r1", patch=WorkPatch(notes="new"))
+    assert (await controller.update(request)).status == "denied" and provider.updates == []
     provider.work = ProviderWork("T", "N", False, "r1", Routing(), True)
+    provider.ignore_update = True
+    assert (await controller.update(request)).status == "unknown" and len(provider.updates) == 1
+
+async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_controller):
+    active, _, provider, controller = setup_controller
+    provider.unknown_append = True
     result = await controller.append(WorkAppendRequest(api_version="1", work_id=active, text="history"))
-    assert result.status == "ok" and provider.appends == ["history"]
+    assert result.status == "unknown" and provider.appends == ["history"]
+    provider.fail_get = True
+    result = await controller.get(WorkGetRequest(api_version="1", work_id=active))
+    assert result.status == "provider_error" and "secret" not in str(result.model_dump())
