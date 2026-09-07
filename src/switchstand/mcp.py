@@ -1,28 +1,43 @@
-from typing import Literal
+import os
+from collections.abc import Callable
+from typing import Any, Literal
 from uuid import UUID
 
+import httpx
 from mcp.server import MCPServer
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
     AppendResult,
+    LaunchAuthority,
     WorkAppendRequest,
     WorkGetRequest,
     WorkPatch,
     WorkResult,
     WorkUpdateRequest,
 )
+from .core import Controller
+from .provider import AsanaProvider
+from .state import PostgresState
 
 
-class UnavailableController:
-    async def get(self, request: WorkGetRequest) -> WorkResult:
-        return WorkResult(status="provider_error")
-    async def update(self, request: WorkUpdateRequest) -> WorkResult:
-        return WorkResult(status="provider_error")
-    async def append(self, request: WorkAppendRequest) -> AppendResult:
-        return AppendResult(status="provider_error")
+def controller_from_env() -> Controller:
+    references = tuple(UUID(value) for value in os.getenv("REFERENCE_WORK_IDS", "").split(",") if value)
+    authority = LaunchAuthority(active_work_id=UUID(os.environ["ACTIVE_WORK_ID"]), reference_work_ids=references)
+    engine = create_async_engine(os.environ["DATABASE_URL"])
+    client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
+                               headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
+    return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
 
-def build_server(controller: object | None = None) -> MCPServer:
-    service = controller or UnavailableController()
+def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
+    server.tool(name=name)(function)
+    tool = server._tool_manager.get_tool(name)  # pyright: ignore[reportPrivateUsage]
+    assert tool is not None
+    tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+    tool.fn_metadata.arg_model.model_rebuild(force=True)
+    tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
+
+def build_server(service: object) -> MCPServer:
     server = MCPServer("Switchstand")
 
     async def _work_get(api_version: Literal["1"], work_id: UUID) -> WorkResult:
@@ -36,13 +51,13 @@ def build_server(controller: object | None = None) -> MCPServer:
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
-    server.tool(name="work_get")(_work_get)
-    server.tool(name="work_update")(_work_update)
-    server.tool(name="work_append")(_work_append)
+    _closed_tool(server, "work_get", _work_get)
+    _closed_tool(server, "work_update", _work_update)
+    _closed_tool(server, "work_append", _work_append)
     return server
 
 def main() -> None:
-    build_server().run()
+    build_server(controller_from_env()).run()
 
 if __name__ == "__main__":
     main()
