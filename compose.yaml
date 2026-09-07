@@ -16,6 +16,8 @@ services:
     stdin_open: true
     environment:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
-      ASANA_TOKEN: ${ASANA_TOKEN:-}
+      ASANA_TOKEN: ${ASANA_TOKEN:?required}
+      ACTIVE_WORK_ID: ${ACTIVE_WORK_ID:?required}
+      REFERENCE_WORK_IDS: ${REFERENCE_WORK_IDS:-}
     depends_on:
       postgres: {condition: service_healthy}

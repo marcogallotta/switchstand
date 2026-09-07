@@ -1,26 +1,33 @@
+import os
 from collections.abc import Callable
 from typing import Any, Literal
 from uuid import UUID
 
+import httpx
 from mcp.server import MCPServer
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
     AppendResult,
+    LaunchAuthority,
     WorkAppendRequest,
     WorkGetRequest,
     WorkPatch,
     WorkResult,
     WorkUpdateRequest,
 )
+from .core import Controller
+from .provider import AsanaProvider
+from .state import PostgresState
 
 
-class UnavailableController:
-    async def get(self, request: WorkGetRequest) -> WorkResult:
-        return WorkResult(status="provider_error")
-    async def update(self, request: WorkUpdateRequest) -> WorkResult:
-        return WorkResult(status="provider_error")
-    async def append(self, request: WorkAppendRequest) -> AppendResult:
-        return AppendResult(status="provider_error")
+def controller_from_env() -> Controller:
+    references = tuple(UUID(value) for value in os.getenv("REFERENCE_WORK_IDS", "").split(",") if value)
+    authority = LaunchAuthority(active_work_id=UUID(os.environ["ACTIVE_WORK_ID"]), reference_work_ids=references)
+    engine = create_async_engine(os.environ["DATABASE_URL"])
+    client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
+                               headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
+    return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
 
 def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
     server.tool(name=name)(function)
@@ -30,8 +37,7 @@ def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> 
     tool.fn_metadata.arg_model.model_rebuild(force=True)
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
 
-def build_server(controller: object | None = None) -> MCPServer:
-    service = controller or UnavailableController()
+def build_server(service: object) -> MCPServer:
     server = MCPServer("Switchstand")
 
     async def _work_get(api_version: Literal["1"], work_id: UUID) -> WorkResult:
@@ -51,7 +57,7 @@ def build_server(controller: object | None = None) -> MCPServer:
     return server
 
 def main() -> None:
-    build_server().run()
+    build_server(controller_from_env()).run()
 
 if __name__ == "__main__":
     main()
