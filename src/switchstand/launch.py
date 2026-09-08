@@ -44,14 +44,14 @@ class PreparedRun(NamedTuple):
 def linked_branch(repo: Path, env: dict[str, str]) -> str:
     completed = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir",
-         "--abbrev-ref", "HEAD", "HEAD"],
+         "HEAD", "--abbrev-ref", "HEAD"],
         cwd=repo,
         env=env,
         check=True,
         text=True,
         capture_output=True,
     )
-    git_value, common_value, branch, head = completed.stdout.splitlines()
+    git_value, common_value, head, branch = completed.stdout.splitlines()
     git_dir, common_dir = (Path(value).resolve(strict=True) for value in (git_value, common_value))
     if git_dir == common_dir:
         raise ValueError("managed launch requires a linked writer worktree")
