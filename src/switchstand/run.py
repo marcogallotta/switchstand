@@ -1,7 +1,7 @@
 import fcntl
 import json
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,7 +88,7 @@ def _write_receipt(
 @contextmanager
 def reserve_run(
     repo: Path, branch: str, git_dir: Path
-) -> Iterator[Callable[[UUID], RunReceipt]]:
+) -> Generator[Callable[[UUID], RunReceipt]]:
     path = git_dir / RECEIPT
     lock = os.open(
         git_dir / "switchstand-run.lock",
