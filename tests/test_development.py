@@ -15,7 +15,8 @@ def tool(name):
 
 def test_development_surface_is_closed():
     server = development.build_server()
-    assert set(server._tool_manager._tools) == {"quality", "commit_all_current_worktree"}
+    assert set(server._tool_manager._tools) == {
+        "quality", "commit_all_current_worktree", "run_status"}
     for item in server._tool_manager._tools.values():
         assert item.parameters.get("additionalProperties") is False
 
@@ -53,3 +54,21 @@ def test_credential_path_covers_environment_variants():
                for name in (".env", ".env.local", "service.env.production"))
     assert not development._credential_path("environment.md")
     assert not development._credential_path(".env.example")
+
+
+async def test_run_status_is_bound_to_owned_worktree(monkeypatch, tmp_path):
+    monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
+    monkeypatch.setattr(
+        development, "_git", lambda repo, *args: completed(stdout=str(tmp_path) + "\n")
+    )
+    captured = {}
+    monkeypatch.setattr(
+        development,
+        "inspect_receipt",
+        lambda path, repo, branch: captured.setdefault(
+            "call", development.RunStatus(status="stopped")
+        ),
+    )
+    result = await tool("run_status")()
+    assert result.status == "stopped"
+    assert captured["call"].status == "stopped"
