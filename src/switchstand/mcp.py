@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Callable
 from typing import Any, Literal
@@ -56,7 +57,14 @@ def build_server(service: object) -> MCPServer:
     _closed_tool(server, "work_append", _work_append)
     return server
 
+def _protect_provider_logs() -> None:
+    for name in ("httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        logger.handlers[:] = [logging.NullHandler()]
+        logger.propagate = False
+
 def main() -> None:
+    _protect_provider_logs()
     build_server(controller_from_env()).run()
 
 if __name__ == "__main__":

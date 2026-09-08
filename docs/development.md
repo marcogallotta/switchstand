@@ -13,6 +13,8 @@
   `--reference <Asana task URL>` for up to eight read-only references. Provisioning migrates the database first, is
   idempotent, and accepts task IDs as well as URLs.
 - MCP server: `docker compose run --rm -T controller`
+- Codex: trust this repository, then start Codex from its root. The checked-in project MCP configuration launches the
+  same required STDIO server and forwards `HOME` only; Compose obtains secrets from the shared environment file.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Integration admits

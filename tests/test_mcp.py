@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 from uuid import UUID
@@ -5,7 +6,7 @@ from uuid import UUID
 from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import AppendResult, Routing, WorkItem, WorkResult
-from switchstand.mcp import build_server
+from switchstand.mcp import _protect_provider_logs, build_server
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -20,6 +21,13 @@ class FakeService:
         return WorkResult(status="stale", item=item(request.patch.notes))
     async def append(self, request):
         return AppendResult(status="ok")
+
+def test_provider_request_logs_are_suppressed(caplog):
+    _protect_provider_logs()
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("httpx").info("GET https://provider.invalid/tasks/raw-provider-id")
+        logging.getLogger("httpcore.connection").warning("raw-provider-id")
+    assert "raw-provider-id" not in caplog.text
 
 async def test_real_stdio_handshake_exposes_exact_surface():
     server = StdioServerParameters(command=sys.executable, args=[str(Path(__file__)), "serve"])
