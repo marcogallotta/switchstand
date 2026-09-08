@@ -34,11 +34,17 @@ This file is the sole writable owner of shared agent operating rules.
 - Keep changes inside the assigned stage and file ownership. Shared config, migrations, CI, and guidance belong
   to the integration owner unless explicitly delegated.
 - Run affected tests and the full quality gate before publication. Review AI-authored tests for the fault they catch.
+- Before escalating a material blocker to Marco, dispatch one fresh context-free challenge to test whether the frozen
+  authority already delegates a smaller compliant resolution. Record the process friction; ask only if it survives.
+- Treat a stage as a coordination/result owner, not as a pull-request boundary. Before editing, decompose it into the
+  smallest independently coherent and verifiable PR tranches. Each PR must have one primary behavioral outcome and
+  one reason to change; dependency order or shared timing alone does not justify bundling. Treat a large diff or broad
+  file spread as a split signal, but prefer behavioral cohesion over an arbitrary line limit.
 - Before publication, automatically dispatch one fresh read-only review child. Add reviewers only for materially
   independent surfaces when parallelism reduces elapsed time. Minor findings may be deferred. Fix blocking findings,
   then use the same child for one targeted rereview; do not recursively review rereview-only changes.
 - Record real non-blocking setup or workflow friction in `~/.config/switchstand/friction.md` as it is observed;
   do not let the scratch record expand the active task.
 - Stop on a new material authority, persistence, concurrency, security, or external-interface choice.
-- Keep cumulative handwritten Bootstrap Python at or below 1,700 lines; reforecast before crossing the current allowance.
+- Keep cumulative handwritten Bootstrap Python at or below 2,400 lines; reforecast before crossing the current allowance.
 - Treat `marcogallotta/switchstandold` as read-only evidence, never as an implementation base.
