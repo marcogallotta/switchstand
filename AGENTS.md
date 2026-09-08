@@ -3,8 +3,8 @@
 This file is the sole writable owner of shared agent operating rules.
 
 - Start from the assigned active WorkId, bounded reference WorkIds, and an exact green repository SHA.
-- Use the repo-local `.env` for setup. Ask once for any missing value, write it there, and reuse it automatically.
-- Asana REST uses `ASANA_TOKEN` from `.env`. Any OAuth layer is GitHub-only; never use Asana OAuth.
+- Use `~/.config/switchstand/.env` for setup. Ask once for any missing value, write it there, and reuse it automatically.
+- Asana REST uses `ASANA_TOKEN` from that file. Any OAuth layer is GitHub-only; never use Asana OAuth.
 - Read the active work and its governing references before material edits or child dispatch.
 - One agent owns each writable surface. Children receive bounded objectives, files, tests, and stop conditions.
 - Inspect a child after roughly a minute or when behavior looks suspicious; steer or stop scope drift.
