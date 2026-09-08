@@ -38,7 +38,9 @@ class FakeState:
 class FakeProvider:
     def __init__(self, work):
         self.work, self.updates, self.appends = work, [], []
-        self.ignore_update = self.unknown_append = self.fail_get = False
+        self.ignore_update = self.unknown_update = self.reject_update = False
+        self.fail_after_update = self.deny_after_update = False
+        self.unknown_append = self.fail_get = False
         self.fail_after_append = self.deny_after_append = False
         self.reject_append = False
         self.confirm_append = True
@@ -48,6 +50,10 @@ class FakeProvider:
         return self.work
     async def update(self, provider_work_id, patch):
         self.updates.append(patch)
+        if self.reject_update:
+            raise ProviderError("definite rejection")
+        if self.unknown_update:
+            raise UnknownEffect("lost response")
         if self.ignore_update:
             return
         fields = patch.model_fields_set
@@ -60,6 +66,13 @@ class FakeProvider:
             patch.completed if "completed" in fields else self.work.completed,
             "r2", Routing(**routing), self.work.canonical,
         )
+        if self.fail_after_update:
+            self.fail_get = True
+        if self.deny_after_update:
+            self.work = ProviderWork(
+                self.work.title, self.work.notes, self.work.completed,
+                self.work.revision, self.work.routing, False,
+            )
     async def append(self, provider_work_id, text):
         self.appends.append(text)
         if self.reject_append:
@@ -116,6 +129,33 @@ async def test_write_denial_and_readback_mismatch_are_not_success(setup_controll
     provider.work = ProviderWork("T", "N", False, "r1", Routing(), True)
     provider.ignore_update = True
     assert (await controller.update(request)).status == "unknown" and len(provider.updates) == 1
+
+
+@pytest.mark.parametrize(
+    "failure", ["unknown_update", "fail_after_update", "deny_after_update", "fail_unlock"]
+)
+async def test_update_ambiguous_effect_is_unknown_and_not_retried(setup_controller, failure):
+    active, _, provider, controller = setup_controller
+    setattr(controller.state if failure == "fail_unlock" else provider, failure, True)
+    result = await controller.update(
+        WorkUpdateRequest(
+            api_version="1", work_id=active, observed_revision="r1",
+            patch=WorkPatch(notes="sent once"),
+        )
+    )
+    assert result.status == "unknown" and len(provider.updates) == 1
+
+
+async def test_update_provider_rejection_is_provider_error(setup_controller):
+    active, _, provider, controller = setup_controller
+    provider.reject_update = True
+    result = await controller.update(
+        WorkUpdateRequest(
+            api_version="1", work_id=active, observed_revision="r1",
+            patch=WorkPatch(notes="rejected"),
+        )
+    )
+    assert result.status == "provider_error" and len(provider.updates) == 1
 
 async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_controller):
     active, _, provider, controller = setup_controller

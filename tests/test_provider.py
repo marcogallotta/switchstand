@@ -59,6 +59,20 @@ async def test_update_is_narrow():
     subject, api = provider((200, {})); await subject.update("t", WorkPatch(completed=True))
     assert api.requests[0].method == "PUT" and json.loads(api.requests[0].content) == {
         "data": {"completed": True}}
+async def test_update_ambiguous_response_is_unknown_and_not_retried():
+    error = httpx.ReadTimeout("lost", request=httpx.Request("PUT", "https://a"))
+    subject, api = provider(error)
+    with pytest.raises(UnknownEffect, match="provider effect unknown"):
+        await subject.update("t", WorkPatch(notes="x"))
+    assert len(api.requests) == 1
+    subject, api = provider((500, {}))
+    with pytest.raises(UnknownEffect, match="provider effect unknown"):
+        await subject.update("t", WorkPatch(notes="x"))
+    assert len(api.requests) == 1
+    subject, api = provider((400, {}))
+    with pytest.raises(ProviderError, match="provider write failed"):
+        await subject.update("t", WorkPatch(notes="x"))
+    assert len(api.requests) == 1
 @pytest.mark.parametrize("fields", [[], [field(enabled=False)], [field(), field()],
                                      [field(option="Other")]])
 async def test_bad_routing_settings_deny_without_put(fields):
