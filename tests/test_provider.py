@@ -123,3 +123,11 @@ async def test_suggest_next_fails_closed_on_truncated_provider_page():
                                  "next_page": {"offset": "more"}}))
     with pytest.raises(ProviderError, match="provider request failed"):
         await subject.suggest_next(frozenset())
+
+async def test_suggest_next_fails_closed_on_malformed_actionable_row():
+    malformed = candidate("broken", "P0")
+    malformed["name"] = None
+    subject, _ = provider((200, {"data": [malformed, candidate("lower", "P1")],
+                                 "next_page": None}))
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.suggest_next(frozenset())

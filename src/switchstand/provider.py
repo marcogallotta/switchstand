@@ -123,17 +123,27 @@ class AsanaProvider:
                     raise TypeError
                 item = cast(JSON, value)
                 gid, title = item.get("gid"), item.get("name")
-                if gid in excluded or item.get("completed") is not False:
-                    continue
-                fields = self._custom_fields(item)
-                priority = next((field.get("display_value") for field in fields
-                                 if field.get("gid") == FIELDS["priority"]), None)
-                horizon = next((field.get("display_value") for field in fields
-                                if field.get("gid") == FIELDS["horizon"]), None)
+                completed = item.get("completed")
+                raw_fields = item.get("custom_fields")
                 if (not isinstance(gid, str) or not isinstance(title, str)
-                        or not isinstance(priority, str) or priority not in PRIORITIES
-                        or horizon is not None and not isinstance(horizon, str)):
+                        or not isinstance(completed, bool) or not isinstance(raw_fields, list)
+                        or any(not isinstance(field, dict) for field in raw_fields)):
+                    raise TypeError
+                if gid in excluded or completed:
                     continue
+                fields = cast(list[JSON], raw_fields)
+                priorities = [field.get("display_value") for field in fields
+                              if field.get("gid") == FIELDS["priority"]]
+                horizons = [field.get("display_value") for field in fields
+                            if field.get("gid") == FIELDS["horizon"]]
+                if len(priorities) > 1 or len(horizons) > 1:
+                    raise TypeError
+                priority = priorities[0] if priorities else None
+                horizon = horizons[0] if horizons else None
+                if priority is None or isinstance(priority, str) and priority not in PRIORITIES:
+                    continue
+                if not isinstance(priority, str) or horizon is not None and not isinstance(horizon, str):
+                    raise TypeError
                 candidates.append((PRIORITIES[priority], position,
                                    ProviderHead(gid, title, priority, horizon)))
             return min(candidates, key=lambda candidate: candidate[:2])[2] if candidates else None

@@ -48,6 +48,7 @@ class ProviderHead:
 
 class State(Protocol):
     async def get(self, work_id: UUID) -> Handle | None: ...
+    async def bound_provider_ids(self, provider: str) -> frozenset[str]: ...
     def locked(self, work_id: UUID) -> AbstractAsyncContextManager[Handle | None]: ...
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
 
@@ -166,13 +167,10 @@ class Controller:
 
     async def suggest_next(self) -> SuggestionResult:
         try:
-            handles = [await self.state.get(work_id) for work_id in
-                       (self.authority.active_work_id, *self.authority.reference_work_ids)]
-            active = handles[0]
+            active = await self.state.get(self.authority.active_work_id)
             if active is None or (provider := self.providers.get(active.provider)) is None:
                 return SuggestionResult(status="provider_error")
-            excluded = frozenset(handle.provider_work_id for handle in handles
-                                 if handle is not None and handle.provider == active.provider)
+            excluded = await self.state.bound_provider_ids(active.provider)
             candidate = await provider.suggest_next(excluded)
             if candidate is None:
                 return SuggestionResult(status="none")

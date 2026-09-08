@@ -26,6 +26,9 @@ from switchstand.core import (
 class FakeState:
     def __init__(self, handles): self.handles, self.fail_unlock = handles, False
     async def get(self, work_id): return self.handles.get(work_id)
+    async def bound_provider_ids(self, provider):
+        return frozenset(handle.provider_work_id for handle in self.handles.values()
+                         if handle.provider == provider)
     @asynccontextmanager
     async def locked(self, work_id):
         yield self.handles.get(work_id)
@@ -203,6 +206,8 @@ async def test_suggest_next_returns_one_head_and_excludes_bound_work(setup_contr
     assert result.item.title == "Next work" and result.item.priority == "P0"
     assert provider.excluded == frozenset({"a", "r"})
     assert await controller.state.get(result.item.id) == Handle(result.item.id, "fake", "next")
+    await controller.suggest_next()
+    assert provider.excluded == frozenset({"a", "r", "next"})
 
 
 async def test_suggest_next_returns_none_without_actionable_work(setup_controller):
