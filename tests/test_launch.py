@@ -32,12 +32,17 @@ def test_linked_branch_requires_recorded_clean_green_head(monkeypatch, tmp_path)
     common.mkdir()
     head = "a" * 40
     (git_dir / "switchstand-green-sha").write_text(head)
-    answers = iter((f"{git_dir}\n{common}\nowned\n{head}\n", ""))
-    monkeypatch.setattr(subprocess, "run",
-                        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0,
-                                                                           stdout=next(answers)))
+    answers = iter((f"{git_dir}\n{common}\n{head}\nowned\n", ""))
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=next(answers))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert linked_branch(tmp_path, {}) == "owned"
-    answers = iter((f"{git_dir}\n{common}\nowned\n{head}\n", " M Dockerfile\n"))
+    assert commands[0][-3:] == ["HEAD", "--abbrev-ref", "HEAD"]
+    answers = iter((f"{git_dir}\n{common}\n{head}\nowned\n", " M Dockerfile\n"))
     with pytest.raises(ValueError, match="clean green"):
         linked_branch(tmp_path, {})
 
