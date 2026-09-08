@@ -3,7 +3,7 @@ from typing import Any, cast
 import httpx
 
 from .contracts import Routing, WorkPatch
-from .core import ProviderError, ProviderWork, UnknownEffect
+from .core import ProviderError, ProviderHead, ProviderWork, UnknownEffect
 
 PROJECT = "1218210259719507"
 ANCESTRY_GETS = 9
@@ -15,6 +15,7 @@ OPT_FIELDS = ("name,notes,completed,modified_at,memberships.project.gid,parent.g
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
 JSON = dict[str, Any]
+PRIORITIES = {f"P{value}": value for value in range(4)}
 class AsanaProvider:
     def __init__(self, client: httpx.AsyncClient): self.client = client
     async def _task(self, gid: str) -> JSON | None:
@@ -104,3 +105,37 @@ class AsanaProvider:
             data = response.json()["data"]
             return isinstance(data, dict) and isinstance(cast(JSON, data).get("gid"), str)
         except (KeyError, TypeError, ValueError): return False
+
+    async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None:
+        try:
+            response = await self.client.get(
+                f"/projects/{PROJECT}/tasks",
+                params={"completed_since": "now", "limit": "100", "opt_fields": OPT_FIELDS},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload["data"]
+            if not isinstance(data, list) or payload.get("next_page") is not None:
+                raise TypeError
+            candidates: list[tuple[int, int, ProviderHead]] = []
+            for position, value in enumerate(cast(list[object], data)):
+                if not isinstance(value, dict):
+                    raise TypeError
+                item = cast(JSON, value)
+                gid, title = item.get("gid"), item.get("name")
+                if gid in excluded or item.get("completed") is not False:
+                    continue
+                fields = self._custom_fields(item)
+                priority = next((field.get("display_value") for field in fields
+                                 if field.get("gid") == FIELDS["priority"]), None)
+                horizon = next((field.get("display_value") for field in fields
+                                if field.get("gid") == FIELDS["horizon"]), None)
+                if (not isinstance(gid, str) or not isinstance(title, str)
+                        or not isinstance(priority, str) or priority not in PRIORITIES
+                        or horizon is not None and not isinstance(horizon, str)):
+                    continue
+                candidates.append((PRIORITIES[priority], position,
+                                   ProviderHead(gid, title, priority, horizon)))
+            return min(candidates, default=None, key=lambda candidate: candidate[:2])[2]
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None

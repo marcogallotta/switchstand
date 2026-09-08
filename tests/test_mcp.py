@@ -5,7 +5,7 @@ from uuid import UUID
 
 from mcp import Client, StdioServerParameters
 
-from switchstand.contracts import AppendResult, Routing, WorkItem, WorkResult
+from switchstand.contracts import AppendResult, Routing, SuggestionResult, WorkItem, WorkResult
 from switchstand.mcp import _protect_provider_logs, build_server
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -22,6 +22,8 @@ class FakeService:
         return WorkResult(status="stale", item=item(request.patch.notes))
     async def append(self, request):
         return AppendResult(status="ok")
+    async def suggest_next(self):
+        return SuggestionResult(status="none")
 
 def test_provider_request_logs_are_suppressed(caplog):
     _protect_provider_logs()
@@ -31,10 +33,14 @@ def test_provider_request_logs_are_suppressed(caplog):
     assert "raw-provider-id" not in caplog.text
 
 async def test_real_stdio_handshake_exposes_exact_surface():
-    server = StdioServerParameters(command=sys.executable, args=[str(Path(__file__)), "serve"])
+    server = StdioServerParameters(
+        command=sys.executable, args=[str(Path(__file__)), "serve"],
+        env={"PYTHONPATH": str(Path.cwd() / "src")},
+    )
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
-        assert {tool.name for tool in tools} == {"work_get", "work_update", "work_append"}
+        assert {tool.name for tool in tools} == {
+            "work_get", "work_update", "work_append", "work_suggest_next"}
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)
         get_tool = next(tool for tool in tools if tool.name == "work_get")
@@ -57,6 +63,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert updated.structured_content == WorkResult(status="stale", item=item("after")).model_dump(mode="json")
         appended = await client.call_tool("work_append", base | {"text": "history"})
         assert appended.structured_content == {"status": "ok"}
+        suggested = await client.call_tool("work_suggest_next", {"api_version": "1"})
+        assert suggested.structured_content == {"status": "none", "item": None}
         rejected = await client.call_tool("work_get", base | {"extra": "secret"})
         assert rejected.is_error
 

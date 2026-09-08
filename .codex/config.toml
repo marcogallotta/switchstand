@@ -22,7 +22,7 @@ command = "docker"
 args = ["compose", "run", "--rm", "-T", "--no-deps", "controller"]
 env_vars = ["HOME", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
 required = true
-enabled_tools = ["work_get", "work_update", "work_append"]
+enabled_tools = ["work_get", "work_update", "work_append", "work_suggest_next"]
 
 [mcp_servers.switchstand_development]
 command = "scripts/switchstand-development-mcp"

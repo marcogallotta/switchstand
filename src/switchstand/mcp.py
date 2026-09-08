@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from .contracts import (
     AppendResult,
     LaunchAuthority,
+    SuggestionResult,
     WorkAppendRequest,
     WorkGetRequest,
     WorkPatch,
@@ -59,9 +60,15 @@ def build_server(
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
+
+    async def _work_suggest_next(api_version: Literal["1"]) -> SuggestionResult:
+        """Return only the highest-priority unbound actionable work head."""
+        return await service.suggest_next()  # type: ignore[attr-defined]
+
     closed_tool(server, "work_get", _work_get)
     closed_tool(server, "work_update", _work_update)
     closed_tool(server, "work_append", _work_append)
+    closed_tool(server, "work_suggest_next", _work_suggest_next)
     return server
 
 def _protect_provider_logs() -> None:
