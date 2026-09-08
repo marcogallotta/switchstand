@@ -140,3 +140,27 @@ class Controller:
             return AppendResult(status="unknown")
         except ProviderError:
             return AppendResult(status="provider_error")
+
+
+async def provision_launch(
+    state: State,
+    provider_name: str,
+    provider: Provider,
+    active_provider_work_id: str,
+    reference_provider_work_ids: tuple[str, ...] = (),
+) -> LaunchAuthority:
+    provider_work_ids = (active_provider_work_id, *reference_provider_work_ids)
+    if len(reference_provider_work_ids) > 8:
+        raise ValueError("at most eight reference tasks are allowed")
+    if len(set(provider_work_ids)) != len(provider_work_ids):
+        raise ValueError("active and reference tasks must be distinct")
+
+    works = [await provider.get(provider_work_id) for provider_work_id in provider_work_ids]
+    if any(work is None or not work.canonical for work in works):
+        raise PermissionError("all work must be canonical")
+
+    handles = [await state.bind(provider_name, provider_work_id) for provider_work_id in provider_work_ids]
+    return LaunchAuthority(
+        active_work_id=handles[0].id,
+        reference_work_ids=tuple(handle.id for handle in handles[1:]),
+    )

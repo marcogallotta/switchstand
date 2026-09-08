@@ -12,7 +12,14 @@ from switchstand.contracts import (
     WorkPatch,
     WorkUpdateRequest,
 )
-from switchstand.core import Controller, Handle, ProviderError, ProviderWork, UnknownEffect
+from switchstand.core import (
+    Controller,
+    Handle,
+    ProviderError,
+    ProviderWork,
+    UnknownEffect,
+    provision_launch,
+)
 
 
 class FakeState:
@@ -21,6 +28,9 @@ class FakeState:
     @asynccontextmanager
     async def locked(self, work_id): yield self.handles.get(work_id)
     async def bind(self, provider, provider_work_id):
+        existing = next((handle for handle in self.handles.values()
+                         if (handle.provider, handle.provider_work_id) == (provider, provider_work_id)), None)
+        if existing is not None: return existing
         handle = Handle(uuid4(), provider, provider_work_id); self.handles[handle.id] = handle; return handle
 
 class FakeProvider:
@@ -105,3 +115,31 @@ async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_cont
     provider.fail_get = True
     result = await controller.get(WorkGetRequest(api_version="1", work_id=active))
     assert result.status == "provider_error" and "secret" not in str(result.model_dump())
+
+
+async def test_provision_launch_validates_all_work_before_stable_binding():
+    state = FakeState({})
+    provider = FakeProvider(ProviderWork("T", "N", False, "r1", Routing(), True))
+    first = await provision_launch(state, "fake", provider, "active", ("reference",))
+    again = await provision_launch(state, "fake", provider, "active", ("reference",))
+    assert first == again
+    assert await state.get(first.active_work_id) == Handle(first.active_work_id, "fake", "active")
+    assert await state.get(first.reference_work_ids[0]) == Handle(
+        first.reference_work_ids[0], "fake", "reference"
+    )
+
+    provider.work = ProviderWork("T", "N", False, "r1", Routing(), False)
+    empty = FakeState({})
+    with pytest.raises(PermissionError, match="all work must be canonical"):
+        await provision_launch(empty, "fake", provider, "active", ("reference",))
+    assert empty.handles == {}
+
+
+async def test_provision_launch_rejects_invalid_bounds_before_provider_reads():
+    state = FakeState({})
+    provider = FakeProvider(ProviderWork("T", "N", False, "r1", Routing(), True))
+    with pytest.raises(ValueError, match="distinct"):
+        await provision_launch(state, "fake", provider, "same", ("same",))
+    with pytest.raises(ValueError, match="eight"):
+        await provision_launch(state, "fake", provider, "active", tuple(map(str, range(9))))
+    assert state.handles == {}
