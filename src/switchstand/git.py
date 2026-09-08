@@ -8,11 +8,8 @@ class GitError(RuntimeError):
     pass
 
 
-class LandingIdentity(NamedTuple):
-    candidate: str
-    previous_base: str
-    merged: str
-    tree: str
+LandingIdentity = NamedTuple("LandingIdentity", [  # noqa: UP014
+    ("candidate", str), ("previous_base", str), ("merged", str), ("tree", str)])
 
 
 def _commit(repo: Path, sha: str) -> tuple[str, str, tuple[str, ...]]:
@@ -21,11 +18,13 @@ def _commit(repo: Path, sha: str) -> tuple[str, str, tuple[str, ...]]:
     env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "TZ")
            if key in os.environ}
     found = subprocess.run(
-        ["git", "show", "-s", "--format=%H%n%T%n%P", sha], cwd=repo.resolve(strict=True),
-        env=env, text=True, capture_output=True, check=False,
-    )
+        ["git", "--no-replace-objects", "--no-lazy-fetch", "show", "-s",
+         "--format=%H%n%T%n%P", sha], cwd=repo.resolve(strict=True), env=env,
+        text=True, capture_output=True, check=False)
     values = found.stdout.splitlines()
-    if found.returncode or len(values) != 3 or values[0] != sha:
+    tokens = values[:2] + values[2].split() if len(values) == 3 else []
+    if (found.returncode or len(values) != 3 or values[:1] != [sha] or
+            any(len(value) != 40 or not set(value) <= set("0123456789abcdef") for value in tokens)):
         raise GitError("Git could not prove the requested commit identity")
     return values[0], values[1], tuple(values[2].split())
 
