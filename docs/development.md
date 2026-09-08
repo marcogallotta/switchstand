@@ -15,6 +15,8 @@
 - MCP server: `docker compose run --rm -T controller`
 - Codex: trust this repository, then start Codex from its root. The checked-in project MCP configuration launches the
   same required STDIO server and forwards `HOME` only; Compose obtains secrets from the shared environment file.
+  A fresh head calls `work_get` with only `api_version="1"`; the tool defaults to its active assignment and advertises
+  the opaque IDs of its bounded read-only references.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Integration admits

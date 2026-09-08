@@ -38,12 +38,19 @@ def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> 
     tool.fn_metadata.arg_model.model_rebuild(force=True)
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
 
-def build_server(service: object) -> MCPServer:
+def build_server(
+    service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = ()
+) -> MCPServer:
     server = MCPServer("Switchstand")
 
-    async def _work_get(api_version: Literal["1"], work_id: UUID) -> WorkResult:
-        """Read one launch-bound work item."""
-        return await service.get(WorkGetRequest(api_version=api_version, work_id=work_id))  # type: ignore[attr-defined]
+    async def _work_get(api_version: Literal["1"], work_id: UUID | None = None) -> WorkResult:
+        return await service.get(WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id))  # type: ignore[attr-defined]
+
+    references = ", ".join(map(str, reference_work_ids)) or "none"
+    _work_get.__doc__ = (
+        "Read launch-bound work. Omit work_id for the active assignment. "
+        f"Bounded read-only reference WorkIds: {references}."
+    )
 
     async def _work_update(api_version: Literal["1"], work_id: UUID, observed_revision: str, patch: WorkPatch) -> WorkResult:
         """Update approved fields on the active work item."""
@@ -65,7 +72,10 @@ def _protect_provider_logs() -> None:
 
 def main() -> None:
     _protect_provider_logs()
-    build_server(controller_from_env()).run()
+    service = controller_from_env()
+    build_server(
+        service, service.authority.active_work_id, service.authority.reference_work_ids
+    ).run()
 
 if __name__ == "__main__":
     main()

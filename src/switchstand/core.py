@@ -116,6 +116,7 @@ class Controller:
     async def append(self, request: WorkAppendRequest) -> AppendResult:
         if request.work_id != self.authority.active_work_id:
             return AppendResult(status="denied")
+        append_returned = False
         try:
             async with self.state.locked(request.work_id) as handle:
                 if handle is None:
@@ -126,20 +127,22 @@ class Controller:
                         return AppendResult(status="provider_error")
                     return AppendResult(status=current.status)
                 confirmed = await self.providers[handle.provider].append(handle.provider_work_id, request.text)
+                append_returned = True
                 if not confirmed:
                     return AppendResult(status="unknown")
-                readback = await self._read(request.work_id, handle)
-                if readback.status == "ok":
-                    return AppendResult(status="ok")
-                if readback.status == "denied":
-                    return AppendResult(status="denied")
-                if readback.status == "unknown":
+                try:
+                    readback = await self._read(request.work_id, handle)
+                except (UnknownEffect, ProviderError):
                     return AppendResult(status="unknown")
-                return AppendResult(status="provider_error")
+                return AppendResult(status="ok" if readback.status == "ok" else "unknown")
         except UnknownEffect:
             return AppendResult(status="unknown")
         except ProviderError:
-            return AppendResult(status="provider_error")
+            return AppendResult(status="unknown" if append_returned else "provider_error")
+        except Exception:
+            if append_returned:
+                return AppendResult(status="unknown")
+            raise
 
 
 async def provision_launch(

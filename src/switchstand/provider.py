@@ -60,13 +60,18 @@ class AsanaProvider:
             return ProviderWork(title, notes, completed, revision, routing, await self._canonical(task))
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
-    async def _write(self, method: str, path: str, data: JSON) -> httpx.Response:
+    async def _write(
+        self, method: str, path: str, data: JSON, *, unknown_on_server_error: bool = False
+    ) -> httpx.Response:
         try:
             response = await self.client.request(method, path, json={"data": data})
         except httpx.RequestError: raise UnknownEffect("provider effect unknown") from None
         try:
             response.raise_for_status()
-        except httpx.HTTPStatusError: raise ProviderError("provider write failed") from None
+        except httpx.HTTPStatusError:
+            if unknown_on_server_error and response.status_code >= 500:
+                raise UnknownEffect("provider effect unknown") from None
+            raise ProviderError("provider write failed") from None
         return response
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
@@ -88,7 +93,10 @@ class AsanaProvider:
             data["custom_fields"] = custom
         await self._write("PUT", f"/tasks/{provider_work_id}", data)
     async def append(self, provider_work_id: str, text: str) -> bool:
-        response = await self._write("POST", f"/tasks/{provider_work_id}/stories", {"text": text})
+        response = await self._write(
+            "POST", f"/tasks/{provider_work_id}/stories", {"text": text},
+            unknown_on_server_error=True,
+        )
         try:
             data = response.json()["data"]
             return isinstance(data, dict) and isinstance(cast(JSON, data).get("gid"), str)

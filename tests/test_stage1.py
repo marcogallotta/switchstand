@@ -23,10 +23,12 @@ from switchstand.core import (
 
 
 class FakeState:
-    def __init__(self, handles): self.handles = handles
+    def __init__(self, handles): self.handles, self.fail_unlock = handles, False
     async def get(self, work_id): return self.handles.get(work_id)
     @asynccontextmanager
-    async def locked(self, work_id): yield self.handles.get(work_id)
+    async def locked(self, work_id):
+        yield self.handles.get(work_id)
+        if self.fail_unlock: raise RuntimeError("database commit failed")
     async def bind(self, provider, provider_work_id):
         existing = next((handle for handle in self.handles.values()
                          if (handle.provider, handle.provider_work_id) == (provider, provider_work_id)), None)
@@ -37,6 +39,8 @@ class FakeProvider:
     def __init__(self, work):
         self.work, self.updates, self.appends = work, [], []
         self.ignore_update = self.unknown_append = self.fail_get = False
+        self.fail_after_append = self.deny_after_append = False
+        self.reject_append = False
         self.confirm_append = True
     async def get(self, provider_work_id):
         if self.fail_get:
@@ -58,8 +62,17 @@ class FakeProvider:
         )
     async def append(self, provider_work_id, text):
         self.appends.append(text)
+        if self.reject_append:
+            raise ProviderError("definite rejection")
         if self.unknown_append:
             raise UnknownEffect("lost response")
+        if self.fail_after_append:
+            self.fail_get = True
+        if self.deny_after_append:
+            self.work = ProviderWork(
+                self.work.title, self.work.notes, self.work.completed,
+                self.work.revision, self.work.routing, False,
+            )
         return self.confirm_append
 
 @pytest.fixture
@@ -115,6 +128,25 @@ async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_cont
     provider.fail_get = True
     result = await controller.get(WorkGetRequest(api_version="1", work_id=active))
     assert result.status == "provider_error" and "secret" not in str(result.model_dump())
+
+
+@pytest.mark.parametrize("failure", ["fail_after_append", "deny_after_append", "fail_unlock"])
+async def test_append_readback_failure_after_post_is_unknown(setup_controller, failure):
+    active, _, provider, controller = setup_controller
+    setattr(controller.state if failure == "fail_unlock" else provider, failure, True)
+    result = await controller.append(
+        WorkAppendRequest(api_version="1", work_id=active, text="sent once")
+    )
+    assert result.status == "unknown" and provider.appends == ["sent once"]
+
+
+async def test_append_provider_rejection_is_provider_error(setup_controller):
+    active, _, provider, controller = setup_controller
+    provider.reject_append = True
+    result = await controller.append(
+        WorkAppendRequest(api_version="1", work_id=active, text="rejected")
+    )
+    assert result.status == "provider_error" and provider.appends == ["rejected"]
 
 
 async def test_provision_launch_validates_all_work_before_stable_binding():
