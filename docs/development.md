@@ -11,7 +11,7 @@
   helper fails closed on an existing target or branch and records the exact launch baseline in linked-worktree Git
   metadata; one managed writer owns each linked worktree. Launch refuses a dirty or advanced baseline.
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
-  `install -m 600 .env.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
+  `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
