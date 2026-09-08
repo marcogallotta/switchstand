@@ -136,6 +136,6 @@ class AsanaProvider:
                     continue
                 candidates.append((PRIORITIES[priority], position,
                                    ProviderHead(gid, title, priority, horizon)))
-            return min(candidates, default=None, key=lambda candidate: candidate[:2])[2]
+            return min(candidates, key=lambda candidate: candidate[:2])[2] if candidates else None
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None
