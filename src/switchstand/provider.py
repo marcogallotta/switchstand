@@ -91,7 +91,10 @@ class AsanaProvider:
                     raise ProviderError("routing write denied")
                 custom[FIELDS[name]] = choices[0]["gid"]
             data["custom_fields"] = custom
-        await self._write("PUT", f"/tasks/{provider_work_id}", data)
+        await self._write(
+            "PUT", f"/tasks/{provider_work_id}", data,
+            unknown_on_server_error=True,
+        )
     async def append(self, provider_work_id: str, text: str) -> bool:
         response = await self._write(
             "POST", f"/tasks/{provider_work_id}/stories", {"text": text},

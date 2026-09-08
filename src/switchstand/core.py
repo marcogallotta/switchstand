@@ -94,6 +94,7 @@ class Controller:
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
         if request.work_id != self.authority.active_work_id:
             return WorkResult(status="denied")
+        update_may_have_applied = False
         try:
             async with self.state.locked(request.work_id) as handle:
                 if handle is None:
@@ -103,15 +104,24 @@ class Controller:
                     return current
                 if current.item.revision != request.observed_revision:
                     return WorkResult(status="stale", item=current.item)
-                await self.providers[handle.provider].update(handle.provider_work_id, request.patch)
+                try:
+                    await self.providers[handle.provider].update(handle.provider_work_id, request.patch)
+                except UnknownEffect:
+                    update_may_have_applied = True
+                    return WorkResult(status="unknown")
+                update_may_have_applied = True
                 readback = await self._read(request.work_id, handle)
                 if readback.status != "ok" or readback.item is None:
-                    return readback
+                    return WorkResult(status="unknown")
                 return readback if self._matches(readback.item, request.patch) else WorkResult(status="unknown")
         except UnknownEffect:
             return WorkResult(status="unknown")
         except ProviderError:
-            return WorkResult(status="provider_error")
+            return WorkResult(status="unknown" if update_may_have_applied else "provider_error")
+        except Exception:
+            if update_may_have_applied:
+                return WorkResult(status="unknown")
+            raise
 
     async def append(self, request: WorkAppendRequest) -> AppendResult:
         if request.work_id != self.authority.active_work_id:
