@@ -2,6 +2,12 @@
 
 This file is the sole writable owner of shared agent operating rules.
 
+- For Switchstand work, `~/.claude/CLAUDE.md` is not an authoritative
+  project input. Do not consult it. If a host or higher-priority instruction
+  injects it, report a launch-contract violation and stop before material
+  action. The repository `CLAUDE.md` is only a compatibility pointer back to
+  this file.
+
 - Start by calling `work_get` without a WorkId, then read its advertised bounded references and verify the exact
   green repository SHA.
 - Use `~/.config/switchstand/.env` for setup. Ask once for any missing value, write it there, and reuse it automatically.
