@@ -12,12 +12,17 @@ services:
       retries: 15
   controller:
     build: .
-    command: ["sh", "-c", "uv run alembic upgrade head && exec uv run switchstand"]
+    command:
+      - sh
+      - -c
+      - |
+        : "$${ASANA_TOKEN:?required}"
+        : "$${ACTIVE_WORK_ID:?required}"
+        uv run alembic upgrade head && exec uv run switchstand
     stdin_open: true
+    env_file:
+      - ${HOME}/.config/switchstand/.env
     environment:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
-      ASANA_TOKEN: ${ASANA_TOKEN:?required}
-      ACTIVE_WORK_ID: ${ACTIVE_WORK_ID:?required}
-      REFERENCE_WORK_IDS: ${REFERENCE_WORK_IDS:-}
     depends_on:
       postgres: {condition: service_healthy}
