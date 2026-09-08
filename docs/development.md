@@ -7,6 +7,11 @@
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 .env.example ~/.config/switchstand/.env`, then fill in the values. Compose loads that file
   automatically.
+- Provision WorkIds: run
+  `docker compose run --build --rm controller uv run --no-sync switchstand-provision --active <Asana task URL>` and
+  copy the two printed assignments into `~/.config/switchstand/.env`. Repeat
+  `--reference <Asana task URL>` for up to eight read-only references. Provisioning migrates the database first, is
+  idempotent, and accepts task IDs as well as URLs.
 - MCP server: `docker compose run --rm -T controller`
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting

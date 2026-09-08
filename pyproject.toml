@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 switchstand = "switchstand.mcp:main"
+switchstand-provision = "switchstand.provision:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]

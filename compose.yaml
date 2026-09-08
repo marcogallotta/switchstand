@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:18-alpine
+    volumes:
+      - postgres-data:/var/lib/postgresql
     environment:
       POSTGRES_DB: switchstand
       POSTGRES_USER: switchstand
@@ -18,7 +20,7 @@ services:
       - |
         : "$${ASANA_TOKEN:?required}"
         : "$${ACTIVE_WORK_ID:?required}"
-        uv run alembic upgrade head && exec uv run switchstand
+        uv run --no-sync alembic upgrade head && exec uv run --no-sync switchstand
     stdin_open: true
     env_file:
       - ${HOME}/.config/switchstand/.env
@@ -26,3 +28,6 @@ services:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
     depends_on:
       postgres: {condition: service_healthy}
+
+volumes:
+  postgres-data:
