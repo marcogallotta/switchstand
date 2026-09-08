@@ -1,6 +1,6 @@
 import pytest
 
-from switchstand.provision import asana_task_id
+from switchstand.task_ref import asana_task_id
 
 
 @pytest.mark.parametrize(

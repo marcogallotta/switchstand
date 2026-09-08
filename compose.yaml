@@ -1,3 +1,5 @@
+name: switchstand
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -12,8 +14,23 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
+  postgres-test:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: switchstand_test
+      POSTGRES_USER: switchstand
+      POSTGRES_PASSWORD: switchstand
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchstand"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql
   controller:
-    build: .
+    build:
+      context: .
+      target: runtime
     command:
       - sh
       - -c
@@ -26,8 +43,22 @@ services:
       - ${HOME}/.config/switchstand/.env
     environment:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
+      ACTIVE_WORK_ID: ${ACTIVE_WORK_ID:-}
+      REFERENCE_WORK_IDS: ${REFERENCE_WORK_IDS:-}
     depends_on:
       postgres: {condition: service_healthy}
+  quality:
+    build:
+      context: .
+      target: development
+    command:
+      - sh
+      - -c
+      - uv run --no-sync ruff check . && uv run --no-sync pyright && uv run --no-sync pytest
+    environment:
+      TEST_DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test
+    depends_on:
+      postgres-test: {condition: service_healthy}
 
 volumes:
   postgres-data:

@@ -1,6 +1,19 @@
+default_permissions = "switchstand-development"
+
+[permissions.switchstand-development]
+description = "Bounded local development for the active Switchstand work."
+extends = ":workspace"
+
+[permissions.switchstand-development.filesystem]
+"~/.config/switchstand/.env" = "deny"
+glob_scan_max_depth = 6
+
+[permissions.switchstand-development.filesystem.":workspace_roots"]
+"**/*.env" = "deny"
+
 [mcp_servers.switchstand]
 command = "docker"
 args = ["compose", "run", "--rm", "-T", "controller"]
-env_vars = ["HOME"]
+env_vars = ["HOME", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
 required = true
 enabled_tools = ["work_get", "work_update", "work_append"]

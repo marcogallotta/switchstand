@@ -12,6 +12,7 @@ reference only; this repository is a clean implementation of the current contrac
 uv sync --locked --all-extras --dev
 docker compose up --build
 uv run pytest
+scripts/switchstand-launch --active <Asana task ID or URL>
 ```
 
 See [architecture](docs/architecture.md), [development](docs/development.md), and [agent routing](AGENTS.md).

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+git_dir=$(git -C "$repo" rev-parse --absolute-git-dir)
+git_common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+if [ "$git_dir" = "$git_common" ]; then
+    echo "managed launch requires a linked writer worktree" >&2
+    exit 1
+fi
+PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m switchstand.launch "$@"
