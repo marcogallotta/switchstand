@@ -9,14 +9,15 @@ from switchstand.contracts import AppendResult, Routing, WorkItem, WorkResult
 from switchstand.mcp import _protect_provider_logs, build_server
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
+REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
 
-def item(notes: str = "before") -> WorkItem:
-    return WorkItem(id=ID, title="bounded", notes=notes, completed=False,
+def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
+    return WorkItem(id=work_id, title="bounded", notes=notes, completed=False,
                     revision="r1", routing=Routing(priority="P0"))
 
 class FakeService:
     async def get(self, request):
-        return WorkResult(status="ok", item=item())
+        return WorkResult(status="ok", item=item(work_id=request.work_id))
     async def update(self, request):
         return WorkResult(status="stale", item=item(request.patch.notes))
     async def append(self, request):
@@ -36,11 +37,20 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert {tool.name for tool in tools} == {"work_get", "work_update", "work_append"}
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)
+        get_tool = next(tool for tool in tools if tool.name == "work_get")
+        assert "work_id" not in get_tool.input_schema["required"]
+        assert str(REFERENCE_ID) in (get_tool.description or "")
         assert not (await client.list_resources()).resources
         assert not (await client.list_prompts()).prompts
-        base = {"api_version": "1", "work_id": str(ID)}
-        got = await client.call_tool("work_get", base)
+        got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content == WorkResult(status="ok", item=item()).model_dump(mode="json")
+        reference = await client.call_tool(
+            "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
+        )
+        assert reference.structured_content == WorkResult(
+            status="ok", item=item(work_id=REFERENCE_ID)
+        ).model_dump(mode="json")
+        base = {"api_version": "1", "work_id": str(ID)}
         updated = await client.call_tool(
             "work_update", base | {"observed_revision": "r1", "patch": {"notes": "after"}}
         )
@@ -51,4 +61,4 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert rejected.is_error
 
 if __name__ == "__main__":
-    build_server(FakeService()).run()
+    build_server(FakeService(), ID, (REFERENCE_ID,)).run()

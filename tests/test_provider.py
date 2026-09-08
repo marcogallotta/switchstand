@@ -75,6 +75,10 @@ async def test_append_once_and_ambiguous_response_is_not_retried():
     subject, api = provider(error)
     with pytest.raises(UnknownEffect, match="provider effect unknown"): await subject.append("t", "x")
     assert len(api.requests) == 1
+    subject, _ = provider((500, {}))
+    with pytest.raises(UnknownEffect): await subject.append("t", "x")
+    subject, _ = provider((400, {}))
+    with pytest.raises(ProviderError): await subject.append("t", "x")
 async def test_failures_are_sanitized():
     subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
     with pytest.raises(ProviderError) as read_error: await subject.get("t")
