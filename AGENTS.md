@@ -3,8 +3,9 @@
 This file is the sole writable owner of shared agent operating rules.
 
 - Start from the assigned active WorkId, bounded reference WorkIds, and an exact green repository SHA.
-- Before launch, read and cross off the host-setup checklist in canonical Bootstrap owner `1218242783900077`;
-  never guess an auth provider or treat a connector OAuth session as a controller credential.
+- During setup, detect and ask once for missing human-only PAT/runtime inputs, then cross off the checklist
+  in canonical Bootstrap owner `1218242783900077`; Marco does not need to remember or act as courier.
+- Asana REST uses a host-injected PAT. Any OAuth layer is GitHub-only; never try or fall back to Asana OAuth.
 - Read the active work and its governing references before material edits or child dispatch.
 - One agent owns each writable surface. Children receive bounded objectives, files, tests, and stop conditions.
 - Inspect a child after roughly a minute or when behavior looks suspicious; steer or stop scope drift.
