@@ -24,6 +24,15 @@ env_vars = ["HOME", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
 required = true
 enabled_tools = ["work_get", "work_update", "work_append", "work_suggest_next"]
 
+[mcp_servers.switchstand.tools.work_get]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.work_update]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.work_append]
+approval_mode = "approve"
+
 [mcp_servers.switchstand_development]
 command = "scripts/switchstand-development-mcp"
 env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON",
@@ -31,3 +40,12 @@ env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMO
             "SWITCHSTAND_DATABASE_CONTAINER", "SWITCHSTAND_MANIFEST_SHA256"]
 required = true
 enabled_tools = ["commit_all_current_worktree", "quality", "run_status"]
+
+[mcp_servers.switchstand_development.tools.commit_all_current_worktree]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_development.tools.quality]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_development.tools.run_status]
+approval_mode = "approve"
