@@ -16,5 +16,5 @@ This file is the sole writable owner of shared agent operating rules.
   to the integration owner unless explicitly delegated.
 - Run affected tests and the full quality gate before publication. Review AI-authored tests for the fault they catch.
 - Stop on a new material authority, persistence, concurrency, security, or external-interface choice.
-- Keep handwritten Bootstrap change at or below 1,000 lines; reforecast before crossing the current allowance.
+- Keep handwritten Bootstrap change at or below 1,400 lines; reforecast before crossing the current allowance.
 - Treat `marcogallotta/switchstandold` as read-only evidence, never as an implementation base.
