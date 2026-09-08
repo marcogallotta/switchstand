@@ -1,4 +1,5 @@
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from switchstand.launch import (
     clean_environment,
     linked_branch,
     parse_authority,
+    prepare_managed_run,
     provision,
     readback,
     validate_codex_args,
@@ -72,6 +74,35 @@ def test_validate_codex_args_blocks_boundary_overrides():
     for arguments in (["-sdanger-full-access"], ["-C/tmp"], ["-c", "sandbox_mode=read-only"]):
         with pytest.raises(ValueError):
             validate_codex_args(arguments)
+
+
+def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def reservation(repo, branch, git_dir):
+        events.append("reserved")
+
+        def record(active_work_id):
+            events.append("recorded")
+            return object()
+
+        yield record
+
+    authority = type("Authority", (), {"active": ACTIVE})()
+    development = object()
+    monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
+    monkeypatch.setattr(
+        "switchstand.launch.provision",
+        lambda *args: events.append("provisioned") or authority,
+    )
+    monkeypatch.setattr(
+        "switchstand.launch.prepare_development",
+        lambda *args: events.append("development") or development,
+    )
+    result = prepare_managed_run(tmp_path, "owned", "123", (), {}, tmp_path)
+    assert events == ["reserved", "provisioned", "development", "recorded"]
+    assert result.authority is authority and result.development is development
 
 
 def readback_messages(sources):

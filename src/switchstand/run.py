@@ -1,6 +1,8 @@
 import fcntl
 import json
 import os
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -48,7 +50,45 @@ def process_start_token(pid: int, proc: Path = Path("/proc")) -> int:
     return int(tail[19])
 
 
-def create_receipt(repo: Path, branch: str, active_work_id: UUID, git_dir: Path) -> RunReceipt:
+def _write_receipt(
+    repo: Path, branch: str, active_work_id: UUID, git_dir: Path
+) -> RunReceipt:
+    receipt = RunReceipt(
+        run_id=uuid4(),
+        active_work_id=active_work_id,
+        worktree=str(repo),
+        branch=branch,
+        pid=os.getpid(),
+        start_token=process_start_token(os.getpid()),
+        started_at=datetime.now(UTC),
+    )
+    path = git_dir / RECEIPT
+    temporary = git_dir / f".{RECEIPT}.{receipt.run_id}.tmp"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(receipt.model_dump_json() + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return receipt
+
+
+@contextmanager
+def reserve_run(
+    repo: Path, branch: str, git_dir: Path
+) -> Iterator[Callable[[UUID], RunReceipt]]:
     path = git_dir / RECEIPT
     lock = os.open(
         git_dir / "switchstand-run.lock",
@@ -59,37 +99,14 @@ def create_receipt(repo: Path, branch: str, active_work_id: UUID, git_dir: Path)
         fcntl.flock(lock, fcntl.LOCK_EX)
         if path.exists() and inspect_receipt(path, repo, branch).status != "stopped":
             raise RuntimeError("previous managed run must be stopped before relaunch")
-        receipt = RunReceipt(
-            run_id=uuid4(),
-            active_work_id=active_work_id,
-            worktree=str(repo),
-            branch=branch,
-            pid=os.getpid(),
-            start_token=process_start_token(os.getpid()),
-            started_at=datetime.now(UTC),
-        )
-        temporary = git_dir / f".{RECEIPT}.{receipt.run_id}.tmp"
-        try:
-            descriptor = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-                0o600,
-            )
-            with os.fdopen(descriptor, "w") as stream:
-                stream.write(receipt.model_dump_json() + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-            directory = os.open(git_dir, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return receipt
+        yield lambda active_work_id: _write_receipt(repo, branch, active_work_id, git_dir)
     finally:
         os.close(lock)
+
+
+def create_receipt(repo: Path, branch: str, active_work_id: UUID, git_dir: Path) -> RunReceipt:
+    with reserve_run(repo, branch, git_dir) as record:
+        return record(active_work_id)
 
 
 def inspect_receipt(path: Path, repo: Path, branch: str, proc: Path = Path("/proc")) -> RunStatus:

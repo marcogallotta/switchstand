@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 from uuid import UUID
 
-from .run import create_receipt
+from .run import RunReceipt, reserve_run
 from .task_ref import asana_task_id
 
 PROFILE = "switchstand-development"
@@ -33,6 +33,12 @@ class DevelopmentBoundary(NamedTuple):
     network: str
     database: str
     manifest: str
+
+
+class PreparedRun(NamedTuple):
+    authority: Authority
+    development: DevelopmentBoundary
+    receipt: RunReceipt
 
 
 def linked_branch(repo: Path, env: dict[str, str]) -> str:
@@ -243,14 +249,35 @@ def validate_codex_args(arguments: list[str]) -> list[str]:
     return forwarded
 
 
+def prepare_managed_run(
+    repo: Path,
+    branch: str,
+    active: str,
+    references: tuple[str, ...],
+    env: dict[str, str],
+    git_dir: Path,
+) -> PreparedRun:
+    with reserve_run(repo, branch, git_dir) as record:
+        authority = provision(repo, active, references, env)
+        development = prepare_development(repo, env)
+        receipt = record(authority.active)
+    return PreparedRun(authority, development, receipt)
+
+
 def run(arguments: argparse.Namespace) -> None:
     repo = Path.cwd().resolve()
     env = clean_environment(dict(os.environ))
     codex_args = validate_codex_args(arguments.codex_args)
     branch = linked_branch(repo, env)
     checked = readback(repo, env)
-    authority = provision(repo, arguments.active, tuple(arguments.reference), env)
-    development = prepare_development(repo, env)
+    git_dir = Path(subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, env=env,
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()).resolve(strict=True)
+    prepared = prepare_managed_run(
+        repo, branch, arguments.active, tuple(arguments.reference), env, git_dir
+    )
+    authority, development, receipt = prepared
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["REFERENCE_WORK_IDS"] = ",".join(map(str, authority.references))
     env["SWITCHSTAND_WORKTREE"] = str(repo)
@@ -262,11 +289,6 @@ def run(arguments: argparse.Namespace) -> None:
     env["SWITCHSTAND_QUALITY_NETWORK"] = development.network
     env["SWITCHSTAND_DATABASE_CONTAINER"] = development.database
     env["SWITCHSTAND_MANIFEST_SHA256"] = development.manifest
-    git_dir = Path(subprocess.run(
-        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, env=env,
-        check=True, text=True, capture_output=True,
-    ).stdout.strip()).resolve(strict=True)
-    receipt = create_receipt(repo, branch, authority.active, git_dir)
     print(f"Codex profile: {checked.profile} ({checked.sandbox})", file=sys.stderr)
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
