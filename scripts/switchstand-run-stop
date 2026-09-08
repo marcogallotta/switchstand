@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+if [ "$#" -ne 0 ]; then
+    echo "usage: switchstand-run-stop" >&2
+    exit 1
+fi
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+python=$(dirname "$common")/.venv/bin/python
+if [ ! -x "$python" ]; then
+    echo "run the documented bootstrap in the primary checkout first" >&2
+    exit 1
+fi
+cd "$repo"
+PYTHONPATH="$repo/src" exec "$python" -m switchstand.run "$@"
