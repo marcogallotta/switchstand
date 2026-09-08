@@ -12,6 +12,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 COPY tests ./tests
+COPY .codex/config.toml ./.codex/config.toml
 RUN uv sync --locked --all-groups && uv run --no-sync pyright --version
 
 FROM base AS runtime

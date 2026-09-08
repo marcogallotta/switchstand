@@ -1,4 +1,5 @@
 import subprocess
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
@@ -18,6 +19,24 @@ from switchstand.launch import (
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
+
+
+def test_managed_tools_have_narrow_approval_free_policy():
+    config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    servers = config["mcp_servers"]
+    expected = {
+        "switchstand": {"work_get", "work_update", "work_append"},
+        "switchstand_development": {
+            "commit_all_current_worktree",
+            "quality",
+            "run_status",
+        },
+    }
+    for server, names in expected.items():
+        tools = servers[server]["tools"]
+        assert set(tools) == names
+        assert names <= set(servers[server]["enabled_tools"])
+        assert all(tool["approval_mode"] == "approve" for tool in tools.values())
 
 
 def test_clean_environment_removes_secret_and_stale_authority():
