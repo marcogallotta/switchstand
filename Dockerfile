@@ -12,7 +12,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 COPY tests ./tests
-RUN uv sync --locked --all-groups
+RUN uv sync --locked --all-groups && uv run --no-sync pyright --version
 
 FROM base AS runtime
 RUN uv sync --locked --no-dev
