@@ -7,8 +7,10 @@ from .contracts import (
     AppendResult,
     LaunchAuthority,
     Routing,
+    SuggestionResult,
     WorkAppendRequest,
     WorkGetRequest,
+    WorkHead,
     WorkItem,
     WorkPatch,
     WorkResult,
@@ -37,8 +39,16 @@ class ProviderWork:
     routing: Routing
     canonical: bool
 
+@dataclass(frozen=True)
+class ProviderHead:
+    provider_work_id: str
+    title: str
+    priority: str
+    horizon: str | None
+
 class State(Protocol):
     async def get(self, work_id: UUID) -> Handle | None: ...
+    async def bound_provider_ids(self, provider: str) -> frozenset[str]: ...
     def locked(self, work_id: UUID) -> AbstractAsyncContextManager[Handle | None]: ...
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
 
@@ -46,6 +56,7 @@ class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
     async def append(self, provider_work_id: str, text: str) -> bool: ...
+    async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
 
 class Controller:
     def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
@@ -153,6 +164,23 @@ class Controller:
             if append_returned:
                 return AppendResult(status="unknown")
             raise
+
+    async def suggest_next(self) -> SuggestionResult:
+        try:
+            active = await self.state.get(self.authority.active_work_id)
+            if active is None or (provider := self.providers.get(active.provider)) is None:
+                return SuggestionResult(status="provider_error")
+            excluded = await self.state.bound_provider_ids(active.provider)
+            candidate = await provider.suggest_next(excluded)
+            if candidate is None:
+                return SuggestionResult(status="none")
+            handle = await self.state.bind(active.provider, candidate.provider_work_id)
+            return SuggestionResult(status="ok", item=WorkHead(
+                id=handle.id, title=candidate.title, priority=candidate.priority,
+                horizon=candidate.horizon,
+            ))
+        except (ProviderError, UnknownEffect):
+            return SuggestionResult(status="provider_error")
 
 
 async def provision_launch(

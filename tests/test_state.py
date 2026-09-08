@@ -25,6 +25,8 @@ async def test_bind_has_stable_opaque_identity(state):
     again = await state.bind("asana", "provider-id")
     assert first == again == await state.get(first.id)
     assert first.id.version == 4
+    await state.bind("other", "elsewhere")
+    assert await state.bound_provider_ids("asana") == frozenset({"provider-id"})
 
 async def test_lock_serializes_two_writers(state):
     handle = await state.bind("asana", "serialized")

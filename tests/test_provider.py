@@ -16,6 +16,11 @@ def task(*, parent=None, project=None, fields=()):
                      "modified_at": "r1", "memberships": memberships,
                      "parent": None if parent is None else {"gid": parent},
                      "custom_fields": list(fields)}}
+def candidate(gid, priority, *, completed=False, horizon="Stage 3"):
+    fields = [field(FIELDS["priority"], display=priority),
+              field(FIELDS["horizon"], display=horizon)]
+    return {"gid": gid, "name": f"Work {gid}", "completed": completed,
+            "custom_fields": fields}
 class API:
     def __init__(self, *responses): self.responses, self.requests = list(responses), []
     def __call__(self, request):
@@ -101,3 +106,28 @@ async def test_failures_are_sanitized():
     malformed = task(project=PROJECT); malformed["data"]["notes"] = {"secret": True}
     with pytest.raises(ProviderError) as malformed_error: await provider((200, malformed))[0].get("t")
     assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
+
+async def test_suggest_next_returns_only_highest_priority_actionable_head():
+    payload = {"data": [candidate("bound", "P0"), candidate("later", "P2"),
+                        candidate("head", "P1"), candidate("unset", "UNSET")],
+               "next_page": None}
+    subject, api = provider((200, payload))
+    result = await subject.suggest_next(frozenset({"bound"}))
+    assert result and (result.provider_work_id, result.title, result.priority) == (
+        "head", "Work head", "P1")
+    assert api.requests[0].url.path == f"/api/1.0/projects/{PROJECT}/tasks"
+    assert api.requests[0].url.params["limit"] == "100"
+
+async def test_suggest_next_fails_closed_on_truncated_provider_page():
+    subject, _ = provider((200, {"data": [candidate("head", "P0")],
+                                 "next_page": {"offset": "more"}}))
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.suggest_next(frozenset())
+
+async def test_suggest_next_fails_closed_on_malformed_actionable_row():
+    malformed = candidate("broken", "P0")
+    malformed["name"] = None
+    subject, _ = provider((200, {"data": [malformed, candidate("lower", "P1")],
+                                 "next_page": None}))
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.suggest_next(frozenset())

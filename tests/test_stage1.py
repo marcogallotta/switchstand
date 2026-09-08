@@ -16,6 +16,7 @@ from switchstand.core import (
     Controller,
     Handle,
     ProviderError,
+    ProviderHead,
     ProviderWork,
     UnknownEffect,
     provision_launch,
@@ -25,6 +26,9 @@ from switchstand.core import (
 class FakeState:
     def __init__(self, handles): self.handles, self.fail_unlock = handles, False
     async def get(self, work_id): return self.handles.get(work_id)
+    async def bound_provider_ids(self, provider):
+        return frozenset(handle.provider_work_id for handle in self.handles.values()
+                         if handle.provider == provider)
     @asynccontextmanager
     async def locked(self, work_id):
         yield self.handles.get(work_id)
@@ -44,6 +48,8 @@ class FakeProvider:
         self.fail_after_append = self.deny_after_append = False
         self.reject_append = False
         self.confirm_append = True
+        self.suggestion = None
+        self.excluded = frozenset()
     async def get(self, provider_work_id):
         if self.fail_get:
             raise ProviderError("secret provider detail")
@@ -87,6 +93,9 @@ class FakeProvider:
                 self.work.revision, self.work.routing, False,
             )
         return self.confirm_append
+    async def suggest_next(self, excluded):
+        self.excluded = excluded
+        return self.suggestion
 
 @pytest.fixture
 def setup_controller():
@@ -187,6 +196,22 @@ async def test_append_provider_rejection_is_provider_error(setup_controller):
         WorkAppendRequest(api_version="1", work_id=active, text="rejected")
     )
     assert result.status == "provider_error" and provider.appends == ["rejected"]
+
+
+async def test_suggest_next_returns_one_head_and_excludes_bound_work(setup_controller):
+    _, _, provider, controller = setup_controller
+    provider.suggestion = ProviderHead("next", "Next work", "P0", "Stage 3")
+    result = await controller.suggest_next()
+    assert result.status == "ok" and result.item
+    assert result.item.title == "Next work" and result.item.priority == "P0"
+    assert provider.excluded == frozenset({"a", "r"})
+    assert await controller.state.get(result.item.id) == Handle(result.item.id, "fake", "next")
+    await controller.suggest_next()
+    assert provider.excluded == frozenset({"a", "r", "next"})
+
+
+async def test_suggest_next_returns_none_without_actionable_work(setup_controller):
+    assert (await setup_controller[3].suggest_next()).status == "none"
 
 
 async def test_provision_launch_validates_all_work_before_stable_binding():
