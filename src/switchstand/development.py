@@ -94,7 +94,7 @@ def build_server() -> MCPServer:
                    "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
                    "-v", f"{repo}:/workspace:ro", "-w", "/workspace",
                    os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
-                   "/app/.venv/bin/ruff check . && /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python && /app/.venv/bin/pytest"]
+                   "/app/.venv/bin/ruff check --no-cache . && /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python && /app/.venv/bin/pytest -p no:cacheprovider"]
         checked = await asyncio.to_thread(_quality, command)
         unchanged = before == _git(repo, "rev-parse", "HEAD").stdout.strip()
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
