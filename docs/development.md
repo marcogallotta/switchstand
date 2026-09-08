@@ -22,6 +22,8 @@
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
   During implementation, `scripts/check <affected-test-paths>` runs lint and affected tests from the stable host
   environment; the exact clean candidate must still pass the complete containerized `quality` tool before review.
+  Each launch writes a protected per-worktree run receipt with a fresh identity and Linux PID start token. The
+  read-only `run_status` tool reports `running`, `stopped`, `lost`, or `unknown` without accepting an arbitrary PID.
 - MCP server: `docker compose run --rm -T controller`
 - Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
   and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 from uuid import UUID
 
+from .run import create_receipt
 from .task_ref import asana_task_id
 
 PROFILE = "switchstand-development"
@@ -261,7 +262,13 @@ def run(arguments: argparse.Namespace) -> None:
     env["SWITCHSTAND_QUALITY_NETWORK"] = development.network
     env["SWITCHSTAND_DATABASE_CONTAINER"] = development.database
     env["SWITCHSTAND_MANIFEST_SHA256"] = development.manifest
+    git_dir = Path(subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, env=env,
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()).resolve(strict=True)
+    receipt = create_receipt(repo, branch, authority.active, git_dir)
     print(f"Codex profile: {checked.profile} ({checked.sandbox})", file=sys.stderr)
+    print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
     command = [
         "codex",

@@ -9,6 +9,7 @@ from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
 from .mcp import closed_tool
+from .run import RECEIPT, RunStatus, inspect_receipt
 
 
 class DevelopmentResult(BaseModel):
@@ -107,8 +108,17 @@ def build_server() -> MCPServer:
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
         return _result(state, before, repo, checked.stdout + checked.stderr)
 
+    async def run_status() -> RunStatus:
+        """Report the exact managed run identity and observed process state."""
+        repo, branch, _ = _bound_repo()
+        result = _git(repo, "rev-parse", "--absolute-git-dir")
+        if result.returncode != 0:
+            return RunStatus(status="unknown")
+        return inspect_receipt(Path(result.stdout.strip()) / RECEIPT, repo, branch)
+
     closed_tool(server, "commit_all_current_worktree", commit_all_current_worktree)
     closed_tool(server, "quality", quality)
+    closed_tool(server, "run_status", run_status)
     return server
 
 

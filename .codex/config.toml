@@ -30,4 +30,4 @@ env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMO
             "SWITCHSTAND_QUALITY_IMAGE", "SWITCHSTAND_QUALITY_NETWORK",
             "SWITCHSTAND_DATABASE_CONTAINER", "SWITCHSTAND_MANIFEST_SHA256"]
 required = true
-enabled_tools = ["commit_all_current_worktree", "quality"]
+enabled_tools = ["commit_all_current_worktree", "quality", "run_status"]
