@@ -14,10 +14,6 @@ from .task_ref import asana_task_id
 
 PROFILE = "switchstand-development"
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
-FORBIDDEN_CODEX_OPTIONS = frozenset({
-    "--add-dir", "--cd", "--config", "--dangerously-bypass-approvals-and-sandbox",
-    "--ignore-user-config", "--profile", "--sandbox", "-C", "-c", "-p", "-s",
-})
 
 
 class Authority(NamedTuple):
@@ -112,7 +108,7 @@ def clean_environment(source: dict[str, str]) -> dict[str, str]:
     return {
         name: value
         for name, value in source.items()
-        if name != "ASANA_TOKEN" and name not in AUTHORITY_NAMES
+        if name != "ASANA_TOKEN" and name not in AUTHORITY_NAMES and not name.startswith("DOCKER_")
     }
 
 
@@ -241,10 +237,8 @@ def readback(repo: Path, env: dict[str, str]) -> CodexReadback:
 
 def validate_codex_args(arguments: list[str]) -> list[str]:
     forwarded = arguments[1:] if arguments[:1] == ["--"] else arguments
-    for argument in forwarded:
-        option = argument.split("=", 1)[0]
-        if option in FORBIDDEN_CODEX_OPTIONS:
-            raise ValueError(f"managed launch forbids Codex option {option}")
+    if len(forwarded) > 1 or any(argument.startswith("-") for argument in forwarded):
+        raise ValueError("managed launch accepts at most one prompt and no Codex options")
     return forwarded
 
 

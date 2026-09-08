@@ -35,6 +35,7 @@ async def test_quality_uses_only_pinned_image_and_read_only_worktree(monkeypatch
     command = captured["run"].args
     assert result.status == "ok"
     assert "sha256:fixed" in command and f"{tmp_path}:/workspace:ro" in command
+    assert "PYTHONPATH=/workspace/src" in " ".join(command)
     assert "compose.yaml" not in " ".join(command) and "Dockerfile" not in " ".join(command)
 
 

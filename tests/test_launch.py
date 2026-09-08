@@ -19,7 +19,7 @@ REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
 
 
 def test_clean_environment_removes_secret_and_stale_authority():
-    source = {"PATH": "/bin", "ASANA_TOKEN": "secret", "ACTIVE_WORK_ID": "stale",
+    source = {"PATH": "/bin", "DOCKER_HOST": "remote", "ASANA_TOKEN": "secret", "ACTIVE_WORK_ID": "stale",
               "REFERENCE_WORK_IDS": "stale"}
     assert clean_environment(source) == {"PATH": "/bin"}
 
@@ -68,8 +68,8 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
 
 
 def test_validate_codex_args_blocks_boundary_overrides():
-    assert validate_codex_args(["--", "exec", "hello"]) == ["exec", "hello"]
-    for arguments in (["--sandbox=danger-full-access"], ["-c", "sandbox_mode=read-only"]):
+    assert validate_codex_args(["--", "do the work"]) == ["do the work"]
+    for arguments in (["-sdanger-full-access"], ["-C/tmp"], ["-c", "sandbox_mode=read-only"]):
         with pytest.raises(ValueError):
             validate_codex_args(arguments)
 

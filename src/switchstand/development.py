@@ -94,9 +94,11 @@ def build_server() -> MCPServer:
                    "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
                    "-v", f"{repo}:/workspace:ro", "-w", "/workspace",
                    os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
-                   "/app/.venv/bin/ruff check --no-cache . && /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python && /app/.venv/bin/pytest -p no:cacheprovider"]
+                   "PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . && PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider"]
         checked = await asyncio.to_thread(_quality, command)
-        unchanged = before == _git(repo, "rev-parse", "HEAD").stdout.strip()
+        unchanged = (before == _git(repo, "rev-parse", "HEAD").stdout.strip()
+                     and not _git(repo, "status", "--porcelain").stdout
+                     and _manifest(repo) == os.environ["SWITCHSTAND_MANIFEST_SHA256"])
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
         return _result(state, before, repo, checked.stdout + checked.stderr)
 
