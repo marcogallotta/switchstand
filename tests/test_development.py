@@ -53,7 +53,7 @@ def test_credential_path_covers_environment_variants():
     assert all(development._credential_path(name)
                for name in (".env", ".env.local", "service.env.production"))
     assert not development._credential_path("environment.md")
-    assert not development._credential_path(".env.example")
+    assert not development._credential_path("switchstand-config.example")
 
 
 async def test_run_status_is_bound_to_owned_worktree(monkeypatch, tmp_path):

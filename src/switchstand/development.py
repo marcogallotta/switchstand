@@ -63,7 +63,7 @@ def _quality(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _credential_path(path: str) -> bool:
     name = Path(path).name
-    return name != ".env.example" and (name.endswith(".env") or ".env." in name)
+    return name.endswith(".env") or ".env." in name
 
 
 def build_server() -> MCPServer:
