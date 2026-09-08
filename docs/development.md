@@ -5,7 +5,7 @@
 - Services: `docker compose up --build`
 - Migration: `uv run alembic upgrade head`
 - Setup once: copy `.env.example` to `.env` and fill in the values. Compose loads it automatically.
-- MCP server: `docker compose run --rm controller`
+- MCP server: `docker compose run --rm -T controller`
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Integration admits
