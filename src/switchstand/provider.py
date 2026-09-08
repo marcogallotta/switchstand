@@ -126,12 +126,14 @@ class AsanaProvider:
                 completed = item.get("completed")
                 raw_fields = item.get("custom_fields")
                 if (not isinstance(gid, str) or not isinstance(title, str)
-                        or not isinstance(completed, bool) or not isinstance(raw_fields, list)
-                        or any(not isinstance(field, dict) for field in raw_fields)):
+                        or not isinstance(completed, bool) or not isinstance(raw_fields, list)):
+                    raise TypeError
+                raw_values = cast(list[object], raw_fields)
+                if any(not isinstance(field, dict) for field in raw_values):
                     raise TypeError
                 if gid in excluded or completed:
                     continue
-                fields = cast(list[JSON], raw_fields)
+                fields = [cast(JSON, field) for field in raw_values]
                 priorities = [field.get("display_value") for field in fields
                               if field.get("gid") == FIELDS["priority"]]
                 horizons = [field.get("display_value") for field in fields
