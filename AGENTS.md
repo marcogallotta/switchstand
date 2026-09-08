@@ -40,5 +40,5 @@ This file is the sole writable owner of shared agent operating rules.
 - Record real non-blocking setup or workflow friction in `~/.config/switchstand/friction.md` as it is observed;
   do not let the scratch record expand the active task.
 - Stop on a new material authority, persistence, concurrency, security, or external-interface choice.
-- Keep handwritten Bootstrap change at or below 1,400 lines; reforecast before crossing the current allowance.
+- Keep cumulative handwritten Bootstrap Python at or below 1,700 lines; reforecast before crossing the current allowance.
 - Treat `marcogallotta/switchstandold` as read-only evidence, never as an implementation base.

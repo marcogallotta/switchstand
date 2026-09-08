@@ -1,19 +1,4 @@
-name: switchstand
-
 services:
-  postgres:
-    image: postgres:18-alpine
-    volumes:
-      - postgres-data:/var/lib/postgresql
-    environment:
-      POSTGRES_DB: switchstand
-      POSTGRES_USER: switchstand
-      POSTGRES_PASSWORD: switchstand
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U switchstand"]
-      interval: 2s
-      timeout: 2s
-      retries: 15
   postgres-test:
     image: postgres:18-alpine
     environment:
@@ -45,8 +30,7 @@ services:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
       ACTIVE_WORK_ID: ${ACTIVE_WORK_ID:-}
       REFERENCE_WORK_IDS: ${REFERENCE_WORK_IDS:-}
-    depends_on:
-      postgres: {condition: service_healthy}
+    networks: [state]
   quality:
     build:
       context: .
@@ -60,5 +44,7 @@ services:
     depends_on:
       postgres-test: {condition: service_healthy}
 
-volumes:
-  postgres-data:
+networks:
+  state:
+    name: switchstand_default
+    external: true

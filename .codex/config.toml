@@ -11,9 +11,23 @@ glob_scan_max_depth = 6
 [permissions.switchstand-development.filesystem.":workspace_roots"]
 "**/*.env" = "deny"
 
+[permissions.switchstand-development.network]
+enabled = false
+
+[permissions.switchstand-development.network.unix_sockets]
+"/var/run/docker.sock" = "deny"
+
 [mcp_servers.switchstand]
 command = "docker"
-args = ["compose", "run", "--rm", "-T", "controller"]
+args = ["compose", "run", "--rm", "-T", "--no-deps", "controller"]
 env_vars = ["HOME", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
 required = true
 enabled_tools = ["work_get", "work_update", "work_append"]
+
+[mcp_servers.switchstand_development]
+command = "scripts/switchstand-development-mcp"
+env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON",
+            "SWITCHSTAND_QUALITY_IMAGE", "SWITCHSTAND_QUALITY_NETWORK",
+            "SWITCHSTAND_DATABASE_CONTAINER", "SWITCHSTAND_MANIFEST_SHA256"]
+required = true
+enabled_tools = ["commit_all_current_worktree", "quality"]

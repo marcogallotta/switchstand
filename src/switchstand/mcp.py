@@ -30,7 +30,7 @@ def controller_from_env() -> Controller:
                                headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
     return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
 
-def _closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
+def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
     server.tool(name=name)(function)
     tool = server._tool_manager.get_tool(name)  # pyright: ignore[reportPrivateUsage]
     assert tool is not None
@@ -59,9 +59,9 @@ def build_server(
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
-    _closed_tool(server, "work_get", _work_get)
-    _closed_tool(server, "work_update", _work_update)
-    _closed_tool(server, "work_append", _work_append)
+    closed_tool(server, "work_get", _work_get)
+    closed_tool(server, "work_update", _work_update)
+    closed_tool(server, "work_append", _work_append)
     return server
 
 def _protect_provider_logs() -> None:

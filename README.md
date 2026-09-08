@@ -12,6 +12,8 @@ reference only; this repository is a clean implementation of the current contrac
 uv sync --locked --all-extras --dev
 docker compose up --build
 uv run pytest
+scripts/switchstand-worktree <writer-name> <exact-green-SHA>
+# In the printed linked worktree:
 scripts/switchstand-launch --active <Asana task ID or URL>
 ```
 

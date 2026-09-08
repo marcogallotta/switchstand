@@ -25,4 +25,6 @@ git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && {
     exit 1
 }
 git -C "$repo" worktree add -b "$branch" "$target" "$sha"
+git_dir=$(git -C "$target" rev-parse --absolute-git-dir)
+printf '%s\n' "$sha" > "$git_dir/switchstand-green-sha"
 echo "$target"

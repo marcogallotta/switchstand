@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+repo=$(git rev-parse --show-toplevel)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+venv=$(dirname "$common")/.venv
+PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
+PYTHONPATH="$repo/src" "$venv/bin/pytest" "$@"
