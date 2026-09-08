@@ -1,0 +1,6 @@
+[mcp_servers.switchstand]
+command = "docker"
+args = ["compose", "run", "--rm", "-T", "controller"]
+env_vars = ["HOME"]
+required = true
+enabled_tools = ["work_get", "work_update", "work_append"]
