@@ -31,6 +31,17 @@ class RunStatus(BaseModel):
     branch: str | None = None
 
 
+def _known_status(
+    status: Literal["running", "stopped", "lost", "unknown"], receipt: RunReceipt
+) -> RunStatus:
+    return RunStatus(
+        status=status,
+        run_id=receipt.run_id,
+        active_work_id=receipt.active_work_id,
+        branch=receipt.branch,
+    )
+
+
 def process_start_token(pid: int, proc: Path = Path("/proc")) -> int:
     stat = (proc / str(pid) / "stat").read_text()
     tail = stat[stat.rindex(")") + 2:].split()
@@ -86,18 +97,13 @@ def inspect_receipt(path: Path, repo: Path, branch: str, proc: Path = Path("/pro
         receipt = RunReceipt.model_validate(json.loads(path.read_text()))
     except (OSError, ValueError, ValidationError):
         return RunStatus(status="unknown")
-    identity = {
-        "run_id": receipt.run_id,
-        "active_work_id": receipt.active_work_id,
-        "branch": receipt.branch,
-    }
     if receipt.worktree != str(repo) or receipt.branch != branch:
-        return RunStatus(status="unknown", **identity)
+        return _known_status("unknown", receipt)
     try:
         current = process_start_token(receipt.pid, proc)
     except FileNotFoundError:
-        return RunStatus(status="stopped", **identity)
+        return _known_status("stopped", receipt)
     except (OSError, ValueError):
-        return RunStatus(status="unknown", **identity)
+        return _known_status("unknown", receipt)
     status = "running" if current == receipt.start_token else "lost"
-    return RunStatus(status=status, **identity)
+    return _known_status(status, receipt)
