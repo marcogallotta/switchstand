@@ -46,3 +46,10 @@ def test_development_environment_removes_credentials(monkeypatch):
     clean = development._environment()
     assert clean["PATH"] == "/bin"
     assert "ASANA_TOKEN" not in clean and "GIT_CONFIG" not in clean
+
+
+def test_credential_path_covers_environment_variants():
+    assert all(development._credential_path(name)
+               for name in (".env", ".env.local", "service.env.production"))
+    assert not development._credential_path("environment.md")
+    assert not development._credential_path(".env.example")

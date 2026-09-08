@@ -60,6 +60,11 @@ def _quality(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, env=_environment(), text=True, capture_output=True, check=False)
 
 
+def _credential_path(path: str) -> bool:
+    name = Path(path).name
+    return name != ".env.example" and (name.endswith(".env") or ".env." in name)
+
+
 def build_server() -> MCPServer:
     server = MCPServer("Switchstand Development Boundary")
 
@@ -74,7 +79,7 @@ def build_server() -> MCPServer:
         if "160000 " in tracked or any(path != repo / ".git" for path in repo.rglob(".git")):
             return _result("failed", before, repo, "nested repositories are not supported")
         paths = _git(repo, "ls-files", "--cached", "--others", "--exclude-standard").stdout.splitlines()
-        if any(Path(path).name == ".env" or Path(path).suffix == ".env" for path in paths):
+        if any(_credential_path(path) for path in paths):
             return _result("failed", before, repo, "tracked credential path rejected")
         added = _git(repo, "add", "-A", "--", ":/")
         committed = _git(repo, "commit", "-m", message) if added.returncode == 0 else added

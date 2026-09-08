@@ -9,7 +9,7 @@ extends = ":workspace"
 glob_scan_max_depth = 6
 
 [permissions.switchstand-development.filesystem.":workspace_roots"]
-"**/*.env" = "deny"
+"**/*.env*" = "deny"
 
 [permissions.switchstand-development.network]
 enabled = false

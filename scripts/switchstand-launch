@@ -7,4 +7,5 @@ if [ "$git_dir" = "$git_common" ]; then
     echo "managed launch requires a linked writer worktree" >&2
     exit 1
 fi
+cd "$repo"
 PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m switchstand.launch "$@"
