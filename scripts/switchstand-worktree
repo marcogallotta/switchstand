@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+if [ "$#" -ne 2 ]; then
+    echo "usage: scripts/switchstand-worktree <writer-name> <exact-green-sha>" >&2
+    exit 2
+fi
+name=$1
+sha=$2
+case "$name" in *[!a-z0-9-]*|'') echo "writer name must use a-z, 0-9 and hyphens" >&2; exit 2;; esac
+case "$sha" in *[!0-9a-f]*|'') echo "exact SHA must be hexadecimal" >&2; exit 2;; esac
+if [ "${#sha}" -ne 40 ]; then
+    echo "exact SHA must contain 40 hexadecimal characters" >&2
+    exit 2
+fi
+repo=$(git rev-parse --show-toplevel)
+git -C "$repo" cat-file -e "$sha^{commit}"
+target=${TMPDIR:-/tmp}/switchstand-$name
+branch=v2-$name
+if [ -e "$target" ]; then
+    echo "target already exists: $target" >&2
+    exit 1
+fi
+git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && {
+    echo "branch already exists: $branch" >&2
+    exit 1
+}
+git -C "$repo" worktree add -b "$branch" "$target" "$sha"
+git_dir=$(git -C "$target" rev-parse --absolute-git-dir)
+printf '%s\n' "$sha" > "$git_dir/switchstand-green-sha"
+echo "$target"

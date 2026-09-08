@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+repo=${SWITCHSTAND_WORKTREE:?required}
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+python=$(dirname "$common")/.venv/bin/python
+if [ ! -x "$python" ]; then
+    echo "run the documented bootstrap in the primary checkout first" >&2
+    exit 1
+fi
+PYTHONPATH="$repo/src" exec "$python" -m switchstand.development
