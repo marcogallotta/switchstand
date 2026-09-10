@@ -10,9 +10,9 @@ from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, Asa
 
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
     return {"gid": gid, "enabled": enabled, "display_value": display, "enum_options": [{"gid": "option-gid", "name": option, "enabled": enabled}]}
-def task(*, parent=None, project=None, fields=()):
+def task(*, parent=None, project=None, fields=(), notes="Notes"):
     memberships = [] if project is None else [{"project": {"gid": project}}]
-    return {"data": {"name": "Title", "notes": "Notes", "completed": False,
+    return {"data": {"name": "Title", "notes": notes, "completed": False,
                      "modified_at": "r1", "memberships": memberships,
                      "parent": None if parent is None else {"gid": parent},
                      "custom_fields": list(fields)}}
@@ -47,6 +47,12 @@ async def test_unknown_task_and_routing_projection():
     fields = [field(gid, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
     result = await subject.get("t"); assert result and result.routing.model_dump() == {name: name for name in FIELDS}
+async def test_launch_spec_is_host_only_provider_metadata():
+    notes = ('Visible\n<!-- switchstand-launch-spec\n{"version":"1",'
+             '"required_references":["123"]}\n-->')
+    subject, _ = provider((200, task(project=PROJECT, notes=notes)))
+    result = await subject.get("t")
+    assert result and result.notes == "Visible" and result.required_references == ("123",)
 async def test_ancestry_is_bounded():
     subject, api = provider(*[(200, task(parent=str(i))) for i in range(ANCESTRY_GETS)])
     result = await subject.get("t"); assert result and not result.canonical and len(api.requests) == ANCESTRY_GETS

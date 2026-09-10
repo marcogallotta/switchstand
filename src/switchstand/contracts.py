@@ -56,17 +56,6 @@ class WorkAppendRequest(ClosedModel):
     work_id: UUID
     text: str = Field(min_length=1)
 
-class WorkResult(ClosedModel):
-    status: Status
-    item: WorkItem | None = None
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        needs_item = self.status in {"ok", "stale"}
-        if needs_item != (self.item is not None):
-            raise ValueError("item presence does not match status")
-        return self
-
 class AppendResult(ClosedModel):
     status: Literal["ok", "denied", "unknown", "provider_error"]
 
@@ -88,7 +77,7 @@ class SuggestionResult(ClosedModel):
 
 class LaunchAuthority(ClosedModel):
     active_work_id: UUID
-    reference_work_ids: tuple[UUID, ...] = Field(default=(), max_length=8)
+    reference_work_ids: tuple[UUID, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def bounded(self) -> Self:
@@ -98,3 +87,42 @@ class LaunchAuthority(ClosedModel):
 
     def can_read(self, work_id: UUID) -> bool:
         return work_id == self.active_work_id or work_id in self.reference_work_ids
+
+
+class LaunchBinding(LaunchAuthority):
+    reference_count: int = Field(ge=0, le=32)
+
+    @model_validator(mode="after")
+    def count_matches(self) -> Self:
+        if self.reference_count != len(self.reference_work_ids):
+            raise ValueError("reference count does not match bound references")
+        return self
+
+
+class WorkFingerprint(ClosedModel):
+    id: UUID
+    title: str
+    revision: str
+
+
+class LaunchVerification(ClosedModel):
+    active: WorkFingerprint
+    references: tuple[WorkFingerprint, ...] = Field(default=(), max_length=32)
+
+
+class PreparedLaunch(ClosedModel):
+    authority: LaunchAuthority
+    verification: LaunchVerification
+
+
+class WorkResult(ClosedModel):
+    status: Status
+    item: WorkItem | None = None
+    launch: LaunchBinding | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        needs_item = self.status in {"ok", "stale"}
+        if needs_item != (self.item is not None):
+            raise ValueError("item presence does not match status")
+        return self

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+: "${SWITCHSTAND_RUN_REF:?managed Switchstand run required}"
+: "${SWITCHSTAND_RUNS_DIR:?managed Switchstand runs directory required}"
+: "${SWITCHSTAND_CANDIDATE_SHA:?candidate identity required}"
+exec docker compose run --rm -T \
+  -e "SWITCHSTAND_RUN_RECEIPT=/run/switchstand/runs/$SWITCHSTAND_RUN_REF.json" \
+  -e "SWITCHSTAND_CANDIDATE_SHA=$SWITCHSTAND_CANDIDATE_SHA" \
+  -v "$SWITCHSTAND_RUNS_DIR:/run/switchstand/runs" controller

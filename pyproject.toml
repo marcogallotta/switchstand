@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-switchstand = "switchstand.mcp:main"
+switchstand = "switchstand.launch:main"
+switchstand-controller = "switchstand.mcp:main"
 switchstand-provision = "switchstand.provision:main"
 
 [dependency-groups]

@@ -6,6 +6,7 @@ from uuid import UUID
 from .contracts import (
     AppendResult,
     LaunchAuthority,
+    LaunchVerification,
     Routing,
     SuggestionResult,
     WorkAppendRequest,
@@ -38,6 +39,7 @@ class ProviderWork:
     revision: str
     routing: Routing
     canonical: bool
+    required_references: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class ProviderHead:
@@ -59,8 +61,30 @@ class Provider(Protocol):
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
 
 class Controller:
-    def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
+    def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider],
+                 *, admitted: bool = True):
         self.authority, self.state, self.providers = authority, state, providers
+        self._admitted = admitted
+
+    @property
+    def admitted(self) -> bool:
+        return self._admitted
+
+    async def verify_and_admit(self, expected: LaunchVerification) -> bool:
+        if self._admitted:
+            raise RuntimeError("controller admission is one-shot")
+        expected_ids = (expected.active.id, *(item.id for item in expected.references))
+        authority_ids = (self.authority.active_work_id, *self.authority.reference_work_ids)
+        if expected_ids != authority_ids:
+            return False
+        for fingerprint in (expected.active, *expected.references):
+            result = await self.get(WorkGetRequest(api_version="1", work_id=fingerprint.id))
+            if (result.status != "ok" or result.item is None or
+                    (result.item.title, result.item.revision) !=
+                    (fingerprint.title, fingerprint.revision)):
+                return False
+        self._admitted = True
+        return True
 
     def _item(self, work_id: UUID, work: ProviderWork) -> WorkItem:
         return WorkItem(id=work_id, title=work.title, notes=work.notes, completed=work.completed, revision=work.revision, routing=work.routing)
@@ -103,7 +127,7 @@ class Controller:
             return WorkResult(status="provider_error")
 
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
-        if request.work_id != self.authority.active_work_id:
+        if not self._admitted or request.work_id != self.authority.active_work_id:
             return WorkResult(status="denied")
         update_may_have_applied = False
         try:
@@ -135,7 +159,7 @@ class Controller:
             raise
 
     async def append(self, request: WorkAppendRequest) -> AppendResult:
-        if request.work_id != self.authority.active_work_id:
+        if not self._admitted or request.work_id != self.authority.active_work_id:
             return AppendResult(status="denied")
         append_returned = False
         try:
@@ -190,17 +214,31 @@ async def provision_launch(
     active_provider_work_id: str,
     reference_provider_work_ids: tuple[str, ...] = (),
 ) -> LaunchAuthority:
-    provider_work_ids = (active_provider_work_id, *reference_provider_work_ids)
-    if len(reference_provider_work_ids) > 8:
-        raise ValueError("at most eight reference tasks are allowed")
-    if len(set(provider_work_ids)) != len(provider_work_ids):
-        raise ValueError("active and reference tasks must be distinct")
-
-    works = [await provider.get(provider_work_id) for provider_work_id in provider_work_ids]
-    if any(work is None or not work.canonical for work in works):
+    active = await provider.get(active_provider_work_id)
+    if active is None or not active.canonical:
         raise PermissionError("all work must be canonical")
 
-    handles = [await state.bind(provider_name, provider_work_id) for provider_work_id in provider_work_ids]
+    ordered: list[str] = []
+    seen = {active_provider_work_id}
+
+    async def resolve(provider_work_id: str, chain: tuple[str, ...]) -> None:
+        if provider_work_id in seen:
+            return
+        if len(ordered) == 32:
+            raise ValueError("reference closure exceeds 32 at " + " -> ".join(chain))
+        work = await provider.get(provider_work_id)
+        if work is None or not work.canonical:
+            raise PermissionError("reference is not canonical: " + " -> ".join(chain))
+        seen.add(provider_work_id)
+        ordered.append(provider_work_id)
+        for nested in work.required_references:
+            await resolve(nested, (*chain, nested))
+
+    for direct in (*active.required_references, *reference_provider_work_ids):
+        await resolve(direct, (active_provider_work_id, direct))
+
+    provider_work_ids = (active_provider_work_id, *ordered)
+    handles = [await state.bind(provider_name, value) for value in provider_work_ids]
     return LaunchAuthority(
         active_work_id=handles[0].id,
         reference_work_ids=tuple(handle.id for handle in handles[1:]),

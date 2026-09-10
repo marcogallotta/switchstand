@@ -56,9 +56,11 @@ class AsanaProvider:
         try:
             title, notes, completed, revision = (task[key] for key in ("name", "notes", "completed", "modified_at"))
             if not all(isinstance(value, str) for value in (title, notes, revision)) or not isinstance(completed, bool): raise TypeError
+            visible_notes, required_references = split_asana_launch_spec(notes)
             routing = Routing(**{key: value if isinstance(value, str) else None
                                for key, value in values.items()})
-            return ProviderWork(title, notes, completed, revision, routing, await self._canonical(task))
+            return ProviderWork(title, visible_notes, completed, revision, routing,
+                                await self._canonical(task), required_references)
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
     async def _write(

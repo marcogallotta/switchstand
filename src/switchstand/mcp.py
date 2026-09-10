@@ -1,11 +1,14 @@
+import asyncio
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import httpx
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
@@ -20,16 +23,40 @@ from .contracts import (
 )
 from .core import Controller
 from .provider import AsanaProvider
+from .run import read_receipt, update_receipt
 from .state import PostgresState
 
 
-def controller_from_env() -> Controller:
-    references = tuple(UUID(value) for value in os.getenv("REFERENCE_WORK_IDS", "").split(",") if value)
-    authority = LaunchAuthority(active_work_id=UUID(os.environ["ACTIVE_WORK_ID"]), reference_work_ids=references)
+async def controller_from_env() -> tuple[Controller, Path | None]:
+    receipt_value = os.getenv("SWITCHSTAND_RUN_RECEIPT")
+    receipt_path = Path(receipt_value) if receipt_value else None
+    receipt = read_receipt(receipt_path) if receipt_path is not None else None
+    if receipt is None:
+        references = tuple(UUID(value) for value in os.getenv("REFERENCE_WORK_IDS", "").split(",") if value)
+        authority = LaunchAuthority(active_work_id=UUID(os.environ["ACTIVE_WORK_ID"]), reference_work_ids=references)
+    else:
+        assert receipt_path is not None
+        prepared = receipt.prepared
+        if prepared is None:
+            update_receipt(receipt_path, phase="BLOCKED", outcome="intake incomplete")
+            raise RuntimeError("launch blocked: rerun exact-task intake")
+        if os.environ.get("SWITCHSTAND_CANDIDATE_SHA") != receipt.candidate_sha:
+            update_receipt(receipt_path, phase="BLOCKED", outcome="candidate identity mismatch")
+            raise RuntimeError("launch blocked: rebuild the exact candidate")
+        authority = prepared.authority
     engine = create_async_engine(os.environ["DATABASE_URL"])
     client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
                                headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
-    return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
+    controller = Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)},
+                            admitted=receipt_path is None)
+    if receipt_path is not None and receipt is not None:
+        update_receipt(receipt_path, phase="VERIFYING", controller_identity=str(os.getpid()))
+        assert receipt.prepared is not None
+        if not await controller.verify_and_admit(receipt.prepared.verification):
+            update_receipt(receipt_path, phase="BLOCKED", outcome="work verification mismatch")
+            raise RuntimeError("launch blocked: rerun exact-task intake")
+        update_receipt(receipt_path, phase="ADMITTED", admitted=True)
+    return controller, receipt_path
 
 def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
     server.tool(name=name)(function)
@@ -40,17 +67,32 @@ def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> N
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
 
 def build_server(
-    service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = ()
+    service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = (),
+    on_active_read: Callable[[], None] | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
     async def _work_get(api_version: Literal["1"], work_id: UUID | None = None) -> WorkResult:
-        return await service.get(WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id))  # type: ignore[attr-defined]
+        target = work_id or active_work_id
+        result = cast(
+            WorkResult,
+            await service.get(  # type: ignore[attr-defined]
+                WorkGetRequest(api_version=api_version, work_id=target)
+            ),
+        )
+        if target == active_work_id and result.item is not None:
+            result = result.model_copy(update={"launch": LaunchBinding(
+                active_work_id=active_work_id,
+                reference_work_ids=reference_work_ids,
+                reference_count=len(reference_work_ids),
+            )})
+            if on_active_read is not None:
+                on_active_read()
+        return result
 
-    references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
         "Read launch-bound work. Omit work_id for the active assignment. "
-        f"Bounded read-only reference WorkIds: {references}."
+        "The active result includes the authoritative bounded reference WorkIds and count."
     )
 
     async def _work_update(api_version: Literal["1"], work_id: UUID, observed_revision: str, patch: WorkPatch) -> WorkResult:
@@ -77,12 +119,27 @@ def _protect_provider_logs() -> None:
         logger.handlers[:] = [logging.NullHandler()]
         logger.propagate = False
 
-def main() -> None:
+async def _serve() -> None:
     _protect_provider_logs()
-    service = controller_from_env()
-    build_server(
-        service, service.authority.active_work_id, service.authority.reference_work_ids
-    ).run()
+    service, receipt_path = await controller_from_env()
+    if receipt_path is not None:
+        update_receipt(receipt_path, phase="STARTING")
+    running = False
+
+    def on_active_read() -> None:
+        nonlocal running
+        if receipt_path is not None and not running:
+            update_receipt(receipt_path, phase="RUNNING")
+            running = True
+
+    await build_server(
+        service, service.authority.active_work_id, service.authority.reference_work_ids,
+        on_active_read,
+    ).run_stdio_async()
+
+
+def main() -> None:
+    asyncio.run(_serve())
 
 if __name__ == "__main__":
     main()

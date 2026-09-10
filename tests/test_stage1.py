@@ -6,8 +6,10 @@ from pydantic import ValidationError
 
 from switchstand.contracts import (
     LaunchAuthority,
+    LaunchVerification,
     Routing,
     WorkAppendRequest,
+    WorkFingerprint,
     WorkGetRequest,
     WorkPatch,
     WorkUpdateRequest,
@@ -123,6 +125,40 @@ async def test_reference_write_denied_and_stale_update_has_no_effect(setup_contr
     stale = await controller.update(WorkUpdateRequest(api_version="1", work_id=active, observed_revision="old", patch=WorkPatch(notes="x")))
     assert denied.status == "denied" and stale.status == "stale" and provider.updates == []
 
+
+async def test_sealed_controller_denies_eager_writes_without_provider_access(setup_controller):
+    active, _, provider, controller = setup_controller
+    controller = Controller(controller.authority, controller.state, controller.providers,
+                            admitted=False)
+    provider.fail_get = True
+    update = await controller.update(WorkUpdateRequest(
+        api_version="1", work_id=active, observed_revision="r1", patch=WorkPatch(notes="x")
+    ))
+    append = await controller.append(WorkAppendRequest(
+        api_version="1", work_id=active, text="x"
+    ))
+    assert update.status == append.status == "denied"
+    assert provider.updates == provider.appends == []
+
+
+async def test_exact_verification_admits_once_and_mismatch_stays_sealed(setup_controller):
+    active, reference, provider, controller = setup_controller
+    controller = Controller(controller.authority, controller.state, controller.providers,
+                            admitted=False)
+    exact = LaunchVerification(
+        active=WorkFingerprint(id=active, title="Title", revision="r1"),
+        references=(WorkFingerprint(id=reference, title="Title", revision="r1"),),
+    )
+    assert await controller.verify_and_admit(exact) and controller.admitted
+    with pytest.raises(RuntimeError, match="one-shot"):
+        await controller.verify_and_admit(exact)
+
+    controller = Controller(controller.authority, controller.state, controller.providers,
+                            admitted=False)
+    wrong = exact.model_copy(update={"active": exact.active.model_copy(update={"revision": "old"})})
+    assert not await controller.verify_and_admit(wrong) and not controller.admitted
+    assert provider.updates == provider.appends == []
+
 async def test_update_returns_authoritative_readback(setup_controller):
     active, _, provider, controller = setup_controller
     patch = WorkPatch(notes="new", horizon="Stage 3")
@@ -232,11 +268,43 @@ async def test_provision_launch_validates_all_work_before_stable_binding():
     assert empty.handles == {}
 
 
-async def test_provision_launch_rejects_invalid_bounds_before_provider_reads():
+async def test_provision_launch_dedupes_active_and_explicit_references():
     state = FakeState({})
     provider = FakeProvider(ProviderWork("T", "N", False, "r1", Routing(), True))
-    with pytest.raises(ValueError, match="distinct"):
-        await provision_launch(state, "fake", provider, "same", ("same",))
-    with pytest.raises(ValueError, match="eight"):
-        await provision_launch(state, "fake", provider, "active", tuple(map(str, range(9))))
+    result = await provision_launch(state, "fake", provider, "active", ("active", "ref", "ref"))
+    assert len(result.reference_work_ids) == 1
+
+
+class GraphProvider:
+    def __init__(self, references): self.references, self.reads = references, []
+    async def get(self, provider_work_id):
+        self.reads.append(provider_work_id)
+        references = self.references.get(provider_work_id)
+        if references is None: return None
+        return ProviderWork("T", "N", False, "r1", Routing(), True, references)
+
+
+async def test_provision_launch_resolves_nested_closure_cycles_before_binding():
+    state = FakeState({})
+    provider = GraphProvider({
+        "active": ("b", "a"), "b": ("nested",), "a": ("nested", "b"),
+        "nested": ("a",),
+    })
+    result = await provision_launch(state, "fake", provider, "active")
+    bound = [state.handles[value].provider_work_id for value in result.reference_work_ids]
+    assert bound == ["b", "nested", "a"]
+    assert provider.reads == ["active", "b", "nested", "a"]
+
+
+async def test_invalid_or_over_budget_nested_closure_never_partially_binds():
+    state = FakeState({})
+    provider = GraphProvider({"active": ("missing",)})
+    with pytest.raises(PermissionError, match="active -> missing"):
+        await provision_launch(state, "fake", provider, "active")
+    assert state.handles == {}
+
+    references = tuple(f"r{index}" for index in range(33))
+    provider = GraphProvider({"active": references, **{value: () for value in references}})
+    with pytest.raises(ValueError, match=r"exceeds 32 at active -> r32"):
+        await provision_launch(state, "fake", provider, "active")
     assert state.handles == {}
