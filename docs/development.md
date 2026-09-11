@@ -28,6 +28,10 @@
   stops only the receipt's exact process identity: pidfd-pinned `SIGTERM`, a fixed bounded wait, then pidfd-pinned
   `SIGKILL`. It returns `lost` or `unknown` without signalling when identity cannot be proven, and never accepts a PID,
   signal, timeout, path, or process group.
+- One-step managed start: from the clean ordinary `main` checkout at the locally accepted `origin/main`, run
+  `scripts/switchstand-start --active <Asana task URL>`. It verifies that exact baseline, creates the task-named linked
+  writer worktree, and replaces itself with the managed launcher. Task IDs, references, and one optional prompt are
+  forwarded unchanged.
 - MCP server: `docker compose run --rm -T controller`
 - Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
   and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.

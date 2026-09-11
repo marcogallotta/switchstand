@@ -1,0 +1,47 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    echo "usage: scripts/switchstand-start --active <Asana task ID or URL> [--reference <ID-or-URL>] [prompt]" >&2
+    exit 2
+}
+
+active=
+previous=
+for argument in "$@"; do
+    if [ "$previous" = "--active" ]; then
+        [ -z "$active" ] || usage
+        active=$argument
+        previous=
+        continue
+    fi
+    case "$argument" in
+        --active) previous=--active ;;
+        --active=*)
+            [ -z "$active" ] || usage
+            active=${argument#--active=}
+            ;;
+    esac
+done
+[ -n "$active" ] && [ -z "$previous" ] || usage
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+branch=$(git -C "$repo" branch --show-current)
+head=$(git -C "$repo" rev-parse HEAD)
+accepted=$(git -C "$repo" rev-parse origin/main)
+dirty=$(git -C "$repo" status --porcelain)
+[ "$branch" = main ] || {
+    echo "start requires the ordinary main checkout" >&2
+    exit 1
+}
+[ "$head" = "$accepted" ] && [ -z "$dirty" ] || {
+    echo "start requires clean main at the locally accepted origin/main" >&2
+    exit 1
+}
+
+task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+    'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
+    "$active")
+target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$head")
+cd "$target"
+exec scripts/switchstand-launch "$@"

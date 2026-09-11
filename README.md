@@ -15,6 +15,9 @@ uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>
 # In the printed linked worktree:
 scripts/switchstand-launch --active <Asana task ID or URL>
+
+# Or create the task worktree and launch it in one operation:
+scripts/switchstand-start --active <Asana task ID or URL>
 ```
 
 See [architecture](docs/architecture.md), [development](docs/development.md), and [agent routing](AGENTS.md).

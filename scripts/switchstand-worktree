@@ -24,7 +24,7 @@ git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && {
     echo "branch already exists: $branch" >&2
     exit 1
 }
-git -C "$repo" worktree add -b "$branch" "$target" "$sha"
+git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2
 git_dir=$(git -C "$target" rev-parse --absolute-git-dir)
 printf '%s\n' "$sha" > "$git_dir/switchstand-green-sha"
 echo "$target"
