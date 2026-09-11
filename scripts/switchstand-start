@@ -43,6 +43,113 @@ dirty=$(git -C "$repo" status --porcelain)
 task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
     "$active")
-target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$head")
+writer=task-$task_id
+target_hint=${TMPDIR:-/tmp}/switchstand-$writer
+writer_branch=v2-$writer
+target_existed=false
+[ ! -e "$target_hint" ] || target_existed=true
+branch_existed=false
+if git -C "$repo" show-ref --verify --quiet "refs/heads/$writer_branch"; then
+    branch_existed=true
+fi
+
+report_preserved_writer() {
+    preserve_target=$1
+    preserve_branch=$2
+    observed_branch=$(git -C "$preserve_target" branch --show-current 2>/dev/null || true)
+    observed_head=$(git -C "$preserve_target" rev-parse HEAD 2>/dev/null || true)
+    observed_common=$(git -C "$preserve_target" rev-parse --path-format=absolute --git-common-dir \
+        2>/dev/null || true)
+    observed_dirty=unknown
+    if git -C "$preserve_target" status --porcelain >/tmp/switchstand-writer-status.$$ 2>/dev/null; then
+        if [ -s /tmp/switchstand-writer-status.$$ ]; then
+            observed_dirty=dirty
+        else
+            observed_dirty=clean
+        fi
+    fi
+    rm -f /tmp/switchstand-writer-status.$$
+    echo "preserving failed-launch writer: target=$preserve_target branch=$preserve_branch observed_branch=${observed_branch:-unknown} head=${observed_head:-unknown} common=${observed_common:-unknown} state=$observed_dirty" >&2
+}
+
+cleanup_created_writer() {
+    cleanup_target=$1
+    cleanup_branch=$2
+    cleanup_sha=$3
+    request_common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+    if [ -e "$cleanup_target" ]; then
+        actual_root=$(git -C "$cleanup_target" rev-parse --show-toplevel 2>/dev/null || true)
+        actual_branch=$(git -C "$cleanup_target" branch --show-current 2>/dev/null || true)
+        actual_head=$(git -C "$cleanup_target" rev-parse HEAD 2>/dev/null || true)
+        actual_git=$(git -C "$cleanup_target" rev-parse --absolute-git-dir 2>/dev/null || true)
+        actual_common=$(git -C "$cleanup_target" rev-parse --path-format=absolute --git-common-dir \
+            2>/dev/null || true)
+        actual_dirty=$(git -C "$cleanup_target" status --porcelain 2>/dev/null || printf 'unknown\n')
+        green=
+        [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
+        registered=false
+        if git -C "$repo" worktree list --porcelain 2>/dev/null \
+                | grep -Fqx "worktree $cleanup_target"; then
+            registered=true
+        fi
+        if [ "$actual_root" != "$cleanup_target" ] || [ "$actual_branch" != "$cleanup_branch" ] \
+                || [ "$actual_head" != "$cleanup_sha" ] || [ "$green" != "$cleanup_sha" ] \
+                || [ -n "$actual_dirty" ] || [ "$actual_common" != "$request_common" ] \
+                || [ "$registered" != true ]; then
+            report_preserved_writer "$cleanup_target" "$cleanup_branch"
+            return 0
+        fi
+        if ! git -C "$repo" worktree remove "$cleanup_target"; then
+            echo "failed-launch writer cleanup could not remove $cleanup_target; preserving branch $cleanup_branch" >&2
+            return 0
+        fi
+    fi
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$cleanup_branch"; then
+        branch_head=$(git -C "$repo" rev-parse "refs/heads/$cleanup_branch")
+        if [ "$branch_head" != "$cleanup_sha" ]; then
+            echo "failed-launch writer branch advanced; preserving $cleanup_branch at $branch_head" >&2
+            return 0
+        fi
+        if git -C "$repo" worktree list --porcelain 2>/dev/null \
+                | grep -Fqx "branch refs/heads/$cleanup_branch"; then
+            echo "failed-launch writer branch is registered to another worktree; preserving $cleanup_branch" >&2
+            return 0
+        fi
+        if ! git -C "$repo" update-ref -d "refs/heads/$cleanup_branch" "$cleanup_sha"; then
+            echo "failed-launch writer branch cleanup failed; preserving $cleanup_branch" >&2
+            return 0
+        fi
+    fi
+    echo "cleaned untouched failed-launch writer: target=$cleanup_target branch=$cleanup_branch" >&2
+}
+
+set +e
+target=$(cd "$repo" && scripts/switchstand-worktree "$writer" "$head")
+worktree_status=$?
+set -e
+if [ "$worktree_status" -ne 0 ]; then
+    if [ "$target_existed" = false ] && [ "$branch_existed" = false ]; then
+        cleanup_created_writer "$target_hint" "$writer_branch" "$head"
+    fi
+    exit "$worktree_status"
+fi
+created=false
+if [ "$target_existed" = false ] && [ "$branch_existed" = false ]; then
+    created=true
+fi
+prepared=$(mktemp "${TMPDIR:-/tmp}/switchstand-start-prepared.XXXXXX")
+rm -f "$prepared"
+trap 'rm -f "$prepared"' EXIT HUP INT TERM
 cd "$target"
-exec scripts/switchstand-launch "$@"
+set +e
+SWITCHSTAND_START_PREPARED="$prepared" scripts/switchstand-launch "$@"
+launch_status=$?
+set -e
+if [ "$launch_status" -ne 0 ] && [ ! -e "$prepared" ]; then
+    if [ "$created" = true ]; then
+        cleanup_created_writer "$target" "$writer_branch" "$head"
+    else
+        report_preserved_writer "$target" "$writer_branch"
+    fi
+fi
+exit "$launch_status"
