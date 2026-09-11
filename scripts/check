@@ -5,8 +5,22 @@ common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 primary=$(dirname "$common")
 bootstrap=$primary/scripts/bootstrap
 venv=$primary/.venv
+deadline=$(($(date +%s) + 120))
+run() {
+    remaining=$((deadline - $(date +%s)))
+    [ "$remaining" -gt 0 ] || {
+        echo "focused check exceeded the 120-second stop-loss" >&2
+        exit 124
+    }
+    status=0
+    timeout "$remaining" "$@" || status=$?
+    if [ "$status" -eq 124 ]; then
+        echo "focused check exceeded the 120-second stop-loss" >&2
+    fi
+    return "$status"
+}
 if [ -x "$bootstrap" ]; then
-    "$bootstrap"
+    run "$bootstrap"
 elif [ ! -x "$venv/bin/python" ]; then
     echo "run scripts/bootstrap in the primary checkout first" >&2
     exit 1
@@ -19,15 +33,6 @@ manifest() {
 [ "$(manifest "$repo")" = "$(manifest "$primary")" ] || {
     echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
     exit 1
-}
-deadline=$(($(date +%s) + 120))
-run() {
-    remaining=$((deadline - $(date +%s)))
-    [ "$remaining" -gt 0 ] || {
-        echo "focused check exceeded the 120-second stop-loss" >&2
-        exit 124
-    }
-    timeout "$remaining" "$@"
 }
 run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
 run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
