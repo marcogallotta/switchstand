@@ -16,6 +16,7 @@ from .task_ref import asana_task_id
 PROFILE = "switchstand-development"
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
 MANAGED_NAME = "SWITCHSTAND_MANAGED"
+START_PREPARED_NAME = "SWITCHSTAND_START_PREPARED"
 
 
 class Authority(NamedTuple):
@@ -44,8 +45,16 @@ class PreparedRun(NamedTuple):
 
 def linked_branch(repo: Path, env: dict[str, str]) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir",
-         "HEAD", "--abbrev-ref", "HEAD"],
+        [
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+            "HEAD",
+            "--abbrev-ref",
+            "HEAD",
+        ],
         cwd=repo,
         env=env,
         check=True,
@@ -59,8 +68,14 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
     if branch == "HEAD":
         raise ValueError("managed launch requires a branch")
     green = (git_dir / "switchstand-green-sha").read_text().strip()
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, env=env, check=True,
-                           text=True, capture_output=True).stdout
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
     if head != green or dirty:
         raise ValueError("managed launch requires the exact clean green worktree baseline")
     return branch
@@ -69,30 +84,66 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
 def prepare_development(repo: Path, env: dict[str, str]) -> DevelopmentBoundary:
     suffix = hashlib.sha256(f"{repo}:{os.getpid()}".encode()).hexdigest()[:12]
     network, database = f"switchstand-dev-{suffix}", f"switchstand-test-{suffix}"
-    image = subprocess.run(["docker", "build", "--quiet", "--target", "development", "."],
-                           cwd=repo, env=env, check=True, text=True,
-                           capture_output=True).stdout.strip().splitlines()[-1]
-    subprocess.run(["docker", "network", "create", "--internal", network], env=env,
-                   check=True, capture_output=True)
+    image = subprocess.run(
+        ["docker", "build", "--quiet", "--target", "development", "."],
+        cwd=repo,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip().splitlines()[-1]
+    subprocess.run(
+        ["docker", "network", "create", "--internal", network],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
     try:
-        subprocess.run(["docker", "run", "-d", "--rm", "--name", database,
-                        "--network", network, "--network-alias", "postgres-test", "--tmpfs",
-                        "/var/lib/postgresql", "-e", "POSTGRES_DB=switchstand_test", "-e",
-                        "POSTGRES_USER=switchstand", "-e", "POSTGRES_PASSWORD=switchstand",
-                        "postgres:18-alpine"], env=env, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                database,
+                "--network",
+                network,
+                "--network-alias",
+                "postgres-test",
+                "--tmpfs",
+                "/var/lib/postgresql",
+                "-e",
+                "POSTGRES_DB=switchstand_test",
+                "-e",
+                "POSTGRES_USER=switchstand",
+                "-e",
+                "POSTGRES_PASSWORD=switchstand",
+                "postgres:18-alpine",
+            ],
+            env=env,
+            check=True,
+            capture_output=True,
+        )
         for _ in range(30):
-            ready = subprocess.run(["docker", "exec", database, "pg_isready", "-U", "switchstand"],
-                                   env=env, capture_output=True, check=False)
+            ready = subprocess.run(
+                ["docker", "exec", database, "pg_isready", "-U", "switchstand"],
+                env=env,
+                capture_output=True,
+                check=False,
+            )
             if ready.returncode == 0:
                 break
             time.sleep(1)
         else:
             raise RuntimeError("development test database did not become ready")
     except Exception:
-        subprocess.run(["docker", "rm", "-f", database], env=env,
-                       capture_output=True, check=False)
-        subprocess.run(["docker", "network", "rm", network], env=env,
-                       capture_output=True, check=False)
+        subprocess.run(
+            ["docker", "rm", "-f", database], env=env, capture_output=True, check=False
+        )
+        subprocess.run(
+            ["docker", "network", "rm", network], env=env, capture_output=True, check=False
+        )
         raise
     digest = hashlib.sha256()
     for name in ("pyproject.toml", "uv.lock"):
@@ -118,6 +169,7 @@ def clean_environment(source: dict[str, str]) -> dict[str, str]:
         for name, value in source.items()
         if name != "ASANA_TOKEN"
         and name != MANAGED_NAME
+        and name != START_PREPARED_NAME
         and name not in AUTHORITY_NAMES
         and not name.startswith("DOCKER_")
     }
@@ -143,7 +195,10 @@ def parse_authority(output: str) -> Authority:
 def provision(repo: Path, active: str, references: tuple[str, ...], env: dict[str, str]) -> Authority:
     subprocess.run(
         ["docker", "compose", "-f", "compose.state.yaml", "up", "-d", "--wait", "postgres"],
-        cwd=repo, env=env, check=True, capture_output=True,
+        cwd=repo,
+        env=env,
+        check=True,
+        capture_output=True,
     )
     command = [
         "docker",
@@ -285,16 +340,37 @@ def prepare_managed_run(
     return PreparedRun(authority, development, receipt)
 
 
+def mark_start_prepared(path: str | None) -> None:
+    if path is None:
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, b"prepared\n")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def run(arguments: argparse.Namespace) -> None:
     repo = Path.cwd().resolve()
+    prepared_marker = os.environ.get(START_PREPARED_NAME)
     env = clean_environment(dict(os.environ))
     codex_args = validate_codex_args(arguments.codex_args)
     branch = linked_branch(repo, env)
     checked = readback(repo, env)
-    git_dir = Path(subprocess.run(
-        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, env=env,
-        check=True, text=True, capture_output=True,
-    ).stdout.strip()).resolve(strict=True)
+    git_dir = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=repo,
+            env=env,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+    ).resolve(strict=True)
     prepared = prepare_managed_run(
         repo, branch, arguments.active, tuple(arguments.reference), env, git_dir
     )
@@ -304,9 +380,18 @@ def run(arguments: argparse.Namespace) -> None:
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_WORKTREE"] = str(repo)
     env["SWITCHSTAND_BRANCH"] = branch
-    env["SWITCHSTAND_GIT_COMMON"] = str(Path(subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo,
-        env=env, check=True, text=True, capture_output=True).stdout.strip()).resolve())
+    env["SWITCHSTAND_GIT_COMMON"] = str(
+        Path(
+            subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=repo,
+                env=env,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+        ).resolve()
+    )
     env["SWITCHSTAND_QUALITY_IMAGE"] = development.image
     env["SWITCHSTAND_QUALITY_NETWORK"] = development.network
     env["SWITCHSTAND_DATABASE_CONTAINER"] = development.database
@@ -315,6 +400,7 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
     command = codex_command(repo, codex_args)
+    mark_start_prepared(prepared_marker)
     os.execvpe(command[0], command, env)
 
 
