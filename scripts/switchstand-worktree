@@ -31,13 +31,19 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
         dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
         green=
         [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
+        based_on_requested=false
+        if [ "$actual_head" = "$sha" ] \
+                || git -C "$target" merge-base --is-ancestor "$sha" "$actual_head" 2>/dev/null; then
+            based_on_requested=true
+        fi
         if [ "$actual_root" = "$target" ] && [ "$actual_branch" = "$branch" ] \
-                && [ "$actual_head" = "$sha" ] && [ "$green" = "$sha" ] && [ -z "$dirty" ]; then
+                && [ "$based_on_requested" = true ] \
+                && [ "$green" = "$sha" ] && [ -z "$dirty" ]; then
             echo "$target"
             exit 0
         fi
     fi
-    echo "existing task writer is not the exact clean requested baseline: $target" >&2
+    echo "existing task writer is not clean and based on the requested starting point: $target" >&2
     exit 1
 fi
 git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2

@@ -63,8 +63,12 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
     green = (git_dir / "switchstand-green-sha").read_text().strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, env=env, check=True,
                            text=True, capture_output=True).stdout
-    if head != green or dirty:
-        raise ValueError("managed launch requires the exact clean green worktree baseline")
+    based_on_green = head == green or subprocess.run(
+        ["git", "merge-base", "--is-ancestor", green, head],
+        cwd=repo, env=env, check=False, capture_output=True,
+    ).returncode == 0
+    if not based_on_green or dirty:
+        raise ValueError("managed launch requires a clean task worktree based on its green baseline")
     return branch
 
 

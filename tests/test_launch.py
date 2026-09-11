@@ -74,8 +74,36 @@ def test_linked_branch_requires_recorded_clean_green_head(monkeypatch, tmp_path)
     assert linked_branch(tmp_path, {}) == "owned"
     assert commands[0][-3:] == ["HEAD", "--abbrev-ref", "HEAD"]
     answers = iter((f"{git_dir}\n{common}\n{head}\nowned\n", " M Dockerfile\n"))
-    with pytest.raises(ValueError, match="clean green"):
+    with pytest.raises(ValueError, match="clean task"):
         linked_branch(tmp_path, {})
+
+
+@pytest.mark.parametrize("ancestor", [True, False])
+def test_linked_branch_checks_clean_commits_after_green_head(
+    monkeypatch, tmp_path, ancestor
+):
+    git_dir, common = tmp_path / "gitdir", tmp_path / "common"
+    git_dir.mkdir()
+    common.mkdir()
+    green, head = "a" * 40, "b" * 40
+    (git_dir / "switchstand-green-sha").write_text(green)
+
+    def fake_run(command, **kwargs):
+        if "--is-ancestor" in command:
+            assert command[-2:] == [green, head]
+            return subprocess.CompletedProcess(command, 0 if ancestor else 1)
+        if "--porcelain" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"{git_dir}\n{common}\n{head}\nowned\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    if ancestor:
+        assert linked_branch(tmp_path, {}) == "owned"
+    else:
+        with pytest.raises(ValueError, match="clean task"):
+            linked_branch(tmp_path, {})
 
 
 def test_parse_authority_requires_exact_complete_response():

@@ -3,6 +3,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 def executable(path: Path, text: str) -> None:
     path.write_text(text)
@@ -127,7 +129,11 @@ esac
     assert "HEAD is now at accepted" in result.stderr
 
 
-def test_worktree_helper_reuses_only_exact_clean_task_writer(tmp_path):
+@pytest.mark.parametrize(
+    "problem",
+    [None, "wrong-root", "wrong-branch", "changed-baseline", "dirty", "divergent"],
+)
+def test_worktree_helper_reuses_only_valid_clean_task_writer(tmp_path, problem):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
@@ -137,8 +143,9 @@ def test_worktree_helper_reuses_only_exact_clean_task_writer(tmp_path):
     fake_bin.mkdir()
     target.mkdir()
     git_dir.mkdir()
-    sha = "a" * 40
-    (git_dir / "switchstand-green-sha").write_text(sha + "\n")
+    sha, current = "a" * 40, "b" * 40
+    recorded = "c" * 40 if problem == "changed-baseline" else sha
+    (git_dir / "switchstand-green-sha").write_text(recorded + "\n")
     source = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
     helper = scripts / "switchstand-worktree"
     helper.write_bytes(source.read_bytes())
@@ -148,11 +155,12 @@ case "$*" in
   "rev-parse --show-toplevel") echo "$FAKE_REPO" ;;
   *"cat-file -e"*) : ;;
   *"show-ref --verify --quiet"*) : ;;
-  *"rev-parse --show-toplevel"*) echo "$FAKE_TARGET" ;;
-  *"branch --show-current"*) echo v2-sample ;;
+  *"rev-parse --show-toplevel"*) echo "$FAKE_ACTUAL_TARGET" ;;
+  *"branch --show-current"*) echo "$FAKE_BRANCH" ;;
   *"rev-parse HEAD"*) echo "$FAKE_SHA" ;;
   *"rev-parse --absolute-git-dir"*) echo "$FAKE_GIT_DIR" ;;
-  *"status --porcelain"*) : ;;
+  *"status --porcelain"*) [ "$FAKE_DIRTY" = 0 ] || echo dirty ;;
+  *"merge-base --is-ancestor"*) exit "$FAKE_DIVERGENT" ;;
   *) exit 91 ;;
 esac
 """)
@@ -160,16 +168,23 @@ esac
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "TMPDIR": str(tmp_path),
         "FAKE_REPO": str(repo),
-        "FAKE_TARGET": str(target),
-        "FAKE_SHA": sha,
+        "FAKE_ACTUAL_TARGET": str(tmp_path / "wrong" if problem == "wrong-root" else target),
+        "FAKE_BRANCH": "wrong" if problem == "wrong-branch" else "v2-sample",
+        "FAKE_SHA": current,
         "FAKE_GIT_DIR": str(git_dir),
+        "FAKE_DIRTY": "1" if problem == "dirty" else "0",
+        "FAKE_DIVERGENT": "1" if problem == "divergent" else "0",
     }
     result = subprocess.run(
         [helper, "sample", sha], cwd=repo, env=environment,
         text=True, capture_output=True, check=False,
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{target}\n"
+    if problem is None:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{target}\n"
+    else:
+        assert result.returncode == 1
+        assert "not clean and based on the requested starting point" in result.stderr
 
 
 def test_launch_uses_shared_project_environment(tmp_path):
