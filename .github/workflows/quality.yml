@@ -16,9 +16,12 @@ jobs:
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with: {python-version: "3.14", enable-cache: true}
-      - run: uv sync --locked --all-extras --dev
-      - run: uv run ruff check .
-      - run: uv run pyright
-      - run: uv run pytest
+      - run: docker build --target development --tag switchstand-quality .
+      - run: >-
+          docker run --rm --network host
+          -e TEST_DATABASE_URL
+          -v "$PWD:/workspace:ro" -w /workspace
+          switchstand-quality sh -c
+          'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
+          PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
+          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider'

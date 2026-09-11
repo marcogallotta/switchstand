@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+UV_VERSION=0.12.10
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+primary=$(dirname "$common")
+[ "$repo" = "$primary" ] || {
+    echo "bootstrap must run from the primary checkout" >&2
+    exit 1
+}
+
+tools="$common/switchstand-tools"
+uv="$tools/uv-$UV_VERSION"
+venv="$primary/.venv"
+python=$(command -v python3.14 || command -v python3)
+fingerprint=$(
+    { sha256sum "$repo/pyproject.toml" "$repo/uv.lock"; printf '%s\n' "$UV_VERSION" "$($python --version)"; } \
+        | sha256sum | cut -d' ' -f1
+)
+receipt="$tools/environment-$fingerprint"
+if [ -x "$venv/bin/python" ] && [ -x "$venv/bin/ruff" ] \
+        && [ -x "$venv/bin/pyright" ] && [ -x "$venv/bin/pytest" ] \
+        && [ -f "$receipt" ]; then
+    exit 0
+fi
+
+mkdir -p "$tools"
+if [ ! -x "$uv" ]; then
+    container=$(docker create "ghcr.io/astral-sh/uv:$UV_VERSION")
+    trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+    docker cp "$container:/uv" "$uv.tmp"
+    chmod 755 "$uv.tmp"
+    mv "$uv.tmp" "$uv"
+    docker rm "$container" >/dev/null
+    trap - EXIT HUP INT TERM
+fi
+
+UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
+    --no-install-project --python "$python"
+rm -f "$tools"/environment-*
+: > "$receipt"

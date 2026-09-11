@@ -15,6 +15,7 @@ from .task_ref import asana_task_id
 
 PROFILE = "switchstand-development"
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
+MANAGED_NAME = "SWITCHSTAND_MANAGED"
 
 
 class Authority(NamedTuple):
@@ -115,7 +116,10 @@ def clean_environment(source: dict[str, str]) -> dict[str, str]:
     return {
         name: value
         for name, value in source.items()
-        if name != "ASANA_TOKEN" and name not in AUTHORITY_NAMES and not name.startswith("DOCKER_")
+        if name != "ASANA_TOKEN"
+        and name != MANAGED_NAME
+        and name not in AUTHORITY_NAMES
+        and not name.startswith("DOCKER_")
     }
 
 
@@ -249,6 +253,23 @@ def validate_codex_args(arguments: list[str]) -> list[str]:
     return forwarded
 
 
+def codex_command(repo: Path, codex_args: list[str]) -> list[str]:
+    return [
+        "codex",
+        "-C",
+        str(repo),
+        "-a",
+        "never",
+        "-c",
+        f'default_permissions="{PROFILE}"',
+        "-c",
+        "mcp_servers.switchstand.required=true",
+        "-c",
+        "mcp_servers.switchstand_development.required=true",
+        *codex_args,
+    ]
+
+
 def prepare_managed_run(
     repo: Path,
     branch: str,
@@ -280,6 +301,7 @@ def run(arguments: argparse.Namespace) -> None:
     authority, development, receipt = prepared
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["REFERENCE_WORK_IDS"] = ",".join(map(str, authority.references))
+    env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_WORKTREE"] = str(repo)
     env["SWITCHSTAND_BRANCH"] = branch
     env["SWITCHSTAND_GIT_COMMON"] = str(Path(subprocess.run(
@@ -292,16 +314,7 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Codex profile: {checked.profile} ({checked.sandbox})", file=sys.stderr)
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
-    command = [
-        "codex",
-        "-C",
-        str(repo),
-        "-a",
-        "never",
-        "-c",
-        f'default_permissions="{PROFILE}"',
-        *codex_args,
-    ]
+    command = codex_command(repo, codex_args)
     os.execvpe(command[0], command, env)
 
 

@@ -20,6 +20,10 @@ services:
       - sh
       - -c
       - |
+        if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then
+          unset ASANA_TOKEN DATABASE_URL ACTIVE_WORK_ID REFERENCE_WORK_IDS
+          exec uv run --no-sync switchstand
+        fi
         : "$${ASANA_TOKEN:?required}"
         : "$${ACTIVE_WORK_ID:?required}"
         uv run --no-sync alembic upgrade head && exec uv run --no-sync switchstand
@@ -30,6 +34,7 @@ services:
       DATABASE_URL: postgresql+psycopg://switchstand:switchstand@postgres/switchstand
       ACTIVE_WORK_ID: ${ACTIVE_WORK_ID:-}
       REFERENCE_WORK_IDS: ${REFERENCE_WORK_IDS:-}
+      SWITCHSTAND_MANAGED: ${SWITCHSTAND_MANAGED:-}
     networks: [state]
   quality:
     build:

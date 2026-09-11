@@ -9,6 +9,7 @@ import pytest
 from switchstand.launch import (
     PROFILE,
     clean_environment,
+    codex_command,
     linked_branch,
     parse_authority,
     prepare_managed_run,
@@ -27,12 +28,14 @@ def test_managed_tools_have_narrow_approval_free_policy():
     expected = {
         "switchstand": {"work_get", "work_update", "work_append"},
         "switchstand_development": {
+            "check",
             "commit_all_current_worktree",
             "quality",
             "run_status",
         },
     }
     for server, names in expected.items():
+        assert servers[server]["required"] is False
         tools = servers[server]["tools"]
         assert set(tools) == names
         assert names <= set(servers[server]["enabled_tools"])
@@ -41,7 +44,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
 
 def test_clean_environment_removes_secret_and_stale_authority():
     source = {"PATH": "/bin", "DOCKER_HOST": "remote", "ASANA_TOKEN": "secret", "ACTIVE_WORK_ID": "stale",
-              "REFERENCE_WORK_IDS": "stale"}
+              "REFERENCE_WORK_IDS": "stale", "SWITCHSTAND_MANAGED": "1"}
     assert clean_environment(source) == {"PATH": "/bin"}
 
 
@@ -98,6 +101,12 @@ def test_validate_codex_args_blocks_boundary_overrides():
     for arguments in (["-sdanger-full-access"], ["-C/tmp"], ["-c", "sandbox_mode=read-only"]):
         with pytest.raises(ValueError):
             validate_codex_args(arguments)
+
+
+def test_managed_codex_requires_both_mcp_servers():
+    command = codex_command(Path("/writer"), [])
+    assert "mcp_servers.switchstand.required=true" in command
+    assert "mcp_servers.switchstand_development.required=true" in command
 
 
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):

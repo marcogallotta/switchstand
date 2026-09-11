@@ -38,6 +38,7 @@ dirty=$(git -C "$repo" status --porcelain)
     echo "start requires clean main at the locally accepted origin/main" >&2
     exit 1
 }
+"$repo/scripts/bootstrap"
 
 task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \

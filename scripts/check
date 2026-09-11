@@ -2,6 +2,33 @@
 set -eu
 repo=$(git rev-parse --show-toplevel)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-venv=$(dirname "$common")/.venv
-PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
-PYTHONPATH="$repo/src" "$venv/bin/pytest" "$@"
+primary=$(dirname "$common")
+bootstrap=$primary/scripts/bootstrap
+venv=$primary/.venv
+if [ -x "$bootstrap" ]; then
+    "$bootstrap"
+elif [ ! -x "$venv/bin/python" ]; then
+    echo "run scripts/bootstrap in the primary checkout first" >&2
+    exit 1
+fi
+manifest() {
+    "$venv/bin/python" -c \
+        'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' \
+        "$1"
+}
+[ "$(manifest "$repo")" = "$(manifest "$primary")" ] || {
+    echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
+    exit 1
+}
+deadline=$(($(date +%s) + 120))
+run() {
+    remaining=$((deadline - $(date +%s)))
+    [ "$remaining" -gt 0 ] || {
+        echo "focused check exceeded the 120-second stop-loss" >&2
+        exit 124
+    }
+    timeout "$remaining" "$@"
+}
+run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
+run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
+run env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" "$@"

@@ -9,7 +9,7 @@ the MCP Python SDK v2. The retired implementation is preserved in `marcogallotta
 reference only; this repository is a clean implementation of the current contract.
 
 ```bash
-uv sync --locked --all-extras --dev
+scripts/bootstrap
 docker compose up --build
 uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>

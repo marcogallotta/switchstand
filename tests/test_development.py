@@ -16,9 +16,52 @@ def tool(name):
 def test_development_surface_is_closed():
     server = development.build_server()
     assert set(server._tool_manager._tools) == {
-        "quality", "commit_all_current_worktree", "run_status"}
+        "check", "quality", "commit_all_current_worktree", "run_status"}
     for item in server._tool_manager._tools.values():
         assert item.parameters.get("additionalProperties") is False
+
+
+def test_unbound_development_surface_has_no_tools():
+    assert not development.build_server(bound=False)._tool_manager._tools
+
+
+async def test_focused_check_uses_pinned_image_database_and_paths(monkeypatch, tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_one.py").touch()
+    monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
+    monkeypatch.setattr(development, "_manifest", lambda repo: "manifest")
+    monkeypatch.setattr(
+        development,
+        "_git",
+        lambda repo, *args: completed(stdout="a" * 40 + "\n"),
+    )
+    monkeypatch.setenv("SWITCHSTAND_QUALITY_IMAGE", "sha256:fixed")
+    monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
+    monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
+    captured = {}
+    monkeypatch.setattr(
+        development, "_focused", lambda command: captured.setdefault("run", completed(command))
+    )
+    result = await tool("check")("a" * 40, ["tests/test_one.py"])
+    command = captured["run"].args
+    assert result.status == "ok"
+    assert "sha256:fixed" in command and "isolated" in command
+    assert "TEST_DATABASE_URL=" in " ".join(command)
+    assert command[-1] == "tests/test_one.py"
+
+
+async def test_focused_check_rejects_stale_dependency_manifest(monkeypatch, tmp_path):
+    monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
+    monkeypatch.setattr(development, "_manifest", lambda repo: "changed")
+    monkeypatch.setattr(
+        development,
+        "_git",
+        lambda repo, *args: completed(stdout="a" * 40 + "\n"),
+    )
+    monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "launched")
+    result = await tool("check")("a" * 40, ["tests/test_one.py"])
+    assert result.status == "stale"
+    assert "relaunch required" in result.output
 
 
 async def test_quality_uses_only_pinned_image_and_read_only_worktree(monkeypatch, tmp_path):

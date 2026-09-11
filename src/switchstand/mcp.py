@@ -71,6 +71,15 @@ def build_server(
     closed_tool(server, "work_suggest_next", _work_suggest_next)
     return server
 
+
+def server_from_env() -> MCPServer:
+    if os.getenv("SWITCHSTAND_MANAGED") != "1":
+        return MCPServer("Switchstand (unbound)")
+    service = controller_from_env()
+    return build_server(
+        service, service.authority.active_work_id, service.authority.reference_work_ids
+    )
+
 def _protect_provider_logs() -> None:
     for name in ("httpx", "httpcore"):
         logger = logging.getLogger(name)
@@ -79,10 +88,7 @@ def _protect_provider_logs() -> None:
 
 def main() -> None:
     _protect_provider_logs()
-    service = controller_from_env()
-    build_server(
-        service, service.authority.active_work_id, service.authority.reference_work_ids
-    ).run()
+    server_from_env().run()
 
 if __name__ == "__main__":
     main()

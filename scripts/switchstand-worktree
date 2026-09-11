@@ -16,14 +16,30 @@ repo=$(git rev-parse --show-toplevel)
 git -C "$repo" cat-file -e "$sha^{commit}"
 target=${TMPDIR:-/tmp}/switchstand-$name
 branch=v2-$name
-if [ -e "$target" ]; then
-    echo "target already exists: $target" >&2
+target_exists=false
+[ ! -e "$target" ] || target_exists=true
+branch_exists=false
+if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    branch_exists=true
+fi
+if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
+    if [ "$target_exists" = true ] && [ "$branch_exists" = true ]; then
+        actual_root=$(git -C "$target" rev-parse --show-toplevel 2>/dev/null || true)
+        actual_branch=$(git -C "$target" branch --show-current 2>/dev/null || true)
+        actual_head=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
+        actual_git=$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null || true)
+        dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
+        green=
+        [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
+        if [ "$actual_root" = "$target" ] && [ "$actual_branch" = "$branch" ] \
+                && [ "$actual_head" = "$sha" ] && [ "$green" = "$sha" ] && [ -z "$dirty" ]; then
+            echo "$target"
+            exit 0
+        fi
+    fi
+    echo "existing task writer is not the exact clean requested baseline: $target" >&2
     exit 1
 fi
-git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && {
-    echo "branch already exists: $branch" >&2
-    exit 1
-}
 git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2
 git_dir=$(git -C "$target" rev-parse --absolute-git-dir)
 printf '%s\n' "$sha" > "$git_dir/switchstand-green-sha"

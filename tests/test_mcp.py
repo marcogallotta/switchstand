@@ -1,12 +1,15 @@
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 from uuid import UUID
 
+import pytest
 from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import AppendResult, Routing, SuggestionResult, WorkItem, WorkResult
-from switchstand.mcp import _protect_provider_logs, build_server
+from switchstand.mcp import _protect_provider_logs, build_server, server_from_env
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -31,6 +34,44 @@ def test_provider_request_logs_are_suppressed(caplog):
         logging.getLogger("httpx").info("GET https://provider.invalid/tasks/raw-provider-id")
         logging.getLogger("httpcore.connection").warning("raw-provider-id")
     assert "raw-provider-id" not in caplog.text
+
+
+def test_unbound_environment_initializes_with_no_work_tools(monkeypatch):
+    monkeypatch.delenv("SWITCHSTAND_MANAGED", raising=False)
+    monkeypatch.delenv("ACTIVE_WORK_ID", raising=False)
+    monkeypatch.setenv("ASANA_TOKEN", "must-not-create-a-provider")
+    assert not server_from_env()._tool_manager._tools
+
+
+def test_managed_environment_without_authority_fails(monkeypatch):
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.delenv("ACTIVE_WORK_ID", raising=False)
+    with pytest.raises(KeyError, match="ACTIVE_WORK_ID"):
+        server_from_env()
+
+
+def test_managed_controller_script_without_authority_fails():
+    script = Path(__file__).parents[1] / "scripts" / "switchstand-controller-mcp"
+    environment = os.environ | {"SWITCHSTAND_MANAGED": "1"}
+    environment.pop("ACTIVE_WORK_ID", None)
+    result = subprocess.run(
+        [script], env=environment, text=True, capture_output=True, check=False
+    )
+    assert result.returncode != 0
+    assert "managed controller requires ACTIVE_WORK_ID" in result.stderr
+
+
+@pytest.mark.skipif(
+    Path("/.dockerenv").exists(),
+    reason="real-host Stage-0 environment is not mounted into the quality container",
+)
+async def test_unbound_launcher_completes_stdio_handshake():
+    script = Path(__file__).parents[1] / "scripts" / "switchstand-controller-mcp"
+    server = StdioServerParameters(
+        command=str(script), env={"HOME": str(Path.home()), "PATH": os.environ["PATH"]}
+    )
+    async with Client(server) as client:
+        assert not (await client.list_tools()).tools
 
 async def test_real_stdio_handshake_exposes_exact_surface():
     server = StdioServerParameters(

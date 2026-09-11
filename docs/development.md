@@ -1,8 +1,10 @@
 # Development
 
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
-- Host install/sync (optional): `uv sync --locked --all-extras --dev`
-- Human-run Quality: `docker compose run --build --rm quality`.
+- Stable host tools: run `scripts/bootstrap`. The script reuses a lockfile-fingerprinted `.venv` shared by linked
+  worktrees and obtains the pinned uv binary through Docker only when needed.
+- Full clean/container quality runs in CI. Run `docker compose run --build --rm quality` locally only when changing
+  Docker, runtime, or development-tool behavior that CI cannot qualify for the host.
 - Services: start stable state with `docker compose -f compose.state.yaml up -d --wait`, then run
   `docker compose up --build`.
 - Migration: `uv run alembic upgrade head`
@@ -20,8 +22,11 @@
   the shared environment file. At launch it pins a development image and starts a writer-local internal test network;
   the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools. Ordinary commands cannot reach the
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
-  During implementation, `scripts/check <affected-test-paths>` runs lint and affected tests from the stable host
-  environment; the exact clean candidate must still pass the complete containerized `quality` tool before review.
+  During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
+  environment. CI supplies the routine full clean/container gate; real-host launch and recovery changes still require
+  a real-host canary.
+  Focused checks stop after 120 seconds instead of silently falling back to repeated container rebuilds. Selecting a
+  database-backed test without a live `TEST_DATABASE_URL` fails rather than skips.
   Each launch writes a protected per-worktree run receipt with a fresh identity and Linux PID start token. The
   read-only `run_status` tool reports `running`, `stopped`, `lost`, or `unknown` without accepting an arbitrary PID.
   From that linked worktree, `scripts/switchstand-run-stop` uses the repository's bootstrapped Python environment and
