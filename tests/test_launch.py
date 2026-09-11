@@ -1,4 +1,7 @@
+import os
+import signal
 import subprocess
+import sys
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,13 +11,19 @@ import pytest
 
 from switchstand.launch import (
     PROFILE,
+    DevelopmentBoundary,
     clean_environment,
+    cleanup_development,
     codex_command,
+    development_names,
+    docker_run,
     linked_branch,
     parse_authority,
+    prepare_development,
     prepare_managed_run,
     provision,
     readback,
+    supervise_codex,
     validate_codex_args,
 )
 
@@ -113,8 +122,10 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     events = []
 
     @contextmanager
-    def reservation(repo, branch, git_dir):
+    def reservation(repo, branch, git_dir, reclaim=None):
         events.append("reserved")
+        assert reclaim is not None
+        reclaim(type("Receipt", (), {"pid": 123})())
 
         def record(active_work_id):
             events.append("recorded")
@@ -126,6 +137,10 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
     monkeypatch.setattr(
+        "switchstand.launch.cleanup_development",
+        lambda network, database, env: events.append((network, database)),
+    )
+    monkeypatch.setattr(
         "switchstand.launch.provision",
         lambda *args: events.append("provisioned") or authority,
     )
@@ -134,8 +149,144 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         lambda *args: events.append("development") or development,
     )
     result = prepare_managed_run(tmp_path, "owned", "123", (), {}, tmp_path)
-    assert events == ["reserved", "provisioned", "development", "recorded"]
+    assert events == [
+        "reserved",
+        development_names(tmp_path, 123),
+        "provisioned",
+        "recorded",
+        "development",
+    ]
     assert result.authority is authority and result.development is development
+
+
+def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
+    def failed(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="could not find an available, non-overlapping IPv4 address pool"
+        )
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    with pytest.raises(RuntimeError, match="non-overlapping IPv4 address pool"):
+        docker_run(["network", "create", "--internal", "owned"], tmp_path, {})
+
+
+def test_cleanup_removes_only_the_exact_run_resources(monkeypatch):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cleanup_development("switchstand-dev-owned", "switchstand-test-owned", {})
+    assert commands == [
+        ["docker", "rm", "-f", "switchstand-test-owned"],
+        ["docker", "network", "rm", "switchstand-dev-owned"],
+    ]
+
+
+def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
+    calls = 0
+    cleaned = []
+
+    def docker(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise KeyboardInterrupt
+        return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
+
+    monkeypatch.setattr("switchstand.launch.docker_run", docker)
+    monkeypatch.setattr(
+        "switchstand.launch.cleanup_development",
+        lambda network, database, env, **kwargs: cleaned.append((network, database)),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        prepare_development(tmp_path, {})
+    assert cleaned == [development_names(tmp_path, os.getpid())]
+
+
+def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
+    events = []
+    handlers = {}
+    launch = {}
+
+    class Process:
+        pid = 123
+
+        def wait(self, timeout=None):
+            events.append("waited")
+            return -signal.SIGTERM
+
+    def popen(*args, **kwargs):
+        assert signal.SIGTERM in handlers
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        launch.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
+    monkeypatch.setattr(
+        "switchstand.launch.cleanup_development",
+        lambda network, database, env: events.append((network, database)),
+    )
+    development = DevelopmentBoundary("image", "network", "database", "manifest")
+    assert supervise_codex(["codex"], {}, development) == 128 + signal.SIGTERM
+    assert launch["start_new_session"] is True
+    assert set(handlers) >= {
+        signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM,
+        signal.SIGTSTP, signal.SIGCONT, signal.SIGWINCH,
+    }
+    assert events == [(123, signal.SIGTERM), "waited", ("network", "database")]
+
+
+def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
+    events = []
+    handlers = {}
+    ticks = iter((10.0, 12.0))
+
+    class Process:
+        pid = 123
+        started = False
+
+        def wait(self, timeout=None):
+            if not self.started:
+                self.started = True
+                handlers[signal.SIGQUIT](signal.SIGQUIT, None)
+            if (123, signal.SIGKILL) not in events:
+                raise subprocess.TimeoutExpired("codex", timeout)
+            return -signal.SIGKILL
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Process())
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
+    monkeypatch.setattr("switchstand.launch.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
+    monkeypatch.setattr(
+        "switchstand.launch.cleanup_development",
+        lambda network, database, env: events.append((network, database)),
+    )
+    development = DevelopmentBoundary("image", "network", "database", "manifest")
+    assert supervise_codex(["codex"], {}, development) == 128 + signal.SIGQUIT
+    assert events == [
+        (123, signal.SIGQUIT),
+        (123, signal.SIGKILL),
+        ("network", "database"),
+    ]
+
+
+def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_path):
+    output = tmp_path / "blocked-signals"
+    code = (
+        "import signal; from pathlib import Path; "
+        f"Path({str(output)!r}).write_text(','.join(map(str, "
+        "sorted(signal.pthread_sigmask(signal.SIG_BLOCK, set())))))"
+    )
+    monkeypatch.setattr("switchstand.launch.cleanup_development", lambda *args: None)
+    development = DevelopmentBoundary("image", "network", "database", "manifest")
+    assert supervise_codex([sys.executable, "-c", code], dict(os.environ), development) == 0
+    blocked = {int(item) for item in output.read_text().split(",") if item}
+    assert not blocked.intersection({signal.SIGINT, signal.SIGQUIT, signal.SIGTERM})
 
 
 def readback_messages(sources):

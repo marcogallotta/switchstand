@@ -14,6 +14,7 @@ from switchstand.run import (
     create_receipt,
     inspect_receipt,
     process_start_token,
+    reserve_run,
     stop_receipt,
 )
 
@@ -76,6 +77,19 @@ def test_create_receipt_is_private_and_refuses_to_replace_live_run(tmp_path):
     path.write_text(first.model_copy(update={"pid": 2**30}).model_dump_json())
     second = create_receipt(tmp_path, "owned", work_id, tmp_path)
     assert second.run_id != first.run_id and second.pid == os.getpid()
+
+
+def test_reservation_reclaims_exact_stopped_run_before_replacement(tmp_path):
+    work_id = uuid4()
+    first = create_receipt(tmp_path, "owned", work_id, tmp_path)
+    path = tmp_path / RECEIPT
+    stopped = first.model_copy(update={"pid": 2**30})
+    path.write_text(stopped.model_dump_json())
+    reclaimed = []
+    with reserve_run(tmp_path, "owned", tmp_path, reclaimed.append) as record:
+        second = record(work_id)
+    assert reclaimed == [stopped]
+    assert second.run_id != first.run_id
 
 
 def test_lost_receipt_can_be_replaced_without_touching_reused_process(tmp_path):

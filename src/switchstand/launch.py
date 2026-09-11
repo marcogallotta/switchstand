@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import selectors
+import signal
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ from .task_ref import asana_task_id
 PROFILE = "switchstand-development"
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
 MANAGED_NAME = "SWITCHSTAND_MANAGED"
+CHILD_TERM_SECONDS = 1.0
 
 
 class Authority(NamedTuple):
@@ -67,19 +69,18 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
 
 
 def prepare_development(repo: Path, env: dict[str, str]) -> DevelopmentBoundary:
-    suffix = hashlib.sha256(f"{repo}:{os.getpid()}".encode()).hexdigest()[:12]
-    network, database = f"switchstand-dev-{suffix}", f"switchstand-test-{suffix}"
-    image = subprocess.run(["docker", "build", "--quiet", "--target", "development", "."],
-                           cwd=repo, env=env, check=True, text=True,
-                           capture_output=True).stdout.strip().splitlines()[-1]
-    subprocess.run(["docker", "network", "create", "--internal", network], env=env,
-                   check=True, capture_output=True)
+    network, database = development_names(repo, os.getpid())
     try:
-        subprocess.run(["docker", "run", "-d", "--rm", "--name", database,
-                        "--network", network, "--network-alias", "postgres-test", "--tmpfs",
-                        "/var/lib/postgresql", "-e", "POSTGRES_DB=switchstand_test", "-e",
-                        "POSTGRES_USER=switchstand", "-e", "POSTGRES_PASSWORD=switchstand",
-                        "postgres:18-alpine"], env=env, check=True, capture_output=True)
+        image = docker_run(["build", "--quiet", "--target", "development", "."], repo, env)
+        assert image.stdout is not None
+        image_id = image.stdout.strip().splitlines()[-1]
+        docker_run(["network", "create", "--internal", network], None, env)
+        docker_run([
+            "run", "-d", "--rm", "--name", database, "--network", network,
+            "--network-alias", "postgres-test", "--tmpfs", "/var/lib/postgresql",
+            "-e", "POSTGRES_DB=switchstand_test", "-e", "POSTGRES_USER=switchstand",
+            "-e", "POSTGRES_PASSWORD=switchstand", "postgres:18-alpine",
+        ], None, env)
         for _ in range(30):
             ready = subprocess.run(["docker", "exec", database, "pg_isready", "-U", "switchstand"],
                                    env=env, capture_output=True, check=False)
@@ -88,16 +89,46 @@ def prepare_development(repo: Path, env: dict[str, str]) -> DevelopmentBoundary:
             time.sleep(1)
         else:
             raise RuntimeError("development test database did not become ready")
-    except Exception:
-        subprocess.run(["docker", "rm", "-f", database], env=env,
-                       capture_output=True, check=False)
-        subprocess.run(["docker", "network", "rm", network], env=env,
-                       capture_output=True, check=False)
+        digest = hashlib.sha256()
+        for name in ("pyproject.toml", "uv.lock"):
+            digest.update((repo / name).read_bytes())
+        return DevelopmentBoundary(image_id, network, database, digest.hexdigest())
+    except BaseException:
+        cleanup_development(network, database, env, required=False)
         raise
-    digest = hashlib.sha256()
-    for name in ("pyproject.toml", "uv.lock"):
-        digest.update((repo / name).read_bytes())
-    return DevelopmentBoundary(image, network, database, digest.hexdigest())
+
+
+def development_names(repo: Path, pid: int) -> tuple[str, str]:
+    suffix = hashlib.sha256(f"{repo}:{pid}".encode()).hexdigest()[:12]
+    network, database = f"switchstand-dev-{suffix}", f"switchstand-test-{suffix}"
+    return network, database
+
+
+def docker_run(
+    arguments: list[str], cwd: Path | None, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    command = ["docker", *arguments]
+    try:
+        return subprocess.run(
+            command, cwd=cwd, env=env, check=True, text=True, capture_output=True
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "no diagnostic output").strip()
+        raise RuntimeError(f"{' '.join(command)} failed: {detail}") from error
+
+
+def cleanup_development(
+    network: str, database: str, env: dict[str, str], *, required: bool = True
+) -> None:
+    failures = []
+    for command in (["docker", "rm", "-f", database], ["docker", "network", "rm", network]):
+        completed = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
+        detail = (completed.stderr or completed.stdout).strip()
+        absent = "No such" in detail or "not found" in detail
+        if completed.returncode != 0 and not absent:
+            failures.append(f"{' '.join(command)}: {detail or 'no diagnostic output'}")
+    if failures and required:
+        raise RuntimeError("development cleanup failed: " + "; ".join(failures))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -278,11 +309,77 @@ def prepare_managed_run(
     env: dict[str, str],
     git_dir: Path,
 ) -> PreparedRun:
-    with reserve_run(repo, branch, git_dir) as record:
+    def reclaim(receipt: RunReceipt) -> None:
+        network, database = development_names(repo, receipt.pid)
+        cleanup_development(network, database, env)
+
+    with reserve_run(repo, branch, git_dir, reclaim) as record:
         authority = provision(repo, active, references, env)
-        development = prepare_development(repo, env)
         receipt = record(authority.active)
+        development = prepare_development(repo, env)
     return PreparedRun(authority, development, receipt)
+
+
+def supervise_codex(
+    command: list[str], env: dict[str, str], development: DevelopmentBoundary
+) -> int:
+    forwarded = (
+        signal.SIGHUP,
+        signal.SIGINT,
+        signal.SIGQUIT,
+        signal.SIGTERM,
+        signal.SIGTSTP,
+        signal.SIGCONT,
+        signal.SIGWINCH,
+    )
+    process: subprocess.Popen[bytes] | None = None
+    previous_handlers: dict[signal.Signals, Any] = {}
+    termination: tuple[int, float] | None = None
+    pending: list[int] = []
+
+    def deliver(signum: int) -> None:
+        nonlocal termination
+        assert process is not None
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+        if signum in {signal.SIGHUP, signal.SIGQUIT, signal.SIGTERM} and termination is None:
+            termination = (signum, time.monotonic() + CHILD_TERM_SECONDS)
+        if signum == signal.SIGTSTP:
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+    def forward(signum: int, _frame: object) -> None:
+        if process is None:
+            pending.append(signum)
+        else:
+            deliver(signum)
+
+    try:
+        for handled in forwarded:
+            previous_handlers[handled] = signal.signal(handled, forward)
+        process = subprocess.Popen(command, env=env, start_new_session=True)
+        for signum in pending:
+            deliver(signum)
+        while True:
+            try:
+                returncode = process.wait(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                if termination is not None and time.monotonic() >= termination[1]:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        if termination is not None:
+            return 128 + termination[0]
+        return returncode if returncode >= 0 else 128 - returncode
+    finally:
+        try:
+            cleanup_development(development.network, development.database, env)
+        finally:
+            for handled, previous in previous_handlers.items():
+                signal.signal(handled, previous)
 
 
 def run(arguments: argparse.Namespace) -> None:
@@ -315,7 +412,7 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
     command = codex_command(repo, codex_args)
-    os.execvpe(command[0], command, env)
+    raise SystemExit(supervise_codex(command, env, development))
 
 
 def main() -> None:

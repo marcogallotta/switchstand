@@ -105,7 +105,10 @@ def _write_receipt(
 
 @contextmanager
 def reserve_run(
-    repo: Path, branch: str, git_dir: Path
+    repo: Path,
+    branch: str,
+    git_dir: Path,
+    reclaim: Callable[[RunReceipt], None] | None = None,
 ) -> Generator[Callable[[UUID], RunReceipt]]:
     path = git_dir / RECEIPT
     lock = os.open(
@@ -115,10 +118,13 @@ def reserve_run(
     )
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if path.exists() and inspect_receipt(path, repo, branch).status not in {
-            "stopped", "lost"
-        }:
-            raise RuntimeError("previous managed run must be stopped before relaunch")
+        if path.exists():
+            receipt = _read_receipt(path)
+            status = inspect_receipt(path, repo, branch).status
+            if receipt is None or status not in {"stopped", "lost"}:
+                raise RuntimeError("previous managed run must be stopped before relaunch")
+            if reclaim is not None:
+                reclaim(receipt)
         yield lambda active_work_id: _write_receipt(repo, branch, active_work_id, git_dir)
     finally:
         os.close(lock)
