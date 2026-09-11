@@ -8,9 +8,11 @@ import pytest
 
 from switchstand.launch import (
     PROFILE,
+    START_PREPARED_NAME,
     clean_environment,
     codex_command,
     linked_branch,
+    mark_start_prepared,
     parse_authority,
     prepare_managed_run,
     provision,
@@ -42,10 +44,26 @@ def test_managed_tools_have_narrow_approval_free_policy():
         assert all(tool["approval_mode"] == "approve" for tool in tools.values())
 
 
-def test_clean_environment_removes_secret_and_stale_authority():
-    source = {"PATH": "/bin", "DOCKER_HOST": "remote", "ASANA_TOKEN": "secret", "ACTIVE_WORK_ID": "stale",
-              "REFERENCE_WORK_IDS": "stale", "SWITCHSTAND_MANAGED": "1"}
+def test_clean_environment_removes_secret_stale_authority_and_start_marker():
+    source = {
+        "PATH": "/bin",
+        "DOCKER_HOST": "remote",
+        "ASANA_TOKEN": "secret",
+        "ACTIVE_WORK_ID": "stale",
+        "REFERENCE_WORK_IDS": "stale",
+        "SWITCHSTAND_MANAGED": "1",
+        START_PREPARED_NAME: "/tmp/marker",
+    }
     assert clean_environment(source) == {"PATH": "/bin"}
+
+
+def test_mark_start_prepared_creates_exclusive_private_marker(tmp_path):
+    marker = tmp_path / "prepared"
+    mark_start_prepared(str(marker))
+    assert marker.read_text() == "prepared\n"
+    assert marker.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        mark_start_prepared(str(marker))
 
 
 def test_linked_branch_requires_recorded_clean_green_head(monkeypatch, tmp_path):
@@ -141,15 +159,25 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
 def readback_messages(sources):
     return [
         {"id": 2, "result": {"data": [{"id": PROFILE, "allowed": True}]}},
-        {"id": 3, "result": {"activePermissionProfile": {"id": PROFILE},
-                              "sandbox": {"type": "workspaceWrite", "networkAccess": False},
-                              "approvalPolicy": "never",
-                              "instructionSources": sources}},
+        {
+            "id": 3,
+            "result": {
+                "activePermissionProfile": {"id": PROFILE},
+                "sandbox": {"type": "workspaceWrite", "networkAccess": False},
+                "approvalPolicy": "never",
+                "instructionSources": sources,
+            },
+        },
     ]
 
 
-@pytest.mark.parametrize("source, accepted", [(str(Path.home() / ".codex/AGENTS.md"), True),
-                                               ("/home/test/.claude/CLAUDE.md", False)])
+@pytest.mark.parametrize(
+    "source, accepted",
+    [
+        (str(Path.home() / ".codex/AGENTS.md"), True),
+        ("/home/test/.claude/CLAUDE.md", False),
+    ],
+)
 def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
     monkeypatch.setattr(
         "switchstand.launch._rpc_messages",
