@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 from uuid import UUID
@@ -203,10 +204,14 @@ def provision(repo: Path, active: str, references: tuple[str, ...], env: dict[st
     return parse_authority(completed.stdout)
 
 
-def _rpc_messages(repo: Path, env: dict[str, str]) -> list[dict[str, Any]]:
+def _rpc_messages(
+    repo: Path, env: dict[str, str], profile: str = PROFILE
+) -> list[dict[str, Any]]:
     process = subprocess.Popen(
         [
             "codex",
+            "-c",
+            f'default_permissions="{profile}"',
             "-c",
             "mcp_servers.switchstand.enabled=false",
             "-c",
@@ -259,26 +264,33 @@ def _rpc_messages(repo: Path, env: dict[str, str]) -> list[dict[str, Any]]:
         process.wait(timeout=5)
 
 
-def readback(repo: Path, env: dict[str, str]) -> CodexReadback:
-    responses = {message.get("id"): message for message in _rpc_messages(repo, env)}
+def readback(
+    repo: Path,
+    env: dict[str, str],
+    *,
+    profile: str = PROFILE,
+    sandbox: str = "workspaceWrite",
+) -> CodexReadback:
+    messages = _rpc_messages(repo, env) if profile == PROFILE else _rpc_messages(repo, env, profile)
+    responses = {message.get("id"): message for message in messages}
     profiles = cast(list[dict[str, object]], responses[2]["result"]["data"])
-    if not any(item["id"] == PROFILE and item["allowed"] for item in profiles):
-        raise RuntimeError(f"Codex permission profile {PROFILE!r} is not available")
+    if not any(item["id"] == profile and item["allowed"] for item in profiles):
+        raise RuntimeError(f"Codex permission profile {profile!r} is not available")
     result = cast(dict[str, Any], responses[3]["result"])
     active = cast(dict[str, object] | None, result.get("activePermissionProfile"))
     sources = tuple(cast(list[str], result.get("instructionSources", ())))
     sandbox_data = cast(dict[str, object], result["sandbox"])
-    sandbox = cast(str, sandbox_data["type"])
-    if active is None or active.get("id") != PROFILE:
+    actual_sandbox = cast(str, sandbox_data["type"])
+    if active is None or active.get("id") != profile:
         raise RuntimeError(f"Codex selected an unexpected permission profile: {active!r}")
-    if sandbox != "workspaceWrite" or sandbox_data.get("networkAccess") is not False:
+    if actual_sandbox != sandbox or sandbox_data.get("networkAccess") is not False:
         raise RuntimeError(f"Codex selected an unexpected sandbox: {sandbox_data!r}")
     if result.get("approvalPolicy") != "never":
         raise RuntimeError(f"Codex selected an unexpected approval policy: {result.get('approvalPolicy')!r}")
     declared = {str(Path.home() / ".codex/AGENTS.md"), str(repo / "AGENTS.md")}
     if not sources or set(sources) != declared:
         raise RuntimeError(f"Codex loaded undeclared instruction sources: {sources!r}")
-    return CodexReadback(PROFILE, sandbox, sources)
+    return CodexReadback(profile, actual_sandbox, sources)
 
 
 def validate_codex_args(arguments: list[str]) -> list[str]:
@@ -334,8 +346,8 @@ def prepare_managed_run(
     return PreparedRun(authority, development, receipt)
 
 
-def supervise_codex(
-    command: list[str], env: dict[str, str], development: DevelopmentBoundary
+def supervise_process(
+    command: list[str], env: dict[str, str], cleanup: Callable[[], None]
 ) -> int:
     forwarded = (
         signal.SIGHUP,
@@ -390,10 +402,20 @@ def supervise_codex(
         return returncode if returncode >= 0 else 128 - returncode
     finally:
         try:
-            cleanup_development(development.network, development.database, env)
+            cleanup()
         finally:
             for handled, previous in previous_handlers.items():
                 signal.signal(handled, previous)
+
+
+def supervise_codex(
+    command: list[str], env: dict[str, str], development: DevelopmentBoundary
+) -> int:
+    return supervise_process(
+        command,
+        env,
+        lambda: cleanup_development(development.network, development.database, env),
+    )
 
 
 def run(arguments: argparse.Namespace) -> None:

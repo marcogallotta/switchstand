@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+"$repo/scripts/bootstrap"
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+python=$(dirname "$common")/.venv/bin/python
+if [ ! -x "$python" ]; then
+    echo "run the documented bootstrap in the primary checkout first" >&2
+    exit 1
+fi
+cd "$repo"
+PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -m switchstand.qualification "$@"

@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+: "${SWITCHSTAND_QUALIFICATION:?qualification wrapper requires a managed launch}"
+: "${SWITCHSTAND_QUALIFICATION_IMAGE:?qualification image is required}"
+: "${SWITCHSTAND_QUALIFICATION_NETWORK:?qualification network is required}"
+: "${SWITCHSTAND_QUALIFICATION_DATABASE:?qualification database is required}"
+: "${SWITCHSTAND_QUALIFICATION_SERVER:?qualification server name is required}"
+: "${SWITCHSTAND_QUALIFICATION_ACTIVE:?qualification active task is required}"
+: "${SWITCHSTAND_QUALIFICATION_APPROVED:?qualification approved references are required}"
+
+config=${HOME:?HOME is required}/.config/switchstand/.env
+[ -r "$config" ] || {
+    echo "protected Switchstand host configuration is unavailable" >&2
+    exit 1
+}
+
+set -- --task "$SWITCHSTAND_QUALIFICATION_ACTIVE"
+old_ifs=$IFS
+IFS=,
+for reference in $SWITCHSTAND_QUALIFICATION_APPROVED; do
+    set -- "$@" --reference "$reference"
+done
+IFS=$old_ifs
+
+exec docker run --rm -i \
+    --name "$SWITCHSTAND_QUALIFICATION_SERVER" \
+    --network "$SWITCHSTAND_QUALIFICATION_NETWORK" \
+    --env-file "$config" \
+    -e DATABASE_URL= \
+    -e "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@$SWITCHSTAND_QUALIFICATION_DATABASE/switchstand_test" \
+    "$SWITCHSTAND_QUALIFICATION_IMAGE" \
+    sh -ec 'uv run --no-sync alembic upgrade head >&2; exec uv run --no-sync python scripts/chatgpt-mcp-canary.py "$@"' \
+    switchstand-qualification "$@"

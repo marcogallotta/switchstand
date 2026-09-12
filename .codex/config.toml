@@ -17,6 +17,23 @@ enabled = false
 [permissions.switchstand-development.network.unix_sockets]
 "/var/run/docker.sock" = "deny"
 
+[permissions.switchstand-qualification]
+description = "Read-only client for one host-bound Switchstand qualification run."
+extends = ":read-only"
+
+[permissions.switchstand-qualification.filesystem]
+"~/.config/switchstand/.env" = "deny"
+glob_scan_max_depth = 6
+
+[permissions.switchstand-qualification.filesystem.":workspace_roots"]
+"**/*.env*" = "deny"
+
+[permissions.switchstand-qualification.network]
+enabled = false
+
+[permissions.switchstand-qualification.network.unix_sockets]
+"/var/run/docker.sock" = "deny"
+
 [mcp_servers.switchstand]
 command = "scripts/switchstand-controller-mcp"
 env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
@@ -57,4 +74,33 @@ approval_mode = "approve"
 approval_mode = "approve"
 
 [mcp_servers.switchstand_development.tools.run_status]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification]
+command = "scripts/switchstand-qualification-mcp"
+env_vars = ["HOME", "SWITCHSTAND_QUALIFICATION", "SWITCHSTAND_QUALIFICATION_IMAGE",
+            "SWITCHSTAND_QUALIFICATION_NETWORK", "SWITCHSTAND_QUALIFICATION_DATABASE",
+            "SWITCHSTAND_QUALIFICATION_SERVER", "SWITCHSTAND_QUALIFICATION_ACTIVE",
+            "SWITCHSTAND_QUALIFICATION_APPROVED"]
+enabled = false
+required = false
+enabled_tools = ["grant_get", "work_get", "source_task", "source_stories", "source_story",
+                 "work_append"]
+
+[mcp_servers.switchstand_qualification.tools.grant_get]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification.tools.work_get]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification.tools.source_task]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification.tools.source_stories]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification.tools.source_story]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_qualification.tools.work_append]
 approval_mode = "approve"

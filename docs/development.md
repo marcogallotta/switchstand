@@ -37,6 +37,19 @@
   `scripts/switchstand-start --active <Asana task URL>`. It verifies that exact baseline, creates the task-named linked
   writer worktree, and replaces itself with the managed launcher. Task IDs, references, and one optional prompt are
   forwarded unchanged.
+- Bounded candidate qualification is a separate, explicit host operation. From clean ordinary `main` at the locally
+  accepted `origin/main`, run `scripts/switchstand-qualify --candidate <exact-40-character-SHA> --active <authorized
+  disposable task> --approved <read-only governing task>`; repeat `--approved` for up to eight references. The
+  candidate must already be an available descendant of accepted main and contain the reviewed six-tool canary.
+  Qualification attaches it as a clean detached worktree, builds and labels the exact image, and starts a unique
+  tmpfs PostgreSQL container whose only database is `switchstand_test`. The host wrapper obtains `ASANA_TOKEN` from
+  the protected owner-only config and supplies the test database URL only inside the candidate server container;
+  neither value enters the Codex process, project MCP config, or command sandbox. Before Codex starts, the launcher
+  reads back the exact six-tool inventory, closed schemas, grant, opaque WorkIds, and active/reference source IDs.
+  The qualification profile is read-only with network and Docker socket access disabled, and the ordinary controller
+  and development MCP servers are disabled for that session. Candidate/server/database/network/image-tag/worktree
+  mismatch or cleanup uncertainty fails the run closed. This mode never moves `main`, candidate branches, pull
+  requests, shared state, or production services; `scripts/switchstand-start` remains the ordinary development path.
 - MCP server: `docker compose run --rm -T controller`
 - Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
   and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.
