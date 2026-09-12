@@ -16,7 +16,8 @@ class AppendGateway:
 
     @staticmethod
     def fingerprint(principal: PrincipalContext, request: ProtectedAppend) -> str:
-        payload = [principal.key, str(request.work_id), request.text]
+        payload = [principal.key, str(request.work_id), request.grant_version,
+                   request.observed_revision, request.text]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
 
     @staticmethod
@@ -32,6 +33,7 @@ class AppendGateway:
 
     async def append(self, principal: PrincipalContext, request: ProtectedAppend) -> GuardOutcome:
         possible_send = False
+        history_known = False
         try:
             async with self.grants.locked(principal.key, request.work_id) as grant:
                 if not self.admitted(principal, grant) or grant is None:
@@ -47,8 +49,9 @@ class AppendGateway:
                     return self.guard(request, "denied", "append_not_qualified_for_this_surface")
                 fingerprint = self.fingerprint(principal, request)
                 previous = await self.grants.previous(
-                    request.operation_id, fingerprint, request.work_id,
+                    request.operation_id, request.work_id,
                 )
+                history_known = True
                 if previous is not None:
                     owner, previous_fingerprint, outcome = previous
                     if owner == principal.key and previous_fingerprint == fingerprint:
@@ -89,7 +92,7 @@ class AppendGateway:
             # A prepared intent survives cancellations/crashes too. Its UNKNOWN
             # remains the durable barrier until an exact trusted reconciliation.
             return self.guard(request, "unknown", "state_or_effect_unavailable",
-                              possible_send=possible_send)
+                              possible_send=possible_send or not history_known)
 
     async def _send(
         self, principal: PrincipalContext, grant: WorkGrant, request: ProtectedAppend,

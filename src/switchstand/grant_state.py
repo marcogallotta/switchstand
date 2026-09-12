@@ -19,7 +19,7 @@ work_grants = Table(
 effect_intents = Table(
     "effect_intents", metadata,
     Column("operation_id", Text, primary_key=True),
-    Column("fingerprint", Text, nullable=False, unique=True),
+    Column("fingerprint", Text, nullable=False),
     Column("principal_key", Text, nullable=False),
     Column("work_id", Text, nullable=False, index=True),
     Column("grant_id", Text, nullable=False),
@@ -75,14 +75,13 @@ class GrantState:
             yield grant
 
     async def previous(
-        self, operation_id: UUID, fingerprint: str, work_id: UUID,
+        self, operation_id: UUID, work_id: UUID,
     ) -> tuple[str, str, GuardOutcome] | None:
         async with self.engine.connect() as connection:
             # Called under the work lock: unresolved sends block the entire target,
             # including changed payloads, principals or new OperationIds.
             rows = (await connection.execute(select(effect_intents).where(
                 (effect_intents.c.operation_id == str(operation_id))
-                | (effect_intents.c.fingerprint == fingerprint)
                 | ((effect_intents.c.work_id == str(work_id))
                    & (effect_intents.c.outcome["effect"].astext == "unknown"))
             ))).mappings().all()

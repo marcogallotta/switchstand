@@ -95,9 +95,9 @@ class MemoryGrants:
     async def locked(self, key, work_id=None):
         yield await self.current(key)
 
-    async def previous(self, operation_id, fingerprint, work_id):
+    async def previous(self, operation_id, work_id):
         candidates = [v for k, v in self.effects.items()
-                      if k == operation_id or v[1] == fingerprint
+                      if k == operation_id
                       or v[2].work_id == work_id and v[2].effect == "unknown"]
         return candidates[0] if candidates else None
 

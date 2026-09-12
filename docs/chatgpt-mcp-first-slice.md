@@ -35,7 +35,11 @@ fresh preflight, not a claim that an unrelated external writer cannot race it.
 The gateway commits an UNKNOWN intent before any possible provider send. Work
 locks serialize competing effects; an unresolved intent blocks further sends to
 that work even if principal, OperationId or payload changes. An identical logical
-append returns its earlier outcome and original OperationId. Success requires
+operation replay returns its earlier outcome and original OperationId. Text
+equality does not identify a logical operation: a new OperationId may append the
+same text after a resolved outcome if its current revision/grant preflight passes.
+An unavailable journal preserves UNKNOWN prior-effect truth and requires
+reconciliation; it never proves a replay was not sent. Success requires
 exact story ID, target and text readback, persisted as a receipt. Restart does not
 erase either receipts or UNKNOWN. Source task/story IDs never become WorkIds.
 

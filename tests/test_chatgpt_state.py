@@ -1,5 +1,6 @@
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from switchstand.contracts import (
     SourceStoryRequest,
     SourceTaskRequest,
 )
+from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import ProtectedAppend
@@ -93,7 +95,7 @@ async def test_wrong_work_revision_and_grant_version_never_send(subject):
     assert provider.sends == 0
 
 
-async def test_exact_receipt_survives_restart_and_new_id_does_not_duplicate(subject):
+async def test_exact_operation_replay_and_distinct_later_same_text(subject):
     service, selected, provider = subject
     req = request(selected)
     first = await service.append(req)
@@ -103,10 +105,56 @@ async def test_exact_receipt_survives_restart_and_new_id_does_not_duplicate(subj
     assert first.receipt.work_id == req.work_id and first.receipt.task_gid == "123"
     assert first.receipt.story_gid == "1" and first.receipt.text == req.text
     restarted = AppendGateway(service.state, GrantState(service.grants.engine), service.providers)
-    for repeated in (req, req.model_copy(update={"operation_id": uuid4()})):
-        assert await restarted.append(selected.principal, repeated) == first
+    assert await restarted.append(selected.principal, req) == first
+    assert (await restarted.append(selected.principal,
+        req.model_copy(update={"operation_id": uuid4()}))).status == "stale"
     conflict = await service.append(req.model_copy(update={"text": "different payload"}))
     assert conflict.status == "denied" and conflict.reason == "operation_identity_conflict"
+    assert provider.sends == 1
+    later = req.model_copy(update={"operation_id": uuid4(), "observed_revision": provider.revision})
+    second = await restarted.append(selected.principal, later)
+    assert second.status == "ok" and second.operation_id == later.operation_id
+    assert second.receipt.story_gid == "2" and second.receipt.text == first.receipt.text
+    assert provider.sends == 2
+
+
+async def test_definite_nonapplication_does_not_suppress_authorized_recovery(subject, monkeypatch):
+    service, selected, provider = subject
+    req = request(selected)
+    async def reject(*args):
+        raise ProviderError("definite rejection before effect")
+    with monkeypatch.context() as patch:
+        patch.setattr(provider, "append", reject)
+        rejected = await service.append(req)
+    assert rejected.status == "not_applied" and rejected.effect == "not_sent"
+    assert await service.append(req) == rejected
+    recovered = await service.append(req.model_copy(update={"operation_id": uuid4()}))
+    assert recovered.status == "ok" and recovered.receipt.text == req.text
+    assert provider.sends == 1
+
+
+@pytest.mark.parametrize("prior_unknown", [False, True])
+@pytest.mark.parametrize("failure_at", ["lock", "lookup"])
+async def test_unreadable_history_preserves_prior_effect_uncertainty(subject, monkeypatch, prior_unknown, failure_at):
+    service, selected, provider = subject
+    provider.unknown = prior_unknown
+    req = request(selected)
+    first = await service.append(req)
+    assert first.effect == ("unknown" if prior_unknown else "applied")
+    async def unavailable(*args):
+        raise SQLAlchemyError("journal unavailable on reentry")
+    @asynccontextmanager
+    async def unavailable_lock(*args):
+        await unavailable()
+        yield None
+    with monkeypatch.context() as patch:
+        patch.setattr(service.grants, "locked" if failure_at == "lock" else "previous",
+                      unavailable_lock if failure_at == "lock" else unavailable)
+        replay = await service.append(req)
+    assert replay.status == "unknown" and replay.effect == "unknown"
+    assert replay.retry == "reconcile" and "do not send a new operation" in replay.next_action
+    assert replay.receipt is None and provider.sends == 1
+    assert await service.append(req) == first
     assert provider.sends == 1
 
 
@@ -157,7 +205,7 @@ async def test_intent_is_committed_before_send_and_two_callers_send_once(subject
     done, _ = await asyncio.wait([first, second], timeout=0.1)
     release.set()
     results = await asyncio.gather(first, second)
-    assert not done and results[0] == results[1] and results[0].status == "ok"
+    assert not done and results[0].status == "ok" and results[1].status == "stale"
     assert provider.sends == 1
 
 
