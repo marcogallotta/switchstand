@@ -7,6 +7,14 @@ from .contracts import (
     AppendResult,
     LaunchAuthority,
     Routing,
+    SourceStoriesRequest,
+    SourceStoriesResult,
+    SourceStory,
+    SourceStoryRequest,
+    SourceStoryResult,
+    SourceTask,
+    SourceTaskRequest,
+    SourceTaskResult,
     SuggestionResult,
     WorkAppendRequest,
     WorkGetRequest,
@@ -21,14 +29,17 @@ from .contracts import (
 class ProviderError(Exception):
     """A provider failure whose details must not cross the controller boundary."""
 
+
 class UnknownEffect(ProviderError):
     """A single external effect was sent but its outcome is unknown."""
+
 
 @dataclass(frozen=True)
 class Handle:
     id: UUID
     provider: str
     provider_work_id: str
+
 
 @dataclass(frozen=True)
 class ProviderWork:
@@ -39,6 +50,7 @@ class ProviderWork:
     routing: Routing
     canonical: bool
 
+
 @dataclass(frozen=True)
 class ProviderHead:
     provider_work_id: str
@@ -46,17 +58,56 @@ class ProviderHead:
     priority: str
     horizon: str | None
 
+
+@dataclass(frozen=True)
+class ProviderSourceTask:
+    title: str
+    notes: str
+    completed: bool
+    revision: str
+    canonical: bool
+
+
+@dataclass(frozen=True)
+class ProviderSourceStory:
+    story_gid: str
+    task_gid: str
+    subtype: str | None
+    text: str | None
+    created_at: str
+    created_by: str | None
+
+
+@dataclass(frozen=True)
+class ProviderStoriesPage:
+    task_gid: str
+    revision: str
+    stories: tuple[ProviderSourceStory, ...]
+    next_offset: str | None
+    canonical: bool
+    stale: bool = False
+
+
 class State(Protocol):
     async def get(self, work_id: UUID) -> Handle | None: ...
     async def bound_provider_ids(self, provider: str) -> frozenset[str]: ...
     def locked(self, work_id: UUID) -> AbstractAsyncContextManager[Handle | None]: ...
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
 
+
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
-    async def append(self, provider_work_id: str, text: str) -> bool: ...
+    async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
+    async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None: ...
+    async def source_stories(
+        self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int
+    ) -> ProviderStoriesPage | None: ...
+    async def source_story(
+        self, provider_task_id: str, provider_story_id: str
+    ) -> ProviderSourceStory | None: ...
+
 
 class Controller:
     def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
@@ -73,6 +124,17 @@ class Controller:
             for field in patch.model_fields_set
         )
 
+    @staticmethod
+    def _source_story(story: ProviderSourceStory) -> SourceStory:
+        return SourceStory(
+            story_gid=story.story_gid,
+            task_gid=story.task_gid,
+            subtype=story.subtype,
+            text=story.text,
+            created_at=story.created_at,
+            created_by=story.created_by,
+        )
+
     async def _read(self, work_id: UUID, handle: Handle) -> WorkResult:
         provider = self.providers.get(handle.provider)
         if provider is None:
@@ -83,6 +145,9 @@ class Controller:
         if not work.canonical:
             return WorkResult(status="denied")
         return WorkResult(status="ok", item=self._item(work_id, work))
+
+    def _source_provider(self) -> Provider | None:
+        return self.providers.get("asana")
 
     async def bind_work(self, provider_name: str, provider_work_id: str) -> Handle:
         provider = self.providers[provider_name]
@@ -101,6 +166,89 @@ class Controller:
             return WorkResult(status="unknown")
         except ProviderError:
             return WorkResult(status="provider_error")
+
+    async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
+        provider = self._source_provider()
+        if provider is None:
+            return SourceTaskResult(status="provider_error")
+        try:
+            task = await provider.source_task(request.task_gid)
+            if task is None:
+                return SourceTaskResult(status="unknown")
+            if not task.canonical:
+                return SourceTaskResult(status="denied")
+            return SourceTaskResult(
+                status="ok",
+                item=SourceTask(
+                    task_gid=request.task_gid,
+                    title=task.title,
+                    notes=task.notes,
+                    completed=task.completed,
+                    revision=task.revision,
+                ),
+            )
+        except UnknownEffect:
+            return SourceTaskResult(status="unknown")
+        except ProviderError:
+            return SourceTaskResult(status="provider_error")
+
+    async def source_stories(self, request: SourceStoriesRequest) -> SourceStoriesResult:
+        provider = self._source_provider()
+        if provider is None:
+            return SourceStoriesResult(status="provider_error")
+        try:
+            page = await provider.source_stories(
+                request.task_gid, request.observed_revision, request.offset, request.limit
+            )
+            if page is None:
+                return SourceStoriesResult(status="unknown")
+            if not page.canonical:
+                return SourceStoriesResult(status="denied")
+            if page.stale:
+                return SourceStoriesResult(
+                    status="stale", task_gid=page.task_gid, revision=page.revision
+                )
+            return SourceStoriesResult(
+                status="ok",
+                task_gid=page.task_gid,
+                revision=page.revision,
+                stories=tuple(self._source_story(story) for story in page.stories),
+                next_offset=page.next_offset,
+            )
+        except UnknownEffect:
+            return SourceStoriesResult(status="unknown")
+        except ProviderError:
+            return SourceStoriesResult(status="provider_error")
+
+    async def source_story(self, request: SourceStoryRequest) -> SourceStoryResult:
+        provider = self._source_provider()
+        if provider is None:
+            return SourceStoryResult(status="provider_error")
+        try:
+            task = await provider.source_task(request.task_gid)
+            if task is None:
+                return SourceStoryResult(status="unknown")
+            if not task.canonical:
+                return SourceStoryResult(status="denied")
+            if task.revision != request.observed_revision:
+                return SourceStoryResult(
+                    status="stale", task_gid=request.task_gid, revision=task.revision
+                )
+            story = await provider.source_story(request.task_gid, request.story_gid)
+            if story is None:
+                return SourceStoryResult(status="unknown")
+            if story.task_gid != request.task_gid:
+                return SourceStoryResult(status="denied")
+            return SourceStoryResult(
+                status="ok",
+                task_gid=request.task_gid,
+                revision=task.revision,
+                item=self._source_story(story),
+            )
+        except UnknownEffect:
+            return SourceStoryResult(status="unknown")
+        except ProviderError:
+            return SourceStoryResult(status="provider_error")
 
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
         if request.work_id != self.authority.active_work_id:
@@ -144,18 +292,21 @@ class Controller:
                     return AppendResult(status="unknown")
                 current = await self._read(request.work_id, handle)
                 if current.status != "ok":
-                    if current.status == "stale":
-                        return AppendResult(status="provider_error")
-                    return AppendResult(status=current.status)
-                confirmed = await self.providers[handle.provider].append(handle.provider_work_id, request.text)
+                    return AppendResult(status=current.status if current.status != "stale" else "provider_error")
+                provider = self.providers[handle.provider]
+                story_gid = await provider.append(handle.provider_work_id, request.text)
                 append_returned = True
-                if not confirmed:
+                if story_gid is None:
                     return AppendResult(status="unknown")
-                try:
-                    readback = await self._read(request.work_id, handle)
-                except (UnknownEffect, ProviderError):
+                story = await provider.source_story(handle.provider_work_id, story_gid)
+                if story is None or story.task_gid != handle.provider_work_id or story.text != request.text:
                     return AppendResult(status="unknown")
-                return AppendResult(status="ok" if readback.status == "ok" else "unknown")
+                readback = await self._read(request.work_id, handle)
+                if readback.status != "ok":
+                    return AppendResult(status="unknown")
+                return AppendResult(
+                    status="ok", task_gid=handle.provider_work_id, story_gid=story_gid
+                )
         except UnknownEffect:
             return AppendResult(status="unknown")
         except ProviderError:
