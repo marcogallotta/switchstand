@@ -51,6 +51,7 @@ class FakeProvider:
         self.story_task_gid = TASK_GID
         self.story_text = "feedback"
         self.append_count = 0
+        self.bump_revision_on_story = False
 
     async def get(self, provider_work_id):
         return ProviderWork("Task", "Notes", False, self.revision, Routing(), self.canonical)
@@ -72,6 +73,8 @@ class FakeProvider:
         )
 
     async def source_story(self, provider_task_id, provider_story_id):
+        if self.bump_revision_on_story:
+            self.revision = "r2"
         return ProviderSourceStory(
             provider_story_id, self.story_task_gid, "comment_added", self.story_text,
             "2026-09-12T00:00:00Z", "Marco",
@@ -144,6 +147,16 @@ async def test_material_story_reread_checks_revision_and_target(setup_controller
         )
     )
     assert denied.status == "denied"
+
+    provider.story_task_gid = TASK_GID
+    provider.bump_revision_on_story = True
+    stale = await controller.source_story(
+        SourceStoryRequest(
+            api_version="1", task_gid=TASK_GID,
+            story_gid=STORY_GID, observed_revision="r1",
+        )
+    )
+    assert stale.status == "stale" and stale.revision == "r2"
 
 
 async def test_append_returns_exact_created_story_and_target(setup_controller):
