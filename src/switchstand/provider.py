@@ -178,8 +178,7 @@ class AsanaProvider:
     ) -> ProviderSourceStory | None:
         story = await self._story(provider_story_id)
         if story is None: return None
-        value = self._story_value(story)
-        return value if value.task_gid == provider_task_id else value
+        return self._story_value(story)
 
     async def _write(
         self, method: str, path: str, data: JSON, *, unknown_on_server_error: bool = False
