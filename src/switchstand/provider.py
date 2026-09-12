@@ -149,8 +149,9 @@ class AsanaProvider:
             response.raise_for_status()
             payload = response.json()
             data = payload["data"]
-            if not isinstance(data, list) or len(data) > limit: raise TypeError
+            if not isinstance(data, list): raise TypeError
             raw_stories = cast(list[object], data)
+            if len(raw_stories) > limit: raise TypeError
             stories = tuple(
                 self._story_value(cast(JSON, value), provider_task_id)
                 for value in raw_stories if isinstance(value, dict)
