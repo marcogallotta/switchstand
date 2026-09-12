@@ -16,7 +16,6 @@ from switchstand.contracts import (
     SourceStoryResult,
     SourceTask,
     SourceTaskResult,
-    SuggestionResult,
     WorkItem,
     WorkResult,
 )
@@ -65,14 +64,8 @@ class FakeService:
             ),
         )
 
-    async def update(self, request):
-        return WorkResult(status="stale", item=item(request.patch.notes))
-
     async def append(self, request):
         return AppendResult(status="ok", task_gid=TASK_GID, story_gid=STORY_GID)
-
-    async def suggest_next(self):
-        return SuggestionResult(status="none")
 
 
 def test_provider_request_logs_are_suppressed(caplog):
@@ -129,8 +122,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "source_task", "source_stories", "source_story",
-            "work_update", "work_append", "work_suggest_next",
+            "work_get", "source_task", "source_stories", "source_story", "work_append",
         }
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)
@@ -179,18 +171,10 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert story.structured_content["item"]["task_gid"] == TASK_GID
 
         base = {"api_version": "1", "work_id": str(ID)}
-        updated = await client.call_tool(
-            "work_update", base | {"observed_revision": "r1", "patch": {"notes": "after"}}
-        )
-        assert updated.structured_content == WorkResult(
-            status="stale", item=item("after")
-        ).model_dump(mode="json")
         appended = await client.call_tool("work_append", base | {"text": "history"})
         assert appended.structured_content == {
             "status": "ok", "task_gid": TASK_GID, "story_gid": STORY_GID
         }
-        suggested = await client.call_tool("work_suggest_next", {"api_version": "1"})
-        assert suggested.structured_content == {"status": "none", "item": None}
         rejected = await client.call_tool("work_get", base | {"extra": "secret"})
         assert rejected.is_error
 
