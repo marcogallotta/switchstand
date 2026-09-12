@@ -158,14 +158,14 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
     assert "Active inbox" in command[-1]
 
 
-@pytest.mark.parametrize("request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
-def test_managed_codex_preserves_launch_request_in_one_prompt(request):
+@pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
+def test_managed_codex_preserves_launch_request_in_one_prompt(launch_request):
     default = codex_command(Path("/writer"), [])
-    command = codex_command(Path("/writer"), validate_codex_args(["--", request]))
+    command = codex_command(Path("/writer"), validate_codex_args(["--", launch_request]))
     assert command[:-1] == default[:-1]
     prefix, supplied = command[-1].split("\n\nAdditional launch request:\n", 1)
     assert prefix == default[-1]
-    assert supplied == request
+    assert supplied == launch_request
 
 
 @pytest.mark.parametrize("arguments", [["--config=unsafe"], ["first", "second"]])
