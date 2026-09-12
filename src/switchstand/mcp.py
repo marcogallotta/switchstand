@@ -11,6 +11,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from .contracts import (
     AppendResult,
     LaunchAuthority,
+    SourceStoriesRequest,
+    SourceStoriesResult,
+    SourceStoryRequest,
+    SourceStoryResult,
+    SourceTaskRequest,
+    SourceTaskResult,
     SuggestionResult,
     WorkAppendRequest,
     WorkGetRequest,
@@ -31,6 +37,7 @@ def controller_from_env() -> Controller:
                                headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
     return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
 
+
 def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
     server.tool(name=name)(function)
     tool = server._tool_manager.get_tool(name)  # pyright: ignore[reportPrivateUsage]
@@ -38,6 +45,7 @@ def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> N
     tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
     tool.fn_metadata.arg_model.model_rebuild(force=True)
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
+
 
 def build_server(
     service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = ()
@@ -53,12 +61,47 @@ def build_server(
         f"Bounded read-only reference WorkIds: {references}."
     )
 
+    async def _source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
+        """Read one exact canonical Asana task by Asana task GID; this is not a WorkId."""
+        return await service.source_task(  # type: ignore[attr-defined]
+            SourceTaskRequest(api_version=api_version, task_gid=task_gid)
+        )
+
+    async def _source_stories(
+        api_version: Literal["1"], task_gid: str, observed_revision: str,
+        offset: str | None = None, limit: int = 50,
+    ) -> SourceStoriesResult:
+        """Read one revision-checked page of exact Asana task history/comments."""
+        return await service.source_stories(  # type: ignore[attr-defined]
+            SourceStoriesRequest(
+                api_version=api_version,
+                task_gid=task_gid,
+                observed_revision=observed_revision,
+                offset=offset,
+                limit=limit,
+            )
+        )
+
+    async def _source_story(
+        api_version: Literal["1"], task_gid: str, story_gid: str,
+        observed_revision: str,
+    ) -> SourceStoryResult:
+        """Reread one exact material Asana story and verify its task and task revision."""
+        return await service.source_story(  # type: ignore[attr-defined]
+            SourceStoryRequest(
+                api_version=api_version,
+                task_gid=task_gid,
+                story_gid=story_gid,
+                observed_revision=observed_revision,
+            )
+        )
+
     async def _work_update(api_version: Literal["1"], work_id: UUID, observed_revision: str, patch: WorkPatch) -> WorkResult:
         """Update approved fields on the active work item."""
         return await service.update(WorkUpdateRequest(api_version=api_version, work_id=work_id, observed_revision=observed_revision, patch=patch))  # type: ignore[attr-defined]
 
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
-        """Append one history entry to the active work item."""
+        """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
 
     async def _work_suggest_next(api_version: Literal["1"]) -> SuggestionResult:
@@ -66,6 +109,9 @@ def build_server(
         return await service.suggest_next()  # type: ignore[attr-defined]
 
     closed_tool(server, "work_get", _work_get)
+    closed_tool(server, "source_task", _source_task)
+    closed_tool(server, "source_stories", _source_stories)
+    closed_tool(server, "source_story", _source_story)
     closed_tool(server, "work_update", _work_update)
     closed_tool(server, "work_append", _work_append)
     closed_tool(server, "work_suggest_next", _work_suggest_next)
@@ -80,15 +126,18 @@ def server_from_env() -> MCPServer:
         service, service.authority.active_work_id, service.authority.reference_work_ids
     )
 
+
 def _protect_provider_logs() -> None:
     for name in ("httpx", "httpcore"):
         logger = logging.getLogger(name)
         logger.handlers[:] = [logging.NullHandler()]
         logger.propagate = False
 
+
 def main() -> None:
     _protect_provider_logs()
     server_from_env().run()
+
 
 if __name__ == "__main__":
     main()
