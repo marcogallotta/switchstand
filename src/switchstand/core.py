@@ -225,24 +225,33 @@ class Controller:
         if provider is None:
             return SourceStoryResult(status="provider_error")
         try:
-            task = await provider.source_task(request.task_gid)
-            if task is None:
+            before = await provider.source_task(request.task_gid)
+            if before is None:
                 return SourceStoryResult(status="unknown")
-            if not task.canonical:
+            if not before.canonical:
                 return SourceStoryResult(status="denied")
-            if task.revision != request.observed_revision:
+            if before.revision != request.observed_revision:
                 return SourceStoryResult(
-                    status="stale", task_gid=request.task_gid, revision=task.revision
+                    status="stale", task_gid=request.task_gid, revision=before.revision
                 )
             story = await provider.source_story(request.task_gid, request.story_gid)
             if story is None:
                 return SourceStoryResult(status="unknown")
             if story.task_gid != request.task_gid:
                 return SourceStoryResult(status="denied")
+            after = await provider.source_task(request.task_gid)
+            if after is None:
+                return SourceStoryResult(status="unknown")
+            if not after.canonical:
+                return SourceStoryResult(status="denied")
+            if after.revision != before.revision:
+                return SourceStoryResult(
+                    status="stale", task_gid=request.task_gid, revision=after.revision
+                )
             return SourceStoryResult(
                 status="ok",
                 task_gid=request.task_gid,
-                revision=task.revision,
+                revision=after.revision,
                 item=self._source_story(story),
             )
         except UnknownEffect:
