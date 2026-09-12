@@ -11,6 +11,7 @@ from switchstand.contracts import (
     SourceStoryRequest,
     SourceTaskRequest,
     WorkAppendRequest,
+    WorkGetRequest,
 )
 from switchstand.core import (
     Controller,
@@ -49,6 +50,7 @@ class FakeProvider:
         self.revision = "r1"
         self.canonical = True
         self.story_task_gid = TASK_GID
+        self.story_gid = STORY_GID
         self.story_text = "feedback"
         self.append_count = 0
         self.bump_revision_on_story = False
@@ -76,7 +78,7 @@ class FakeProvider:
         if self.bump_revision_on_story:
             self.revision = "r2"
         return ProviderSourceStory(
-            provider_story_id, self.story_task_gid, "comment_added", self.story_text,
+            self.story_gid, self.story_task_gid, "comment_added", self.story_text,
             "2026-09-12T00:00:00Z", "Marco",
         )
 
@@ -108,6 +110,10 @@ def test_asana_source_identity_is_not_a_work_id():
 
 async def test_exact_task_and_revision_checked_history(setup_controller):
     provider, controller = setup_controller
+    active = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID))
+    assert active.status == "ok" and active.item and active.item.source
+    assert active.item.source.provider == "asana" and active.item.source.task_gid == TASK_GID
+    assert active.item.id == WORK_ID
     task = await controller.source_task(SourceTaskRequest(api_version="1", task_gid=TASK_GID))
     assert task.status == "ok" and task.item and task.item.task_gid == TASK_GID
 
@@ -173,3 +179,17 @@ async def test_append_returns_exact_created_story_and_target(setup_controller):
         WorkAppendRequest(api_version="1", work_id=WORK_ID, text="second")
     )
     assert unknown.status == "unknown" and provider.append_count == 2
+
+
+async def test_exact_story_identity_is_required_for_read_and_append(setup_controller):
+    provider, controller = setup_controller
+    provider.story_gid = "999"
+    reread = await controller.source_story(SourceStoryRequest(
+        api_version="1", task_gid=TASK_GID, story_gid=STORY_GID, observed_revision="r1",
+    ))
+    assert reread.status == "denied" and reread.item is None
+    appended = await controller.append(
+        WorkAppendRequest(api_version="1", work_id=WORK_ID, text="feedback")
+    )
+    assert appended.status == "unknown" and appended.story_gid is None
+    assert provider.append_count == 1

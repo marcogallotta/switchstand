@@ -17,6 +17,7 @@ from switchstand.core import (
     Handle,
     ProviderError,
     ProviderHead,
+    ProviderSourceStory,
     ProviderWork,
     UnknownEffect,
     provision_launch,
@@ -92,7 +93,10 @@ class FakeProvider:
                 self.work.title, self.work.notes, self.work.completed,
                 self.work.revision, self.work.routing, False,
             )
-        return self.confirm_append
+        return "story" if self.confirm_append else None
+    async def source_story(self, provider_task_id, provider_story_id):
+        return ProviderSourceStory(provider_story_id, provider_task_id, "comment_added",
+                                   self.appends[-1], "2026-09-12T00:00:00Z", "Marco")
     async def suggest_next(self, excluded):
         self.excluded = excluded
         return self.suggestion
@@ -177,6 +181,14 @@ async def test_append_unknown_is_not_retried_and_errors_are_sanitized(setup_cont
     provider.fail_get = True
     result = await controller.get(WorkGetRequest(api_version="1", work_id=active))
     assert result.status == "provider_error" and "secret" not in str(result.model_dump())
+
+
+async def test_append_success_checks_story_target_and_reference_denial(setup_controller):
+    active, reference, provider, controller = setup_controller
+    result = await controller.append(WorkAppendRequest(api_version="1", work_id=active, text="x"))
+    assert result.status == "ok" and result.task_gid == "a" and result.story_gid == "story"
+    denied = await controller.append(WorkAppendRequest(api_version="1", work_id=reference, text="y"))
+    assert denied.status == "denied" and provider.appends == ["x"]
 
 
 @pytest.mark.parametrize("failure", ["fail_after_append", "deny_after_append", "fail_unlock"])

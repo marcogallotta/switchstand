@@ -18,7 +18,7 @@ ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
     "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
-OPT_FIELDS = ("name,notes,completed,modified_at,memberships.project.gid,parent.gid,"
+OPT_FIELDS = ("gid,name,notes,completed,modified_at,memberships.project.gid,parent.gid,"
               "custom_fields.gid,custom_fields.display_value,custom_fields.enabled,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
@@ -81,12 +81,14 @@ class AsanaProvider:
     @staticmethod
     def _story_value(payload: JSON, fallback_task_gid: str | None = None) -> ProviderSourceStory:
         story_gid = payload.get("gid")
-        target_gid = AsanaProvider._gid(payload.get("target")) or fallback_task_gid
+        target_gid = (AsanaProvider._gid(payload["target"])
+                      if "target" in payload else fallback_task_gid)
         created_at = payload.get("created_at")
         subtype, text = payload.get("resource_subtype"), payload.get("text")
         creator = payload.get("created_by")
         created_by = cast(JSON, creator).get("name") if isinstance(creator, dict) else None
-        if (not isinstance(story_gid, str) or not isinstance(target_gid, str)
+        if (not isinstance(story_gid, str) or not story_gid
+                or not isinstance(target_gid, str) or not target_gid
                 or not isinstance(created_at, str)
                 or subtype is not None and not isinstance(subtype, str)
                 or text is not None and not isinstance(text, str)
@@ -113,6 +115,7 @@ class AsanaProvider:
         task = await self._task(provider_task_id)
         if task is None: return None
         try:
+            if self._gid(task) != provider_task_id: raise TypeError
             title, notes, completed, revision = (
                 task[key] for key in ("name", "notes", "completed", "modified_at")
             )
@@ -146,18 +149,21 @@ class AsanaProvider:
             response.raise_for_status()
             payload = response.json()
             data = payload["data"]
-            if not isinstance(data, list): raise TypeError
+            if not isinstance(data, list) or len(data) > limit: raise TypeError
             raw_stories = cast(list[object], data)
             stories = tuple(
                 self._story_value(cast(JSON, value), provider_task_id)
                 for value in raw_stories if isinstance(value, dict)
             )
             if len(stories) != len(raw_stories): raise TypeError
-            next_page = payload.get("next_page")
-            next_offset = (
-                cast(JSON, next_page).get("offset") if isinstance(next_page, dict) else None
-            )
-            if next_offset is not None and not isinstance(next_offset, str): raise TypeError
+            if any(story.task_gid != provider_task_id for story in stories): raise TypeError
+            next_page = payload["next_page"]
+            next_offset: str | None = None
+            if next_page is not None:
+                if not isinstance(next_page, dict): raise TypeError
+                value = cast(JSON, next_page).get("offset")
+                if not isinstance(value, str) or not value or value == offset: raise TypeError
+                next_offset = value
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None
         after = await self.source_task(provider_task_id)
@@ -179,6 +185,8 @@ class AsanaProvider:
     ) -> ProviderSourceStory | None:
         story = await self._story(provider_story_id)
         if story is None: return None
+        if self._gid(story) != provider_story_id:
+            raise ProviderError("provider response invalid")
         return self._story_value(story)
 
     async def _write(

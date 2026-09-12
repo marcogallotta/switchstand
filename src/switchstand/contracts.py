@@ -19,6 +19,11 @@ class Routing(ClosedModel):
     stage3_gate: str | None = None
 
 
+class WorkSource(ClosedModel):
+    provider: str
+    task_gid: str
+
+
 class WorkItem(ClosedModel):
     id: UUID
     title: str
@@ -26,6 +31,7 @@ class WorkItem(ClosedModel):
     completed: bool
     revision: str
     routing: Routing
+    source: WorkSource | None = None
 
 
 class WorkPatch(ClosedModel):

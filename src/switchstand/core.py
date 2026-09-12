@@ -22,6 +22,7 @@ from .contracts import (
     WorkItem,
     WorkPatch,
     WorkResult,
+    WorkSource,
     WorkUpdateRequest,
 )
 
@@ -113,8 +114,12 @@ class Controller:
     def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
         self.authority, self.state, self.providers = authority, state, providers
 
-    def _item(self, work_id: UUID, work: ProviderWork) -> WorkItem:
-        return WorkItem(id=work_id, title=work.title, notes=work.notes, completed=work.completed, revision=work.revision, routing=work.routing)
+    def _item(self, work_id: UUID, work: ProviderWork, handle: Handle) -> WorkItem:
+        return WorkItem(
+            id=work_id, title=work.title, notes=work.notes, completed=work.completed,
+            revision=work.revision, routing=work.routing,
+            source=WorkSource(provider=handle.provider, task_gid=handle.provider_work_id),
+        )
 
     @staticmethod
     def _matches(item: WorkItem, patch: WorkPatch) -> bool:
@@ -144,7 +149,7 @@ class Controller:
             return WorkResult(status="unknown")
         if not work.canonical:
             return WorkResult(status="denied")
-        return WorkResult(status="ok", item=self._item(work_id, work))
+        return WorkResult(status="ok", item=self._item(work_id, work, handle))
 
     def _source_provider(self) -> Provider | None:
         return self.providers.get("asana")
@@ -204,7 +209,10 @@ class Controller:
                 return SourceStoriesResult(status="unknown")
             if not page.canonical:
                 return SourceStoriesResult(status="denied")
-            if page.stale:
+            if (page.task_gid != request.task_gid or len(page.stories) > request.limit
+                    or any(story.task_gid != request.task_gid for story in page.stories)):
+                return SourceStoriesResult(status="provider_error")
+            if page.stale or page.revision != request.observed_revision:
                 return SourceStoriesResult(
                     status="stale", task_gid=page.task_gid, revision=page.revision
                 )
@@ -237,7 +245,7 @@ class Controller:
             story = await provider.source_story(request.task_gid, request.story_gid)
             if story is None:
                 return SourceStoryResult(status="unknown")
-            if story.task_gid != request.task_gid:
+            if story.task_gid != request.task_gid or story.story_gid != request.story_gid:
                 return SourceStoryResult(status="denied")
             after = await provider.source_task(request.task_gid)
             if after is None:
@@ -308,7 +316,8 @@ class Controller:
                 if story_gid is None:
                     return AppendResult(status="unknown")
                 story = await provider.source_story(handle.provider_work_id, story_gid)
-                if story is None or story.task_gid != handle.provider_work_id or story.text != request.text:
+                if (story is None or story.story_gid != story_gid
+                        or story.task_gid != handle.provider_work_id or story.text != request.text):
                     return AppendResult(status="unknown")
                 readback = await self._read(request.work_id, handle)
                 if readback.status != "ok":

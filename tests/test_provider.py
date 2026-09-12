@@ -131,3 +131,90 @@ async def test_suggest_next_fails_closed_on_malformed_actionable_row():
                                  "next_page": None}))
     with pytest.raises(ProviderError, match="provider request failed"):
         await subject.suggest_next(frozenset())
+
+
+def source_task_payload(*, gid="123", revision="r1", canonical=True):
+    payload = task(project=PROJECT if canonical else None)
+    payload["data"].update(gid=gid, modified_at=revision)
+    return payload
+
+
+def source_story_payload(*, gid="456", target="123"):
+    return {"gid": gid, "target": {"gid": target}, "resource_subtype": "comment_added",
+            "text": "feedback", "created_at": "2026-09-12T00:00:00Z",
+            "created_by": {"name": "Marco"}}
+
+
+async def test_source_identity_and_canonical_ancestry():
+    child = source_task_payload()
+    child["data"].update(memberships=[], parent={"gid": "789"})
+    subject, api = provider((200, child), (200, source_task_payload(gid="789")))
+    result = await subject.source_task("123")
+    assert result and result.canonical and len(api.requests) == 2
+    subject, _ = provider((200, source_task_payload(gid="999")))
+    with pytest.raises(ProviderError):
+        await subject.source_task("123")
+
+
+async def test_history_page_preserves_exact_cursor_and_revision():
+    snapshot = source_task_payload()
+    page = {"data": [source_story_payload()], "next_page": {"offset": "next"}}
+    subject, api = provider((200, snapshot), (200, page), (200, snapshot))
+    result = await subject.source_stories("123", "r1", "prior", 1)
+    assert result and not result.stale and result.next_offset == "next"
+    assert result.stories[0].story_gid == "456" and result.stories[0].task_gid == "123"
+    request = api.requests[1]
+    assert request.url.path == "/api/1.0/tasks/123/stories"
+    assert request.url.params["offset"] == "prior" and request.url.params["limit"] == "1"
+    assert len(api.requests) == 3
+
+
+@pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])
+async def test_changed_or_noncanonical_history_does_not_fetch_stories(canonical, revision):
+    subject, api = provider((200, source_task_payload(canonical=canonical, revision=revision)))
+    page = await subject.source_stories("123", "r1", None, 50)
+    assert page and not page.stories and page.canonical is canonical
+    assert page.stale is canonical and len(api.requests) == 1
+
+
+@pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])
+async def test_history_discards_page_when_task_changes_during_read(canonical, revision):
+    subject, api = provider(
+        (200, source_task_payload()),
+        (200, {"data": [source_story_payload()], "next_page": None}),
+        (200, source_task_payload(canonical=canonical, revision=revision)),
+    )
+    page = await subject.source_stories("123", "r1", None, 50)
+    assert page and not page.stories and page.next_offset is None
+    assert page.canonical is canonical and page.stale is canonical
+    assert len(api.requests) == 3
+
+
+@pytest.mark.parametrize("payload", [
+    {"data": [source_story_payload(target="999")], "next_page": None},
+    {"data": [source_story_payload() | {"target": None}], "next_page": None},
+    {"data": [None], "next_page": None},
+    {"data": [], "next_page": {}},
+    {"data": [], "next_page": {"offset": ""}},
+    {"data": [], "next_page": "more"},
+    {"data": [], "next_page": {"offset": "prior"}},
+    {"data": []},
+    {"data": [source_story_payload(), source_story_payload(gid="457")], "next_page": None},
+])
+async def test_invalid_history_never_claims_complete_or_returns_wrong_task(payload):
+    subject, api = provider((200, source_task_payload()), (200, payload))
+    with pytest.raises(ProviderError):
+        await subject.source_stories("123", "r1", "prior", 1)
+    assert len(api.requests) == 2
+
+
+async def test_exact_story_rereads_current_text_and_validates_identity():
+    subject, api = provider((200, {"data": source_story_payload() | {"text": "edited"}}))
+    result = await subject.source_story("123", "456")
+    assert result and result.text == "edited" and result.task_gid == "123"
+    assert api.requests[0].url.path == "/api/1.0/stories/456"
+    subject, _ = provider((200, {"data": source_story_payload(gid="999")}))
+    with pytest.raises(ProviderError):
+        await subject.source_story("123", "456")
+    subject, _ = provider((404, {}))
+    assert await subject.source_story("123", "456") is None
