@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from pydantic import ValidationError
 import pytest
+from pydantic import ValidationError
 
 from switchstand.contracts import (
     LaunchAuthority,
