@@ -54,6 +54,9 @@ class AppendGateway:
                 history_known = True
                 if previous is not None:
                     owner, previous_fingerprint, outcome = previous
+                    # The context manager can fail while releasing its transaction,
+                    # even after this branch chooses a previously recorded result.
+                    possible_send = outcome.effect != "not_sent"
                     if owner == principal.key and previous_fingerprint == fingerprint:
                         return outcome
                     if outcome.operation_id == request.operation_id:

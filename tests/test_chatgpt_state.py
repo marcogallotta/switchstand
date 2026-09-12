@@ -134,7 +134,7 @@ async def test_definite_nonapplication_does_not_suppress_authorized_recovery(sub
 
 
 @pytest.mark.parametrize("prior_unknown", [False, True])
-@pytest.mark.parametrize("failure_at", ["lock", "lookup"])
+@pytest.mark.parametrize("failure_at", ["lock", "lookup", "exit"])
 async def test_unreadable_history_preserves_prior_effect_uncertainty(subject, monkeypatch, prior_unknown, failure_at):
     service, selected, provider = subject
     provider.unknown = prior_unknown
@@ -147,9 +147,16 @@ async def test_unreadable_history_preserves_prior_effect_uncertainty(subject, mo
     async def unavailable_lock(*args):
         await unavailable()
         yield None
+    original_lock = service.grants.locked
+    @asynccontextmanager
+    async def unavailable_exit(*args):
+        async with original_lock(*args) as current:
+            yield current
+            await unavailable()
     with monkeypatch.context() as patch:
-        patch.setattr(service.grants, "locked" if failure_at == "lock" else "previous",
-                      unavailable_lock if failure_at == "lock" else unavailable)
+        patch.setattr(service.grants, "previous" if failure_at == "lookup" else "locked",
+                      {"lock": unavailable_lock, "lookup": unavailable,
+                       "exit": unavailable_exit}[failure_at])
         replay = await service.append(req)
     assert replay.status == "unknown" and replay.effect == "unknown"
     assert replay.retry == "reconcile" and "do not send a new operation" in replay.next_action
