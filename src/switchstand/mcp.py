@@ -17,12 +17,9 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
-    SuggestionResult,
     WorkAppendRequest,
     WorkGetRequest,
-    WorkPatch,
     WorkResult,
-    WorkUpdateRequest,
 )
 from .core import Controller
 from .provider import AsanaProvider
@@ -96,25 +93,15 @@ def build_server(
             )
         )
 
-    async def _work_update(api_version: Literal["1"], work_id: UUID, observed_revision: str, patch: WorkPatch) -> WorkResult:
-        """Update approved fields on the active work item."""
-        return await service.update(WorkUpdateRequest(api_version=api_version, work_id=work_id, observed_revision=observed_revision, patch=patch))  # type: ignore[attr-defined]
-
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
-
-    async def _work_suggest_next(api_version: Literal["1"]) -> SuggestionResult:
-        """Return only the highest-priority unbound actionable work head."""
-        return await service.suggest_next()  # type: ignore[attr-defined]
 
     closed_tool(server, "work_get", _work_get)
     closed_tool(server, "source_task", _source_task)
     closed_tool(server, "source_stories", _source_stories)
     closed_tool(server, "source_story", _source_story)
-    closed_tool(server, "work_update", _work_update)
     closed_tool(server, "work_append", _work_append)
-    closed_tool(server, "work_suggest_next", _work_suggest_next)
     return server
 
 
