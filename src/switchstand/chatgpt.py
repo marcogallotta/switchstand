@@ -3,6 +3,8 @@
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .contracts import (
     LaunchAuthority,
     SourceStoriesRequest,
@@ -13,10 +15,10 @@ from .contracts import (
     SourceTaskResult,
     WorkGetRequest,
 )
-from .core import Controller, Provider, State
+from .core import Controller, Provider, ProviderError, State
 from .effects import AppendGateway
 from .grant_state import GrantState
-from .grants import GrantResult, GrantedWorkResult, GuardOutcome, PrincipalContext, ProtectedAppend
+from .grants import GrantedWorkResult, GrantResult, GuardOutcome, PrincipalContext, ProtectedAppend
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 
@@ -47,7 +49,7 @@ class ChatGPTService:
                 return GrantResult(status="denied", principal=principal,
                                    guard=self.denied("grant_get", "no_current_grant"))
             return GrantResult(status="ok", principal=principal, grant=grant)
-        except Exception:
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantResult(status="unknown", principal=principal)
 
     async def get(self, work_id: UUID | None = None) -> GrantedWorkResult:
@@ -67,7 +69,7 @@ class ChatGPTService:
                     WorkGetRequest(api_version="1", work_id=target)
                 )
                 return GrantedWorkResult(status=result.status, item=result.item)
-        except Exception:
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
 
     async def append(self, request: ProtectedAppend) -> GuardOutcome:

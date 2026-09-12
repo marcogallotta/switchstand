@@ -1,8 +1,8 @@
 """Trusted caller/grant values. None of the issuance inputs are MCP arguments."""
 
 import hashlib
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
@@ -36,7 +36,7 @@ class WorkGrant(ClosedModel):
     append_qualification: str | None = Field(default=None, min_length=1)
 
     def current(self) -> bool:
-        return self.state == "active" and self.expires_at > datetime.now(timezone.utc)
+        return self.state == "active" and self.expires_at > datetime.now(UTC)
 
 
 class ProtectedAppend(ClosedModel):
@@ -73,7 +73,7 @@ class GuardOutcome(ClosedModel):
     receipt: EffectReceipt | None = None
 
     @model_validator(mode="after")
-    def exact_receipt(self) -> "GuardOutcome":
+    def exact_receipt(self) -> Self:
         if self.effect == "applied" and (self.status != "ok" or self.receipt is None):
             raise ValueError("applied outcome requires an exact receipt")
         if self.receipt is not None and (self.effect != "applied" or self.status != "ok"):

@@ -3,10 +3,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, grant, service
 from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
-from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, grant, service
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import SourceTaskRequest
 from switchstand.grants import PrincipalContext, ProtectedAppend
@@ -14,8 +14,7 @@ from switchstand.grants import PrincipalContext, ProtectedAppend
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
 def test_append_cannot_accept_authority_arguments(field):
-    values = dict(api_version="1", operation_id=uuid4(), work_id=ACTIVE,
-                  grant_version=1, observed_revision="r1", text="feedback")
+    values = {'api_version': "1", 'operation_id': uuid4(), 'work_id': ACTIVE, 'grant_version': 1, 'observed_revision': "r1", 'text': "feedback"}
     with pytest.raises(ValidationError):
         ProtectedAppend.model_validate(values | {field: "owner"})
 
@@ -68,8 +67,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert got["item"]["id"] == str(ACTIVE)
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
-        args = dict(api_version="1", operation_id=str(uuid4()), work_id=str(ACTIVE),
-                    grant_version=1, observed_revision="r1", text="protocol feedback")
+        args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'grant_version': 1, 'observed_revision': "r1", 'text': "protocol feedback"}
         reference = await client.call_tool("work_append", args | {"work_id": str(REFERENCE)})
         assert reference.structured_content["status"] == "denied"
         first = (await client.call_tool("work_append", args)).structured_content

@@ -7,7 +7,7 @@ Asana task. The command line is a trusted host provisioning surface, not MCP.
 import argparse
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -41,7 +41,7 @@ async def serve(task: str, references: tuple[str, ...]) -> None:
                 current = WorkGrant(id=uuid4(), version=1, principal=principal, authority=authority,
                     operations=frozenset({"work_get", "work_append"}), issuer="local-canary-command",
                     provenance=f"explicit disposable target {task}",
-                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=30),
                     append_qualification=f"test:disposable-task:{task}")
                 await grants.issue(current, None)
             elif current.authority != authority or not current.current():

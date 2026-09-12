@@ -12,7 +12,7 @@ from .contracts import (
     SourceTaskRequest,
     SourceTaskResult,
 )
-from .grants import GrantResult, GrantedWorkResult, GuardOutcome, ProtectedAppend
+from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend
 from .mcp import closed_tool
 
 

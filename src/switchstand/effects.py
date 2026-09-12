@@ -3,6 +3,8 @@
 import hashlib
 import json
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .core import Provider, ProviderError, State, UnknownEffect
 from .grant_state import GrantState
 from .grants import EffectReceipt, GuardOutcome, PrincipalContext, ProtectedAppend, WorkGrant
@@ -21,14 +23,8 @@ class AppendGateway:
     def guard(
         request: ProtectedAppend, status: str, reason: str, *, possible_send: bool = False,
     ) -> GuardOutcome:
-        return GuardOutcome.model_validate(dict(
-            status=status, operation="work_append", work_id=request.work_id,
-            operation_id=request.operation_id, reason=reason,
-            effect="unknown" if possible_send else "not_sent",
-            retry="reconcile" if possible_send else "refresh" if status == "stale" else "none",
-            next_action=("Reconcile the recorded effect; do not send a new operation."
-                         if possible_send else "Refresh work/grant or ask the trusted issuer."),
-        ))
+        return GuardOutcome.model_validate({'status': status, 'operation': "work_append", 'work_id': request.work_id, 'operation_id': request.operation_id, 'reason': reason, 'effect': "unknown" if possible_send else "not_sent", 'retry': "reconcile" if possible_send else "refresh" if status == "stale" else "none", 'next_action': "Reconcile the recorded effect; do not send a new operation."
+                         if possible_send else "Refresh work/grant or ask the trusted issuer."})
 
     @staticmethod
     def admitted(principal: PrincipalContext, grant: WorkGrant | None) -> bool:
@@ -89,7 +85,7 @@ class AppendGateway:
                                                handle.provider_work_id, provider, qualification)
                 await self.grants.finish(outcome)
                 return outcome
-        except Exception:
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             # A prepared intent survives cancellations/crashes too. Its UNKNOWN
             # remains the durable barrier until an exact trusted reconciliation.
             return self.guard(request, "unknown", "state_or_effect_unavailable",

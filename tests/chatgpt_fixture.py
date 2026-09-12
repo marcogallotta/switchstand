@@ -1,7 +1,7 @@
 """Explicit fake caller/provider for local protocol tests; never a ChatGPT identity claim."""
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from switchstand.chatgpt import ChatGPTService
@@ -23,11 +23,7 @@ PRINCIPAL = PrincipalContext(issuer="fixture", subject="owner", client_id="local
 
 
 def grant(principal=PRINCIPAL, active=ACTIVE, reference=REFERENCE, **changes):
-    values = dict(id=uuid4(), version=1, principal=principal,
-                  authority=LaunchAuthority(active_work_id=active, reference_work_ids=(reference,)),
-                  operations=frozenset({"work_get", "work_append"}), issuer="fixture-operator",
-                  provenance="local fixture only", append_qualification="test:disposable",
-                  expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    values = {'id': uuid4(), 'version': 1, 'principal': principal, 'authority': LaunchAuthority(active_work_id=active, reference_work_ids=(reference,)), 'operations': frozenset({"work_get", "work_append"}), 'issuer': "fixture-operator", 'provenance': "local fixture only", 'append_qualification': "test:disposable", 'expires_at': datetime.now(UTC) + timedelta(hours=1)}
     return WorkGrant(**(values | changes))
 
 

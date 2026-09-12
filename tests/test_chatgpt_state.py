@@ -1,16 +1,22 @@
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from chatgpt_fixture import PRINCIPAL, Provider, grant
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from chatgpt_fixture import PRINCIPAL, Provider, grant
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import LaunchAuthority, SourceStoriesRequest, SourceStoryRequest, SourceTaskRequest
+from switchstand.contracts import (
+    LaunchAuthority,
+    SourceStoriesRequest,
+    SourceStoryRequest,
+    SourceTaskRequest,
+)
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import ProtectedAppend
@@ -41,9 +47,7 @@ async def subject():
 
 
 def request(selected, **changes):
-    return ProtectedAppend(**(dict(api_version="1", operation_id=uuid4(),
-        work_id=selected.authority.active_work_id, grant_version=selected.version,
-        observed_revision="r1", text="reply to exact source 123/story 1") | changes))
+    return ProtectedAppend(**({'api_version': "1", 'operation_id': uuid4(), 'work_id': selected.authority.active_work_id, 'grant_version': selected.version, 'observed_revision': "r1", 'text': "reply to exact source 123/story 1"} | changes))
 
 
 async def test_trusted_issuance_is_versioned_and_replacement_removes_old_work(subject):
@@ -65,7 +69,7 @@ async def test_trusted_issuance_is_versioned_and_replacement_removes_old_work(su
 
 @pytest.mark.parametrize("changes", [
     {"state": "revoked"}, {"state": "terminal"},
-    {"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)},
+    {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
     {"operations": frozenset({"work_get"})}, {"append_qualification": None},
     {"append_qualification": "real:unqualified-test-principal"},
 ])
@@ -112,7 +116,7 @@ async def test_ambiguous_send_blocks_new_id_changed_payload_and_other_principal(
     req = request(selected)
     if failure == "finish":
         async def unavailable(outcome):
-            raise RuntimeError("lost receipt storage")
+            raise SQLAlchemyError("lost receipt storage")
         monkeypatch.setattr(service.grants, "finish", unavailable)
     else:
         setattr(provider, failure, True)
