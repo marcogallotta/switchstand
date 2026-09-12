@@ -147,11 +147,12 @@ class AsanaProvider:
             payload = response.json()
             data = payload["data"]
             if not isinstance(data, list): raise TypeError
+            raw_stories = cast(list[object], data)
             stories = tuple(
                 self._story_value(cast(JSON, value), provider_task_id)
-                for value in cast(list[object], data) if isinstance(value, dict)
+                for value in raw_stories if isinstance(value, dict)
             )
-            if len(stories) != len(data): raise TypeError
+            if len(stories) != len(raw_stories): raise TypeError
             next_page = payload.get("next_page")
             next_offset = (
                 cast(JSON, next_page).get("offset") if isinstance(next_page, dict) else None
