@@ -26,7 +26,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
     servers = config["mcp_servers"]
     expected = {
-        "switchstand": {"work_get", "work_update", "work_append"},
+        "switchstand": {"work_get", "source_task", "source_stories", "source_story", "work_append"},
         "switchstand_development": {
             "check",
             "commit_all_current_worktree",
@@ -38,7 +38,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
         assert servers[server]["required"] is False
         tools = servers[server]["tools"]
         assert set(tools) == names
-        assert names <= set(servers[server]["enabled_tools"])
+        assert names == set(servers[server]["enabled_tools"])
         assert all(tool["approval_mode"] == "approve" for tool in tools.values())
 
 

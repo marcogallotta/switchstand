@@ -14,7 +14,7 @@ This file is the sole writable owner of shared agent operating rules.
 - One agent owns each writable surface. Children receive bounded objectives, files, tests, and stop conditions.
 - Inspect a child after roughly a minute or when behavior looks suspicious; steer or stop scope drift.
 - Only the active WorkId is writable. Reference WorkIds are read-only.
-- Use only `work_get`, `work_update`, and `work_append`; raw provider access is outside agent authority.
+- Use only `work_get`, `source_task`, `source_stories`, `source_story`, and `work_append` for the source/history/feedback capability; raw provider access is outside agent authority. Source task/story IDs are read-only identities, never writable WorkIds. Reread material stories before relying on them; only the active WorkId accepts feedback.
 - Default to Switchstand for work discovery. Do not use raw Asana or the `asana` CLI unless the active handoff explicitly authorizes the temporary Asana-handoff exception and names the exact task ID(s) to fetch. Under that exception, use `asana` read-only for only those exact tasks/references; no search/list/project sweep, claim, mutation, or broader discovery. The exception ends once the work is Switchstand-bound.
 - Reread before replacement writes, preserve stale-state failures, and read back successful effects.
 - Never retry an append after an ambiguous response; record the outcome as unknown.

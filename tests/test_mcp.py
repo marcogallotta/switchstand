@@ -2,6 +2,7 @@ import logging
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from uuid import UUID
 
@@ -123,6 +124,10 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
             "work_get", "source_task", "source_stories", "source_story", "work_append",
+        }
+        config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+        assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
+            tool.name for tool in tools
         }
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)

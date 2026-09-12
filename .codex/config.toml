@@ -21,12 +21,18 @@ enabled = false
 command = "scripts/switchstand-controller-mcp"
 env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS"]
 required = false
-enabled_tools = ["work_get", "work_update", "work_append", "work_suggest_next"]
+enabled_tools = ["work_get", "source_task", "source_stories", "source_story", "work_append"]
 
 [mcp_servers.switchstand.tools.work_get]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.work_update]
+[mcp_servers.switchstand.tools.source_task]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.source_stories]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.source_story]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.work_append]
