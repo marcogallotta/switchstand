@@ -146,6 +146,34 @@ def test_managed_codex_requires_both_mcp_servers():
     assert "mcp_servers.switchstand_development.required=true" in command
 
 
+def test_managed_codex_starts_work_without_a_manual_prompt():
+    command = codex_command(Path("/writer"), [])
+    assert command[:-1] == [
+        "codex", "-C", "/writer", "-a", "never", "-c",
+        f'default_permissions="{PROFILE}"',
+        "-c", "mcp_servers.switchstand.required=true",
+        "-c", "mcp_servers.switchstand_development.required=true",
+    ]
+    assert 'work_get(api_version="1")' in command[-1]
+    assert "Active inbox" in command[-1]
+
+
+@pytest.mark.parametrize("request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
+def test_managed_codex_preserves_launch_request_in_one_prompt(request):
+    default = codex_command(Path("/writer"), [])
+    command = codex_command(Path("/writer"), validate_codex_args(["--", request]))
+    assert command[:-1] == default[:-1]
+    prefix, supplied = command[-1].split("\n\nAdditional launch request:\n", 1)
+    assert prefix == default[-1]
+    assert supplied == request
+
+
+@pytest.mark.parametrize("arguments", [["--config=unsafe"], ["first", "second"]])
+def test_managed_codex_command_rejects_extra_options_and_prompts(arguments):
+    with pytest.raises(ValueError):
+        codex_command(Path("/writer"), arguments)
+
+
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):
     events = []
 
