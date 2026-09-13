@@ -17,6 +17,7 @@ from switchstand.launch import (
     codex_command,
     development_names,
     docker_run,
+    exact_revision_preflight,
     linked_branch,
     parse_authority,
     prepare_development,
@@ -29,6 +30,95 @@ from switchstand.launch import (
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
+
+
+def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
+    monkeypatch, tmp_path
+):
+    repo = tmp_path / "writer"
+    common = tmp_path / "control" / ".git"
+    git_dir = common / "worktrees" / "writer"
+    for path in (repo, common, git_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    requested = "a" * 40
+    commands = []
+    state = {
+        "observed": requested,
+        "control_dirty": "",
+        "candidate_dirty": "",
+        "ancestor": True,
+    }
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        cwd = kwargs.get("cwd")
+        if command[1:3] == ["cat-file", "-t"]:
+            return subprocess.CompletedProcess(command, 0, stdout="commit\n")
+        if "--show-toplevel" in command:
+            return subprocess.CompletedProcess(
+                command, 0,
+                stdout=f"{repo}\n{git_dir}\n{common}\n",
+            )
+        if command[1:4] == ["worktree", "list", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout=f"worktree {repo}\n\n")
+        if command[1] == "fetch":
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        if command[1:3] == ["branch", "--show-current"]:
+            return subprocess.CompletedProcess(command, 0, stdout="main\n")
+        if command[1:3] == ["rev-parse", "HEAD"]:
+            if cwd == repo:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=f"{state['observed']}\n"
+                )
+            return subprocess.CompletedProcess(
+                command, 0, stdout=f"{'b' * 40}\n{'b' * 40}\n"
+            )
+        if command[1:3] == ["status", "--porcelain"]:
+            assert cwd in {repo, common.parent}
+            dirty = state["candidate_dirty"] if cwd == repo else state["control_dirty"]
+            return subprocess.CompletedProcess(command, 0, stdout=dirty)
+        if command[1:3] == ["merge-base", "--is-ancestor"]:
+            assert command[-2:] == ["b" * 40, requested]
+            return subprocess.CompletedProcess(command, 0 if state["ancestor"] else 1)
+        raise AssertionError(command)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert exact_revision_preflight(repo, requested, str(common), {}) == requested
+    fetch = next(command for command in commands if command[1] == "fetch")
+    assert fetch[-1] == "+refs/heads/main:refs/remotes/origin/main"
+    assert commands.index(fetch) < commands.index(["git", "rev-parse", "HEAD"])
+
+    state["candidate_dirty"] = "?? untracked.py\n"
+    with pytest.raises(ValueError, match="candidate must be clean"):
+        exact_revision_preflight(repo, requested, str(common), {})
+    state["candidate_dirty"] = ""
+    state["observed"] = "c" * 40
+    with pytest.raises(ValueError, match="exact requested revision"):
+        exact_revision_preflight(repo, requested, str(common), {})
+    state["observed"] = requested
+    state["ancestor"] = False
+    with pytest.raises(ValueError, match="contain freshly fetched"):
+        exact_revision_preflight(repo, requested, str(common), {})
+    state["ancestor"] = True
+    state["control_dirty"] = " M scripts/switchstand-start\n"
+    with pytest.raises(ValueError, match="control checkout"):
+        exact_revision_preflight(repo, requested, str(common), {})
+    foreign_common = tmp_path / "foreign" / ".git"
+    foreign_common.mkdir(parents=True)
+    with pytest.raises(ValueError, match="provenance"):
+        exact_revision_preflight(repo, requested, str(foreign_common), {})
+
+
+@pytest.mark.parametrize(
+    ("requested", "error"),
+    [
+        ("A" * 40, "exact lowercase"),
+        ("a" * 39, "exact lowercase"),
+    ],
+)
+def test_exact_revision_preflight_rejects_ambiguous_identity(tmp_path, requested, error):
+    with pytest.raises(ValueError, match=error):
+        exact_revision_preflight(tmp_path, requested, str(tmp_path), {})
 
 
 def test_managed_tools_have_narrow_approval_free_policy():

@@ -17,6 +17,7 @@ from .task_ref import asana_task_id
 PROFILE = "switchstand-development"
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
 MANAGED_NAME = "SWITCHSTAND_MANAGED"
+REQUESTING_GIT_COMMON = "SWITCHSTAND_REQUESTING_GIT_COMMON"
 CHILD_TERM_SECONDS = 1.0
 
 
@@ -61,8 +62,11 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
     if branch == "HEAD":
         raise ValueError("managed launch requires a branch")
     green = (git_dir / "switchstand-green-sha").read_text().strip()
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, env=env, check=True,
-                           text=True, capture_output=True).stdout
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout
     based_on_green = head == green or subprocess.run(
         ["git", "merge-base", "--is-ancestor", green, head],
         cwd=repo, env=env, check=False, capture_output=True,
@@ -140,11 +144,85 @@ def parser() -> argparse.ArgumentParser:
         description="Bind human-readable work and start Codex inside the managed boundary."
     )
     result.add_argument("--active", required=True, help="active Asana task ID or URL")
+    result.add_argument("--commit", required=True, help="exact candidate commit SHA")
     result.add_argument(
         "--reference", action="append", default=[], help="read-only Asana task ID or URL"
     )
     result.add_argument("codex_args", nargs=argparse.REMAINDER, help="arguments passed to Codex")
     return result
+
+
+def exact_revision_preflight(
+    repo: Path, requested: str, expected_common: str, env: dict[str, str]
+) -> str:
+    if len(requested) != 40 or not set(requested) <= set("0123456789abcdef"):
+        raise ValueError("candidate revision requires an exact lowercase 40-character SHA")
+    object_type = subprocess.run(
+        ["git", "cat-file", "-t", requested], cwd=repo, env=env, check=False,
+        text=True, capture_output=True,
+    )
+    if object_type.returncode != 0 or object_type.stdout.strip() != "commit":
+        raise ValueError("candidate revision must resolve directly to an available commit object")
+
+    values = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel", "--path-format=absolute",
+         "--git-dir", "--git-common-dir"],
+        cwd=repo, env=env, check=True, text=True, capture_output=True,
+    ).stdout.splitlines()
+    root_value, git_value, common_value = values
+    root = Path(root_value).resolve(strict=True)
+    git_dir = Path(git_value).resolve(strict=True)
+    common = Path(common_value).resolve(strict=True)
+    if root != repo or git_dir == common or common != Path(expected_common).resolve(strict=True):
+        raise ValueError("candidate provenance does not match the requesting linked worktree")
+    worktrees = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, env=env,
+        check=True, text=True, capture_output=True,
+    ).stdout.splitlines()
+    if f"worktree {repo}" not in worktrees:
+        raise ValueError("candidate is not a registered worktree of the requesting repository")
+
+    control = common.parent
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--no-tags", "origin",
+         "+refs/heads/main:refs/remotes/origin/main"],
+        cwd=control, env=env, check=True, capture_output=True,
+    )
+    control_branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=control, env=env, check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    control_head, accepted = subprocess.run(
+        ["git", "rev-parse", "HEAD", "origin/main"],
+        cwd=control, env=env, check=True, text=True, capture_output=True,
+    ).stdout.splitlines()
+    control_dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=control, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout
+    candidate_dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout
+    contains_main = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", accepted, requested],
+        cwd=repo, env=env, check=False, capture_output=True,
+    ).returncode == 0
+    if control_branch != "main" or control_head != accepted or control_dirty:
+        raise ValueError("control checkout must be clean main at freshly fetched origin/main")
+    if not contains_main:
+        raise ValueError("candidate revision must contain freshly fetched origin/main")
+    if candidate_dirty:
+        raise ValueError("candidate must be clean at the exact requested revision")
+    observed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout.strip()
+    if observed != requested:
+        raise ValueError("candidate must be clean at the exact requested revision")
+    return observed
 
 
 def clean_environment(source: dict[str, str]) -> dict[str, str]:
@@ -402,10 +480,14 @@ def run(arguments: argparse.Namespace) -> None:
     codex_args = validate_codex_args(arguments.codex_args)
     branch = linked_branch(repo, env)
     checked = readback(repo, env)
+    observed = exact_revision_preflight(
+        repo, arguments.commit, os.environ[REQUESTING_GIT_COMMON], env
+    )
     git_dir = Path(subprocess.run(
         ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, env=env,
         check=True, text=True, capture_output=True,
     ).stdout.strip()).resolve(strict=True)
+    print(f"Revision: {observed}", file=sys.stderr)
     prepared = prepare_managed_run(
         repo, branch, arguments.active, tuple(arguments.reference), env, git_dir
     )
