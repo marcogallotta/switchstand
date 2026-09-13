@@ -27,22 +27,41 @@ done
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 branch=$(git -C "$repo" branch --show-current)
-head=$(git -C "$repo" rev-parse HEAD)
-accepted=$(git -C "$repo" rev-parse origin/main)
 dirty=$(git -C "$repo" status --porcelain)
 [ "$branch" = main ] || {
     echo "start requires the ordinary main checkout" >&2
     exit 1
 }
-[ "$head" = "$accepted" ] && [ -z "$dirty" ] || {
-    echo "start requires clean main at the locally accepted origin/main" >&2
+[ -z "$dirty" ] || {
+    echo "start requires a clean ordinary main checkout" >&2
     exit 1
 }
-"$repo/scripts/bootstrap"
 
-task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+python=$(command -v python3.14 || command -v python3 || true)
+[ -n "$python" ] || {
+    echo "start requires python3" >&2
+    exit 1
+}
+task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
     "$active")
-target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$head")
+resolved=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -m switchstand.launch_source \
+    --repo "$repo" "$task_id")
+set -- $resolved
+[ "$#" -eq 2 ] || {
+    echo "launch source resolver returned an invalid result" >&2
+    exit 1
+}
+accepted=$1
+candidate=$2
+
+"$repo/scripts/bootstrap"
+target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$accepted" "$candidate")
+actual=$(git -C "$target" rev-parse HEAD)
+[ "$actual" = "$candidate" ] || {
+    echo "prepared task writer is not at the exact requested candidate" >&2
+    exit 1
+}
+printf 'SWITCHSTAND_ACCEPTED_BASE=%s\nSWITCHSTAND_CANDIDATE_SHA=%s\n' "$accepted" "$candidate" >&2
 cd "$target"
 exec scripts/switchstand-launch "$@"
