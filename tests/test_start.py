@@ -94,6 +94,7 @@ if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ];
 fi
 exit 92
 """)
+    executable(fake_bin / "python3.14", (fake_bin / "python3").read_text())
     executable(control_python, """#!/bin/sh
 pwd > "$FAKE_LAUNCH_CWD"
 printf '%s\\n' "$@" > "$FAKE_LAUNCH_ARGS"
