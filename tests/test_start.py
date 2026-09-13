@@ -50,9 +50,11 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     target = tmp_path / "writer"
+    control_python = repo / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
-    (target / "scripts").mkdir(parents=True)
+    target.mkdir(parents=True)
+    control_python.parent.mkdir(parents=True)
     source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
@@ -61,12 +63,26 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
 case "$*" in
   *"branch --show-current") echo main ;;
   *"rev-parse HEAD") echo "$FAKE_HEAD" ;;
-  *"rev-parse origin/main") echo "$FAKE_ACCEPTED" ;;
   *"status --porcelain") : ;;
   *) exit 91 ;;
 esac
 """)
-    executable(fake_bin / "python3", "#!/bin/sh\necho 1218383014436992\n")
+    executable(fake_bin / "python3.14", """#!/bin/sh
+if [ "$1" = "-c" ]; then
+    echo 1218383014436992
+    exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "switchstand.launch_source" ]; then
+    printf '%s\n' "$*" > "$FAKE_SOURCE_ARGS"
+    if [ "${FAKE_SOURCE_FAIL:-0}" = 1 ]; then
+        echo 'launch source preparation failed: simulated exact source failure' >&2
+        exit 1
+    fi
+    printf '%s %s\n' "$FAKE_ACCEPTED" "$FAKE_CANDIDATE"
+    exit 0
+fi
+exit 92
+""")
     executable(scripts / "bootstrap", "#!/bin/sh\n:\n")
     executable(scripts / "switchstand-worktree", """#!/bin/sh
 printf '%s\n' "$*" > "$FAKE_WORKTREE_LOG"
@@ -74,19 +90,23 @@ pwd > "$FAKE_WORKTREE_CWD"
 echo 'git progress belongs on stderr' >&2
 echo "$FAKE_TARGET"
 """)
-    executable(target / "scripts" / "switchstand-launch", """#!/bin/sh
+    executable(control_python, """#!/bin/sh
 pwd > "$FAKE_LAUNCH_CWD"
 printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
+printf '%s\n' "$PYTHONPATH" > "$FAKE_LAUNCH_PYTHONPATH"
 """)
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_HEAD": "a" * 40,
         "FAKE_ACCEPTED": "a" * 40,
+        "FAKE_CANDIDATE": "a" * 40,
         "FAKE_TARGET": str(target),
+        "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
+        "FAKE_LAUNCH_PYTHONPATH": str(tmp_path / "launch.pythonpath"),
     }
     return start, environment, target
 
@@ -101,19 +121,32 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert (tmp_path / "source.args").read_text().splitlines() == [
+        f"-m switchstand.launch_source --repo {start.parents[1]} 1218383014436992"
+    ]
     assert (tmp_path / "worktree.log").read_text() == (
-        f"task-1218383014436992 {'a' * 40}\n"
+        f"task-1218383014436992 {'a' * 40} {'a' * 40}\n"
     )
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(target)
+    assert (tmp_path / "launch.pythonpath").read_text().strip() == str(
+        start.parents[1] / "src"
+    )
     assert (tmp_path / "launch.args").read_text().splitlines() == [
-        "--active", "1218383014436992", "--reference", "42", "do work",
+        "-P",
+        "-m",
+        "switchstand.launch",
+        "--active",
+        "1218383014436992",
+        "--reference",
+        "42",
+        "do work",
     ]
 
 
-def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
+def test_start_stops_when_exact_task_source_resolution_fails(tmp_path):
     start, environment, _ = fixture(tmp_path)
-    environment["FAKE_ACCEPTED"] = "b" * 40
+    environment["FAKE_SOURCE_FAIL"] = "1"
     result = subprocess.run(
         [start, "--active=1218383014436992"],
         env=environment,
@@ -122,7 +155,7 @@ def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
         check=False,
     )
     assert result.returncode == 1
-    assert "clean main at the locally accepted origin/main" in result.stderr
+    assert "simulated exact source failure" in result.stderr
     assert not (tmp_path / "worktree.log").exists()
 
 
