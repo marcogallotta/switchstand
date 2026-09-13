@@ -211,6 +211,95 @@ async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
     assert removed == [("container", "exact-id", "run-id", "quality")]
 
 
+async def test_cancel_during_post_create_inspection_removes_captured_id(monkeypatch):
+    inspect_started = asyncio.Event()
+    inspect_release = asyncio.Event()
+    removed = []
+
+    class CreatedProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"exact-id\n", b""
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_subprocess(*args, **kwargs):
+        return CreatedProcess()
+
+    async def fake_to_thread(function, *args):
+        if function is development.require_absent:
+            return None
+        if function is development.inspect_object:
+            inspect_started.set()
+            await inspect_release.wait()
+            return owned("check")
+        if function is development.remove_exact:
+            removed.append((args[0], args[1], args[2], args[3]))
+            return None
+        return function(*args)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+    task = asyncio.create_task(
+        development._create_owned_container([], "run-id", "check")
+    )
+    await inspect_started.wait()
+    task.cancel()
+    inspect_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert removed == [("container", "exact-id", "run-id", "check")]
+
+
+async def test_cancel_during_post_attach_readback_removes_captured_id(monkeypatch):
+    inspect_started = asyncio.Event()
+    inspect_release = asyncio.Event()
+    removed = []
+
+    class FinishedProcess:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def fake_create(args, owner, role):
+        return owned(role)
+
+    async def fake_subprocess(*args, **kwargs):
+        return FinishedProcess()
+
+    async def fake_to_thread(function, *args):
+        if function is development.inspect_object:
+            inspect_started.set()
+            await inspect_release.wait()
+            return owned("quality", running=True, status="running")
+        if function is development.remove_exact:
+            removed.append((args[0], args[1], args[2], args[3]))
+            return None
+        return function(*args)
+
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+    task = asyncio.create_task(
+        development._run_owned_workload([], "run-id", "quality", 60)
+    )
+    await inspect_started.wait()
+    task.cancel()
+    inspect_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert removed == [("container", "exact-id", "run-id", "quality")]
+
+
 @pytest.mark.parametrize(
     ("state", "message"),
     [
