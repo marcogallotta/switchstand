@@ -71,6 +71,16 @@ def test_missing_persistent_contents_are_explicit(tmp_path: Path) -> None:
         prepare_candidate(repo, WORK_ID, base, state_home=state)
 
 
+def test_corrupt_existing_worktree_identity_is_unknown(tmp_path: Path) -> None:
+    repo, base = repository(tmp_path / "repo")
+    state = tmp_path / "state"
+    candidate = prepare_candidate(repo, WORK_ID, base, state_home=state)
+    git(repo, "worktree", "unlock", str(candidate.path))
+    (candidate.path / ".git").write_text("gitdir: /definitely/missing\n")
+    with pytest.raises(WorkspaceUnknown, match="Git identity cannot be read safely"):
+        prepare_candidate(repo, WORK_ID, base, state_home=state)
+
+
 def test_foreign_clone_cannot_adopt_same_repository_work_id(tmp_path: Path) -> None:
     origin = "https://example.test/switchstand.git"
     repo, base = repository(tmp_path / "repo-a", origin)
