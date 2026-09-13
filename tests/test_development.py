@@ -1,4 +1,7 @@
+import asyncio
 import subprocess
+
+import pytest
 
 from switchstand import development
 
@@ -16,7 +19,11 @@ def tool(name):
 def test_development_surface_is_closed():
     server = development.build_server()
     assert set(server._tool_manager._tools) == {
-        "check", "quality", "commit_all_current_worktree", "run_status"}
+        "check",
+        "quality",
+        "commit_all_current_worktree",
+        "run_status",
+    }
     for item in server._tool_manager._tools.values():
         assert item.parameters.get("additionalProperties") is False
 
@@ -25,11 +32,12 @@ def test_unbound_development_surface_has_no_tools():
     assert not development.build_server(bound=False)._tool_manager._tools
 
 
-async def test_focused_check_uses_pinned_image_database_and_paths(monkeypatch, tmp_path):
+async def test_focused_check_uses_exact_owned_container_and_bound(monkeypatch, tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_one.py").touch()
     monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
     monkeypatch.setattr(development, "_manifest", lambda repo: "manifest")
+    monkeypatch.setattr(development, "_run_owner", lambda repo, branch: "run-id")
     monkeypatch.setattr(
         development,
         "_git",
@@ -39,12 +47,18 @@ async def test_focused_check_uses_pinned_image_database_and_paths(monkeypatch, t
     monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
     monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
     captured = {}
-    monkeypatch.setattr(
-        development, "_focused", lambda command: captured.setdefault("run", completed(command))
-    )
+
+    async def fake_run(arguments, owner, role, timeout):
+        captured.update(arguments=arguments, owner=owner, role=role, timeout=timeout)
+        return completed(arguments)
+
+    monkeypatch.setattr(development, "_run_owned_workload", fake_run)
     result = await tool("check")("a" * 40, ["tests/test_one.py"])
-    command = captured["run"].args
+    command = captured["arguments"]
     assert result.status == "ok"
+    assert captured["owner"] == "run-id" and captured["role"] == "check"
+    assert captured["timeout"] == development.FOCUSED_SECONDS
+    assert command[:3] == ["create", "--name", "switchstand-check-runid"]
     assert "sha256:fixed" in command and "isolated" in command
     assert "TEST_DATABASE_URL=" in " ".join(command)
     assert command[-1] == "tests/test_one.py"
@@ -64,23 +78,113 @@ async def test_focused_check_rejects_stale_dependency_manifest(monkeypatch, tmp_
     assert "relaunch required" in result.output
 
 
-async def test_quality_uses_only_pinned_image_and_read_only_worktree(monkeypatch, tmp_path):
+async def test_quality_uses_exact_owned_container_and_full_bound(monkeypatch, tmp_path):
     monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
     monkeypatch.setattr(development, "_manifest", lambda repo: "manifest")
-    monkeypatch.setattr(development, "_git", lambda repo, *args: completed(stdout=("a" * 40 + "\n")
-                                                                        if "rev-parse" in args else ""))
+    monkeypatch.setattr(development, "_run_owner", lambda repo, branch: "run-id")
+    monkeypatch.setattr(
+        development,
+        "_git",
+        lambda repo, *args: completed(
+            stdout=("a" * 40 + "\n") if "rev-parse" in args else ""
+        ),
+    )
     monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
     monkeypatch.setenv("SWITCHSTAND_QUALITY_IMAGE", "sha256:fixed")
     monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
     captured = {}
-    monkeypatch.setattr(development, "_quality",
-                        lambda command: captured.setdefault("run", completed(command)))
+
+    async def fake_run(arguments, owner, role, timeout):
+        captured.update(arguments=arguments, owner=owner, role=role, timeout=timeout)
+        return completed(arguments)
+
+    monkeypatch.setattr(development, "_run_owned_workload", fake_run)
     result = await tool("quality")("a" * 40)
-    command = captured["run"].args
+    command = captured["arguments"]
     assert result.status == "ok"
+    assert captured["role"] == "quality" and captured["timeout"] == development.QUALITY_SECONDS
+    assert command[:3] == ["create", "--name", "switchstand-quality-runid"]
     assert "sha256:fixed" in command and f"{tmp_path}:/workspace:ro" in command
     assert "PYTHONPATH=/workspace/src" in " ".join(command)
     assert "compose.yaml" not in " ".join(command) and "Dockerfile" not in " ".join(command)
+
+
+async def test_hung_workload_stops_cli_removes_exact_container_and_reraises(monkeypatch):
+    class HangingProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stopped = False
+
+        async def wait(self):
+            if not self.stopped:
+                await asyncio.Event().wait()
+            self.returncode = -15
+            return -15
+
+        def terminate(self):
+            self.stopped = True
+
+        def kill(self):
+            self.stopped = True
+
+    process = HangingProcess()
+    removed = []
+    monkeypatch.setattr(development, "_create_owned_container", lambda args, owner, role: "cid")
+
+    async def fake_subprocess(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(
+        development,
+        "remove_owned",
+        lambda kind, name, owner, role, env: removed.append((kind, name, owner, role)),
+    )
+    with pytest.raises(TimeoutError):
+        await development._run_owned_workload([], "run-id", "check", 0.001)
+    assert removed == [("container", "switchstand-check-runid", "run-id", "check")]
+
+
+async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
+    started = asyncio.Event()
+
+    class HangingProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stopped = False
+
+        async def wait(self):
+            started.set()
+            while not self.stopped:
+                await asyncio.sleep(60)
+            self.returncode = -15
+            return -15
+
+        def terminate(self):
+            self.stopped = True
+
+        def kill(self):
+            self.stopped = True
+
+    process = HangingProcess()
+    removed = []
+    monkeypatch.setattr(development, "_create_owned_container", lambda args, owner, role: "cid")
+
+    async def fake_subprocess(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(
+        development,
+        "remove_owned",
+        lambda kind, name, owner, role, env: removed.append((kind, name, owner, role)),
+    )
+    task = asyncio.create_task(development._run_owned_workload([], "run-id", "quality", 60))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert removed == [("container", "switchstand-quality-runid", "run-id", "quality")]
 
 
 def test_development_environment_removes_credentials(monkeypatch):
@@ -93,8 +197,10 @@ def test_development_environment_removes_credentials(monkeypatch):
 
 
 def test_credential_path_covers_environment_variants():
-    assert all(development._credential_path(name)
-               for name in (".env", ".env.local", "service.env.production"))
+    assert all(
+        development._credential_path(name)
+        for name in (".env", ".env.local", "service.env.production")
+    )
     assert not development._credential_path("environment.md")
     assert not development._credential_path("switchstand-config.example")
 
