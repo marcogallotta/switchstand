@@ -4,7 +4,7 @@ import fcntl
 import hashlib
 import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,7 +128,7 @@ class CandidateWorkspace:
     repository_fingerprint: str
 
     @contextmanager
-    def writer(self) -> Iterator[None]:
+    def writer(self) -> Generator[None, None, None]:
         descriptor = os.open(
             self.git_dir / "switchstand-writer.lock",
             os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
