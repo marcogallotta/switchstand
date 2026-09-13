@@ -124,8 +124,7 @@ def _origin_repository(url: str) -> str:
     path = next((value[len(prefix):] for prefix in prefixes if value.startswith(prefix)), None)
     if path is None:
         raise LaunchSourceError("origin must be a github.com repository")
-    if path.endswith(".git"):
-        path = path[:-4]
+    path = path.removesuffix(".git")
     if REPOSITORY_PATTERN.fullmatch(path) is None:
         raise LaunchSourceError("origin is not an exact github.com owner/repository")
     return path
