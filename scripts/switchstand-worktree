@@ -1,20 +1,30 @@
 #!/bin/sh
 set -eu
-if [ "$#" -ne 2 ]; then
-    echo "usage: scripts/switchstand-worktree <writer-name> <exact-green-sha>" >&2
+if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
+    echo "usage: scripts/switchstand-worktree <writer-name> <exact-green-sha> [exact-head-sha]" >&2
     exit 2
 fi
 name=$1
-sha=$2
+green_sha=$2
+head_sha=${3:-$2}
+exact_head=false
+[ "$#" -ne 3 ] || exact_head=true
 case "$name" in *[!a-z0-9-]*|'') echo "writer name must use a-z, 0-9 and hyphens" >&2; exit 2;; esac
-case "$sha" in *[!0-9a-f]*|'') echo "exact SHA must be hexadecimal" >&2; exit 2;; esac
-if [ "${#sha}" -ne 40 ]; then
-    echo "exact SHA must contain 40 hexadecimal characters" >&2
-    exit 2
-fi
+for value in "$green_sha" "$head_sha"; do
+    case "$value" in *[!0-9a-f]*|'') echo "exact SHA must be hexadecimal" >&2; exit 2;; esac
+    if [ "${#value}" -ne 40 ]; then
+        echo "exact SHA must contain 40 hexadecimal characters" >&2
+        exit 2
+    fi
+done
 repo=$(git rev-parse --show-toplevel)
 common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-git -C "$repo" cat-file -e "$sha^{commit}"
+git -C "$repo" cat-file -e "$green_sha^{commit}"
+git -C "$repo" cat-file -e "$head_sha^{commit}"
+if ! git -C "$repo" merge-base --is-ancestor "$green_sha" "$head_sha"; then
+    echo "requested head is not based on the requested green baseline" >&2
+    exit 1
+fi
 target=${TMPDIR:-/tmp}/switchstand-$name
 branch=v2-$name
 target_exists=false
@@ -31,12 +41,20 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
         actual_git=$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null || true)
         actual_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
         dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
-        green=
-        [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
+        recorded_green=
+        recorded_head=
+        if [ -n "$actual_git" ]; then
+            recorded_green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
+            recorded_head=$(cat "$actual_git/switchstand-candidate-sha" 2>/dev/null || true)
+        fi
         based_on_requested=false
-        if [ "$actual_head" = "$sha" ] \
-                || git -C "$target" merge-base --is-ancestor "$sha" "$actual_head" 2>/dev/null; then
+        if [ "$actual_head" = "$green_sha" ] \
+                || git -C "$target" merge-base --is-ancestor "$green_sha" "$actual_head" 2>/dev/null; then
             based_on_requested=true
+        fi
+        head_matches=true
+        if [ "$exact_head" = true ] && { [ "$actual_head" != "$head_sha" ] || [ "$recorded_head" != "$head_sha" ]; }; then
+            head_matches=false
         fi
         registered=false
         if [ -n "$actual_common" ] && [ "$actual_common" = "$common_dir" ] \
@@ -53,8 +71,8 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
             registered=true
         fi
         if [ "$actual_root" = "$target" ] && [ "$actual_branch" = "$branch" ] \
-                && [ "$based_on_requested" = true ] \
-                && [ "$green" = "$sha" ] && [ -z "$dirty" ] \
+                && [ "$based_on_requested" = true ] && [ "$head_matches" = true ] \
+                && [ "$recorded_green" = "$green_sha" ] && [ -z "$dirty" ] \
                 && [ "$registered" = true ]; then
             echo "$target"
             exit 0
@@ -63,7 +81,10 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
     echo "existing task writer is not a clean registered linked worktree of the requesting repository at the requested starting point: $target" >&2
     exit 1
 fi
-git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2
+git -C "$repo" worktree add -b "$branch" "$target" "$head_sha" >&2
 git_dir=$(git -C "$target" rev-parse --absolute-git-dir)
-printf '%s\n' "$sha" > "$git_dir/switchstand-green-sha"
+printf '%s\n' "$green_sha" > "$git_dir/switchstand-green-sha"
+if [ "$exact_head" = true ]; then
+    printf '%s\n' "$head_sha" > "$git_dir/switchstand-candidate-sha"
+fi
 echo "$target"
