@@ -86,6 +86,7 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
     assert exact_revision_preflight(repo, requested, str(common), {}) == requested
     fetch = next(command for command in commands if command[1] == "fetch")
     assert fetch[-1] == "+refs/heads/main:refs/remotes/origin/main"
+    assert commands.index(fetch) < commands.index(["git", "rev-parse", "HEAD"])
 
     state["candidate_dirty"] = "?? untracked.py\n"
     with pytest.raises(ValueError, match="candidate must be clean"):
