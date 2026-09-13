@@ -2,14 +2,20 @@ import asyncio
 import hashlib
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Literal
 
 from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
+from .docker import inspect_object, label_arguments, remove_owned, require_absent
 from .mcp import closed_tool
 from .run import RECEIPT, RunStatus, inspect_receipt
+
+FOCUSED_SECONDS = 120
+QUALITY_SECONDS = 600
+WORKLOAD_STOP_SECONDS = 5
 
 
 class DevelopmentResult(BaseModel):
@@ -26,28 +32,51 @@ def _environment() -> dict[str, str]:
 
 
 def _git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null",
-                           "-c", "commit.gpgSign=false", *arguments], cwd=repo,
-                          env=_environment(), text=True, capture_output=True, check=False)
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", *arguments],
+        cwd=repo,
+        env=_environment(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def _bound_repo() -> tuple[Path, str, str]:
     repo = Path(os.environ["SWITCHSTAND_WORKTREE"]).resolve(strict=True)
-    expected_branch, expected_common = (os.environ[name] for name in
-                                        ("SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON"))
-    values = _git(repo, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir",
-                  "--git-common-dir", "--abbrev-ref", "HEAD").stdout.splitlines()
+    expected_branch, expected_common = (
+        os.environ[name] for name in ("SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON")
+    )
+    values = _git(
+        repo,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-dir",
+        "--git-common-dir",
+        "--abbrev-ref",
+        "HEAD",
+    ).stdout.splitlines()
     root, git_dir, common, branch = values
-    if (Path(root).resolve() != repo or Path(git_dir).resolve() == Path(common).resolve()
-            or str(Path(common).resolve()) != expected_common or branch != expected_branch):
+    if (
+        Path(root).resolve() != repo
+        or Path(git_dir).resolve() == Path(common).resolve()
+        or str(Path(common).resolve()) != expected_common
+        or branch != expected_branch
+    ):
         raise RuntimeError("development boundary lost its exact linked-worktree ownership")
     return repo, branch, _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
-def _result(status: Literal["ok", "failed", "stale"], before: str, repo: Path, output: str = ""):
-    return DevelopmentResult(status=status, before=before,
-                             after=_git(repo, "rev-parse", "HEAD").stdout.strip(),
-                             output=output[-12000:])
+def _result(
+    status: Literal["ok", "failed", "stale"], before: str, repo: Path, output: str = ""
+) -> DevelopmentResult:
+    return DevelopmentResult(
+        status=status,
+        before=before,
+        after=_git(repo, "rev-parse", "HEAD").stdout.strip(),
+        output=output[-12000:],
+    )
 
 
 def _manifest(repo: Path) -> str:
@@ -57,19 +86,102 @@ def _manifest(repo: Path) -> str:
     return digest.hexdigest()
 
 
-def _quality(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, env=_environment(), text=True, capture_output=True, check=False)
-
-
-def _focused(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, env=_environment(), text=True, capture_output=True, check=False, timeout=120
-    )
-
-
 def _credential_path(path: str) -> bool:
     name = Path(path).name
     return name.endswith(".env") or ".env." in name
+
+
+def _run_owner(repo: Path, branch: str) -> str:
+    git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    if git_dir.returncode != 0:
+        raise RuntimeError("cannot resolve managed run receipt")
+    status = inspect_receipt(Path(git_dir.stdout.strip()) / RECEIPT, repo, branch)
+    if status.status != "running" or status.run_id is None:
+        raise RuntimeError("development workload requires one exact running managed run")
+    return str(status.run_id)
+
+
+def _workload_name(owner: str, role: Literal["check", "quality"]) -> str:
+    return f"switchstand-{role}-{owner.replace('-', '')}"
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), WORKLOAD_STOP_SECONDS)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+async def _run_owned_workload(
+    command: list[str], owner: str, role: Literal["check", "quality"], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    env = _environment()
+    name = _workload_name(owner, role)
+    require_absent("container", name, owner, role, env)
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout)
+        except BaseException:
+            await _stop_process(process)
+            remove_owned("container", name, owner, role, env)
+            raise
+        output.seek(0)
+        text = output.read()
+    leftover = inspect_object("container", name, env)
+    if leftover is not None:
+        if leftover.owner == owner and leftover.role == role:
+            remove_owned("container", name, owner, role, env)
+        raise RuntimeError(f"Docker {role} workload {name!r} remained after completion")
+    assert process.returncode is not None
+    return subprocess.CompletedProcess(command, process.returncode, stdout=text, stderr="")
+
+
+def _quality_command(
+    repo: Path, owner: str, role: Literal["check", "quality"], test_paths: list[Path]
+) -> list[str]:
+    name = _workload_name(owner, role)
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        name,
+        *label_arguments(owner, role),
+        "--network",
+        os.environ["SWITCHSTAND_QUALITY_NETWORK"],
+        "-e",
+        "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
+        "-e",
+        "SWITCHSTAND_REQUIRE_TEST_DATABASE=1",
+        "-v",
+        f"{repo}:/workspace:ro",
+        "-w",
+        "/workspace",
+        os.environ["SWITCHSTAND_QUALITY_IMAGE"],
+        "sh",
+        "-c",
+    ]
+    script = (
+        "PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . && "
+        "PYTHONPATH=/workspace/src /app/.venv/bin/pyright "
+        "--pythonpath /app/.venv/bin/python && "
+        "PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider"
+    )
+    if role == "check":
+        command.extend([script + ' \"$@\"', "switchstand-check", *(str(path) for path in test_paths)])
+    else:
+        command.append(script)
+    return command
 
 
 def build_server(bound: bool = True) -> MCPServer:
@@ -79,7 +191,7 @@ def build_server(bound: bool = True) -> MCPServer:
 
     async def check(expected_head: str, test_paths: list[str]) -> DevelopmentResult:
         """Run Ruff, strict Pyright, and selected tests against the active worktree."""
-        repo, _, before = _bound_repo()
+        repo, branch, before = _bound_repo()
         if before != expected_head:
             return _result("stale", before, repo)
         if _manifest(repo) != os.environ["SWITCHSTAND_MANIFEST_SHA256"]:
@@ -95,23 +207,17 @@ def build_server(bound: bool = True) -> MCPServer:
             for path in paths
         ):
             return _result("failed", before, repo, "test paths must be existing files under tests/")
-        command = [
-            "docker", "run", "--rm", "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
-            "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
-            "-e", "SWITCHSTAND_REQUIRE_TEST_DATABASE=1", "-v", f"{repo}:/workspace:ro",
-            "-w", "/workspace", os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
-            (
-                "PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . && "
-                "PYTHONPATH=/workspace/src /app/.venv/bin/pyright "
-                "--pythonpath /app/.venv/bin/python && "
-                "PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider \"$@\""
-            ),
-            "switchstand-check", *(str(path) for path in paths),
-        ]
+        owner = _run_owner(repo, branch)
         try:
-            checked = await asyncio.to_thread(_focused, command)
-        except subprocess.TimeoutExpired as error:
-            return _result("failed", before, repo, f"focused check exceeded 120 seconds: {error}")
+            checked = await _run_owned_workload(
+                _quality_command(repo, owner, "check", paths), owner, "check", FOCUSED_SECONDS
+            )
+        except TimeoutError as error:
+            return _result(
+                "failed", before, repo, f"focused check exceeded {FOCUSED_SECONDS} seconds: {error}"
+            )
+        except RuntimeError as error:
+            return _result("failed", before, repo, str(error))
         unchanged = before == _git(repo, "rev-parse", "HEAD").stdout.strip()
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
         return _result(state, before, repo, checked.stdout + checked.stderr)
@@ -126,7 +232,9 @@ def build_server(bound: bool = True) -> MCPServer:
         tracked = _git(repo, "ls-files", "--stage").stdout
         if "160000 " in tracked or any(path != repo / ".git" for path in repo.rglob(".git")):
             return _result("failed", before, repo, "nested repositories are not supported")
-        paths = _git(repo, "ls-files", "--cached", "--others", "--exclude-standard").stdout.splitlines()
+        paths = _git(
+            repo, "ls-files", "--cached", "--others", "--exclude-standard"
+        ).stdout.splitlines()
         if any(_credential_path(path) for path in paths):
             return _result("failed", before, repo, "tracked credential path rejected")
         added = _git(repo, "add", "-A", "--", ":/")
@@ -136,22 +244,29 @@ def build_server(bound: bool = True) -> MCPServer:
 
     async def quality(expected_head: str) -> DevelopmentResult:
         """Run the fixed full gate against one clean, exact, dependency-pinned candidate."""
-        repo, _, before = _bound_repo()
+        repo, branch, before = _bound_repo()
         if before != expected_head:
             return _result("stale", before, repo)
         if _git(repo, "status", "--porcelain").stdout:
             return _result("failed", before, repo, "candidate worktree is not clean")
         if _manifest(repo) != os.environ["SWITCHSTAND_MANIFEST_SHA256"]:
             return _result("stale", before, repo, "dependency manifests changed; relaunch required")
-        command = ["docker", "run", "--rm", "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
-                   "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
-                   "-v", f"{repo}:/workspace:ro", "-w", "/workspace",
-                   os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
-                   "PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . && PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider"]
-        checked = await asyncio.to_thread(_quality, command)
-        unchanged = (before == _git(repo, "rev-parse", "HEAD").stdout.strip()
-                     and not _git(repo, "status", "--porcelain").stdout
-                     and _manifest(repo) == os.environ["SWITCHSTAND_MANIFEST_SHA256"])
+        owner = _run_owner(repo, branch)
+        try:
+            checked = await _run_owned_workload(
+                _quality_command(repo, owner, "quality", []), owner, "quality", QUALITY_SECONDS
+            )
+        except TimeoutError as error:
+            return _result(
+                "failed", before, repo, f"full quality exceeded {QUALITY_SECONDS} seconds: {error}"
+            )
+        except RuntimeError as error:
+            return _result("failed", before, repo, str(error))
+        unchanged = (
+            before == _git(repo, "rev-parse", "HEAD").stdout.strip()
+            and not _git(repo, "status", "--porcelain").stdout
+            and _manifest(repo) == os.environ["SWITCHSTAND_MANIFEST_SHA256"]
+        )
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
         return _result(state, before, repo, checked.stdout + checked.stderr)
 
@@ -175,14 +290,7 @@ def main() -> None:
     if not bound:
         build_server(False).run()
         return
-    try:
-        build_server().run()
-    finally:
-        env = _environment()
-        subprocess.run(["docker", "rm", "-f", os.environ["SWITCHSTAND_DATABASE_CONTAINER"]],
-                       env=env, capture_output=True, check=False)
-        subprocess.run(["docker", "network", "rm", os.environ["SWITCHSTAND_QUALITY_NETWORK"]],
-                       env=env, capture_output=True, check=False)
+    build_server().run()
 
 
 if __name__ == "__main__":
