@@ -87,6 +87,5 @@ def test_foreign_clone_cannot_adopt_same_repository_work_id(tmp_path: Path) -> N
 def test_candidate_writer_lock_is_non_blocking(tmp_path: Path) -> None:
     repo, base = repository(tmp_path / "repo")
     candidate = prepare_candidate(repo, WORK_ID, base, state_home=tmp_path / "state")
-    with candidate.writer(), pytest.raises(WriterBusy, match="active writer"):
-        with candidate.writer():
-            raise AssertionError("second writer unexpectedly acquired the candidate")
+    with candidate.writer(), pytest.raises(WriterBusy, match="active writer"), candidate.writer():
+        raise AssertionError("second writer unexpectedly acquired the candidate")
