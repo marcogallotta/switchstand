@@ -9,7 +9,7 @@ from typing import Literal
 from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
-from .docker import inspect_object, label_arguments, remove_owned, require_absent
+from .docker import DockerObject, inspect_object, label_arguments, remove_exact, require_absent
 from .mcp import closed_tool
 from .run import RECEIPT, RunStatus, inspect_receipt
 
@@ -141,44 +141,6 @@ def _container_arguments(
     return command
 
 
-def _create_owned_container(
-    arguments: list[str], owner: str, role: Literal["check", "quality"]
-) -> str:
-    env = _environment()
-    name = _workload_name(owner, role)
-    require_absent("container", name, owner, role, env)
-    try:
-        created = subprocess.run(
-            ["docker", *arguments],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=CREATE_SECONDS,
-        )
-    except subprocess.TimeoutExpired as error:
-        existing = inspect_object("container", name, env)
-        if existing is not None and existing.owner == owner and existing.role == role:
-            remove_owned("container", name, owner, role, env)
-        raise RuntimeError(f"Docker {role} create exceeded {CREATE_SECONDS} seconds") from error
-    if created.returncode != 0:
-        detail = (created.stderr or created.stdout).strip()
-        raise RuntimeError(f"Docker {role} create failed: {detail or 'no diagnostic output'}")
-    values = created.stdout.strip().splitlines()
-    if not values:
-        raise RuntimeError(f"Docker {role} create returned no container identity")
-    container_id = values[-1]
-    existing = inspect_object("container", name, env)
-    if (
-        existing is None
-        or existing.object_id != container_id
-        or existing.owner != owner
-        or existing.role != role
-    ):
-        raise RuntimeError(f"Docker {role} create did not bind the exact owned container")
-    return container_id
-
-
 async def _stop_process(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
@@ -190,13 +152,71 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+async def _remove_created(container: DockerObject, env: dict[str, str]) -> None:
+    await asyncio.to_thread(
+        remove_exact, "container", container.object_id, container.owner or "", container.role or "", env
+    )
+
+
+async def _cleanup_named_if_owned(
+    name: str, owner: str, role: Literal["check", "quality"], env: dict[str, str]
+) -> None:
+    existing = await asyncio.to_thread(inspect_object, "container", name, env)
+    if existing is None:
+        return
+    if existing.owner != owner or existing.role != role:
+        raise RuntimeError(f"refusing to clean foreign Docker container {name!r}")
+    await asyncio.to_thread(remove_exact, "container", existing.object_id, owner, role, env)
+
+
+async def _create_owned_container(
+    arguments: list[str], owner: str, role: Literal["check", "quality"]
+) -> DockerObject:
+    env = _environment()
+    name = _workload_name(owner, role)
+    await asyncio.to_thread(require_absent, "container", name, owner, role, env)
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        *arguments,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), CREATE_SECONDS)
+    except BaseException:
+        try:
+            await _stop_process(process)
+        finally:
+            await _cleanup_named_if_owned(name, owner, role, env)
+        raise
+    if process.returncode != 0:
+        await _cleanup_named_if_owned(name, owner, role, env)
+        detail = (stderr or stdout).decode(errors="replace").strip()
+        raise RuntimeError(f"Docker {role} create failed: {detail or 'no diagnostic output'}")
+    values = stdout.decode(errors="replace").strip().splitlines()
+    if not values:
+        await _cleanup_named_if_owned(name, owner, role, env)
+        raise RuntimeError(f"Docker {role} create returned no container identity")
+    container_id = values[-1]
+    existing = await asyncio.to_thread(inspect_object, "container", container_id, env)
+    if (
+        existing is None
+        or existing.object_id != container_id
+        or existing.name != name
+        or existing.owner != owner
+        or existing.role != role
+    ):
+        raise RuntimeError(f"Docker {role} create did not bind the exact owned container")
+    return existing
+
+
 async def _run_owned_workload(
     arguments: list[str], owner: str, role: Literal["check", "quality"], timeout: int
 ) -> subprocess.CompletedProcess[str]:
     env = _environment()
-    name = _workload_name(owner, role)
-    container_id = _create_owned_container(arguments, owner, role)
-    command = ["docker", "start", "--attach", container_id]
+    container = await _create_owned_container(arguments, owner, role)
+    command = ["docker", "start", "--attach", container.object_id]
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -206,7 +226,7 @@ async def _run_owned_workload(
                 stderr=subprocess.STDOUT,
             )
         except BaseException:
-            remove_owned("container", name, owner, role, env)
+            await _remove_created(container, env)
             raise
         try:
             await asyncio.wait_for(process.wait(), timeout)
@@ -214,22 +234,35 @@ async def _run_owned_workload(
             try:
                 await _stop_process(process)
             finally:
-                remove_owned("container", name, owner, role, env)
+                await _remove_created(container, env)
             raise
         output.seek(0)
         text = output.read()
-    finished = inspect_object("container", name, env)
+    try:
+        finished = await asyncio.to_thread(inspect_object, "container", container.object_id, env)
+    except RuntimeError as readback_error:
+        try:
+            await _remove_created(container, env)
+        except RuntimeError as cleanup_error:
+            raise RuntimeError(
+                f"Docker {role} daemon readback failed and exact cleanup is unresolved: {cleanup_error}"
+            ) from readback_error
+        raise RuntimeError(f"Docker {role} daemon readback failed after exact cleanup") from readback_error
+    if finished is None:
+        raise RuntimeError(f"Docker {role} workload identity disappeared before daemon readback")
     if (
-        finished is None
-        or finished.object_id != container_id
+        finished.object_id != container.object_id
         or finished.owner != owner
         or finished.role != role
-        or finished.running is not False
-        or finished.exit_code is None
     ):
-        raise RuntimeError(f"Docker {role} workload ended without exact daemon-state readback")
+        raise RuntimeError(f"Docker {role} workload identity changed before daemon readback")
+    if finished.running is not False or finished.status != "exited" or finished.exit_code is None:
+        await _remove_created(container, env)
+        raise RuntimeError(
+            f"Docker {role} attach ended without an exited daemon workload; exact container removed"
+        )
     returncode = finished.exit_code
-    remove_owned("container", name, owner, role, env)
+    await _remove_created(container, env)
     return subprocess.CompletedProcess(command, returncode, stdout=text, stderr="")
 
 
