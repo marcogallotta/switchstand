@@ -164,7 +164,10 @@ def _create_owned_container(
     if created.returncode != 0:
         detail = (created.stderr or created.stdout).strip()
         raise RuntimeError(f"Docker {role} create failed: {detail or 'no diagnostic output'}")
-    container_id = created.stdout.strip().splitlines()[-1]
+    values = created.stdout.strip().splitlines()
+    if not values:
+        raise RuntimeError(f"Docker {role} create returned no container identity")
+    container_id = values[-1]
     existing = inspect_object("container", name, env)
     if (
         existing is None
@@ -195,17 +198,23 @@ async def _run_owned_workload(
     container_id = _create_owned_container(arguments, owner, role)
     command = ["docker", "start", "--attach", container_id]
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            env=env,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+        except BaseException:
+            remove_owned("container", name, owner, role, env)
+            raise
         try:
             await asyncio.wait_for(process.wait(), timeout)
         except BaseException:
-            await _stop_process(process)
-            remove_owned("container", name, owner, role, env)
+            try:
+                await _stop_process(process)
+            finally:
+                remove_owned("container", name, owner, role, env)
             raise
         output.seek(0)
         text = output.read()
