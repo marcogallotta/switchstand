@@ -30,7 +30,8 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
         actual_head=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
         actual_git=$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null || true)
         actual_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-        dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
+        dirty=$(git -C "$target" status --porcelain --untracked-files=all \
+            2>/dev/null || printf 'unknown\n')
         green=
         [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
         based_on_requested=false
