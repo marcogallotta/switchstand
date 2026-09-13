@@ -13,6 +13,7 @@ if [ "${#sha}" -ne 40 ]; then
     exit 2
 fi
 repo=$(git rev-parse --show-toplevel)
+common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 git -C "$repo" cat-file -e "$sha^{commit}"
 target=${TMPDIR:-/tmp}/switchstand-$name
 branch=v2-$name
@@ -28,6 +29,7 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
         actual_branch=$(git -C "$target" branch --show-current 2>/dev/null || true)
         actual_head=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
         actual_git=$(git -C "$target" rev-parse --absolute-git-dir 2>/dev/null || true)
+        actual_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
         dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
         green=
         [ -z "$actual_git" ] || green=$(cat "$actual_git/switchstand-green-sha" 2>/dev/null || true)
@@ -36,14 +38,29 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
                 || git -C "$target" merge-base --is-ancestor "$sha" "$actual_head" 2>/dev/null; then
             based_on_requested=true
         fi
+        registered=false
+        if [ -n "$actual_common" ] && [ "$actual_common" = "$common_dir" ] \
+                && [ -n "$actual_git" ] && [ "$actual_git" != "$actual_common" ] \
+                && git -C "$repo" worktree list --porcelain 2>/dev/null \
+                    | awk -v target="$target" '
+                        /^worktree / {
+                            path = substr($0, 10)
+                            if (path == target) found = 1
+                        }
+                        END { exit found ? 0 : 1 }
+                    '
+        then
+            registered=true
+        fi
         if [ "$actual_root" = "$target" ] && [ "$actual_branch" = "$branch" ] \
                 && [ "$based_on_requested" = true ] \
-                && [ "$green" = "$sha" ] && [ -z "$dirty" ]; then
+                && [ "$green" = "$sha" ] && [ -z "$dirty" ] \
+                && [ "$registered" = true ]; then
             echo "$target"
             exit 0
         fi
     fi
-    echo "existing task writer is not clean and based on the requested starting point: $target" >&2
+    echo "existing task writer is not a clean registered linked worktree of the requesting repository at the requested starting point: $target" >&2
     exit 1
 fi
 git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2
