@@ -4,7 +4,7 @@ from uuid import UUID
 
 import pytest
 
-from switchstand.candidate import WriterBusy, WorkspaceMissing, WorkspaceUnknown, prepare_candidate
+from switchstand.candidate import WorkspaceMissing, WorkspaceUnknown, WriterBusy, prepare_candidate
 
 WORK_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -87,7 +87,6 @@ def test_foreign_clone_cannot_adopt_same_repository_work_id(tmp_path: Path) -> N
 def test_candidate_writer_lock_is_non_blocking(tmp_path: Path) -> None:
     repo, base = repository(tmp_path / "repo")
     candidate = prepare_candidate(repo, WORK_ID, base, state_home=tmp_path / "state")
-    with candidate.writer():
-        with pytest.raises(WriterBusy, match="active writer"):
-            with candidate.writer():
-                raise AssertionError("second writer unexpectedly acquired the candidate")
+    with candidate.writer(), pytest.raises(WriterBusy, match="active writer"):
+        with candidate.writer():
+            raise AssertionError("second writer unexpectedly acquired the candidate")
