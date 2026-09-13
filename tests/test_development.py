@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from switchstand import development
+from switchstand.docker import DockerObject
 
 
 def completed(args=(), stdout="", returncode=0):
@@ -14,6 +15,19 @@ def tool(name):
     found = development.build_server()._tool_manager.get_tool(name)
     assert found is not None
     return found.fn
+
+
+def owned(role: str, *, running=False, status="created", exit_code=0):
+    return DockerObject(
+        "container",
+        f"switchstand-{role}-runid",
+        "exact-id",
+        "run-id",
+        role,
+        running,
+        exit_code,
+        status,
+    )
 
 
 def test_development_surface_is_closed():
@@ -129,20 +143,25 @@ async def test_hung_workload_stops_cli_removes_exact_container_and_reraises(monk
 
     process = HangingProcess()
     removed = []
-    monkeypatch.setattr(development, "_create_owned_container", lambda args, owner, role: "cid")
+
+    async def fake_create(args, owner, role):
+        return owned(role)
 
     async def fake_subprocess(*args, **kwargs):
         return process
 
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
         development,
-        "remove_owned",
-        lambda kind, name, owner, role, env: removed.append((kind, name, owner, role)),
+        "remove_exact",
+        lambda kind, object_id, owner, role, env: removed.append(
+            (kind, object_id, owner, role)
+        ),
     )
     with pytest.raises(TimeoutError):
         await development._run_owned_workload([], "run-id", "check", 0.001)
-    assert removed == [("container", "switchstand-check-runid", "run-id", "check")]
+    assert removed == [("container", "exact-id", "run-id", "check")]
 
 
 async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
@@ -168,23 +187,98 @@ async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
 
     process = HangingProcess()
     removed = []
-    monkeypatch.setattr(development, "_create_owned_container", lambda args, owner, role: "cid")
+
+    async def fake_create(args, owner, role):
+        return owned(role)
 
     async def fake_subprocess(*args, **kwargs):
         return process
 
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
         development,
-        "remove_owned",
-        lambda kind, name, owner, role, env: removed.append((kind, name, owner, role)),
+        "remove_exact",
+        lambda kind, object_id, owner, role, env: removed.append(
+            (kind, object_id, owner, role)
+        ),
     )
     task = asyncio.create_task(development._run_owned_workload([], "run-id", "quality", 60))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert removed == [("container", "switchstand-quality-runid", "run-id", "quality")]
+    assert removed == [("container", "exact-id", "run-id", "quality")]
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        (owned("check", running=True, status="running"), "without an exited daemon workload"),
+        (owned("check", running=False, status="created"), "without an exited daemon workload"),
+    ],
+)
+async def test_attach_end_without_exited_execution_removes_exact_container(
+    monkeypatch, state, message
+):
+    class FinishedProcess:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    removed = []
+
+    async def fake_create(args, owner, role):
+        return owned(role)
+
+    async def fake_subprocess(*args, **kwargs):
+        return FinishedProcess()
+
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(development, "inspect_object", lambda kind, object_id, env: state)
+    monkeypatch.setattr(
+        development,
+        "remove_exact",
+        lambda kind, object_id, owner, role, env: removed.append(
+            (kind, object_id, owner, role)
+        ),
+    )
+    with pytest.raises(RuntimeError, match=message):
+        await development._run_owned_workload([], "run-id", "check", 60)
+    assert removed == [("container", "exact-id", "run-id", "check")]
+
+
+async def test_success_uses_exact_daemon_exit_code_and_removes_bound_id(monkeypatch):
+    class FinishedProcess:
+        returncode = 99
+
+        async def wait(self):
+            return 99
+
+    removed = []
+
+    async def fake_create(args, owner, role):
+        return owned(role)
+
+    async def fake_subprocess(*args, **kwargs):
+        return FinishedProcess()
+
+    exited = owned("quality", running=False, status="exited", exit_code=7)
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(development, "inspect_object", lambda kind, object_id, env: exited)
+    monkeypatch.setattr(
+        development,
+        "remove_exact",
+        lambda kind, object_id, owner, role, env: removed.append(
+            (kind, object_id, owner, role)
+        ),
+    )
+    result = await development._run_owned_workload([], "run-id", "quality", 60)
+    assert result.returncode == 7
+    assert removed == [("container", "exact-id", "run-id", "quality")]
 
 
 def test_development_environment_removes_credentials(monkeypatch):
