@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -16,6 +17,8 @@ def git(repo: Path, *args: str) -> str:
 
 
 def repository(path: Path, origin: str = "https://example.test/switchstand.git") -> tuple[Path, str]:
+    if shutil.which("git") is None:
+        pytest.skip("git is required for real persistent-candidate tests")
     path.mkdir(parents=True)
     git(path, "init", "-q")
     git(path, "config", "user.email", "test@example.test")
