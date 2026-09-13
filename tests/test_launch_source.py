@@ -1,5 +1,7 @@
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -100,9 +102,50 @@ def test_prepare_source_accepts_stale_primary_when_control_is_identical(
     assert fetched == [("base", BASE), ("candidate", CANDIDATE)]
 
 
+def test_control_python_does_not_execute_candidate_startup_or_indirect_import(tmp_path: Path):
+    control = tmp_path / "control"
+    candidate = tmp_path / "candidate"
+    control_package = control / "src" / "switchstand"
+    candidate_package = candidate / "src" / "switchstand"
+    control_package.mkdir(parents=True)
+    candidate_package.mkdir(parents=True)
+    control_marker = tmp_path / "control-marker"
+    candidate_marker = tmp_path / "candidate-marker"
+
+    (control_package / "__init__.py").write_text("")
+    (control_package / "launch.py").write_text("import switchstand.run\n")
+    (control_package / "run.py").write_text(
+        "import os\nfrom pathlib import Path\nPath(os.environ['CONTROL_MARKER']).write_text('control')\n"
+    )
+    (candidate / "sitecustomize.py").write_text(
+        "import os\nfrom pathlib import Path\nPath(os.environ['CANDIDATE_MARKER']).write_text('cwd')\n"
+    )
+    (candidate / "src" / "sitecustomize.py").write_text(
+        "import os\nfrom pathlib import Path\nPath(os.environ['CANDIDATE_MARKER']).write_text('src')\n"
+    )
+    (candidate_package / "__init__.py").write_text("")
+    (candidate_package / "run.py").write_text(
+        "import os\nfrom pathlib import Path\nPath(os.environ['CANDIDATE_MARKER']).write_text('run')\n"
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(control / "src")
+    env["CONTROL_MARKER"] = str(control_marker)
+    env["CANDIDATE_MARKER"] = str(candidate_marker)
+    subprocess.run(
+        [sys.executable, "-P", "-m", "switchstand.launch"],
+        cwd=candidate,
+        env=env,
+        check=True,
+    )
+
+    assert control_marker.read_text() == "control"
+    assert not candidate_marker.exists()
+
+
 def _git(repo: Path, *arguments: str) -> str:
     result = subprocess.run(
-        ["git", *arguments], cwd=repo, check=True, text=True, capture_output=True
+        ["git", *arguments], cwd=repo, text=True, capture_output=True, check=True
     )
     return result.stdout.strip()
 
@@ -135,9 +178,9 @@ def test_worktree_exact_head_preserves_green_baseline_and_rejects_advanced_reuse
     first = subprocess.run(
         [str(script), "task-123", base, candidate],
         cwd=repo,
-        check=True,
         text=True,
         capture_output=True,
+        check=True,
     )
     target = Path(first.stdout.strip())
     git_dir = Path(_git(target, "rev-parse", "--absolute-git-dir"))
@@ -148,9 +191,9 @@ def test_worktree_exact_head_preserves_green_baseline_and_rejects_advanced_reuse
     subprocess.run(
         [str(script), "task-123", base, candidate],
         cwd=repo,
-        check=True,
         text=True,
         capture_output=True,
+        check=True,
     )
     (target / "later.txt").write_text("later\n")
     _git(target, "add", "later.txt")
@@ -158,9 +201,9 @@ def test_worktree_exact_head_preserves_green_baseline_and_rejects_advanced_reuse
     rejected = subprocess.run(
         [str(script), "task-123", base, candidate],
         cwd=repo,
-        check=False,
         text=True,
         capture_output=True,
+        check=False,
     )
     assert rejected.returncode == 1
     assert "not a clean registered linked worktree" in rejected.stderr
