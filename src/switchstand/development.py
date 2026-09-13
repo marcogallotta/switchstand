@@ -229,7 +229,7 @@ async def _create_owned_container(
     except BaseException as readback_error:
         try:
             await _remove_exact_id(container_id, owner, role, env)
-        except BaseException as cleanup_error:
+        except (RuntimeError, asyncio.CancelledError) as cleanup_error:
             raise RuntimeError(
                 f"Docker {role} create readback failed and exact cleanup is unresolved: "
                 f"{cleanup_error}"
@@ -282,7 +282,7 @@ async def _run_owned_workload(
     except BaseException as readback_error:
         try:
             await _remove_created(container, env)
-        except BaseException as cleanup_error:
+        except (RuntimeError, asyncio.CancelledError) as cleanup_error:
             raise RuntimeError(
                 f"Docker {role} daemon readback failed and exact cleanup is unresolved: "
                 f"{cleanup_error}"
