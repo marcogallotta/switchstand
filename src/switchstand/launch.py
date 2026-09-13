@@ -62,8 +62,11 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
     if branch == "HEAD":
         raise ValueError("managed launch requires a branch")
     green = (git_dir / "switchstand-green-sha").read_text().strip()
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, env=env, check=True,
-                           text=True, capture_output=True).stdout
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout
     based_on_green = head == green or subprocess.run(
         ["git", "merge-base", "--is-ancestor", green, head],
         cwd=repo, env=env, check=False, capture_output=True,
@@ -163,10 +166,10 @@ def exact_revision_preflight(
 
     values = subprocess.run(
         ["git", "rev-parse", "--show-toplevel", "--path-format=absolute",
-         "--git-dir", "--git-common-dir", "HEAD"],
+         "--git-dir", "--git-common-dir"],
         cwd=repo, env=env, check=True, text=True, capture_output=True,
     ).stdout.splitlines()
-    root_value, git_value, common_value, observed = values
+    root_value, git_value, common_value = values
     root = Path(root_value).resolve(strict=True)
     git_dir = Path(git_value).resolve(strict=True)
     common = Path(common_value).resolve(strict=True)
@@ -194,11 +197,13 @@ def exact_revision_preflight(
         cwd=control, env=env, check=True, text=True, capture_output=True,
     ).stdout.splitlines()
     control_dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=control, env=env, check=True,
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=control, env=env, check=True,
         text=True, capture_output=True,
     ).stdout
     candidate_dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=repo, env=env, check=True,
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo, env=env, check=True,
         text=True, capture_output=True,
     ).stdout
     contains_main = subprocess.run(
@@ -209,7 +214,13 @@ def exact_revision_preflight(
         raise ValueError("control checkout must be clean main at freshly fetched origin/main")
     if not contains_main:
         raise ValueError("candidate revision must contain freshly fetched origin/main")
-    if observed != requested or candidate_dirty:
+    if candidate_dirty:
+        raise ValueError("candidate must be clean at the exact requested revision")
+    observed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, env=env, check=True,
+        text=True, capture_output=True,
+    ).stdout.strip()
+    if observed != requested:
         raise ValueError("candidate must be clean at the exact requested revision")
     return observed
 

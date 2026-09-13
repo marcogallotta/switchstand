@@ -69,7 +69,7 @@ case "$*" in
   *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
   *"rev-parse HEAD") [ "$2" = "$FAKE_TARGET" ] && echo "$FAKE_TARGET_HEAD" || echo "$FAKE_HEAD" ;;
   *"rev-parse origin/main") echo "$FAKE_ACCEPTED" ;;
-  *"status --porcelain") [ "$2" != "$FAKE_TARGET" ] || [ "$FAKE_TARGET_DIRTY" = 0 ] || echo dirty ;;
+  *"status --porcelain"*) [ "$2" != "$FAKE_TARGET" ] || [ "$FAKE_TARGET_DIRTY" = 0 ] || echo dirty ;;
   *"cat-file -t"*) echo "$FAKE_OBJECT_TYPE" ;;
   *"merge-base --is-ancestor"*) : ;;
   *"worktree list --porcelain"*) printf 'worktree %s\n\n' "$FAKE_TARGET" ;;
@@ -82,7 +82,10 @@ pwd > "$FAKE_LAUNCH_CWD"
 printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
 printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 """)
-    executable(scripts / "bootstrap", "#!/bin/sh\n:\n")
+    executable(
+        scripts / "bootstrap",
+        "#!/bin/sh\nprintf 'called\\n' > \"$FAKE_BOOTSTRAP_LOG\"\n",
+    )
     executable(scripts / "switchstand-worktree", """#!/bin/sh
 printf '%s\n' "$*" > "$FAKE_WORKTREE_LOG"
 pwd > "$FAKE_WORKTREE_CWD"
@@ -103,6 +106,7 @@ echo "$FAKE_TARGET"
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
         "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
+        "FAKE_BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
     }
     return start, environment, target
 
@@ -159,6 +163,7 @@ def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
     assert result.returncode == 1
     assert "registered clean worktree at the exact requested commit" in result.stderr
     assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
 
 
 @pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])

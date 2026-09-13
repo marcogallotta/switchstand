@@ -57,7 +57,7 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
         if "--show-toplevel" in command:
             return subprocess.CompletedProcess(
                 command, 0,
-                stdout=f"{repo}\n{git_dir}\n{common}\n{state['observed']}\n",
+                stdout=f"{repo}\n{git_dir}\n{common}\n",
             )
         if command[1:4] == ["worktree", "list", "--porcelain"]:
             return subprocess.CompletedProcess(command, 0, stdout=f"worktree {repo}\n\n")
@@ -66,6 +66,10 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
         if command[1:3] == ["branch", "--show-current"]:
             return subprocess.CompletedProcess(command, 0, stdout="main\n")
         if command[1:3] == ["rev-parse", "HEAD"]:
+            if cwd == repo:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=f"{state['observed']}\n"
+                )
             return subprocess.CompletedProcess(
                 command, 0, stdout=f"{'b' * 40}\n{'b' * 40}\n"
             )
