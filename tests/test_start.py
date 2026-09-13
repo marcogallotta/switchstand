@@ -50,43 +50,63 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     target = tmp_path / "writer"
+    common = tmp_path / "shared" / ".git"
+    control_python = common.parent / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     (target / "scripts").mkdir(parents=True)
+    control_python.parent.mkdir(parents=True)
+    common.mkdir()
     source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
     start.chmod(0o755)
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
+  *"fetch --quiet --no-tags origin"*) : ;;
   *"branch --show-current") echo main ;;
-  *"rev-parse HEAD") echo "$FAKE_HEAD" ;;
+  *"rev-parse --show-toplevel") echo "$FAKE_TARGET" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
+  *"rev-parse HEAD") [ "$2" = "$FAKE_TARGET" ] && echo "$FAKE_TARGET_HEAD" || echo "$FAKE_HEAD" ;;
   *"rev-parse origin/main") echo "$FAKE_ACCEPTED" ;;
-  *"status --porcelain") : ;;
+  *"status --porcelain"*) [ "$2" != "$FAKE_TARGET" ] || [ "$FAKE_TARGET_DIRTY" = 0 ] || echo dirty ;;
+  *"cat-file -t"*) echo "$FAKE_OBJECT_TYPE" ;;
+  *"merge-base --is-ancestor"*) : ;;
+  *"worktree list --porcelain"*) printf 'worktree %s\n\n' "$FAKE_TARGET" ;;
   *) exit 91 ;;
 esac
 """)
     executable(fake_bin / "python3", "#!/bin/sh\necho 1218383014436992\n")
-    executable(scripts / "bootstrap", "#!/bin/sh\n:\n")
+    executable(control_python, """#!/bin/sh
+pwd > "$FAKE_LAUNCH_CWD"
+printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
+printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
+""")
+    executable(
+        scripts / "bootstrap",
+        "#!/bin/sh\nprintf 'called\\n' > \"$FAKE_BOOTSTRAP_LOG\"\n",
+    )
     executable(scripts / "switchstand-worktree", """#!/bin/sh
 printf '%s\n' "$*" > "$FAKE_WORKTREE_LOG"
 pwd > "$FAKE_WORKTREE_CWD"
 echo 'git progress belongs on stderr' >&2
 echo "$FAKE_TARGET"
 """)
-    executable(target / "scripts" / "switchstand-launch", """#!/bin/sh
-pwd > "$FAKE_LAUNCH_CWD"
-printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
-""")
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_HEAD": "a" * 40,
         "FAKE_ACCEPTED": "a" * 40,
+        "FAKE_TARGET_HEAD": "a" * 40,
+        "FAKE_TARGET_DIRTY": "0",
+        "FAKE_OBJECT_TYPE": "commit",
         "FAKE_TARGET": str(target),
+        "FAKE_COMMON": str(common),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
+        "FAKE_BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
     }
     return start, environment, target
 
@@ -94,7 +114,8 @@ printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
 def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     start, environment, target = fixture(tmp_path)
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--reference", "42", "do work"],
+        [start, "--active", "1218383014436992", "--commit", "a" * 40,
+         "--reference", "42", "do work"],
         env=environment,
         text=True,
         capture_output=True,
@@ -107,15 +128,17 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(target)
     assert (tmp_path / "launch.args").read_text().splitlines() == [
-        "--active", "1218383014436992", "--reference", "42", "do work",
+        "-m", "switchstand.launch", "--active", "1218383014436992",
+        "--commit", "a" * 40, "--reference", "42", "do work",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
 
 
 def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
     start, environment, _ = fixture(tmp_path)
     environment["FAKE_ACCEPTED"] = "b" * 40
     result = subprocess.run(
-        [start, "--active=1218383014436992"],
+        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -123,6 +146,46 @@ def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
     )
     assert result.returncode == 1
     assert "clean main at the locally accepted origin/main" in result.stderr
+    assert not (tmp_path / "worktree.log").exists()
+
+
+@pytest.mark.parametrize("problem", ["wrong-head", "dirty"])
+def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
+    start, environment, _ = fixture(tmp_path)
+    if problem == "wrong-head":
+        environment["FAKE_TARGET_HEAD"] = "b" * 40
+    else:
+        environment["FAKE_TARGET_DIRTY"] = "1"
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "registered clean worktree at the exact requested commit" in result.stderr
+    assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
+
+
+@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])
+def test_start_requires_exact_lowercase_commit(tmp_path, commit):
+    start, environment, _ = fixture(tmp_path)
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", commit],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert not (tmp_path / "worktree.log").exists()
+
+
+def test_start_requires_commit_object(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    environment["FAKE_OBJECT_TYPE"] = "tag"
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "available commit object" in result.stderr
     assert not (tmp_path / "worktree.log").exists()
 
 
@@ -336,6 +399,7 @@ esac
     executable(python, """#!/bin/sh
 printf '%s\n' "$PYTHONPATH" > "$FAKE_PYTHONPATH"
 printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
+printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 """)
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -343,13 +407,15 @@ printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
         "FAKE_COMMON": str(common),
         "FAKE_PYTHONPATH": str(tmp_path / "pythonpath"),
         "FAKE_PYTHON_ARGS": str(tmp_path / "python.args"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
     }
     result = subprocess.run(
         [launch, "--active", "123"], env=environment,
         text=True, capture_output=True, check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "pythonpath").read_text().split(":")[0] == str(repo / "src")
+    assert (tmp_path / "pythonpath").read_text().strip().split(":")[0] == str(repo / "src")
     assert (tmp_path / "python.args").read_text().splitlines() == [
         "-m", "switchstand.launch", "--active", "123",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == str(common)
