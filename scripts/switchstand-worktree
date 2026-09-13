@@ -21,7 +21,8 @@ repo=$(git rev-parse --show-toplevel)
 common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 git -C "$repo" cat-file -e "$green_sha^{commit}"
 git -C "$repo" cat-file -e "$head_sha^{commit}"
-if ! git -C "$repo" merge-base --is-ancestor "$green_sha" "$head_sha"; then
+if [ "$exact_head" = true ] \
+        && ! git -C "$repo" merge-base --is-ancestor "$green_sha" "$head_sha"; then
     echo "requested head is not based on the requested green baseline" >&2
     exit 1
 fi
