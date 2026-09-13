@@ -1,22 +1,99 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from switchstand.git import GitError, reconcile
 
 
-def test_reconcile_requires_exact_identity_and_rejects_malformed_output(monkeypatch, tmp_path):
-    answer = lambda sha, tree, parents="": subprocess.CompletedProcess(
-        (), 0, f"{sha}\n{tree}\n{parents}\n", "")
-    candidate, base, merged, current, tree = (character * 40 for character in "abcde")
-    replies = {
-        candidate: answer(candidate, tree), base: answer(base, "f" * 40),
-        merged: answer(merged, tree, f"{base} {candidate}"),
-        current: answer(current, "not-a-git-object-id", f"{base} {candidate}"),
-    }
-    monkeypatch.setattr(subprocess, "run", lambda command, **options: replies[command[-1]])
-    assert reconcile(tmp_path, candidate, base, merged, merged).tree == tree
-    for arguments in ((candidate, base, merged, current), (candidate, base, current, current),
-                      (candidate, base, base, base), (candidate, base, "HEAD", merged)):
-        with pytest.raises(GitError):
-            reconcile(tmp_path, *arguments)
+def _git(repo: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments], cwd=repo, text=True, capture_output=True, check=True)
+    return result.stdout.strip()
+
+
+def _repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _git(repo, "config", "user.email", "switchstand@example.invalid")
+    _git(repo, "config", "user.name", "Switchstand Test")
+    _git(repo, "commit", "--allow-empty", "-m", "base")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _candidate(repo: Path, base: str, branch: str = "candidate") -> str:
+    _git(repo, "switch", "-c", branch, base)
+    (repo / "candidate.txt").write_text("reviewed candidate\n")
+    _git(repo, "add", "candidate.txt")
+    _git(repo, "commit", "-m", "candidate")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _squash(repo: Path, candidate: str, branch: str = "main") -> str:
+    _git(repo, "switch", branch)
+    _git(repo, "merge", "--squash", candidate)
+    _git(repo, "commit", "-m", "squash candidate")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_reconcile_accepts_current_base_one_parent_squash(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    candidate = _candidate(repo, base)
+    merged = _squash(repo, candidate)
+
+    assert len(_git(repo, "rev-list", "--parents", "-n", "1", merged).split()) == 2
+    assert reconcile(repo, candidate, base, merged, merged).tree == _git(
+        repo, "rev-parse", f"{candidate}^{{tree}}")
+
+
+def test_reconcile_rejects_stale_base(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    candidate = _candidate(repo, base)
+    _git(repo, "switch", "main")
+    _git(repo, "commit", "--allow-empty", "-m", "main advanced")
+    merged = _squash(repo, candidate)
+
+    with pytest.raises(GitError, match="reviewed base"):
+        reconcile(repo, candidate, base, merged, merged)
+
+
+def test_reconcile_rejects_wrong_tree(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    candidate = _candidate(repo, base)
+    _git(repo, "switch", "main")
+    _git(repo, "merge", "--squash", candidate)
+    (repo / "candidate.txt").write_text("wrong tree\n")
+    _git(repo, "add", "candidate.txt")
+    _git(repo, "commit", "-m", "tampered squash")
+    merged = _git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(GitError, match="landing tree"):
+        reconcile(repo, candidate, base, merged, merged)
+
+
+def test_reconcile_rejects_unrelated_head_with_matching_tree(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    _git(repo, "switch", "--orphan", "unrelated")
+    (repo / "candidate.txt").write_text("reviewed candidate\n")
+    _git(repo, "add", "candidate.txt")
+    _git(repo, "commit", "-m", "unrelated candidate")
+    candidate = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "main")
+    _git(repo, "merge", "--squash", "--allow-unrelated-histories", candidate)
+    _git(repo, "commit", "-m", "squash unrelated candidate")
+    merged = _git(repo, "rev-parse", "HEAD")
+
+    assert _git(repo, "rev-parse", f"{candidate}^{{tree}}") == _git(
+        repo, "rev-parse", f"{merged}^{{tree}}")
+    with pytest.raises(GitError, match="not based"):
+        reconcile(repo, candidate, base, merged, merged)
+
+
+def test_reconcile_requires_exact_commit_identity(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    candidate = _candidate(repo, base)
+    merged = _squash(repo, candidate)
+
+    with pytest.raises(GitError, match="exact 40-character SHA"):
+        reconcile(repo, "HEAD", base, merged, merged)
