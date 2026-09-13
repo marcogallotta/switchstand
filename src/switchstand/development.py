@@ -218,10 +218,18 @@ async def _run_owned_workload(
             raise
         output.seek(0)
         text = output.read()
-    returncode = process.returncode
+    finished = inspect_object("container", name, env)
+    if (
+        finished is None
+        or finished.object_id != container_id
+        or finished.owner != owner
+        or finished.role != role
+        or finished.running is not False
+        or finished.exit_code is None
+    ):
+        raise RuntimeError(f"Docker {role} workload ended without exact daemon-state readback")
+    returncode = finished.exit_code
     remove_owned("container", name, owner, role, env)
-    if returncode is None:
-        raise RuntimeError(f"Docker {role} workload ended without a return code")
     return subprocess.CompletedProcess(command, returncode, stdout=text, stderr="")
 
 
