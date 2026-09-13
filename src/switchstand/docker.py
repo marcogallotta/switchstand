@@ -13,6 +13,8 @@ class DockerObject(NamedTuple):
     object_id: str
     owner: str | None
     role: str | None
+    running: bool | None = None
+    exit_code: int | None = None
 
 
 def _docker(arguments: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -39,9 +41,16 @@ def inspect_object(kind: DockerKind, name: str, env: dict[str, str]) -> DockerOb
         value = values[0]
         object_id = cast(str, value["Id"])
         raw_name = cast(str, value["Name"])
+        running: bool | None = None
+        exit_code: int | None = None
         if kind == "container":
             config = cast(dict[str, Any], value.get("Config") or {})
             labels = cast(dict[str, str], config.get("Labels") or {})
+            state = cast(dict[str, Any], value.get("State") or {})
+            if "Running" in state:
+                running = cast(bool, state["Running"])
+            if "ExitCode" in state:
+                exit_code = cast(int, state["ExitCode"])
             object_name = raw_name.removeprefix("/")
         else:
             labels = cast(dict[str, str], value.get("Labels") or {})
@@ -54,6 +63,8 @@ def inspect_object(kind: DockerKind, name: str, env: dict[str, str]) -> DockerOb
         object_id=object_id,
         owner=labels.get(OWNER_LABEL),
         role=labels.get(ROLE_LABEL),
+        running=running,
+        exit_code=exit_code,
     )
 
 
