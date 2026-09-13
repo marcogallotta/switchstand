@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,8 @@ def _git(repo: Path, *arguments: str) -> str:
 
 
 def _repo(tmp_path: Path) -> tuple[Path, str]:
+    if shutil.which("git") is None:
+        pytest.skip("git is required for real repository reconciliation tests")
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "--initial-branch=main")
@@ -91,9 +94,5 @@ def test_reconcile_rejects_unrelated_head_with_matching_tree(tmp_path: Path):
 
 
 def test_reconcile_requires_exact_commit_identity(tmp_path: Path):
-    repo, base = _repo(tmp_path)
-    candidate = _candidate(repo, base)
-    merged = _squash(repo, candidate)
-
     with pytest.raises(GitError, match="exact 40-character SHA"):
-        reconcile(repo, "HEAD", base, merged, merged)
+        reconcile(tmp_path, "HEAD", "a" * 40, "b" * 40, "b" * 40)
