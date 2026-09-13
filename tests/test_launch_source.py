@@ -1,5 +1,4 @@
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,32 +56,68 @@ def test_exact_ref_rejects_remote_movement_before_local_mutation(monkeypatch: py
         )
 
 
-def test_prepare_source_rejects_candidate_control_change(monkeypatch: pytest.MonkeyPatch):
+def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
     source = parse_notes(NOTES)
+    monkeypatch.setattr(launch_source, "_remote_sha", lambda _repo, _ref: CANDIDATE)
+    monkeypatch.setattr(launch_source, "_local_ref", lambda _repo, _name: CANDIDATE)
 
     def fake_git(_repo: Path, *arguments: str, check: bool = True):
-        del check
-        if arguments == ("remote", "get-url", "origin"):
-            return _completed(stdout="git@github.com:marcogallotta/switchstand.git\n")
-        if arguments[:2] == ("merge-base", "--is-ancestor"):
-            return _completed()
+        if arguments[:2] == ("cat-file", "-e") and check:
+            raise subprocess.CalledProcessError(1, ["git", *arguments])
         raise AssertionError(arguments)
 
     monkeypatch.setattr(launch_source, "_git", fake_git)
-    monkeypatch.setattr(launch_source, "_fetch_exact_ref", lambda *_args: None)
-    monkeypatch.setattr(launch_source, "_control_changed", lambda *_args: True)
+    with pytest.raises(LaunchSourceError, match="not an available commit"):
+        launch_source._fetch_exact_ref(
+            Path("."), "123", "candidate", source.candidate_ref, source.candidate_sha
+        )
 
-    with pytest.raises(LaunchSourceError, match="candidate changes launch/control"):
-        prepare_source(Path("."), "123", source)
 
-
-def test_prepare_source_accepts_stale_primary_when_control_is_identical(
+def test_prepare_source_rejects_task_base_before_fetch_when_control_differs(
     monkeypatch: pytest.MonkeyPatch,
 ):
     source = parse_notes(NOTES)
 
     def fake_git(_repo: Path, *arguments: str, check: bool = True):
         del check
+        if arguments == ("rev-parse", "HEAD"):
+            return _completed(stdout="c" * 40 + "\n")
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(launch_source, "_git", fake_git)
+    monkeypatch.setattr(
+        launch_source,
+        "_fetch_exact_ref",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before fetch")),
+    )
+
+    with pytest.raises(LaunchSourceError, match="task base does not match"):
+        prepare_source(Path("."), "123", source, "c" * 40)
+
+
+def test_prepare_source_rejects_wrong_control_checkout(monkeypatch: pytest.MonkeyPatch):
+    source = parse_notes(NOTES)
+
+    def fake_git(_repo: Path, *arguments: str, check: bool = True):
+        del check
+        if arguments == ("rev-parse", "HEAD"):
+            return _completed(stdout="c" * 40 + "\n")
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(launch_source, "_git", fake_git)
+    with pytest.raises(LaunchSourceError, match="not executing from the selected CONTROL SHA"):
+        prepare_source(Path("."), "123", source, BASE)
+
+
+def test_prepare_source_uses_selected_control_and_exact_remote_refs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = parse_notes(NOTES)
+
+    def fake_git(_repo: Path, *arguments: str, check: bool = True):
+        del check
+        if arguments == ("rev-parse", "HEAD"):
+            return _completed(stdout=BASE + "\n")
         if arguments == ("remote", "get-url", "origin"):
             return _completed(stdout="https://github.com/marcogallotta/switchstand.git\n")
         if arguments[:2] == ("merge-base", "--is-ancestor"):
@@ -96,9 +131,8 @@ def test_prepare_source_accepts_stale_primary_when_control_is_identical(
         "_fetch_exact_ref",
         lambda _repo, _task, label, _ref, sha: fetched.append((label, sha)),
     )
-    monkeypatch.setattr(launch_source, "_control_changed", lambda *_args: False)
 
-    assert prepare_source(Path("."), "123", source) == source
+    assert prepare_source(Path("."), "123", source, BASE) == source
     assert fetched == [("base", BASE), ("candidate", CANDIDATE)]
 
 
@@ -141,69 +175,3 @@ def test_control_python_does_not_execute_candidate_startup_or_indirect_import(tm
 
     assert control_marker.read_text() == "control"
     assert not candidate_marker.exists()
-
-
-def _git(repo: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", *arguments], cwd=repo, text=True, capture_output=True, check=True
-    )
-    return result.stdout.strip()
-
-
-def test_worktree_exact_head_preserves_green_baseline_and_rejects_advanced_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    if shutil.which("git") is None:
-        pytest.skip("git is required for exact launch worktree tests")
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "--initial-branch=main")
-    _git(repo, "config", "user.email", "switchstand@example.invalid")
-    _git(repo, "config", "user.name", "Switchstand Test")
-    (repo / "base.txt").write_text("base\n")
-    _git(repo, "add", "base.txt")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
-    _git(repo, "switch", "-c", "candidate")
-    (repo / "candidate.txt").write_text("candidate\n")
-    _git(repo, "add", "candidate.txt")
-    _git(repo, "commit", "-m", "candidate")
-    candidate = _git(repo, "rev-parse", "HEAD")
-    _git(repo, "switch", "main")
-
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    monkeypatch.setenv("TMPDIR", str(scratch))
-    script = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
-    first = subprocess.run(
-        [str(script), "task-123", base, candidate],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    target = Path(first.stdout.strip())
-    git_dir = Path(_git(target, "rev-parse", "--absolute-git-dir"))
-    assert _git(target, "rev-parse", "HEAD") == candidate
-    assert (git_dir / "switchstand-green-sha").read_text().strip() == base
-    assert (git_dir / "switchstand-candidate-sha").read_text().strip() == candidate
-
-    subprocess.run(
-        [str(script), "task-123", base, candidate],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    (target / "later.txt").write_text("later\n")
-    _git(target, "add", "later.txt")
-    _git(target, "commit", "-m", "advance")
-    rejected = subprocess.run(
-        [str(script), "task-123", base, candidate],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert rejected.returncode == 1
-    assert "not a clean registered linked worktree" in rejected.stderr

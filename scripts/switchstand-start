@@ -2,16 +2,23 @@
 set -eu
 
 usage() {
-    echo "usage: scripts/switchstand-start --active <Asana task ID or URL> [--reference <ID-or-URL>] [prompt]" >&2
+    echo "usage: scripts/switchstand-start --active <Asana task ID or URL> --commit <exact-40-character-SHA> [--reference <ID-or-URL>] [prompt]" >&2
     exit 2
 }
 
 active=
+commit=
 previous=
 for argument in "$@"; do
     if [ "$previous" = "--active" ]; then
         [ -z "$active" ] || usage
         active=$argument
+        previous=
+        continue
+    fi
+    if [ "$previous" = "--commit" ]; then
+        [ -z "$commit" ] || usage
+        commit=$argument
         previous=
         continue
     fi
@@ -21,20 +28,47 @@ for argument in "$@"; do
             [ -z "$active" ] || usage
             active=${argument#--active=}
             ;;
+        --commit) previous=--commit ;;
+        --commit=*)
+            [ -z "$commit" ] || usage
+            commit=${argument#--commit=}
+            ;;
     esac
 done
-[ -n "$active" ] && [ -z "$previous" ] || usage
+[ -n "$active" ] && [ -n "$commit" ] && [ -z "$previous" ] || usage
+case "$commit" in *[!0-9a-f]*|'') usage;; esac
+[ "${#commit}" -eq 40 ] || usage
 
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-branch=$(git -C "$repo" branch --show-current)
-dirty=$(git -C "$repo" status --porcelain)
-[ "$branch" = main ] || {
-    echo "start requires the ordinary main checkout" >&2
+control_path=${SWITCHSTAND_CONTROL_PATH:-}
+control_sha=${SWITCHSTAND_CONTROL_SHA:-}
+control_common=${SWITCHSTAND_CONTROL_COMMON:-}
+[ -n "$control_path" ] && [ -n "$control_sha" ] && [ -n "$control_common" ] || {
+    echo "start requires selector-provided exact CONTROL identity" >&2
     exit 1
 }
-[ -z "$dirty" ] || {
-    echo "start requires a clean ordinary main checkout" >&2
+case "$control_sha" in *[!0-9a-f]*|'')
+    echo "selector CONTROL SHA must be exact lowercase hexadecimal" >&2
     exit 1
+    ;;
+esac
+[ "${#control_sha}" -eq 40 ] || {
+    echo "selector CONTROL SHA must contain 40 hexadecimal characters" >&2
+    exit 1
+}
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+[ "$repo" = "$control_path" ] || {
+    echo "start must execute from the selector-provided CONTROL path" >&2
+    exit 1
+}
+head=$(git -C "$repo" rev-parse HEAD)
+branch=$(git -C "$repo" branch --show-current)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+dirty=$(git -C "$repo" status --porcelain --untracked-files=all)
+[ "$head" = "$control_sha" ] && [ -z "$branch" ] \
+    && [ "$common" = "$control_common" ] && [ -z "$dirty" ] || {
+        echo "start CONTROL checkout does not match the selector-provided identity" >&2
+        exit 1
 }
 
 python=$(command -v python3.14 || command -v python3 || true)
@@ -42,34 +76,57 @@ python=$(command -v python3.14 || command -v python3 || true)
     echo "start requires python3" >&2
     exit 1
 }
-task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c \
+task_id=$(PYTHONPATH="$repo/src" "$python" -P -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
     "$active")
-resolved=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -m switchstand.launch_source \
-    --repo "$repo" "$task_id")
+resolved=$(PYTHONPATH="$repo/src" "$python" -P -m switchstand.launch_source \
+    --repo "$repo" --control-sha "$control_sha" "$task_id")
 accepted=
 candidate=
 extra=
-IFS=' ' read -r accepted candidate extra <<EOF
+IFS=' ' read -r accepted candidate extra <<EOF_RESOLVED
 $resolved
-EOF
+EOF_RESOLVED
 [ -n "$accepted" ] && [ -n "$candidate" ] && [ -z "$extra" ] || {
     echo "launch source resolver returned an invalid result" >&2
     exit 1
 }
-
-"$repo/scripts/bootstrap"
-target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$accepted" "$candidate")
-actual=$(git -C "$target" rev-parse HEAD)
-[ "$actual" = "$candidate" ] || {
-    echo "prepared task writer is not at the exact requested candidate" >&2
+[ "$accepted" = "$control_sha" ] || {
+    echo "launch task base does not match selector-provided CONTROL" >&2
     exit 1
 }
+[ "$candidate" = "$commit" ] || {
+    echo "launch task candidate does not match requested --commit" >&2
+    exit 1
+}
+
+target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$candidate")
+target_root=$(git -C "$target" rev-parse --show-toplevel 2>/dev/null || true)
+target_head=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
+target_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+target_dirty=$(git -C "$target" status --porcelain --untracked-files=all \
+    2>/dev/null || printf 'unknown\n')
+registered=false
+if git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v target="$target" '
+    /^worktree / { if (substr($0, 10) == target) found = 1 }
+    END { exit found ? 0 : 1 }
+'; then
+    registered=true
+fi
+[ "$target_root" = "$target" ] && [ "$target_common" = "$common" ] \
+    && [ "$target_head" = "$candidate" ] && [ -z "$target_dirty" ] \
+    && [ "$registered" = true ] || {
+        echo "candidate must be the requested repository's registered clean worktree at the exact requested commit" >&2
+        exit 1
+}
+"$repo/scripts/bootstrap"
 control_python="$repo/.venv/bin/python"
 [ -x "$control_python" ] || {
-    echo "bootstrap did not prepare the accepted control Python environment" >&2
+    echo "bootstrap did not prepare the selected CONTROL Python environment" >&2
     exit 1
 }
 printf 'SWITCHSTAND_ACCEPTED_BASE=%s\nSWITCHSTAND_CANDIDATE_SHA=%s\n' "$accepted" "$candidate" >&2
 cd "$target"
-PYTHONPATH="$repo/src" exec "$control_python" -P -m switchstand.launch "$@"
+SWITCHSTAND_REQUESTING_GIT_COMMON=$common \
+    PYTHONPATH="$repo/src" \
+    exec "$control_python" -P -m switchstand.launch "$@"

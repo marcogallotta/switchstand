@@ -49,7 +49,7 @@ An error after the POST or failed readback remains `unknown`.
 
 ## Active Codex inbox
 
-`scripts/switchstand-start --active <task>` now supplies Codex with an initial
+`scripts/switchstand-start --active <task> --commit <exact-candidate-SHA>` now supplies Codex with an initial
 request to read its bound work and follow the repository's Active inbox routine.
 An optional caller prompt is preserved inside that same initial request. No
 extra prompt from Marco is needed to begin inbox loading. The active source

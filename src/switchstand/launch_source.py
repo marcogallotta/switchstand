@@ -23,26 +23,6 @@ MARKERS = (
     "SWITCHSTAND_CANDIDATE_REF",
     "SWITCHSTAND_CANDIDATE_SHA",
 )
-CONTROL_PATHS = (
-    ".codex",
-    "AGENTS.md",
-    "Dockerfile",
-    "compose.state.yaml",
-    "compose.yaml",
-    "pyproject.toml",
-    "scripts/bootstrap",
-    "scripts/check",
-    "scripts/switchstand-controller-mcp",
-    "scripts/switchstand-development-mcp",
-    "scripts/switchstand-launch",
-    "scripts/switchstand-run-stop",
-    "scripts/switchstand-start",
-    "scripts/switchstand-worktree",
-    "src/switchstand/launch.py",
-    "src/switchstand/launch_source.py",
-    "switchstand-config.example",
-    "uv.lock",
-)
 JSON = dict[str, Any]
 
 
@@ -189,11 +169,16 @@ def _fetch_exact_ref(
         raise LaunchSourceError(f"launch {label} is not an available commit") from None
 
 
-def _control_changed(repo: Path, left: str, right: str) -> bool:
-    return _git(repo, "diff", "--quiet", left, right, "--", *CONTROL_PATHS, check=False).returncode != 0
-
-
-def prepare_source(repo: Path, task_id: str, source: LaunchSource) -> LaunchSource:
+def prepare_source(
+    repo: Path, task_id: str, source: LaunchSource, control_sha: str
+) -> LaunchSource:
+    if SHA_PATTERN.fullmatch(control_sha) is None:
+        raise LaunchSourceError("selected CONTROL SHA must be exact lowercase 40-character hex")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if head != control_sha:
+        raise LaunchSourceError("launch resolver is not executing from the selected CONTROL SHA")
+    if source.base_sha != control_sha:
+        raise LaunchSourceError("launch task base does not match the selected CONTROL SHA")
     origin = _git(repo, "remote", "get-url", "origin").stdout.strip()
     if _origin_repository(origin) != source.repository:
         raise LaunchSourceError("launch task repository does not match this checkout origin")
@@ -203,23 +188,18 @@ def prepare_source(repo: Path, task_id: str, source: LaunchSource) -> LaunchSour
         repo, "merge-base", "--is-ancestor", source.base_sha, source.candidate_sha, check=False
     ).returncode != 0:
         raise LaunchSourceError("launch candidate is not based on the accepted base")
-    if _control_changed(repo, source.base_sha, source.candidate_sha):
-        raise LaunchSourceError("candidate changes launch/control inputs for the current run")
-    if _control_changed(repo, source.base_sha, "HEAD"):
-        raise LaunchSourceError(
-            "local primary checkout launch/control inputs do not match the accepted base"
-        )
     return source
 
 
-def resolve(repo: Path, active: str, token: str) -> LaunchSource:
+def resolve(repo: Path, active: str, token: str, control_sha: str) -> LaunchSource:
     task_id = asana_task_id(active)
-    return prepare_source(repo, task_id, parse_notes(_task_notes(task_id, token)))
+    return prepare_source(repo, task_id, parse_notes(_task_notes(task_id, token)), control_sha)
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Resolve and prepare an exact managed launch source.")
     result.add_argument("--repo", type=Path, required=True)
+    result.add_argument("--control-sha", required=True)
     result.add_argument("active", help="exact active Asana task ID or URL")
     return result
 
@@ -228,7 +208,9 @@ def main() -> None:
     arguments = parser().parse_args()
     try:
         token = os.environ["ASANA_TOKEN"]
-        source = resolve(arguments.repo.resolve(strict=True), arguments.active, token)
+        source = resolve(
+            arguments.repo.resolve(strict=True), arguments.active, token, arguments.control_sha
+        )
     except (KeyError, LaunchSourceError, OSError, subprocess.CalledProcessError) as error:
         parser().exit(1, f"launch source preparation failed: {error}\n")
     print(source.base_sha, source.candidate_sha)

@@ -50,56 +50,79 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     target = tmp_path / "writer"
+    common = tmp_path / "shared" / ".git"
     control_python = repo / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
-    target.mkdir(parents=True)
+    (target / "scripts").mkdir(parents=True)
     control_python.parent.mkdir(parents=True)
+    common.mkdir(parents=True)
     source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
     start.chmod(0o755)
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
-  *"branch --show-current") echo main ;;
-  *"rev-parse HEAD") echo "$FAKE_HEAD" ;;
-  *"status --porcelain") : ;;
+  *"rev-parse --show-toplevel") echo "$FAKE_TARGET" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
+  *"rev-parse HEAD") [ "$2" = "$FAKE_TARGET" ] && echo "$FAKE_TARGET_HEAD" || echo "$FAKE_HEAD" ;;
+  *"branch --show-current") printf '%s\\n' "$FAKE_BRANCH" ;;
+  *"status --porcelain"*)
+      if [ "$2" = "$FAKE_TARGET" ]; then
+          [ "$FAKE_TARGET_DIRTY" = 0 ] || echo dirty
+      else
+          [ "$FAKE_CONTROL_DIRTY" = 0 ] || echo dirty
+      fi
+      ;;
+  *"worktree list --porcelain"*) printf 'worktree %s\\n\\n' "$FAKE_TARGET" ;;
   *) exit 91 ;;
 esac
 """)
-    executable(fake_bin / "python3.14", """#!/bin/sh
-if [ "$1" = "-c" ]; then
+    executable(fake_bin / "python3", """#!/bin/sh
+if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
     echo 1218383014436992
     exit 0
 fi
-if [ "$1" = "-m" ] && [ "$2" = "switchstand.launch_source" ]; then
-    printf '%s\n' "$*" > "$FAKE_SOURCE_ARGS"
+if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ]; then
+    printf '%s\\n' "$*" > "$FAKE_SOURCE_ARGS"
     if [ "${FAKE_SOURCE_FAIL:-0}" = 1 ]; then
         echo 'launch source preparation failed: simulated exact source failure' >&2
         exit 1
     fi
-    printf '%s %s\n' "$FAKE_ACCEPTED" "$FAKE_CANDIDATE"
+    printf '%s %s\\n' "$FAKE_ACCEPTED" "$FAKE_CANDIDATE"
     exit 0
 fi
 exit 92
 """)
-    executable(scripts / "bootstrap", "#!/bin/sh\n:\n")
+    executable(control_python, """#!/bin/sh
+pwd > "$FAKE_LAUNCH_CWD"
+printf '%s\\n' "$@" > "$FAKE_LAUNCH_ARGS"
+printf '%s\\n' "$PYTHONPATH" > "$FAKE_LAUNCH_PYTHONPATH"
+printf '%s\\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
+""")
+    executable(
+        scripts / "bootstrap",
+        "#!/bin/sh\nprintf 'called\\n' > \"$FAKE_BOOTSTRAP_LOG\"\n",
+    )
     executable(scripts / "switchstand-worktree", """#!/bin/sh
-printf '%s\n' "$*" > "$FAKE_WORKTREE_LOG"
+printf '%s\\n' "$*" > "$FAKE_WORKTREE_LOG"
 pwd > "$FAKE_WORKTREE_CWD"
 echo 'git progress belongs on stderr' >&2
 echo "$FAKE_TARGET"
 """)
-    executable(control_python, """#!/bin/sh
-pwd > "$FAKE_LAUNCH_CWD"
-printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
-printf '%s\n' "$PYTHONPATH" > "$FAKE_LAUNCH_PYTHONPATH"
-""")
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "SWITCHSTAND_CONTROL_PATH": str(repo),
+        "SWITCHSTAND_CONTROL_SHA": "a" * 40,
+        "SWITCHSTAND_CONTROL_COMMON": str(common),
         "FAKE_HEAD": "a" * 40,
+        "FAKE_BRANCH": "",
+        "FAKE_COMMON": str(common),
+        "FAKE_CONTROL_DIRTY": "0",
         "FAKE_ACCEPTED": "a" * 40,
         "FAKE_CANDIDATE": "a" * 40,
+        "FAKE_TARGET_HEAD": "a" * 40,
+        "FAKE_TARGET_DIRTY": "0",
         "FAKE_TARGET": str(target),
         "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
@@ -107,6 +130,8 @@ printf '%s\n' "$PYTHONPATH" > "$FAKE_LAUNCH_PYTHONPATH"
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
         "FAKE_LAUNCH_PYTHONPATH": str(tmp_path / "launch.pythonpath"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
+        "FAKE_BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
     }
     return start, environment, target
 
@@ -114,7 +139,16 @@ printf '%s\n' "$PYTHONPATH" > "$FAKE_LAUNCH_PYTHONPATH"
 def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     start, environment, target = fixture(tmp_path)
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--reference", "42", "do work"],
+        [
+            start,
+            "--active",
+            "1218383014436992",
+            "--commit",
+            "a" * 40,
+            "--reference",
+            "42",
+            "do work",
+        ],
         env=environment,
         text=True,
         capture_output=True,
@@ -122,10 +156,11 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "source.args").read_text().splitlines() == [
-        f"-m switchstand.launch_source --repo {start.parents[1]} 1218383014436992"
+        f"-P -m switchstand.launch_source --repo {start.parents[1]} "
+        f"--control-sha {'a' * 40} 1218383014436992"
     ]
     assert (tmp_path / "worktree.log").read_text() == (
-        f"task-1218383014436992 {'a' * 40} {'a' * 40}\n"
+        f"task-1218383014436992 {'a' * 40}\n"
     )
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(target)
@@ -138,17 +173,61 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
         "switchstand.launch",
         "--active",
         "1218383014436992",
+        "--commit",
+        "a" * 40,
         "--reference",
         "42",
         "do work",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
+    assert (tmp_path / "bootstrap.log").read_text() == "called\n"
+
+
+@pytest.mark.parametrize(
+    ("problem", "expected"),
+    [
+        ("missing-selector", "selector-provided exact CONTROL identity"),
+        ("wrong-path", "selector-provided CONTROL path"),
+        ("wrong-head", "does not match the selector-provided identity"),
+        ("wrong-common", "does not match the selector-provided identity"),
+        ("attached-branch", "does not match the selector-provided identity"),
+        ("dirty-control", "does not match the selector-provided identity"),
+    ],
+)
+def test_start_requires_exact_selector_control_before_task_read(tmp_path, problem, expected):
+    start, environment, _ = fixture(tmp_path)
+    if problem == "missing-selector":
+        environment.pop("SWITCHSTAND_CONTROL_SHA")
+    elif problem == "wrong-path":
+        environment["SWITCHSTAND_CONTROL_PATH"] = str(tmp_path / "other")
+    elif problem == "wrong-head":
+        environment["SWITCHSTAND_CONTROL_SHA"] = "b" * 40
+    elif problem == "wrong-common":
+        environment["SWITCHSTAND_CONTROL_COMMON"] = str(tmp_path / "other-common")
+    elif problem == "attached-branch":
+        environment["FAKE_BRANCH"] = "main"
+    else:
+        environment["FAKE_CONTROL_DIRTY"] = "1"
+
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert expected in result.stderr
+    assert not (tmp_path / "source.args").exists()
+    assert not (tmp_path / "worktree.log").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
 
 
 def test_start_stops_when_exact_task_source_resolution_fails(tmp_path):
     start, environment, _ = fixture(tmp_path)
     environment["FAKE_SOURCE_FAIL"] = "1"
     result = subprocess.run(
-        [start, "--active=1218383014436992"],
+        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -156,6 +235,58 @@ def test_start_stops_when_exact_task_source_resolution_fails(tmp_path):
     )
     assert result.returncode == 1
     assert "simulated exact source failure" in result.stderr
+    assert not (tmp_path / "worktree.log").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
+
+
+def test_start_rejects_task_candidate_that_differs_from_requested_commit(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    environment["FAKE_CANDIDATE"] = "b" * 40
+    result = subprocess.run(
+        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "candidate does not match requested --commit" in result.stderr
+    assert not (tmp_path / "worktree.log").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
+
+
+@pytest.mark.parametrize("problem", ["wrong-head", "dirty"])
+def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
+    start, environment, _ = fixture(tmp_path)
+    if problem == "wrong-head":
+        environment["FAKE_TARGET_HEAD"] = "b" * 40
+    else:
+        environment["FAKE_TARGET_DIRTY"] = "1"
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "registered clean worktree at the exact requested commit" in result.stderr
+    assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
+
+
+@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])
+def test_start_requires_exact_lowercase_commit(tmp_path, commit):
+    start, environment, _ = fixture(tmp_path)
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", commit],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert not (tmp_path / "source.args").exists()
     assert not (tmp_path / "worktree.log").exists()
 
 
@@ -192,8 +323,12 @@ esac
         "FAKE_GIT_DIR": str(git_dir),
     }
     result = subprocess.run(
-        [helper, "sample", "a" * 40], cwd=repo, env=environment,
-        text=True, capture_output=True, check=False,
+        [helper, "sample", "a" * 40],
+        cwd=repo,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{tmp_path / 'switchstand-sample'}\n"
@@ -253,8 +388,12 @@ esac
         "FAKE_DIVERGENT": "1" if problem == "divergent" else "0",
     }
     result = subprocess.run(
-        [helper, "sample", sha], cwd=repo, env=environment,
-        text=True, capture_output=True, check=False,
+        [helper, "sample", sha],
+        cwd=repo,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     if problem is None:
         assert result.returncode == 0, result.stderr
@@ -369,6 +508,7 @@ esac
     executable(python, """#!/bin/sh
 printf '%s\n' "$PYTHONPATH" > "$FAKE_PYTHONPATH"
 printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
+printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 """)
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -376,13 +516,21 @@ printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
         "FAKE_COMMON": str(common),
         "FAKE_PYTHONPATH": str(tmp_path / "pythonpath"),
         "FAKE_PYTHON_ARGS": str(tmp_path / "python.args"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
     }
     result = subprocess.run(
-        [launch, "--active", "123"], env=environment,
-        text=True, capture_output=True, check=False,
+        [launch, "--active", "123"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "pythonpath").read_text().split(":")[0] == str(repo / "src")
+    assert (tmp_path / "pythonpath").read_text().strip().split(":")[0] == str(repo / "src")
     assert (tmp_path / "python.args").read_text().splitlines() == [
-        "-m", "switchstand.launch", "--active", "123",
+        "-m",
+        "switchstand.launch",
+        "--active",
+        "123",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == str(common)
