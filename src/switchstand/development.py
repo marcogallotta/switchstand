@@ -13,6 +13,7 @@ from .docker import inspect_object, label_arguments, remove_owned, require_absen
 from .mcp import closed_tool
 from .run import RECEIPT, RunStatus, inspect_receipt
 
+CREATE_SECONDS = 30
 FOCUSED_SECONDS = 120
 QUALITY_SECONDS = 600
 WORKLOAD_STOP_SECONDS = 5
@@ -105,57 +106,13 @@ def _workload_name(owner: str, role: Literal["check", "quality"]) -> str:
     return f"switchstand-{role}-{owner.replace('-', '')}"
 
 
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), WORKLOAD_STOP_SECONDS)
-    except TimeoutError:
-        process.kill()
-        await process.wait()
-
-
-async def _run_owned_workload(
-    command: list[str], owner: str, role: Literal["check", "quality"], timeout: int
-) -> subprocess.CompletedProcess[str]:
-    env = _environment()
-    name = _workload_name(owner, role)
-    require_absent("container", name, owner, role, env)
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            env=env,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-        )
-        try:
-            await asyncio.wait_for(process.wait(), timeout)
-        except BaseException:
-            await _stop_process(process)
-            remove_owned("container", name, owner, role, env)
-            raise
-        output.seek(0)
-        text = output.read()
-    leftover = inspect_object("container", name, env)
-    if leftover is not None:
-        if leftover.owner == owner and leftover.role == role:
-            remove_owned("container", name, owner, role, env)
-        raise RuntimeError(f"Docker {role} workload {name!r} remained after completion")
-    assert process.returncode is not None
-    return subprocess.CompletedProcess(command, process.returncode, stdout=text, stderr="")
-
-
-def _quality_command(
+def _container_arguments(
     repo: Path, owner: str, role: Literal["check", "quality"], test_paths: list[Path]
 ) -> list[str]:
-    name = _workload_name(owner, role)
     command = [
-        "docker",
-        "run",
-        "--rm",
+        "create",
         "--name",
-        name,
+        _workload_name(owner, role),
         *label_arguments(owner, role),
         "--network",
         os.environ["SWITCHSTAND_QUALITY_NETWORK"],
@@ -184,6 +141,81 @@ def _quality_command(
     return command
 
 
+def _create_owned_container(
+    arguments: list[str], owner: str, role: Literal["check", "quality"]
+) -> str:
+    env = _environment()
+    name = _workload_name(owner, role)
+    require_absent("container", name, owner, role, env)
+    try:
+        created = subprocess.run(
+            ["docker", *arguments],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=CREATE_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        existing = inspect_object("container", name, env)
+        if existing is not None and existing.owner == owner and existing.role == role:
+            remove_owned("container", name, owner, role, env)
+        raise RuntimeError(f"Docker {role} create exceeded {CREATE_SECONDS} seconds") from error
+    if created.returncode != 0:
+        detail = (created.stderr or created.stdout).strip()
+        raise RuntimeError(f"Docker {role} create failed: {detail or 'no diagnostic output'}")
+    container_id = created.stdout.strip().splitlines()[-1]
+    existing = inspect_object("container", name, env)
+    if (
+        existing is None
+        or existing.object_id != container_id
+        or existing.owner != owner
+        or existing.role != role
+    ):
+        raise RuntimeError(f"Docker {role} create did not bind the exact owned container")
+    return container_id
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), WORKLOAD_STOP_SECONDS)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+async def _run_owned_workload(
+    arguments: list[str], owner: str, role: Literal["check", "quality"], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    env = _environment()
+    name = _workload_name(owner, role)
+    container_id = _create_owned_container(arguments, owner, role)
+    command = ["docker", "start", "--attach", container_id]
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout)
+        except BaseException:
+            await _stop_process(process)
+            remove_owned("container", name, owner, role, env)
+            raise
+        output.seek(0)
+        text = output.read()
+    returncode = process.returncode
+    remove_owned("container", name, owner, role, env)
+    if returncode is None:
+        raise RuntimeError(f"Docker {role} workload ended without a return code")
+    return subprocess.CompletedProcess(command, returncode, stdout=text, stderr="")
+
+
 def build_server(bound: bool = True) -> MCPServer:
     server = MCPServer("Switchstand Development Boundary")
     if not bound:
@@ -210,7 +242,7 @@ def build_server(bound: bool = True) -> MCPServer:
         owner = _run_owner(repo, branch)
         try:
             checked = await _run_owned_workload(
-                _quality_command(repo, owner, "check", paths), owner, "check", FOCUSED_SECONDS
+                _container_arguments(repo, owner, "check", paths), owner, "check", FOCUSED_SECONDS
             )
         except TimeoutError as error:
             return _result(
@@ -254,7 +286,7 @@ def build_server(bound: bool = True) -> MCPServer:
         owner = _run_owner(repo, branch)
         try:
             checked = await _run_owned_workload(
-                _quality_command(repo, owner, "quality", []), owner, "quality", QUALITY_SECONDS
+                _container_arguments(repo, owner, "quality", []), owner, "quality", QUALITY_SECONDS
             )
         except TimeoutError as error:
             return _result(
