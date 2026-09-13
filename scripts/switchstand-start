@@ -2,16 +2,23 @@
 set -eu
 
 usage() {
-    echo "usage: scripts/switchstand-start --active <Asana task ID or URL> [--reference <ID-or-URL>] [prompt]" >&2
+    echo "usage: scripts/switchstand-start --active <Asana task ID or URL> --commit <exact-40-character-SHA> [--reference <ID-or-URL>] [prompt]" >&2
     exit 2
 }
 
 active=
+commit=
 previous=
 for argument in "$@"; do
     if [ "$previous" = "--active" ]; then
         [ -z "$active" ] || usage
         active=$argument
+        previous=
+        continue
+    fi
+    if [ "$previous" = "--commit" ]; then
+        [ -z "$commit" ] || usage
+        commit=$argument
         previous=
         continue
     fi
@@ -21,11 +28,20 @@ for argument in "$@"; do
             [ -z "$active" ] || usage
             active=${argument#--active=}
             ;;
+        --commit) previous=--commit ;;
+        --commit=*)
+            [ -z "$commit" ] || usage
+            commit=${argument#--commit=}
+            ;;
     esac
 done
-[ -n "$active" ] && [ -z "$previous" ] || usage
+[ -n "$active" ] && [ -n "$commit" ] && [ -z "$previous" ] || usage
+case "$commit" in *[!0-9a-f]*|'') usage;; esac
+[ "${#commit}" -eq 40 ] || usage
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+git -C "$repo" fetch --quiet --no-tags origin \
+    '+refs/heads/main:refs/remotes/origin/main'
 branch=$(git -C "$repo" branch --show-current)
 head=$(git -C "$repo" rev-parse HEAD)
 accepted=$(git -C "$repo" rev-parse origin/main)
@@ -38,11 +54,40 @@ dirty=$(git -C "$repo" status --porcelain)
     echo "start requires clean main at the locally accepted origin/main" >&2
     exit 1
 }
+[ "$(git -C "$repo" cat-file -t "$commit" 2>/dev/null || true)" = commit ] || {
+    echo "requested revision must be an available commit object" >&2
+    exit 1
+}
+git -C "$repo" merge-base --is-ancestor "$accepted" "$commit" || {
+    echo "requested revision must contain the freshly accepted origin/main" >&2
+    exit 1
+}
 "$repo/scripts/bootstrap"
 
 task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
     "$active")
-target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$head")
+target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$commit")
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+target_root=$(git -C "$target" rev-parse --show-toplevel 2>/dev/null || true)
+target_head=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
+target_common=$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+target_dirty=$(git -C "$target" status --porcelain 2>/dev/null || printf 'unknown\n')
+registered=false
+if git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v target="$target" '
+    /^worktree / { if (substr($0, 10) == target) found = 1 }
+    END { exit found ? 0 : 1 }
+'; then
+    registered=true
+fi
+[ "$target_root" = "$target" ] && [ "$target_common" = "$common" ] \
+    && [ "$target_head" = "$commit" ] && [ -z "$target_dirty" ] \
+    && [ "$registered" = true ] || {
+        echo "candidate must be the requested repository's registered clean worktree at the exact requested commit" >&2
+        exit 1
+    }
+python=$(dirname "$common")/.venv/bin/python
 cd "$target"
-exec scripts/switchstand-launch "$@"
+SWITCHSTAND_REQUESTING_GIT_COMMON=$common \
+    PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" \
+    exec "$python" -m switchstand.launch "$@"

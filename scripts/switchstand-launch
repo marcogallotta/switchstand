@@ -13,4 +13,6 @@ if [ ! -x "$python" ]; then
     exit 1
 fi
 cd "$repo"
-PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -m switchstand.launch "$@"
+SWITCHSTAND_REQUESTING_GIT_COMMON=$git_common \
+    PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" \
+    exec "$python" -m switchstand.launch "$@"

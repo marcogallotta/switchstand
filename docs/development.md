@@ -20,7 +20,7 @@
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
-- Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --reference <reference URL>`. Task IDs work
+- Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
   instruction sources, then replaces itself with Codex. It refuses the ordinary checkout. Do not copy WorkIds or edit
@@ -40,10 +40,13 @@
   stops only the receipt's exact process identity: pidfd-pinned `SIGTERM`, a fixed bounded wait, then pidfd-pinned
   `SIGKILL`. It returns `lost` or `unknown` without signalling when identity cannot be proven, and never accepts a PID,
   signal, timeout, path, or process group.
-- One-step managed start: from the clean ordinary `main` checkout at the locally accepted `origin/main`, run
-  `scripts/switchstand-start --active <Asana task URL>`. It verifies that exact baseline, creates the task-named linked
-  writer worktree, and replaces itself with the managed launcher. Task IDs, references, and one optional prompt are
-  forwarded unchanged.
+- One-step managed start: from the clean ordinary `main` checkout, run
+  `scripts/switchstand-start --active <Asana task URL> --commit <exact-candidate-SHA>`. It freshly fetches `origin/main`,
+  requires clean local `main` at that accepted revision and requires the exact commit object to contain it. It creates
+  or reuses the task-named linked writer without moving or cleaning an existing worktree, then proves the candidate is
+  registered to the same repository, clean, and at the requested commit. The accepted control-side launcher repeats
+  the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
+  Task IDs, references, and one optional prompt are forwarded unchanged.
 - MCP server: `docker compose run --rm -T controller`
 - Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
   and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.
