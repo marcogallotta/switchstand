@@ -154,15 +154,20 @@ def _attach(
 ) -> CandidateWorkspace:
     if target.is_symlink() or not target.is_dir():
         raise WorkspaceUnknown(f"candidate path is not a persistent directory: {target}")
-    actual_root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip()).resolve(strict=True)
-    actual_branch = _git(target, "branch", "--show-current").stdout.strip()
-    actual_head = _git(target, "rev-parse", "HEAD").stdout.strip()
-    actual_git_dir = Path(
-        _git(target, "rev-parse", "--absolute-git-dir").stdout.strip()
-    ).resolve(strict=True)
-    actual_common = Path(
-        _git(target, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
-    ).resolve(strict=True)
+    try:
+        actual_root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip()).resolve(
+            strict=True
+        )
+        actual_branch = _git(target, "branch", "--show-current").stdout.strip()
+        actual_head = _git(target, "rev-parse", "HEAD").stdout.strip()
+        actual_git_dir = Path(
+            _git(target, "rev-parse", "--absolute-git-dir").stdout.strip()
+        ).resolve(strict=True)
+        actual_common = Path(
+            _git(target, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+        ).resolve(strict=True)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise WorkspaceUnknown("candidate Git identity cannot be read safely") from error
     if actual_root != target or actual_branch != branch or actual_common != common_dir:
         raise WorkspaceUnknown("candidate path/branch/repository identity does not match the recorded work")
     if actual_git_dir == actual_common:
