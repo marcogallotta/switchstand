@@ -80,6 +80,7 @@ esac
 """)
     executable(fake_bin / "python3", """#!/bin/sh
 if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
+    printf '%s\\n' "$*" > "$FAKE_TASK_REF_LOG"
     echo 1218383014436992
     exit 0
 fi
@@ -125,6 +126,7 @@ echo "$FAKE_TARGET"
         "FAKE_TARGET_HEAD": "a" * 40,
         "FAKE_TARGET_DIRTY": "0",
         "FAKE_TARGET": str(target),
+        "FAKE_TASK_REF_LOG": str(tmp_path / "task-ref.log"),
         "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
@@ -220,6 +222,7 @@ def test_start_requires_exact_selector_control_before_task_read(tmp_path, proble
     )
     assert result.returncode == 1
     assert expected in result.stderr
+    assert not (tmp_path / "task-ref.log").exists()
     assert not (tmp_path / "source.args").exists()
     assert not (tmp_path / "worktree.log").exists()
     assert not (tmp_path / "bootstrap.log").exists()
