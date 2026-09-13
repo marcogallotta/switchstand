@@ -2,6 +2,14 @@
 set -eu
 
 UV_VERSION=0.12.10
+missing() {
+    echo "bootstrap prerequisite '$1' is missing; make '$1' available on PATH, then rerun scripts/bootstrap in the primary checkout" >&2
+    exit 1
+}
+for command_name in dirname git sha256sum cut mkdir chmod mv rm; do
+    command -v "$command_name" >/dev/null 2>&1 || missing "$command_name"
+done
+
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 primary=$(dirname "$common")
@@ -13,7 +21,8 @@ primary=$(dirname "$common")
 tools="$common/switchstand-tools"
 uv="$tools/uv-$UV_VERSION"
 venv="$primary/.venv"
-python=$(command -v python3.14 || command -v python3)
+python=$(command -v python3.14 || command -v python3 || true)
+[ -n "$python" ] || missing "python3"
 fingerprint=$(
     { sha256sum "$repo/pyproject.toml" "$repo/uv.lock"; printf '%s\n' "$UV_VERSION" "$($python --version)"; } \
         | sha256sum | cut -d' ' -f1
@@ -27,6 +36,7 @@ fi
 
 mkdir -p "$tools"
 if [ ! -x "$uv" ]; then
+    command -v docker >/dev/null 2>&1 || missing "docker"
     container=$(docker create "ghcr.io/astral-sh/uv:$UV_VERSION")
     trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT HUP INT TERM
     docker cp "$container:/uv" "$uv.tmp"

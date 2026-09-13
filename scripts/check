@@ -1,33 +1,62 @@
 #!/bin/sh
 set -eu
+
+missing() {
+    echo "focused check prerequisite '$1' is missing; make '$1' available on PATH, then rerun scripts/check" >&2
+    exit 1
+}
+for command_name in git date timeout dirname env; do
+    command -v "$command_name" >/dev/null 2>&1 || missing "$command_name"
+done
+
 repo=$(git rev-parse --show-toplevel)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 primary=$(dirname "$common")
 bootstrap=$primary/scripts/bootstrap
 venv=$primary/.venv
-if [ -x "$bootstrap" ]; then
-    "$bootstrap"
-elif [ ! -x "$venv/bin/python" ]; then
-    echo "run scripts/bootstrap in the primary checkout first" >&2
-    exit 1
-fi
-manifest() {
-    "$venv/bin/python" -c \
-        'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' \
-        "$1"
-}
-[ "$(manifest "$repo")" = "$(manifest "$primary")" ] || {
-    echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
-    exit 1
-}
 deadline=$(($(date +%s) + 120))
 run() {
     remaining=$((deadline - $(date +%s)))
-    [ "$remaining" -gt 0 ] || {
+    [ "$remaining" -gt 1 ] || {
         echo "focused check exceeded the 120-second stop-loss" >&2
-        exit 124
+        return 124
     }
-    timeout "$remaining" "$@"
+    soft_limit=$((remaining - 1))
+    status=0
+    timeout --kill-after=1 "$soft_limit" "$@" || status=$?
+    case "$status" in
+        124|137) return 124 ;;
+        *) return "$status" ;;
+    esac
+}
+if [ -x "$bootstrap" ]; then
+    run "$bootstrap" || {
+        status=$?
+        if [ "$status" -eq 124 ]; then
+            echo "focused check setup exceeded the 120-second stop-loss; run scripts/bootstrap in the primary checkout, then rerun scripts/check" >&2
+        fi
+        exit "$status"
+    }
+elif [ ! -x "$venv/bin/python" ]; then
+    echo "focused check setup is missing; run scripts/bootstrap in the primary checkout, then rerun scripts/check" >&2
+    exit 1
+fi
+for tool in python ruff pyright pytest; do
+    [ -x "$venv/bin/$tool" ] || {
+        echo "focused check setup is incomplete ($venv/bin/$tool missing); run scripts/bootstrap in the primary checkout, then rerun scripts/check" >&2
+        exit 1
+    }
+done
+manifest() {
+    run "$venv/bin/python" -c \
+        'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' \
+        "$1"
+}
+repo_manifest=$(manifest "$repo") || exit $?
+primary_manifest=$(manifest "$primary") || exit $?
+[ "$repo_manifest" = "$primary_manifest" ] || {
+    echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
+    exit 1
 }
 run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
 run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
