@@ -152,9 +152,34 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+async def _remove_exact_id(
+    object_id: str, owner: str, role: str, env: dict[str, str]
+) -> None:
+    cleanup = asyncio.create_task(
+        asyncio.to_thread(remove_exact, "container", object_id, owner, role, env)
+    )
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(cleanup)
+            break
+        except asyncio.CancelledError as error:
+            cancelled = error
+            if cleanup.done():
+                break
+    try:
+        cleanup.result()
+    except BaseException as cleanup_error:
+        raise RuntimeError(
+            f"exact Docker cleanup is unresolved for container identity {object_id!r}: {cleanup_error}"
+        ) from cleanup_error
+    if cancelled is not None:
+        raise cancelled
+
+
 async def _remove_created(container: DockerObject, env: dict[str, str]) -> None:
-    await asyncio.to_thread(
-        remove_exact, "container", container.object_id, container.owner or "", container.role or "", env
+    await _remove_exact_id(
+        container.object_id, container.owner or "", container.role or "", env
     )
 
 
@@ -166,7 +191,7 @@ async def _cleanup_named_if_owned(
         return
     if existing.owner != owner or existing.role != role:
         raise RuntimeError(f"refusing to clean foreign Docker container {name!r}")
-    await asyncio.to_thread(remove_exact, "container", existing.object_id, owner, role, env)
+    await _remove_exact_id(existing.object_id, owner, role, env)
 
 
 async def _create_owned_container(
@@ -199,7 +224,19 @@ async def _create_owned_container(
         await _cleanup_named_if_owned(name, owner, role, env)
         raise RuntimeError(f"Docker {role} create returned no container identity")
     container_id = values[-1]
-    existing = await asyncio.to_thread(inspect_object, "container", container_id, env)
+    try:
+        existing = await asyncio.to_thread(inspect_object, "container", container_id, env)
+    except BaseException as readback_error:
+        try:
+            await _remove_exact_id(container_id, owner, role, env)
+        except BaseException as cleanup_error:
+            raise RuntimeError(
+                f"Docker {role} create readback failed and exact cleanup is unresolved: "
+                f"{cleanup_error}"
+            ) from readback_error
+        if isinstance(readback_error, asyncio.CancelledError):
+            raise
+        raise RuntimeError(f"Docker {role} create readback failed after exact cleanup") from readback_error
     if (
         existing is None
         or existing.object_id != container_id
@@ -207,6 +244,8 @@ async def _create_owned_container(
         or existing.owner != owner
         or existing.role != role
     ):
+        if existing is not None and existing.owner == owner and existing.role == role:
+            await _remove_exact_id(container_id, owner, role, env)
         raise RuntimeError(f"Docker {role} create did not bind the exact owned container")
     return existing
 
@@ -240,13 +279,16 @@ async def _run_owned_workload(
         text = output.read()
     try:
         finished = await asyncio.to_thread(inspect_object, "container", container.object_id, env)
-    except RuntimeError as readback_error:
+    except BaseException as readback_error:
         try:
             await _remove_created(container, env)
-        except RuntimeError as cleanup_error:
+        except BaseException as cleanup_error:
             raise RuntimeError(
-                f"Docker {role} daemon readback failed and exact cleanup is unresolved: {cleanup_error}"
+                f"Docker {role} daemon readback failed and exact cleanup is unresolved: "
+                f"{cleanup_error}"
             ) from readback_error
+        if isinstance(readback_error, asyncio.CancelledError):
+            raise
         raise RuntimeError(f"Docker {role} daemon readback failed after exact cleanup") from readback_error
     if finished is None:
         raise RuntimeError(f"Docker {role} workload identity disappeared before daemon readback")
