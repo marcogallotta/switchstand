@@ -65,6 +65,11 @@ actual=$(git -C "$target" rev-parse HEAD)
     echo "prepared task writer is not at the exact requested candidate" >&2
     exit 1
 }
+control_python="$repo/.venv/bin/python"
+[ -x "$control_python" ] || {
+    echo "bootstrap did not prepare the accepted control Python environment" >&2
+    exit 1
+}
 printf 'SWITCHSTAND_ACCEPTED_BASE=%s\nSWITCHSTAND_CANDIDATE_SHA=%s\n' "$accepted" "$candidate" >&2
 cd "$target"
-exec scripts/switchstand-launch "$@"
+PYTHONPATH="$repo/src" exec "$control_python" -P -m switchstand.launch "$@"
