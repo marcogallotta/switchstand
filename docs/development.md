@@ -15,7 +15,8 @@
   common directory exactly matches that repository, its branch and recorded green SHA match, and its HEAD is at or
   descends from the requested starting point. A same-named worktree from another clone is rejected without being
   adopted. The exact launch baseline remains recorded in linked-worktree Git metadata; one managed writer owns each
-  linked worktree. Launch refuses a dirty or advanced baseline.
+  linked worktree. Launch refuses a dirty worktree or a HEAD that is not at or descended from the recorded green
+  baseline.
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.

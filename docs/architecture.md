@@ -17,9 +17,9 @@ recovery is complete. Git landing reconciliation follows the repository's one-pa
 the current result directly parented by the reviewed base, the reviewed candidate must descend from that base, and the
 landing tree must equal the reviewed candidate tree. Existing writer reuse is repository-bound: a reusable target must
 be the expected clean linked worktree registered by the requesting repository, with the same absolute Git common
-directory, so another clone's same-named worktree is rejected. Focused checks use one 120-second deadline beginning
-before bootstrap/setup and apply the remaining budget through manifest verification and the focused commands, with a
-forced-kill phase for TERM-resistant timeouts and no full-build fallback.
+directory, so another clone's same-named worktree is rejected. The `scripts/check` focused host path uses one
+120-second deadline beginning before bootstrap/setup and applies the remaining budget through manifest verification
+and the focused commands, with a forced-kill phase for TERM-resistant timeouts and no full-build fallback.
 
 Important recovery defects remain outside those repairs. Docker cleanup/cancellation still lacks exact ownership and
 cancellation proof for the affected resources. Writer task worktrees still live under `${TMPDIR:-/tmp}`; the named
