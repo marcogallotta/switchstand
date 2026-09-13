@@ -47,13 +47,16 @@ task_id=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c \
     "$active")
 resolved=$(PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -m switchstand.launch_source \
     --repo "$repo" "$task_id")
-set -- $resolved
-[ "$#" -eq 2 ] || {
+accepted=
+candidate=
+extra=
+IFS=' ' read -r accepted candidate extra <<EOF
+$resolved
+EOF
+[ -n "$accepted" ] && [ -n "$candidate" ] && [ -z "$extra" ] || {
     echo "launch source resolver returned an invalid result" >&2
     exit 1
 }
-accepted=$1
-candidate=$2
 
 "$repo/scripts/bootstrap"
 target=$(cd "$repo" && scripts/switchstand-worktree "task-$task_id" "$accepted" "$candidate")
