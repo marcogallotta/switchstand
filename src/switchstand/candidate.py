@@ -128,7 +128,7 @@ class CandidateWorkspace:
     repository_fingerprint: str
 
     @contextmanager
-    def writer(self) -> Generator[None, None, None]:
+    def writer(self) -> Generator[None]:
         descriptor = os.open(
             self.git_dir / "switchstand-writer.lock",
             os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
