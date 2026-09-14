@@ -150,6 +150,58 @@ async def test_quality_uses_exact_owned_container_and_full_bound(monkeypatch, tm
     assert "compose.yaml" not in " ".join(command) and "Dockerfile" not in " ".join(command)
 
 
+async def test_same_run_and_role_workloads_are_serialized(monkeypatch, tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_one.py").touch()
+    monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
+    monkeypatch.setattr(development, "_manifest", lambda repo: "manifest")
+    monkeypatch.setattr(development, "_run_owner", lambda repo, branch: "run-id")
+    monkeypatch.setattr(
+        development,
+        "_git",
+        lambda repo, *args: completed(stdout="a" * 40 + "\n"),
+    )
+    monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
+    monkeypatch.setenv("SWITCHSTAND_QUALITY_IMAGE", "sha256:fixed")
+    monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
+    second_ready = asyncio.Event()
+    release_first = asyncio.Event()
+    argument_calls = 0
+    workload_calls = 0
+
+    original_arguments = development._container_arguments
+
+    def observed_arguments(repo, owner, role, paths):
+        nonlocal argument_calls
+        argument_calls += 1
+        if argument_calls == 2:
+            second_ready.set()
+        return original_arguments(repo, owner, role, paths)
+
+    async def fake_run(arguments, owner, role, timeout):
+        nonlocal workload_calls
+        workload_calls += 1
+        if workload_calls == 1:
+            await release_first.wait()
+        return completed(arguments)
+
+    monkeypatch.setattr(development, "_container_arguments", observed_arguments)
+    monkeypatch.setattr(development, "_run_owned_workload", fake_run)
+    server = development.build_server()
+    check = server._tool_manager.get_tool("check")
+    assert check is not None
+
+    first = asyncio.create_task(check.fn("a" * 40, ["tests/test_one.py"]))
+    second = asyncio.create_task(check.fn("a" * 40, ["tests/test_one.py"]))
+    await second_ready.wait()
+    assert workload_calls == 1
+
+    release_first.set()
+    results = await asyncio.gather(first, second)
+    assert workload_calls == 2
+    assert [result.status for result in results] == ["ok", "ok"]
+
+
 async def test_hung_workload_stops_cli_removes_exact_container_and_reraises(monkeypatch):
     class HangingProcess:
         def __init__(self):
@@ -409,7 +461,7 @@ async def test_output_overflow_stops_workload_and_removes_exact_container(
         def __init__(self):
             self.returncode = None
             self.stopped = False
-            self.stdout = output_stream(b"123456789")
+            self.stdout = output_stream(b"x" * (development.WORKLOAD_OUTPUT_BYTES + 1))
 
         async def wait(self):
             while not self.stopped:
@@ -434,7 +486,6 @@ async def test_output_overflow_stops_workload_and_removes_exact_container(
         assert kwargs["limit"] == development.WORKLOAD_OUTPUT_CHUNK_BYTES
         return process
 
-    monkeypatch.setattr(development, "WORKLOAD_OUTPUT_BYTES", 8)
     monkeypatch.setattr(development, "_create_owned_container", fake_create)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
@@ -444,10 +495,21 @@ async def test_output_overflow_stops_workload_and_removes_exact_container(
             (kind, object_id, owner, role)
         ),
     )
-    with pytest.raises(RuntimeError, match="output exceeded 8 bytes"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "output exceeded the 12000-byte hard limit; "
+            "reduce test or tool output and rerun"
+        ),
+    ):
         await development._run_owned_workload([], "run-id", "quality", 60)
     assert process.stopped
     assert removed == [("container", "exact-id", "run-id", "quality")]
+
+
+async def test_output_at_hard_limit_is_accepted():
+    value = b"x" * development.WORKLOAD_OUTPUT_BYTES
+    assert await development._read_bounded_output(output_stream(value)) == value.decode()
 
 
 def test_development_environment_removes_credentials(monkeypatch):

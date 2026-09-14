@@ -169,7 +169,8 @@ async def _read_bounded_output(stream: asyncio.StreamReader) -> str:
         output.extend(chunk)
         if len(output) > WORKLOAD_OUTPUT_BYTES:
             raise RuntimeError(
-                f"Docker workload output exceeded {WORKLOAD_OUTPUT_BYTES} bytes"
+                f"Docker workload output exceeded the {WORKLOAD_OUTPUT_BYTES}-byte hard limit; "
+                "reduce test or tool output and rerun"
             )
     return output.decode(errors="replace")
 
@@ -349,6 +350,17 @@ def build_server(bound: bool = True) -> MCPServer:
     server = MCPServer("Switchstand Development Boundary")
     if not bound:
         return server
+    workload_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    async def run_serialized(
+        arguments: list[str],
+        owner: str,
+        role: Literal["focused", "quality"],
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        lock = workload_locks.setdefault((owner, role), asyncio.Lock())
+        async with lock:
+            return await _run_owned_workload(arguments, owner, role, timeout)
 
     async def check(expected_head: str, test_paths: list[str]) -> DevelopmentResult:
         """Run Ruff, strict Pyright, and selected tests against the active worktree."""
@@ -370,7 +382,7 @@ def build_server(bound: bool = True) -> MCPServer:
             return _result("failed", before, repo, "test paths must be existing files under tests/")
         owner = _run_owner(repo, branch)
         try:
-            checked = await _run_owned_workload(
+            checked = await run_serialized(
                 _container_arguments(repo, owner, "focused", paths),
                 owner,
                 "focused",
@@ -417,7 +429,7 @@ def build_server(bound: bool = True) -> MCPServer:
             return _result("stale", before, repo, "dependency manifests changed; relaunch required")
         owner = _run_owner(repo, branch)
         try:
-            checked = await _run_owned_workload(
+            checked = await run_serialized(
                 _container_arguments(repo, owner, "quality", []), owner, "quality", QUALITY_SECONDS
             )
         except TimeoutError as error:

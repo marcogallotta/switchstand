@@ -35,6 +35,8 @@
   an explicit rerun/setup action, and the focused path does not fall back to a full container build. CI supplies the
   routine full clean/container gate; real-host launch and recovery changes still require a real-host canary.
   Selecting a database-backed test without a live `TEST_DATABASE_URL` fails rather than skips.
+  Focused and full-quality workload output has a 12,000-byte hard limit: output at or below the limit is accepted;
+  exceeding it stops and removes the workload and returns a failed result. Reduce test or tool output, then rerun.
   Each launch writes a protected per-worktree run receipt with a fresh identity and Linux PID start token. The
   read-only `run_status` tool reports `running`, `stopped`, `lost`, or `unknown` without accepting an arbitrary PID.
   From that linked worktree, `scripts/switchstand-run-stop` uses the repository's bootstrapped Python environment and
