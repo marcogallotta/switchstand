@@ -79,6 +79,9 @@ def selector_with_env_identity(
     env_link: Path,
     candidates: list[Path],
     trusted_find: Path | None = None,
+    status_file: Path | None = None,
+    overflow_uid_file: Path | None = None,
+    trusted_sed: Path | None = None,
 ):
     source = wrapper.read_text()
     source = source.replace(
@@ -92,6 +95,22 @@ def selector_with_env_identity(
     if trusted_find is not None:
         source = source.replace(
             'find_bin=/usr/bin/find', f'find_bin={shlex.quote(str(trusted_find))}', 1
+        )
+    if status_file is not None:
+        source = source.replace(
+            'status_file=/proc/self/status',
+            f'status_file={shlex.quote(str(status_file))}',
+            1,
+        )
+    if overflow_uid_file is not None:
+        source = source.replace(
+            'overflow_uid_file=/proc/sys/kernel/overflowuid',
+            f'overflow_uid_file={shlex.quote(str(overflow_uid_file))}',
+            1,
+        )
+    if trusted_sed is not None:
+        source = source.replace(
+            'sed_bin=/usr/bin/sed', f'sed_bin={shlex.quote(str(trusted_sed))}', 1
         )
     wrapper.write_text(source)
 
@@ -137,6 +156,64 @@ def test_active_accepts_trusted_system_env_symlink(selector_fixture, tmp_path):
     result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
     assert result.returncode == 0, result.stderr
     assert receipt.with_suffix('.sha').read_text().strip() == sha
+
+
+@pytest.mark.parametrize(('effective_uid', 'expected'), [('1000', 0), ('65534', 1)])
+def test_overflow_owned_system_env_is_trusted_only_for_other_users(
+    selector_fixture, tmp_path, effective_uid, expected
+):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    target = tmp_path / 'system-env'
+    shutil.copy2('/usr/bin/env', target, follow_symlinks=True)
+    target.chmod(0o755)
+    env_link = tmp_path / 'env-link'
+    env_link.symlink_to(target)
+    find_log = tmp_path / 'find-log'
+    trusted_find = tmp_path / 'trusted-find'
+    trusted_find.write_text(
+        '#!/bin/sh\n'
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(find_log))}\n'
+        'case "$*" in *"-uid 65534 "*) printf "%s\\n" "$1";; esac\n'
+    )
+    trusted_find.chmod(0o755)
+    status_file = tmp_path / 'status'
+    status_file.write_text(
+        f'Name:\ttest\nUid:\t{effective_uid}\t{effective_uid}\t{effective_uid}'
+        f'\t{effective_uid}\n'
+    )
+    overflow_uid_file = tmp_path / 'overflowuid'
+    # Model the managed procfs short-read: a shell builtin sees only `6`, while
+    # the fixed reader returns the complete sysctl value.
+    overflow_uid_file.write_text('6\n')
+    sed_log = tmp_path / 'sed-log'
+    trusted_sed = tmp_path / 'trusted-sed'
+    trusted_sed.write_text(
+        '#!/bin/sh\n'
+        f'printf "%s\\n" "$*" > {shlex.quote(str(sed_log))}\n'
+        'printf "65534\\n"\n'
+    )
+    trusted_sed.chmod(0o755)
+    selector_with_env_identity(
+        wrapper,
+        env_link,
+        [target],
+        trusted_find,
+        status_file,
+        overflow_uid_file,
+        trusted_sed,
+    )
+
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+
+    assert result.returncode == expected, result.stderr
+    assert receipt.with_suffix('.sha').exists() is (expected == 0)
+    if expected == 0:
+        assert receipt.with_suffix('.sha').read_text().strip() == sha
+    checks = find_log.read_text().splitlines()
+    assert any('-uid 0 ' in check for check in checks)
+    assert any('-uid 65534 ' in check for check in checks) is (expected == 0)
+    assert str(overflow_uid_file) in sed_log.read_text()
 
 
 @pytest.mark.parametrize('problem', ['unknown-target', 'symlink-candidate', 'writable-target',
