@@ -13,7 +13,17 @@ from .core import (
     UnknownEffect,
 )
 
-PROJECT = "1218210259719507"
+PROJECTS = (
+    "1218210259719507",
+    "1218431616678499",
+    "1218431557603624",
+    "1218431557524230",
+    "1218431557368054",
+    "1218431592956026",
+    "1218431584990145",
+    "1218431586138793",
+)
+PROJECT = PROJECTS[0]
 ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
@@ -63,7 +73,7 @@ class AsanaProvider:
         seen: set[str] = set()
         while True:
             if not isinstance(memberships := task.get("memberships"), list): return False
-            if any(self._gid(cast(JSON, item).get("project")) == PROJECT
+            if any(self._gid(cast(JSON, item).get("project")) in PROJECTS
                    for item in cast(list[object], memberships) if isinstance(item, dict)):
                 return True
             if (parent := self._gid(task.get("parent"))) is None or parent in seen: return False
@@ -242,42 +252,49 @@ class AsanaProvider:
 
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None:
         try:
-            response = await self.client.get(
-                f"/projects/{PROJECT}/tasks",
-                params={"completed_since": "now", "limit": "100", "opt_fields": OPT_FIELDS},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            data = payload["data"]
-            if not isinstance(data, list) or payload.get("next_page") is not None:
-                raise TypeError
             candidates: list[tuple[int, int, ProviderHead]] = []
-            for position, value in enumerate(cast(list[object], data)):
-                if not isinstance(value, dict): raise TypeError
-                item = cast(JSON, value)
-                gid, title = item.get("gid"), item.get("name")
-                completed = item.get("completed")
-                raw_fields = item.get("custom_fields")
-                if (not isinstance(gid, str) or not isinstance(title, str)
-                        or not isinstance(completed, bool) or not isinstance(raw_fields, list)):
+            seen: set[str] = set()
+            position = 0
+            for project in PROJECTS:
+                response = await self.client.get(
+                    f"/projects/{project}/tasks",
+                    params={"completed_since": "now", "limit": "100", "opt_fields": OPT_FIELDS},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                data = payload["data"]
+                if not isinstance(data, list) or payload.get("next_page") is not None:
                     raise TypeError
-                raw_values = cast(list[object], raw_fields)
-                if any(not isinstance(field, dict) for field in raw_values): raise TypeError
-                if gid in excluded or completed: continue
-                fields = [cast(JSON, field) for field in raw_values]
-                priorities = [field.get("display_value") for field in fields
-                              if field.get("gid") == FIELDS["priority"]]
-                horizons = [field.get("display_value") for field in fields
-                            if field.get("gid") == FIELDS["horizon"]]
-                if len(priorities) > 1 or len(horizons) > 1: raise TypeError
-                priority = priorities[0] if priorities else None
-                horizon = horizons[0] if horizons else None
-                if priority is None or isinstance(priority, str) and priority not in PRIORITIES:
-                    continue
-                if not isinstance(priority, str) or horizon is not None and not isinstance(horizon, str):
-                    raise TypeError
-                candidates.append((PRIORITIES[priority], position,
-                                   ProviderHead(gid, title, priority, horizon)))
+                for value in cast(list[object], data):
+                    current_position, position = position, position + 1
+                    if not isinstance(value, dict): raise TypeError
+                    item = cast(JSON, value)
+                    gid, title = item.get("gid"), item.get("name")
+                    completed = item.get("completed")
+                    raw_fields = item.get("custom_fields")
+                    if (not isinstance(gid, str) or not isinstance(title, str)
+                            or not isinstance(completed, bool) or not isinstance(raw_fields, list)):
+                        raise TypeError
+                    raw_values = cast(list[object], raw_fields)
+                    if any(not isinstance(field, dict) for field in raw_values): raise TypeError
+                    if gid in seen: continue
+                    seen.add(gid)
+                    if gid in excluded or completed: continue
+                    fields = [cast(JSON, field) for field in raw_values]
+                    priorities = [field.get("display_value") for field in fields
+                                  if field.get("gid") == FIELDS["priority"]]
+                    horizons = [field.get("display_value") for field in fields
+                                if field.get("gid") == FIELDS["horizon"]]
+                    if len(priorities) > 1 or len(horizons) > 1: raise TypeError
+                    priority = priorities[0] if priorities else None
+                    horizon = horizons[0] if horizons else None
+                    if priority is None or isinstance(priority, str) and priority not in PRIORITIES:
+                        continue
+                    if (not isinstance(priority, str)
+                            or horizon is not None and not isinstance(horizon, str)):
+                        raise TypeError
+                    candidates.append((PRIORITIES[priority], current_position,
+                                       ProviderHead(gid, title, priority, horizon)))
             return min(candidates, key=lambda candidate: candidate[:2])[2] if candidates else None
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None

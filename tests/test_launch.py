@@ -9,15 +9,16 @@ from uuid import UUID
 
 import pytest
 
+from switchstand.docker import DockerObject
 from switchstand.launch import (
     PROFILE,
     DevelopmentBoundary,
     clean_environment,
     cleanup_development,
     codex_command,
-    development_names,
     docker_run,
     exact_revision_preflight,
+    filesystem_override,
     linked_branch,
     parse_authority,
     prepare_development,
@@ -35,12 +36,14 @@ REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
 def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
     monkeypatch, tmp_path
 ):
-    repo = tmp_path / "writer"
+    candidate = tmp_path / "writer"
+    control = tmp_path / "control"
     common = tmp_path / "control" / ".git"
     git_dir = common / "worktrees" / "writer"
-    for path in (repo, common, git_dir):
+    for path in (candidate, control, common, git_dir):
         path.mkdir(parents=True, exist_ok=True)
     requested = "a" * 40
+    control_sha = "b" * 40
     commands = []
     state = {
         "observed": requested,
@@ -55,58 +58,53 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
         if command[1:3] == ["cat-file", "-t"]:
             return subprocess.CompletedProcess(command, 0, stdout="commit\n")
         if "--show-toplevel" in command:
-            return subprocess.CompletedProcess(
-                command, 0,
-                stdout=f"{repo}\n{git_dir}\n{common}\n",
-            )
-        if command[1:4] == ["worktree", "list", "--porcelain"]:
-            return subprocess.CompletedProcess(command, 0, stdout=f"worktree {repo}\n\n")
-        if command[1] == "fetch":
-            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
-        if command[1:3] == ["branch", "--show-current"]:
-            return subprocess.CompletedProcess(command, 0, stdout="main\n")
-        if command[1:3] == ["rev-parse", "HEAD"]:
-            if cwd == repo:
+            if cwd == control:
                 return subprocess.CompletedProcess(
-                    command, 0, stdout=f"{state['observed']}\n"
+                    command, 0, stdout=f"{control}\n{common}\n{control_sha}\n"
                 )
             return subprocess.CompletedProcess(
-                command, 0, stdout=f"{'b' * 40}\n{'b' * 40}\n"
+                command, 0,
+                stdout=f"{candidate}\n{git_dir}\n{common}\n{state['observed']}\n",
+            )
+        if command[1:4] == ["worktree", "list", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, stdout=f"worktree {candidate}\n\n")
+        if command[1:3] == ["rev-parse", "HEAD"] and cwd == candidate:
+            return subprocess.CompletedProcess(
+                command, 0, stdout=f"{state['observed']}\n"
             )
         if command[1:3] == ["status", "--porcelain"]:
-            assert cwd in {repo, common.parent}
-            dirty = state["candidate_dirty"] if cwd == repo else state["control_dirty"]
+            assert cwd in {candidate, control}
+            dirty = state["candidate_dirty"] if cwd == candidate else state["control_dirty"]
             return subprocess.CompletedProcess(command, 0, stdout=dirty)
         if command[1:3] == ["merge-base", "--is-ancestor"]:
-            assert command[-2:] == ["b" * 40, requested]
+            assert command[-2:] == [control_sha, requested]
             return subprocess.CompletedProcess(command, 0 if state["ancestor"] else 1)
         raise AssertionError(command)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert exact_revision_preflight(repo, requested, str(common), {}) == requested
-    fetch = next(command for command in commands if command[1] == "fetch")
-    assert fetch[-1] == "+refs/heads/main:refs/remotes/origin/main"
-    assert commands.index(fetch) < commands.index(["git", "rev-parse", "HEAD"])
+    assert exact_revision_preflight(
+        control, candidate, requested, control_sha, str(common), {}
+    ) == requested
 
     state["candidate_dirty"] = "?? untracked.py\n"
     with pytest.raises(ValueError, match="candidate must be clean"):
-        exact_revision_preflight(repo, requested, str(common), {})
+        exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
     state["candidate_dirty"] = ""
     state["observed"] = "c" * 40
     with pytest.raises(ValueError, match="exact requested revision"):
-        exact_revision_preflight(repo, requested, str(common), {})
+        exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
     state["observed"] = requested
     state["ancestor"] = False
     with pytest.raises(ValueError, match="contain freshly fetched"):
-        exact_revision_preflight(repo, requested, str(common), {})
+        exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
     state["ancestor"] = True
     state["control_dirty"] = " M scripts/switchstand-start\n"
-    with pytest.raises(ValueError, match="control checkout"):
-        exact_revision_preflight(repo, requested, str(common), {})
+    with pytest.raises(ValueError, match="CONTROL checkout"):
+        exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
     foreign_common = tmp_path / "foreign" / ".git"
     foreign_common.mkdir(parents=True)
     with pytest.raises(ValueError, match="provenance"):
-        exact_revision_preflight(repo, requested, str(foreign_common), {})
+        exact_revision_preflight(control, candidate, requested, control_sha, str(foreign_common), {})
 
 
 @pytest.mark.parametrize(
@@ -118,11 +116,14 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
 )
 def test_exact_revision_preflight_rejects_ambiguous_identity(tmp_path, requested, error):
     with pytest.raises(ValueError, match=error):
-        exact_revision_preflight(tmp_path, requested, str(tmp_path), {})
+        exact_revision_preflight(
+            tmp_path, tmp_path, requested, "b" * 40, str(tmp_path), {}
+        )
 
 
 def test_managed_tools_have_narrow_approval_free_policy():
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
     expected = {
         "switchstand": {"work_get", "source_task", "source_stories", "source_story", "work_append"},
@@ -139,6 +140,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
         assert set(tools) == names
         assert names == set(servers[server]["enabled_tools"])
         assert all(tool["approval_mode"] == "approve" for tool in tools.values())
+    assert "SWITCHSTAND_RUN_ID" in servers["switchstand_development"]["env_vars"]
 
 
 def test_clean_environment_removes_secret_and_stale_authority():
@@ -205,10 +207,12 @@ def test_parse_authority_requires_exact_complete_response():
 
 
 def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatch):
-    captured = {}
+    captured = []
 
     def fake_run(command, **kwargs):
-        captured.update(command=command, kwargs=kwargs)
+        captured.append((command, kwargs))
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         return subprocess.CompletedProcess(
             command,
             0,
@@ -219,8 +223,70 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
     monkeypatch.setattr(subprocess, "run", fake_run)
     authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
     assert authority.active == ACTIVE
-    assert captured["command"][-4:] == ["--active", "123", "--reference", "456"]
-    assert captured["kwargs"]["env"] == {"HOME": "/home/test"}
+    state, controller = captured
+    assert state[0] == [
+        "docker", "compose", "--project-directory", "/repo", "-f",
+        "/repo/compose.state.yaml", "up", "-d", "--wait", "postgres",
+    ]
+    assert controller[0][-4:] == ["--active", "123", "--reference", "456"]
+    assert controller[0][2:6] == [
+        "--project-directory", "/repo", "-f", "/repo/compose.yaml"
+    ]
+    assert all(call[1]["cwd"] == Path("/repo") for call in captured)
+    assert all(call[1]["env"] == {"HOME": "/home/test"} for call in captured)
+
+
+def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
+    monkeypatch, tmp_path
+):
+    control, candidate = tmp_path / "control", tmp_path / "candidate"
+    control.mkdir()
+    candidate.mkdir()
+    (control / "Dockerfile.candidate-runner").write_text("trusted\n")
+    for name in ("pyproject.toml", "uv.lock", "README.md"):
+        (candidate / name).write_text(f"candidate {name}\n")
+    for name in ("Dockerfile", "compose.yaml", ".dockerignore", "alembic.ini"):
+        (candidate / name).write_text("HOSTILE\n")
+    (candidate / ".codex").mkdir()
+    (candidate / ".codex" / "config.toml").write_text("HOSTILE\n")
+    builds = []
+    networks = []
+    answers = iter(("sha256:image\n", "network-id\n", "database-id\n"))
+
+    def docker(arguments, cwd, env, **kwargs):
+        if arguments[0] == "build":
+            builds.append((arguments, set(cwd.iterdir()), kwargs))
+        elif arguments[:2] == ["network", "create"]:
+            networks.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
+
+    monkeypatch.setattr("switchstand.launch.docker_run", docker)
+    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    boundary = prepare_development(control, candidate, ACTIVE, {"PATH": "/bin"})
+    build, context_files, options = builds[0]
+    assert build[0:3] == ["build", "--quiet", "--tag"]
+    assert build[-3:] == ["-f", str(control / "Dockerfile.candidate-runner"), "."]
+    assert "com.switchstand.run=" + str(ACTIVE) in build
+    assert {path.name for path in context_files} == {"pyproject.toml", "uv.lock", "README.md"}
+    assert options["timeout"] == 600
+    assert len(networks) == 1
+    network = networks[0]
+    assert network[:-1] == [
+        "network", "create",
+        "--label", f"com.switchstand.run={ACTIVE}",
+        "--label", "com.switchstand.role=qualification",
+    ]
+    assert network[-1].startswith("switchstand-dev-")
+    assert "--internal" not in network
+    assert boundary == DevelopmentBoundary(
+        "sha256:image", "network-id", "database-id", boundary.manifest
+    )
 
 
 def test_validate_codex_args_blocks_boundary_overrides():
@@ -231,16 +297,17 @@ def test_validate_codex_args_blocks_boundary_overrides():
 
 
 def test_managed_codex_requires_both_mcp_servers():
-    command = codex_command(Path("/writer"), [])
+    command = codex_command(Path("/control"), Path("/writer"), [])
     assert "mcp_servers.switchstand.required=true" in command
     assert "mcp_servers.switchstand_development.required=true" in command
 
 
 def test_managed_codex_starts_work_without_a_manual_prompt():
-    command = codex_command(Path("/writer"), [])
+    command = codex_command(Path("/control"), Path("/writer"), [])
     assert command[:-1] == [
-        "codex", "-C", "/writer", "-a", "never", "-c",
+        "codex", "-C", "/control", "--add-dir", "/writer", "-a", "never", "-c",
         f'default_permissions="{PROFILE}"',
+        "-c", filesystem_override(Path("/control")),
         "-c", "mcp_servers.switchstand.required=true",
         "-c", "mcp_servers.switchstand_development.required=true",
     ]
@@ -250,8 +317,10 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
 
 @pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
 def test_managed_codex_preserves_launch_request_in_one_prompt(launch_request):
-    default = codex_command(Path("/writer"), [])
-    command = codex_command(Path("/writer"), validate_codex_args(["--", launch_request]))
+    default = codex_command(Path("/control"), Path("/writer"), [])
+    command = codex_command(
+        Path("/control"), Path("/writer"), validate_codex_args(["--", launch_request])
+    )
     assert command[:-1] == default[:-1]
     prefix, supplied = command[-1].split("\n\nAdditional launch request:\n", 1)
     assert prefix == default[-1]
@@ -261,7 +330,7 @@ def test_managed_codex_preserves_launch_request_in_one_prompt(launch_request):
 @pytest.mark.parametrize("arguments", [["--config=unsafe"], ["first", "second"]])
 def test_managed_codex_command_rejects_extra_options_and_prompts(arguments):
     with pytest.raises(ValueError):
-        codex_command(Path("/writer"), arguments)
+        codex_command(Path("/control"), Path("/writer"), arguments)
 
 
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):
@@ -271,11 +340,11 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     def reservation(repo, branch, git_dir, reclaim=None):
         events.append("reserved")
         assert reclaim is not None
-        reclaim(type("Receipt", (), {"pid": 123})())
+        reclaim(type("Receipt", (), {"run_id": ACTIVE})())
 
         def record(active_work_id):
             events.append("recorded")
-            return object()
+            return type("Receipt", (), {"run_id": ACTIVE})()
 
         yield record
 
@@ -283,8 +352,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
-        lambda network, database, env: events.append((network, database)),
+        "switchstand.launch.inspect_docker", lambda *args: None
     )
     monkeypatch.setattr(
         "switchstand.launch.provision",
@@ -294,10 +362,13 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "switchstand.launch.prepare_development",
         lambda *args: events.append("development") or development,
     )
-    result = prepare_managed_run(tmp_path, "owned", "123", (), {}, tmp_path)
+    control = tmp_path / "control"
+    candidate = tmp_path / "candidate"
+    result = prepare_managed_run(
+        control, candidate, "owned", "123", (), {}, tmp_path
+    )
     assert events == [
         "reserved",
-        development_names(tmp_path, 123),
         "provisioned",
         "recorded",
         "development",
@@ -306,28 +377,60 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
 
 
 def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
-    def failed(command, **kwargs):
-        raise subprocess.CalledProcessError(
-            1, command, stderr="could not find an available, non-overlapping IPv4 address pool"
+    monkeypatch.setattr(
+        "switchstand.launch.docker_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="could not find an available, non-overlapping IPv4 address pool"
         )
-
-    monkeypatch.setattr(subprocess, "run", failed)
+    )
     with pytest.raises(RuntimeError, match="non-overlapping IPv4 address pool"):
         docker_run(["network", "create", "--internal", "owned"], tmp_path, {})
 
 
-def test_cleanup_removes_only_the_exact_run_resources(monkeypatch):
-    commands = []
+def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
+    removed = []
+    monkeypatch.setattr("switchstand.launch.inspect_docker", lambda *args: None)
+    monkeypatch.setattr(
+        "switchstand.launch.remove_owned",
+        lambda *args: removed.append(args),
+    )
+    cleanup_development(
+        "image-id", "network-id", "database-id", tmp_path, str(ACTIVE), {}
+    )
+    assert removed == [
+        ("container", "database-id", str(ACTIVE), "database", {}),
+        ("network", "network-id", str(ACTIVE), "qualification", {}),
+        ("image", "image-id", str(ACTIVE), "runner", {}),
+    ]
 
-    def fake_run(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    cleanup_development("switchstand-dev-owned", "switchstand-test-owned", {})
-    assert commands == [
-        ["docker", "rm", "-f", "switchstand-test-owned"],
-        ["docker", "network", "rm", "switchstand-dev-owned"],
+def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatch, tmp_path):
+    removed = []
+
+    def inspect(kind, name, env):
+        role = name.split("-")[1] if name.startswith("switchstand-focused-") else None
+        if name.startswith("switchstand-quality-"):
+            role = "quality"
+        elif name.startswith("switchstand-test-"):
+            role = "database"
+        elif name.startswith("switchstand-dev-"):
+            role = "qualification"
+        elif name.startswith("switchstand-runner-"):
+            role = "runner"
+        assert role is not None
+        return DockerObject(kind, name, f"{role}-id", str(ACTIVE), role)
+
+    monkeypatch.setattr("switchstand.launch.inspect_docker", inspect)
+    monkeypatch.setattr(
+        "switchstand.launch.remove_owned", lambda *args: removed.append(args)
+    )
+    cleanup_development(None, None, None, tmp_path, str(ACTIVE), {})
+    assert [(args[0], args[2], args[3]) for args in removed] == [
+        ("container", str(ACTIVE), "database"),
+        ("container", str(ACTIVE), "focused"),
+        ("container", str(ACTIVE), "quality"),
+        ("network", str(ACTIVE), "qualification"),
+        ("image", str(ACTIVE), "runner"),
     ]
 
 
@@ -335,7 +438,7 @@ def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
     calls = 0
     cleaned = []
 
-    def docker(*args):
+    def docker(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 3:
@@ -343,13 +446,21 @@ def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
 
     monkeypatch.setattr("switchstand.launch.docker_run", docker)
+    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
-        lambda network, database, env, **kwargs: cleaned.append((network, database)),
+        lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
+            (image, network, database, candidate, owner)
+        ),
     )
+    for name in ("pyproject.toml", "uv.lock", "README.md"):
+        (tmp_path / name).write_text(name)
     with pytest.raises(KeyboardInterrupt):
-        prepare_development(tmp_path, {})
-    assert cleaned == [development_names(tmp_path, os.getpid())]
+        prepare_development(tmp_path, tmp_path, ACTIVE, {})
+    assert cleaned == [
+        ("sha256:image", "sha256:image", None, tmp_path, str(ACTIVE))
+    ]
 
 
 def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
@@ -375,16 +486,24 @@ def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
-        lambda network, database, env: events.append((network, database)),
+        lambda image, network, database, candidate, owner, env: events.append(
+            (image, network, database, candidate, owner)
+        ),
     )
     development = DevelopmentBoundary("image", "network", "database", "manifest")
-    assert supervise_codex(["codex"], {}, development) == 128 + signal.SIGTERM
+    assert supervise_codex(
+        ["codex"], {"SWITCHSTAND_WORKTREE": "/writer"}, development, ACTIVE
+    ) == 128 + signal.SIGTERM
     assert launch["start_new_session"] is True
     assert set(handlers) >= {
         signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM,
         signal.SIGTSTP, signal.SIGCONT, signal.SIGWINCH,
     }
-    assert events == [(123, signal.SIGTERM), "waited", ("network", "database")]
+    assert events == [
+        (123, signal.SIGTERM),
+        "waited",
+        ("image", "network", "database", Path("/writer"), str(ACTIVE)),
+    ]
 
 
 def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
@@ -410,14 +529,18 @@ def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
-        lambda network, database, env: events.append((network, database)),
+        lambda image, network, database, candidate, owner, env: events.append(
+            (image, network, database, candidate, owner)
+        ),
     )
     development = DevelopmentBoundary("image", "network", "database", "manifest")
-    assert supervise_codex(["codex"], {}, development) == 128 + signal.SIGQUIT
+    assert supervise_codex(
+        ["codex"], {"SWITCHSTAND_WORKTREE": "/writer"}, development, ACTIVE
+    ) == 128 + signal.SIGQUIT
     assert events == [
         (123, signal.SIGQUIT),
         (123, signal.SIGKILL),
-        ("network", "database"),
+        ("image", "network", "database", Path("/writer"), str(ACTIVE)),
     ]
 
 
@@ -430,7 +553,12 @@ def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_
     )
     monkeypatch.setattr("switchstand.launch.cleanup_development", lambda *args: None)
     development = DevelopmentBoundary("image", "network", "database", "manifest")
-    assert supervise_codex([sys.executable, "-c", code], dict(os.environ), development) == 0
+    assert supervise_codex(
+        [sys.executable, "-c", code],
+        dict(os.environ) | {"SWITCHSTAND_WORKTREE": str(tmp_path)},
+        development,
+        ACTIVE,
+    ) == 0
     blocked = {int(item) for item in output.read_text().split(",") if item}
     assert not blocked.intersection({signal.SIGINT, signal.SIGQUIT, signal.SIGTERM})
 
@@ -439,10 +567,37 @@ def readback_messages(sources):
     return [
         {"id": 2, "result": {"data": [{"id": PROFILE, "allowed": True}]}},
         {"id": 3, "result": {"activePermissionProfile": {"id": PROFILE},
-                              "sandbox": {"type": "workspaceWrite", "networkAccess": False},
+                              "sandbox": {"type": "workspaceWrite", "networkAccess": True,
+                                          "writableRoots": ["/writer"]},
+                              "runtimeWorkspaceRoots": ["/repo", "/writer"],
                               "approvalPolicy": "never",
                               "instructionSources": sources}},
     ]
+
+
+def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    del messages[0]["result"]["data"][0]["allowed"]
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
+
+
+def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    messages[0]["result"]["data"][0]["allowed"] = False
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="permission profile.*not available"):
+        readback(Path("/repo"), Path("/writer"), {})
 
 
 @pytest.mark.parametrize("source, accepted", [(str(Path.home() / ".codex/AGENTS.md"), True),
@@ -450,10 +605,32 @@ def readback_messages(sources):
 def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
     monkeypatch.setattr(
         "switchstand.launch._rpc_messages",
-        lambda repo, env: readback_messages([source, "/repo/AGENTS.md"]),
+        lambda control, candidate, env: readback_messages([source, "/repo/AGENTS.md"]),
     )
     if accepted:
-        assert readback(Path("/repo"), {}).profile == PROFILE
+        assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
     else:
         with pytest.raises(RuntimeError, match="undeclared instruction"):
-            readback(Path("/repo"), {})
+            readback(Path("/repo"), Path("/writer"), {})
+
+
+def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
+    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
+    messages[1]["result"]["sandbox"]["writableRoots"] = ["/repo", "/writer"]
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="unexpected writable roots"):
+        readback(Path("/repo"), Path("/writer"), {})
+
+
+def test_readback_rejects_disabled_network(monkeypatch):
+    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
+    messages[1]["result"]["sandbox"]["networkAccess"] = False
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="unexpected sandbox"):
+        readback(Path("/repo"), Path("/writer"), {})

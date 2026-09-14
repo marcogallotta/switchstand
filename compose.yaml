@@ -26,7 +26,9 @@ services:
         fi
         : "$${ASANA_TOKEN:?required}"
         : "$${ACTIVE_WORK_ID:?required}"
-        uv run --no-sync alembic upgrade head && exec uv run --no-sync switchstand
+        uv run --no-sync python -c \
+          'from switchstand.provision import require_current_schema; require_current_schema()'
+        exec uv run --no-sync switchstand
     stdin_open: true
     env_file:
       - ${HOME}/.config/switchstand/.env
