@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -49,3 +50,10 @@ def test_stale_schema_fails_before_provider_effect(monkeypatch):
     with pytest.raises(SystemExit):
         provision.main()
     assert called == []
+
+
+def test_managed_controller_checks_schema_without_upgrading_it():
+    compose = (Path(__file__).parents[1] / "compose.yaml").read_text()
+    managed = compose.split('if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then', 1)[1]
+    assert "require_current_schema; require_current_schema()" in managed
+    assert "alembic upgrade" not in managed
