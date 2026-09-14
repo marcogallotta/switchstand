@@ -119,10 +119,11 @@ Own-active append is not arbitrary cross-agent inbox send; receipt, acceptance
 and completed action remain distinct. Polling cadence and critical judgment
 belong to the active agent, not this server. No inactive wake is implemented.
 
-Record separate local and actual ChatGPT results. Do not land/activate this
-candidate until its required independent review, CI, local Codex and real
-ChatGPT capability evidence are complete. Reconcile then-current main and rerun
-affected composed tests before non-force landing.
+Record separate local and actual ChatGPT results. Landing requires the independent
+review, CI and local disposable qualification on the exact candidate. Real ChatGPT
+authentication, account capability and no-bypass evidence gate activation and
+reliance only; they do not block an otherwise qualified inert landing. Reconcile
+then-current main and rerun affected composed tests before non-force landing.
 
 ## Size and shared-path forecast
 
