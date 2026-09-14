@@ -1,4 +1,5 @@
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -11,48 +12,101 @@ def executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def committed_repo(path: Path) -> str:
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    run_git(path, "config", "user.name", "Switchstand Test")
+    run_git(path, "config", "user.email", "switchstand-test@example.invalid")
+    (path / "tracked.txt").write_text("accepted\n")
+    run_git(path, "add", "tracked.txt")
+    run_git(path, "commit", "-m", "accepted")
+    return run_git(path, "rev-parse", "HEAD").stdout.strip()
+
+
+def clone_repo(source: Path, target: Path) -> None:
+    subprocess.run(
+        ["git", "clone", str(source), str(target)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
 def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     target = tmp_path / "writer"
+    common = tmp_path / "shared" / ".git"
+    control_python = common.parent / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     (target / "scripts").mkdir(parents=True)
+    control_python.parent.mkdir(parents=True)
+    common.mkdir()
     source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
     start.chmod(0o755)
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
+  *"fetch --quiet --no-tags origin"*) : ;;
   *"branch --show-current") echo main ;;
-  *"rev-parse HEAD") echo "$FAKE_HEAD" ;;
+  *"rev-parse --show-toplevel") echo "$FAKE_TARGET" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
+  *"rev-parse HEAD") [ "$2" = "$FAKE_TARGET" ] && echo "$FAKE_TARGET_HEAD" || echo "$FAKE_HEAD" ;;
   *"rev-parse origin/main") echo "$FAKE_ACCEPTED" ;;
-  *"status --porcelain") : ;;
+  *"status --porcelain"*) [ "$2" != "$FAKE_TARGET" ] || [ "$FAKE_TARGET_DIRTY" = 0 ] || echo dirty ;;
+  *"cat-file -t"*) echo "$FAKE_OBJECT_TYPE" ;;
+  *"merge-base --is-ancestor"*) : ;;
+  *"worktree list --porcelain"*) printf 'worktree %s\n\n' "$FAKE_TARGET" ;;
   *) exit 91 ;;
 esac
 """)
     executable(fake_bin / "python3", "#!/bin/sh\necho 1218383014436992\n")
-    executable(scripts / "bootstrap", "#!/bin/sh\n:\n")
+    executable(control_python, """#!/bin/sh
+pwd > "$FAKE_LAUNCH_CWD"
+printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
+printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
+""")
+    executable(
+        scripts / "bootstrap",
+        "#!/bin/sh\nprintf 'called\\n' > \"$FAKE_BOOTSTRAP_LOG\"\n",
+    )
     executable(scripts / "switchstand-worktree", """#!/bin/sh
 printf '%s\n' "$*" > "$FAKE_WORKTREE_LOG"
 pwd > "$FAKE_WORKTREE_CWD"
 echo 'git progress belongs on stderr' >&2
 echo "$FAKE_TARGET"
 """)
-    executable(target / "scripts" / "switchstand-launch", """#!/bin/sh
-pwd > "$FAKE_LAUNCH_CWD"
-printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
-""")
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_HEAD": "a" * 40,
         "FAKE_ACCEPTED": "a" * 40,
+        "FAKE_TARGET_HEAD": "a" * 40,
+        "FAKE_TARGET_DIRTY": "0",
+        "FAKE_OBJECT_TYPE": "commit",
         "FAKE_TARGET": str(target),
+        "FAKE_COMMON": str(common),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
+        "FAKE_BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
     }
     return start, environment, target
 
@@ -60,7 +114,8 @@ printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
 def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     start, environment, target = fixture(tmp_path)
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--reference", "42", "do work"],
+        [start, "--active", "1218383014436992", "--commit", "a" * 40,
+         "--reference", "42", "do work"],
         env=environment,
         text=True,
         capture_output=True,
@@ -73,15 +128,17 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(target)
     assert (tmp_path / "launch.args").read_text().splitlines() == [
-        "--active", "1218383014436992", "--reference", "42", "do work",
+        "-m", "switchstand.launch", "--active", "1218383014436992",
+        "--commit", "a" * 40, "--reference", "42", "do work",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
 
 
 def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
     start, environment, _ = fixture(tmp_path)
     environment["FAKE_ACCEPTED"] = "b" * 40
     result = subprocess.run(
-        [start, "--active=1218383014436992"],
+        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -92,14 +149,56 @@ def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
     assert not (tmp_path / "worktree.log").exists()
 
 
+@pytest.mark.parametrize("problem", ["wrong-head", "dirty"])
+def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
+    start, environment, _ = fixture(tmp_path)
+    if problem == "wrong-head":
+        environment["FAKE_TARGET_HEAD"] = "b" * 40
+    else:
+        environment["FAKE_TARGET_DIRTY"] = "1"
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "registered clean worktree at the exact requested commit" in result.stderr
+    assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "bootstrap.log").exists()
+
+
+@pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])
+def test_start_requires_exact_lowercase_commit(tmp_path, commit):
+    start, environment, _ = fixture(tmp_path)
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", commit],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert not (tmp_path / "worktree.log").exists()
+
+
+def test_start_requires_commit_object(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    environment["FAKE_OBJECT_TYPE"] = "tag"
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "available commit object" in result.stderr
+    assert not (tmp_path / "worktree.log").exists()
+
+
 def test_worktree_helper_keeps_git_progress_off_stdout(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     git_dir = tmp_path / "git-dir"
+    common = tmp_path / "common"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     git_dir.mkdir()
+    common.mkdir()
     source = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
     helper = scripts / "switchstand-worktree"
     helper.write_bytes(source.read_bytes())
@@ -107,6 +206,7 @@ def test_worktree_helper_keeps_git_progress_off_stdout(tmp_path):
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
   "rev-parse --show-toplevel") echo "$FAKE_REPO" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
   *"cat-file -e"*) : ;;
   *"show-ref --verify --quiet"*) exit 1 ;;
   *"worktree add"*) echo 'HEAD is now at accepted' ;;
@@ -118,6 +218,7 @@ esac
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "TMPDIR": str(tmp_path),
         "FAKE_REPO": str(repo),
+        "FAKE_COMMON": str(common),
         "FAKE_GIT_DIR": str(git_dir),
     }
     result = subprocess.run(
@@ -139,10 +240,12 @@ def test_worktree_helper_reuses_only_valid_clean_task_writer(tmp_path, problem):
     fake_bin = tmp_path / "bin"
     target = tmp_path / "switchstand-sample"
     git_dir = tmp_path / "linked-git-dir"
+    common = tmp_path / "common"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     target.mkdir()
     git_dir.mkdir()
+    common.mkdir()
     sha, current = "a" * 40, "b" * 40
     recorded = "c" * 40 if problem == "changed-baseline" else sha
     (git_dir / "switchstand-green-sha").write_text(recorded + "\n")
@@ -153,6 +256,7 @@ def test_worktree_helper_reuses_only_valid_clean_task_writer(tmp_path, problem):
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
   "rev-parse --show-toplevel") echo "$FAKE_REPO" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_COMMON" ;;
   *"cat-file -e"*) : ;;
   *"show-ref --verify --quiet"*) : ;;
   *"rev-parse --show-toplevel"*) echo "$FAKE_ACTUAL_TARGET" ;;
@@ -161,6 +265,7 @@ case "$*" in
   *"rev-parse --absolute-git-dir"*) echo "$FAKE_GIT_DIR" ;;
   *"status --porcelain"*) [ "$FAKE_DIRTY" = 0 ] || echo dirty ;;
   *"merge-base --is-ancestor"*) exit "$FAKE_DIVERGENT" ;;
+  *"worktree list --porcelain"*) printf 'worktree %s\n\n' "$FAKE_REGISTERED_TARGET" ;;
   *) exit 91 ;;
 esac
 """)
@@ -172,6 +277,8 @@ esac
         "FAKE_BRANCH": "wrong" if problem == "wrong-branch" else "v2-sample",
         "FAKE_SHA": current,
         "FAKE_GIT_DIR": str(git_dir),
+        "FAKE_COMMON": str(common),
+        "FAKE_REGISTERED_TARGET": str(target),
         "FAKE_DIRTY": "1" if problem == "dirty" else "0",
         "FAKE_DIVERGENT": "1" if problem == "divergent" else "0",
     }
@@ -184,7 +291,88 @@ esac
         assert result.stdout == f"{target}\n"
     else:
         assert result.returncode == 1
-        assert "not clean and based on the requested starting point" in result.stderr
+        assert "not a clean registered linked worktree" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_worktree_helper_rejects_foreign_clone_collision_and_preserves_it(tmp_path):
+    source_repo = tmp_path / "source"
+    sha = committed_repo(source_repo)
+    requester = tmp_path / "requester"
+    foreign = tmp_path / "foreign"
+    clone_repo(source_repo, requester)
+    clone_repo(source_repo, foreign)
+
+    target = tmp_path / "switchstand-sample"
+    run_git(requester, "branch", "v2-sample", sha)
+    run_git(foreign, "worktree", "add", "-b", "v2-sample", str(target), sha)
+    target_git_dir = Path(
+        run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip()
+    )
+    marker = target_git_dir / "switchstand-green-sha"
+    marker.write_text(sha + "\n")
+
+    before_git_file = (target / ".git").read_text()
+    before_registry = run_git(foreign, "worktree", "list", "--porcelain").stdout
+    helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
+    environment = os.environ | {"TMPDIR": str(tmp_path)}
+
+    result = subprocess.run(
+        [helper, "sample", sha],
+        cwd=requester,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "registered linked worktree of the requesting repository" in result.stderr
+    assert target.exists()
+    assert (target / ".git").read_text() == before_git_file
+    assert run_git(target, "rev-parse", "HEAD").stdout.strip() == sha
+    assert run_git(target, "status", "--porcelain").stdout == ""
+    assert marker.read_text() == sha + "\n"
+    assert run_git(foreign, "worktree", "list", "--porcelain").stdout == before_registry
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_worktree_helper_reuses_registered_requesting_repo_worktree(tmp_path):
+    source_repo = tmp_path / "source"
+    sha = committed_repo(source_repo)
+    requester = tmp_path / "requester"
+    clone_repo(source_repo, requester)
+
+    target = tmp_path / "switchstand-sample"
+    run_git(requester, "worktree", "add", "-b", "v2-sample", str(target), sha)
+    target_git_dir = Path(
+        run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip()
+    )
+    (target_git_dir / "switchstand-green-sha").write_text(sha + "\n")
+
+    helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
+    environment = os.environ | {"TMPDIR": str(tmp_path)}
+    result = subprocess.run(
+        [helper, "sample", sha],
+        cwd=requester,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{target}\n"
+    assert (
+        run_git(target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        .stdout.strip()
+        == run_git(
+            requester, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        ).stdout.strip()
+    )
+    assert f"worktree {target}\n" in run_git(
+        requester, "worktree", "list", "--porcelain"
+    ).stdout
 
 
 def test_launch_uses_shared_project_environment(tmp_path):
@@ -211,6 +399,7 @@ esac
     executable(python, """#!/bin/sh
 printf '%s\n' "$PYTHONPATH" > "$FAKE_PYTHONPATH"
 printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
+printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 """)
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -218,13 +407,15 @@ printf '%s\n' "$@" > "$FAKE_PYTHON_ARGS"
         "FAKE_COMMON": str(common),
         "FAKE_PYTHONPATH": str(tmp_path / "pythonpath"),
         "FAKE_PYTHON_ARGS": str(tmp_path / "python.args"),
+        "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
     }
     result = subprocess.run(
         [launch, "--active", "123"], env=environment,
         text=True, capture_output=True, check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "pythonpath").read_text().split(":")[0] == str(repo / "src")
+    assert (tmp_path / "pythonpath").read_text().strip().split(":")[0] == str(repo / "src")
     assert (tmp_path / "python.args").read_text().splitlines() == [
         "-m", "switchstand.launch", "--active", "123",
     ]
+    assert (tmp_path / "launch.common").read_text().strip() == str(common)
