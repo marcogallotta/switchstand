@@ -10,16 +10,15 @@ def completed(arguments, stdout="", stderr="", returncode=0):
     return subprocess.CompletedProcess(arguments, returncode, stdout=stdout, stderr=stderr)
 
 
-def inspection(object_id, name, owner, role):
-    return json.dumps([
-        {
-            "Id": object_id,
-            "Name": name,
-            "Config": {
-                "Labels": {docker.OWNER_LABEL: owner, docker.ROLE_LABEL: role}
-            },
-        }
-    ])
+def inspection(object_id, name, owner, role, *, state=None):
+    value = {
+        "Id": object_id,
+        "Name": name,
+        "Config": {"Labels": {docker.OWNER_LABEL: owner, docker.ROLE_LABEL: role}},
+    }
+    if state is not None:
+        value["State"] = state
+    return json.dumps([value])
 
 
 def test_foreign_collision_is_preserved(monkeypatch):
@@ -80,15 +79,17 @@ def test_control_command_has_a_bounded_timeout(monkeypatch):
 
 
 def test_image_inspection_does_not_require_container_name(monkeypatch):
-    value = json.dumps([
-        {
-            "Id": "sha256:owned",
-            "RepoTags": ["switchstand-runner:latest"],
-            "Config": {
-                "Labels": {docker.OWNER_LABEL: "run-1", docker.ROLE_LABEL: "runner"}
-            },
-        }
-    ])
+    value = json.dumps(
+        [
+            {
+                "Id": "sha256:owned",
+                "RepoTags": ["switchstand-runner:latest"],
+                "Config": {
+                    "Labels": {docker.OWNER_LABEL: "run-1", docker.ROLE_LABEL: "runner"}
+                },
+            }
+        ]
+    )
     monkeypatch.setattr(
         docker,
         "command",
@@ -98,3 +99,23 @@ def test_image_inspection_does_not_require_container_name(monkeypatch):
     assert inspected is not None
     assert inspected.name == "switchstand-runner:latest"
     assert inspected.object_id == "sha256:owned"
+
+
+def test_container_inspection_reads_daemon_execution_state(monkeypatch):
+    value = inspection(
+        "exact-id",
+        "/work",
+        "run-1",
+        "focused",
+        state={"Running": False, "Status": "exited", "ExitCode": 7},
+    )
+    monkeypatch.setattr(
+        docker,
+        "command",
+        lambda arguments, env, **kwargs: completed(arguments, stdout=value),
+    )
+    inspected = docker.inspect("container", "exact-id", {})
+    assert inspected is not None
+    assert inspected.running is False
+    assert inspected.status == "exited"
+    assert inspected.exit_code == 7

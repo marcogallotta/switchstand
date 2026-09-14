@@ -12,7 +12,7 @@ glob_scan_max_depth = 6
 "**/*.env*" = "deny"
 
 [permissions.switchstand-development.network]
-enabled = false
+enabled = true
 
 [permissions.switchstand-development.network.unix_sockets]
 "/var/run/docker.sock" = "deny"
@@ -41,6 +41,7 @@ approval_mode = "approve"
 [mcp_servers.switchstand_development]
 command = "scripts/switchstand-development-mcp"
 env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON",
+            "SWITCHSTAND_RUN_ID",
             "SWITCHSTAND_QUALITY_IMAGE", "SWITCHSTAND_QUALITY_NETWORK",
             "SWITCHSTAND_DATABASE_CONTAINER", "SWITCHSTAND_MANIFEST_SHA256",
             "SWITCHSTAND_MANAGED"]

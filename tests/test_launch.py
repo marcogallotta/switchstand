@@ -123,6 +123,7 @@ def test_exact_revision_preflight_rejects_ambiguous_identity(tmp_path, requested
 
 def test_managed_tools_have_narrow_approval_free_policy():
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
     expected = {
         "switchstand": {"work_get", "source_task", "source_stories", "source_story", "work_append"},
@@ -139,6 +140,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
         assert set(tools) == names
         assert names == set(servers[server]["enabled_tools"])
         assert all(tool["approval_mode"] == "approve" for tool in tools.values())
+    assert "SWITCHSTAND_RUN_ID" in servers["switchstand_development"]["env_vars"]
 
 
 def test_clean_environment_removes_secret_and_stale_authority():
@@ -248,11 +250,14 @@ def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
     (candidate / ".codex").mkdir()
     (candidate / ".codex" / "config.toml").write_text("HOSTILE\n")
     builds = []
+    networks = []
     answers = iter(("sha256:image\n", "network-id\n", "database-id\n"))
 
     def docker(arguments, cwd, env, **kwargs):
         if arguments[0] == "build":
             builds.append((arguments, set(cwd.iterdir()), kwargs))
+        elif arguments[:2] == ["network", "create"]:
+            networks.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
 
     monkeypatch.setattr("switchstand.launch.docker_run", docker)
@@ -270,6 +275,15 @@ def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
     assert "com.switchstand.run=" + str(ACTIVE) in build
     assert {path.name for path in context_files} == {"pyproject.toml", "uv.lock", "README.md"}
     assert options["timeout"] == 600
+    assert len(networks) == 1
+    network = networks[0]
+    assert network[:-1] == [
+        "network", "create",
+        "--label", f"com.switchstand.run={ACTIVE}",
+        "--label", "com.switchstand.role=qualification",
+    ]
+    assert network[-1].startswith("switchstand-dev-")
+    assert "--internal" not in network
     assert boundary == DevelopmentBoundary(
         "sha256:image", "network-id", "database-id", boundary.manifest
     )
@@ -553,7 +567,7 @@ def readback_messages(sources):
     return [
         {"id": 2, "result": {"data": [{"id": PROFILE, "allowed": True}]}},
         {"id": 3, "result": {"activePermissionProfile": {"id": PROFILE},
-                              "sandbox": {"type": "workspaceWrite", "networkAccess": False,
+                              "sandbox": {"type": "workspaceWrite", "networkAccess": True,
                                           "writableRoots": ["/writer"]},
                               "runtimeWorkspaceRoots": ["/repo", "/writer"],
                               "approvalPolicy": "never",
@@ -583,4 +597,15 @@ def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="unexpected writable roots"):
+        readback(Path("/repo"), Path("/writer"), {})
+
+
+def test_readback_rejects_disabled_network(monkeypatch):
+    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
+    messages[1]["result"]["sandbox"]["networkAccess"] = False
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="unexpected sandbox"):
         readback(Path("/repo"), Path("/writer"), {})
