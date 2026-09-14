@@ -38,6 +38,7 @@ async def test_focused_check_uses_pinned_image_database_and_paths(monkeypatch, t
     monkeypatch.setenv("SWITCHSTAND_QUALITY_IMAGE", "sha256:fixed")
     monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
     monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
+    monkeypatch.setenv("SWITCHSTAND_RUN_ID", "run-1")
     captured = {}
     monkeypatch.setattr(
         development, "_focused", lambda command: captured.setdefault("run", completed(command))
@@ -47,6 +48,8 @@ async def test_focused_check_uses_pinned_image_database_and_paths(monkeypatch, t
     assert result.status == "ok"
     assert "sha256:fixed" in command and "isolated" in command
     assert "TEST_DATABASE_URL=" in " ".join(command)
+    assert "switchstand-focused-run-1" in command
+    assert "com.switchstand.run=run-1" in command
     assert command[-1] == "tests/test_one.py"
 
 
@@ -72,6 +75,7 @@ async def test_quality_uses_only_pinned_image_and_read_only_worktree(monkeypatch
     monkeypatch.setenv("SWITCHSTAND_MANIFEST_SHA256", "manifest")
     monkeypatch.setenv("SWITCHSTAND_QUALITY_IMAGE", "sha256:fixed")
     monkeypatch.setenv("SWITCHSTAND_QUALITY_NETWORK", "isolated")
+    monkeypatch.setenv("SWITCHSTAND_RUN_ID", "run-1")
     captured = {}
     monkeypatch.setattr(development, "_quality",
                         lambda command: captured.setdefault("run", completed(command)))
@@ -80,6 +84,8 @@ async def test_quality_uses_only_pinned_image_and_read_only_worktree(monkeypatch
     assert result.status == "ok"
     assert "sha256:fixed" in command and f"{tmp_path}:/workspace:ro" in command
     assert "PYTHONPATH=/workspace/src" in " ".join(command)
+    assert "switchstand-quality-run-1" in command
+    assert "com.switchstand.run=run-1" in command
     assert "compose.yaml" not in " ".join(command) and "Dockerfile" not in " ".join(command)
 
 

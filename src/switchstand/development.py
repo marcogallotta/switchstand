@@ -8,6 +8,8 @@ from typing import Literal
 from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
+from .docker import labels as docker_labels
+from .docker import owned_name
 from .mcp import closed_tool
 from .run import RECEIPT, RunStatus, inspect_receipt
 
@@ -96,7 +98,13 @@ def build_server(bound: bool = True) -> MCPServer:
         ):
             return _result("failed", before, repo, "test paths must be existing files under tests/")
         command = [
-            "docker", "run", "--rm", "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
+            "docker", "run", "--rm", "--name",
+            owned_name(os.environ["SWITCHSTAND_RUN_ID"], "focused"),
+            *docker_labels(os.environ["SWITCHSTAND_RUN_ID"], "focused"),
+            "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--pids-limit", "512",
+            "--memory", "2g", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec",
+            "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
             "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
             "-e", "SWITCHSTAND_REQUIRE_TEST_DATABASE=1", "-v", f"{repo}:/workspace:ro",
             "-w", "/workspace", os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
@@ -143,7 +151,13 @@ def build_server(bound: bool = True) -> MCPServer:
             return _result("failed", before, repo, "candidate worktree is not clean")
         if _manifest(repo) != os.environ["SWITCHSTAND_MANIFEST_SHA256"]:
             return _result("stale", before, repo, "dependency manifests changed; relaunch required")
-        command = ["docker", "run", "--rm", "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
+        command = ["docker", "run", "--rm", "--name",
+                   owned_name(os.environ["SWITCHSTAND_RUN_ID"], "quality"),
+                   *docker_labels(os.environ["SWITCHSTAND_RUN_ID"], "quality"),
+                   "--read-only", "--cap-drop", "ALL",
+                   "--security-opt", "no-new-privileges", "--pids-limit", "512",
+                   "--memory", "2g", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec",
+                   "--network", os.environ["SWITCHSTAND_QUALITY_NETWORK"],
                    "-e", "TEST_DATABASE_URL=postgresql+psycopg://switchstand:switchstand@postgres-test/switchstand_test",
                    "-v", f"{repo}:/workspace:ro", "-w", "/workspace",
                    os.environ["SWITCHSTAND_QUALITY_IMAGE"], "sh", "-c",
@@ -175,14 +189,7 @@ def main() -> None:
     if not bound:
         build_server(False).run()
         return
-    try:
-        build_server().run()
-    finally:
-        env = _environment()
-        subprocess.run(["docker", "rm", "-f", os.environ["SWITCHSTAND_DATABASE_CONTAINER"]],
-                       env=env, capture_output=True, check=False)
-        subprocess.run(["docker", "network", "rm", os.environ["SWITCHSTAND_QUALITY_NETWORK"]],
-                       env=env, capture_output=True, check=False)
+    build_server().run()
 
 
 if __name__ == "__main__":
