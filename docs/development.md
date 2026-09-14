@@ -24,7 +24,8 @@
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
   instruction sources, then replaces itself with Codex. It refuses the ordinary checkout. Do not copy WorkIds or edit
-  the shared environment file. At launch it pins a development image and starts a writer-local internal test network;
+  the shared environment file. Managed Codex runs have network access. At launch it pins a development image and
+  starts a writer-local test network with egress for dependency resolution;
   the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools. Ordinary commands cannot reach the
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
   During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
