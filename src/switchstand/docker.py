@@ -14,6 +14,9 @@ class DockerObject(NamedTuple):
     object_id: str
     owner: str | None
     role: str | None
+    running: bool | None = None
+    exit_code: int | None = None
+    status: str | None = None
 
 
 def command(
@@ -25,8 +28,13 @@ def command(
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            ["docker", *arguments], cwd=cwd, env=env, text=True,
-            capture_output=True, check=False, timeout=timeout,
+            ["docker", *arguments],
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(f"docker {' '.join(arguments)} timed out") from error
@@ -53,15 +61,35 @@ def inspect(kind: DockerKind, reference: str, env: dict[str, str]) -> DockerObje
             )
             or {},
         )
+        running: bool | None = None
+        exit_code: int | None = None
+        status: str | None = None
         if kind == "image":
             tags = cast(list[str], value.get("RepoTags") or [])
             name = tags[0] if tags else reference
         else:
             name = cast(str, value["Name"]).removeprefix("/")
+        if kind == "container":
+            state = cast(dict[str, Any], value.get("State") or {})
+            if "Running" in state:
+                running = cast(bool, state["Running"])
+            if "ExitCode" in state:
+                exit_code = cast(int, state["ExitCode"])
+            if "Status" in state:
+                status = cast(str, state["Status"])
         object_id = cast(str, value["Id"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("docker returned invalid object inspection") from error
-    return DockerObject(kind, name, object_id, labels.get(OWNER_LABEL), labels.get(ROLE_LABEL))
+    return DockerObject(
+        kind,
+        name,
+        object_id,
+        labels.get(OWNER_LABEL),
+        labels.get(ROLE_LABEL),
+        running,
+        exit_code,
+        status,
+    )
 
 
 def labels(owner: str, role: str) -> list[str]:
