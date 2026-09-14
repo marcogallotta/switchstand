@@ -90,6 +90,41 @@ def test_paused_fails_before_git_or_control_execution(selector_fixture, tmp_path
     assert not receipt.with_suffix('.sha').exists()
 
 
+def test_active_ignores_caller_path_git(selector_fixture, tmp_path):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    fake = tmp_path / 'fake-bin'
+    fake.mkdir()
+    marker = tmp_path / 'git-called'
+    fake_git = fake / 'git'
+    fake_git.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 99\n')
+    fake_git.chmod(0o755)
+    env['PATH'] = f"{fake}:{env['PATH']}"
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert receipt.with_suffix('.sha').read_text().strip() == sha
+
+
+def test_active_ignores_hostile_git_config(selector_fixture, tmp_path):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    marker = tmp_path / 'fsmonitor-called'
+    helper = tmp_path / 'fsmonitor-helper'
+    helper.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n')
+    helper.chmod(0o755)
+    git(control, 'config', 'core.fsmonitor', str(helper))
+    env |= {
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0': 'core.fsmonitor',
+        'GIT_CONFIG_VALUE_0': str(helper),
+    }
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert receipt.with_suffix('.sha').read_text().strip() == sha
+
+
 def test_active_selects_exact_control_from_arbitrary_cwd(selector_fixture, tmp_path):
     wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
     active(manifest, sha, control)
