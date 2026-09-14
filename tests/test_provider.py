@@ -5,7 +5,7 @@ import pytest
 
 from switchstand.contracts import WorkPatch
 from switchstand.core import ProviderError, UnknownEffect
-from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, AsanaProvider
+from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, PROJECTS, AsanaProvider
 
 
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
@@ -21,6 +21,8 @@ def candidate(gid, priority, *, completed=False, horizon="Stage 3"):
               field(FIELDS["horizon"], display=horizon)]
     return {"gid": gid, "name": f"Work {gid}", "completed": completed,
             "custom_fields": fields}
+def page(*candidates):
+    return {"data": list(candidates), "next_page": None}
 class API:
     def __init__(self, *responses): self.responses, self.requests = list(responses), []
     def __call__(self, request):
@@ -34,7 +36,9 @@ def provider(*responses):
     return AsanaProvider(client), api
 @pytest.mark.parametrize("responses,canonical,count", [
     ([(200, task(project=PROJECT))], True, 1),
-    ([(200, task(parent="p")), (200, task(project=PROJECT))], True, 2),
+    ([(200, task(project=PROJECTS[1]))], True, 1),
+    ([(200, task(parent="p")), (200, task(project=PROJECTS[-1]))], True, 2),
+    ([(200, task(project="unapproved"))], False, 1),
     ([(200, task())], False, 1),
 ])
 async def test_exact_get_and_effective_membership(responses, canonical, count):
@@ -47,6 +51,13 @@ async def test_unknown_task_and_routing_projection():
     fields = [field(gid, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
     result = await subject.get("t"); assert result and result.routing.model_dump() == {name: name for name in FIELDS}
+def test_project_registry_does_not_expand_writable_routing_fields():
+    assert FIELDS == {
+        "priority": "1217653169990249",
+        "horizon": "1218212397743203",
+        "review_next_action": "1218212397743210",
+        "stage3_gate": "1218212397743217",
+    }
 async def test_ancestry_is_bounded():
     subject, api = provider(*[(200, task(parent=str(i))) for i in range(ANCESTRY_GETS)])
     result = await subject.get("t"); assert result and not result.canonical and len(api.requests) == ANCESTRY_GETS
@@ -108,15 +119,32 @@ async def test_failures_are_sanitized():
     assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
 
 async def test_suggest_next_returns_only_highest_priority_actionable_head():
-    payload = {"data": [candidate("bound", "P0"), candidate("later", "P2"),
-                        candidate("head", "P1"), candidate("unset", "UNSET")],
-               "next_page": None}
-    subject, api = provider((200, payload))
+    payloads = [page(candidate("bound", "P0"), candidate("later", "P2")),
+                page(), page(candidate("head", "P1"), candidate("unset", "UNSET"))]
+    payloads.extend(page() for _ in PROJECTS[len(payloads):])
+    subject, api = provider(*[(200, payload) for payload in payloads])
     result = await subject.suggest_next(frozenset({"bound"}))
     assert result and (result.provider_work_id, result.title, result.priority) == (
         "head", "Work head", "P1")
-    assert api.requests[0].url.path == f"/api/1.0/projects/{PROJECT}/tasks"
-    assert api.requests[0].url.params["limit"] == "100"
+    assert [request.url.path for request in api.requests] == [
+        f"/api/1.0/projects/{project}/tasks" for project in PROJECTS
+    ]
+    assert all(request.url.params["limit"] == "100" for request in api.requests)
+
+async def test_suggest_next_discovers_area_only_task_without_exact_id():
+    payloads = [page() for _ in PROJECTS]
+    payloads[2] = page(candidate("area-only-fixture", "P0"))
+    subject, _ = provider(*[(200, payload) for payload in payloads])
+    result = await subject.suggest_next(frozenset())
+    assert result and result.provider_work_id == "area-only-fixture"
+
+async def test_suggest_next_deduplicates_cross_project_membership_by_identity():
+    payloads = [page() for _ in PROJECTS]
+    payloads[0] = page(candidate("shared", "P2"))
+    payloads[1] = page(candidate("shared", "P0"))
+    subject, _ = provider(*[(200, payload) for payload in payloads])
+    result = await subject.suggest_next(frozenset())
+    assert result and (result.provider_work_id, result.priority) == ("shared", "P2")
 
 async def test_suggest_next_fails_closed_on_truncated_provider_page():
     subject, _ = provider((200, {"data": [candidate("head", "P0")],
@@ -127,8 +155,7 @@ async def test_suggest_next_fails_closed_on_truncated_provider_page():
 async def test_suggest_next_fails_closed_on_malformed_actionable_row():
     malformed = candidate("broken", "P0")
     malformed["name"] = None
-    subject, _ = provider((200, {"data": [malformed, candidate("lower", "P1")],
-                                 "next_page": None}))
+    subject, _ = provider((200, page(malformed, candidate("lower", "P1"))))
     with pytest.raises(ProviderError, match="provider request failed"):
         await subject.suggest_next(frozenset())
 
