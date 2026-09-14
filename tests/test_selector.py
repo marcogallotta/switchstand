@@ -125,6 +125,23 @@ def test_active_ignores_hostile_git_config(selector_fixture, tmp_path):
     assert receipt.with_suffix('.sha').read_text().strip() == sha
 
 
+def test_active_rejects_local_core_worktree_redirection(selector_fixture, tmp_path):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    alternate = tmp_path / 'alternate-worktree'
+    (alternate / 'scripts').mkdir(parents=True)
+    shutil.copy2(control / 'scripts' / 'switchstand-start', alternate / 'scripts' / 'switchstand-start')
+    git(control, 'config', 'core.worktree', str(alternate))
+    marker = tmp_path / 'redirected-control-executed'
+    (control / 'scripts' / 'switchstand-start').write_text(
+        f'#!/bin/sh\ntouch "{marker}"\nexit 0\n'
+    )
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 1
+    assert not marker.exists()
+    assert not receipt.with_suffix('.sha').exists()
+
+
 def test_active_selects_exact_control_from_arbitrary_cwd(selector_fixture, tmp_path):
     wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
     active(manifest, sha, control)
