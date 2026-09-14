@@ -112,6 +112,7 @@ run_git() {
         GIT_CONFIG_NOSYSTEM=1 \
         GIT_CONFIG_GLOBAL=/dev/null \
         GIT_TERMINAL_PROMPT=0 \
+        GIT_PAGER=cat \
         "$git_bin" \
         --work-tree="$control_real" \
         -c core.worktree="$control_real" \
@@ -124,14 +125,12 @@ head=$(run_git -C "$control_real" rev-parse HEAD 2>/dev/null) \
     || fail "cannot inspect CONTROL HEAD"
 branch=$(run_git -C "$control_real" branch --show-current 2>/dev/null) \
     || fail "cannot inspect CONTROL branch state"
-dirty=$(run_git -C "$control_real" status --porcelain --untracked-files=all 2>/dev/null) \
-    || fail "cannot inspect CONTROL cleanliness"
 common=$(run_git -C "$control_real" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
     || fail "cannot inspect CONTROL git common directory"
 toplevel=$(run_git -C "$control_real" rev-parse --show-toplevel 2>/dev/null) \
     || fail "cannot inspect CONTROL effective worktree"
-[ "$head" = "$control_sha" ] && [ -z "$branch" ] && [ -z "$dirty" ] && [ -n "$common" ] \
-    || fail "CONTROL checkout is not the exact clean detached manifest SHA"
+[ "$head" = "$control_sha" ] && [ -z "$branch" ] && [ -n "$common" ] \
+    || fail "CONTROL checkout is not the exact detached manifest SHA"
 [ "$toplevel" = "$control_real" ] || fail "CONTROL effective worktree does not match selected CONTROL path"
 [ -d "$common" ] || fail "CONTROL git common directory is missing"
 common_real=$(CDPATH= cd -- "$common" && pwd -P)
@@ -139,6 +138,29 @@ case "$common_real" in
     "$control_real"/*) ;;
     *) fail "CONTROL git common directory lies outside the selected CONTROL snapshot" ;;
 esac
+
+local_keys=$(run_git -C "$control_real" config --local --no-includes --name-only --list 2>/dev/null) \
+    || fail "cannot inspect CONTROL local Git config"
+bad_key=
+while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    case "$key" in
+        core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|core.precomposeunicode|\
+        remote.origin.url|remote.origin.fetch|branch.*.remote|branch.*.merge)
+            ;;
+        *)
+            bad_key=$key
+            break
+            ;;
+    esac
+done <<EOF
+$local_keys
+EOF
+[ -z "$bad_key" ] || fail "CONTROL local Git config contains unsupported key: $bad_key"
+
+dirty=$(run_git -C "$control_real" status --porcelain --untracked-files=all 2>/dev/null) \
+    || fail "cannot inspect CONTROL cleanliness"
+[ -z "$dirty" ] || fail "CONTROL checkout is not clean"
 
 origin=$(run_git -C "$control_real" remote get-url origin 2>/dev/null) \
     || fail "cannot inspect CONTROL origin"
