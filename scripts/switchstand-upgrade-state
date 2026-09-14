@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 0 ] || { echo "usage: scripts/switchstand-upgrade-state" >&2; exit 2; }
+control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+head=$(git -C "$control" rev-parse HEAD)
+branch=$(git -C "$control" branch --show-current)
+common=$(git -C "$control" rev-parse --path-format=absolute --git-common-dir)
+dirty=$(git -C "$control" status --porcelain --untracked-files=all)
+
+if [ -n "${SWITCHSTAND_CONTROL_PATH:-}${SWITCHSTAND_CONTROL_SHA:-}${SWITCHSTAND_CONTROL_COMMON:-}" ]; then
+    [ "$control" = "${SWITCHSTAND_CONTROL_PATH:-}" ] \
+        && [ "$head" = "${SWITCHSTAND_CONTROL_SHA:-}" ] \
+        && [ "$common" = "${SWITCHSTAND_CONTROL_COMMON:-}" ] \
+        && [ -z "$branch" ] && [ -z "$dirty" ] \
+        || { echo "state upgrade CONTROL does not match selector identity" >&2; exit 1; }
+else
+    git -C "$control" fetch --quiet --no-tags origin \
+        '+refs/heads/main:refs/remotes/origin/main'
+    accepted=$(git -C "$control" rev-parse origin/main)
+    [ "$branch" = main ] && [ "$head" = "$accepted" ] && [ -z "$dirty" ] \
+        || { echo "state upgrade requires clean current main CONTROL" >&2; exit 1; }
+fi
+
+"$control/scripts/bootstrap"
+docker compose --project-directory "$control" -f "$control/compose.state.yaml" \
+    up -d --wait postgres
+docker compose --project-directory "$control" -f "$control/compose.yaml" \
+    run --build --rm --no-deps controller \
+    uv run --no-sync alembic -c /app/alembic.ini upgrade head

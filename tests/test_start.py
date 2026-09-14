@@ -50,13 +50,13 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
     target = tmp_path / "writer"
-    common = tmp_path / "shared" / ".git"
-    control_python = common.parent / ".venv" / "bin" / "python"
+    common = repo / ".git"
+    control_python = repo / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     (target / "scripts").mkdir(parents=True)
     control_python.parent.mkdir(parents=True)
-    common.mkdir()
+    common.mkdir(parents=True)
     source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
@@ -76,11 +76,16 @@ case "$*" in
   *) exit 91 ;;
 esac
 """)
-    executable(fake_bin / "python3", "#!/bin/sh\necho 1218383014436992\n")
     executable(control_python, """#!/bin/sh
+if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
+  echo 1218383014436992
+  exit 0
+fi
 pwd > "$FAKE_LAUNCH_CWD"
 printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
 printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
+printf '%s\n' "$SWITCHSTAND_CONTROL_ROOT" > "$FAKE_CONTROL_ROOT"
+printf '%s\n' "$SWITCHSTAND_CANDIDATE_ROOT" > "$FAKE_CANDIDATE_ROOT"
 """)
     executable(
         scripts / "bootstrap",
@@ -106,6 +111,8 @@ echo "$FAKE_TARGET"
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
         "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
+        "FAKE_CONTROL_ROOT": str(tmp_path / "control.root"),
+        "FAKE_CANDIDATE_ROOT": str(tmp_path / "candidate.root"),
         "FAKE_BOOTSTRAP_LOG": str(tmp_path / "bootstrap.log"),
     }
     return start, environment, target
@@ -126,12 +133,14 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
         f"task-1218383014436992 {'a' * 40}\n"
     )
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
-    assert (tmp_path / "launch.cwd").read_text().strip() == str(target)
+    assert (tmp_path / "launch.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.args").read_text().splitlines() == [
-        "-m", "switchstand.launch", "--active", "1218383014436992",
+        "-P", "-m", "switchstand.launch", "--active", "1218383014436992",
         "--commit", "a" * 40, "--reference", "42", "do work",
     ]
     assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
+    assert (tmp_path / "control.root").read_text().strip() == str(start.parents[1])
+    assert (tmp_path / "candidate.root").read_text().strip() == str(target)
 
 
 def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
@@ -145,7 +154,7 @@ def test_start_rejects_a_main_that_is_not_the_accepted_commit(tmp_path):
         check=False,
     )
     assert result.returncode == 1
-    assert "clean main at the locally accepted origin/main" in result.stderr
+    assert "clean main at the freshly accepted origin/main" in result.stderr
     assert not (tmp_path / "worktree.log").exists()
 
 
@@ -163,7 +172,7 @@ def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
     assert result.returncode == 1
     assert "registered clean worktree at the exact requested commit" in result.stderr
     assert not (tmp_path / "launch.args").exists()
-    assert not (tmp_path / "bootstrap.log").exists()
+    assert (tmp_path / "bootstrap.log").exists()
 
 
 @pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])
