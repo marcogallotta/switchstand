@@ -30,6 +30,13 @@ def owned(role: str, *, running=False, status="created", exit_code=0):
     )
 
 
+def output_stream(value: bytes = b""):
+    stream = asyncio.StreamReader()
+    stream.feed_data(value)
+    stream.feed_eof()
+    return stream
+
+
 def test_development_surface_is_closed():
     server = development.build_server()
     assert set(server._tool_manager._tools) == {
@@ -128,6 +135,7 @@ async def test_hung_workload_stops_cli_removes_exact_container_and_reraises(monk
         def __init__(self):
             self.returncode = None
             self.stopped = False
+            self.stdout = output_stream()
 
         async def wait(self):
             if not self.stopped:
@@ -171,6 +179,7 @@ async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
         def __init__(self):
             self.returncode = None
             self.stopped = False
+            self.stdout = output_stream()
 
         async def wait(self):
             started.set()
@@ -266,6 +275,7 @@ async def test_cancel_during_post_attach_readback_removes_captured_id(monkeypatc
 
     class FinishedProcess:
         returncode = 0
+        stdout = output_stream()
 
         async def wait(self):
             return 0
@@ -312,6 +322,7 @@ async def test_attach_end_without_exited_execution_removes_exact_container(
 ):
     class FinishedProcess:
         returncode = 0
+        stdout = output_stream()
 
         async def wait(self):
             return 0
@@ -342,6 +353,7 @@ async def test_attach_end_without_exited_execution_removes_exact_container(
 async def test_success_uses_exact_daemon_exit_code_and_removes_bound_id(monkeypatch):
     class FinishedProcess:
         returncode = 99
+        stdout = output_stream()
 
         async def wait(self):
             return 99
@@ -367,6 +379,54 @@ async def test_success_uses_exact_daemon_exit_code_and_removes_bound_id(monkeypa
     )
     result = await development._run_owned_workload([], "run-id", "quality", 60)
     assert result.returncode == 7
+    assert removed == [("container", "exact-id", "run-id", "quality")]
+
+
+async def test_output_overflow_stops_workload_and_removes_exact_container(
+    monkeypatch,
+):
+    class NoisyProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stopped = False
+            self.stdout = output_stream(b"123456789")
+
+        async def wait(self):
+            while not self.stopped:
+                await asyncio.sleep(60)
+            self.returncode = -15
+            return -15
+
+        def terminate(self):
+            self.stopped = True
+
+        def kill(self):
+            self.stopped = True
+
+    process = NoisyProcess()
+    removed = []
+
+    async def fake_create(args, owner, role):
+        return owned(role)
+
+    async def fake_subprocess(*args, **kwargs):
+        assert kwargs["stdout"] is asyncio.subprocess.PIPE
+        assert kwargs["limit"] == development.WORKLOAD_OUTPUT_CHUNK_BYTES
+        return process
+
+    monkeypatch.setattr(development, "WORKLOAD_OUTPUT_BYTES", 8)
+    monkeypatch.setattr(development, "_create_owned_container", fake_create)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(
+        development,
+        "remove_exact",
+        lambda kind, object_id, owner, role, env: removed.append(
+            (kind, object_id, owner, role)
+        ),
+    )
+    with pytest.raises(RuntimeError, match="output exceeded 8 bytes"):
+        await development._run_owned_workload([], "run-id", "quality", 60)
+    assert process.stopped
     assert removed == [("container", "exact-id", "run-id", "quality")]
 
 

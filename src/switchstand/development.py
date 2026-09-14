@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +16,8 @@ CREATE_SECONDS = 30
 FOCUSED_SECONDS = 120
 QUALITY_SECONDS = 600
 WORKLOAD_STOP_SECONDS = 5
+WORKLOAD_OUTPUT_BYTES = 12000
+WORKLOAD_OUTPUT_CHUNK_BYTES = 4096
 
 
 class DevelopmentResult(BaseModel):
@@ -152,6 +153,36 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+async def _read_bounded_output(stream: asyncio.StreamReader) -> str:
+    output = bytearray()
+    while chunk := await stream.read(
+        min(WORKLOAD_OUTPUT_CHUNK_BYTES, WORKLOAD_OUTPUT_BYTES - len(output) + 1)
+    ):
+        output.extend(chunk)
+        if len(output) > WORKLOAD_OUTPUT_BYTES:
+            raise RuntimeError(
+                f"Docker workload output exceeded {WORKLOAD_OUTPUT_BYTES} bytes"
+            )
+    return output.decode(errors="replace")
+
+
+async def _wait_with_bounded_output(
+    process: asyncio.subprocess.Process, timeout: int
+) -> str:
+    if process.stdout is None:
+        raise RuntimeError("Docker workload output pipe is unavailable")
+    wait = asyncio.create_task(process.wait())
+    read = asyncio.create_task(_read_bounded_output(process.stdout))
+    try:
+        _, text = await asyncio.wait_for(asyncio.gather(wait, read), timeout)
+        return text
+    finally:
+        for task in (wait, read):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(wait, read, return_exceptions=True)
+
+
 async def _remove_exact_id(
     object_id: str, owner: str, role: str, env: dict[str, str]
 ) -> None:
@@ -256,27 +287,25 @@ async def _run_owned_workload(
     env = _environment()
     container = await _create_owned_container(arguments, owner, role)
     command = ["docker", "start", "--attach", container.object_id]
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            limit=WORKLOAD_OUTPUT_CHUNK_BYTES,
+        )
+    except BaseException:
+        await _remove_created(container, env)
+        raise
+    try:
+        text = await _wait_with_bounded_output(process, timeout)
+    except BaseException:
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                env=env,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-            )
-        except BaseException:
+            await _stop_process(process)
+        finally:
             await _remove_created(container, env)
-            raise
-        try:
-            await asyncio.wait_for(process.wait(), timeout)
-        except BaseException:
-            try:
-                await _stop_process(process)
-            finally:
-                await _remove_created(container, env)
-            raise
-        output.seek(0)
-        text = output.read()
+        raise
     try:
         finished = await asyncio.to_thread(inspect_object, "container", container.object_id, env)
     except BaseException as readback_error:
