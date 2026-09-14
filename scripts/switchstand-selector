@@ -100,12 +100,15 @@ env_link=/usr/bin/env
 env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"
 find_bin=/usr/bin/find
 git_bin=/usr/bin/git
+sed_bin=/usr/bin/sed
 status_file=/proc/self/status
 overflow_uid_file=/proc/sys/kernel/overflowuid
 [ -f "$find_bin" ] && [ -x "$find_bin" ] && [ ! -L "$find_bin" ] \
     || fail "trusted find executable is unavailable"
 [ -f "$git_bin" ] && [ -x "$git_bin" ] && [ ! -L "$git_bin" ] \
     || fail "trusted git executable is unavailable"
+[ -f "$sed_bin" ] && [ -x "$sed_bin" ] && [ ! -L "$sed_bin" ] \
+    || fail "trusted sed executable is unavailable"
 
 effective_uid=
 while IFS=' 	' read -r label _ effective _; do
@@ -117,7 +120,7 @@ case "$effective_uid" in
     *[!0-9]*|'') fail "trusted process identity is unavailable" ;;
 esac
 overflow_uid=
-IFS= read -r overflow_uid < "$overflow_uid_file" || :
+overflow_uid=$("$sed_bin" -n '1p' "$overflow_uid_file" 2>/dev/null) || overflow_uid=
 case "$overflow_uid" in
     *[!0-9]*|'') overflow_uid= ;;
 esac

@@ -81,6 +81,7 @@ def selector_with_env_identity(
     trusted_find: Path | None = None,
     status_file: Path | None = None,
     overflow_uid_file: Path | None = None,
+    trusted_sed: Path | None = None,
 ):
     source = wrapper.read_text()
     source = source.replace(
@@ -106,6 +107,10 @@ def selector_with_env_identity(
             'overflow_uid_file=/proc/sys/kernel/overflowuid',
             f'overflow_uid_file={shlex.quote(str(overflow_uid_file))}',
             1,
+        )
+    if trusted_sed is not None:
+        source = source.replace(
+            'sed_bin=/usr/bin/sed', f'sed_bin={shlex.quote(str(trusted_sed))}', 1
         )
     wrapper.write_text(source)
 
@@ -178,7 +183,17 @@ def test_overflow_owned_system_env_is_trusted_only_for_other_users(
         f'\t{effective_uid}\n'
     )
     overflow_uid_file = tmp_path / 'overflowuid'
-    overflow_uid_file.write_text('65534\n')
+    # Model the managed procfs short-read: a shell builtin sees only `6`, while
+    # the fixed reader returns the complete sysctl value.
+    overflow_uid_file.write_text('6\n')
+    sed_log = tmp_path / 'sed-log'
+    trusted_sed = tmp_path / 'trusted-sed'
+    trusted_sed.write_text(
+        '#!/bin/sh\n'
+        f'printf "%s\\n" "$*" > {shlex.quote(str(sed_log))}\n'
+        'printf "65534\\n"\n'
+    )
+    trusted_sed.chmod(0o755)
     selector_with_env_identity(
         wrapper,
         env_link,
@@ -186,6 +201,7 @@ def test_overflow_owned_system_env_is_trusted_only_for_other_users(
         trusted_find,
         status_file,
         overflow_uid_file,
+        trusted_sed,
     )
 
     result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
@@ -197,6 +213,7 @@ def test_overflow_owned_system_env_is_trusted_only_for_other_users(
     checks = find_log.read_text().splitlines()
     assert any('-uid 0 ' in check for check in checks)
     assert any('-uid 65534 ' in check for check in checks) is (expected == 0)
+    assert str(overflow_uid_file) in sed_log.read_text()
 
 
 @pytest.mark.parametrize('problem', ['unknown-target', 'symlink-candidate', 'writable-target',
