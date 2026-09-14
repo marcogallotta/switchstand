@@ -109,7 +109,7 @@ def prepare_development(
         require_owned("image", image_id, str(owner), "runner", env)
         require_absent("network", network, env)
         created_network = docker_run(
-            ["network", "create", "--internal", *docker_labels(str(owner), "qualification"), network],
+            ["network", "create", *docker_labels(str(owner), "qualification"), network],
             None,
             env,
         )
@@ -453,7 +453,7 @@ def readback(control: Path, candidate: Path, env: dict[str, str]) -> CodexReadba
     roots = tuple(cast(list[str], result.get("runtimeWorkspaceRoots", ())))
     if active is None or active.get("id") != PROFILE:
         raise RuntimeError(f"Codex selected an unexpected permission profile: {active!r}")
-    if sandbox != "workspaceWrite" or sandbox_data.get("networkAccess") is not False:
+    if sandbox != "workspaceWrite" or sandbox_data.get("networkAccess") is not True:
         raise RuntimeError(f"Codex selected an unexpected sandbox: {sandbox_data!r}")
     if writable != (str(candidate),):
         raise RuntimeError(f"Codex selected unexpected writable roots: {writable!r}")
