@@ -120,9 +120,29 @@ def test_active_ignores_hostile_git_config(selector_fixture, tmp_path):
         'GIT_CONFIG_VALUE_0': str(helper),
     }
     result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
     assert not marker.exists()
-    assert receipt.with_suffix('.sha').read_text().strip() == sha
+    assert not receipt.with_suffix('.sha').exists()
+
+
+def test_active_rejects_local_clean_filter_helper(selector_fixture, tmp_path):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    marker = tmp_path / 'clean-filter-called'
+    helper = tmp_path / 'clean-filter-helper'
+    helper.write_text(f'#!/bin/sh\ntouch "{marker}"\n/bin/cat\n')
+    helper.chmod(0o755)
+    attributes = tmp_path / 'attributes'
+    attributes.write_text('scripts/switchstand-start filter=evil\n')
+    git(control, 'config', 'core.attributesFile', str(attributes))
+    git(control, 'config', 'filter.evil.clean', str(helper))
+    tracked = control / 'scripts' / 'switchstand-start'
+    stat = tracked.stat()
+    os.utime(tracked, (stat.st_atime, stat.st_mtime + 5))
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 1
+    assert not marker.exists()
+    assert not receipt.with_suffix('.sha').exists()
 
 
 def test_active_rejects_local_core_worktree_redirection(selector_fixture, tmp_path):
