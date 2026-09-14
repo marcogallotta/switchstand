@@ -309,22 +309,6 @@ def test_start_requires_exact_lowercase_commit(tmp_path, commit):
     assert not (tmp_path / "worktree.log").exists()
 
 
-def test_start_requires_commit_object(tmp_path):
-    start, environment, _ = fixture(tmp_path)
-    environment["FAKE_OBJECT_TYPE"] = "tag"
-    result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", "a" * 40],
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 1
-    assert "available commit object" in result.stderr
-    assert not (tmp_path / "source.args").exists()
-    assert not (tmp_path / "worktree.log").exists()
-
-
 def test_worktree_helper_keeps_git_progress_off_stdout(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"

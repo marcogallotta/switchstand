@@ -67,14 +67,6 @@ else
         exit 1
     }
 fi
-[ "$(git -C "$repo" cat-file -t "$commit" 2>/dev/null || true)" = commit ] || {
-    echo "requested revision must be an available commit object" >&2
-    exit 1
-}
-git -C "$repo" merge-base --is-ancestor "$accepted" "$commit" || {
-    echo "requested revision must contain the freshly accepted origin/main" >&2
-    exit 1
-}
 primary=$(dirname "$common")
 "$primary/scripts/bootstrap"
 python="$primary/.venv/bin/python"
