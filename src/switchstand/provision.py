@@ -5,6 +5,9 @@ import os
 import httpx
 from alembic import command
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .core import ProviderError, provision_launch
@@ -48,16 +51,37 @@ async def run(active: str, references: tuple[str, ...]) -> None:
         await engine.dispose()
 
 
-def upgrade_database() -> None:
-    command.upgrade(Config("alembic.ini"), "head")
+def migration_config(root: str = ".") -> Config:
+    config = Config(os.path.join(root, "alembic.ini"))
+    config.set_main_option("script_location", os.path.join(root, "migrations"))
+    return config
+
+
+def require_current_schema(root: str = ".") -> None:
+    config = migration_config(root)
+    expected = set(ScriptDirectory.from_config(config).get_heads())
+    engine = create_engine(os.environ["DATABASE_URL"])
+    try:
+        with engine.connect() as connection:
+            current = set(MigrationContext.configure(connection).get_current_heads())
+    finally:
+        engine.dispose()
+    if current != expected:
+        raise RuntimeError(
+            "shared CONTROL schema is stale; run the explicit trusted state upgrade first"
+        )
+
+
+def upgrade_database(root: str = ".") -> None:
+    command.upgrade(migration_config(root), "head")
 
 
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        upgrade_database()
+        require_current_schema()
         asyncio.run(run(arguments.active, tuple(arguments.reference)))
-    except (KeyError, ValueError, PermissionError, ProviderError) as error:
+    except (KeyError, ValueError, PermissionError, ProviderError, RuntimeError) as error:
         parser().exit(1, f"provisioning failed: {error}\n")
 
 

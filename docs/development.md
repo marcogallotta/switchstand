@@ -24,7 +24,8 @@
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
   instruction sources, then replaces itself with Codex. It refuses the ordinary checkout. Do not copy WorkIds or edit
-  the shared environment file. At launch it pins a development image and starts a writer-local internal test network;
+  the shared environment file. Managed Codex runs have network access. At launch it pins a development image and
+  starts a writer-local test network with egress for dependency resolution;
   the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools. Ordinary commands cannot reach the
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
   During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
@@ -34,6 +35,8 @@
   an explicit rerun/setup action, and the focused path does not fall back to a full container build. CI supplies the
   routine full clean/container gate; real-host launch and recovery changes still require a real-host canary.
   Selecting a database-backed test without a live `TEST_DATABASE_URL` fails rather than skips.
+  Focused and full-quality workload output has a 12,000-byte hard limit: output at or below the limit is accepted;
+  exceeding it stops and removes the workload and returns a failed result. Reduce test or tool output, then rerun.
   Each launch writes a protected per-worktree run receipt with a fresh identity and Linux PID start token. The
   read-only `run_status` tool reports `running`, `stopped`, `lost`, or `unknown` without accepting an arbitrary PID.
   From that linked worktree, `scripts/switchstand-run-stop` uses the repository's bootstrapped Python environment and

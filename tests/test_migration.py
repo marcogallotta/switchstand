@@ -6,19 +6,43 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
+from switchstand.provision import require_current_schema
 
-def test_empty_database_migrates_to_single_table(monkeypatch):
+
+def disposable_url() -> str:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for the PostgreSQL migration test")
     if make_url(url).database != "switchstand_test":
         pytest.fail("migration test requires the disposable switchstand_test database")
+    return url
+
+
+def test_stale_schema_check_does_not_upgrade(monkeypatch):
+    url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
     with engine.begin() as connection:
-        connection.execute(text("DROP TABLE IF EXISTS alembic_version, work_handles CASCADE"))
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, effect_intents, work_grants, work_handles CASCADE"
+        ))
+    with pytest.raises(RuntimeError, match="shared CONTROL schema is stale"):
+        require_current_schema()
+    assert inspect(engine).get_table_names() == []
+
+
+def test_empty_database_migrates_to_grants_and_effects(monkeypatch):
+    url = disposable_url()
+    monkeypatch.setenv("DATABASE_URL", url)
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, effect_intents, work_grants, work_handles CASCADE"
+        ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
-    assert set(inspect(engine).get_table_names()) == {"alembic_version", "work_handles"}
+    assert set(inspect(engine).get_table_names()) == {
+        "alembic_version", "work_handles", "work_grants", "effect_intents",
+    }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}

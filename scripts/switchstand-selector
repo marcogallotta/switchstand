@@ -1,0 +1,210 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    echo "switchstand selector: $*" >&2
+    exit 1
+}
+
+case ${HOME:-} in
+    /*) ;;
+    *) fail "HOME must be an absolute path" ;;
+esac
+
+selector_root="$HOME/.local/state/switchstand/control"
+manifest="$selector_root/manifest"
+controls="$selector_root/controls"
+
+[ -f "$manifest" ] && [ ! -L "$manifest" ] || fail "CONTROL manifest is missing or not a regular file"
+
+seen_state=0
+seen_repository=0
+seen_sha=0
+seen_path=0
+state=
+repository=
+control_sha=
+control_path=
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        state=*)
+            [ "$seen_state" -eq 0 ] || fail "CONTROL manifest contains duplicate state"
+            seen_state=1
+            state=${line#state=}
+            ;;
+        repository=*)
+            [ "$seen_repository" -eq 0 ] || fail "CONTROL manifest contains duplicate repository"
+            seen_repository=1
+            repository=${line#repository=}
+            ;;
+        control_sha=*)
+            [ "$seen_sha" -eq 0 ] || fail "CONTROL manifest contains duplicate control_sha"
+            seen_sha=1
+            control_sha=${line#control_sha=}
+            ;;
+        control_path=*)
+            [ "$seen_path" -eq 0 ] || fail "CONTROL manifest contains duplicate control_path"
+            seen_path=1
+            control_path=${line#control_path=}
+            ;;
+        *) fail "CONTROL manifest contains an unknown or malformed field" ;;
+    esac
+done < "$manifest"
+
+[ "$seen_state" -eq 1 ] || fail "CONTROL manifest is missing state"
+case "$state" in
+    PAUSED)
+        [ "$seen_repository" -eq 0 ] && [ "$seen_sha" -eq 0 ] && [ "$seen_path" -eq 0 ] \
+            || fail "PAUSED CONTROL manifest must contain only state"
+        fail "managed Switchstand execution not activated: selector is PAUSED"
+        ;;
+    ACTIVE)
+        [ "$seen_repository" -eq 1 ] && [ "$seen_sha" -eq 1 ] && [ "$seen_path" -eq 1 ] \
+            || fail "ACTIVE CONTROL manifest is incomplete"
+        ;;
+    *) fail "CONTROL manifest state must be PAUSED or ACTIVE" ;;
+esac
+
+case "$repository" in
+    */*) ;;
+    *) fail "CONTROL repository identity must be owner/repository" ;;
+esac
+owner=${repository%%/*}
+repo_name=${repository#*/}
+[ -n "$owner" ] && [ -n "$repo_name" ] && [ "$repo_name" != "$repository" ] \
+    || fail "CONTROL repository identity must be owner/repository"
+case "$owner$repo_name" in
+    *[!A-Za-z0-9_.-]*) fail "CONTROL repository identity contains invalid characters" ;;
+esac
+case "$repo_name" in
+    */*) fail "CONTROL repository identity must contain exactly one slash" ;;
+esac
+case "$control_sha" in
+    *[!0-9a-f]*|'') fail "CONTROL SHA must be exact lowercase hexadecimal" ;;
+esac
+[ "${#control_sha}" -eq 40 ] || fail "CONTROL SHA must contain 40 hexadecimal characters"
+case "$control_path" in
+    /*) ;;
+    *) fail "CONTROL path must be absolute" ;;
+esac
+
+[ -d "$selector_root" ] && [ ! -L "$selector_root" ] || fail "selector root is missing or is a symlink"
+[ -d "$controls" ] && [ ! -L "$controls" ] || fail "CONTROL root is missing or is a symlink"
+controls_real=$(CDPATH= cd -- "$controls" && pwd -P)
+[ -d "$control_path" ] && [ ! -L "$control_path" ] || fail "CONTROL path is missing or is a symlink"
+control_real=$(CDPATH= cd -- "$control_path" && pwd -P)
+[ "$control_path" = "$control_real" ] || fail "CONTROL path must be canonical"
+[ "$control_real" = "$controls_real/$control_sha" ] || fail "CONTROL path must be the SHA-keyed snapshot inside the CONTROL root"
+
+env_link=/usr/bin/env
+env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"
+find_bin=/usr/bin/find
+git_bin=/usr/bin/git
+[ -f "$find_bin" ] && [ -x "$find_bin" ] && [ ! -L "$find_bin" ] \
+    || fail "trusted find executable is unavailable"
+[ -f "$git_bin" ] && [ -x "$git_bin" ] && [ ! -L "$git_bin" ] \
+    || fail "trusted git executable is unavailable"
+
+trusted_system_path() {
+    checked=$1
+    while :; do
+        match=$("$find_bin" "$checked" -maxdepth 0 -uid 0 ! -perm /022 -print 2>/dev/null) \
+            || return 1
+        [ "$match" = "$checked" ] || return 1
+        [ "$checked" = / ] && break
+        checked=${checked%/*}
+        [ -n "$checked" ] || checked=/
+    done
+}
+
+env_parent=${env_link%/*}
+trusted_system_path "$env_parent" || fail "trusted env executable is unavailable"
+env_bin=
+for candidate in $env_candidates; do
+    [ -f "$candidate" ] && [ -x "$candidate" ] && [ ! -L "$candidate" ] \
+        && [ "$env_link" -ef "$candidate" ] \
+        && trusted_system_path "$candidate" || continue
+    env_bin=$candidate
+    break
+done
+[ -n "$env_bin" ] || fail "trusted env executable is unavailable"
+
+run_git() {
+    "$env_bin" -i \
+        PATH=/usr/bin:/bin \
+        HOME=/nonexistent \
+        XDG_CONFIG_HOME=/nonexistent \
+        LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_TERMINAL_PROMPT=0 \
+        GIT_PAGER=cat \
+        "$git_bin" \
+        --work-tree="$control_real" \
+        -c core.worktree="$control_real" \
+        -c core.fsmonitor=false \
+        -c core.hooksPath=/dev/null \
+        "$@"
+}
+
+head=$(run_git -C "$control_real" rev-parse HEAD 2>/dev/null) \
+    || fail "cannot inspect CONTROL HEAD"
+branch=$(run_git -C "$control_real" branch --show-current 2>/dev/null) \
+    || fail "cannot inspect CONTROL branch state"
+common=$(run_git -C "$control_real" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || fail "cannot inspect CONTROL git common directory"
+toplevel=$(run_git -C "$control_real" rev-parse --show-toplevel 2>/dev/null) \
+    || fail "cannot inspect CONTROL effective worktree"
+[ "$head" = "$control_sha" ] && [ -z "$branch" ] && [ -n "$common" ] \
+    || fail "CONTROL checkout is not the exact detached manifest SHA"
+[ "$toplevel" = "$control_real" ] || fail "CONTROL effective worktree does not match selected CONTROL path"
+[ -d "$common" ] || fail "CONTROL git common directory is missing"
+common_real=$(CDPATH= cd -- "$common" && pwd -P)
+case "$common_real" in
+    "$control_real"/*) ;;
+    *) fail "CONTROL git common directory lies outside the selected CONTROL snapshot" ;;
+esac
+
+local_keys=$(run_git -C "$control_real" config --local --no-includes --name-only --list 2>/dev/null) \
+    || fail "cannot inspect CONTROL local Git config"
+bad_key=
+while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    case "$key" in
+        core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|core.ignorecase|core.precomposeunicode|\
+        remote.origin.url|remote.origin.fetch|branch.*.remote|branch.*.merge)
+            ;;
+        *)
+            bad_key=$key
+            break
+            ;;
+    esac
+done <<EOF
+$local_keys
+EOF
+[ -z "$bad_key" ] || fail "CONTROL local Git config contains unsupported key: $bad_key"
+
+dirty=$(run_git -C "$control_real" status --porcelain --untracked-files=all 2>/dev/null) \
+    || fail "cannot inspect CONTROL cleanliness"
+[ -z "$dirty" ] || fail "CONTROL checkout is not clean"
+
+origin=$(run_git -C "$control_real" remote get-url origin 2>/dev/null) \
+    || fail "cannot inspect CONTROL origin"
+case "$origin" in
+    https://github.com/*) origin_repository=${origin#https://github.com/} ;;
+    ssh://git@github.com/*) origin_repository=${origin#ssh://git@github.com/} ;;
+    git@github.com:*) origin_repository=${origin#git@github.com:} ;;
+    *) fail "CONTROL origin must be a github.com repository" ;;
+esac
+origin_repository=${origin_repository%.git}
+[ "$origin_repository" = "$repository" ] || fail "CONTROL origin does not match manifest repository identity"
+
+entry="$control_real/scripts/switchstand-start"
+[ -f "$entry" ] && [ -x "$entry" ] || fail "CONTROL internal start entry is missing or not executable"
+
+printf 'SWITCHSTAND_CONTROL_SHA=%s\nSWITCHSTAND_CONTROL_PATH=%s\n' "$control_sha" "$control_real" >&2
+unset PYTHONPATH PYTHONHOME
+SWITCHSTAND_CONTROL_PATH="$control_real" \
+SWITCHSTAND_CONTROL_SHA="$control_sha" \
+SWITCHSTAND_CONTROL_COMMON="$common_real" \
+    exec "$entry" "$@"
