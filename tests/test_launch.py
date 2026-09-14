@@ -561,6 +561,31 @@ def readback_messages(sources):
     ]
 
 
+def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    del messages[0]["result"]["data"][0]["allowed"]
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
+
+
+def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    messages[0]["result"]["data"][0]["allowed"] = False
+    monkeypatch.setattr(
+        "switchstand.launch._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="permission profile.*not available"):
+        readback(Path("/repo"), Path("/writer"), {})
+
+
 @pytest.mark.parametrize("source, accepted", [(str(Path.home() / ".codex/AGENTS.md"), True),
                                                ("/home/test/.claude/CLAUDE.md", False)])
 def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):

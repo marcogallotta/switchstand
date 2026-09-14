@@ -442,7 +442,11 @@ def readback(control: Path, candidate: Path, env: dict[str, str]) -> CodexReadba
         message.get("id"): message for message in _rpc_messages(control, candidate, env)
     }
     profiles = cast(list[dict[str, object]], responses[2]["result"]["data"])
-    if not any(item["id"] == PROFILE and item["allowed"] for item in profiles):
+    if not any(
+        item.get("id") == PROFILE
+        and ("allowed" not in item or item["allowed"] is True)
+        for item in profiles
+    ):
         raise RuntimeError(f"Codex permission profile {PROFILE!r} is not available")
     result = cast(dict[str, Any], responses[3]["result"])
     active = cast(dict[str, object] | None, result.get("activePermissionProfile"))
