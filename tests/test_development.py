@@ -20,7 +20,7 @@ def tool(name):
 def owned(role: str, *, running=False, status="created", exit_code=0):
     return DockerObject(
         "container",
-        f"switchstand-{role}-runid",
+        f"switchstand-{role}-run-id",
         "exact-id",
         "run-id",
         role,
@@ -77,11 +77,29 @@ async def test_focused_check_uses_exact_owned_container_and_bound(monkeypatch, t
     result = await tool("check")("a" * 40, ["tests/test_one.py"])
     command = captured["arguments"]
     assert result.status == "ok"
-    assert captured["owner"] == "run-id" and captured["role"] == "check"
+    assert captured["owner"] == "run-id" and captured["role"] == "focused"
     assert captured["timeout"] == development.FOCUSED_SECONDS
-    assert command[:3] == ["create", "--name", "switchstand-check-runid"]
+    assert command[:3] == ["create", "--name", "switchstand-focused-run-id"]
     assert "sha256:fixed" in command and "isolated" in command
     assert "TEST_DATABASE_URL=" in " ".join(command)
+    assert "com.switchstand.run=run-id" in command
+    assert "com.switchstand.role=focused" in command
+    assert all(
+        value in command
+        for value in (
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "512",
+            "--memory",
+            "2g",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,noexec",
+        )
+    )
     assert command[-1] == "tests/test_one.py"
 
 
@@ -124,9 +142,11 @@ async def test_quality_uses_exact_owned_container_and_full_bound(monkeypatch, tm
     command = captured["arguments"]
     assert result.status == "ok"
     assert captured["role"] == "quality" and captured["timeout"] == development.QUALITY_SECONDS
-    assert command[:3] == ["create", "--name", "switchstand-quality-runid"]
+    assert command[:3] == ["create", "--name", "switchstand-quality-run-id"]
     assert "sha256:fixed" in command and f"{tmp_path}:/workspace:ro" in command
     assert "PYTHONPATH=/workspace/src" in " ".join(command)
+    assert "com.switchstand.run=run-id" in command
+    assert "com.switchstand.role=quality" in command
     assert "compose.yaml" not in " ".join(command) and "Dockerfile" not in " ".join(command)
 
 
@@ -162,14 +182,14 @@ async def test_hung_workload_stops_cli_removes_exact_container_and_reraises(monk
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
         development,
-        "remove_exact",
+        "remove_owned",
         lambda kind, object_id, owner, role, env: removed.append(
             (kind, object_id, owner, role)
         ),
     )
     with pytest.raises(TimeoutError):
-        await development._run_owned_workload([], "run-id", "check", 0.001)
-    assert removed == [("container", "exact-id", "run-id", "check")]
+        await development._run_owned_workload([], "run-id", "focused", 0.001)
+    assert removed == [("container", "exact-id", "run-id", "focused")]
 
 
 async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
@@ -207,7 +227,7 @@ async def test_interrupted_workload_cancels_exact_daemon_container(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
         development,
-        "remove_exact",
+        "remove_owned",
         lambda kind, object_id, owner, role, env: removed.append(
             (kind, object_id, owner, role)
         ),
@@ -246,11 +266,11 @@ async def test_cancel_during_post_create_inspection_removes_captured_id(monkeypa
     async def fake_to_thread(function, *args):
         if function is development.require_absent:
             return None
-        if function is development.inspect_object:
+        if function is development.inspect:
             inspect_started.set()
             await inspect_release.wait()
-            return owned("check")
-        if function is development.remove_exact:
+            return owned("focused")
+        if function is development.remove_owned:
             removed.append((args[0], args[1], args[2], args[3]))
             return None
         return function(*args)
@@ -258,14 +278,14 @@ async def test_cancel_during_post_create_inspection_removes_captured_id(monkeypa
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     task = asyncio.create_task(
-        development._create_owned_container([], "run-id", "check")
+        development._create_owned_container([], "run-id", "focused")
     )
     await inspect_started.wait()
     task.cancel()
     inspect_release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert removed == [("container", "exact-id", "run-id", "check")]
+    assert removed == [("container", "exact-id", "run-id", "focused")]
 
 
 async def test_cancel_during_post_attach_readback_removes_captured_id(monkeypatch):
@@ -287,11 +307,11 @@ async def test_cancel_during_post_attach_readback_removes_captured_id(monkeypatc
         return FinishedProcess()
 
     async def fake_to_thread(function, *args):
-        if function is development.inspect_object:
+        if function is development.inspect:
             inspect_started.set()
             await inspect_release.wait()
             return owned("quality", running=True, status="running")
-        if function is development.remove_exact:
+        if function is development.remove_owned:
             removed.append((args[0], args[1], args[2], args[3]))
             return None
         return function(*args)
@@ -313,8 +333,8 @@ async def test_cancel_during_post_attach_readback_removes_captured_id(monkeypatc
 @pytest.mark.parametrize(
     ("state", "message"),
     [
-        (owned("check", running=True, status="running"), "without an exited daemon workload"),
-        (owned("check", running=False, status="created"), "without an exited daemon workload"),
+        (owned("focused", running=True, status="running"), "without an exited daemon workload"),
+        (owned("focused", running=False, status="created"), "without an exited daemon workload"),
     ],
 )
 async def test_attach_end_without_exited_execution_removes_exact_container(
@@ -337,17 +357,17 @@ async def test_attach_end_without_exited_execution_removes_exact_container(
 
     monkeypatch.setattr(development, "_create_owned_container", fake_create)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
-    monkeypatch.setattr(development, "inspect_object", lambda kind, object_id, env: state)
+    monkeypatch.setattr(development, "inspect", lambda kind, object_id, env: state)
     monkeypatch.setattr(
         development,
-        "remove_exact",
+        "remove_owned",
         lambda kind, object_id, owner, role, env: removed.append(
             (kind, object_id, owner, role)
         ),
     )
     with pytest.raises(RuntimeError, match=message):
-        await development._run_owned_workload([], "run-id", "check", 60)
-    assert removed == [("container", "exact-id", "run-id", "check")]
+        await development._run_owned_workload([], "run-id", "focused", 60)
+    assert removed == [("container", "exact-id", "run-id", "focused")]
 
 
 async def test_success_uses_exact_daemon_exit_code_and_removes_bound_id(monkeypatch):
@@ -369,10 +389,10 @@ async def test_success_uses_exact_daemon_exit_code_and_removes_bound_id(monkeypa
     exited = owned("quality", running=False, status="exited", exit_code=7)
     monkeypatch.setattr(development, "_create_owned_container", fake_create)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
-    monkeypatch.setattr(development, "inspect_object", lambda kind, object_id, env: exited)
+    monkeypatch.setattr(development, "inspect", lambda kind, object_id, env: exited)
     monkeypatch.setattr(
         development,
-        "remove_exact",
+        "remove_owned",
         lambda kind, object_id, owner, role, env: removed.append(
             (kind, object_id, owner, role)
         ),
@@ -419,7 +439,7 @@ async def test_output_overflow_stops_workload_and_removes_exact_container(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
     monkeypatch.setattr(
         development,
-        "remove_exact",
+        "remove_owned",
         lambda kind, object_id, owner, role, env: removed.append(
             (kind, object_id, owner, role)
         ),

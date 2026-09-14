@@ -4,8 +4,8 @@ from typing import Any, Literal, NamedTuple, cast
 
 OWNER_LABEL = "com.switchstand.run"
 ROLE_LABEL = "com.switchstand.role"
-CONTROL_SECONDS = 5
-DockerKind = Literal["container", "network"]
+CONTROL_SECONDS = 10
+DockerKind = Literal["container", "image", "network"]
 
 
 class DockerObject(NamedTuple):
@@ -19,44 +19,57 @@ class DockerObject(NamedTuple):
     status: str | None = None
 
 
-def _docker(arguments: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def command(
+    arguments: list[str],
+    env: dict[str, str],
+    *,
+    cwd: str | None = None,
+    timeout: float = CONTROL_SECONDS,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["docker", *arguments],
+            cwd=cwd,
             env=env,
             text=True,
             capture_output=True,
             check=False,
-            timeout=CONTROL_SECONDS,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as error:
-        raise RuntimeError(
-            f"docker {' '.join(arguments)} exceeded {CONTROL_SECONDS} seconds"
-        ) from error
+        raise RuntimeError(f"docker {' '.join(arguments)} timed out") from error
 
 
-def inspect_object(kind: DockerKind, reference: str, env: dict[str, str]) -> DockerObject | None:
-    completed = _docker(["inspect", "--type", kind, reference], env)
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
+def inspect(kind: DockerKind, reference: str, env: dict[str, str]) -> DockerObject | None:
+    result = command(["inspect", "--type", kind, reference], env)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
         if "No such" in detail or "not found" in detail:
             return None
-        raise RuntimeError(
-            f"docker inspect {kind} {reference} failed: {detail or 'no diagnostic output'}"
-        )
+        raise RuntimeError(f"docker inspect failed: {detail or 'no diagnostic output'}")
     try:
-        values = cast(list[dict[str, Any]], json.loads(completed.stdout))
+        values = cast(list[dict[str, Any]], json.loads(result.stdout))
         if len(values) != 1:
-            raise ValueError("expected exactly one object")
+            raise ValueError
         value = values[0]
-        object_id = cast(str, value["Id"])
-        raw_name = cast(str, value["Name"])
+        labels = cast(
+            dict[str, str],
+            (
+                cast(dict[str, Any], value.get("Config") or {}).get("Labels")
+                if kind in {"container", "image"}
+                else value.get("Labels")
+            )
+            or {},
+        )
         running: bool | None = None
         exit_code: int | None = None
         status: str | None = None
+        if kind == "image":
+            tags = cast(list[str], value.get("RepoTags") or [])
+            name = tags[0] if tags else reference
+        else:
+            name = cast(str, value["Name"]).removeprefix("/")
         if kind == "container":
-            config = cast(dict[str, Any], value.get("Config") or {})
-            labels = cast(dict[str, str], config.get("Labels") or {})
             state = cast(dict[str, Any], value.get("State") or {})
             if "Running" in state:
                 running = cast(bool, state["Running"])
@@ -64,55 +77,60 @@ def inspect_object(kind: DockerKind, reference: str, env: dict[str, str]) -> Doc
                 exit_code = cast(int, state["ExitCode"])
             if "Status" in state:
                 status = cast(str, state["Status"])
-            object_name = raw_name.removeprefix("/")
-        else:
-            labels = cast(dict[str, str], value.get("Labels") or {})
-            object_name = raw_name
+        object_id = cast(str, value["Id"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"docker returned invalid {kind} inspection for {reference}") from error
+        raise RuntimeError("docker returned invalid object inspection") from error
     return DockerObject(
-        kind=kind,
-        name=object_name,
-        object_id=object_id,
-        owner=labels.get(OWNER_LABEL),
-        role=labels.get(ROLE_LABEL),
-        running=running,
-        exit_code=exit_code,
-        status=status,
+        kind,
+        name,
+        object_id,
+        labels.get(OWNER_LABEL),
+        labels.get(ROLE_LABEL),
+        running,
+        exit_code,
+        status,
     )
 
 
-def label_arguments(owner: str, role: str) -> list[str]:
+def labels(owner: str, role: str) -> list[str]:
     return ["--label", f"{OWNER_LABEL}={owner}", "--label", f"{ROLE_LABEL}={role}"]
 
 
-def require_absent(
-    kind: DockerKind, name: str, owner: str, role: str, env: dict[str, str]
-) -> None:
-    existing = inspect_object(kind, name, env)
-    if existing is None:
-        return
-    if existing.owner == owner and existing.role == role:
-        raise RuntimeError(f"owned Docker {kind} {name!r} already exists")
-    raise RuntimeError(f"foreign Docker {kind} {name!r} occupies the managed name")
+def owned_name(owner: str, role: str) -> str:
+    return f"switchstand-{role}-{owner}"
 
 
-def remove_exact(
+def require_absent(kind: DockerKind, name: str, env: dict[str, str]) -> None:
+    if inspect(kind, name, env) is not None:
+        raise RuntimeError(f"Docker {kind} name collision: {name!r}")
+
+
+def require_owned(
+    kind: DockerKind, reference: str, owner: str, role: str, env: dict[str, str]
+) -> DockerObject:
+    value = inspect(kind, reference, env)
+    if value is None or value.owner != owner or value.role != role:
+        raise RuntimeError(f"Docker {kind} is not the exact owned {role} object")
+    return value
+
+
+def remove_owned(
     kind: DockerKind, object_id: str, owner: str, role: str, env: dict[str, str]
 ) -> None:
-    existing = inspect_object(kind, object_id, env)
-    if existing is None:
+    value = inspect(kind, object_id, env)
+    if value is None:
         return
-    if existing.object_id != object_id or existing.owner != owner or existing.role != role:
-        raise RuntimeError(f"refusing to remove foreign Docker {kind} identity {object_id!r}")
-    arguments = (
-        ["rm", "-f", object_id] if kind == "container" else ["network", "rm", object_id]
-    )
-    removed = _docker(arguments, env)
+    if value.object_id != object_id or value.owner != owner or value.role != role:
+        raise RuntimeError(f"refusing to remove foreign Docker {kind} identity")
+    if kind == "container":
+        arguments = ["rm", "-f", object_id]
+    elif kind == "image":
+        arguments = ["image", "rm", object_id]
+    else:
+        arguments = ["network", "rm", object_id]
+    removed = command(arguments, env)
     if removed.returncode != 0:
         detail = (removed.stderr or removed.stdout).strip()
-        raise RuntimeError(
-            f"docker remove {kind} {object_id} failed: {detail or 'no diagnostic output'}"
-        )
-    if inspect_object(kind, object_id, env) is not None:
-        raise RuntimeError(f"Docker {kind} identity {object_id!r} still exists after removal")
+        raise RuntimeError(f"docker cleanup failed: {detail or 'no diagnostic output'}")
+    if inspect(kind, object_id, env) is not None:
+        raise RuntimeError(f"Docker {kind} remains after exact cleanup")

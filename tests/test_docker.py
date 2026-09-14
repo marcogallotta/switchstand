@@ -6,115 +6,116 @@ import pytest
 from switchstand import docker
 
 
-def completed(args=(), stdout="", stderr="", returncode=0):
-    return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
+def completed(arguments, stdout="", stderr="", returncode=0):
+    return subprocess.CompletedProcess(arguments, returncode, stdout=stdout, stderr=stderr)
 
 
-def inspected(
-    name: str,
-    object_id: str,
-    owner: str,
-    role: str,
-    *,
-    running: bool = False,
-    status: str = "created",
-    exit_code: int = 0,
-) -> str:
-    return json.dumps(
+def inspection(object_id, name, owner, role, *, state=None):
+    value = {
+        "Id": object_id,
+        "Name": name,
+        "Config": {"Labels": {docker.OWNER_LABEL: owner, docker.ROLE_LABEL: role}},
+    }
+    if state is not None:
+        value["State"] = state
+    return json.dumps([value])
+
+
+def test_foreign_collision_is_preserved(monkeypatch):
+    calls = []
+
+    def command(arguments, env, **kwargs):
+        calls.append(arguments)
+        return completed(arguments, inspection("foreign-id", "/claimed", "other", "database"))
+
+    monkeypatch.setattr(docker, "command", command)
+    with pytest.raises(RuntimeError, match="name collision"):
+        docker.require_absent("container", "claimed", {})
+    assert calls == [["inspect", "--type", "container", "claimed"]]
+
+
+def test_cleanup_requires_labels_and_removes_exact_id_with_readback(monkeypatch):
+    calls = []
+    answers = iter(
+        (
+            completed([], inspection("owned-id", "/claimed", "run-1", "database")),
+            completed([], stdout="owned-id\n"),
+            completed([], stderr="No such container", returncode=1),
+        )
+    )
+
+    def command(arguments, env, **kwargs):
+        calls.append(arguments)
+        return next(answers)
+
+    monkeypatch.setattr(docker, "command", command)
+    docker.remove_owned("container", "owned-id", "run-1", "database", {})
+    assert calls == [
+        ["inspect", "--type", "container", "owned-id"],
+        ["rm", "-f", "owned-id"],
+        ["inspect", "--type", "container", "owned-id"],
+    ]
+
+
+def test_cleanup_refuses_foreign_identity(monkeypatch):
+    monkeypatch.setattr(
+        docker,
+        "command",
+        lambda arguments, env, **kwargs: completed(
+            arguments, inspection("foreign-id", "/claimed", "other", "database")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="foreign Docker"):
+        docker.remove_owned("container", "foreign-id", "run-1", "database", {})
+
+
+def test_control_command_has_a_bounded_timeout(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="timed out"):
+        docker.command(["inspect", "object"], {}, timeout=0.01)
+
+
+def test_image_inspection_does_not_require_container_name(monkeypatch):
+    value = json.dumps(
         [
             {
-                "Id": object_id,
-                "Name": f"/{name}",
+                "Id": "sha256:owned",
+                "RepoTags": ["switchstand-runner:latest"],
                 "Config": {
-                    "Labels": {
-                        docker.OWNER_LABEL: owner,
-                        docker.ROLE_LABEL: role,
-                    }
-                },
-                "State": {
-                    "Running": running,
-                    "Status": status,
-                    "ExitCode": exit_code,
+                    "Labels": {docker.OWNER_LABEL: "run-1", docker.ROLE_LABEL: "runner"}
                 },
             }
         ]
     )
-
-
-def test_foreign_same_name_is_rejected_without_removal(monkeypatch):
-    calls = []
-
-    def fake(arguments, env):
-        calls.append(arguments)
-        return completed(arguments, inspected("work", "foreign-id", "other-run", "check"))
-
-    monkeypatch.setattr(docker, "_docker", fake)
-    with pytest.raises(RuntimeError, match="foreign Docker container"):
-        docker.require_absent("container", "work", "this-run", "check", {})
-    assert calls == [["inspect", "--type", "container", "work"]]
-
-
-def test_exact_remove_uses_bound_id_and_verifies_that_id_absent(monkeypatch):
-    calls = []
-    responses = iter(
-        [
-            completed(stdout=inspected("renamed", "exact-id", "run", "quality")),
-            completed(stdout="exact-id\n"),
-            completed(returncode=1, stderr="Error: No such object: exact-id"),
-        ]
-    )
-
-    def fake(arguments, env):
-        calls.append(arguments)
-        return next(responses)
-
-    monkeypatch.setattr(docker, "_docker", fake)
-    docker.remove_exact("container", "exact-id", "run", "quality", {})
-    assert calls == [
-        ["inspect", "--type", "container", "exact-id"],
-        ["rm", "-f", "exact-id"],
-        ["inspect", "--type", "container", "exact-id"],
-    ]
-
-
-def test_exact_remove_refuses_foreign_identity(monkeypatch):
     monkeypatch.setattr(
         docker,
-        "_docker",
-        lambda arguments, env: completed(
-            arguments, inspected("work", "foreign-id", "other-run", "quality")
-        ),
+        "command",
+        lambda arguments, env, **kwargs: completed(arguments, stdout=value),
     )
-    with pytest.raises(RuntimeError, match="refusing to remove foreign"):
-        docker.remove_exact("container", "foreign-id", "run", "quality", {})
+    inspected = docker.inspect("image", "sha256:owned", {})
+    assert inspected is not None
+    assert inspected.name == "switchstand-runner:latest"
+    assert inspected.object_id == "sha256:owned"
 
 
-def test_docker_control_timeout_is_bounded(monkeypatch):
-    def hanging(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], docker.CONTROL_SECONDS)
-
-    monkeypatch.setattr(subprocess, "run", hanging)
-    with pytest.raises(RuntimeError, match="exceeded 5 seconds"):
-        docker.inspect_object("container", "work", {})
-
-
-def test_container_inspection_reads_execution_state(monkeypatch):
+def test_container_inspection_reads_daemon_execution_state(monkeypatch):
+    value = inspection(
+        "exact-id",
+        "/work",
+        "run-1",
+        "focused",
+        state={"Running": False, "Status": "exited", "ExitCode": 7},
+    )
     monkeypatch.setattr(
         docker,
-        "_docker",
-        lambda arguments, env: completed(
-            arguments,
-            inspected(
-                "work",
-                "exact-id",
-                "run",
-                "check",
-                running=False,
-                status="exited",
-                exit_code=7,
-            ),
-        ),
+        "command",
+        lambda arguments, env, **kwargs: completed(arguments, stdout=value),
     )
-    result = docker.inspect_object("container", "exact-id", {})
-    assert result is not None
-    assert result.status == "exited" and result.running is False and result.exit_code == 7
+    inspected = docker.inspect("container", "exact-id", {})
+    assert inspected is not None
+    assert inspected.running is False
+    assert inspected.status == "exited"
+    assert inspected.exit_code == 7

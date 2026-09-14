@@ -8,7 +8,8 @@ from typing import Literal
 from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
-from .docker import DockerObject, inspect_object, label_arguments, remove_exact, require_absent
+from .docker import DockerObject, inspect, owned_name, remove_owned, require_absent
+from .docker import labels as docker_labels
 from .mcp import closed_tool
 from .run import RECEIPT, RunStatus, inspect_receipt
 
@@ -103,18 +104,25 @@ def _run_owner(repo: Path, branch: str) -> str:
     return str(status.run_id)
 
 
-def _workload_name(owner: str, role: Literal["check", "quality"]) -> str:
-    return f"switchstand-{role}-{owner.replace('-', '')}"
-
-
 def _container_arguments(
-    repo: Path, owner: str, role: Literal["check", "quality"], test_paths: list[Path]
+    repo: Path, owner: str, role: Literal["focused", "quality"], test_paths: list[Path]
 ) -> list[str]:
     command = [
         "create",
         "--name",
-        _workload_name(owner, role),
-        *label_arguments(owner, role),
+        owned_name(owner, role),
+        *docker_labels(owner, role),
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "512",
+        "--memory",
+        "2g",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec",
         "--network",
         os.environ["SWITCHSTAND_QUALITY_NETWORK"],
         "-e",
@@ -135,7 +143,7 @@ def _container_arguments(
         "--pythonpath /app/.venv/bin/python && "
         "PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider"
     )
-    if role == "check":
+    if role == "focused":
         command.extend([script + ' \"$@\"', "switchstand-check", *(str(path) for path in test_paths)])
     else:
         command.append(script)
@@ -187,7 +195,7 @@ async def _remove_exact_id(
     object_id: str, owner: str, role: str, env: dict[str, str]
 ) -> None:
     cleanup = asyncio.create_task(
-        asyncio.to_thread(remove_exact, "container", object_id, owner, role, env)
+        asyncio.to_thread(remove_owned, "container", object_id, owner, role, env)
     )
     cancelled: asyncio.CancelledError | None = None
     while True:
@@ -215,9 +223,9 @@ async def _remove_created(container: DockerObject, env: dict[str, str]) -> None:
 
 
 async def _cleanup_named_if_owned(
-    name: str, owner: str, role: Literal["check", "quality"], env: dict[str, str]
+    name: str, owner: str, role: Literal["focused", "quality"], env: dict[str, str]
 ) -> None:
-    existing = await asyncio.to_thread(inspect_object, "container", name, env)
+    existing = await asyncio.to_thread(inspect, "container", name, env)
     if existing is None:
         return
     if existing.owner != owner or existing.role != role:
@@ -226,11 +234,11 @@ async def _cleanup_named_if_owned(
 
 
 async def _create_owned_container(
-    arguments: list[str], owner: str, role: Literal["check", "quality"]
+    arguments: list[str], owner: str, role: Literal["focused", "quality"]
 ) -> DockerObject:
     env = _environment()
-    name = _workload_name(owner, role)
-    await asyncio.to_thread(require_absent, "container", name, owner, role, env)
+    name = owned_name(owner, role)
+    await asyncio.to_thread(require_absent, "container", name, env)
     process = await asyncio.create_subprocess_exec(
         "docker",
         *arguments,
@@ -256,7 +264,7 @@ async def _create_owned_container(
         raise RuntimeError(f"Docker {role} create returned no container identity")
     container_id = values[-1]
     try:
-        existing = await asyncio.to_thread(inspect_object, "container", container_id, env)
+        existing = await asyncio.to_thread(inspect, "container", container_id, env)
     except BaseException as readback_error:
         try:
             await _remove_exact_id(container_id, owner, role, env)
@@ -282,7 +290,7 @@ async def _create_owned_container(
 
 
 async def _run_owned_workload(
-    arguments: list[str], owner: str, role: Literal["check", "quality"], timeout: int
+    arguments: list[str], owner: str, role: Literal["focused", "quality"], timeout: int
 ) -> subprocess.CompletedProcess[str]:
     env = _environment()
     container = await _create_owned_container(arguments, owner, role)
@@ -307,7 +315,7 @@ async def _run_owned_workload(
             await _remove_created(container, env)
         raise
     try:
-        finished = await asyncio.to_thread(inspect_object, "container", container.object_id, env)
+        finished = await asyncio.to_thread(inspect, "container", container.object_id, env)
     except BaseException as readback_error:
         try:
             await _remove_created(container, env)
@@ -363,7 +371,10 @@ def build_server(bound: bool = True) -> MCPServer:
         owner = _run_owner(repo, branch)
         try:
             checked = await _run_owned_workload(
-                _container_arguments(repo, owner, "check", paths), owner, "check", FOCUSED_SECONDS
+                _container_arguments(repo, owner, "focused", paths),
+                owner,
+                "focused",
+                FOCUSED_SECONDS,
             )
         except TimeoutError as error:
             return _result(
