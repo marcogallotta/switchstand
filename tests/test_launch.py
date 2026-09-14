@@ -139,6 +139,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
         assert set(tools) == names
         assert names == set(servers[server]["enabled_tools"])
         assert all(tool["approval_mode"] == "approve" for tool in tools.values())
+    assert "SWITCHSTAND_RUN_ID" in servers["switchstand_development"]["env_vars"]
 
 
 def test_clean_environment_removes_secret_and_stale_authority():
