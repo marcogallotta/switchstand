@@ -96,12 +96,38 @@ control_real=$(CDPATH= cd -- "$control_path" && pwd -P)
 [ "$control_path" = "$control_real" ] || fail "CONTROL path must be canonical"
 [ "$control_real" = "$controls_real/$control_sha" ] || fail "CONTROL path must be the SHA-keyed snapshot inside the CONTROL root"
 
-env_bin=/usr/bin/env
+env_link=/usr/bin/env
+env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"
+find_bin=/usr/bin/find
 git_bin=/usr/bin/git
-[ -f "$env_bin" ] && [ -x "$env_bin" ] && [ ! -L "$env_bin" ] \
-    || fail "trusted env executable is unavailable"
+[ -f "$find_bin" ] && [ -x "$find_bin" ] && [ ! -L "$find_bin" ] \
+    || fail "trusted find executable is unavailable"
 [ -f "$git_bin" ] && [ -x "$git_bin" ] && [ ! -L "$git_bin" ] \
     || fail "trusted git executable is unavailable"
+
+trusted_system_path() {
+    checked=$1
+    while :; do
+        match=$("$find_bin" "$checked" -maxdepth 0 -uid 0 ! -perm /022 -print 2>/dev/null) \
+            || return 1
+        [ "$match" = "$checked" ] || return 1
+        [ "$checked" = / ] && break
+        checked=${checked%/*}
+        [ -n "$checked" ] || checked=/
+    done
+}
+
+env_parent=${env_link%/*}
+trusted_system_path "$env_parent" || fail "trusted env executable is unavailable"
+env_bin=
+for candidate in $env_candidates; do
+    [ -f "$candidate" ] && [ -x "$candidate" ] && [ ! -L "$candidate" ] \
+        && [ "$env_link" -ef "$candidate" ] \
+        && trusted_system_path "$candidate" || continue
+    env_bin=$candidate
+    break
+done
+[ -n "$env_bin" ] || fail "trusted env executable is unavailable"
 
 run_git() {
     "$env_bin" -i \

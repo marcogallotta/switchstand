@@ -1,4 +1,5 @@
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -73,6 +74,19 @@ def active(manifest: Path, sha: str, path: Path, repository='marcogallotta/switc
     )
 
 
+def selector_with_env_identity(wrapper: Path, env_link: Path, candidates: list[Path]):
+    source = wrapper.read_text()
+    source = source.replace(
+        'env_link=/usr/bin/env', f'env_link={shlex.quote(str(env_link))}', 1
+    )
+    source = source.replace(
+        'env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"',
+        'env_candidates=' + shlex.quote(' '.join(map(str, candidates))),
+        1,
+    )
+    wrapper.write_text(source)
+
+
 def test_paused_fails_before_git_or_control_execution(selector_fixture, tmp_path):
     wrapper, manifest, _control, _sha, receipt, env, _controls = selector_fixture
     paused(manifest)
@@ -104,6 +118,50 @@ def test_active_ignores_caller_path_git(selector_fixture, tmp_path):
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
     assert receipt.with_suffix('.sha').read_text().strip() == sha
+
+
+def test_active_accepts_trusted_system_env_symlink(selector_fixture, tmp_path):
+    if not Path('/usr/bin/env').is_symlink():
+        pytest.skip('/usr/bin/env is a regular executable on this host')
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 0, result.stderr
+    assert receipt.with_suffix('.sha').read_text().strip() == sha
+
+
+@pytest.mark.parametrize('problem', ['unknown-target', 'symlink-candidate', 'writable-target',
+                                     'writable-parent'])
+def test_active_rejects_untrusted_env_symlink_target(selector_fixture, tmp_path, problem):
+    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
+    active(manifest, sha, control)
+    target_parent = tmp_path / 'env-target'
+    target_parent.mkdir()
+    target = target_parent / 'env'
+    shutil.copy2('/usr/bin/env', target, follow_symlinks=True)
+    target.chmod(0o755)
+    env_link = tmp_path / 'env-link'
+    env_link.symlink_to(target)
+    candidates = [target]
+    if problem == 'unknown-target':
+        candidates = [tmp_path / 'different-env']
+        shutil.copy2('/usr/bin/env', candidates[0], follow_symlinks=True)
+        candidates[0].chmod(0o755)
+    elif problem == 'symlink-candidate':
+        candidate = tmp_path / 'candidate-link'
+        candidate.symlink_to(target)
+        candidates = [candidate]
+        env_link.unlink()
+        env_link.symlink_to(candidate)
+    elif problem == 'writable-target':
+        target.chmod(0o777)
+    else:
+        target_parent.chmod(0o777)
+    selector_with_env_identity(wrapper, env_link, candidates)
+    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
+    assert result.returncode == 1
+    assert 'trusted env executable is unavailable' in result.stderr
+    assert not receipt.with_suffix('.sha').exists()
 
 
 def test_active_ignores_hostile_git_config(selector_fixture, tmp_path):
