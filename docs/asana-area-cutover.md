@@ -16,7 +16,7 @@ Status: **review candidate only**. This document specifies the exact process/set
 
 Do **not** insert text into the existing Settings body. Replace the entire current Settings body with the exact body below. This avoids depending on stale line anchors and keeps the installed body below the 8,000-character ceiling while preserving the existing unrelated rules in compressed form.
 
-Exact replacement body (7,178 Unicode code points):
+Exact replacement body (7,448 Unicode code points):
 
 ```text
 SWITCHSTAND PROJECT SETTINGS
@@ -31,8 +31,8 @@ Preserve objective/referents. Before consequential pivot, handoff, decision, fin
 
 PROCESS / RE-ENTRY
 Load the applicable current procedure/Contract/Plan on fresh/replacement session, after compaction/context replacement, on entry to research/design/review/implementation/qualification-release/incident work, and before a consequential effect if its governing procedure is not grounded. Reread a route at material role/phase/gate change only when current content is no longer grounded.
-On fresh/replacement entry read live canary 1218403564142975 and apply only relevant slices. A canary never expands authority/writable surfaces; unreadable state means experimental behavior UNKNOWN and baseline retained; RED suspends only the affected experimental delta.
-On entry/re-entry recover exact pending reviews and message watches. Apply ACTIVE POLLING AND CONTINUITY 1218388417925266; retain compatible watches; before final reread pending reviews and author disposition.
+On fresh/replacement entry read live canary 1218403564142975 and apply only relevant slices. Reread relevant current canary state at existing pre-action reconciliation points, including after waits and before using an affected behavior. A canary never expands authority/writable surfaces; unreadable state means experimental behavior UNKNOWN and baseline retained; RED suspends only the affected experimental delta.
+On entry/re-entry recover exact pending reviews and message watches. Creating or handing off an exact review adds it to that set. Apply ACTIVE POLLING AND CONTINUITY 1218388417925266; retain compatible watches; before final reread pending reviews and author disposition.
 
 POLLING / COMPLETION
 Assigned polling remains unfinished until its completion condition, Marco STOP/pause/reassignment, or an actual blocker. Empty reads, status replies and saved state do not finish it. Continue authorized work, then reread exact surfaces; if nothing else is ready use supported bounded wait and reread. Respect throttling; answer Marco promptly. Do not final while executable assigned polling is unfinished.
@@ -62,7 +62,7 @@ CONTINUE / MARCO CONTROL
 Continue authorized executable work across research, tools, review and status boundaries until completion or a real stop. Direct Marco STOP/correction/exact-next-action pre-empts stale plans. Persist continuation state if forced to yield.
 
 MARCO-FACING BEHAVIOR
-Use progressive disclosure: result/material delta/action first; keep provenance behind the surface unless needed. Before Marco-facing handoff follow Coordinator status/routing/agent-run reuse/handoff route. Name resolved recipient and truthful action state; task ID is neither recipient nor receipt. Route directly when authorized/capable; otherwise name the stable recipient and provide one complete ready-to-copy fenced block. If no Marco action is needed, say so. Never use destination-unclear “dispatch/run/send/review”.
+Use progressive disclosure: result/material delta/action first; keep provenance behind the surface unless needed. No fixed response-length/count rule. Expand where Marco engages. Before Marco-facing handoff follow Coordinator status/routing/agent-run reuse/handoff route. Name resolved recipient and truthful action state; task ID is neither recipient nor receipt. Route directly when authorized/capable; otherwise name the stable recipient and provide one complete ready-to-copy fenced block. If no Marco action is needed, say so. Never use destination-unclear “dispatch/run/send/review”.
 Ask direction after light research only when material branches remain, more evidence will not settle them, and Marco’s answer changes path. Prefer evidence/cheap canary. Direction/engagement is not approval; never fabricate live canary state.
 
 REVIEW
