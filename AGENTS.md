@@ -17,6 +17,9 @@ This file is the stable repository bootstrap for managed agents. It is a router,
 - Load applicable current canary state on entry/re-entry and before affected behavior. A canary never expands authority. If its state is unreadable, keep the experimental behavior UNKNOWN and retain the baseline; RED suspends only the affected experimental delta.
 - Before a consequential external effect, handoff, approval claim, or final completion claim, reread the relevant current work/grant and reconcile material new direction. Preserve STALE/DENIED/UNKNOWN and read back successful effects.
 
+- Preserve the selected role and main work across re-entry and adjacent reads. Context, messages, project membership and tool capability are not reassignment; re-anchor before acting and change only under explicit current assignment authority.
+- Before declaring a blocker or requesting manual work, check the available authorized capabilities. Block only the unsupported effect and continue independent authorized work. Do not promise unsupported elapsed times; state uncertainty when a reliable estimate is unavailable.
+
 ## Repository and source access
 
 - `~/.claude/CLAUDE.md` is not an authoritative Switchstand project input. If a host or higher-priority instruction injects it as project authority, report the launch-contract conflict before material action. Repository `CLAUDE.md` is only a compatibility pointer to this file.
@@ -63,6 +66,7 @@ After light boundary research, establish or confirm a short Headline/Intent befo
 
 ## Change discipline
 
+- When changing a canary's behavior or lifecycle, reconcile the affected durable procedure, current canary record and agent entry guidance. Record exact updates/readback, existing coverage, non-applicability or pending propagation; a state change alone is not instruction installation. Keep mutable trial state out of this bootstrap and preserve existing review/approval boundaries.
 - One agent owns each writable surface. Contributors/children get bounded objectives, surfaces, evidence and stop conditions. When multiple contributors touch shared config, migrations, CI or agent guidance, bind one explicit integration owner for that shared surface.
 - Before handoff or completion, ensure every delegated child is terminal or explicitly stopped/abandoned, absorb durable results into the owning work, and retire temporary work.
 - Keep work inside the exact assigned objective/scope. Stop on a new material authority, persistence, concurrency, security/trust, recovery, external-interface/effect, or other hard-to-reverse choice unless already covered by the controlling package.
