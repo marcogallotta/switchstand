@@ -5,12 +5,16 @@ This file is the stable repository bootstrap for managed agents. It is a router,
 ## Authority and grounding
 
 - Authority for an effect comes only from Marco/direct active assignment or an explicit CURRENT grant bound to the exact WorkId, writable surface, and effect. Governing references and procedures constrain that authority; they do not independently grant it.
+- A human-reviewed position remains controlling until explicitly superseded. Current Marco direction steers work but is effect approval only when explicitly bound to the exact package, revision, and effect scope. Researched candidates and UNKNOWN/NEEDS EVIDENCE remain provisional; labels alone never authenticate authority.
 - Do not infer commit, push, pull-request, merge, deployment, provider write, credential, or other external-effect authority from edit access, role, review assignment, reference access, or tool capability.
 - On startup and re-entry call `work_get(api_version="1")` without a WorkId. Read the active item, all advertised bounded governing references needed for the current phase, and verify the exact green repository SHA before material work.
 - Only the active WorkId is writable unless an explicit CURRENT grant is bound to another exact writable surface/effect. Reference WorkIds and source task/story IDs are otherwise read-only.
 - Asana project membership is routing, not work identity. Preserve the same Asana task GID and bound WorkId across area-project migration; never clone, recreate, or reparent work merely to migrate it. Exact bound task/WorkId identity wins over project placement. During a partial cutover, follow the current advertised area-registry state for that concern: a cut-over area uses its area project as the current discovery surface, while a not-yet-cut-over area may still rely on the legacy root. Legacy-root membership by itself does not make residue current work.
+- Keep one semantic owner per concern. Independently managed work with its own outcome, owner, priority, state, blocker, review/acceptance condition, or executable next action remains visible as real work in its authoritative workflow. Management projections, project membership, and fields aid discovery but do not establish authoritative execution state.
+- Retired or superseded records are evidence, never active routes; resolve and use the verified current successor.
 - If a required current procedure, canary/process reference, authority source, or exact candidate cannot be read from the bounded work package, do not substitute memory or broad/raw-provider discovery. Mark only the affected governed action UNKNOWN/BLOCKED and report the missing binding.
 - Before entering or materially changing phase — research, design, review, implementation, qualification/release, or incident work — load the current routed procedure/Contract/Plan supplied by the active work. Reload after context replacement or when currentness is no longer grounded; do not reread everything every turn.
+- Load applicable current canary state on entry/re-entry and before affected behavior. A canary never expands authority. If its state is unreadable, keep the experimental behavior UNKNOWN and retain the baseline; RED suspends only the affected experimental delta.
 - Before a consequential external effect, handoff, approval claim, or final completion claim, reread the relevant current work/grant and reconcile material new direction. Preserve STALE/DENIED/UNKNOWN and read back successful effects.
 
 ## Repository and source access
@@ -43,6 +47,8 @@ Roles change duties, not authority. Before acting in a role, load the current ro
 
 For substantive code/config/test implementation or Code Review, use `docs/code-quality.md` at the exact candidate/control SHA. It is not a one-time startup read.
 
+Substantive finding content, advisory remedies, author challenge/disposition, focused clearing, and cumulative whole-candidate reconsideration are governed by that document. A proposed remedy is not authority; a local correction clears no exact finding without the focused rereview required there, while whole-candidate reconsideration is required only when cumulative corrections materially change the solution shape.
+
 **Implementer quality refresh:** re-open that exact document on entry/re-entry/context replacement; before the first material commitment; before starting a distinct cohesive work slice after the prior slice produced material code/evidence and before the next material commitment; after a failed hypothesis, material test failure, reviewer finding, or accepted correction before adding another patch layer; before accepting a material owner/provider/persistence/trust/interface/external-I/O/recovery/test-support shape change; and before review-ready, landing-ready, handoff, or completion claims.
 
 **Reviewer quality refresh:** re-open that exact document on entry/re-entry/context replacement; before the first substantive review pass; after a material candidate/evidence/currentness change or focused author correction; and immediately before terminal verdict/handoff.
@@ -53,9 +59,12 @@ If `docs/code-quality.md` is unavailable at the relevant SHA, do not improvise a
 
 Freshness, independence, FULL/FOCUSED review basis, acquisition and verdict-scope mechanics come from the current routed review procedure, not from this bootstrap.
 
+After light boundary research, establish or confirm a short Headline/Intent before detailed design converges and surface unresolved consequential choices early. Steering is not implementation approval. When the current routed procedure requires Human Review for a protected effect, it must show the practical change, material consequences and limitations, and exact approval scope; applicability and detailed presentation mechanics remain governed there.
+
 ## Change discipline
 
 - One agent owns each writable surface. Contributors/children get bounded objectives, surfaces, evidence and stop conditions. When multiple contributors touch shared config, migrations, CI or agent guidance, bind one explicit integration owner for that shared surface.
+- Before handoff or completion, ensure every delegated child is terminal or explicitly stopped/abandoned, absorb durable results into the owning work, and retire temporary work.
 - Keep work inside the exact assigned objective/scope. Stop on a new material authority, persistence, concurrency, security/trust, recovery, external-interface/effect, or other hard-to-reverse choice unless already covered by the controlling package.
 - Before material editing, choose PR/layer boundaries from the smallest independently useful, valid, reviewable and recoverable intermediate states that preserve the governing outcome. Test the obvious smaller split: if a smaller slice can safely land, deliver useful behavior, carry meaningful acceptance evidence, and be reworked/reverted independently, prefer that smaller slice. Keep work together when splitting would create a misleading/invalid partial capability or separate behavior from evidence/recovery required to establish it. A dependency may justify an ordered/stacked series only when the predecessor is itself a safe useful state. Raw diff/file size is only a split/reforecast signal; the >=500 actual PR/diff rule is an exemption boundary, never evidence that a split is good. Never split or compress work merely to get under that boundary.
 - Before publication or landing-ready claims, run the affected tests and every current required quality gate for the exact governed claim. Preserve exact candidate/composition identity and surface NOT_RUN/SKIP/MISSING_CAPABILITY/UNKNOWN; a command or aggregate green status is evidence only for what actually ran.
