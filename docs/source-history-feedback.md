@@ -2,8 +2,8 @@
 
 This capability exposes `work_get`, `source_task`, `source_stories`,
 `source_story` and `work_append`. It uses the existing state and Asana adapter;
-the optional related-work read finds direct-child candidates without text search,
-new relation authority, assignment, generic update or event store.
+the optional related-work read finds direct-child and Root Work GID field
+candidates without new relation authority, assignment, generic update or event store.
 
 ## Read the assignment and its evidence
 
@@ -24,6 +24,17 @@ not a complete set. A work task that becomes noncanonical returns `denied`
 without candidates.
 Candidate roles do not establish the current spec, canonical review, gate
 requiredness or named proof. Those require their own authoritative sources.
+
+The same opt-in read returns `grouped` separately from `related`. It searches
+one bounded Asana workspace page for the exact Root Work GID text field value
+equal to the bound work task GID, restricted to configured admission projects.
+Each returned task is reread by exact GID and admitted only when its enabled
+text field still matches and its source is canonical. Candidate evidence includes
+task GID, title, revision, observed root GID and search plus exact-GET provenance.
+`grouped.complete` is always `false`: search indexing and its 100-result cap
+cannot prove family completeness or absence. Zero results, unavailable search,
+malformed or changed rows return `UH_OH`. Field membership grants no work or
+write authority.
 
 For an exact Asana task already identified by the assignment or its evidence,
 call `source_task(api_version="1", task_gid=...)`. Source reads accept explicit

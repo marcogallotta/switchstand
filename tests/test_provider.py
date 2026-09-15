@@ -5,7 +5,16 @@ import pytest
 
 from switchstand.contracts import WorkPatch
 from switchstand.core import ProviderError, UnknownEffect
-from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, PROJECTS, AsanaProvider
+from switchstand.provider import (
+    ANCESTRY_GETS,
+    FIELDS,
+    OPT_FIELDS,
+    PROJECT,
+    PROJECTS,
+    ROOT_WORK_GID,
+    WORKSPACE,
+    AsanaProvider,
+)
 
 
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
@@ -38,6 +47,106 @@ def provider(*responses, test_project_gid=None):
 
 
 TEST_PROJECT = "9999999999999999"
+
+
+def root_field(value):
+    return {"gid": ROOT_WORK_GID, "enabled": True,
+            "resource_subtype": "text", "text_value": value}
+
+
+async def test_grouped_lookup_requires_bound_task_to_identify_itself_as_root():
+    member = task(project=PROJECT, fields=[root_field("121")])
+    member["data"]["gid"] = "456"
+    subject, api = provider((200, member), (200, {"data": []}), (200, member))
+    result = await subject.find_grouped("456")
+    assert (result.status, result.reason, result.candidates) == (
+        "UH_OH", "root_identity_unverified", ()
+    )
+    assert [request.url.path for request in api.requests] == ["/api/1.0/tasks/456"]
+
+
+async def test_grouped_lookup_discards_candidates_if_root_identity_changes_on_readback():
+    root = task(project=PROJECT, fields=[root_field("121")]); root["data"]["gid"] = "121"
+    changed_root = task(project=PROJECT, fields=[root_field("456")])
+    changed_root["data"]["gid"] = "121"
+    member = task(project=PROJECT, fields=[root_field("121")])
+    member["data"]["gid"] = "456"
+    subject, api = provider((200, root), (200, {"data": [{"gid": "456"}]}),
+                            (200, member), (200, changed_root))
+    result = await subject.find_grouped("121")
+    assert (result.status, result.reason, result.candidates) == (
+        "UH_OH", "root_identity_unverified", ()
+    )
+    assert [request.method for request in api.requests] == ["GET"] * 4
+
+
+async def test_grouped_lookup_queries_exact_text_field_then_rereads_canonical_task():
+    root_gid, member_gid = "121", "456"
+    root = task(project=PROJECT, fields=[root_field(root_gid)])
+    root["data"]["gid"] = root_gid
+    member = task(project=PROJECTS[1], fields=[{
+        "gid": ROOT_WORK_GID, "enabled": True, "resource_subtype": "text",
+        "text_value": root_gid,
+    }])
+    member["data"]["gid"] = member_gid
+    subject, api = provider((200, root), (200, {"data": [{"gid": member_gid}]}),
+                            (200, member), (200, root))
+
+    result = await subject.find_grouped(root_gid)
+
+    assert result.status == "CANDIDATES" and result.complete is False
+    assert result.root_task_gid == root_gid and result.observed_revision == "r1"
+    assert [(row.task_gid, row.root_work_gid, row.revision, row.source) for row in result.candidates] == [
+        (member_gid, root_gid, "r1", "asana_root_work_gid_search_exact_get")
+    ]
+    assert [request.method for request in api.requests] == ["GET"] * 4
+    assert [request.url.path for request in api.requests] == [
+        f"/api/1.0/tasks/{root_gid}", f"/api/1.0/workspaces/{WORKSPACE}/tasks/search",
+        f"/api/1.0/tasks/{member_gid}", f"/api/1.0/tasks/{root_gid}",
+    ]
+    search_params = dict(api.requests[1].url.params)
+    project_filter = search_params.pop("projects.any").split(",")
+    assert len(project_filter) == len(PROJECTS) and set(project_filter) == set(PROJECTS)
+    assert search_params == {
+        f"custom_fields.{ROOT_WORK_GID}.value": root_gid,
+        "limit": "100", "opt_fields": "gid",
+    }
+
+
+@pytest.mark.parametrize("field_value,project,expected_reason", [
+    ("different", PROJECT, "relationship_changed"),
+    ("121", "outside", "candidate_not_canonical"),
+])
+async def test_grouped_lookup_does_not_admit_changed_or_noncanonical_match(
+    field_value, project, expected_reason,
+):
+    root = task(project=PROJECT, fields=[root_field("121")]); root["data"]["gid"] = "121"
+    member = task(project=project, fields=[{
+        "gid": ROOT_WORK_GID, "enabled": True, "resource_subtype": "text",
+        "text_value": field_value,
+    }]); member["data"]["gid"] = "456"
+    subject, _ = provider((200, root), (200, {"data": [{"gid": "456"}]}), (200, member))
+    result = await subject.find_grouped("121")
+    assert result.status == "UH_OH" and result.reason == expected_reason
+    assert not result.candidates and result.complete is False
+
+
+@pytest.mark.parametrize("search_response,expected_reason", [
+    ((200, {"data": []}), "no_search_matches"),
+    ((200, {"data": [{"gid": "456"}, {"gid": "456"}]}), "invalid_search_row"),
+    ((200, {"data": [], "next_page": {"offset": "unexpected"}}), "invalid_search_page"),
+    ((402, {"errors": [{"message": "premium"}]}), "read_unavailable"),
+])
+async def test_grouped_lookup_preserves_unknown_for_incomplete_search(search_response, expected_reason):
+    root = task(project=PROJECT, fields=[root_field("121")]); root["data"]["gid"] = "121"
+    responses = [(200, root), search_response]
+    if expected_reason == "no_search_matches":
+        responses.append((200, root))
+    subject, api = provider(*responses)
+    result = await subject.find_grouped("121")
+    assert result.status == "UH_OH" and result.reason == expected_reason
+    assert not result.candidates and result.complete is False
+    assert all(request.method == "GET" for request in api.requests)
 
 
 async def test_exact_test_project_admission_and_production_only_discovery():

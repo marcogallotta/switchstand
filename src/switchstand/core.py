@@ -5,6 +5,7 @@ from uuid import UUID
 
 from .contracts import (
     AppendResult,
+    GroupedLookup,
     LaunchAuthority,
     RelatedLookup,
     Routing,
@@ -100,6 +101,7 @@ class State(Protocol):
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
     async def find_related(self, work_task_gid: str) -> RelatedLookup: ...
+    async def find_grouped(self, root_task_gid: str) -> GroupedLookup: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
@@ -188,7 +190,24 @@ class Controller:
                     related = RelatedLookup(status="UH_OH", work_task_gid=handle.provider_work_id,
                                             observed_revision=related.observed_revision,
                                             reason="work_revision_mismatch")
-            return WorkResult(status="ok", item=result.item, related=related)
+            grouped = GroupedLookup(status="UH_OH", root_task_gid=handle.provider_work_id,
+                                    reason="provider_not_supported")
+            if handle.provider == "asana" and hasattr(self.providers[handle.provider], "find_grouped"):
+                try:
+                    grouped = await self.providers[handle.provider].find_grouped(handle.provider_work_id)
+                except ProviderError:
+                    grouped = GroupedLookup(status="UH_OH", root_task_gid=handle.provider_work_id,
+                                            reason="grouped_unavailable")
+                if grouped.reason == "work_not_canonical":
+                    return WorkResult(status="denied")
+                if (grouped.root_task_gid != handle.provider_work_id
+                        or (grouped.status == "CANDIDATES"
+                            or grouped.observed_revision is not None)
+                        and grouped.observed_revision != result.item.revision):
+                    grouped = GroupedLookup(status="UH_OH", root_task_gid=handle.provider_work_id,
+                                            observed_revision=grouped.observed_revision,
+                                            reason="work_revision_mismatch")
+            return WorkResult(status="ok", item=result.item, related=related, grouped=grouped)
         except UnknownEffect:
             return WorkResult(status="unknown")
         except ProviderError:
