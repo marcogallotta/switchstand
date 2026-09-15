@@ -89,17 +89,35 @@ class RelatedLookup(ClosedModel):
     reason: str | None = None
 
 
+class GroupedCandidate(ClosedModel):
+    task_gid: AsanaGid
+    title: str
+    revision: str
+    root_work_gid: AsanaGid
+    source: Literal["asana_root_work_gid_search_exact_get"]
+
+
+class GroupedLookup(ClosedModel):
+    status: Literal["CANDIDATES", "UH_OH"]
+    root_task_gid: AsanaGid
+    observed_revision: str | None = None
+    candidates: tuple[GroupedCandidate, ...] = ()
+    complete: Literal[False] = False
+    reason: str | None = None
+
+
 class WorkResult(ClosedModel):
     status: Status
     item: WorkItem | None = None
     related: RelatedLookup | None = None
+    grouped: GroupedLookup | None = None
 
     @model_validator(mode="after")
     def valid_result(self) -> Self:
         needs_item = self.status in {"ok", "stale"}
         if needs_item != (self.item is not None):
             raise ValueError("item presence does not match status")
-        if self.related is not None and self.status != "ok":
+        if (self.related is not None or self.grouped is not None) and self.status != "ok":
             raise ValueError("related evidence requires current readable work")
         return self
 

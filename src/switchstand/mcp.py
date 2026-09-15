@@ -60,7 +60,8 @@ def build_server(
 
     references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
-        "Read launch-bound work. Set include_related for bounded direct-child evidence or UH_OH. "
+        "Read launch-bound work. Set include_related for bounded direct-child and "
+        "Root Work GID grouping candidates; completeness is always unknown. "
         "Omit work_id for the active assignment. "
         f"Bounded read-only reference WorkIds: {references}."
     )
