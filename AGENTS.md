@@ -38,6 +38,7 @@ Every managed start supplies an initial request. The active item's `source.task_
 - While assigned work or an exact pending watch remains executable, check the exact inbox/review surfaces between bounded work batches, after blocking calls, and before consequential effects/final completion. If nothing else is ready, use a supported bounded wait and read again. This is active-run polling, not a scheduler or inactive wake claim.
 - For actionable inbound work, append a concise receipt/disposition through `work_append` identifying the exact source task/story and accepted scope, rejection, or blocker. After acting, record exact result evidence. Sending, receipt, acceptance/disposition, and completion are distinct states.
 - Prior completion evidence prevents duplicate effects. Missing feedback is not proof an effect failed; reconcile before repeating.
+- Record real setup or workflow friction in the repo-local, Git-ignored `friction.md` when that file is writable; keep the scratch log from expanding the assigned task. Ordinary Codex sessions in the Switchstand checkout may write it directly. If an isolated candidate-only run cannot write that file, report the observation on its exact active WorkId through `work_append` when available, or preserve it in the handoff. Do not widen writable roots or claim the local log was updated after a rejected write.
 
 ## Roles and routed procedure
 
