@@ -45,6 +45,86 @@ def clone_repo(source: Path, target: Path) -> None:
     )
 
 
+def real_start_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
+    source = tmp_path / "source"
+    committed_repo(source)
+    scripts = source / "scripts"
+    scripts.mkdir()
+    start_source = Path(__file__).parents[1] / "scripts" / "switchstand-start"
+    start = scripts / "switchstand-start"
+    start.write_bytes(start_source.read_bytes())
+    start.chmod(0o755)
+    executable(scripts / "bootstrap", "#!/bin/sh\nexit 17\n")
+    run_git(source, "add", "scripts/switchstand-start", "scripts/bootstrap")
+    run_git(source, "commit", "-m", "launcher")
+    clone = tmp_path / "clone"
+    clone_repo(source, clone)
+    return source, clone, clone / "scripts" / "switchstand-start"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_start_fast_forwards_clean_main_to_exact_fetched_commit(tmp_path):
+    source, clone, start = real_start_repo(tmp_path)
+    before = run_git(clone, "rev-parse", "HEAD").stdout.strip()
+    (source / "tracked.txt").write_text("new accepted revision\n")
+    run_git(source, "add", "tracked.txt")
+    run_git(source, "commit", "-m", "advance main")
+    accepted = run_git(source, "rev-parse", "HEAD").stdout.strip()
+
+    environment = {name: value for name, value in os.environ.items()
+                   if not name.startswith("SWITCHSTAND_CONTROL_")}
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", accepted],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 17, result.stderr
+    assert before != accepted
+    assert run_git(clone, "rev-parse", "HEAD").stdout.strip() == accepted
+    assert run_git(clone, "status", "--porcelain", "--untracked-files=all").stdout == ""
+    assert (clone / "tracked.txt").read_text() == "new accepted revision\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+@pytest.mark.parametrize("problem", ["dirty", "divergent"])
+def test_start_preserves_dirty_or_divergent_main(tmp_path, problem):
+    source, clone, start = real_start_repo(tmp_path)
+    (source / "tracked.txt").write_text("remote advancement\n")
+    run_git(source, "add", "tracked.txt")
+    run_git(source, "commit", "-m", "advance main")
+    before = run_git(clone, "rev-parse", "HEAD").stdout.strip()
+    if problem == "dirty":
+        (clone / "local.txt").write_text("uncommitted local work\n")
+    else:
+        run_git(clone, "config", "user.name", "Switchstand Test")
+        run_git(clone, "config", "user.email", "switchstand-test@example.invalid")
+        (clone / "local.txt").write_text("local committed work\n")
+        run_git(clone, "add", "local.txt")
+        run_git(clone, "commit", "-m", "local advancement")
+        before = run_git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    environment = {name: value for name, value in os.environ.items()
+                   if not name.startswith("SWITCHSTAND_CONTROL_")}
+    result = subprocess.run(
+        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert problem in result.stderr
+    assert run_git(clone, "rev-parse", "HEAD").stdout.strip() == before
+    assert (clone / "local.txt").read_text() == (
+        "uncommitted local work\n" if problem == "dirty" else "local committed work\n"
+    )
+    assert (clone / "tracked.txt").read_text() == "accepted\n"
+
+
 def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
@@ -78,6 +158,7 @@ case "$*" in
       ;;
   *"cat-file -t"*) echo "$FAKE_OBJECT_TYPE" ;;
   *"merge-base --is-ancestor"*) : ;;
+  *"merge --ff-only --quiet"*) : ;;
   *"worktree list --porcelain"*) printf 'worktree %s\\n\\n' "$FAKE_TARGET" ;;
   *) exit 91 ;;
 esac
@@ -90,6 +171,7 @@ if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
 fi
 if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ]; then
   printf '%s\\n' "$*" > "$FAKE_SOURCE_ARGS"
+  printf '%s\\n' "${ASANA_TOKEN:-}" > "$FAKE_SOURCE_TOKEN"
   if [ "${FAKE_SOURCE_FAIL:-0}" = 1 ]; then
     echo 'launch source preparation failed: simulated exact source failure' >&2
     exit 1
@@ -98,6 +180,7 @@ if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ];
   exit 0
 fi
 pwd > "$FAKE_LAUNCH_CWD"
+printf '%s\\n' "${ASANA_TOKEN:-}" > "$FAKE_LAUNCH_TOKEN"
 printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
 printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 printf '%s\n' "$SWITCHSTAND_CONTROL_ROOT" > "$FAKE_CONTROL_ROOT"
@@ -130,9 +213,11 @@ echo "$FAKE_TARGET"
         "FAKE_TARGET": str(target),
         "FAKE_TASK_REF_LOG": str(tmp_path / "task-ref.log"),
         "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
+        "FAKE_SOURCE_TOKEN": str(tmp_path / "source.token"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
+        "FAKE_LAUNCH_TOKEN": str(tmp_path / "launch.token"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
         "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
         "FAKE_CONTROL_ROOT": str(tmp_path / "control.root"),
@@ -144,6 +229,7 @@ echo "$FAKE_TARGET"
 
 def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     start, environment, target = fixture(tmp_path)
+    environment["ASANA_TOKEN"] = "ambient-token-must-not-reach-candidate"
     result = subprocess.run(
         [
             start,
@@ -178,6 +264,8 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
     assert (tmp_path / "control.root").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "candidate.root").read_text().strip() == str(target)
+    assert (tmp_path / "source.token").read_text() == "\n"
+    assert (tmp_path / "launch.token").read_text() == "\n"
 
 
 @pytest.mark.parametrize(
@@ -221,7 +309,7 @@ def test_start_requires_exact_selector_control_before_task_read(tmp_path, proble
     assert not (tmp_path / "bootstrap.log").exists()
 
 
-def test_start_direct_fallback_rejects_main_not_at_freshly_accepted_commit(tmp_path):
+def test_start_direct_fallback_requires_exact_fast_forward_readback(tmp_path):
     start, environment, _ = fixture(tmp_path)
     environment.pop("SWITCHSTAND_CONTROL_PATH")
     environment.pop("SWITCHSTAND_CONTROL_SHA")
@@ -236,7 +324,7 @@ def test_start_direct_fallback_rejects_main_not_at_freshly_accepted_commit(tmp_p
         check=False,
     )
     assert result.returncode == 1
-    assert "clean main at the freshly accepted origin/main" in result.stderr
+    assert "read back clean main at the exact fetched revision" in result.stderr
     assert not (tmp_path / "task-ref.log").exists()
     assert not (tmp_path / "source.args").exists()
     assert not (tmp_path / "worktree.log").exists()

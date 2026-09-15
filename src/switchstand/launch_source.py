@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import re
 import subprocess
 import urllib.error
@@ -86,6 +85,24 @@ def _task_notes(task_id: str, token: str) -> str:
     if task.get("gid") != task_id or not isinstance(notes, str):
         raise LaunchSourceError("exact launch task response is invalid")
     return notes
+
+
+def load_asana_token(config: Path) -> str:
+    try:
+        lines = config.read_text().splitlines()
+    except OSError:
+        raise LaunchSourceError("protected Asana config is unavailable") from None
+    tokens: list[str] = []
+    for line in lines:
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == "ASANA_TOKEN":
+            tokens.append(value.strip())
+    if len(tokens) != 1 or not tokens[0]:
+        raise LaunchSourceError("ASANA_TOKEN is missing or empty in protected Asana config")
+    token = tokens[0]
+    if token.startswith(("'", '"')) or any(character.isspace() for character in token):
+        raise LaunchSourceError("ASANA_TOKEN must be a plain unquoted value in protected Asana config")
+    return token
 
 
 def _git(repo: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -207,7 +224,7 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        token = os.environ["ASANA_TOKEN"]
+        token = load_asana_token(Path.home() / ".config" / "switchstand" / ".env")
         source = resolve(
             arguments.repo.resolve(strict=True), arguments.active, token, arguments.control_sha
         )
