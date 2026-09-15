@@ -126,6 +126,50 @@ def test_exact_ref_rejects_remote_movement_before_local_mutation(monkeypatch: py
         )
 
 
+def test_local_ref_uses_real_git_missing_ref_exit_code(tmp_path: Path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    name = "refs/switchstand/launch/123/base"
+
+    assert launch_source._local_ref(tmp_path, name) is None
+
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"],
+        check=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(tmp_path), "update-ref", name, sha], check=True)
+
+    assert launch_source._local_ref(tmp_path, name) == sha
+
+
+def test_exact_ref_fetches_on_first_use_with_real_git(tmp_path: Path):
+    remote = tmp_path / "remote"
+    control = tmp_path / "control"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(remote)], check=True)
+    subprocess.run(
+        ["git", "-C", str(remote), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"],
+        check=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "init", "-q", str(control)], check=True)
+    subprocess.run(["git", "-C", str(control), "remote", "add", "origin", str(remote)], check=True)
+    name = "refs/switchstand/launch/123/base"
+
+    assert launch_source._local_ref(control, name) is None
+    launch_source._fetch_exact_ref(control, "123", "base", "refs/heads/main", sha)
+    assert launch_source._local_ref(control, name) == sha
+
+
 def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
     source = parse_notes(NOTES)
     monkeypatch.setattr(launch_source, "_remote_sha", lambda _repo, _ref: CANDIDATE)

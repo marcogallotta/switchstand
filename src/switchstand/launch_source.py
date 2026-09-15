@@ -139,11 +139,12 @@ def _remote_sha(repo: Path, remote_ref: str) -> str:
 
 
 def _local_ref(repo: Path, name: str) -> str | None:
-    completed = _git(repo, "show-ref", "--verify", "--hash", name, check=False)
-    if completed.returncode == 1:
+    presence = _git(repo, "show-ref", "--verify", "--quiet", name, check=False)
+    if presence.returncode == 1:
         return None
-    if completed.returncode != 0:
+    if presence.returncode != 0:
         raise LaunchSourceError(f"cannot inspect prepared ref {name}")
+    completed = _git(repo, "show-ref", "--verify", "--hash", name)
     value = completed.stdout.strip()
     if SHA_PATTERN.fullmatch(value) is None:
         raise LaunchSourceError(f"prepared ref has invalid identity: {name}")
