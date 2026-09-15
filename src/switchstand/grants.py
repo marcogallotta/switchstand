@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
-from .contracts import ClosedModel, LaunchAuthority, WorkItem
+from .contracts import ClosedModel, LaunchAuthority, RelatedLookup, WorkItem
 
 
 class PrincipalContext(ClosedModel):
@@ -91,4 +91,5 @@ class GrantResult(ClosedModel):
 class GrantedWorkResult(ClosedModel):
     status: Literal["ok", "denied", "unknown", "provider_error", "stale"]
     item: WorkItem | None = None
+    related: RelatedLookup | None = None
     guard: GuardOutcome | None = None

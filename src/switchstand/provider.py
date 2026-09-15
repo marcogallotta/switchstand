@@ -2,7 +2,7 @@ from typing import Any, cast
 
 import httpx
 
-from .contracts import Routing, WorkPatch
+from .contracts import RelatedCandidate, RelatedLookup, Routing, WorkPatch
 from .core import (
     ProviderError,
     ProviderHead,
@@ -28,8 +28,13 @@ ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
     "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
-OPT_FIELDS = ("gid,name,notes,completed,modified_at,memberships.project.gid,parent.gid,"
-              "custom_fields.gid,custom_fields.display_value,custom_fields.enabled,"
+WORK_TYPE = "1218431623135287"
+FINDER_LIMIT = 20
+FINDER_MAX_CHILDREN = 100
+OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
+              "memberships.project.gid,parent.gid,"
+              "custom_fields.gid,custom_fields.display_value,custom_fields.enum_value.gid,"
+              "custom_fields.enabled,custom_fields.resource_subtype,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
@@ -88,6 +93,28 @@ class AsanaProvider:
         return ([cast(JSON, value) for value in cast(list[object], fields) if isinstance(value, dict)]
                 if isinstance(fields, list) else [])
 
+    def _related_candidate(self, gid: str, task: JSON, parent_gid: str) -> RelatedCandidate:
+        title, revision = task.get("name"), task.get("modified_at")
+        if not isinstance(title, str) or not isinstance(revision, str):
+            raise TypeError
+        role_fields = [field for field in self._custom_fields(task)
+                       if field.get("gid") == WORK_TYPE]
+        option: str | None = None
+        if len(role_fields) == 1:
+            field = role_fields[0]
+            value = self._gid(field.get("enum_value"))
+            options = field.get("enum_options")
+            if (field.get("enabled") is True
+                    and field.get("resource_subtype") == "enum"
+                    and isinstance(options, list)):
+                valid_options = [cast(JSON, item) for item in cast(list[object], options)
+                                 if isinstance(item, dict)]
+                if any(self._gid(item) == value and item.get("enabled") is True
+                       for item in valid_options):
+                    option = value
+        return RelatedCandidate(task_gid=gid, title=title, revision=revision,
+                                parent_gid=parent_gid, work_type_option_gid=option)
+
     @staticmethod
     def _story_value(payload: JSON, fallback_task_gid: str | None = None) -> ProviderSourceStory:
         story_gid = payload.get("gid")
@@ -120,6 +147,91 @@ class AsanaProvider:
             return ProviderWork(title, notes, completed, revision, routing, await self._canonical(task))
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
+
+    async def find_related(self, work_task_gid: str) -> RelatedLookup:
+        """Read bounded direct-child evidence; this does not decide canonical roles."""
+        candidates: list[RelatedCandidate] = []
+        observed_revision: str | None = None
+
+        def uncertain(reason: str) -> RelatedLookup:
+            return RelatedLookup(status="UH_OH", work_task_gid=work_task_gid,
+                                 observed_revision=observed_revision,
+                                 candidates=() if reason == "work_not_canonical" else tuple(candidates),
+                                 reason=reason)
+
+        try:
+            work = await self._task(work_task_gid)
+            if work is None or self._gid(work) != work_task_gid:
+                return uncertain("work_not_returned")
+            revision = work.get("modified_at")
+            if not isinstance(revision, str):
+                return uncertain("work_revision_unavailable")
+            observed_revision = revision
+            if not await self._canonical(work):
+                return uncertain("work_not_canonical")
+
+            offset: str | None = None
+            seen_offsets: set[str] = set()
+            seen_child_gids: set[str] = set()
+            incomplete_reason: str | None = None
+            while True:
+                params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
+                if offset is not None:
+                    params["offset"] = offset
+                response = await self.client.get(f"/tasks/{work_task_gid}/subtasks", params=params)
+                response.raise_for_status()
+                payload = response.json()
+                rows, next_page = payload["data"], payload["next_page"]
+                if not isinstance(rows, list):
+                    return uncertain("invalid_subtask_page")
+                raw_rows = cast(list[object], rows)
+                if len(raw_rows) > FINDER_LIMIT:
+                    return uncertain("invalid_subtask_page")
+                if len(candidates) + len(raw_rows) > FINDER_MAX_CHILDREN:
+                    incomplete_reason = "subtask_cap"
+                    break
+                for row in raw_rows:
+                    child_gid = self._gid(row)
+                    if child_gid is None:
+                        return uncertain("invalid_subtask_page")
+                    child = await self._task(child_gid)
+                    if child is None or self._gid(child) != child_gid:
+                        return uncertain("candidate_not_returned")
+                    if self._gid(child.get("parent")) != work_task_gid:
+                        return uncertain("relationship_changed")
+                    if child_gid in seen_child_gids:
+                        return uncertain("duplicate_subtask")
+                    seen_child_gids.add(child_gid)
+                    candidates.append(self._related_candidate(child_gid, child, work_task_gid))
+                if next_page is None:
+                    break
+                next_offset = cast(JSON, next_page).get("offset") if isinstance(next_page, dict) else None
+                if (not isinstance(next_offset, str) or not next_offset
+                        or next_offset in seen_offsets):
+                    incomplete_reason = "invalid_subtask_offset"
+                    break
+                if len(candidates) >= FINDER_MAX_CHILDREN:
+                    incomplete_reason = "subtask_cap"
+                    break
+                seen_offsets.add(next_offset)
+                offset = next_offset
+
+            readback = await self._task(work_task_gid)
+            if readback is None or self._gid(readback) != work_task_gid:
+                return uncertain("work_readback_unavailable")
+            if not await self._canonical(readback):
+                return uncertain("work_not_canonical")
+            if readback.get("modified_at") != observed_revision:
+                return uncertain("work_stale")
+            if incomplete_reason is not None:
+                return uncertain(incomplete_reason)
+            if not candidates:
+                return uncertain("no_direct_subtasks")
+            return RelatedLookup(status="CANDIDATES", work_task_gid=work_task_gid,
+                                 observed_revision=observed_revision,
+                                 candidates=tuple(candidates))
+        except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+            return uncertain("read_unavailable")
 
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None:
         task = await self._task(provider_task_id)

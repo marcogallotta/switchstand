@@ -6,6 +6,7 @@ from uuid import UUID
 from .contracts import (
     AppendResult,
     LaunchAuthority,
+    RelatedLookup,
     Routing,
     SourceStoriesRequest,
     SourceStoriesResult,
@@ -98,6 +99,7 @@ class State(Protocol):
 
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
+    async def find_related(self, work_task_gid: str) -> RelatedLookup: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
@@ -166,7 +168,27 @@ class Controller:
             return WorkResult(status="denied")
         try:
             handle = await self.state.get(request.work_id)
-            return WorkResult(status="unknown") if handle is None else await self._read(request.work_id, handle)
+            if handle is None:
+                return WorkResult(status="unknown")
+            result = await self._read(request.work_id, handle)
+            if not request.include_related or result.status != "ok" or result.item is None:
+                return result
+            related = RelatedLookup(status="UH_OH", work_task_gid=handle.provider_work_id,
+                                    reason="provider_not_supported")
+            if handle.provider == "asana":
+                try:
+                    related = await self.providers[handle.provider].find_related(handle.provider_work_id)
+                except ProviderError:
+                    related = RelatedLookup(status="UH_OH", work_task_gid=handle.provider_work_id,
+                                            reason="related_unavailable")
+                if related.reason == "work_not_canonical":
+                    return WorkResult(status="denied")
+                if (related.work_task_gid != handle.provider_work_id
+                        or related.observed_revision != result.item.revision):
+                    related = RelatedLookup(status="UH_OH", work_task_gid=handle.provider_work_id,
+                                            observed_revision=related.observed_revision,
+                                            reason="work_revision_mismatch")
+            return WorkResult(status="ok", item=result.item, related=related)
         except UnknownEffect:
             return WorkResult(status="unknown")
         except ProviderError:

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import LaunchAuthority, Routing
+from switchstand.contracts import LaunchAuthority, RelatedCandidate, RelatedLookup, Routing
 from switchstand.core import (
     Handle,
     ProviderSourceStory,
@@ -40,12 +40,20 @@ class Provider:
     def __init__(self):
         self.notes, self.revision, self.stories = "initial notes", "r1", []
         self.sends = 0
+        self.related_calls = []
         self.unknown = self.mismatch = self.cancel = False
         self.before_send = None
 
     async def get(self, task_gid):
         return ProviderWork("Task", self.notes, False, self.revision, Routing(priority="P0"),
                             task_gid in {"123", "456"})
+
+    async def find_related(self, task_gid):
+        self.related_calls.append(task_gid)
+        return RelatedLookup(status="CANDIDATES", work_task_gid=task_gid,
+                             observed_revision=self.revision,
+                             candidates=(RelatedCandidate(task_gid="789", title="Review",
+                                         revision=self.revision, parent_gid=task_gid),))
 
     async def source_task(self, task_gid):
         return ProviderSourceTask("Task", self.notes, False, self.revision,
