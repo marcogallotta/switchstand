@@ -55,22 +55,44 @@ if [ -n "$selector_path$selector_sha$selector_common" ]; then
         || { echo "start CONTROL checkout does not match selector identity" >&2; exit 1; }
     accepted=$selector_sha
 else
-    git -C "$repo" fetch --quiet --no-tags origin \
-        '+refs/heads/main:refs/remotes/origin/main'
-    accepted=$(git -C "$repo" rev-parse origin/main)
-    [ "$branch" = main ] || {
+    primary=$(dirname "$common")
+    [ "$repo" = "$primary" ] && [ "$branch" = main ] || {
         echo "start requires the ordinary main checkout" >&2
         exit 1
     }
-    [ "$head" = "$accepted" ] && [ -z "$dirty" ] || {
-        echo "start requires clean main at the freshly accepted origin/main" >&2
+    [ -z "$dirty" ] || {
+        echo "start refuses dirty main; local work is intact" >&2
         exit 1
     }
+    git -C "$repo" fetch --quiet --no-tags origin \
+        '+refs/heads/main:refs/remotes/origin/main'
+    accepted=$(git -C "$repo" rev-parse origin/main)
+    if [ "$head" != "$accepted" ]; then
+        git -C "$repo" merge-base --is-ancestor "$head" "$accepted" || {
+            echo "start refuses divergent main; local commits are intact" >&2
+            exit 1
+        }
+        [ -z "$(git -C "$repo" status --porcelain --untracked-files=all)" ] || {
+            echo "start refuses dirty main; local work is intact" >&2
+            exit 1
+        }
+        git -C "$repo" merge --ff-only --quiet "$accepted" || {
+            echo "start could not fast-forward main; inspect the checkout" >&2
+            exit 1
+        }
+    fi
+    [ "$(git -C "$repo" branch --show-current)" = main ] \
+        && [ "$(git -C "$repo" rev-parse HEAD)" = "$accepted" ] \
+        && [ -z "$(git -C "$repo" status --porcelain --untracked-files=all)" ] || {
+            echo "start could not read back clean main at the exact fetched revision" >&2
+            exit 1
+        }
 fi
 primary=$(dirname "$common")
 "$primary/scripts/bootstrap"
 python="$primary/.venv/bin/python"
 [ -x "$python" ] || { echo "trusted CONTROL Python environment is unavailable" >&2; exit 1; }
+unset ASANA_TOKEN
 task_id=$(PYTHONPATH="$repo/src" "$python" -P -c \
     'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
     "$active")

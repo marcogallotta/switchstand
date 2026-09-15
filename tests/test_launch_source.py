@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from switchstand import launch_source
-from switchstand.launch_source import LaunchSource, LaunchSourceError, parse_notes, prepare_source
+from switchstand.launch_source import (
+    LaunchSource,
+    LaunchSourceError,
+    load_asana_token,
+    parse_notes,
+    prepare_source,
+)
 
 BASE = "a" * 40
 CANDIDATE = "b" * 40
@@ -20,6 +26,70 @@ SWITCHSTAND_CANDIDATE_SHA={CANDIDATE}
 
 def _completed(*, stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["git"], returncode, stdout, "")
+
+
+def test_load_asana_token_reads_only_exact_config_value(tmp_path: Path):
+    config = tmp_path / "config"
+    config.write_text("# host config\nDATABASE_URL=not-for-resolver\nASANA_TOKEN=host-only\n")
+    assert load_asana_token(config) == "host-only"
+
+
+@pytest.mark.parametrize("contents", ["", "ASANA_TOKEN=\n", "ASANA_TOKEN=one\nASANA_TOKEN=two\n"])
+def test_load_asana_token_rejects_missing_empty_or_duplicate_value(
+    tmp_path: Path, contents: str
+):
+    config = tmp_path / "config"
+    config.write_text(contents)
+    with pytest.raises(LaunchSourceError, match="ASANA_TOKEN is missing or empty"):
+        load_asana_token(config)
+
+
+@pytest.mark.parametrize("value", ["'quoted'", '"quoted"', "token # comment"])
+def test_load_asana_token_rejects_non_plain_value_without_repeating_it(
+    tmp_path: Path, value: str
+):
+    config = tmp_path / "config"
+    config.write_text(f"ASANA_TOKEN={value}\n")
+    with pytest.raises(LaunchSourceError, match="plain unquoted") as error:
+        load_asana_token(config)
+    assert value not in str(error.value)
+
+
+def test_launch_source_main_uses_protected_config_instead_of_ambient_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    config = tmp_path / ".config" / "switchstand" / ".env"
+    config.parent.mkdir(parents=True)
+    config.write_text("ASANA_TOKEN=host-only\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ASANA_TOKEN", "ambient-should-be-ignored")
+    monkeypatch.setattr(sys, "argv", ["launch_source", "--repo", str(tmp_path),
+                                      "--control-sha", BASE, "123"])
+    observed: list[str] = []
+
+    def fake_resolve(repo: Path, active: str, token: str, control_sha: str) -> LaunchSource:
+        assert repo == tmp_path
+        assert active == "123"
+        assert control_sha == BASE
+        observed.append(token)
+        return parse_notes(NOTES)
+
+    monkeypatch.setattr(launch_source, "resolve", fake_resolve)
+    launch_source.main()
+    assert observed == ["host-only"]
+    assert capsys.readouterr().out == f"{BASE} {CANDIDATE}\n"
+
+
+def test_launch_source_main_reports_missing_protected_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["launch_source", "--repo", str(tmp_path),
+                                      "--control-sha", BASE, "123"])
+    with pytest.raises(SystemExit) as error:
+        launch_source.main()
+    assert error.value.code == 1
+    assert "protected Asana config is unavailable" in capsys.readouterr().err
 
 
 def test_parse_notes_requires_complete_unique_exact_markers():

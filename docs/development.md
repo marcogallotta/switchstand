@@ -45,7 +45,11 @@
   signal, timeout, path, or process group.
 - One-step managed start: from the clean ordinary `main` checkout, run
   `scripts/switchstand-start --active <Asana task URL> --commit <exact-candidate-SHA>`. It freshly fetches `origin/main`,
-  requires clean local `main` at that accepted revision and requires the exact commit object to contain it. It creates
+  fast-forwards a clean ancestor `main` to that exact revision, and reads back a clean HEAD. Dirty or divergent main
+  fails with local work intact. The trusted resolver reads only `ASANA_TOKEN` from the protected host config;
+  the token is not exported into the candidate launch environment. The task must still contain exact base and candidate
+  refs and SHAs matching the remote and the requested commit. A stale task binding stops launch after any safe main
+  fast-forward. The launcher creates
   or reuses the task-named linked writer without moving or cleaning an existing worktree, then proves the candidate is
   registered to the same repository, clean, and at the requested commit. The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
