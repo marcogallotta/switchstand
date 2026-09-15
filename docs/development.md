@@ -16,7 +16,9 @@
   descends from the requested starting point. A same-named worktree from another clone is rejected without being
   adopted. The exact launch baseline remains recorded in linked-worktree Git metadata; one managed writer owns each
   linked worktree. Launch refuses a dirty worktree or a HEAD that is not at or descended from the recorded green
-  baseline.
+  baseline. The helper's optional `--resume-exact` mode is a preservation check for an already registered writer: its
+  HEAD must equal the requested checkpoint, the recorded green must be that checkpoint or its ancestor, and it never
+  moves HEAD, edits files, or rewrites green metadata. This mode itself grants no launch authority.
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
@@ -51,7 +53,12 @@
   refs and SHAs matching the remote and the requested commit. A stale task binding stops launch after any safe main
   fast-forward. The launcher creates
   or reuses the task-named linked writer without moving or cleaning an existing worktree, then proves the candidate is
-  registered to the same repository, clean, and at the requested commit. The accepted control-side launcher repeats
+  registered to the same repository and at the requested commit. A dirty writer at that exact remote-bound checkpoint
+  can resume with edits intact. New task writers live under the host's private 0700
+  `~/.local/state/switchstand/worktrees` directory. A same-task legacy writer under `/tmp` or the caller's `TMPDIR`
+  blocks creation of a second writer and remains untouched; reconcile it explicitly before relaunch. A locally moved
+  HEAD, wrong task branch, foreign worktree, running/UNKNOWN prior run, or stale task binding fails with work intact.
+  The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
   Task IDs, references, and one optional prompt are forwarded unchanged.
 - MCP server: `docker compose run --rm -T controller`
@@ -73,9 +80,9 @@ The Stage-1 repairs above are bounded and do not close all code-red findings:
 
 - **Docker ownership/cancellation:** current cleanup and timed Docker paths do not yet prove exact ownership and exact
   cancellation of every affected resource. Do not treat name matching or a timeout alone as ownership proof.
-- **Durable task work:** `scripts/switchstand-worktree` still places writer worktrees under
-  `${TMPDIR:-/tmp}/switchstand-<writer-name>`. This is separate from PostgreSQL's named volume and does not satisfy the
-  durable task-work requirement.
+- **Other writer durability:** The generic two-argument `scripts/switchstand-worktree` helper still places ordinary
+  writers under `${TMPDIR:-/tmp}/switchstand-<writer-name>`. One-step task launch uses the private host state directory
+  described above; existing temporary writers are preserved and require explicit reconciliation.
 - **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration
   and working-directory inputs from this repository, with the Codex binary selected from the ambient host path. It is
   therefore not the independently pinned CONTROL release required by the recovery design.

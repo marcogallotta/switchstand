@@ -77,8 +77,12 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
         ["git", "merge-base", "--is-ancestor", green, head],
         cwd=repo, env=env, check=False, capture_output=True,
     ).returncode == 0
-    if not based_on_green or dirty:
-        raise ValueError("managed launch requires a clean task worktree based on its green baseline")
+    dirty_task_checkpoint = branch.startswith("v2-task-") and based_on_green
+    if not based_on_green or (dirty and not dirty_task_checkpoint):
+        raise ValueError(
+            "managed launch requires a clean writer based on its green baseline "
+            "or a task writer at its exact checkpoint"
+        )
     return branch
 
 
@@ -222,6 +226,8 @@ def exact_revision_preflight(
     control_sha: str,
     expected_common: str,
     env: dict[str, str],
+    *,
+    allow_dirty_task: bool = False,
 ) -> str:
     if len(requested) != 40 or not set(requested) <= set("0123456789abcdef"):
         raise ValueError("candidate revision requires an exact lowercase 40-character SHA")
@@ -279,7 +285,7 @@ def exact_revision_preflight(
         raise ValueError("selected CONTROL checkout must remain clean")
     if not contains_main:
         raise ValueError("candidate revision must contain freshly fetched origin/main")
-    if candidate_dirty:
+    if candidate_dirty and not allow_dirty_task:
         raise ValueError("candidate must be clean at the exact requested revision")
     observed = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=candidate, env=env, check=True,
@@ -614,10 +620,13 @@ def run(arguments: argparse.Namespace) -> None:
     env = clean_environment(dict(os.environ))
     codex_args = validate_codex_args(arguments.codex_args)
     branch = linked_branch(candidate, env)
+    task_branch = "v2-task-" + asana_task_id(arguments.active)
+    if branch != task_branch:
+        raise ValueError("candidate task branch does not match the exact active task")
     checked = readback(control, candidate, env)
     observed = exact_revision_preflight(
         control, candidate, arguments.commit, os.environ["SWITCHSTAND_CONTROL_SHA"],
-        os.environ[REQUESTING_GIT_COMMON], env,
+        os.environ[REQUESTING_GIT_COMMON], env, allow_dirty_task=True,
     )
     git_dir = Path(subprocess.run(
         ["git", "rev-parse", "--absolute-git-dir"], cwd=candidate, env=env,

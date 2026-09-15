@@ -74,7 +74,7 @@ def test_start_fast_forwards_clean_main_to_exact_fetched_commit(tmp_path):
     environment = {name: value for name, value in os.environ.items()
                    if not name.startswith("SWITCHSTAND_CONTROL_")}
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", accepted],
+        [start, "--active", "9999999999999999", "--commit", accepted],
         env=environment,
         text=True,
         capture_output=True,
@@ -109,7 +109,7 @@ def test_start_preserves_dirty_or_divergent_main(tmp_path, problem):
     environment = {name: value for name, value in os.environ.items()
                    if not name.startswith("SWITCHSTAND_CONTROL_")}
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
         env=environment,
         text=True,
         capture_output=True,
@@ -129,7 +129,11 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
-    target = tmp_path / "writer"
+    home = tmp_path / "home"
+    state_root = home / ".local" / "state" / "switchstand" / "worktrees"
+    state_root.mkdir(parents=True, mode=0o700)
+    state_root.chmod(0o700)
+    target = state_root / "switchstand-task-9999999999999999"
     common = repo / ".git"
     control_python = repo / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
@@ -166,7 +170,7 @@ esac
     executable(control_python, """#!/bin/sh
 if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
   printf '%s\\n' "$*" > "$FAKE_TASK_REF_LOG"
-  echo 1218383014436992
+  echo 9999999999999999
   exit 0
 fi
 if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ]; then
@@ -197,6 +201,7 @@ echo 'git progress belongs on stderr' >&2
 echo "$FAKE_TARGET"
 """)
     environment = os.environ | {
+        "HOME": str(home),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "SWITCHSTAND_CONTROL_PATH": str(repo),
         "SWITCHSTAND_CONTROL_SHA": "a" * 40,
@@ -234,7 +239,7 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
         [
             start,
             "--active",
-            "1218383014436992",
+            "9999999999999999",
             "--commit",
             "a" * 40,
             "--reference",
@@ -249,16 +254,16 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     assert result.returncode == 0, result.stderr
     source_args = (
         f"-P -m switchstand.launch_source --repo {start.parents[1]} "
-        f"--control-sha {'a' * 40} 1218383014436992"
+        f"--control-sha {'a' * 40} 9999999999999999"
     )
     assert (tmp_path / "source.args").read_text().splitlines() == [source_args]
     assert (tmp_path / "worktree.log").read_text() == (
-        f"task-1218383014436992 {'a' * 40}\n"
+        f"task-9999999999999999 {'a' * 40} --resume-exact\n"
     )
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.args").read_text().splitlines() == [
-        "-P", "-m", "switchstand.launch", "--active", "1218383014436992",
+        "-P", "-m", "switchstand.launch", "--active", "9999999999999999",
         "--commit", "a" * 40, "--reference", "42", "do work",
     ]
     assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
@@ -295,7 +300,7 @@ def test_start_requires_exact_selector_control_before_task_read(tmp_path, proble
         environment["FAKE_CONTROL_DIRTY"] = "1"
 
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
         env=environment,
         text=True,
         capture_output=True,
@@ -317,7 +322,7 @@ def test_start_direct_fallback_requires_exact_fast_forward_readback(tmp_path):
     environment["FAKE_BRANCH"] = "main"
     environment["FAKE_ACCEPTED"] = "b" * 40
     result = subprocess.run(
-        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
+        [start, "--active=9999999999999999", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -334,7 +339,7 @@ def test_start_stops_when_exact_task_source_resolution_fails(tmp_path):
     start, environment, _ = fixture(tmp_path)
     environment["FAKE_SOURCE_FAIL"] = "1"
     result = subprocess.run(
-        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
+        [start, "--active=9999999999999999", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -350,7 +355,7 @@ def test_start_rejects_task_candidate_that_differs_from_requested_commit(tmp_pat
     start, environment, _ = fixture(tmp_path)
     environment["FAKE_CANDIDATE"] = "b" * 40
     result = subprocess.run(
-        [start, "--active=1218383014436992", f"--commit={'a' * 40}"],
+        [start, "--active=9999999999999999", f"--commit={'a' * 40}"],
         env=environment,
         text=True,
         capture_output=True,
@@ -362,31 +367,67 @@ def test_start_rejects_task_candidate_that_differs_from_requested_commit(tmp_pat
     assert (tmp_path / "bootstrap.log").exists()
 
 
-@pytest.mark.parametrize("problem", ["wrong-head", "dirty"])
-def test_start_refuses_inexact_candidate_without_launching(tmp_path, problem):
+def test_start_refuses_inexact_candidate_without_launching(tmp_path):
     start, environment, _ = fixture(tmp_path)
-    if problem == "wrong-head":
-        environment["FAKE_TARGET_HEAD"] = "b" * 40
-    else:
-        environment["FAKE_TARGET_DIRTY"] = "1"
+    environment["FAKE_TARGET_HEAD"] = "b" * 40
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", "a" * 40],
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
         env=environment,
         text=True,
         capture_output=True,
         check=False,
     )
     assert result.returncode == 1
-    assert "registered clean worktree at the exact requested commit" in result.stderr
+    assert "registered worktree at the exact requested checkpoint" in result.stderr
     assert not (tmp_path / "launch.args").exists()
     assert (tmp_path / "bootstrap.log").exists()
+
+
+def test_start_keeps_legacy_task_writer_intact_without_creating_second_writer(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    legacy = tmp_path / "old-temp" / "switchstand-task-9999999999999999"
+    legacy.mkdir(parents=True)
+    (legacy / "unfinished.txt").write_text("keep me\n")
+    environment["TMPDIR"] = str(legacy.parent)
+    blocked = subprocess.run(
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert blocked.returncode == 1
+    assert "legacy task writer exists" in blocked.stderr
+    assert (legacy / "unfinished.txt").read_text() == "keep me\n"
+    assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "worktree.log").exists()
+
+
+def test_start_rejects_relative_home_before_creating_task_writer(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    environment["HOME"] = "relative-home"
+    result = subprocess.run(
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "HOME must be absolute" in result.stderr
+    assert not (tmp_path / "worktree.log").exists()
+
+
+def test_start_uses_canonical_durable_target_for_noncanonical_home(tmp_path):
+    start, environment, target = fixture(tmp_path)
+    environment["HOME"] = str(tmp_path / "home" / ".." / "home")
+    result = subprocess.run(
+        [start, "--active", "9999999999999999", "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "candidate.root").read_text().strip() == str(target)
 
 
 @pytest.mark.parametrize("commit", ["a" * 39, "A" * 40, "main"])
 def test_start_requires_exact_lowercase_commit(tmp_path, commit):
     start, environment, _ = fixture(tmp_path)
     result = subprocess.run(
-        [start, "--active", "1218383014436992", "--commit", commit],
+        [start, "--active", "9999999999999999", "--commit", commit],
         env=environment,
         text=True,
         capture_output=True,
@@ -507,7 +548,7 @@ esac
         assert result.stdout == f"{target}\n"
     else:
         assert result.returncode == 1
-        assert "not a clean registered linked worktree" in result.stderr
+        assert "not a registered linked worktree" in result.stderr
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
@@ -589,6 +630,121 @@ def test_worktree_helper_reuses_registered_requesting_repo_worktree(tmp_path):
     assert f"worktree {target}\n" in run_git(
         requester, "worktree", "list", "--porcelain"
     ).stdout
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+@pytest.mark.parametrize("moved_head", [False, True])
+def test_task_writer_relaunch_preserves_dirty_exact_checkpoint(tmp_path, moved_head):
+    source = tmp_path / "source"
+    checkpoint = committed_repo(source)
+    requester = tmp_path / "requester"
+    clone_repo(source, requester)
+    target = tmp_path / "switchstand-task-123"
+    run_git(requester, "worktree", "add", "-b", "v2-task-123", str(target), checkpoint)
+    git_dir = Path(run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip())
+    marker = git_dir / "switchstand-green-sha"
+    marker.write_text(checkpoint + "\n")
+    (target / "tracked.txt").write_text("unfinished edit\n")
+    (target / "new.txt").write_text("unfinished new file\n")
+    if moved_head:
+        run_git(target, "config", "user.name", "Switchstand Test")
+        run_git(target, "config", "user.email", "switchstand-test@example.invalid")
+        run_git(target, "add", "tracked.txt")
+        run_git(target, "commit", "-m", "local checkpoint moved")
+        (target / "tracked.txt").write_text("unfinished edit\n")
+    before_head = run_git(target, "rev-parse", "HEAD").stdout.strip()
+    before_status = run_git(target, "status", "--porcelain", "--untracked-files=all").stdout
+    before_registry = run_git(requester, "worktree", "list", "--porcelain").stdout
+
+    helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
+    result = subprocess.run(
+        [helper, "task-123", checkpoint, "--resume-exact"], cwd=requester,
+        env=os.environ | {"TMPDIR": str(tmp_path)},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == (1 if moved_head else 0), result.stderr
+    if not moved_head:
+        assert result.stdout == str(target) + "\n"
+    else:
+        assert "exact requested checkpoint" in result.stderr
+    assert run_git(target, "rev-parse", "HEAD").stdout.strip() == before_head
+    assert run_git(target, "status", "--porcelain", "--untracked-files=all").stdout == before_status
+    assert run_git(requester, "worktree", "list", "--porcelain").stdout == before_registry
+    assert (target / "tracked.txt").read_text() == "unfinished edit\n"
+    assert (target / "new.txt").read_text() == "unfinished new file\n"
+    assert marker.read_text() == checkpoint + "\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_task_writer_reuses_newer_pushed_checkpoint_without_rewriting_green(tmp_path):
+    source = tmp_path / "source"
+    green = committed_repo(source)
+    requester = tmp_path / "requester"
+    clone_repo(source, requester)
+    target = tmp_path / "switchstand-task-123"
+    run_git(requester, "worktree", "add", "-b", "v2-task-123", str(target), green)
+    git_dir = Path(run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip())
+    marker = git_dir / "switchstand-green-sha"
+    marker.write_text(green + "\n")
+    run_git(target, "config", "user.name", "Switchstand Test")
+    run_git(target, "config", "user.email", "switchstand-test@example.invalid")
+    (target / "tracked.txt").write_text("pushed checkpoint\n")
+    run_git(target, "add", "tracked.txt")
+    run_git(target, "commit", "-m", "next checkpoint")
+    checkpoint = run_git(target, "rev-parse", "HEAD").stdout.strip()
+    run_git(target, "push", "origin", "HEAD:refs/heads/candidate")
+    (target / "new.txt").write_text("unfinished after checkpoint\n")
+    before_status = run_git(target, "status", "--porcelain", "--untracked-files=all").stdout
+
+    result = subprocess.run(
+        [Path(__file__).parents[1] / "scripts" / "switchstand-worktree",
+         "task-123", checkpoint, "--resume-exact"],
+        cwd=requester, env=os.environ | {"TMPDIR": str(tmp_path)},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == str(target) + "\n"
+    assert run_git(target, "rev-parse", "HEAD").stdout.strip() == checkpoint
+    assert run_git(target, "status", "--porcelain", "--untracked-files=all").stdout == before_status
+    assert marker.read_text() == green + "\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_task_writer_canonicalizes_noncanonical_state_root_before_create_and_reuse(tmp_path):
+    source = tmp_path / "source"
+    checkpoint = committed_repo(source)
+    requester = tmp_path / "requester"
+    clone_repo(source, requester)
+    state = tmp_path / "real-state"
+    state.mkdir(mode=0o700)
+    alias = tmp_path / "state-alias"
+    alias.symlink_to(state, target_is_directory=True)
+    target = state / "switchstand-task-123"
+    helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
+
+    created = subprocess.run(
+        [helper, "task-123", checkpoint, "--resume-exact"],
+        cwd=requester, env=os.environ | {"TMPDIR": str(alias)},
+        text=True, capture_output=True, check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    assert created.stdout == str(target) + "\n"
+    git_dir = Path(run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip())
+    (git_dir / "switchstand-green-sha").write_text(checkpoint + "\n")
+    (target / "unfinished.txt").write_text("keep me\n")
+    before = run_git(target, "status", "--porcelain", "--untracked-files=all").stdout
+
+    reused = subprocess.run(
+        [helper, "task-123", checkpoint, "--resume-exact"],
+        cwd=requester, env=os.environ | {"TMPDIR": str(state / ".." / state.name)},
+        text=True, capture_output=True, check=False,
+    )
+    assert reused.returncode == 0, reused.stderr
+    assert reused.stdout == str(target) + "\n"
+    assert run_git(target, "status", "--porcelain", "--untracked-files=all").stdout == before
+    assert (target / "unfinished.txt").read_text() == "keep me\n"
 
 
 def test_launch_uses_shared_project_environment(tmp_path):
