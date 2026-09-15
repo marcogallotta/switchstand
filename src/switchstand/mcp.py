@@ -32,7 +32,9 @@ def controller_from_env() -> Controller:
     engine = create_async_engine(os.environ["DATABASE_URL"])
     client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
                                headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
-    return Controller(authority, PostgresState(engine), {"asana": AsanaProvider(client)})
+    return Controller(authority, PostgresState(engine), {
+        "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
+    })
 
 
 def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:

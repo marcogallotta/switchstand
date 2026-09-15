@@ -40,7 +40,7 @@ async def run(active: str, references: tuple[str, ...]) -> None:
         authority = await provision_launch(
             PostgresState(engine),
             "asana",
-            AsanaProvider(client),
+            AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
             asana_task_id(active),
             tuple(asana_task_id(value) for value in references),
         )
