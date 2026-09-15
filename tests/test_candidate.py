@@ -1,11 +1,20 @@
 import shutil
 import subprocess
+from dataclasses import fields
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 
-from switchstand.candidate import WorkspaceMissing, WorkspaceUnknown, WriterBusy, prepare_candidate
+from switchstand.candidate import (
+    CandidateIdentity,
+    WorkspaceAbsent,
+    WorkspaceMissing,
+    WorkspaceUnknown,
+    WriterBusy,
+    inspect_candidate,
+    prepare_candidate,
+)
 
 WORK_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -102,3 +111,48 @@ def test_candidate_writer_lock_is_non_blocking(tmp_path: Path) -> None:
     candidate = prepare_candidate(repo, WORK_ID, base, state_home=tmp_path / "state")
     with candidate.writer(), pytest.raises(WriterBusy, match="active writer"), candidate.writer():
         raise AssertionError("second writer unexpectedly acquired the candidate")
+
+
+def test_inspect_candidate_observes_current_git_identity_without_repair(tmp_path: Path) -> None:
+    repo, base = repository(tmp_path / "repo")
+    state = tmp_path / "state"
+    candidate = prepare_candidate(repo, WORK_ID, base, state_home=state)
+    git(repo, "worktree", "unlock", str(candidate.path))
+    (candidate.path / "file.txt").write_text("next\n")
+    git(candidate.path, "commit", "-am", "next", "-q")
+    current_head = git(candidate.path, "rev-parse", "HEAD")
+    registration = git(repo, "worktree", "list", "--porcelain")
+    metadata = (candidate.git_dir / "switchstand-work-id").read_bytes()
+
+    observed = inspect_candidate(repo, WORK_ID, state_home=state)
+    assert observed.green_sha == base
+    assert observed.head_sha == current_head
+    assert observed.head_sha != base
+    assert type(observed) is CandidateIdentity
+    assert {field.name for field in fields(observed)} == {
+        "branch", "work_id", "green_sha", "head_sha",
+    }
+    assert not any(
+        hasattr(observed, name) for name in ("writer", "git_dir", "path", "workspace")
+    )
+    assert git(repo, "worktree", "list", "--porcelain") == registration
+    assert (candidate.git_dir / "switchstand-work-id").read_bytes() == metadata
+
+    (candidate.git_dir / "switchstand-work-id").write_text(str(UUID(int=2)) + "\n")
+    with pytest.raises(WorkspaceUnknown, match="metadata does not match"):
+        inspect_candidate(repo, WORK_ID, state_home=state)
+    assert git(repo, "worktree", "list", "--porcelain") == registration
+
+
+def test_inspect_candidate_distinguishes_absent_from_missing_contents(tmp_path: Path) -> None:
+    repo, base = repository(tmp_path / "repo")
+    state = tmp_path / "state"
+    with pytest.raises(WorkspaceAbsent):
+        inspect_candidate(repo, WORK_ID, state_home=state)
+    assert not state.exists()
+
+    candidate = prepare_candidate(repo, WORK_ID, base, state_home=state)
+    git(repo, "worktree", "unlock", str(candidate.path))
+    git(repo, "worktree", "remove", "--force", str(candidate.path))
+    with pytest.raises(WorkspaceMissing):
+        inspect_candidate(repo, WORK_ID, state_home=state)
