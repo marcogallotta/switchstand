@@ -331,10 +331,13 @@ class AsanaProvider:
                 return uncertain("work_readback_unavailable")
             if readback is None or self._gid(readback) != root_task_gid:
                 return uncertain("work_readback_unavailable")
-            if not await self._canonical(readback):
-                return uncertain("work_not_canonical")
             if not identifies_root(readback):
                 return uncertain("root_identity_unverified")
+            try:
+                if not await self._canonical(readback):
+                    return uncertain("work_not_canonical")
+            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+                return uncertain("work_readback_unavailable")
             if readback.get("modified_at") != observed_revision:
                 return uncertain("work_stale")
             if not candidates:

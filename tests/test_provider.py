@@ -97,6 +97,25 @@ async def test_grouped_lookup_discards_candidates_when_root_readback_is_unavaila
     assert [request.method for request in api.requests] == ["GET"] * 4
 
 
+@pytest.mark.parametrize("readback_field,reason,reads", [
+    ("456", "root_identity_unverified", 4),
+    ("121", "work_readback_unavailable", 5),
+])
+async def test_grouped_lookup_discards_candidates_before_or_during_readback_ancestry(
+    readback_field, reason, reads,
+):
+    root = task(project=PROJECT, fields=[root_field("121")]); root["data"]["gid"] = "121"
+    member = task(project=PROJECT, fields=[root_field("121")]); member["data"]["gid"] = "456"
+    readback = task(parent="999", fields=[root_field(readback_field)])
+    readback["data"]["gid"] = "121"
+    subject, api = provider((200, root), (200, {"data": [{"gid": "456"}]}),
+                            (200, member), (200, readback),
+                            (500, {"errors": [{"message": "ancestor unavailable"}]}))
+    result = await subject.find_grouped("121")
+    assert (result.status, result.reason, result.candidates) == ("UH_OH", reason, ())
+    assert [request.method for request in api.requests] == ["GET"] * reads
+
+
 async def test_grouped_lookup_queries_exact_text_field_then_rereads_canonical_task():
     root_gid, member_gid = "121", "456"
     root = task(project=PROJECT, fields=[root_field(root_gid)])
