@@ -21,10 +21,12 @@ from switchstand.launch import (
     filesystem_override,
     linked_branch,
     parse_authority,
+    parser,
     prepare_development,
     prepare_managed_run,
     provision,
     readback,
+    run,
     supervise_codex,
     validate_codex_args,
 )
@@ -89,8 +91,15 @@ def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
     state["candidate_dirty"] = "?? untracked.py\n"
     with pytest.raises(ValueError, match="candidate must be clean"):
         exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
-    state["candidate_dirty"] = ""
+    assert exact_revision_preflight(
+        control, candidate, requested, control_sha, str(common), {}, allow_dirty_task=True
+    ) == requested
     state["observed"] = "c" * 40
+    with pytest.raises(ValueError, match="exact requested revision"):
+        exact_revision_preflight(
+            control, candidate, requested, control_sha, str(common), {}, allow_dirty_task=True
+        )
+    state["candidate_dirty"] = ""
     with pytest.raises(ValueError, match="exact requested revision"):
         exact_revision_preflight(control, candidate, requested, control_sha, str(common), {})
     state["observed"] = requested
@@ -166,7 +175,7 @@ def test_linked_branch_requires_recorded_clean_green_head(monkeypatch, tmp_path)
     assert linked_branch(tmp_path, {}) == "owned"
     assert commands[0][-3:] == ["HEAD", "--abbrev-ref", "HEAD"]
     answers = iter((f"{git_dir}\n{common}\n{head}\nowned\n", " M Dockerfile\n"))
-    with pytest.raises(ValueError, match="clean task"):
+    with pytest.raises(ValueError, match="clean writer"):
         linked_branch(tmp_path, {})
 
 
@@ -194,8 +203,28 @@ def test_linked_branch_checks_clean_commits_after_green_head(
     if ancestor:
         assert linked_branch(tmp_path, {}) == "owned"
     else:
-        with pytest.raises(ValueError, match="clean task"):
+        with pytest.raises(ValueError, match="clean writer"):
             linked_branch(tmp_path, {})
+
+
+def test_dirty_task_branch_requires_exact_active_task_before_managed_effects(
+    monkeypatch, tmp_path
+):
+    control, candidate = tmp_path / "control", tmp_path / "candidate"
+    control.mkdir()
+    candidate.mkdir()
+    monkeypatch.chdir(control)
+    monkeypatch.setenv("SWITCHSTAND_CONTROL_ROOT", str(control))
+    monkeypatch.setenv("SWITCHSTAND_CANDIDATE_ROOT", str(candidate))
+    monkeypatch.setattr("switchstand.launch.linked_branch", lambda *_: "v2-task-foreign")
+    monkeypatch.setattr(
+        "switchstand.launch.readback",
+        lambda *_: pytest.fail("readback must not precede exact task branch check"),
+    )
+    arguments = parser().parse_args(["--active", "9999999999999999", "--commit", "a" * 40])
+
+    with pytest.raises(ValueError, match="does not match the exact active task"):
+        run(arguments)
 
 
 def test_parse_authority_requires_exact_complete_response():
