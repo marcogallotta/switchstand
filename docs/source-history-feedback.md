@@ -1,8 +1,9 @@
 # Source, history and feedback
 
-This first capability exposes `work_get`, `source_task`, `source_stories`,
+This capability exposes `work_get`, `source_task`, `source_stories`,
 `source_story` and `work_append`. It uses the existing state and Asana adapter;
-it adds no search, task discovery, assignment, generic update or event store.
+the optional related-work read finds direct-child candidates without text search,
+new relation authority, assignment, generic update or event store.
 
 ## Read the assignment and its evidence
 
@@ -11,6 +12,18 @@ the opaque WorkId. `item.source.provider` and `item.source.task_gid` identify
 the underlying task. A source task GID is never a WorkId and never grants work
 or write authority. WorkId reads remain limited to the active work and the
 launch-bound references.
+
+For a bound WorkId, `work_get(api_version="1", include_related=True)` also reads
+up to 100 direct Asana subtasks. `related.candidates` includes exact task GID,
+title, revision and verified parent GID; a Work Type option appears only when
+the current enum field and option validate. `CANDIDATES` means this bounded
+relation read completed against the observed work revision and configured area
+boundary. `UH_OH` means no direct child was returned, or the read was
+incomplete, stale or unavailable; any partial candidates are evidence to inspect,
+not a complete set. A work task that becomes noncanonical returns `denied`
+without candidates.
+Candidate roles do not establish the current spec, canonical review, gate
+requiredness or named proof. Those require their own authoritative sources.
 
 For an exact Asana task already identified by the assignment or its evidence,
 call `source_task(api_version="1", task_gid=...)`. Source reads accept explicit

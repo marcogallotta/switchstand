@@ -49,12 +49,17 @@ def build_server(
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
-    async def _work_get(api_version: Literal["1"], work_id: UUID | None = None) -> WorkResult:
-        return await service.get(WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id))  # type: ignore[attr-defined]
+    async def _work_get(
+        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
+    ) -> WorkResult:
+        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id,
+                                 include_related=include_related)
+        return await service.get(request)  # type: ignore[attr-defined]
 
     references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
-        "Read launch-bound work. Omit work_id for the active assignment. "
+        "Read launch-bound work. Set include_related for bounded direct-child evidence or UH_OH. "
+        "Omit work_id for the active assignment. "
         f"Bounded read-only reference WorkIds: {references}."
     )
 

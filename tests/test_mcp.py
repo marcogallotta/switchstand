@@ -11,6 +11,8 @@ from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import (
     AppendResult,
+    RelatedCandidate,
+    RelatedLookup,
     Routing,
     SourceStoriesResult,
     SourceStory,
@@ -35,7 +37,12 @@ def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
 
 class FakeService:
     async def get(self, request):
-        return WorkResult(status="ok", item=item(work_id=request.work_id))
+        related = (RelatedLookup(status="CANDIDATES", work_task_gid=TASK_GID,
+                                 observed_revision="r1",
+                                 candidates=(RelatedCandidate(task_gid="789", title="Review",
+                                             revision="r1", parent_gid=TASK_GID),))
+                   if request.include_related else None)
+        return WorkResult(status="ok", item=item(work_id=request.work_id), related=related)
 
     async def source_task(self, request):
         return SourceTaskResult(
@@ -133,6 +140,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
                    tool.output_schema.get("additionalProperties") is False for tool in tools)
         get_tool = next(tool for tool in tools if tool.name == "work_get")
         assert "work_id" not in get_tool.input_schema["required"]
+        assert "include_related" in get_tool.input_schema["properties"]
         assert str(REFERENCE_ID) in (get_tool.description or "")
         source_tool = next(tool for tool in tools if tool.name == "source_task")
         assert "task_gid" in source_tool.input_schema["required"]
@@ -142,6 +150,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
 
         got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content == WorkResult(status="ok", item=item()).model_dump(mode="json")
+        related = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
+        assert related.structured_content["related"]["candidates"][0]["parent_gid"] == TASK_GID
         reference = await client.call_tool(
             "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
         )

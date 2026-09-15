@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ApiVersion = Literal["1"]
+AsanaGid = str
 Status = Literal["ok", "stale", "denied", "unknown", "provider_error"]
 SourceStatus = Literal["ok", "stale", "denied", "unknown", "provider_error"]
 
@@ -56,6 +57,7 @@ class WorkPatch(ClosedModel):
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
+    include_related: bool = False
 
 
 class WorkUpdateRequest(ClosedModel):
@@ -71,15 +73,34 @@ class WorkAppendRequest(ClosedModel):
     text: str = Field(min_length=1)
 
 
+class RelatedCandidate(ClosedModel):
+    task_gid: AsanaGid
+    title: str
+    revision: str
+    parent_gid: AsanaGid
+    work_type_option_gid: AsanaGid | None = None
+
+
+class RelatedLookup(ClosedModel):
+    status: Literal["CANDIDATES", "UH_OH"]
+    work_task_gid: AsanaGid
+    observed_revision: str | None = None
+    candidates: tuple[RelatedCandidate, ...] = ()
+    reason: str | None = None
+
+
 class WorkResult(ClosedModel):
     status: Status
     item: WorkItem | None = None
+    related: RelatedLookup | None = None
 
     @model_validator(mode="after")
     def valid_result(self) -> Self:
         needs_item = self.status in {"ok", "stale"}
         if needs_item != (self.item is not None):
             raise ValueError("item presence does not match status")
+        if self.related is not None and self.status != "ok":
+            raise ValueError("related evidence requires current readable work")
         return self
 
 
@@ -129,9 +150,6 @@ class LaunchAuthority(ClosedModel):
 
     def can_read(self, work_id: UUID) -> bool:
         return work_id == self.active_work_id or work_id in self.reference_work_ids
-
-
-AsanaGid = str
 
 
 class SourceTask(ClosedModel):

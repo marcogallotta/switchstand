@@ -24,9 +24,11 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
         """Read this authenticated caller's current grant; this never issues or changes a grant."""
         return await service.grant_get()
 
-    async def work_get(api_version: Literal["1"], work_id: UUID | None = None) -> GrantedWorkResult:
-        """Read current granted work. Omit work_id for the server-selected active assignment."""
-        return await service.get(work_id)
+    async def work_get(
+        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
+    ) -> GrantedWorkResult:
+        """Read granted work; include_related adds bounded direct-child evidence or UH_OH."""
+        return await service.get(work_id, include_related=include_related)
 
     async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
         """Read current notes/state of one exact canonical source task; reading grants no work."""

@@ -49,6 +49,17 @@ async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     assert (await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))).status == "denied"
 
 
+async def test_related_get_keeps_grant_guard_and_exact_bound_source():
+    subject = service()
+    provider = subject.providers["asana"]
+    denied = await subject.get(uuid4(), include_related=True)
+    assert denied.status == "denied" and provider.related_calls == []
+    current = await subject.get(ACTIVE, include_related=True)
+    assert current.status == "ok" and current.related is not None
+    assert current.related.candidates[0].parent_gid == "123"
+    assert provider.related_calls == ["123"]
+
+
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     parameters = StdioServerParameters(command=sys.executable,
         args=[str(Path(__file__)), "serve"], env={"PYTHONPATH": str(Path.cwd() / "src")})
@@ -65,6 +76,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
+        related = (await client.call_tool("work_get", {
+            "api_version": "1", "include_related": True,
+        })).structured_content
+        assert related["related"]["candidates"][0]["parent_gid"] == "123"
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'grant_version': 1, 'observed_revision': "r1", 'text': "protocol feedback"}

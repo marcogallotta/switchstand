@@ -6,6 +6,8 @@ from pydantic import ValidationError
 
 from switchstand.contracts import (
     LaunchAuthority,
+    RelatedCandidate,
+    RelatedLookup,
     Routing,
     SourceStoriesRequest,
     SourceStoryRequest,
@@ -48,6 +50,9 @@ class FakeState:
 class FakeProvider:
     def __init__(self):
         self.revision = "r1"
+        self.related_revision = "r1"
+        self.related_reason = None
+        self.related_calls = []
         self.canonical = True
         self.story_task_gid = TASK_GID
         self.story_gid = STORY_GID
@@ -57,6 +62,14 @@ class FakeProvider:
 
     async def get(self, provider_work_id):
         return ProviderWork("Task", "Notes", False, self.revision, Routing(), self.canonical)
+
+    async def find_related(self, work_task_gid):
+        self.related_calls.append(work_task_gid)
+        return RelatedLookup(status="UH_OH" if self.related_reason else "CANDIDATES",
+                             reason=self.related_reason, work_task_gid=work_task_gid,
+                             observed_revision=self.related_revision,
+                             candidates=(RelatedCandidate(task_gid="777", title="Review",
+                                         revision="r1", parent_gid=work_task_gid),))
 
     async def source_task(self, provider_task_id):
         return ProviderSourceTask("Task", "Notes", False, self.revision, self.canonical)
@@ -132,6 +145,41 @@ async def test_exact_task_and_revision_checked_history(setup_controller):
         )
     )
     assert stale.status == "stale" and stale.revision == "r2" and not stale.stories
+
+
+async def test_related_read_uses_only_granted_work_id_and_rejects_mixed_revisions(setup_controller):
+    provider, controller = setup_controller
+    foreign = UUID("00000000-0000-0000-0000-000000000003")
+    denied = await controller.get(WorkGetRequest(api_version="1", work_id=foreign,
+                                                 include_related=True))
+    assert denied.status == "denied" and provider.related_calls == []
+
+    current = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
+                                                  include_related=True))
+    assert current.status == "ok" and current.related is not None
+    assert current.related.status == "CANDIDATES"
+    assert current.related.candidates[0].parent_gid == TASK_GID
+    assert provider.related_calls == [TASK_GID]
+
+    provider.related_revision = "r2"
+    stale = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
+                                                include_related=True))
+    assert stale.status == "ok" and stale.related is not None
+    assert (stale.related.status, stale.related.reason, stale.related.candidates) == (
+        "UH_OH", "work_revision_mismatch", ())
+
+    provider.related_revision = "r1"
+    provider.related_reason = "work_not_canonical"
+    removed = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
+                                                  include_related=True))
+    assert removed.status == "denied" and removed.item is None and removed.related is None
+
+    provider.related_reason = "work_revision_unavailable"
+    provider.related_revision = None
+    uncertain = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
+                                                    include_related=True))
+    assert uncertain.status == "ok" and uncertain.item is not None
+    assert uncertain.related is not None and uncertain.related.status == "UH_OH"
 
 
 async def test_material_story_reread_checks_revision_and_target(setup_controller):
