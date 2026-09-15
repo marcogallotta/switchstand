@@ -14,9 +14,20 @@ launch-bound references.
 
 For an exact Asana task already identified by the assignment or its evidence,
 call `source_task(api_version="1", task_gid=...)`. Source reads accept explicit
-Asana GIDs and require canonical Switchstand project membership, directly or
-through the existing bounded ancestor walk. Reading a source does not bind it
-as active work. Requests outside that canonical boundary return `denied`.
+Asana GIDs and require membership in the current approved Switchstand source
+scope, directly or through the existing bounded ancestor walk. During area
+migration that source scope may contain both the legacy root and cut-over area
+projects. Project membership makes a task readable through the source adapter;
+it does not make that project the task's identity, authoritative home or current
+work signal. Exact task GID and bound WorkId remain stable across area moves.
+Requests outside the currently approved source scope return `denied`.
+
+Authoritative home/discovery semantics come from the exact bound work and the
+current routed area registry. During partial migration, a cut-over area's area
+project is authoritative for its current work while a not-yet-cut-over area may
+still use the legacy root. Legacy-root membership alone does not make residue
+current. After final area cutover, the legacy root is Strategy/Programme plus
+legacy residue rather than the global current-work discovery surface.
 
 Use the returned revision for `source_stories(api_version="1", task_gid=...,
 observed_revision=..., limit=50)`. Each call reads at most 100 stories. Pass
