@@ -257,7 +257,8 @@ class AsanaProvider:
         def uncertain(reason: str) -> GroupedLookup:
             return GroupedLookup(status="UH_OH", root_task_gid=root_task_gid,
                                  observed_revision=observed_revision,
-                                 candidates=() if reason in ("work_not_canonical", "root_identity_unverified")
+                                 candidates=() if reason in ("work_not_canonical", "root_identity_unverified",
+                                                            "work_readback_unavailable", "work_stale")
                                  else tuple(candidates),
                                  reason=reason)
 
@@ -324,7 +325,10 @@ class AsanaProvider:
                     root_work_gid=root_task_gid, source="asana_root_work_gid_search_exact_get",
                 ))
 
-            readback = await self._task(root_task_gid)
+            try:
+                readback = await self._task(root_task_gid)
+            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+                return uncertain("work_readback_unavailable")
             if readback is None or self._gid(readback) != root_task_gid:
                 return uncertain("work_readback_unavailable")
             if not await self._canonical(readback):

@@ -80,6 +80,23 @@ async def test_grouped_lookup_discards_candidates_if_root_identity_changes_on_re
     assert [request.method for request in api.requests] == ["GET"] * 4
 
 
+@pytest.mark.parametrize("readback", [
+    (404, {"errors": [{"message": "not found"}]}),
+    (500, {"errors": [{"message": "unavailable"}]}),
+    (200, {"data": {"gid": "999"}}),
+])
+async def test_grouped_lookup_discards_candidates_when_root_readback_is_unavailable(readback):
+    root = task(project=PROJECT, fields=[root_field("121")]); root["data"]["gid"] = "121"
+    member = task(project=PROJECT, fields=[root_field("121")]); member["data"]["gid"] = "456"
+    subject, api = provider((200, root), (200, {"data": [{"gid": "456"}]}),
+                            (200, member), readback)
+    result = await subject.find_grouped("121")
+    assert (result.status, result.reason, result.candidates) == (
+        "UH_OH", "work_readback_unavailable", ()
+    )
+    assert [request.method for request in api.requests] == ["GET"] * 4
+
+
 async def test_grouped_lookup_queries_exact_text_field_then_rereads_canonical_task():
     root_gid, member_gid = "121", "456"
     root = task(project=PROJECT, fields=[root_field(root_gid)])
