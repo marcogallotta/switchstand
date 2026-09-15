@@ -14,9 +14,11 @@ launch-bound references.
 
 For an exact Asana task already identified by the assignment or its evidence,
 call `source_task(api_version="1", task_gid=...)`. Source reads accept explicit
-Asana GIDs and require canonical Switchstand project membership, directly or
-through the existing bounded ancestor walk. Reading a source does not bind it
-as active work. Requests outside that canonical boundary return `denied`.
+Asana GIDs and require membership in the configured approved Switchstand area
+registry, directly or through the existing bounded ancestor walk. During a
+partial area cutover the configured registry may still include the legacy root
+for not-yet-cut-over concerns. Reading a source does not bind it as active work.
+Requests outside that configured boundary return `denied`.
 
 Use the returned revision for `source_stories(api_version="1", task_gid=...,
 observed_revision=..., limit=50)`. Each call reads at most 100 stories. Pass
