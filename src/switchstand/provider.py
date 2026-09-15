@@ -43,7 +43,14 @@ PRIORITIES = {f"P{value}": value for value in range(4)}
 
 
 class AsanaProvider:
-    def __init__(self, client: httpx.AsyncClient): self.client = client
+    def __init__(self, client: httpx.AsyncClient, test_project_gid: str | None = None):
+        if test_project_gid and (not all(digit in "0123456789" for digit in test_project_gid)
+                                 or test_project_gid in PROJECTS):
+            raise ValueError("invalid test project GID")
+        self.client = client
+        self._admission_projects: frozenset[str] = (
+            frozenset((*PROJECTS, test_project_gid)) if test_project_gid else frozenset(PROJECTS)
+        )
 
     async def _task(self, gid: str) -> JSON | None:
         try:
@@ -78,7 +85,7 @@ class AsanaProvider:
         seen: set[str] = set()
         while True:
             if not isinstance(memberships := task.get("memberships"), list): return False
-            if any(self._gid(cast(JSON, item).get("project")) in PROJECTS
+            if any(self._gid(cast(JSON, item).get("project")) in self._admission_projects
                    for item in cast(list[object], memberships) if isinstance(item, dict)):
                 return True
             if (parent := self._gid(task.get("parent"))) is None or parent in seen: return False

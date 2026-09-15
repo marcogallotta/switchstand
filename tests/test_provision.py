@@ -57,3 +57,11 @@ def test_managed_controller_checks_schema_without_upgrading_it():
     managed = compose.split('if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then', 1)[1]
     assert "require_current_schema; require_current_schema()" in managed
     assert "alembic upgrade" not in managed
+
+
+async def test_provisioner_rejects_invalid_trusted_test_project(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
+    monkeypatch.setenv("ASANA_TOKEN", "unused")
+    monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
+    with pytest.raises(ValueError, match="invalid test project GID"):
+        await provision.run("123", ())

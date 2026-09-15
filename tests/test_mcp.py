@@ -22,7 +22,12 @@ from switchstand.contracts import (
     WorkItem,
     WorkResult,
 )
-from switchstand.mcp import _protect_provider_logs, build_server, server_from_env
+from switchstand.mcp import (
+    _protect_provider_logs,
+    build_server,
+    controller_from_env,
+    server_from_env,
+)
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -96,6 +101,15 @@ def test_managed_environment_without_authority_fails(monkeypatch):
     monkeypatch.delenv("ACTIVE_WORK_ID", raising=False)
     with pytest.raises(KeyError, match="ACTIVE_WORK_ID"):
         server_from_env()
+
+
+def test_controller_rejects_invalid_trusted_test_project(monkeypatch):
+    monkeypatch.setenv("ACTIVE_WORK_ID", str(ID))
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
+    monkeypatch.setenv("ASANA_TOKEN", "unused")
+    monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
+    with pytest.raises(ValueError, match="invalid test project GID"):
+        controller_from_env()
 
 
 def test_managed_controller_script_without_authority_fails():

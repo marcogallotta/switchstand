@@ -11,7 +11,8 @@ from switchstand.provider import ANCESTRY_GETS, FIELDS, OPT_FIELDS, PROJECT, PRO
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
     return {"gid": gid, "enabled": enabled, "display_value": display, "enum_options": [{"gid": "option-gid", "name": option, "enabled": enabled}]}
 def task(*, parent=None, project=None, fields=()):
-    memberships = [] if project is None else [{"project": {"gid": project}}]
+    projects = (project if isinstance(project, tuple) else (project,)) if project else ()
+    memberships = [{"project": {"gid": gid}} for gid in projects]
     return {"data": {"name": "Title", "notes": "Notes", "completed": False,
                      "modified_at": "r1", "memberships": memberships,
                      "parent": None if parent is None else {"gid": parent},
@@ -29,11 +30,54 @@ class API:
         self.requests.append(request); response = self.responses.pop(0)
         if isinstance(response, Exception): raise response
         return httpx.Response(response[0], json=response[1])
-def provider(*responses):
+def provider(*responses, test_project_gid=None):
     api = API(*responses)
     client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0",
                               transport=httpx.MockTransport(api))
-    return AsanaProvider(client), api
+    return AsanaProvider(client, test_project_gid), api
+
+
+TEST_PROJECT = "9999999999999999"
+
+
+async def test_exact_test_project_admission_and_production_only_discovery():
+    subject, api = provider(
+        (200, task(project=TEST_PROJECT)),
+        (200, task(project="8888888888888888")),
+        *[(200, page()) for _ in PROJECTS],
+        test_project_gid=TEST_PROJECT,
+    )
+    assert (await subject.get("test-only")).canonical
+    assert not (await subject.get("wrong-project")).canonical
+    assert await subject.suggest_next(frozenset()) is None
+    assert [request.url.path for request in api.requests] == [
+        "/api/1.0/tasks/test-only", "/api/1.0/tasks/wrong-project",
+        *(f"/api/1.0/projects/{gid}/tasks" for gid in PROJECTS),
+    ]
+
+
+async def test_test_project_ancestor_and_mixed_production_membership():
+    subject, api = provider(
+        (200, task(parent="parent")), (200, task(project=TEST_PROJECT)),
+        test_project_gid=TEST_PROJECT,
+    )
+    assert (await subject.get("child")).canonical
+    assert [request.url.path for request in api.requests] == [
+        "/api/1.0/tasks/child", "/api/1.0/tasks/parent",
+    ]
+    mixed = task(project=(TEST_PROJECT, PROJECT))
+    subject, _ = provider((200, mixed), (200, page(candidate("mixed", "P0"))),
+                          *[(200, page()) for _ in PROJECTS[1:]])
+    assert (await subject.get("mixed")).canonical
+    assert (await subject.suggest_next(frozenset())).provider_work_id == "mixed"
+    subject, _ = provider((200, task(project=TEST_PROJECT)))
+    assert not (await subject.get("test-only")).canonical
+
+
+@pytest.mark.parametrize("gid", ["abc", " 123", "123 ", "+123", "１２３", PROJECT])
+def test_invalid_or_duplicate_test_project_gid_fails_closed(gid):
+    with pytest.raises(ValueError, match="invalid test project GID"):
+        provider(test_project_gid=gid)
 @pytest.mark.parametrize("responses,canonical,count", [
     ([(200, task(project=PROJECT))], True, 1),
     ([(200, task(project=PROJECTS[1]))], True, 1),
