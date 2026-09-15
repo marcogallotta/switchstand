@@ -19,6 +19,10 @@ class WorkspaceMissing(CandidateError):
     """A recorded candidate branch exists but its persistent worktree is missing."""
 
 
+class WorkspaceAbsent(CandidateError):
+    """No candidate branch or persistent worktree exists for this WorkId."""
+
+
 class WorkspaceUnknown(CandidateError):
     """Candidate state exists but cannot be proven to belong to this repository/work."""
 
@@ -37,7 +41,7 @@ def _git(repo: Path, *arguments: str, check: bool = True) -> subprocess.Complete
     )
 
 
-def _state_home(explicit: Path | None = None) -> Path:
+def _state_home_path(explicit: Path | None = None) -> Path:
     if explicit is not None:
         root = explicit
     elif value := os.environ.get("XDG_STATE_HOME"):
@@ -48,6 +52,11 @@ def _state_home(explicit: Path | None = None) -> Path:
         raise CandidateError("candidate workspace requires HOME or XDG_STATE_HOME")
     if not root.is_absolute():
         raise CandidateError(f"candidate state directory must be absolute: {root}")
+    return root
+
+
+def _state_home(explicit: Path | None = None) -> Path:
+    root = _state_home_path(explicit)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     return root.resolve(strict=True)
 
@@ -126,6 +135,7 @@ class CandidateWorkspace:
     work_id: UUID
     green_sha: str
     repository_fingerprint: str
+    head_sha: str
 
     @contextmanager
     def writer(self) -> Generator[None]:
@@ -144,6 +154,16 @@ class CandidateWorkspace:
             os.close(descriptor)
 
 
+@dataclass(frozen=True)
+class CandidateIdentity:
+    """Observed read-only Git identity; no writer or trusted run-state access."""
+
+    branch: str
+    work_id: UUID
+    green_sha: str
+    head_sha: str
+
+
 def _attach(
     repo: Path,
     target: Path,
@@ -151,9 +171,11 @@ def _attach(
     common_dir: Path,
     work_id: UUID,
     repository_fingerprint: str,
+    *,
+    lock_unlocked: bool = True,
 ) -> CandidateWorkspace:
     if target.is_symlink() or not target.is_dir():
-        raise WorkspaceUnknown(f"candidate path is not a persistent directory: {target}")
+        raise WorkspaceUnknown("candidate path is not a persistent directory")
     try:
         actual_root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip()).resolve(
             strict=True
@@ -188,7 +210,7 @@ def _attach(
     registered, locked = _worktree_record(repo, target)
     if not registered:
         raise WorkspaceUnknown("candidate is not registered by the requesting repository")
-    if not locked:
+    if not locked and lock_unlocked:
         _git(repo, "worktree", "lock", "--reason", f"switchstand candidate {work_id}", str(target))
     return CandidateWorkspace(
         path=target,
@@ -198,6 +220,39 @@ def _attach(
         work_id=work_id,
         green_sha=green_sha,
         repository_fingerprint=repository_fingerprint,
+        head_sha=actual_head,
+    )
+
+
+def inspect_candidate(
+    repo: Path, work_id: UUID, *, state_home: Path | None = None
+) -> CandidateIdentity:
+    """Observe an existing bound candidate without creating, locking, or repairing it."""
+    repo = repo.resolve(strict=True)
+    common_dir, repository_fingerprint = _repository_identity(repo)
+    state = _state_home_path(state_home)
+    branch = f"switchstand/work-{work_id}"
+    branch_exists = _branch_exists(repo, branch)
+    if not state.is_dir():
+        if branch_exists:
+            raise WorkspaceMissing("candidate branch exists but state directory is missing")
+        raise WorkspaceAbsent("candidate state directory is absent")
+    root = state.resolve(strict=True) / "switchstand" / "worktrees" / repository_fingerprint
+    target = root / str(work_id)
+    target_exists = target.exists() or target.is_symlink()
+    if not target_exists and not branch_exists:
+        raise WorkspaceAbsent("candidate is not present for this WorkId")
+    if not target_exists:
+        raise WorkspaceMissing("candidate branch exists but persistent contents are missing")
+    if not branch_exists:
+        raise WorkspaceUnknown("candidate path exists without its branch")
+    workspace = _attach(
+        repo, target, branch, common_dir, work_id, repository_fingerprint,
+        lock_unlocked=False,
+    )
+    return CandidateIdentity(
+        branch=workspace.branch, work_id=workspace.work_id,
+        green_sha=workspace.green_sha, head_sha=workspace.head_sha,
     )
 
 
