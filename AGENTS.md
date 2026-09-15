@@ -47,7 +47,7 @@ Roles change duties, not authority. Before acting in a role, load the current ro
 
 For substantive code/config/test implementation or Code Review, use `docs/code-quality.md` at the exact candidate/control SHA. It is not a one-time startup read.
 
-Substantive finding content, advisory remedies, author challenge/disposition, focused clearing, and cumulative whole-candidate reconsideration are governed by that document. A proposed remedy is not authority, and a local correction does not clear the exact finding without its required rereview/reset.
+Substantive finding content, advisory remedies, author challenge/disposition, focused clearing, and cumulative whole-candidate reconsideration are governed by that document. A proposed remedy is not authority; a local correction clears no exact finding without the focused rereview required there, while whole-candidate reconsideration is required only when cumulative corrections materially change the solution shape.
 
 **Implementer quality refresh:** re-open that exact document on entry/re-entry/context replacement; before the first material commitment; before starting a distinct cohesive work slice after the prior slice produced material code/evidence and before the next material commitment; after a failed hypothesis, material test failure, reviewer finding, or accepted correction before adding another patch layer; before accepting a material owner/provider/persistence/trust/interface/external-I/O/recovery/test-support shape change; and before review-ready, landing-ready, handoff, or completion claims.
 
@@ -59,7 +59,7 @@ If `docs/code-quality.md` is unavailable at the relevant SHA, do not improvise a
 
 Freshness, independence, FULL/FOCUSED review basis, acquisition and verdict-scope mechanics come from the current routed review procedure, not from this bootstrap.
 
-After light boundary research, establish or confirm a short Headline/Intent before detailed design converges and surface unresolved consequential choices early. Steering is not implementation approval. Before protected effects, Human Review must show the practical change, material consequences and limitations, and exact approval scope; detailed presentation mechanics come from the current routed procedure.
+After light boundary research, establish or confirm a short Headline/Intent before detailed design converges and surface unresolved consequential choices early. Steering is not implementation approval. When the current routed procedure requires Human Review for a protected effect, it must show the practical change, material consequences and limitations, and exact approval scope; applicability and detailed presentation mechanics remain governed there.
 
 ## Change discipline
 
