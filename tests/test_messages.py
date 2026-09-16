@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.grant_state import GrantState
-from switchstand.grants import GuardOutcome
+from switchstand.grants import EffectReceipt, GuardOutcome
 from switchstand.messages import (
     DispositionEvidence,
     MessageDispositionRequest,
@@ -27,6 +27,7 @@ from switchstand.messages import (
     MessageSubmitResult,
     RuntimeCurrentness,
     message_deliveries,
+    message_effect_operation_id,
     message_projection,
     messages,
 )
@@ -183,7 +184,7 @@ async def test_restart_currentness_and_unknown_effect_are_fail_closed(subject):
     assert pending.messages[0].state == "RECEIVED"
     stale = RuntimeCurrentness(generation="run-1", current_generation="run-2")
     assert (await restarted.receive(recipient_principal, stale, receive)).status == "stale"
-    operation_id = uuid4()
+    operation_id = message_effect_operation_id(delivery_id)
     unknown = GuardOutcome(status="unknown", operation="work_append",
         work_id=recipient.authority.active_work_id, operation_id=operation_id,
         reason="ambiguous_provider_send", effect="unknown", retry="reconcile",
@@ -211,3 +212,51 @@ async def test_restart_currentness_and_unknown_effect_are_fail_closed(subject):
         row = (await connection.execute(select(message_deliveries).where(
             message_deliveries.c.delivery_id == delivery_id))).mappings().one()
     assert row["state"] == "RECEIVED" and row["receiving_generation"] == "run-1"
+
+
+async def test_provider_effect_disposition_requires_exact_delivery_correlation(subject):
+    state, engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    delivery_id = original.message.delivery_id
+    runtime = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    assert (await state.receive(recipient_principal, runtime, receive)).status == "ok"
+
+    async def applied_effect(operation_id: UUID) -> None:
+        unknown = GuardOutcome(status="unknown", operation="work_append",
+            work_id=recipient.authority.active_work_id, operation_id=operation_id,
+            reason="send_in_progress", effect="unknown", retry="reconcile",
+            next_action="Reconcile the recorded effect.")
+        await grants.prepare({}, recipient, f"fingerprint-{operation_id}", unknown)
+        await grants.finish(GuardOutcome(status="ok", operation="work_append",
+            work_id=recipient.authority.active_work_id, operation_id=operation_id,
+            reason="append_confirmed", effect="applied", retry="none",
+            next_action="Effect is complete.", receipt=EffectReceipt(
+                operation_id=operation_id, principal=recipient_principal,
+                grant_id=recipient.id, grant_version=recipient.version,
+                work_id=recipient.authority.active_work_id, provider="asana",
+                task_gid="123", story_gid="456", text="processed",
+                qualification="authoritative_readback")))
+
+    unrelated_id = uuid4()
+    await applied_effect(unrelated_id)
+    unrelated = DispositionEvidence(kind="provider_effect", operation_id=unrelated_id)
+    rejected = await state.disposition(recipient_principal, runtime,
+        MessageDispositionRequest(api_version="1", delivery_id=delivery_id, grant_version=1,
+            disposition_digest=digest(unrelated), evidence=unrelated))
+    assert rejected.status == "recovery_required"
+    assert rejected.reason == "effect_evidence_mismatch"
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id))).mappings().one()
+    assert row["state"] == "RECEIVED"
+
+    exact_id = message_effect_operation_id(delivery_id)
+    await applied_effect(exact_id)
+    exact = DispositionEvidence(kind="provider_effect", operation_id=exact_id)
+    disposition = MessageDispositionRequest(api_version="1", delivery_id=delivery_id,
+        grant_version=1, disposition_digest=digest(exact), evidence=exact)
+    first = await state.disposition(recipient_principal, runtime, disposition)
+    replay = await state.disposition(recipient_principal, runtime, disposition)
+    assert first.status == replay.status == "ok"
+    assert first.state == replay.state == "DISPOSITIONED"
