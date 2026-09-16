@@ -5,6 +5,12 @@
   worktrees and obtains the pinned uv binary through Docker only when needed.
 - Full clean/container quality runs in CI. Run `docker compose run --build --rm quality` locally only when changing
   Docker, runtime, or development-tool behavior that CI cannot qualify for the host.
+- For focused Docker, runtime, or tooling validation, run the normal image build so Docker validates and reuses its
+  cache. Record the resulting immutable image ID together with the candidate SHA and dirty state; a dirty worktree is
+  not an immutable candidate. Never reuse an arbitrary tag or an image of unknown provenance. When appropriate, mount
+  the current worktree read-only and set `PYTHONPATH` to its `src` for affected tests, but report that separately from
+  clean image-contained or full-integration evidence. CI supplies the routine clean/full gate; rerun locally only the
+  causal gates affected by the change or boundary being claimed.
 - Services: start stable state with `docker compose -f compose.state.yaml up -d --wait`, then run
   `docker compose up --build`.
 - Migration: `uv run alembic upgrade head`
