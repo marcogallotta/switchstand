@@ -230,6 +230,7 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
+        "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
