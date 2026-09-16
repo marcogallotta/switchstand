@@ -102,7 +102,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert command[1:3] == ["-C", str(writer)]
     assert command[3:8] == ["-a", "never", "-s", "danger-full-access", "--dangerously-bypass-hook-trust"]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
-    assert not any("switchstand_development" in argument for argument in command)
+    assert "mcp_servers.switchstand_development.enabled=false" in command
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
 

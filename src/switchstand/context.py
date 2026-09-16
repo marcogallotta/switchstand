@@ -45,6 +45,8 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         'mcp_servers.switchstand.enabled_tools=["work_get"]',
         "-c",
         "mcp_servers.switchstand.required=true",
+        "-c",
+        "mcp_servers.switchstand_development.enabled=false",
         prompt,
     ]
 
