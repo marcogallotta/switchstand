@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 switchstand = "switchstand.mcp:main"
+switchstand-chatgpt-edge = "switchstand.chatgpt_edge:main"
 switchstand-provision = "switchstand.provision:main"
 
 [dependency-groups]

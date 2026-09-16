@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -9,12 +10,14 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
 from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from .chatgpt import ChatGPTService
 from .contracts import (
@@ -25,8 +28,11 @@ from .contracts import (
     SourceTaskRequest,
     SourceTaskResult,
 )
+from .grant_state import GrantState
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend
 from .principal import RequestPrincipal
+from .provider import AsanaProvider
+from .state import PostgresState
 
 LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
@@ -227,3 +233,35 @@ def create_app(
     for tool in (grant_get, work_get, source_task, source_stories, source_story, work_append):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
+
+
+async def serve() -> None:
+    config = MCPAuthConfig.from_environment()
+    engine = create_async_engine(os.environ["DATABASE_URL"])
+    client = httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", trust_env=False,
+        headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
+    )
+    try:
+        async def unresolved_principal():
+            return None
+
+        service = ChatGPTService(unresolved_principal, PostgresState(engine), GrantState(engine), {
+            "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
+        })
+        app = create_app(service, config)
+        await app.state.fastmcp_server.run_http_async(
+            host=config.bind_host, port=config.bind_port, path="/mcp",
+            json_response=True, stateless_http=True, show_banner=False,
+        )
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+def main() -> None:
+    asyncio.run(serve())
+
+
+if __name__ == "__main__":
+    main()
