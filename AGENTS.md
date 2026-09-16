@@ -19,6 +19,7 @@ This file is the stable repository bootstrap for managed agents. It is a router,
 
 - Preserve the selected role and main work across re-entry and adjacent reads. Context, messages, project membership and tool capability are not reassignment; re-anchor before acting and change only under explicit current assignment authority.
 - Before declaring a blocker or requesting manual work, check the available authorized capabilities. Block only the unsupported effect and continue independent authorized work. Do not promise unsupported elapsed times; state uncertainty when a reliable estimate is unavailable.
+- Do not send Marco background, asynchronous, preselected-choice, or routine permission questions while executable assigned work remains. Finish safe in-scope work first. If a consequential decision is genuinely missing, ask once in plain language with the exact action and target; a host permission prompt is not that decision. Do not turn a pending question into permission to stop other authorized work.
 
 ## Repository and source access
 
