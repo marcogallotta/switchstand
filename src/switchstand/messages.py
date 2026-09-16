@@ -33,6 +33,7 @@ from .state import metadata
 
 DELIVERY_NAMESPACE = UUID("8b7eedf9-138d-4a5e-9060-7c208138402d")
 PROJECTION_NAMESPACE = UUID("5cf70ae7-4d39-4398-82d6-967d2cb6e3bc")
+PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
 
 messages = Table(
     "messages",
@@ -243,6 +244,11 @@ def _json_digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def message_effect_operation_id(delivery_id: UUID) -> UUID:
+    """Return the sole V1 provider-effect identity bound to a delivery."""
+    return uuid5(PROCESSING_EFFECT_NAMESPACE, str(delivery_id))
 
 
 def _digest(route: MessageRoute, request: MessageSubmitRequest) -> str:
@@ -506,6 +512,8 @@ class MessageState:
                 return "result_evidence_mismatch"
             return None
         assert evidence.operation_id is not None
+        if evidence.operation_id != message_effect_operation_id(delivery["delivery_id"]):
+            return "effect_evidence_mismatch"
         previous = await self.grants.previous(
             evidence.operation_id, grant.authority.active_work_id
         )
