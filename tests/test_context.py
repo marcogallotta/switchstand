@@ -73,8 +73,8 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     writer.mkdir()
     (tmp_path / ".git").mkdir()
 
-    def fake_create_writer(repo, active, env, existing):
-        events.append(("writer", repo, active, existing))
+    def fake_create_writer(repo, active, env):
+        events.append(("writer", repo, active))
         return writer
 
     def fake_run(command, **kwargs):
@@ -84,6 +84,9 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     monkeypatch.setattr(context, "provision", fake_provision)
     monkeypatch.setattr(context, "validate_control", lambda repo, env: repo.resolve())
     monkeypatch.setattr(context, "create_writer", fake_create_writer)
+    monkeypatch.setattr(
+        context, "managed_codex_home", lambda control, writer, active, env: tmp_path / "codex"
+    )
     monkeypatch.setattr(context.subprocess, "run", fake_run)
     monkeypatch.setattr(context.os, "execvpe", fake_exec)
 
@@ -100,7 +103,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert codex_env["SWITCHSTAND_MANAGED"] == "1"
     command = events[2][2]
     assert command[1:3] == ["-C", str(writer)]
-    assert command[3:8] == ["-a", "never", "-s", "danger-full-access", "--dangerously-bypass-hook-trust"]
+    assert command[3:6] == ["-a", "never", "--dangerously-bypass-hook-trust"]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
     assert "mcp_servers.switchstand_development.enabled=false" in command
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
@@ -164,7 +167,7 @@ def test_switchstand_isolated_dispatches_to_control_launcher(tmp_path):
     assert result_file.read_text().splitlines() == ["--active", "123", "--commit", "a" * 40]
 
 
-def test_existing_writer_is_registered_green_and_bound_to_exact_task(tmp_path):
+def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
     control = tmp_path / "control"
     control.mkdir()
     git(control, "init", "-b", "main")
@@ -174,51 +177,25 @@ def test_existing_writer_is_registered_green_and_bound_to_exact_task(tmp_path):
     git(control, "add", "tracked.txt")
     git(control, "commit", "-m", "base")
     green = git(control, "rev-parse", "HEAD")
-    root = tmp_path / ".local/state/switchstand/worktrees"
-    root.mkdir(parents=True)
-    root.chmod(0o700)
-    writer = root / "switchstand-existing"
-    git(control, "worktree", "add", "-b", "v2-existing", str(writer), green)
-    git_dir = Path(git(writer, "rev-parse", "--absolute-git-dir"))
-    (git_dir / "switchstand-green-sha").write_text(green + "\n")
-    (git_dir / "switchstand-active-task").write_text("1218438438638352\n")
-    (writer / "unfinished.txt").write_text("preserved\n")
+    git(control, "remote", "add", "origin", "git@github.com:example/switchstand.git")
     environment = os.environ | {"HOME": str(tmp_path)}
-
+    writer = context.create_writer(control, "1218438438638352", environment)
+    git_dir = writer / ".git"
+    assert git_dir.is_dir()
+    assert git(writer, "rev-parse", "--git-common-dir") == ".git"
+    assert not (git_dir / "objects/info/alternates").exists()
+    assert git(writer, "remote", "get-url", "origin") == "git@github.com:example/switchstand.git"
+    assert git(writer, "branch", "--show-current") == "v2-task-1218438438638352"
+    assert (git_dir / "switchstand-green-sha").read_text() == green + "\n"
+    (writer / "unfinished.txt").write_text("preserved\n")
     assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
-    assert (git_dir / "switchstand-active-task").read_text() == "1218438438638352\n"
-    assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
+    assert context.create_writer(control, "1218438438638352", environment) == writer
     assert (writer / "unfinished.txt").read_text() == "preserved\n"
-    with pytest.raises(ValueError, match="different active task"):
-        context.validate_writer(control, writer, "1218483858041754", environment)
-
-
-def test_unbound_existing_writer_is_rejected_without_metadata_mutation(tmp_path):
-    control = tmp_path / "control"
-    control.mkdir()
-    git(control, "init", "-b", "main")
-    git(control, "config", "user.name", "Switchstand Test")
-    git(control, "config", "user.email", "switchstand-test@example.invalid")
-    (control / "tracked").write_text("base\n")
-    git(control, "add", "tracked")
-    git(control, "commit", "-m", "base")
-    green = git(control, "rev-parse", "HEAD")
-    root = tmp_path / ".local/state/switchstand/worktrees"
-    root.mkdir(parents=True, mode=0o700)
-    root.chmod(0o700)
-    writer = root / "switchstand-unrelated"
-    git(control, "worktree", "add", "-b", "v2-unrelated", str(writer), green)
-    git_dir = Path(git(writer, "rev-parse", "--absolute-git-dir"))
-    (git_dir / "switchstand-green-sha").write_text(green + "\n")
-
-    with pytest.raises(ValueError, match="no exact binding"):
-        context.validate_writer(control, writer, "1218438438638352", os.environ | {"HOME": str(tmp_path)})
-
-    assert not (git_dir / "switchstand-active-task").exists()
+    assert git(control, "status", "--short") == ""
 
 
 def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
-    root = tmp_path / ".local/state/switchstand/worktrees"
+    root = tmp_path / ".local/state/switchstand/writers"
     root.parent.mkdir(parents=True)
     target = tmp_path / "target"
     target.mkdir()
@@ -229,6 +206,34 @@ def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
     root.mkdir(mode=0o755)
     with pytest.raises(ValueError, match="real user-owned 0700"):
         context.durable_root(os.environ | {"HOME": str(tmp_path)})
+
+
+def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
+    control = tmp_path / "control"
+    writer = tmp_path / "writer"
+    (control / "scripts").mkdir(parents=True)
+    writer.mkdir()
+    executable(control / "scripts/codex-hook", "#!/bin/sh\nexit 0\n")
+    auth = tmp_path / ".codex/auth.json"
+    auth.parent.mkdir()
+    auth.write_text("{}\n")
+    auth.chmod(0o600)
+
+    managed = context.managed_codex_home(
+        control, writer, "1218438438638352", os.environ | {"HOME": str(tmp_path)}
+    )
+
+    assert (managed / "auth.json").is_symlink()
+    assert (managed / "auth.json").resolve() == auth
+    hooks = (managed / "hooks.json").read_text()
+    assert hooks.count(str(control / "scripts/codex-hook")) == 2
+    assert "codex-hook-router" not in hooks
+    config = (managed / "config.toml").read_text()
+    assert 'approval_policy = "never"' in config
+    assert f'[projects."{writer}"]' in config
+    assert 'trust_level = "untrusted"' in config
+    assert f'"{managed}" = "deny"' in config
+    assert f'"{auth}" = "deny"' in config
 
 
 if __name__ == "__main__":
