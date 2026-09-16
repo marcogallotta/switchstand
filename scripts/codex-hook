@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Switchstand-owned Codex guard for visible destructive shell commands."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+
+MUTATIONS = {
+    "add", "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge",
+    "mv", "pull", "rebase", "reset", "restore", "revert", "rm", "stage", "stash",
+    "switch", "tag", "unstage", "update-index", "update-ref",
+}
+SHELLS = {"bash", "dash", "sh", "zsh"}
+
+
+def deny(reason: str, event: str) -> dict[str, object]:
+    return {"hookSpecificOutput": {"hookEventName": event,
+            "permissionDecision": "deny", "permissionDecisionReason": reason}}
+
+
+def segments(command: str) -> list[list[str]]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    result: list[list[str]] = []
+    current: list[str] = []
+    for token in lexer:
+        if token and all(char in ";&|" for char in token):
+            if current:
+                result.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        result.append(current)
+    return result
+
+
+def git_parts(tokens: list[str], cwd: str) -> tuple[list[str], str, list[str], str] | None:
+    if not tokens or Path(tokens[0]).name != "git":
+        return None
+    prefix: list[str] = []
+    pos = 1
+    command_cwd = cwd
+    aliases: dict[str, str] = {}
+    while pos < len(tokens):
+        token = tokens[pos]
+        if token == "-C" and pos + 1 < len(tokens):
+            value = tokens[pos + 1]
+            command_cwd = os.path.realpath(os.path.join(command_cwd, value))
+            pos += 2
+        elif token == "-c" and pos + 1 < len(tokens):
+            value = tokens[pos + 1]
+            prefix += [token, value]
+            if value.startswith("alias.") and "=" in value:
+                name, expansion = value.split("=", 1)
+                aliases[name.removeprefix("alias.")] = expansion
+            pos += 2
+        elif token.startswith("-"):
+            prefix.append(token)
+            pos += 1
+        else:
+            break
+    if pos == len(tokens):
+        return None
+    subcommand = tokens[pos]
+    tail = tokens[pos + 1:]
+    if subcommand in aliases:
+        expansion = aliases[subcommand]
+        nested = expansion[1:] if expansion.startswith("!") else "git " + expansion
+        return git_parts(shlex.split(nested) + tail, command_cwd)
+    return prefix, subcommand, tail, command_cwd
+
+
+def inline_alias(tokens: list[str]) -> str | None:
+    if not tokens or Path(tokens[0]).name != "git":
+        return None
+    aliases: dict[str, str] = {}
+    pos = 1
+    while pos < len(tokens):
+        if tokens[pos] in {"-C", "-c"} and pos + 1 < len(tokens):
+            if tokens[pos] == "-c" and tokens[pos + 1].startswith("alias.") and "=" in tokens[pos + 1]:
+                name, expansion = tokens[pos + 1].split("=", 1)
+                aliases[name.removeprefix("alias.")] = expansion
+            pos += 2
+        elif tokens[pos].startswith("-"):
+            pos += 1
+        else:
+            break
+    if pos == len(tokens) or tokens[pos] not in aliases:
+        return None
+    expansion = aliases[tokens[pos]]
+    command = expansion[1:] if expansion.startswith("!") else "git " + expansion
+    return command + (" " + shlex.join(tokens[pos + 1:]) if tokens[pos + 1:] else "")
+
+
+def primary_checkout(prefix: list[str], cwd: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *prefix, "rev-parse", "--path-format=absolute", "--show-toplevel",
+             "--git-dir", "--git-common-dir"], cwd=cwd, text=True, capture_output=True,
+            timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = result.stdout.splitlines()
+    if result.returncode or len(lines) != 3:
+        return None
+    return lines[0] if os.path.realpath(lines[1]) == os.path.realpath(lines[2]) else None
+
+
+def severe(tokens: list[str], cwd: str) -> str | None:
+    if not tokens:
+        return None
+    name, args = Path(tokens[0]).name, tokens[1:]
+    git = git_parts(tokens, cwd)
+    if git:
+        _prefix, subcommand, tail, _cwd = git
+        if subcommand == "reset" and "--hard" in tail:
+            return "git reset --hard"
+        if subcommand == "clean":
+            return "git clean"
+        if subcommand == "push" and any(
+            arg in {"-f", "--force", "--force-with-lease", "--mirror"}
+            or arg.startswith("--force-with-lease=") or arg.startswith("+")
+            or (arg.startswith("-") and not arg.startswith("--") and "f" in arg[1:])
+            for arg in tail
+        ):
+            return "git force push"
+    if name == "rm" and any(arg in {"-r", "-R", "--recursive"}
+            or (arg.startswith("-") and not arg.startswith("--") and "r" in arg.lower())
+            for arg in args):
+        return "recursive rm"
+    if name in {"apt", "apt-get"} and any(arg in {"remove", "purge"} for arg in args):
+        return "apt package removal"
+    if name == "docker":
+        words = [arg for arg in args if not arg.startswith("-")]
+        joined = " ".join(words)
+        if "volume rm" in joined or "volume prune" in joined:
+            return "docker volume removal"
+        if "system prune" in joined:
+            return "docker system prune"
+        if "compose" in words and "down" in words and any(arg in {"-v", "--volumes"} for arg in args):
+            return "docker compose down --volumes"
+    return None
+
+
+def classify(command: str, cwd: str) -> str | None:
+    current = cwd
+    for tokens in segments(command):
+        if tokens and Path(tokens[0]).name in SHELLS:
+            positions = [pos for pos, token in enumerate(tokens[:-1])
+                         if token == "-c" or token.startswith("-") and token.endswith("c")]
+            if positions:
+                nested = classify(tokens[positions[0] + 1], current)
+                if nested:
+                    return nested
+        alias = inline_alias(tokens)
+        if alias:
+            nested = classify(alias, current)
+            if nested:
+                return nested
+        danger = severe(tokens, current)
+        if danger:
+            return f"[destructive-command] {danger} is forbidden."
+        if tokens and Path(tokens[0]).name == "git-commit":
+            root = primary_checkout([], current)
+            if root:
+                return (f"[primary-checkout] git git-commit is denied in {root}; "
+                        "use a linked writer worktree.")
+        git = git_parts(tokens, current)
+        if git:
+            prefix, subcommand, args, command_cwd = git
+            branch_reads = {"--show-current", "--list", "-l", "--contains", "--no-contains",
+                            "--merged", "--no-merged", "--points-at", "--format", "--sort"}
+            branch_write = subcommand == "branch" and bool(args) and not any(
+                args[0] == flag or args[0].startswith(flag + "=") for flag in branch_reads
+            )
+            worktree_write = subcommand == "worktree" and bool(args) and args[0] not in {"add", "list"}
+            tag_read = subcommand == "tag" and (not args or args[0].startswith(("--list", "--contains", "--points-at", "-l", "-n")))
+            stash_read = subcommand == "stash" and args[:1] in (["list"], ["show"])
+            if ((subcommand in MUTATIONS and not tag_read and not stash_read)
+                    or branch_write or worktree_write):
+                root = primary_checkout(prefix, command_cwd)
+                if root:
+                    return (f"[primary-checkout] git {subcommand} is denied in {root}; "
+                            "use a linked writer worktree.")
+        if tokens[:1] == ["cd"] and len(tokens) == 2:
+            current = os.path.realpath(os.path.join(current, tokens[1]))
+    return None
+
+
+def main() -> int:
+    payload = json.load(sys.stdin)
+    event = str(payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse")
+    if event not in {"PreToolUse", "PermissionRequest"} or payload.get("tool_name") != "Bash":
+        return 0
+    command = payload.get("tool_input", {}).get("command")
+    if not isinstance(command, str):
+        return 0
+    reason = classify(command, str(payload.get("cwd") or os.getcwd()))
+    if reason:
+        print(json.dumps(deny(reason, event)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
