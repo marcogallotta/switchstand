@@ -23,7 +23,9 @@ fi
 repo=$(git rev-parse --show-toplevel)
 common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 git -C "$repo" cat-file -e "$sha^{commit}"
-root=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P) || {
+root=$HOME/.local/state/switchstand/worktrees
+umask 077; mkdir -p "$root"
+root=$(CDPATH= cd -- "$root" && pwd -P) || {
     echo "writer root is unavailable" >&2
     exit 1
 }
