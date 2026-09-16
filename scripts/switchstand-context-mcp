@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+: "${ACTIVE_WORK_ID:?context controller requires ACTIVE_WORK_ID}"
+: "${SWITCHSTAND_MANAGED:?context controller requires SWITCHSTAND_MANAGED}"
+
+cd "$repo"
+exec docker compose run --rm -T --no-deps controller \
+    uv run --no-sync python -m switchstand.context_mcp
