@@ -198,13 +198,13 @@ def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
     environment = os.environ | {"HOME": str(tmp_path)}
     writer = context.create_writer(control, "1218438438638352", environment)
     git_dir = writer / ".git"
-    assert git_dir.is_dir()
-    assert git(writer, "rev-parse", "--git-common-dir") == ".git"
+    assert git_dir.is_dir() and git(writer, "rev-parse", "--git-common-dir") == ".git"
     assert not (git_dir / "objects/info/alternates").exists()
     assert git(writer, "remote", "get-url", "origin") == "git@github.com:example/switchstand.git"
     assert git(writer, "branch", "--show-current") == "v2-task-1218438438638352"
-    assert git(writer, "config", "--local", "user.name") == "Switchstand Test"
-    assert git(writer, "config", "--local", "user.email") == "switchstand-test@example.invalid"
+    assert [git(writer, "config", "--local", key) for key in ("user.name", "user.email")] == [
+        "Switchstand Test", "switchstand-test@example.invalid",
+    ]
     assert (git_dir / "switchstand-green-sha").read_text() == green + "\n"
     (writer / "unfinished.txt").write_text("preserved\n")
     assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
