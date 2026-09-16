@@ -2,6 +2,19 @@
 set -eu
 
 [ "$#" -eq 0 ] || { echo "usage: scripts/switchstand-upgrade-state" >&2; exit 2; }
+umask 077
+
+EXPECTED_OLD=0002_grants_and_effects
+EXPECTED_NEW=0004_required_result_persistence
+PROJECT=switchstand
+SERVICE=postgres
+VOLUME=switchstand_postgres-data
+IMAGE=postgres:18-alpine
+backup=
+backup_ready=false
+rehearsal=
+shared_migration_attempted=false
+
 control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 head=$(git -C "$control" rev-parse HEAD)
 branch=$(git -C "$control" branch --show-current)
@@ -22,9 +35,119 @@ else
         || { echo "state upgrade requires clean current main CONTROL" >&2; exit 1; }
 fi
 
-"$control/scripts/bootstrap"
-docker compose --project-directory "$control" -f "$control/compose.state.yaml" \
-    up -d --wait postgres
-docker compose --project-directory "$control" -f "$control/compose.yaml" \
-    run --build --rm --no-deps controller \
-    uv run --no-sync alembic -c /app/alembic.ini upgrade head
+state_dir=$HOME/.local/state/switchstand
+lock_dir=$state_dir/state-upgrade.lock
+mkdir -p "$state_dir"
+mkdir "$lock_dir" 2>/dev/null \
+    || { echo "another Switchstand state upgrade is active; refusing concurrent execution" >&2; exit 1; }
+cleanup() {
+    status=$?
+    [ -z "$rehearsal" ] || docker rm -f "$rehearsal" >/dev/null 2>&1 || true
+    if [ "$status" -ne 0 ] && [ "$backup_ready" = true ]; then
+        observed_revision=$(sql 'SELECT version_num FROM alembic_version' 2>/dev/null || printf UNAVAILABLE)
+        observed_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
+        outcome="shared migration NOT_RUN; operation aborted"
+        [ "$shared_migration_attempted" = false ] \
+            || outcome="shared migration outcome UNKNOWN"
+        printf 'state upgrade %s; backup %s; observed revision %s; observed counts %s; no retry or rollback attempted\n' \
+            "$outcome" "$backup" "$observed_revision" "$observed_counts" >&2
+    fi
+    rmdir "$lock_dir" >/dev/null 2>&1 || true
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+compose() { docker compose --project-directory "$control" -f "$control/compose.state.yaml" "$@"; }
+container=$(compose ps -q "$SERVICE")
+[ -n "$container" ] && [ "$(printf '%s\n' "$container" | wc -l)" -eq 1 ] \
+    || { echo "expected exactly one running Switchstand PostgreSQL service" >&2; exit 1; }
+identity=$(docker inspect --format \
+    '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.Config.Image}}|{{.State.Health.Status}}' \
+    "$container")
+[ "$identity" = "$PROJECT|$SERVICE|$IMAGE|healthy" ] \
+    || { echo "Switchstand PostgreSQL service identity or health mismatch" >&2; exit 1; }
+mounts=$(docker inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql"}}{{.Name}}|{{.RW}}{{end}}{{end}}' \
+    "$container")
+[ "$mounts" = "$VOLUME|true" ] \
+    || { echo "Switchstand PostgreSQL volume identity mismatch" >&2; exit 1; }
+volume_identity=$(docker volume inspect --format \
+    '{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.volume"}}' \
+    "$VOLUME")
+[ "$volume_identity" = "$PROJECT|postgres-data" ] \
+    || { echo "Switchstand PostgreSQL volume labels mismatch" >&2; exit 1; }
+
+sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
+revision=$(sql 'SELECT version_num FROM alembic_version')
+[ "$revision" = "$EXPECTED_OLD" ] \
+    || { echo "expected shared schema $EXPECTED_OLD; found $revision" >&2; exit 1; }
+counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)"
+before_counts=$(sql "$counts_sql")
+quiescence_sql="SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'"
+assert_quiescent() {
+    clients=$(sql "$quiescence_sql")
+    [ "$clients" = 0 ] \
+        || { echo "shared state has $clients other database client(s); stop Switchstand writers before upgrading" >&2; exit 1; }
+    container_name=$(docker inspect --format '{{.Name}}' "$container")
+    container_name=${container_name#/}
+    network_members=$(docker network inspect --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' switchstand_default)
+    [ "$network_members" = "$container_name" ] \
+        || { echo "shared state network has an attached application container; stop Switchstand writers before upgrading" >&2; exit 1; }
+}
+assert_quiescent
+
+backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
+mkdir -p "$backup_dir"
+chmod 700 "$backup_dir"
+backup="$backup_dir/state-$EXPECTED_OLD-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
+set -C
+docker exec "$container" pg_dump -U switchstand -d switchstand -Fc >"$backup"
+set +C
+[ -s "$backup" ] || { echo "state backup is empty" >&2; exit 1; }
+backup_ready=true
+
+rehearsal="switchstand-upgrade-rehearsal-$(printf '%.12s' "$head")-$$"
+migration_image="switchstand-upgrade:$head"
+docker run -d --rm --name "$rehearsal" --tmpfs /var/lib/postgresql \
+    -e POSTGRES_DB=switchstand -e POSTGRES_USER=switchstand \
+    -e POSTGRES_PASSWORD=switchstand "$IMAGE" >/dev/null
+i=0
+until docker exec "$rehearsal" pg_isready -U switchstand >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -lt 31 ] || { echo "rehearsal PostgreSQL did not become healthy" >&2; exit 1; }
+    sleep 1
+done
+docker cp "$backup" "$rehearsal:/tmp/state.dump"
+docker exec "$rehearsal" pg_restore --exit-on-error --no-owner --no-privileges \
+    -U switchstand -d switchstand /tmp/state.dump
+rehearsal_sql() { docker exec "$rehearsal" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
+[ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ]
+[ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+
+docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
+migrate() {
+    target=$1
+    docker run --rm --network "container:$target" \
+        -e DATABASE_URL=postgresql+psycopg://switchstand:switchstand@127.0.0.1/switchstand \
+        "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
+}
+migrate "$rehearsal"
+[ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
+[ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+
+assert_quiescent
+revision=$(sql 'SELECT version_num FROM alembic_version')
+current_counts=$(sql "$counts_sql")
+[ "$revision" = "$EXPECTED_OLD" ] && [ "$current_counts" = "$before_counts" ] \
+    || { echo "shared state changed after rehearsal; refusing migration" >&2; exit 1; }
+shared_migration_attempted=true
+migrate "$container"
+revision=$(sql 'SELECT version_num FROM alembic_version')
+after_counts=$(sql "$counts_sql")
+[ "$revision" = "$EXPECTED_NEW" ] && [ "$after_counts" = "$before_counts" ] \
+    || { echo "shared state upgrade readback failed; preserve backup $backup" >&2; exit 1; }
+
+printf 'state upgrade passed: %s -> %s; preserved counts %s; backup %s\n' \
+    "$EXPECTED_OLD" "$EXPECTED_NEW" "$after_counts" "$backup"
