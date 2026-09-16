@@ -76,6 +76,15 @@ def durable_root(env: dict[str, str]) -> Path:
     return _private_directory(Path(env["HOME"]) / ".local/state/switchstand/writers")
 
 
+def _bind_git_identity(control: Path, writer: Path, env: dict[str, str]) -> None:
+    # The task session cannot read the user's global Git configuration. Bind the
+    # ordinary author identity into this private clone while CONTROL can still
+    # resolve it, so local commits do not require broader HOME access.
+    for key in ("user.name", "user.email"):
+        _git(writer, "config", "--local", key,
+             _git(control, "config", "--get", key, env=env), env=env)
+
+
 def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
     writer = writer.resolve(strict=True)
     task = asana_task_id(active)
@@ -109,7 +118,9 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     task = asana_task_id(active)
     writer = durable_root(env) / f"task-{task}"
     if writer.exists():
-        return validate_writer(control, writer, active, env)
+        validated = validate_writer(control, writer, active, env)
+        _bind_git_identity(control, validated, env)
+        return validated
     branch = f"v2-task-{task}"
     base = _git(control, "rev-parse", "HEAD", env=env)
     subprocess.run(
@@ -120,6 +131,7 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     (writer / ".git").chmod(0o700)
     _git(writer, "remote", "set-url", "origin", _provider_origin(control, env), env=env)
     _git(writer, "checkout", "-b", branch, base, env=env)
+    _bind_git_identity(control, writer, env)
     git_dir = writer / ".git"
     (git_dir / "switchstand-active-task").write_text(task + "\n")
     (git_dir / "switchstand-green-sha").write_text(base + "\n")
