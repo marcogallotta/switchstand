@@ -6,7 +6,7 @@ CMD ["uv", "run", "--no-sync", "switchstand"]
 
 FROM base AS development
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libatomic1 \
+    && apt-get install --yes --no-install-recommends git libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 RUN uv sync --locked --all-groups --no-install-project
 COPY src ./src
