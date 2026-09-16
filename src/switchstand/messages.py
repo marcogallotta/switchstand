@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -19,6 +19,7 @@ from sqlalchemy import (
     and_,
     func,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -123,6 +124,7 @@ class PendingMessage(ClosedModel):
     payload: JsonValue
     state: Literal["AVAILABLE", "RECEIVED"]
     recipient_grant_version: int
+    receiving_generation: str | None = None
 
 
 class MessageSubmitResult(ClosedModel):
@@ -174,6 +176,69 @@ class MessagePendingResult(ClosedModel):
         return self
 
 
+class RuntimeCurrentness(ClosedModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    generation: str = Field(min_length=1)
+    current_generation: str | None = Field(default=None, min_length=1)
+
+
+class MessageReceiveRequest(ClosedModel):
+    api_version: ApiVersion
+    delivery_id: UUID
+    grant_version: int = Field(ge=1)
+
+
+class DispositionEvidence(ClosedModel):
+    kind: Literal["result", "provider_effect"]
+    result_message_id: UUID | None = None
+    operation_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exact_reference(self) -> Self:
+        if self.kind == "result" and self.result_message_id is not None and self.operation_id is None:
+            return self
+        if self.kind == "provider_effect" and self.operation_id is not None and self.result_message_id is None:
+            return self
+        raise ValueError("disposition evidence requires exactly its typed correlation")
+
+
+class MessageDispositionRequest(ClosedModel):
+    api_version: ApiVersion
+    delivery_id: UUID
+    grant_version: int = Field(ge=1)
+    disposition_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence: DispositionEvidence
+
+    @model_validator(mode="after")
+    def canonical_digest(self) -> Self:
+        if self.disposition_digest != _json_digest(self.evidence.model_dump(mode="json")):
+            raise ValueError("disposition digest does not match its exact evidence")
+        return self
+
+
+class MessageTransitionResult(ClosedModel):
+    status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
+    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"] | None = None
+    disposition_digest: str | None = None
+    reason: Literal[
+        "no_current_grant", "grant_version_changed", "delivery_not_found",
+        "delivery_not_for_current_work", "runtime_currentness_unavailable",
+        "runtime_generation_changed", "receiving_binding_changed", "delivery_not_received",
+        "delivery_already_dispositioned", "disposition_identity_conflict",
+        "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
+        "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
+        "state_unavailable",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok" and (self.state is None or self.reason is not None):
+            raise ValueError("successful transition requires state readback")
+        if self.status != "ok" and self.reason is None:
+            raise ValueError("unsuccessful transition requires a closed reason")
+        return self
+
+
 def _json_digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -194,6 +259,16 @@ def _view(row: Mapping[str, Any]) -> PendingMessage:
     return PendingMessage.model_validate(row)
 
 
+def _transition(
+    status: Literal["ok", "conflict", "denied", "stale", "recovery_required"],
+    reason: Any = None, row: Mapping[str, Any] | None = None,
+) -> MessageTransitionResult:
+    return MessageTransitionResult(
+        status=status, reason=reason, state=None if row is None else row["state"],
+        disposition_digest=None if row is None else row["disposition_digest"],
+    )
+
+
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
@@ -208,6 +283,18 @@ class MessageState:
             return "denied", "no_current_grant"
         if grant.version != grant_version:
             return "stale", "grant_version_changed"
+        return None
+
+    @staticmethod
+    def _runtime(runtime: RuntimeCurrentness) -> tuple[
+        Literal["stale", "recovery_required"], Literal[
+            "runtime_generation_changed", "runtime_currentness_unavailable"
+        ]
+    ] | None:
+        if runtime.current_generation is None:
+            return "recovery_required", "runtime_currentness_unavailable"
+        if runtime.generation != runtime.current_generation:
+            return "stale", "runtime_generation_changed"
         return None
 
     async def submit(
@@ -306,13 +393,142 @@ class MessageState:
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 
+    async def receive(
+        self, principal: PrincipalContext, runtime: RuntimeCurrentness,
+        request: MessageReceiveRequest,
+    ) -> MessageTransitionResult:
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                failure = (self._admission(principal, grant, request.grant_version)
+                           or self._runtime(runtime))
+                if failure is not None:
+                    return _transition(failure[0], failure[1])
+                assert grant is not None
+                async with self.engine.begin() as connection:
+                    raw = (await connection.execute(select(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).with_for_update())).mappings().one_or_none()
+                    row = None if raw is None else dict(raw)
+                    failure_result = self._delivery_access(row, grant)
+                    if failure_result is not None:
+                        return failure_result
+                    assert row is not None
+                    if row["state"] == "DISPOSITIONED":
+                        return _transition("conflict", "delivery_already_dispositioned", row)
+                    if row["state"] == "RECEIVED":
+                        if (row["recipient_grant_version"] != grant.version
+                                or row["receiving_generation"] != runtime.generation):
+                            return _transition(
+                                "recovery_required", "receiving_binding_changed", row
+                            )
+                        return _transition("ok", row=row)
+                    result = await connection.execute(update(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).values(
+                        state="RECEIVED", recipient_grant_version=grant.version,
+                        receiving_generation=runtime.generation, received_at=func.now(),
+                    ).returning(*message_deliveries.c))
+                    return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
+
+    async def disposition(
+        self, principal: PrincipalContext, runtime: RuntimeCurrentness,
+        request: MessageDispositionRequest,
+    ) -> MessageTransitionResult:
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                failure = (self._admission(principal, grant, request.grant_version)
+                           or self._runtime(runtime))
+                if failure is not None:
+                    return _transition(failure[0], failure[1])
+                assert grant is not None
+                async with self.engine.begin() as connection:
+                    raw = (await connection.execute(select(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).with_for_update())).mappings().one_or_none()
+                    row = None if raw is None else dict(raw)
+                    failure_result = self._delivery_access(row, grant)
+                    if failure_result is not None:
+                        return failure_result
+                    assert row is not None
+                    if row["state"] == "DISPOSITIONED":
+                        if (row["disposition_digest"] == request.disposition_digest
+                                and row["evidence"] == request.evidence.model_dump(mode="json")):
+                            return _transition("ok", row=row)
+                        return _transition("conflict", "disposition_identity_conflict", row)
+                    if row["state"] != "RECEIVED":
+                        return _transition("conflict", "delivery_not_received", row)
+                    if (row["recipient_grant_version"] != grant.version
+                            or row["receiving_generation"] != runtime.generation):
+                        return _transition("recovery_required", "receiving_binding_changed", row)
+                    evidence_failure = await self._evidence_failure(
+                        connection, grant, row, request.evidence
+                    )
+                    if evidence_failure is not None:
+                        return _transition("recovery_required", evidence_failure, row)
+                    result = await connection.execute(update(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).values(
+                        state="DISPOSITIONED", dispositioned_at=func.now(),
+                        disposition_digest=request.disposition_digest,
+                        evidence=request.evidence.model_dump(mode="json"),
+                    ).returning(*message_deliveries.c))
+                    return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
+
+    @staticmethod
+    def _delivery_access(
+        row: Mapping[str, Any] | None, grant: WorkGrant,
+    ) -> MessageTransitionResult | None:
+        if row is None:
+            return _transition("denied", "delivery_not_found")
+        if row["recipient_work_id"] != grant.authority.active_work_id:
+            return _transition("denied", "delivery_not_for_current_work")
+        return None
+
+    async def _evidence_failure(
+        self, connection: Any, grant: WorkGrant, delivery: Mapping[str, Any],
+        evidence: DispositionEvidence,
+    ) -> Literal[
+        "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
+        "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
+    ] | None:
+        if evidence.kind == "result":
+            result = (await connection.execute(select(messages).where(and_(
+                messages.c.sender_work_id == grant.authority.active_work_id,
+                messages.c.message_id == evidence.result_message_id,
+            )))).mappings().one_or_none()
+            if result is None:
+                return "result_evidence_missing"
+            if result["in_reply_to_delivery_id"] != delivery["delivery_id"]:
+                return "result_evidence_mismatch"
+            return None
+        assert evidence.operation_id is not None
+        previous = await self.grants.previous(
+            evidence.operation_id, grant.authority.active_work_id
+        )
+        if previous is None:
+            return "effect_evidence_missing"
+        outcome = previous[2]
+        if outcome.operation_id != evidence.operation_id:
+            return "effect_evidence_mismatch"
+        if outcome.effect == "unknown":
+            return "effect_evidence_unknown"
+        if outcome.effect == "not_sent":
+            return "effect_not_applied"
+        if outcome.receipt is None or outcome.receipt.work_id != grant.authority.active_work_id:
+            return "effect_evidence_mismatch"
+        return None
+
     @staticmethod
     def _pending_query():
         return select(
             message_deliveries.c.delivery_id, message_deliveries.c.message_id,
             message_deliveries.c.sender_work_id, message_deliveries.c.recipient_work_id,
             message_deliveries.c.state, message_deliveries.c.recipient_grant_version,
-            messages.c.route_ref, messages.c.kind,
+            message_deliveries.c.receiving_generation, messages.c.route_ref, messages.c.kind,
             messages.c.payload,
         ).join(messages, and_(
             messages.c.sender_work_id == message_deliveries.c.sender_work_id,
