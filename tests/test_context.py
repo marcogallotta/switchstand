@@ -149,7 +149,7 @@ def test_switchstand_isolated_dispatches_to_control_launcher(tmp_path):
     launcher.write_bytes((Path(__file__).parents[1] / "scripts" / "switchstand").read_bytes())
     launcher.chmod(0o755)
     executable(
-        scripts / "switchstand-isolated-launch",
+        scripts / "switchstand-start",
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RESULT\"\n",
     )
     result_file = tmp_path / "result"

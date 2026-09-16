@@ -59,16 +59,11 @@ def real_start_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     start = scripts / "switchstand-start"
     start.write_bytes(start_source.read_bytes())
     start.chmod(0o755)
-    isolated_source = Path(__file__).parents[1] / "scripts" / "switchstand-isolated-launch"
-    isolated = scripts / "switchstand-isolated-launch"
-    isolated.write_bytes(isolated_source.read_bytes())
-    isolated.chmod(0o755)
     executable(scripts / "bootstrap", "#!/bin/sh\nexit 17\n")
     run_git(
         source,
         "add",
         "scripts/switchstand-start",
-        "scripts/switchstand-isolated-launch",
         "scripts/bootstrap",
     )
     run_git(source, "commit", "-m", "launcher")
@@ -160,10 +155,6 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
     start.chmod(0o755)
-    isolated_source = Path(__file__).parents[1] / "scripts" / "switchstand-isolated-launch"
-    isolated = scripts / "switchstand-isolated-launch"
-    isolated.write_bytes(isolated_source.read_bytes())
-    isolated.chmod(0o755)
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
   *"fetch --quiet --no-tags origin"*) : ;;

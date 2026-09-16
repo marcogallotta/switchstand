@@ -4,7 +4,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 if [ "${1:-}" = --isolated ]; then
     shift
-    exec "$repo/scripts/switchstand-isolated-launch" "$@"
+    exec "$repo/scripts/switchstand-start" "$@"
 fi
 
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
