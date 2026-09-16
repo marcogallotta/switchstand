@@ -6,6 +6,7 @@ from uuid import UUID
 
 import httpx
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
@@ -37,8 +38,11 @@ def controller_from_env() -> Controller:
     })
 
 
-def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> None:
-    server.tool(name=name)(function)
+def closed_tool(
+    server: MCPServer, name: str, function: Callable[..., Any],
+    annotations: ToolAnnotations | None = None,
+) -> None:
+    server.tool(name=name, annotations=annotations)(function)
     tool = server._tool_manager.get_tool(name)  # pyright: ignore[reportPrivateUsage]
     assert tool is not None
     tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
@@ -64,7 +68,12 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
         "Read the exact launch-bound work. Set include_related for bounded direct-child "
         "and Root Work GID grouping candidates; completeness is always unknown."
     )
-    closed_tool(server, "work_get", _work_get)
+    closed_tool(server, "work_get", _work_get, ToolAnnotations(
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=False,
+    ))
     return server
 
 

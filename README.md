@@ -31,13 +31,11 @@ scripts/bootstrap
 docker compose up --build
 uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>
-# Or add one exact task as read-only context to an ordinary Codex session:
-scripts/switchstand-context --active <Asana task ID or URL>
+scripts/switchstand --active <Asana task ID or URL>
 # In the printed linked worktree:
 scripts/switchstand-launch --active <Asana task ID or URL> --commit <exact-candidate-SHA>
 
-# Or create the task worktree and launch it in one operation:
-scripts/switchstand-start --active <Asana task ID or URL> --commit <exact-candidate-SHA>
+scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-candidate-SHA>
 ```
 
 See [architecture](docs/architecture.md), [development](docs/development.md), and [agent routing](AGENTS.md).

@@ -29,7 +29,22 @@ run() {
         *) return "$status" ;;
     esac
 }
-if [ -x "$bootstrap" ]; then
+bound=false
+if [ "${SWITCHSTAND_CHECK_VENV+x}${SWITCHSTAND_CHECK_MANIFEST+x}" != "" ]; then
+    binding_error() {
+        echo "invalid shared check environment binding: $1; relaunch through scripts/switchstand" >&2
+        exit 1
+    }
+    venv=${SWITCHSTAND_CHECK_VENV:-}
+    expected=${SWITCHSTAND_CHECK_MANIFEST:-}
+    case "$venv" in /*) ;; *) binding_error "expected an absolute .venv path" ;; esac
+    [ -d "$venv" ] || binding_error "environment directory is missing"
+    canonical_venv=$(CDPATH= cd -- "$venv" && pwd -P)
+    [ "$canonical_venv" = "$venv" ] || binding_error "environment path is not canonical"
+    [ "${#expected}" -eq 64 ] || binding_error "missing or malformed manifest digest"
+    case "$expected" in *[!0-9a-f]*) binding_error "malformed manifest digest" ;; esac
+    bound=true
+elif [ -x "$bootstrap" ]; then
     run "$bootstrap" || {
         status=$?
         if [ "$status" -eq 124 ]; then
@@ -53,7 +68,11 @@ manifest() {
         "$1"
 }
 repo_manifest=$(manifest "$repo") || exit $?
-primary_manifest=$(manifest "$primary") || exit $?
+if [ "$bound" = true ]; then
+    primary_manifest=$expected
+else
+    primary_manifest=$(manifest "$primary") || exit $?
+fi
 [ "$repo_manifest" = "$primary_manifest" ] || {
     echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
     exit 1
