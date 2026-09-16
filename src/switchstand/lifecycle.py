@@ -1,8 +1,10 @@
-"""Durable storage for the fixed required-result-persistence profile."""
+"""Durable state and deterministic projection for required-result persistence."""
 
+import json
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ConfigDict, Field, model_validator
 from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, Table, Text, select, update
@@ -23,6 +25,22 @@ class ProfileState(StrEnum):
     PERSIST_REQUIRED = "PERSIST_REQUIRED"
     UNKNOWN = "UNKNOWN"
     TERMINAL = "TERMINAL"
+
+
+class ContinuationKind(StrEnum):
+    CONTINUE_CURRENT_WORK = "CONTINUE_CURRENT_WORK"
+    PERSIST_RESULT = "PERSIST_RESULT"
+    RECONCILE_UNKNOWN = "RECONCILE_UNKNOWN"
+    TERMINAL = "TERMINAL"
+
+
+class LifecycleEvent(StrEnum):
+    RESULT_READY = "RESULT_READY"
+    PERSIST_READBACK_MATCHED = "PERSIST_READBACK_MATCHED"
+    PERSIST_OUTCOME_AMBIGUOUS = "PERSIST_OUTCOME_AMBIGUOUS"
+    RECONCILIATION_NO_MATCH_SAFE_TO_RETRY = "RECONCILIATION_NO_MATCH_SAFE_TO_RETRY"
+    CURRENTNESS_STALE = "CURRENTNESS_STALE"
+    CURRENTNESS_UNKNOWN = "CURRENTNESS_UNKNOWN"
 
 
 lifecycle_obligations = Table(
@@ -143,6 +161,24 @@ class LifecycleObligation(ClosedModel):
         return self
 
 
+class Continuation(ClosedModel):
+    """The only action the closed profile projects for its current durable state."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: ContinuationKind
+    destination_ref: str | None = Field(default=None, min_length=1)
+    result_correlation: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def exact_persist_fields(self) -> Self:
+        has_result = self.destination_ref is not None and self.result_correlation is not None
+        partial_result = (self.destination_ref is None) != (self.result_correlation is None)
+        if partial_result or (self.kind is ContinuationKind.PERSIST_RESULT) != has_result:
+            raise ValueError("only PERSIST_RESULT has an exact destination and correlation")
+        return self
+
+
 def _obligation(row: RowMapping | None) -> LifecycleObligation | None:
     return None if row is None else LifecycleObligation.model_validate(row)
 
@@ -222,3 +258,126 @@ class LifecycleRepository:
         if row is None:
             raise ValueError("stale lifecycle obligation or changed immutable binding")
         return LifecycleObligation.model_validate(row)
+
+
+def _encoded_evidence(evidence: Mapping[str, object] | None) -> str:
+    if evidence is None:
+        raise ValueError("event requires bounded evidence")
+    encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if not encoded or len(encoded) > 8000:
+        raise ValueError("event evidence must be between 1 and 8000 characters")
+    return encoded
+
+
+class RequiredResultPersistence:
+    """Apply the closed transition table and project restart-stable continuations."""
+
+    def __init__(self, repository: LifecycleRepository):
+        self.repository = repository
+
+    async def create(
+        self,
+        work_id_ref: UUID,
+        currentness_token: str,
+    ) -> LifecycleObligation:
+        return await self.repository.create(uuid4(), work_id_ref, currentness_token)
+
+    async def _required(self, obligation_id: UUID) -> LifecycleObligation:
+        obligation = await self.repository.get(obligation_id)
+        if obligation is None:
+            raise ValueError("lifecycle obligation missing")
+        return obligation
+
+    async def continuation(
+        self,
+        obligation_id: UUID,
+        currentness_token: str,
+    ) -> Continuation:
+        obligation = await self._required(obligation_id)
+        if currentness_token != obligation.currentness_token:
+            return Continuation(kind=ContinuationKind.RECONCILE_UNKNOWN)
+        if obligation.state is ProfileState.PENDING_RESULT:
+            return Continuation(kind=ContinuationKind.CONTINUE_CURRENT_WORK)
+        if obligation.state is ProfileState.PERSIST_REQUIRED:
+            return Continuation(
+                kind=ContinuationKind.PERSIST_RESULT,
+                destination_ref=obligation.destination_ref,
+                result_correlation=obligation.result_correlation,
+            )
+        if obligation.state is ProfileState.UNKNOWN:
+            return Continuation(kind=ContinuationKind.RECONCILE_UNKNOWN)
+        return Continuation(kind=ContinuationKind.TERMINAL)
+
+    async def transition(
+        self,
+        obligation_id: UUID,
+        currentness_token: str,
+        event: LifecycleEvent,
+        *,
+        destination_ref: str | None = None,
+        result_correlation: str | None = None,
+        evidence: Mapping[str, object] | None = None,
+    ) -> LifecycleObligation:
+        current = await self._required(obligation_id)
+        if currentness_token != current.currentness_token:
+            raise ValueError("currentness token is stale or unknown")
+        if current.state is ProfileState.TERMINAL:
+            raise ValueError("terminal lifecycle obligation cannot transition")
+
+        changes: dict[str, object | None]
+        if event is LifecycleEvent.RESULT_READY:
+            if current.state is not ProfileState.PENDING_RESULT:
+                raise ValueError("RESULT_READY requires PENDING_RESULT")
+            if destination_ref is None or result_correlation is None:
+                raise ValueError("RESULT_READY requires destination and result correlation")
+            changes = {
+                "state": ProfileState.PERSIST_REQUIRED,
+                "destination_ref": destination_ref,
+                "result_correlation": result_correlation,
+            }
+        elif event is LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS:
+            if current.state is not ProfileState.PERSIST_REQUIRED:
+                raise ValueError("ambiguous persistence requires PERSIST_REQUIRED")
+            changes = {
+                "state": ProfileState.UNKNOWN,
+                "unknown_reason": event.value,
+                "unknown_evidence": _encoded_evidence(evidence),
+            }
+        elif event in {LifecycleEvent.CURRENTNESS_STALE, LifecycleEvent.CURRENTNESS_UNKNOWN}:
+            changes = {
+                "state": ProfileState.UNKNOWN,
+                "unknown_reason": event.value,
+                "unknown_evidence": _encoded_evidence(evidence),
+            }
+        elif event is LifecycleEvent.RECONCILIATION_NO_MATCH_SAFE_TO_RETRY:
+            if (
+                current.state is not ProfileState.UNKNOWN
+                or current.destination_ref is None
+                or current.unknown_reason != LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS.value
+            ):
+                raise ValueError("safe retry requires reconciled persistence ambiguity")
+            changes = {
+                "state": ProfileState.PERSIST_REQUIRED,
+                "unknown_reason": None,
+                "unknown_evidence": None,
+            }
+        elif event is LifecycleEvent.PERSIST_READBACK_MATCHED:
+            if current.state not in {ProfileState.PERSIST_REQUIRED, ProfileState.UNKNOWN}:
+                raise ValueError("persistence readback requires a result obligation")
+            if (
+                evidence is None
+                or evidence.get("destination_ref") != current.destination_ref
+                or evidence.get("result_correlation") != current.result_correlation
+            ):
+                raise ValueError("authoritative readback destination or correlation does not match")
+            changes = {
+                "state": ProfileState.TERMINAL,
+                "authoritative_readback_evidence": _encoded_evidence(evidence),
+                "unknown_reason": None,
+                "unknown_evidence": None,
+            }
+        else:  # pragma: no cover - StrEnum validation makes this defensive only.
+            raise ValueError("unsupported lifecycle event")
+
+        replacement = current.model_copy(update=changes | {"row_version": current.row_version + 1})
+        return await self.repository.replace(replacement, current.row_version)
