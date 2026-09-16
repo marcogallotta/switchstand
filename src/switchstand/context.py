@@ -187,7 +187,7 @@ glob_scan_max_depth = 4
 enabled = true
 
 [shell_environment_policy]
-inherit = "core"
+inherit = "all"
 ignore_default_excludes = false
 exclude = ["*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "SSH_AUTH_SOCK", "GIT_ASKPASS", "GH_*", "DOCKER_CONFIG"]
 '''
@@ -206,7 +206,7 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
-        "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
+        "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="approve"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
     ]
