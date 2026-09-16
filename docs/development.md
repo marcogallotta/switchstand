@@ -30,7 +30,7 @@
   configuration; never put per-run work authority in it.
 - Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
   It creates or resumes the task's private durable writer with bound `work_get` and ordinary development access.
-  `--writer <exact-writer-path>` adopts only a registered, already task-bound legacy writer. Dirty progress survives;
+  The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects

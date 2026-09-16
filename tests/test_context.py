@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import subprocess
@@ -32,6 +33,16 @@ def git(repo: Path, *arguments: str) -> str:
         capture_output=True,
         check=True,
     ).stdout.strip()
+
+
+def hook(repo: Path, command: str, environment: dict[str, str]) -> dict:
+    result = subprocess.run(
+        [str(Path(__file__).parents[1] / "scripts/codex-hook")],
+        input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": command}, "cwd": str(repo)}),
+        text=True, capture_output=True, check=True, env=environment,
+    )
+    return json.loads(result.stdout) if result.stdout else {}
 
 
 def test_context_server_exposes_only_active_work_get():
@@ -106,7 +117,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert command[1:3] == ["-C", str(writer)]
     assert command[3:6] == ["-a", "never", "--dangerously-bypass-hook-trust"]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
-    assert 'mcp_servers.switchstand.tools.work_get.approval_mode="approve"' in command
+    assert 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"' in command
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
 
@@ -195,6 +206,32 @@ def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
     assert git(control, "status", "--short") == ""
 
 
+def test_exact_private_task_writer_allows_commit_while_primary_is_denied(tmp_path):
+    primary = tmp_path / "primary"
+    writer = tmp_path / "writer"
+    for repo in (primary, writer):
+        repo.mkdir()
+        git(repo, "init", "-b", "main")
+    task = "1218438438638352"
+    (writer / ".git/switchstand-active-task").write_text(task + "\n")
+    environment = os.environ | {
+        "SWITCHSTAND_TASK_WRITER": str(writer), "SWITCHSTAND_TASK_ID": task,
+    }
+
+    assert hook(writer, "git add README.md", environment) == {}
+    assert hook(writer, "git commit -m test", environment) == {}
+    denied = hook(primary, "git add README.md", environment)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("origin", ["../repo", "relative", "/tmp/repo", "file:///tmp/repo"])
+def test_provider_origin_rejects_local_transports(monkeypatch, tmp_path, origin):
+    monkeypatch.setattr(context, "_git", lambda *args, **kwargs: origin)
+    with pytest.raises(ValueError, match="external provider"):
+        context._provider_origin(tmp_path, dict(os.environ))
+
+
 def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
     root = tmp_path / ".local/state/switchstand/writers"
     root.parent.mkdir(parents=True)
@@ -234,6 +271,29 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
     assert 'trust_level = "untrusted"' in config
     assert f'"{managed}" = "deny"' in config
     assert f'"{auth}" = "deny"' in config
+
+
+def test_managed_codex_home_rejects_symlinked_config(tmp_path):
+    control = tmp_path / "control"
+    writer = tmp_path / "writer"
+    (control / "scripts").mkdir(parents=True)
+    writer.mkdir()
+    executable(control / "scripts/codex-hook", "#!/bin/sh\nexit 0\n")
+    auth = tmp_path / ".codex/auth.json"
+    auth.parent.mkdir()
+    auth.write_text("{}\n")
+    auth.chmod(0o600)
+    managed = tmp_path / ".local/state/switchstand/codex/task-1218438438638352"
+    managed.mkdir(parents=True, mode=0o700)
+    (tmp_path / ".local/state/switchstand/codex").chmod(0o700)
+    victim = tmp_path / "victim"
+    victim.write_text("intact\n")
+    (managed / "config.toml").symlink_to(victim)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        context.managed_codex_home(control, writer, "1218438438638352",
+                                   os.environ | {"HOME": str(tmp_path)})
+    assert victim.read_text() == "intact\n"
 
 
 if __name__ == "__main__":

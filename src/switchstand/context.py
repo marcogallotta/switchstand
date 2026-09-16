@@ -4,7 +4,9 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .launch import clean_environment, provision
 from .task_ref import asana_task_id
@@ -52,16 +54,20 @@ def validate_control(control: Path, env: dict[str, str]) -> Path:
             raise ValueError("ordinary CONTROL must match the locally accepted origin/main")
     elif branch != "HEAD":
         raise ValueError("non-primary CONTROL must be detached at one exact revision")
-    active_hook = primary / "scripts/codex-hook"
     control_hook = control / "scripts/codex-hook"
-    if not active_hook.is_file() or active_hook.read_bytes() != control_hook.read_bytes():
-        raise ValueError("exact CONTROL hook is not the accepted Switchstand hook")
+    if (not control_hook.is_file() or not os.access(control_hook, os.X_OK)
+            or control_hook.resolve(strict=True) != control / "scripts/codex-hook"):
+        raise ValueError("exact CONTROL hook is unavailable")
     return control
 
 
 def _provider_origin(control: Path, env: dict[str, str]) -> str:
     origin = _git(control, "remote", "get-url", "origin", env=env)
-    if origin.startswith(("/", "file:")) or origin in {".", ".."}:
+    parsed = urlparse(origin)
+    provider_url = parsed.scheme in {"https", "ssh", "git"} and bool(parsed.netloc)
+    provider_scp = (":" in origin and "@" in origin.split(":", 1)[0]
+                    and not origin.startswith(("/", "./", "../")))
+    if not (provider_url or provider_scp):
         raise ValueError("CONTROL origin must be an external provider repository")
     return origin
 
@@ -132,6 +138,26 @@ def _validate_auth(home: Path) -> Path:
     return auth
 
 
+def _write_managed(path: Path, content: str) -> None:
+    if path.exists() or path.is_symlink():
+        metadata = path.lstat()
+        if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()):
+            raise ValueError(f"managed file {path} is unsafe")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_path.replace(path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
     task = asana_task_id(active)
     root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
@@ -154,7 +180,7 @@ def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, 
         "PermissionRequest": [{"matcher": "^Bash$", "hooks": [
             {"type": "command", "command": str(hook), "timeout": 10}]}],
     }}
-    (managed / "hooks.json").write_text(json.dumps(hooks, indent=2) + "\n")
+    _write_managed(managed / "hooks.json", json.dumps(hooks, indent=2) + "\n")
     config = f'''approval_policy = "never"
 default_permissions = "switchstand-task"
 
@@ -191,9 +217,7 @@ inherit = "all"
 ignore_default_excludes = false
 exclude = ["*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "SSH_AUTH_SOCK", "GIT_ASKPASS", "GH_*", "DOCKER_CONFIG"]
 '''
-    (managed / "config.toml").write_text(config)
-    (managed / "config.toml").chmod(0o600)
-    (managed / "hooks.json").chmod(0o600)
+    _write_managed(managed / "config.toml", config)
     return managed
 
 
@@ -206,7 +230,7 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
-        "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="approve"',
+        "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
     ]
@@ -219,6 +243,8 @@ def run(active: str) -> None:
     writer = create_writer(control, active, env)
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
+    env["SWITCHSTAND_TASK_WRITER"] = str(writer)
+    env["SWITCHSTAND_TASK_ID"] = asana_task_id(active)
     env["CODEX_HOME"] = str(managed_codex_home(control, writer, active, env))
     for name in tuple(env):
         upper = name.upper()
