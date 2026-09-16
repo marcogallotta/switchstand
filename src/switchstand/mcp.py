@@ -46,6 +46,28 @@ def closed_tool(server: MCPServer, name: str, function: Callable[..., Any]) -> N
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
 
 
+def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
+    server = MCPServer("Switchstand read-only context")
+
+    async def _work_get(
+        api_version: Literal["1"], include_related: bool = False,
+    ) -> WorkResult:
+        return await service.get(  # type: ignore[attr-defined]
+            WorkGetRequest(
+                api_version=api_version,
+                work_id=active_work_id,
+                include_related=include_related,
+            )
+        )
+
+    _work_get.__doc__ = (
+        "Read the exact launch-bound work. Set include_related for bounded direct-child "
+        "and Root Work GID grouping candidates; completeness is always unknown."
+    )
+    closed_tool(server, "work_get", _work_get)
+    return server
+
+
 def build_server(
     service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = ()
 ) -> MCPServer:
@@ -122,7 +144,7 @@ def server_from_env() -> MCPServer:
     )
 
 
-def _protect_provider_logs() -> None:
+def protect_provider_logs() -> None:
     for name in ("httpx", "httpcore"):
         logger = logging.getLogger(name)
         logger.handlers[:] = [logging.NullHandler()]
@@ -130,7 +152,7 @@ def _protect_provider_logs() -> None:
 
 
 def main() -> None:
-    _protect_provider_logs()
+    protect_provider_logs()
     server_from_env().run()
 
 

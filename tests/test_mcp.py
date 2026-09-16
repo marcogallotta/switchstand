@@ -23,9 +23,9 @@ from switchstand.contracts import (
     WorkResult,
 )
 from switchstand.mcp import (
-    _protect_provider_logs,
     build_server,
     controller_from_env,
+    protect_provider_logs,
     server_from_env,
 )
 
@@ -82,7 +82,7 @@ class FakeService:
 
 
 def test_provider_request_logs_are_suppressed(caplog):
-    _protect_provider_logs()
+    protect_provider_logs()
     with caplog.at_level(logging.INFO):
         logging.getLogger("httpx").info("GET https://provider.invalid/tasks/raw-provider-id")
         logging.getLogger("httpcore.connection").warning("raw-provider-id")

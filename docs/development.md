@@ -28,6 +28,10 @@
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
+- Read-only ordinary context: run `scripts/switchstand-context --active <Asana task URL or ID>`.
+  It binds that exact task before starting Codex and exposes only `work_get`, fixed to the resulting opaque WorkId.
+  Source/history, feedback and development tools are absent, and the provider token stays inside the controller
+  container. This opt-in command does not change an ordinary direct `codex` invocation.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
