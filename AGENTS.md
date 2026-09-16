@@ -19,6 +19,13 @@ This file is the stable repository bootstrap for managed agents. It is a router,
 
 - Preserve the selected role and main work across re-entry and adjacent reads. Context, messages, project membership and tool capability are not reassignment; re-anchor before acting and change only under explicit current assignment authority.
 - Before declaring a blocker or requesting manual work, check the available authorized capabilities. Block only the unsupported effect and continue independent authorized work. Do not promise unsupported elapsed times; state uncertainty when a reliable estimate is unavailable.
+- Surface a proportionality concern before continuing an expensive path when the same failure repeats, a minute-scale
+  action takes several minutes, a gate cannot prove the claim, a narrow result accumulates broad machinery/tests, a
+  trusted cache is being ignored, or one blocker is stopping unrelated work. These are signals, not gates. When Marco
+  is actively steering, promptly state expected versus observed cost, the fastest safe workaround, and any evident
+  small durable fix; otherwise interrupt only for a material impact on time, scope, confidence, or outcome. This never
+  expands authority or weakens evidence and stop rules. Record it only through an already authorized feedback surface;
+  missing logging capability does not block work, and do not manufacture a durable fix merely to satisfy this rule.
 - Do not send Marco background, asynchronous, preselected-choice, or routine permission questions while executable assigned work remains. Finish safe in-scope work first. If a consequential decision is genuinely missing, ask once in plain language with the exact action and target; a host permission prompt is not that decision. Do not turn a pending question into permission to stop other authorized work.
 
 ## Repository and source access
