@@ -3,10 +3,10 @@
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -89,17 +89,23 @@ message_projection = Table(
 
 class MessageRoute(ClosedModel):
     recipient_work_id: UUID
-    projection_provider: str = Field(min_length=1)
-    projection_target: str = Field(min_length=1)
+    projection_provider: Literal["asana"]
+    projection_target: str = Field(min_length=1, pattern=r"^[0-9]+$")
 
 
 class MessageSubmitRequest(ClosedModel):
     api_version: ApiVersion
     message_id: UUID
-    route_ref: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
+    route_ref: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.-]*$")
+    kind: Literal["request", "result"]
     payload: JsonValue
     in_reply_to_delivery_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def correlated_result(self) -> Self:
+        if (self.kind == "result") != (self.in_reply_to_delivery_id is not None):
+            raise ValueError("only results carry an exact reply delivery correlation")
+        return self
 
 
 class PendingMessage(ClosedModel):
@@ -108,27 +114,49 @@ class PendingMessage(ClosedModel):
     sender_work_id: UUID
     recipient_work_id: UUID
     route_ref: str
-    kind: str
+    kind: Literal["request", "result"]
     payload: JsonValue
-    state: str
+    state: Literal["AVAILABLE", "RECEIVED"]
 
 
 class MessageSubmitResult(ClosedModel):
-    status: str
+    status: Literal["ok", "conflict"]
     message: PendingMessage | None = None
-    reason: str | None = None
+    reason: Literal["message_identity_conflict", "reply_identity_conflict"] | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok" and (self.message is None or self.reason is not None):
+            raise ValueError("successful submit requires only the exact message")
+        if self.status == "conflict" and (
+            self.message is not None or self.reason is None
+        ):
+            raise ValueError("conflicting submit requires only its closed reason")
+        return self
 
 
 class MessagePendingResult(ClosedModel):
-    status: str
+    status: Literal["ok"] = "ok"
     messages: tuple[PendingMessage, ...] = ()
     next_cursor: UUID | None = None
     has_more: bool = False
-    reason: str | None = None
+
+    @model_validator(mode="after")
+    def exact_page(self) -> Self:
+        if self.has_more != (self.next_cursor is not None):
+            raise ValueError("cursor presence must match page truncation")
+        if self.next_cursor is not None and (
+            not self.messages or self.next_cursor != self.messages[-1].delivery_id
+        ):
+            raise ValueError("next cursor must identify the final returned delivery")
+        return self
 
 
-def _digest(request: MessageSubmitRequest) -> str:
-    content = request.model_dump(mode="json", exclude={"api_version", "message_id"})
+def _digest(route: MessageRoute, request: MessageSubmitRequest) -> str:
+    content = {
+        "route": route.model_dump(mode="json"),
+        "message": request.model_dump(mode="json", exclude={"api_version", "message_id"}),
+    }
     return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -144,11 +172,22 @@ class MessageState:
         self, sender_work_id: UUID, grant_version: int,
         route: MessageRoute, request: MessageSubmitRequest,
     ) -> MessageSubmitResult:
-        digest = _digest(request)
+        digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
         delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
         projection_id = uuid5(PROJECTION_NAMESPACE, identity)
         async with self.engine.begin() as connection:
+            if request.in_reply_to_delivery_id is not None:
+                await connection.execute(select(message_deliveries.c.delivery_id).where(
+                    message_deliveries.c.delivery_id == request.in_reply_to_delivery_id
+                ).with_for_update())
+                prior = (await connection.execute(select(
+                    messages.c.sender_work_id, messages.c.message_id
+                ).where(
+                    messages.c.in_reply_to_delivery_id == request.in_reply_to_delivery_id
+                ))).one_or_none()
+                if prior is not None and prior != (sender_work_id, request.message_id):
+                    return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
             await connection.execute(insert(messages).values(
                 sender_work_id=sender_work_id, message_id=request.message_id,
                 route_ref=request.route_ref, kind=request.kind, payload=request.payload,
