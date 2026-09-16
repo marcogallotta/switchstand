@@ -11,6 +11,7 @@ RESOURCE = "https://public.example/mcp"
 
 class EdgeHandler(BaseHTTPRequestHandler):
     resource = RESOURCE
+    document = None
 
     def do_POST(self):
         self.send_response(401)
@@ -19,7 +20,8 @@ class EdgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        body = json.dumps({"resource": self.resource}).encode()
+        body = json.dumps(self.document if self.document is not None
+                          else {"resource": self.resource}).encode()
         self.send_response(200)
         self.end_headers()
         self.wfile.write(body)
@@ -53,7 +55,7 @@ def test_all_checks_pass_against_real_local_http_server(edge, tmp_path, capsys):
     output = capsys.readouterr().out
     assert "PASS env_file" in output and "PASS env_keys" in output
     assert "PASS local_http" in output and "PASS public_http" in output
-    assert f"PASS runtime_sha: {sha}" in output and "configured" not in output
+    assert f"PASS checkout_sha: {sha}" in output and "configured" not in output
 
 def test_failures_and_omitted_checks_are_truthful(edge, tmp_path, capsys):
     _, port = edge
@@ -68,4 +70,32 @@ def test_failures_and_omitted_checks_are_truthful(edge, tmp_path, capsys):
     assert "FAIL env_file: mode 0644" in output and "FAIL env_keys: missing ASANA_TOKEN" in output
     assert "FAIL local_http: unexpected challenge or resource metadata" in output
     assert "NOT_RUN public_http: no public URL supplied" in output
-    assert "FAIL runtime_sha:" in output
+    assert "FAIL checkout_sha:" in output
+
+
+@pytest.mark.parametrize("document", [[], "unexpected", 42])
+def test_non_object_metadata_fails_without_crashing(edge, tmp_path, capsys, monkeypatch, document):
+    _, port = edge
+    monkeypatch.setattr(EdgeHandler, "document", document)
+    assert run(["--env-file", str(env_file(tmp_path, port))]) == 1
+    assert "FAIL local_http: unexpected challenge or resource metadata" in capsys.readouterr().out
+
+
+def test_invalid_configuration_does_not_echo_input(edge, tmp_path, capsys):
+    _, port = edge
+    env = env_file(tmp_path, port)
+    env.write_text(env.read_text().replace(RESOURCE, "https://user:secret@example.com:bad/mcp"))
+    assert run(["--env-file", str(env)]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL local_http: invalid edge configuration" in output
+    assert "secret" not in output
+
+
+def test_public_url_credentials_are_rejected(edge, tmp_path, capsys):
+    url, port = edge
+    credential_url = url.replace("http://", "http://user:secret@")
+    assert run(["--env-file", str(env_file(tmp_path, port)),
+                "--public-url", credential_url]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL public_http: probe URL must not contain credentials" in output
+    assert "secret" not in output

@@ -3,6 +3,7 @@
 import argparse
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -36,23 +37,27 @@ def _probe(name: str, target: str, resource: str) -> bool:
     metadata = resource.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
     endpoint = target.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
     try:
+        url = httpx.URL(target)
+        if url.username or url.password:
+            return _result(name, "FAIL", "probe URL must not contain credentials")
         with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
             challenge = client.post(target)
             document = client.get(endpoint)
             actual = document.json()
         valid = (challenge.status_code == 401
                  and f'resource_metadata="{metadata}"' in challenge.headers.get("www-authenticate", "")
-                 and document.status_code == 200 and actual.get("resource") == resource)
+                 and document.status_code == 200 and isinstance(actual, dict)
+                 and cast(dict[str, object], actual).get("resource") == resource)
         return _result(name, "PASS" if valid else "FAIL", "challenge and resource metadata exact"
                        if valid else "unexpected challenge or resource metadata")
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
         return _result(name, "FAIL", type(exc).__name__)
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", required=True, type=Path)
     parser.add_argument("--public-url")
-    parser.add_argument("--expected-sha")
+    parser.add_argument("--expected-sha", help="expected checkout HEAD; does not verify running code")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
     values, ok = _read_env(args.env_file)
@@ -71,17 +76,17 @@ def run(argv: list[str] | None = None) -> int:
             else:
                 _result("public_http", "NOT_RUN", "no public URL supplied")
         except ValueError as exc:
-            ok &= _result("local_http", "FAIL", str(exc))
+            ok &= _result("local_http", "FAIL", f"invalid edge configuration ({type(exc).__name__})")
             _result("public_http", "NOT_RUN", "invalid edge configuration")
     if args.expected_sha:
         try:
             actual = subprocess.run(["git", "-C", str(args.repo), "rev-parse", "HEAD"],
                                     check=True, capture_output=True, text=True).stdout.strip()
         except (OSError, subprocess.CalledProcessError) as exc:
-            ok &= _result("runtime_sha", "FAIL", type(exc).__name__)
+            ok &= _result("checkout_sha", "FAIL", type(exc).__name__)
         else:
             exact = actual == args.expected_sha
-            ok &= _result("runtime_sha", "PASS" if exact else "FAIL", actual)
+            ok &= _result("checkout_sha", "PASS" if exact else "FAIL", actual)
     else:
-        _result("runtime_sha", "NOT_RUN", "no expected SHA supplied")
+        _result("checkout_sha", "NOT_RUN", "no expected SHA supplied")
     return 0 if ok else 1
