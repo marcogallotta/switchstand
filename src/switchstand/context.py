@@ -194,6 +194,7 @@ trust_level = "untrusted"
 glob_scan_max_depth = 4
 ":minimal" = "read"
 "{codex_executable}" = "read"
+"{control}" = "read"
 "{managed}" = "deny"
 "{auth}" = "deny"
 "/var/run/docker.sock" = "deny"
@@ -203,6 +204,7 @@ glob_scan_max_depth = 4
 
 [permissions.switchstand-task.filesystem.":workspace_roots"]
 "." = "write"
+".git" = "write"
 ".codex" = "read"
 ".env" = "deny"
 "**/.env" = "deny"

@@ -274,6 +274,8 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
     assert 'approval_policy = "never"' in config
     assert f'[projects."{writer}"]' in config
     assert 'trust_level = "untrusted"' in config
+    assert f'"{control}" = "read"' in config
+    assert '".git" = "write"' in config
     assert f'"{managed}" = "deny"' in config
     assert f'"{auth}" = "deny"' in config
 
