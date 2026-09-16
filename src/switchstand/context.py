@@ -116,27 +116,34 @@ def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str
 
 def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     task = asana_task_id(active)
-    writer = durable_root(env) / f"task-{task}"
+    root = durable_root(env)
+    writer = root / f"task-{task}"
     if writer.exists():
         validated = validate_writer(control, writer, active, env)
         _bind_git_identity(control, validated, env)
         return validated
     branch = f"v2-task-{task}"
     base = _git(control, "rev-parse", "HEAD", env=env)
-    subprocess.run(
-        ["git", "clone", "--no-local", "--no-checkout", str(control), str(writer)],
-        check=True, env=env, capture_output=True, text=True,
-    )
-    writer.chmod(0o700)
-    (writer / ".git").chmod(0o700)
-    _git(writer, "remote", "set-url", "origin", _provider_origin(control, env), env=env)
-    _git(writer, "checkout", "-b", branch, base, env=env)
-    _bind_git_identity(control, writer, env)
-    git_dir = writer / ".git"
-    (git_dir / "switchstand-active-task").write_text(task + "\n")
-    (git_dir / "switchstand-green-sha").write_text(base + "\n")
-    for marker in (git_dir / "switchstand-active-task", git_dir / "switchstand-green-sha"):
-        marker.chmod(0o600)
+    temporary = Path(tempfile.mkdtemp(prefix=f".task-{task}.", dir=root))
+    try:
+        subprocess.run(
+            ["git", "clone", "--no-local", "--no-checkout", str(control), str(temporary)],
+            check=True, env=env, capture_output=True, text=True,
+        )
+        temporary.chmod(0o700)
+        (temporary / ".git").chmod(0o700)
+        _git(temporary, "remote", "set-url", "origin", _provider_origin(control, env), env=env)
+        _git(temporary, "checkout", "-b", branch, base, env=env)
+        _bind_git_identity(control, temporary, env)
+        git_dir = temporary / ".git"
+        (git_dir / "switchstand-active-task").write_text(task + "\n")
+        (git_dir / "switchstand-green-sha").write_text(base + "\n")
+        for marker in (git_dir / "switchstand-active-task", git_dir / "switchstand-green-sha"):
+            marker.chmod(0o600)
+        temporary.rename(writer)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
     return validate_writer(control, writer, active, env)
 
 

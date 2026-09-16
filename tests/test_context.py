@@ -220,6 +220,34 @@ def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
     assert git(control, "status", "--short") == ""
 
 
+def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypatch, tmp_path):
+    control = tmp_path / "control"
+    control.mkdir()
+    git(control, "init", "-b", "main")
+    git(control, "config", "user.name", "Switchstand Test")
+    git(control, "config", "user.email", "switchstand-test@example.invalid")
+    (control / "tracked.txt").write_text("base\n")
+    git(control, "add", "tracked.txt")
+    git(control, "commit", "-m", "base")
+    git(control, "remote", "add", "origin", "git@github.com:example/switchstand.git")
+    environment = os.environ | {"HOME": str(tmp_path)}
+    bind_identity = context._bind_git_identity
+
+    def fail_identity(*args, **kwargs):
+        raise RuntimeError("identity unavailable")
+
+    monkeypatch.setattr(context, "_bind_git_identity", fail_identity)
+    with pytest.raises(RuntimeError, match="identity unavailable"):
+        context.create_writer(control, "1218438438638352", environment)
+
+    root = context.durable_root(environment)
+    assert list(root.iterdir()) == []
+    monkeypatch.setattr(context, "_bind_git_identity", bind_identity)
+    writer = context.create_writer(control, "1218438438638352", environment)
+    assert writer == root / "task-1218438438638352"
+    assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
+
+
 def test_exact_private_task_writer_allows_commit_while_primary_is_denied(tmp_path):
     primary = tmp_path / "primary"
     writer = tmp_path / "writer"
