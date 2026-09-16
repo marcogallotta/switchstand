@@ -177,6 +177,8 @@ def classify(command: str, cwd: str) -> str | None:
         git = git_parts(tokens, current)
         if git:
             prefix, subcommand, args, command_cwd = git
+            if os.getenv("SWITCHSTAND_NORMAL_WORK") == "1" and subcommand in {"merge", "push"}:
+                return f"[task-writer] git {subcommand} is not authorized by the normal launcher."
             branch_reads = {"--show-current", "--list", "-l", "--contains", "--no-contains",
                             "--merged", "--no-merged", "--points-at", "--format", "--sort"}
             branch_write = subcommand == "branch" and bool(args) and not any(

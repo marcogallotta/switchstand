@@ -28,10 +28,13 @@
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
-- Read-only ordinary context: run `scripts/switchstand-context --active <Asana task URL or ID>`.
-  It binds that exact task before starting Codex and exposes only `work_get`, fixed to the resulting opaque WorkId.
-  Source/history, feedback and development tools are absent, and the provider token stays inside the controller
-  container. This opt-in command does not change an ordinary direct `codex` invocation.
+- Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
+  It binds that exact task, creates or resumes its durable linked writer, and starts Codex there with only `work_get`
+  plus the exact-writer commit helper. Dirty and committed progress survives relaunch. To resume an older durable
+  writer whose name predates this launcher, add `--writer <exact-writer-path>`; the launcher accepts only a registered
+  writer under Switchstand's private durable root, records its exact task binding, and rejects later cross-task reuse.
+  Provider writes, push and merge are not authorized. MCP commands and hooks execute from CONTROL, not editable writer
+  content. The provider token stays inside the controller container.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
@@ -55,8 +58,8 @@
   stops only the receipt's exact process identity: pidfd-pinned `SIGTERM`, a fixed bounded wait, then pidfd-pinned
   `SIGKILL`. It returns `lost` or `unknown` without signalling when identity cannot be proven, and never accepts a PID,
   signal, timeout, path, or process group.
-- One-step managed start: from the clean ordinary `main` checkout, run
-  `scripts/switchstand-start --active <Asana task URL> --commit <exact-candidate-SHA>`. It freshly fetches `origin/main`,
+- Isolated exact-candidate qualification: from the clean ordinary `main` checkout, run
+  `scripts/switchstand --isolated --active <Asana task URL> --commit <exact-candidate-SHA>`. It freshly fetches `origin/main`,
   fast-forwards a clean ancestor `main` to that exact revision, and reads back a clean HEAD. Dirty or divergent main
   fails with local work intact. The trusted resolver reads only `ASANA_TOKEN` from the protected host config;
   the token is not exported into the candidate launch environment. The task must still contain exact base and candidate
@@ -71,6 +74,7 @@
   The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
   Task IDs, references, and one optional prompt are forwarded unchanged.
+  The old `scripts/switchstand-context` and `scripts/switchstand-start` names are compatibility wrappers that warn.
 - MCP server: `docker compose run --rm -T controller`
 - Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
   and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.

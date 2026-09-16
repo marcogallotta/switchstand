@@ -59,8 +59,18 @@ def real_start_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     start = scripts / "switchstand-start"
     start.write_bytes(start_source.read_bytes())
     start.chmod(0o755)
+    isolated_source = Path(__file__).parents[1] / "scripts" / "switchstand-isolated-launch"
+    isolated = scripts / "switchstand-isolated-launch"
+    isolated.write_bytes(isolated_source.read_bytes())
+    isolated.chmod(0o755)
     executable(scripts / "bootstrap", "#!/bin/sh\nexit 17\n")
-    run_git(source, "add", "scripts/switchstand-start", "scripts/bootstrap")
+    run_git(
+        source,
+        "add",
+        "scripts/switchstand-start",
+        "scripts/switchstand-isolated-launch",
+        "scripts/bootstrap",
+    )
     run_git(source, "commit", "-m", "launcher")
     clone = tmp_path / "clone"
     clone_repo(source, clone)
@@ -150,6 +160,10 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     start = scripts / "switchstand-start"
     start.write_bytes(source.read_bytes())
     start.chmod(0o755)
+    isolated_source = Path(__file__).parents[1] / "scripts" / "switchstand-isolated-launch"
+    isolated = scripts / "switchstand-isolated-launch"
+    isolated.write_bytes(isolated_source.read_bytes())
+    isolated.chmod(0o755)
     executable(fake_bin / "git", """#!/bin/sh
 case "$*" in
   *"fetch --quiet --no-tags origin"*) : ;;
@@ -715,6 +729,56 @@ def test_task_writer_reuses_newer_pushed_checkpoint_without_rewriting_green(tmp_
     assert run_git(target, "rev-parse", "HEAD").stdout.strip() == checkpoint
     assert run_git(target, "status", "--porcelain", "--untracked-files=all").stdout == before_status
     assert marker.read_text() == green + "\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")
+def test_work_writer_relaunch_preserves_dirty_and_committed_progress(tmp_path):
+    source = tmp_path / "source"
+    green = committed_repo(source)
+    requester = tmp_path / "requester"
+    clone_repo(source, requester)
+    helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
+    environment = os.environ | {"HOME": str(tmp_path)}
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-work-123"
+
+    created = subprocess.run(
+        [helper, "work-123", green, "--resume-work"], cwd=requester, env=environment,
+        text=True, capture_output=True, check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    assert created.stdout == str(target) + "\n"
+    assert f"worktree {target}\n" in run_git(requester, "worktree", "list", "--porcelain").stdout
+
+    (target / "unfinished.txt").write_text("dirty progress\n")
+    run_git(requester, "config", "user.name", "Switchstand Test")
+    run_git(requester, "config", "user.email", "switchstand-test@example.invalid")
+    (requester / "main-progress.txt").write_text("new main\n")
+    run_git(requester, "add", "main-progress.txt")
+    run_git(requester, "commit", "-m", "advance main")
+    newer_main = run_git(requester, "rev-parse", "HEAD").stdout.strip()
+
+    dirty_relaunch = subprocess.run(
+        [helper, "work-123", newer_main, "--resume-work"], cwd=requester, env=environment,
+        text=True, capture_output=True, check=False,
+    )
+    assert dirty_relaunch.returncode == 0, dirty_relaunch.stderr
+    assert dirty_relaunch.stdout == str(target) + "\n"
+    assert (target / "unfinished.txt").read_text() == "dirty progress\n"
+
+    run_git(target, "config", "user.name", "Switchstand Test")
+    run_git(target, "config", "user.email", "switchstand-test@example.invalid")
+    run_git(target, "add", "unfinished.txt")
+    run_git(target, "commit", "-m", "task checkpoint")
+    task_head = run_git(target, "rev-parse", "HEAD").stdout.strip()
+    (target / "after-checkpoint.txt").write_text("still dirty\n")
+
+    committed_relaunch = subprocess.run(
+        [helper, "work-123", newer_main, "--resume-work"], cwd=requester, env=environment,
+        text=True, capture_output=True, check=False,
+    )
+    assert committed_relaunch.returncode == 0, committed_relaunch.stderr
+    assert run_git(target, "rev-parse", "HEAD").stdout.strip() == task_head
+    assert (target / "after-checkpoint.txt").read_text() == "still dirty\n"
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="real Git executable required")

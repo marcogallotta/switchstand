@@ -1,18 +1,20 @@
 #!/bin/sh
 set -eu
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
-    echo "usage: scripts/switchstand-worktree <writer-name> <exact-green-sha> [--resume-exact]" >&2
+    echo "usage: scripts/switchstand-worktree <writer-name> <exact-green-sha> [--resume-exact|--resume-work]" >&2
     exit 2
 fi
 name=$1
 sha=$2
 resume_exact=false
+resume_work=false
 if [ "$#" -eq 3 ]; then
-    [ "$3" = --resume-exact ] || {
+    [ "$3" = --resume-exact ] || [ "$3" = --resume-work ] || {
         echo "unknown writer reuse mode" >&2
         exit 2
     }
-    resume_exact=true
+    [ "$3" != --resume-exact ] || resume_exact=true
+    [ "$3" != --resume-work ] || resume_work=true
 fi
 case "$name" in *[!a-z0-9-]*|'') echo "writer name must use a-z, 0-9 and hyphens" >&2; exit 2;; esac
 case "$sha" in *[!0-9a-f]*|'') echo "exact SHA must be hexadecimal" >&2; exit 2;; esac
@@ -22,6 +24,7 @@ if [ "${#sha}" -ne 40 ]; then
 fi
 repo=$(git rev-parse --show-toplevel)
 common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+common_dir=$(CDPATH= cd -- "$common_dir" && pwd -P)
 git -C "$repo" cat-file -e "$sha^{commit}"
 root=$HOME/.local/state/switchstand/worktrees
 umask 077; mkdir -p "$root"
@@ -53,19 +56,29 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
             at_requested=true
         fi
         based_on_requested=false
-        if [ "$at_requested" = true ] \
+        if [ "$resume_work" = true ] && [ -n "$green" ] \
+                && git -C "$target" cat-file -e "$green^{commit}" 2>/dev/null \
+                && git -C "$target" merge-base --is-ancestor "$green" "$actual_head" 2>/dev/null; then
+            based_on_requested=true
+        elif [ "$at_requested" = true ] \
                 || { [ "$resume_exact" = false ] \
+                    && [ "$resume_work" = false ] \
                     && git -C "$target" merge-base --is-ancestor "$sha" "$actual_head" 2>/dev/null; }; then
             based_on_requested=true
         fi
         green_matches=false
-        if [ "$green" = "$sha" ] \
+        if [ "$resume_work" = true ] && [ -n "$green" ] \
+                && git -C "$target" cat-file -e "$green^{commit}" 2>/dev/null; then
+            green_matches=true
+        elif [ "$green" = "$sha" ] \
                 || { [ "$resume_exact" = true ] && [ -n "$green" ] \
                     && git -C "$target" merge-base --is-ancestor "$green" "$sha" 2>/dev/null; }; then
             green_matches=true
         fi
         reusable_status=false
-        if [ "$resume_exact" = true ] && [ "$at_requested" = true ]; then
+        if [ "$resume_work" = true ]; then
+            reusable_status=true
+        elif [ "$resume_exact" = true ] && [ "$at_requested" = true ]; then
             reusable_status=true
         elif [ "$resume_exact" = false ] && [ -z "$dirty" ]; then
             reusable_status=true
@@ -93,7 +106,7 @@ if [ "$target_exists" = true ] || [ "$branch_exists" = true ]; then
             exit 0
         fi
     fi
-    echo "existing writer is not a registered linked worktree of the requesting repository at the exact requested checkpoint (--resume-exact) or a clean descendant (ordinary mode): $target" >&2
+    echo "existing writer is not a registered linked worktree of the requesting repository with valid task ancestry (--resume-work), at the exact requested checkpoint (--resume-exact), or a clean descendant (ordinary mode): $target" >&2
     exit 1
 fi
 git -C "$repo" worktree add -b "$branch" "$target" "$sha" >&2
