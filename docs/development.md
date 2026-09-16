@@ -14,6 +14,20 @@
 - Services: start stable state with `docker compose -f compose.state.yaml up -d --wait`, then run
   `docker compose up --build`.
 - Migration: `uv run alembic upgrade head`
+
+Shared state upgrades use `scripts/switchstand-upgrade-state` from clean, current
+`main`, after stopping Switchstand writers. The command refuses concurrent
+execution, other database clients, or an unexpected service, volume, or schema revision;
+creates a private custom-format dump under
+`~/.local/state/switchstand/backups`; restores and upgrades that dump in a
+disposable PostgreSQL instance; and only then upgrades shared state. It reads
+back the exact new revision and preserved pre-existing table counts. Keep the
+reported dump until the upgraded service has been exercised successfully.
+
+The command deliberately does not downgrade or auto-restore after an ambiguous
+failure. Stop Switchstand writers, preserve the dump and command output, and
+diagnose before any recovery attempt. A restore is a separate reviewed operator
+action.
 - Writer worktree: from the ordinary checkout, run
   `scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>`, then work from the printed path. The
   helper creates a new linked worktree when the target is absent. If the target and branch already exist, reuse succeeds
