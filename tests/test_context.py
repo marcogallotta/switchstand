@@ -82,6 +82,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
         return subprocess.CompletedProcess(command, 0, stdout=value)
 
     monkeypatch.setattr(context, "provision", fake_provision)
+    monkeypatch.setattr(context, "validate_control", lambda repo, env: repo.resolve())
     monkeypatch.setattr(context, "create_writer", fake_create_writer)
     monkeypatch.setattr(context.subprocess, "run", fake_run)
     monkeypatch.setattr(context.os, "execvpe", fake_exec)
@@ -97,14 +98,11 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert "REFERENCE_WORK_IDS" not in codex_env
     assert codex_env["ACTIVE_WORK_ID"] == str(ACTIVE)
     assert codex_env["SWITCHSTAND_MANAGED"] == "1"
-    assert codex_env["SWITCHSTAND_WORKTREE"] == str(writer)
-    assert codex_env["SWITCHSTAND_BRANCH"] == "v2-work-1218242783900077"
-    assert codex_env["SWITCHSTAND_GIT_COMMON"] == str(tmp_path / ".git")
     command = events[2][2]
     assert command[1:3] == ["-C", str(writer)]
-    assert command[3:6] == ["-a", "never", "--dangerously-bypass-hook-trust"]
+    assert command[3:8] == ["-a", "never", "-s", "danger-full-access", "--dangerously-bypass-hook-trust"]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
-    assert 'mcp_servers.switchstand_development.enabled_tools=["commit_all_current_worktree"]' in command
+    assert not any("switchstand_development" in argument for argument in command)
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
 
@@ -178,10 +176,12 @@ def test_existing_writer_is_registered_green_and_bound_to_exact_task(tmp_path):
     green = git(control, "rev-parse", "HEAD")
     root = tmp_path / ".local/state/switchstand/worktrees"
     root.mkdir(parents=True)
+    root.chmod(0o700)
     writer = root / "switchstand-existing"
     git(control, "worktree", "add", "-b", "v2-existing", str(writer), green)
     git_dir = Path(git(writer, "rev-parse", "--absolute-git-dir"))
     (git_dir / "switchstand-green-sha").write_text(green + "\n")
+    (git_dir / "switchstand-active-task").write_text("1218438438638352\n")
     (writer / "unfinished.txt").write_text("preserved\n")
     environment = os.environ | {"HOME": str(tmp_path)}
 
@@ -191,6 +191,44 @@ def test_existing_writer_is_registered_green_and_bound_to_exact_task(tmp_path):
     assert (writer / "unfinished.txt").read_text() == "preserved\n"
     with pytest.raises(ValueError, match="different active task"):
         context.validate_writer(control, writer, "1218483858041754", environment)
+
+
+def test_unbound_existing_writer_is_rejected_without_metadata_mutation(tmp_path):
+    control = tmp_path / "control"
+    control.mkdir()
+    git(control, "init", "-b", "main")
+    git(control, "config", "user.name", "Switchstand Test")
+    git(control, "config", "user.email", "switchstand-test@example.invalid")
+    (control / "tracked").write_text("base\n")
+    git(control, "add", "tracked")
+    git(control, "commit", "-m", "base")
+    green = git(control, "rev-parse", "HEAD")
+    root = tmp_path / ".local/state/switchstand/worktrees"
+    root.mkdir(parents=True, mode=0o700)
+    root.chmod(0o700)
+    writer = root / "switchstand-unrelated"
+    git(control, "worktree", "add", "-b", "v2-unrelated", str(writer), green)
+    git_dir = Path(git(writer, "rev-parse", "--absolute-git-dir"))
+    (git_dir / "switchstand-green-sha").write_text(green + "\n")
+
+    with pytest.raises(ValueError, match="no exact binding"):
+        context.validate_writer(control, writer, "1218438438638352", os.environ | {"HOME": str(tmp_path)})
+
+    assert not (git_dir / "switchstand-active-task").exists()
+
+
+def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
+    root = tmp_path / ".local/state/switchstand/worktrees"
+    root.parent.mkdir(parents=True)
+    target = tmp_path / "target"
+    target.mkdir()
+    root.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="real user-owned 0700"):
+        context.durable_root(os.environ | {"HOME": str(tmp_path)})
+    root.unlink()
+    root.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="real user-owned 0700"):
+        context.durable_root(os.environ | {"HOME": str(tmp_path)})
 
 
 if __name__ == "__main__":

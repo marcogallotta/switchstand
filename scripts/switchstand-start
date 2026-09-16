@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-echo "warning: scripts/switchstand-start is deprecated; use scripts/switchstand --isolated" >&2
+[ "${SWITCHSTAND_COMPAT_SILENT:-}" = 1 ] || \
+    echo "warning: scripts/switchstand-start is deprecated; use scripts/switchstand --isolated" >&2
 
 usage() {
     echo "usage: scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-40-character-SHA> [--reference <ID-or-URL>] [prompt]" >&2

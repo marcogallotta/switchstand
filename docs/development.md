@@ -29,12 +29,9 @@
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
 - Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
-  It binds that exact task, creates or resumes its durable linked writer, and starts Codex there with only `work_get`
-  plus the exact-writer commit helper. Dirty and committed progress survives relaunch. To resume an older durable
-  writer whose name predates this launcher, add `--writer <exact-writer-path>`; the launcher accepts only a registered
-  writer under Switchstand's private durable root, records its exact task binding, and rejects later cross-task reuse.
-  Provider writes, push and merge are not authorized. MCP commands and hooks execute from CONTROL, not editable writer
-  content. The provider token stays inside the controller container.
+  It creates or resumes the task's private durable writer with bound `work_get` and ordinary development access.
+  `--writer <exact-writer-path>` adopts only a registered, already task-bound legacy writer. Dirty progress survives;
+  normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
   too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
   their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded

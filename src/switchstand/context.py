@@ -1,5 +1,6 @@
 import argparse
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -23,9 +24,9 @@ def parser() -> argparse.ArgumentParser:
 def codex_command(control: Path, writer: Path) -> list[str]:
     prompt = (
         'Load the exact launch-bound context with work_get(api_version="1") without '
-        "a WorkId before material work. Work only inside this exact task writer. Use "
-        "commit_all_current_worktree for staging and committing; push, merge, provider "
-        "writes, and broad Git metadata access are not authorized by this launch."
+        "a WorkId before material work. Work only inside this exact task writer. This "
+        "is ordinary development: use its normal Git, network, test, review, and landing "
+        "workflow within the standing assignment; do not mutate the primary checkout."
     )
     return [
         "codex",
@@ -33,6 +34,8 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         str(writer),
         "-a",
         "never",
+        "-s",
+        "danger-full-access",
         "--dangerously-bypass-hook-trust",
         "-c",
         f'mcp_servers.switchstand.command="{control / "scripts" / "switchstand-context-mcp"}"',
@@ -42,17 +45,6 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         'mcp_servers.switchstand.enabled_tools=["work_get"]',
         "-c",
         "mcp_servers.switchstand.required=true",
-        "-c",
-        f'mcp_servers.switchstand_development.command="{control / "scripts" / "switchstand-development-mcp"}"',
-        "-c",
-        (
-            'mcp_servers.switchstand_development.env_vars=["SWITCHSTAND_WORKTREE",'
-            '"SWITCHSTAND_BRANCH","SWITCHSTAND_GIT_COMMON","SWITCHSTAND_MANAGED"]'
-        ),
-        "-c",
-        'mcp_servers.switchstand_development.enabled_tools=["commit_all_current_worktree"]',
-        "-c",
-        "mcp_servers.switchstand_development.required=true",
         prompt,
     ]
 
@@ -67,11 +59,59 @@ def _git(repo: Path, *arguments: str, env: dict[str, str]) -> str:
     ).stdout.strip()
 
 
+def validate_control(control: Path, env: dict[str, str]) -> Path:
+    control = control.resolve(strict=True)
+    root, git_dir, common, branch, head = _git(
+        control,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-dir",
+        "--git-common-dir",
+        "--abbrev-ref",
+        "HEAD",
+        "HEAD",
+        env=env,
+    ).splitlines()
+    if Path(root).resolve() != control:
+        raise ValueError("launcher must run from the clean CONTROL checkout root")
+    if _git(control, "status", "--porcelain", "--untracked-files=all", env=env):
+        raise ValueError("launcher refuses dirty CONTROL; local work is intact")
+    primary = Path(common).resolve().parent
+    if Path(git_dir).resolve() == Path(common).resolve():
+        if control != primary or branch != "main":
+            raise ValueError("ordinary CONTROL must be the main checkout on branch main")
+        remote = _git(control, "rev-parse", "origin/main", env=env)
+        if head != remote:
+            raise ValueError("ordinary CONTROL must match the locally accepted origin/main")
+    elif branch != "HEAD":
+        raise ValueError("non-primary CONTROL must be detached at one exact revision")
+    active_hook = primary / "scripts" / "codex-hook"
+    control_hook = control / "scripts" / "codex-hook"
+    if not active_hook.is_file() or active_hook.read_bytes() != control_hook.read_bytes():
+        raise ValueError("exact CONTROL hook is not the active Switchstand hook")
+    return control
+
+
+def durable_root(env: dict[str, str]) -> Path:
+    root = Path(env["HOME"]) / ".local/state/switchstand/worktrees"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = root.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise ValueError("durable Switchstand writer root must be a real user-owned 0700 directory")
+    return root.resolve(strict=True)
+
+
 def validate_writer(
     control: Path, writer: Path, active: str, env: dict[str, str]
 ) -> Path:
     writer = writer.resolve(strict=True)
-    state_root = (Path(env["HOME"]) / ".local/state/switchstand/worktrees").resolve(strict=True)
+    state_root = durable_root(env)
     if writer.parent != state_root:
         raise ValueError("writer must be a direct child of the durable Switchstand worktree root")
     root, git_dir, common, branch, head = _git(
@@ -119,14 +159,15 @@ def validate_writer(
         raise ValueError("writer does not descend from its recorded green baseline")
     task = asana_task_id(active)
     task_path = Path(git_dir) / "switchstand-active-task"
-    try:
-        descriptor = os.open(task_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
+    if task_path.is_file():
         if task_path.read_text().strip() != task:
-            raise ValueError("writer is already bound to a different active task") from None
-    else:
+            raise ValueError("writer is already bound to a different active task")
+    elif writer.name == f"switchstand-work-{task}" and branch == f"v2-work-{task}":
+        descriptor = os.open(task_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as stream:
             stream.write(task + "\n")
+    else:
+        raise ValueError("existing writer has no exact binding to the requested task")
     return writer
 
 
@@ -159,30 +200,12 @@ def create_writer(
 
 
 def run(active: str, existing: Path | None = None) -> None:
-    control = Path.cwd().resolve(strict=True)
     env = clean_environment(dict(os.environ))
+    control = validate_control(Path.cwd(), env)
     authority = provision(control, active, (), env)
     writer = create_writer(control, active, env, existing)
-    branch = subprocess.run(
-        ["git", "-C", str(writer), "branch", "--show-current"],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-    ).stdout.strip()
-    common = subprocess.run(
-        ["git", "-C", str(writer), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-    ).stdout.strip()
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
-    env["SWITCHSTAND_NORMAL_WORK"] = "1"
-    env["SWITCHSTAND_WORKTREE"] = str(writer)
-    env["SWITCHSTAND_BRANCH"] = branch
-    env["SWITCHSTAND_GIT_COMMON"] = str(Path(common).resolve(strict=True))
     os.execvpe("codex", codex_command(control, writer), env)
 
 

@@ -31,14 +31,10 @@ scripts/bootstrap
 docker compose up --build
 uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>
-# Start or resume normal task-bound development:
 scripts/switchstand --active <Asana task ID or URL>
-# Adopt a previously created durable writer for that exact task:
-scripts/switchstand --active <Asana task ID or URL> --writer <exact-writer-path>
 # In the printed linked worktree:
 scripts/switchstand-launch --active <Asana task ID or URL> --commit <exact-candidate-SHA>
 
-# Or create the task worktree and launch it in one operation:
 scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-candidate-SHA>
 ```
 
