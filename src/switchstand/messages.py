@@ -22,9 +22,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ApiVersion, ClosedModel
+from .grant_state import GrantState
+from .grants import PrincipalContext, WorkGrant
 from .state import metadata
 
 DELIVERY_NAMESPACE = UUID("8b7eedf9-138d-4a5e-9060-7c208138402d")
@@ -89,6 +92,7 @@ message_projection = Table(
 
 class MessageRoute(ClosedModel):
     recipient_work_id: UUID
+    recipient_grant_version: int = Field(ge=1)
     projection_provider: Literal["asana"]
     projection_target: str = Field(min_length=1, pattern=r"^[0-9]+$")
 
@@ -96,6 +100,7 @@ class MessageRoute(ClosedModel):
 class MessageSubmitRequest(ClosedModel):
     api_version: ApiVersion
     message_id: UUID
+    grant_version: int = Field(ge=1)
     route_ref: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.-]*$")
     kind: Literal["request", "result"]
     payload: JsonValue
@@ -117,32 +122,49 @@ class PendingMessage(ClosedModel):
     kind: Literal["request", "result"]
     payload: JsonValue
     state: Literal["AVAILABLE", "RECEIVED"]
+    recipient_grant_version: int
 
 
 class MessageSubmitResult(ClosedModel):
-    status: Literal["ok", "conflict"]
+    status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
     message: PendingMessage | None = None
-    reason: Literal["message_identity_conflict", "reply_identity_conflict"] | None = None
+    reason: Literal[
+        "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
+        "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
+        "state_unavailable",
+    ] | None = None
 
     @model_validator(mode="after")
     def exact_shape(self) -> Self:
         if self.status == "ok" and (self.message is None or self.reason is not None):
             raise ValueError("successful submit requires only the exact message")
-        if self.status == "conflict" and (
-            self.message is not None or self.reason is None
-        ):
-            raise ValueError("conflicting submit requires only its closed reason")
+        if self.status != "ok" and (self.message is not None or self.reason is None):
+            raise ValueError("unsuccessful submit requires only its closed reason")
         return self
 
 
+class MessagePendingRequest(ClosedModel):
+    api_version: ApiVersion
+    grant_version: int = Field(ge=1)
+    cursor: UUID | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+
+
 class MessagePendingResult(ClosedModel):
-    status: Literal["ok"] = "ok"
+    status: Literal["ok", "denied", "stale", "recovery_required"] = "ok"
     messages: tuple[PendingMessage, ...] = ()
     next_cursor: UUID | None = None
     has_more: bool = False
+    reason: Literal["no_current_grant", "grant_version_changed", "state_unavailable"] | None = None
 
     @model_validator(mode="after")
     def exact_page(self) -> Self:
+        if self.status != "ok":
+            if self.messages or self.next_cursor is not None or self.has_more or self.reason is None:
+                raise ValueError("failed pending read must not claim message data")
+            return self
+        if self.reason is not None:
+            raise ValueError("successful pending read has no failure reason")
         if self.has_more != (self.next_cursor is not None):
             raise ValueError("cursor presence must match page truncation")
         if self.next_cursor is not None and (
@@ -152,12 +174,20 @@ class MessagePendingResult(ClosedModel):
         return self
 
 
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _digest(route: MessageRoute, request: MessageSubmitRequest) -> str:
     content = {
         "route": route.model_dump(mode="json"),
-        "message": request.model_dump(mode="json", exclude={"api_version", "message_id"}),
+        "message": request.model_dump(
+            mode="json", exclude={"api_version", "message_id", "grant_version"}
+        ),
     }
-    return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return _json_digest(content)
 
 
 def _view(row: Mapping[str, Any]) -> PendingMessage:
@@ -165,12 +195,36 @@ def _view(row: Mapping[str, Any]) -> PendingMessage:
 
 
 class MessageState:
-    def __init__(self, engine: AsyncEngine):
-        self.engine = engine
+    def __init__(self, engine: AsyncEngine, grants: GrantState):
+        self.engine, self.grants = engine, grants
+
+    @staticmethod
+    def _admission(
+        principal: PrincipalContext, grant: WorkGrant | None, grant_version: int,
+    ) -> tuple[Literal["denied", "stale"], Literal[
+        "no_current_grant", "grant_version_changed"
+    ]] | None:
+        if grant is None or grant.principal != principal or not grant.current():
+            return "denied", "no_current_grant"
+        if grant.version != grant_version:
+            return "stale", "grant_version_changed"
+        return None
 
     async def submit(
-        self, sender_work_id: UUID, grant_version: int,
-        route: MessageRoute, request: MessageSubmitRequest,
+        self, principal: PrincipalContext, route: MessageRoute, request: MessageSubmitRequest,
+    ) -> MessageSubmitResult:
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                failure = self._admission(principal, grant, request.grant_version)
+                if failure is not None:
+                    return MessageSubmitResult(status=failure[0], reason=failure[1])
+                assert grant is not None
+                return await self._store(grant.authority.active_work_id, route, request)
+        except (SQLAlchemyError, ValueError):
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+
+    async def _store(
+        self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
@@ -178,16 +232,26 @@ class MessageState:
         projection_id = uuid5(PROJECTION_NAMESPACE, identity)
         async with self.engine.begin() as connection:
             if request.in_reply_to_delivery_id is not None:
-                await connection.execute(select(message_deliveries.c.delivery_id).where(
+                replied = (await connection.execute(select(message_deliveries).where(
                     message_deliveries.c.delivery_id == request.in_reply_to_delivery_id
-                ).with_for_update())
-                prior = (await connection.execute(select(
+                ).with_for_update())).mappings().one_or_none()
+                if replied is None:
+                    return MessageSubmitResult(
+                        status="conflict", reason="reply_delivery_not_found"
+                    )
+                if replied["recipient_work_id"] != sender_work_id:
+                    return MessageSubmitResult(
+                        status="denied", reason="reply_sender_not_recipient"
+                    )
+                prior_reply = (await connection.execute(select(
                     messages.c.sender_work_id, messages.c.message_id
                 ).where(
                     messages.c.in_reply_to_delivery_id == request.in_reply_to_delivery_id
                 ))).one_or_none()
-                if prior is not None and prior != (sender_work_id, request.message_id):
-                    return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
+                if prior_reply is not None and prior_reply != (sender_work_id, request.message_id):
+                    return MessageSubmitResult(
+                        status="conflict", reason="reply_identity_conflict"
+                    )
             await connection.execute(insert(messages).values(
                 sender_work_id=sender_work_id, message_id=request.message_id,
                 route_ref=request.route_ref, kind=request.kind, payload=request.payload,
@@ -202,7 +266,7 @@ class MessageState:
             await connection.execute(insert(message_deliveries).values(
                 delivery_id=delivery_id, sender_work_id=sender_work_id,
                 message_id=request.message_id, recipient_work_id=route.recipient_work_id,
-                recipient_grant_version=grant_version,
+                recipient_grant_version=route.recipient_grant_version,
             ).on_conflict_do_nothing())
             await connection.execute(insert(message_projection).values(
                 projection_id=projection_id, sender_work_id=sender_work_id,
@@ -215,31 +279,41 @@ class MessageState:
         return MessageSubmitResult(status="ok", message=_view(dict(row)))
 
     async def pending(
-        self, recipient_work_id: UUID, cursor: UUID | None, limit: int,
+        self, principal: PrincipalContext, request: MessagePendingRequest,
     ) -> MessagePendingResult:
-        query = self._pending_query().where(
-            message_deliveries.c.recipient_work_id == recipient_work_id,
-            message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
-        )
-        if cursor is not None:
-            query = query.where(message_deliveries.c.delivery_id > cursor)
-        query = query.order_by(message_deliveries.c.delivery_id).limit(limit + 1)
-        async with self.engine.connect() as connection:
-            rows = list((await connection.execute(query)).mappings())
-        has_more = len(rows) > limit
-        selected = rows[:limit]
-        return MessagePendingResult(
-            status="ok", messages=tuple(_view(dict(row)) for row in selected),
-            next_cursor=selected[-1]["delivery_id"] if has_more else None,
-            has_more=has_more,
-        )
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                failure = self._admission(principal, grant, request.grant_version)
+                if failure is not None:
+                    return MessagePendingResult(status=failure[0], reason=failure[1])
+                assert grant is not None
+                query = self._pending_query().where(
+                    message_deliveries.c.recipient_work_id == grant.authority.active_work_id,
+                    message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+                )
+                if request.cursor is not None:
+                    query = query.where(message_deliveries.c.delivery_id > request.cursor)
+                query = query.order_by(message_deliveries.c.delivery_id).limit(request.limit + 1)
+                async with self.engine.connect() as connection:
+                    rows = list((await connection.execute(query)).mappings())
+                has_more = len(rows) > request.limit
+                selected = rows[:request.limit]
+                return MessagePendingResult(
+                    messages=tuple(_view(dict(row)) for row in selected),
+                    next_cursor=selected[-1]["delivery_id"] if has_more else None,
+                    has_more=has_more,
+                )
+        except (SQLAlchemyError, ValueError):
+            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 
     @staticmethod
     def _pending_query():
         return select(
             message_deliveries.c.delivery_id, message_deliveries.c.message_id,
             message_deliveries.c.sender_work_id, message_deliveries.c.recipient_work_id,
-            message_deliveries.c.state, messages.c.route_ref, messages.c.kind, messages.c.payload,
+            message_deliveries.c.state, message_deliveries.c.recipient_grant_version,
+            messages.c.route_ref, messages.c.kind,
+            messages.c.payload,
         ).join(messages, and_(
             messages.c.sender_work_id == message_deliveries.c.sender_work_id,
             messages.c.message_id == message_deliveries.c.message_id,
