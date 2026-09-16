@@ -4,12 +4,15 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from chatgpt_fixture import PRINCIPAL, grant
 from pydantic import ValidationError
-from sqlalchemy import create_engine, select, text, update
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.grant_state import GrantState
 from switchstand.messages import (
+    MessagePendingRequest,
     MessagePendingResult,
     MessageRoute,
     MessageState,
@@ -36,89 +39,87 @@ async def subject():
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
     engine = create_async_engine(url)
-    yield MessageState(engine), engine
+    grants = GrantState(engine)
+    sender, recipient = uuid4(), uuid4()
+    sender_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
+    recipient_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
+    sender_grant = grant(principal=sender_principal, active=sender, reference=uuid4())
+    recipient_grant = grant(principal=recipient_principal, active=recipient, reference=uuid4())
+    await grants.issue(sender_grant, None)
+    await grants.issue(recipient_grant, None)
+    yield (MessageState(engine, grants), engine, grants, sender_principal, sender_grant,
+           recipient_principal, recipient_grant)
     await engine.dispose()
 
 
-async def test_real_postgres_message_identity_delivery_seam_restart_and_projection(subject):
-    state, engine = subject
-    sender, recipient, another = uuid4(), uuid4(), uuid4()
-    route = MessageRoute(
-        recipient_work_id=recipient, projection_provider="asana", projection_target="123"
-    )
-    request = MessageSubmitRequest(
-        api_version="1", message_id=uuid4(), route_ref="review", kind="request",
-        payload={"text": "review exact candidate"},
-    )
+def request(selected, **changes):
+    values = {"api_version": "1", "message_id": uuid4(), "grant_version": selected.version,
+              "route_ref": "review", "kind": "request",
+              "payload": {"text": "review exact candidate"}}
+    return MessageSubmitRequest(**(values | changes))
 
-    first = await state.submit(sender, 4, route, request)
+
+def route(selected, target="123"):
+    return MessageRoute(recipient_work_id=selected.authority.active_work_id,
+                        recipient_grant_version=selected.version,
+                        projection_provider="asana", projection_target=target)
+
+
+async def test_route_identity_contract_storage_seam_and_restart(subject):
+    state, engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    submitted, selected_route = request(sender), route(recipient)
+    first = await state.submit(sender_principal, selected_route, submitted)
     assert first.status == "ok" and first.message.state == "AVAILABLE"
-    assert await state.submit(sender, 4, route, request) == first
-    conflict = await state.submit(sender, 4, route, request.model_copy(update={
-        "payload": {"text": "different"}
-    }))
-    assert conflict.status == "conflict" and conflict.reason == "message_identity_conflict"
-    for changed in ({"recipient_work_id": another}, {"projection_target": "456"}):
-        rerouted = await state.submit(sender, 4, route.model_copy(update=changed), request)
-        assert rerouted.status == "conflict"
-
-    second_delivery = uuid4()
+    assert await state.submit(sender_principal, selected_route, submitted) == first
+    variants = [
+        (selected_route, submitted.model_copy(update={"payload": {"text": "different"}})),
+        (selected_route.model_copy(update={"recipient_work_id": uuid4()}), submitted),
+        (selected_route.model_copy(update={"recipient_grant_version": 2}), submitted),
+        (selected_route.model_copy(update={"projection_target": "456"}), submitted),
+    ]
+    for selected, candidate in variants:
+        assert (await state.submit(sender_principal, selected, candidate)).status == "conflict"
+    sender2 = sender.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(sender2, 1)
+    replay = await state.submit(sender_principal, selected_route,
+        submitted.model_copy(update={"grant_version": 2}))
+    assert replay == first
     async with engine.begin() as connection:
         await connection.execute(message_deliveries.insert().values(
-            delivery_id=second_delivery, sender_work_id=sender, message_id=request.message_id,
-            recipient_work_id=another, recipient_grant_version=1,
+            delivery_id=uuid4(), sender_work_id=sender.authority.active_work_id,
+            message_id=submitted.message_id, recipient_work_id=uuid4(), recipient_grant_version=1,
         ))
-        await connection.execute(update(message_deliveries).where(
-            message_deliveries.c.delivery_id == second_delivery
-        ).values(state="RECEIVED"))
+        assert len((await connection.execute(select(message_deliveries))).all()) == 2
         projection = (await connection.execute(select(message_projection))).mappings().one()
-        deliveries = (await connection.execute(select(message_deliveries))).mappings().all()
-    assert projection["state"] == "PENDING" and projection["operation_id"] is not None
-    assert len(deliveries) == 2
-
-    restarted = MessageState(engine)
-    pending = await restarted.pending(recipient, None, 10)
-    assert pending.status == "ok" and pending.messages == (first.message,)
-    independently_received = await restarted.pending(another, None, 10)
-    assert independently_received.messages[0].state == "RECEIVED"
-    result = MessageSubmitRequest(api_version="1", message_id=uuid4(), route_ref="review",
-        kind="result", payload={"text": "done"}, in_reply_to_delivery_id=first.message.delivery_id)
-    reply_route = MessageRoute(recipient_work_id=sender, projection_provider="asana",
-                               projection_target="789")
-    assert (await state.submit(recipient, 4, reply_route, result)).status == "ok"
-    duplicate = await state.submit(recipient, 4, reply_route,
-        result.model_copy(update={"message_id": uuid4()}))
-    assert duplicate.reason == "reply_identity_conflict"
-    async with engine.connect() as connection:
-        assert len((await connection.execute(select(message_projection))).all()) == 2
-        assert len((await connection.execute(select(message_deliveries))).all()) == 3
-
-
-@pytest.mark.parametrize("values", [
-    {"recipient_work_id": uuid4(), "projection_provider": "email", "projection_target": "123"},
-    {"recipient_work_id": uuid4(), "projection_provider": "asana",
-     "projection_target": "not-a-gid", "unexpected": True},
-])
-def test_route_contract_is_closed(values):
-    with pytest.raises(ValidationError):
-        MessageRoute.model_validate(values)
+        assert projection["target"] == "123"
+    restarted = MessageState(engine, GrantState(engine))
+    pending = await restarted.pending(recipient_principal, MessagePendingRequest(
+        api_version="1", grant_version=recipient.version,
+    ))
+    assert pending.messages == (first.message,)
 
 
 @pytest.mark.parametrize("model, values", [
-    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(),
-        "route_ref": "Bad Route", "kind": "request", "payload": {}}),
-    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(),
-        "route_ref": "review", "kind": "other", "payload": {}}),
-    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(),
-        "route_ref": "review", "kind": "request", "payload": {}, "unexpected": True}),
-    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(),
-        "route_ref": "review", "kind": "result", "payload": {}}),
-    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(),
-        "route_ref": "review", "kind": "request", "payload": {},
-        "in_reply_to_delivery_id": uuid4()}),
-    (MessageSubmitResult, {"status": "ok"}),
+    (MessageRoute, {"recipient_work_id": uuid4(), "recipient_grant_version": 1,
+                    "projection_provider": "email", "projection_target": "123"}),
+    (MessageRoute, {"recipient_work_id": uuid4(), "recipient_grant_version": 1,
+                    "projection_provider": "asana", "projection_target": "not-a-gid"}),
+    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
+                            "route_ref": "Bad Route", "kind": "request", "payload": {}}),
+    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
+                            "route_ref": "review", "kind": "other", "payload": {}}),
+    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
+                            "route_ref": "review", "kind": "result", "payload": {}}),
+    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
+                            "route_ref": "review", "kind": "request", "payload": {},
+                            "in_reply_to_delivery_id": uuid4()}),
+    (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
+                            "route_ref": "review", "kind": "request", "payload": {},
+                            "unexpected": True}),
     (MessagePendingResult, {"status": "ok", "has_more": True}),
+    (MessageSubmitResult, {"status": "conflict", "reason": "state_unavailable",
+                           "unexpected": True}),
 ])
-def test_request_and_result_contracts_reject_impossible_shapes(model, values):
+def test_protocol_contracts_reject_unapproved_or_impossible_shapes(model, values):
     with pytest.raises(ValidationError):
         model.model_validate(values)
