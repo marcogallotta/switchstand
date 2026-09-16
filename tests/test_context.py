@@ -288,7 +288,8 @@ def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
         context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv")})
 
 
-def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
+def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch, tmp_path):
+    monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: sys.executable)
     control = tmp_path / "control"
     writer = tmp_path / "writer"
     (control / "scripts").mkdir(parents=True)
@@ -320,7 +321,8 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
     assert f'"{auth}" = "deny"' in config
 
 
-def test_managed_codex_home_rejects_symlinked_config(tmp_path):
+def test_managed_codex_home_rejects_symlinked_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: sys.executable)
     control = tmp_path / "control"
     writer = tmp_path / "writer"
     (control / "scripts").mkdir(parents=True)
