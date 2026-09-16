@@ -46,11 +46,15 @@ def env_file(tmp_path, port, *, missing=()):
     path.chmod(0o600)
     return path
 
-def test_all_checks_pass_against_real_local_http_server(edge, tmp_path, capsys):
+def test_all_checks_pass_against_real_local_http_server(edge, tmp_path, capsys, monkeypatch):
     url, port = edge
     env = env_file(tmp_path, port)
-    sha = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True,
-                         text=True).stdout.strip()
+    sha = "a" * 40
+    # Quality mounts source without Git metadata; only HTTP is real in this test.
+    monkeypatch.setattr(
+        "switchstand.edge_doctor.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=f"{sha}\n"),
+    )
     assert run(["--env-file", str(env), "--public-url", url, "--expected-sha", sha]) == 0
     output = capsys.readouterr().out
     assert "PASS env_file" in output and "PASS env_keys" in output
