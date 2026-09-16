@@ -52,12 +52,16 @@ PRIORITIES = {f"P{value}": value for value in range(4)}
 
 
 class AsanaProvider:
-    def __init__(self, client: httpx.AsyncClient, test_project_gid: str | None = None):
+    def __init__(self, client: httpx.AsyncClient, test_project_gid: str | None = None,
+                 *, test_only: bool = False):
+        if test_only and not test_project_gid:
+            raise ValueError("test-only admission requires a test project GID")
         if test_project_gid and (not all(digit in "0123456789" for digit in test_project_gid)
                                  or test_project_gid in PROJECTS):
             raise ValueError("invalid test project GID")
         self.client = client
         self._admission_projects: frozenset[str] = (
+            frozenset((test_project_gid,)) if test_only and test_project_gid else
             frozenset((*PROJECTS, test_project_gid)) if test_project_gid else frozenset(PROJECTS)
         )
 

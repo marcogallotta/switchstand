@@ -26,6 +26,7 @@ from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedAppend
+from switchstand.provider import PROJECT
 from switchstand.state import PostgresState, metadata
 
 
@@ -76,7 +77,9 @@ async def test_trusted_issuance_is_versioned_and_replacement_removes_old_work(su
 async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
     with pytest.raises(ValueError, match="switchstand_test"):
         test_grant.test_database_url({"TEST_DATABASE_URL": "postgresql:///production"})
-    url = os.environ["TEST_DATABASE_URL"]
+    if not os.getenv("TEST_DATABASE_URL"):
+        pytest.skip("TEST_DATABASE_URL is required for PostgreSQL grant/effect tests")
+    url = test_grant.test_database_url()
     project, subject_id = "999001", str(uuid4())
     engine = create_async_engine(url)
     async with engine.begin() as connection:
@@ -121,6 +124,13 @@ async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
     assert (await GrantState(engine).current(principal.key)).version == 2
     revoked = await test_grant.execute(command("revoke", expected_version=2))
     assert (revoked["grant"]["version"], revoked["grant"]["state"]) == (3, "revoked")
+
+    test_project = project
+    project = PROJECT
+    with pytest.raises(PermissionError, match="canonical"):
+        await test_grant.execute(command("set", expected_version=3, test_project=test_project))
+    assert (await GrantState(engine).current(principal.key)).version == 3
+    project = test_project
 
     expiring = principal.model_copy(update={"subject": str(uuid4())})
     await test_grant.execute(command("set", subject=expiring.subject, ttl_seconds=1))

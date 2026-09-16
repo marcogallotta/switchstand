@@ -24,8 +24,12 @@ MAX_TTL_SECONDS = 3600
 
 def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
     url = environment.get("TEST_DATABASE_URL", "")
-    if not url or make_url(url).database != "switchstand_test":
+    if not url:
         raise ValueError("TEST_DATABASE_URL must name switchstand_test")
+    parsed = make_url(url)
+    if (parsed.drivername != "postgresql+psycopg"
+            or parsed.database != "switchstand_test" or "dbname" in parsed.query):
+        raise ValueError("TEST_DATABASE_URL must name switchstand_test without a dbname override")
     return url
 
 
@@ -79,7 +83,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
             ) as client:
                 authority = await provision_launch(
                     PostgresState(engine), "asana",
-                    AsanaProvider(client, arguments.test_project), arguments.task, (),
+                    AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
