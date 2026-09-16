@@ -88,6 +88,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
         context, "managed_codex_home", lambda control, writer, active, env: tmp_path / "codex"
     )
     monkeypatch.setattr(context.subprocess, "run", fake_run)
+    monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: "/bin/true")
     monkeypatch.setattr(context.os, "execvpe", fake_exec)
 
     with pytest.raises(RuntimeError, match="readback"):
@@ -105,6 +106,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert command[1:3] == ["-C", str(writer)]
     assert command[3:6] == ["-a", "never", "--dangerously-bypass-hook-trust"]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
+    assert 'mcp_servers.switchstand.default_tools_approval_mode="auto"' in command
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
 
@@ -218,9 +220,8 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(tmp_path):
     auth.write_text("{}\n")
     auth.chmod(0o600)
 
-    managed = context.managed_codex_home(
-        control, writer, "1218438438638352", os.environ | {"HOME": str(tmp_path)}
-    )
+    managed = context.managed_codex_home(control, writer, "1218438438638352",
+                                         os.environ | {"HOME": str(tmp_path)})
 
     assert (managed / "auth.json").is_symlink()
     assert (managed / "auth.json").resolve() == auth

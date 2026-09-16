@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -143,6 +144,10 @@ def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, 
     else:
         link.symlink_to(auth)
     hook = control / "scripts/codex-hook"
+    executable = shutil.which("codex", path=env.get("PATH"))
+    if executable is None:
+        raise ValueError("Codex executable is unavailable")
+    codex_executable = Path(executable).resolve(strict=True)
     hooks = {"description": "Exact clean-CONTROL Switchstand guard.", "hooks": {
         "PreToolUse": [{"matcher": "^Bash$", "hooks": [
             {"type": "command", "command": str(hook), "timeout": 10}]}],
@@ -160,7 +165,9 @@ hooks = true
 trust_level = "untrusted"
 
 [permissions.switchstand-task.filesystem]
+glob_scan_max_depth = 4
 ":minimal" = "read"
+"{codex_executable}" = "read"
 "{managed}" = "deny"
 "{auth}" = "deny"
 "/var/run/docker.sock" = "deny"
@@ -199,6 +206,7 @@ def codex_command(control: Path, writer: Path) -> list[str]:
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
+        "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
     ]
