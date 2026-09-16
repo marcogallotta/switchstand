@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+import json
 import os
 from uuid import uuid4
 
@@ -11,16 +14,27 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.grant_state import GrantState
+from switchstand.grants import GuardOutcome
 from switchstand.messages import (
+    DispositionEvidence,
+    MessageDispositionRequest,
     MessagePendingRequest,
     MessagePendingResult,
+    MessageReceiveRequest,
     MessageRoute,
     MessageState,
     MessageSubmitRequest,
     MessageSubmitResult,
+    RuntimeCurrentness,
     message_deliveries,
     message_projection,
+    messages,
 )
+
+
+def digest(evidence: DispositionEvidence) -> str:
+    value = evidence.model_dump(mode="json")
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 @pytest.fixture
@@ -123,3 +137,77 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
 def test_protocol_contracts_reject_unapproved_or_impossible_shapes(model, values):
     with pytest.raises(ValidationError):
         model.model_validate(values)
+
+
+async def test_result_correlation_disposition_replay_and_concurrency(subject):
+    state, engine, _, sender_principal, sender, recipient_principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    delivery_id = original.message.delivery_id
+    runtime = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    received = await asyncio.gather(state.receive(recipient_principal, runtime, receive),
+                                    state.receive(recipient_principal, runtime, receive))
+    assert [value.status for value in received] == ["ok", "ok"]
+    reply = request(recipient, kind="result", in_reply_to_delivery_id=delivery_id)
+    assert (await state.submit(recipient_principal, route(sender), reply)).status == "ok"
+    conflict = await state.submit(recipient_principal, route(sender),
+        reply.model_copy(update={"message_id": uuid4()}))
+    assert conflict.status == "conflict" and conflict.reason == "reply_identity_conflict"
+    evidence = DispositionEvidence(kind="result", result_message_id=reply.message_id)
+    disposition = MessageDispositionRequest(api_version="1", delivery_id=delivery_id,
+        grant_version=1, disposition_digest=digest(evidence), evidence=evidence)
+    first, replay = await asyncio.gather(
+        state.disposition(recipient_principal, runtime, disposition),
+        state.disposition(recipient_principal, runtime, disposition))
+    assert first.status == replay.status == "ok"
+    assert first.state == replay.state == "DISPOSITIONED"
+    async with engine.connect() as connection:
+        assert len((await connection.execute(select(messages))).all()) == 2
+        assert len((await connection.execute(select(message_deliveries))).all()) == 2
+        assert len((await connection.execute(select(message_projection))).all()) == 2
+
+
+async def test_restart_currentness_and_unknown_effect_are_fail_closed(subject):
+    state, engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    delivery_id = original.message.delivery_id
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    current = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    unavailable = RuntimeCurrentness(generation="run-1", current_generation=None)
+    blocked = await state.receive(recipient_principal, unavailable, receive)
+    assert blocked.status == "recovery_required" and blocked.reason == "runtime_currentness_unavailable"
+    assert (await state.receive(recipient_principal, current, receive)).status == "ok"
+    restarted = MessageState(engine, GrantState(engine))
+    pending = await restarted.pending(recipient_principal,
+        MessagePendingRequest(api_version="1", grant_version=1))
+    assert pending.messages[0].state == "RECEIVED"
+    stale = RuntimeCurrentness(generation="run-1", current_generation="run-2")
+    assert (await restarted.receive(recipient_principal, stale, receive)).status == "stale"
+    operation_id = uuid4()
+    unknown = GuardOutcome(status="unknown", operation="work_append",
+        work_id=recipient.authority.active_work_id, operation_id=operation_id,
+        reason="ambiguous_provider_send", effect="unknown", retry="reconcile",
+        next_action="Reconcile the recorded effect.")
+    await grants.prepare({}, recipient, "fingerprint", unknown)
+    evidence = DispositionEvidence(kind="provider_effect", operation_id=operation_id)
+    disposition = MessageDispositionRequest(api_version="1", delivery_id=delivery_id,
+        grant_version=1, disposition_digest=digest(evidence), evidence=evidence)
+    blocked = await restarted.disposition(recipient_principal, current, disposition)
+    assert blocked.reason == "effect_evidence_unknown"
+    changed_generation = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+    blocked = await restarted.disposition(recipient_principal, changed_generation, disposition)
+    assert blocked.reason == "receiving_binding_changed"
+    replacement = recipient.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(replacement, 1)
+    assert (await restarted.receive(recipient_principal, current, receive)).status == "stale"
+    runtime2 = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+    recovery = await restarted.receive(recipient_principal, runtime2,
+        receive.model_copy(update={"grant_version": 2}))
+    assert recovery.status == "recovery_required" and recovery.reason == "receiving_binding_changed"
+    blocked = await restarted.disposition(recipient_principal, current,
+        disposition.model_copy(update={"grant_version": 2}))
+    assert blocked.reason == "receiving_binding_changed"
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id))).mappings().one()
+    assert row["state"] == "RECEIVED" and row["receiving_generation"] == "run-1"
