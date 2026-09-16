@@ -30,6 +30,11 @@
   configuration; never put per-run work authority in it.
 - Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
   It creates or resumes the task's private durable writer with bound `work_get` and ordinary development access.
+  Before Codex starts, `scripts/bootstrap --verify-only` checks the primary's existing environment receipt;
+  missing or stale setup requires `scripts/bootstrap` in the primary checkout and a relaunch.
+  The launcher binds only the canonical `.venv` path and dependency-manifest digest for `scripts/check`, which
+  verifies candidate manifests and reuses that environment without bootstrap or Docker. This editable development
+  convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
   The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work

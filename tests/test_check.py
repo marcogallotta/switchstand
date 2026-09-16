@@ -6,6 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
+def unbound_environment() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items()
+            if name not in {"SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST"}}
+
+
 def executable(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -68,7 +73,7 @@ done
 """,
     )
     executable(fake_bin / "docker", "#!/bin/sh\n: > \"$FAKE_DOCKER\"\n")
-    environment = os.environ | {
+    environment = unbound_environment() | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_REPO": str(repo),
         "FAKE_DATE_STATE": str(tmp_path / "date.state"),
@@ -99,7 +104,7 @@ def test_check_fails_actionably_when_timeout_is_missing(tmp_path: Path) -> None:
     fake_bin.mkdir()
     executable(fake_bin / "git", "#!/bin/sh\nexit 99\n")
     executable(fake_bin / "date", "#!/bin/sh\necho 1000\n")
-    environment = os.environ | {"PATH": str(fake_bin)}
+    environment = unbound_environment() | {"PATH": str(fake_bin)}
     result = subprocess.run(
         [check], cwd=repo, env=environment, text=True, capture_output=True, check=False
     )
@@ -120,7 +125,7 @@ def test_bootstrap_fails_actionably_when_docker_is_missing(tmp_path: Path) -> No
     for command_name in ("dirname", "sha256sum", "cut", "mkdir", "chmod", "mv", "rm"):
         (fake_bin / command_name).symlink_to(find_command(command_name))
     executable(fake_bin / "python3", "#!/bin/sh\necho 'Python 3.14.0'\n")
-    environment = os.environ | {"PATH": str(fake_bin), "FAKE_REPO": str(repo)}
+    environment = unbound_environment() | {"PATH": str(fake_bin), "FAKE_REPO": str(repo)}
     result = subprocess.run(
         [bootstrap], cwd=repo, env=environment, text=True, capture_output=True, check=False
     )
@@ -144,7 +149,7 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
             venv / tool,
             f"#!/bin/sh\nprintf '%s %s\\n' '{tool}' \"$*\" >> \"$FAKE_QUALITY\"\n",
         )
-    environment = os.environ | {
+    environment = unbound_environment() | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_REPO": str(repo),
         "FAKE_BOOTSTRAP": str(tmp_path / "bootstrap.ran"),
@@ -164,3 +169,97 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
     assert calls[0] == "ruff check ."
     assert calls[1].startswith("pyright --pythonpath ")
     assert calls[2] == "pytest tests/test_check.py"
+
+
+def tree_bytes(root: Path) -> dict[str, bytes | str]:
+    return {
+        str(path.relative_to(root)): (
+            os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else "directory"
+        )
+        for path in root.rglob("*")
+    }
+
+
+def test_bootstrap_verify_reuses_receipt_without_mutation(tmp_path: Path) -> None:
+    repo = tmp_path / "primary"
+    bootstrap = copy_script("bootstrap", repo)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    (repo / "pyproject.toml").write_text("[project]\n")
+    (repo / "uv.lock").write_text("lock\n")
+    tools = repo / ".git/switchstand-tools"
+    # A fake pinned uv lets the real bootstrap own receipt creation and freshness.
+    executable(tools / "uv-0.12.10", "#!/bin/sh\nexit 0\n")
+    for tool in ("python", "ruff", "pyright", "pytest"):
+        executable(repo / ".venv/bin" / tool, "#!/bin/sh\nexit 0\n")
+    setup = subprocess.run([bootstrap], capture_output=True, text=True, check=False)
+    assert setup.returncode == 0, setup.stderr
+    before = tree_bytes(repo)
+    result = subprocess.run([bootstrap, "--verify-only"], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    import hashlib
+
+    expected = hashlib.sha256(b"[project]\nlock\n").hexdigest()
+    assert result.stdout.splitlines() == [str(repo / ".venv"), expected]
+    assert tree_bytes(repo) == before
+    for failure in ("stale", "incomplete", "missing"):
+        if failure == "stale":
+            (repo / "uv.lock").write_text("changed\n")
+        elif failure == "incomplete":
+            (repo / "uv.lock").write_text("lock\n")
+            (repo / ".venv/bin/pytest").unlink()
+        else:
+            for receipt in tools.glob("environment-*"):
+                receipt.unlink()
+        before = tree_bytes(repo)
+        result = subprocess.run([bootstrap, "--verify-only"], capture_output=True, text=True, check=False)
+        assert result.returncode == 1
+        assert not result.stdout
+        assert "run scripts/bootstrap in the primary checkout" in result.stderr
+        assert tree_bytes(repo) == before
+
+
+def test_bound_private_check_validates_binding_without_bootstrap(tmp_path: Path) -> None:
+    import hashlib
+    import sys
+
+    repo = tmp_path / "private"
+    check = copy_script("check", repo)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    (repo / "pyproject.toml").write_text("manifest\n")
+    (repo / "uv.lock").write_text("lock\n")
+    executable(repo / "scripts/bootstrap", "#!/bin/sh\necho forbidden-bootstrap >&2\nexit 99\n")
+    venv = tmp_path / "primary/.venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin/python").symlink_to(sys.executable)
+    log = tmp_path / "quality.log"
+    for tool in ("ruff", "pyright", "pytest"):
+        executable(venv / "bin" / tool, f"#!/bin/sh\necho {tool} >> '{log}'\n")
+    digest = hashlib.sha256(b"manifest\nlock\n").hexdigest()
+    environment = unbound_environment()
+    binding = {"SWITCHSTAND_CHECK_VENV": str(venv), "SWITCHSTAND_CHECK_MANIFEST": digest}
+    result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
+    assert not (repo / ".venv").exists()
+    alias = tmp_path / "alias"
+    alias.symlink_to(venv, target_is_directory=True)
+    invalid = [
+        {"SWITCHSTAND_CHECK_VENV": str(venv)},
+        {"SWITCHSTAND_CHECK_MANIFEST": digest},
+        binding | {"SWITCHSTAND_CHECK_VENV": "relative/.venv"},
+        binding | {"SWITCHSTAND_CHECK_VENV": str(alias)},
+        binding | {"SWITCHSTAND_CHECK_VENV": str(venv) + "/../.venv"},
+        binding | {"SWITCHSTAND_CHECK_VENV": str(tmp_path / "missing")},
+        binding | {"SWITCHSTAND_CHECK_MANIFEST": "a" * 64},
+        binding | {"SWITCHSTAND_CHECK_MANIFEST": ""},
+    ]
+    for values in invalid:
+        result = subprocess.run([check], cwd=repo, env=environment | values, capture_output=True, text=True, check=False)
+        assert result.returncode == 1, values
+        assert "forbidden-bootstrap" not in result.stderr
+        assert "binding" in result.stderr or "manifests differ" in result.stderr
+        assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
+    (venv / "bin/pytest").unlink()
+    result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
+    assert result.returncode == 1 and "incomplete" in result.stderr
+    assert "forbidden-bootstrap" not in result.stderr

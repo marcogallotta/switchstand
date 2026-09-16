@@ -2,6 +2,11 @@
 set -eu
 
 UV_VERSION=0.12.10
+mode=${1:-}
+case "$mode" in
+    ""|--verify-only) ;;
+    *) echo "usage: scripts/bootstrap [--verify-only]" >&2; exit 1 ;;
+esac
 missing() {
     echo "bootstrap prerequisite '$1' is missing; make '$1' available on PATH, then rerun scripts/bootstrap in the primary checkout" >&2
     exit 1
@@ -13,16 +18,22 @@ done
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 primary=$(dirname "$common")
-[ "$repo" = "$primary" ] || {
+[ "$mode" = --verify-only ] || [ "$repo" = "$primary" ] || {
     echo "bootstrap must run from the primary checkout" >&2
     exit 1
 }
 
+# Verification from a linked CONTROL checks the primary's existing receipt.
+repo=$primary
 tools="$common/switchstand-tools"
 uv="$tools/uv-$UV_VERSION"
 venv="$primary/.venv"
 python=$(command -v python3.14 || command -v python3 || true)
 [ -n "$python" ] || missing "python3"
+[ -r "$repo/pyproject.toml" ] && [ -r "$repo/uv.lock" ] || {
+    echo "shared check environment is incomplete; run scripts/bootstrap in the primary checkout, then relaunch" >&2
+    exit 1
+}
 fingerprint=$(
     { sha256sum "$repo/pyproject.toml" "$repo/uv.lock"; printf '%s\n' "$UV_VERSION" "$($python --version)"; } \
         | sha256sum | cut -d' ' -f1
@@ -31,7 +42,16 @@ receipt="$tools/environment-$fingerprint"
 if [ -x "$venv/bin/python" ] && [ -x "$venv/bin/ruff" ] \
         && [ -x "$venv/bin/pyright" ] && [ -x "$venv/bin/pytest" ] \
         && [ -f "$receipt" ]; then
+    if [ "$mode" = --verify-only ]; then
+        canonical_venv=$(CDPATH= cd -- "$venv" && pwd -P)
+        manifest=$("$python" -c 'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' "$repo")
+        printf '%s\n%s\n' "$canonical_venv" "$manifest"
+    fi
     exit 0
+fi
+if [ "$mode" = --verify-only ]; then
+    echo "shared check environment is missing, stale or incomplete; run scripts/bootstrap in the primary checkout, then relaunch" >&2
+    exit 1
 fi
 
 mkdir -p "$tools"
