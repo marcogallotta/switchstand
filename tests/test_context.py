@@ -51,6 +51,10 @@ def test_context_server_exposes_only_active_work_get():
     schema = server._tool_manager.get_tool("work_get").parameters
     assert set(schema["properties"]) == {"api_version", "include_related"}
     assert "work_id" not in schema["properties"]
+    annotations = server._tool_manager.get_tool("work_get").annotations
+    assert annotations is not None
+    assert annotations.read_only_hint is True
+    assert annotations.destructive_hint is False
 
 
 async def test_context_server_real_stdio_exposes_only_work_get():
