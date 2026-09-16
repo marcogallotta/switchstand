@@ -23,8 +23,7 @@ The landed Stage-1 code-red tranche contains three bounded repairs:
   setup, manifest verification and focused checks, forcibly terminates TERM-resistant timed-out setup, and does not
   fall back to a full container build.
 
-These repairs do not close all code-red findings. Docker resource ownership/cancellation remains unresolved; writer
-task worktrees still live under `${TMPDIR:-/tmp}` and therefore do not satisfy durable task-work storage; and the
+These repairs do not close all code-red findings. Docker resource ownership/cancellation remains unresolved, and the
 development launch/control path is still repository-supplied rather than an independently pinned CONTROL surface.
 
 ```bash

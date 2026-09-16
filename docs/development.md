@@ -86,9 +86,6 @@ The Stage-1 repairs above are bounded and do not close all code-red findings:
 
 - **Docker ownership/cancellation:** current cleanup and timed Docker paths do not yet prove exact ownership and exact
   cancellation of every affected resource. Do not treat name matching or a timeout alone as ownership proof.
-- **Other writer durability:** The generic two-argument `scripts/switchstand-worktree` helper still places ordinary
-  writers under `${TMPDIR:-/tmp}/switchstand-<writer-name>`. One-step task launch uses the private host state directory
-  described above; existing temporary writers are preserved and require explicit reconciliation.
 - **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration
   and working-directory inputs from this repository, with the Codex binary selected from the ambient host path. It is
   therefore not the independently pinned CONTROL release required by the recovery design.

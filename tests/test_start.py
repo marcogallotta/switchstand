@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 def executable(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -465,7 +470,7 @@ esac
 """)
     environment = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "TMPDIR": str(tmp_path),
+        "TMPDIR": "/",
         "FAKE_REPO": str(repo),
         "FAKE_COMMON": str(common),
         "FAKE_GIT_DIR": str(git_dir),
@@ -479,7 +484,8 @@ esac
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{tmp_path / 'switchstand-sample'}\n"
+    assert result.stdout == f"{tmp_path / '.local/state/switchstand/worktrees/switchstand-sample'}\n"
+    assert Path(result.stdout.strip()).parent.stat().st_mode & 0o777 == 0o700
     assert "HEAD is now at accepted" in result.stderr
 
 
@@ -491,12 +497,12 @@ def test_worktree_helper_reuses_only_valid_clean_task_writer(tmp_path, problem):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = tmp_path / "bin"
-    target = tmp_path / "switchstand-sample"
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-sample"
     git_dir = tmp_path / "linked-git-dir"
     common = tmp_path / "common"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
-    target.mkdir()
+    target.mkdir(parents=True)
     git_dir.mkdir()
     common.mkdir()
     sha, current = "a" * 40, "b" * 40
@@ -560,7 +566,7 @@ def test_worktree_helper_rejects_foreign_clone_collision_and_preserves_it(tmp_pa
     clone_repo(source_repo, requester)
     clone_repo(source_repo, foreign)
 
-    target = tmp_path / "switchstand-sample"
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-sample"
     run_git(requester, "branch", "v2-sample", sha)
     run_git(foreign, "worktree", "add", "-b", "v2-sample", str(target), sha)
     target_git_dir = Path(
@@ -600,7 +606,7 @@ def test_worktree_helper_reuses_registered_requesting_repo_worktree(tmp_path):
     requester = tmp_path / "requester"
     clone_repo(source_repo, requester)
 
-    target = tmp_path / "switchstand-sample"
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-sample"
     run_git(requester, "worktree", "add", "-b", "v2-sample", str(target), sha)
     target_git_dir = Path(
         run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip()
@@ -639,7 +645,7 @@ def test_task_writer_relaunch_preserves_dirty_exact_checkpoint(tmp_path, moved_h
     checkpoint = committed_repo(source)
     requester = tmp_path / "requester"
     clone_repo(source, requester)
-    target = tmp_path / "switchstand-task-123"
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-task-123"
     run_git(requester, "worktree", "add", "-b", "v2-task-123", str(target), checkpoint)
     git_dir = Path(run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip())
     marker = git_dir / "switchstand-green-sha"
@@ -682,7 +688,7 @@ def test_task_writer_reuses_newer_pushed_checkpoint_without_rewriting_green(tmp_
     green = committed_repo(source)
     requester = tmp_path / "requester"
     clone_repo(source, requester)
-    target = tmp_path / "switchstand-task-123"
+    target = tmp_path / ".local/state/switchstand/worktrees/switchstand-task-123"
     run_git(requester, "worktree", "add", "-b", "v2-task-123", str(target), green)
     git_dir = Path(run_git(target, "rev-parse", "--absolute-git-dir").stdout.strip())
     marker = git_dir / "switchstand-green-sha"
@@ -717,16 +723,16 @@ def test_task_writer_canonicalizes_noncanonical_state_root_before_create_and_reu
     checkpoint = committed_repo(source)
     requester = tmp_path / "requester"
     clone_repo(source, requester)
-    state = tmp_path / "real-state"
-    state.mkdir(mode=0o700)
+    state = tmp_path / ".local/state/switchstand/worktrees"
+    state.mkdir(parents=True, mode=0o700)
     alias = tmp_path / "state-alias"
-    alias.symlink_to(state, target_is_directory=True)
+    alias.symlink_to(tmp_path, target_is_directory=True)
     target = state / "switchstand-task-123"
     helper = Path(__file__).parents[1] / "scripts" / "switchstand-worktree"
 
     created = subprocess.run(
         [helper, "task-123", checkpoint, "--resume-exact"],
-        cwd=requester, env=os.environ | {"TMPDIR": str(alias)},
+        cwd=requester, env=os.environ | {"HOME": str(alias)},
         text=True, capture_output=True, check=False,
     )
     assert created.returncode == 0, created.stderr
@@ -738,7 +744,7 @@ def test_task_writer_canonicalizes_noncanonical_state_root_before_create_and_reu
 
     reused = subprocess.run(
         [helper, "task-123", checkpoint, "--resume-exact"],
-        cwd=requester, env=os.environ | {"TMPDIR": str(state / ".." / state.name)},
+        cwd=requester, env=os.environ | {"HOME": str(tmp_path / "ignored" / "..")},
         text=True, capture_output=True, check=False,
     )
     assert reused.returncode == 0, reused.stderr

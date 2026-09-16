@@ -23,8 +23,7 @@ directory, so another clone's same-named worktree is rejected. The `scripts/chec
 and the focused commands, with a forced-kill phase for TERM-resistant timeouts and no full-build fallback.
 
 Important recovery defects remain outside those repairs. Docker cleanup/cancellation still lacks exact ownership and
-cancellation proof for the affected resources. Writer task worktrees still live under `${TMPDIR:-/tmp}`; the named
-PostgreSQL volume does not make that task work durable. The development launcher/control path is also still supplied
+cancellation proof for the affected resources. The development launcher/control path is still supplied
 from this repository and ambient host inputs rather than from an independently pinned CONTROL release, so the current
 development path must not be described as independent CONTROL.
 
