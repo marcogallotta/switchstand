@@ -32,6 +32,8 @@ def codex_command(repo: Path) -> list[str]:
         "-c",
         "mcp_servers.switchstand.required=true",
         "-c",
+        'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
+        "-c",
         "mcp_servers.switchstand_development.enabled=false",
         prompt,
     ]

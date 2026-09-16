@@ -76,6 +76,10 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert codex_env["SWITCHSTAND_MANAGED"] == "1"
     command = events[1][2]
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
+    assert (
+        'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"'
+        in command
+    )
     assert "mcp_servers.switchstand_development.enabled=false" in command
 
 
