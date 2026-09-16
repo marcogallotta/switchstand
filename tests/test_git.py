@@ -16,6 +16,14 @@ def _git(repo: Path, *arguments: str) -> str:
 def _repo(tmp_path: Path) -> tuple[Path, str]:
     if shutil.which("git") is None:
         pytest.skip("git is required for real repository reconciliation tests")
+    supported = subprocess.run(
+        ["git", "--no-lazy-fetch", "--version"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if supported.returncode != 0:
+        pytest.skip("git with --no-lazy-fetch is required for reconciliation tests")
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "--initial-branch=main")
