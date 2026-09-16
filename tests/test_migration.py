@@ -24,25 +24,28 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch):
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, effect_intents, work_grants, work_handles CASCADE"
+            "DROP TABLE IF EXISTS alembic_version, message_projection, message_deliveries, "
+            "messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     with pytest.raises(RuntimeError, match="shared CONTROL schema is stale"):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
 
 
-def test_empty_database_migrates_to_grants_and_effects(monkeypatch):
+def test_empty_database_migrates_to_messages(monkeypatch):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, effect_intents, work_grants, work_handles CASCADE"
+            "DROP TABLE IF EXISTS alembic_version, message_projection, message_deliveries, "
+            "messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
     assert set(inspect(engine).get_table_names()) == {
-        "alembic_version", "work_handles", "work_grants", "effect_intents",
+        "alembic_version", "work_handles", "work_grants", "effect_intents", "messages",
+        "message_deliveries", "message_projection",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
