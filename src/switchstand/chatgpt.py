@@ -247,12 +247,39 @@ class ChatGPTService:
                     "story_gid": outcome.receipt.story_gid,
                 }
                 try:
-                    await self.required_results.transition(
-                        operation_id,
-                        currentness_token,
-                        LifecycleEvent.PERSIST_READBACK_MATCHED,
-                        evidence=evidence,
-                    )
+                    # Re-establish governing currentness after the effect gateway has
+                    # released its locks, then hold that grant/work fence until the
+                    # Lifecycle terminal transition has durably committed.
+                    async with self.grants.locked(principal.key, request.work_id) as terminal_grant:
+                        if terminal_grant is None or not self.gateway.admitted(
+                            principal, terminal_grant
+                        ):
+                            return self._required_guard(
+                                request,
+                                "stale",
+                                "lifecycle_currentness_changed_before_terminal",
+                                operation_id=operation_id,
+                                possible_send=True,
+                            )
+                        if (
+                            terminal_grant.id != grant.id
+                            or terminal_grant.version != grant.version
+                            or terminal_grant.authority.active_work_id != request.work_id
+                            or "work_append" not in terminal_grant.operations
+                        ):
+                            return self._required_guard(
+                                request,
+                                "stale",
+                                "lifecycle_currentness_changed_before_terminal",
+                                operation_id=operation_id,
+                                possible_send=True,
+                            )
+                        await self.required_results.transition(
+                            operation_id,
+                            currentness_token,
+                            LifecycleEvent.PERSIST_READBACK_MATCHED,
+                            evidence=evidence,
+                        )
                 except (SQLAlchemyError, ValueError):
                     # A concurrent caller may have committed the same terminal state.
                     confirmed = await repository.get(operation_id)
