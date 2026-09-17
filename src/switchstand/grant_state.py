@@ -113,7 +113,7 @@ class GrantState:
             return None
         raw_intent = row["intent"]
         if not isinstance(raw_intent, dict):
-            raise ValueError("effect intent invalid")
+            raise TypeError("effect intent invalid")
         return EffectRecord(
             principal_key=str(row["principal_key"]),
             fingerprint=str(row["fingerprint"]),
