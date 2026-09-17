@@ -4,12 +4,33 @@ This is the default-off authenticated ChatGPT edge for task
 `1218470091228623`. Landing it does not start a listener, create a grant, or
 connect ChatGPT. It adds only an ASGI application factory.
 
-The edge exposes the existing ChatGPT MCP product surface: `grant_get`,
-`work_get`, `source_task`, `source_stories`, `source_story`, and `work_append`.
-It does not create a second write path. `work_append` runs through the existing
-current `WorkGrant`, exact active `WorkId`, grant version, observed source
-revision, append qualification, durable operation identity, UNKNOWN handling,
-and exact provider-effect readback. Trusted grant issuance is not an MCP tool.
+The base edge surface remains `grant_get`, `work_get`, `source_task`,
+`source_stories`, `source_story`, and `work_append`. When the host configures
+Lifecycle required-result persistence, the same authenticated edge also exposes
+`required_result_save`. A factory built without that Lifecycle capability keeps
+the six-tool surface unchanged.
+
+Neither write tool creates a second provider path. `work_append` runs through
+the existing current `WorkGrant`, exact active `WorkId`, grant version, observed
+source revision, append qualification, durable operation identity, UNKNOWN
+handling, and exact provider-effect readback. Trusted grant issuance is not an
+MCP tool.
+
+`required_result_save` accepts only `api_version`, `work_id`, `grant_version`,
+`observed_revision`, and result `text`. The caller cannot supply an obligation
+ID or OperationId. The service derives one stable operation/obligation identity
+from the authenticated principal, bound work, and destination, binds the first
+result correlation to that duty, uses the same protected append/readback
+gateway, and only terminalizes Lifecycle while the governing grant remains
+current. Replaying the same request reuses the durable identity/effect rather
+than sending another provider write.
+
+An ambiguous provider send remains `UNKNOWN` and must not be retried with a new
+operation identity. Exact automatic reconciliation of an ambiguous Asana
+comment is separate follow-on work; this edge does not claim it. Lifecycle also
+does not store the result payload for autonomous background retry, so recovery
+before a completed write requires the same semantic save request (or a future
+canonical payload source).
 
 ## Private configuration
 
@@ -45,9 +66,14 @@ Losing it invalidates sessions and requires clients to reconnect.
 For inert landing, prove the pinned FastMCP 4.0.3/MCP 2.1.1 pair imports on
 Python 3.14, unauthenticated requests receive the protected-resource challenge,
 metadata advertises the exact resource and S256 PKCE, the verified token maps
-to the existing principal, exact discovery includes the six tools above, and
-an authenticated write is admitted or denied by the existing grant/effect
-gateway with idempotent replay. Ordinary startup must remain unchanged.
+to the existing principal, and discovery exposes only the tools enabled by the
+configured service. `work_append` must remain admitted or denied by the
+existing grant/effect gateway with idempotent replay. When required-result
+persistence is configured, a real MCP process/client test must additionally
+prove `required_result_save` performs one provider write, returns the
+server-owned operation identity, replays without a duplicate, and recovers the
+same terminal result after process restart. Ordinary startup must remain
+unchanged.
 
 Starting a host or changing the reverse proxy, OAuth app, tunnel, database, or
 provider is activation work. Before relying on it, separately verify the real
