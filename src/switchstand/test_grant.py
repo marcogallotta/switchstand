@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 import httpx
@@ -20,6 +21,7 @@ from .state import PostgresState
 from .task_ref import asana_task_id
 
 MAX_TTL_SECONDS = 3600
+Operation = Literal["work_get", "work_append", "work_create"]
 
 
 def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
@@ -52,7 +54,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
     engine = create_async_engine(test_database_url())
     principal = PrincipalContext(
         issuer=arguments.issuer, subject=arguments.subject,
-        client_id=arguments.client_id, assurance="test",
+        client_id=arguments.client_id, assurance=arguments.assurance,
     )
     grants = GrantState(engine)
     try:
@@ -85,13 +87,19 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                     PostgresState(engine), "asana",
                     AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
+            operations: set[Operation] = {"work_get", "work_create"}
+            append_qualification = None
+            if principal.assurance == "test":
+                operations.add("work_append")
+                append_qualification = arguments.qualification
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
-                authority=authority, operations=frozenset({"work_get", "work_append"}),
+                authority=authority, operations=frozenset(operations),
                 issuer="switchstand-test-grant",
                 provenance=f"explicit disposable task {arguments.task}",
                 expires_at=datetime.now(UTC) + timedelta(seconds=arguments.ttl_seconds),
-                append_qualification=arguments.qualification,
+                append_qualification=append_qualification,
+                create_qualification=arguments.qualification,
             )
         await grants.issue(replacement, None if actual_version == 0 else actual_version)
         return redacted(principal, replacement)
@@ -103,6 +111,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     for field in ("issuer", "subject", "client-id"):
         result.add_argument(f"--{field}", required=True)
+    result.add_argument("--assurance", choices=("test", "authenticated"), default="test")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("inspect")
     setting = commands.add_parser("set")
