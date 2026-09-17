@@ -27,6 +27,7 @@ from switchstand.state import PostgresState, metadata
 
 TOOLS = {
     "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
+    "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -61,7 +62,7 @@ def _child_server() -> None:
         )
 
     edge.SwitchstandGitHubProvider.verify_token = verified
-    edge.AsanaProvider = lambda _client, _project=None: CountingProvider()
+    edge.AsanaProvider = lambda _client, _project=None, **_kwargs: CountingProvider()
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     edge.main()
 

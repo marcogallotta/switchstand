@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.test_grant import test_database_url as database_url
+from switchstand import test_grant
 
 
 @pytest.mark.parametrize("url", [
@@ -12,11 +12,22 @@ from switchstand.test_grant import test_database_url as database_url
 ])
 def test_database_target_cannot_be_overridden(url):
     with pytest.raises(ValueError, match="switchstand_test"):
-        database_url({"TEST_DATABASE_URL": url})
+        test_grant.test_database_url({"TEST_DATABASE_URL": url})
 
 
 def test_database_target_reaches_driver():
-    url = database_url({"TEST_DATABASE_URL": "postgresql+psycopg:///switchstand_test"})
+    url = test_grant.test_database_url({
+        "TEST_DATABASE_URL": "postgresql+psycopg:///switchstand_test"
+    })
     engine = create_async_engine(url)
     _, options = engine.dialect.create_connect_args(engine.url)
     assert options["dbname"] == "switchstand_test"
+
+
+def test_authenticated_qualification_grant_mode_is_explicit():
+    args = test_grant.parser().parse_args([
+        "--issuer", "https://switchstand.example.com/",
+        "--subject", "192548", "--client-id", "chatgpt-client",
+        "--assurance", "authenticated", "inspect",
+    ])
+    assert args.assurance == "authenticated"
