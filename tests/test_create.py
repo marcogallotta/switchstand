@@ -33,6 +33,10 @@ class Provider:
         self.creates = 0
         self.lose_response = False
         self.visible = True
+        self.binding = "fixture-recovery-v1"
+
+    def recovery_identity(self):
+        return self.binding
 
     async def source_task(self, task_gid):
         if task_gid == "123":
@@ -160,6 +164,25 @@ async def test_unresolved_create_recovers_after_original_grant_expiry_without_se
     recovered = await service.create(req)
     assert recovered.status == "ok" and recovered.receipt.grant_id == selected.id
     assert recovered.receipt.grant_version == 1 and provider.creates == 1
+
+
+async def test_recovery_binding_change_blocks_until_original_binding_returns():
+    service, selected, _state, provider = subject()
+    req = request(selected)
+    provider.lose_response, provider.visible = True, False
+    first = await service.create(req)
+    assert first.effect == "unknown" and provider.creates == 1
+
+    provider.visible = True
+    provider.binding = "different-recovery-v2"
+    blocked = await service.create(req)
+    assert blocked.status == "unknown" and blocked.effect == "unknown"
+    assert blocked.reason == "create_recovery_binding_changed" and provider.creates == 1
+
+    provider.binding = "fixture-recovery-v1"
+    recovered = await service.create(req)
+    assert recovered.status == "ok" and recovered.receipt.task_gid == "9001"
+    assert provider.creates == 1
 
 
 async def test_operation_identity_and_qualification_block_unsafe_create():

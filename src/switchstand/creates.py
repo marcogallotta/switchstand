@@ -15,6 +15,7 @@ CREATE_NAMESPACE = UUID("238ea5f0-fb67-4f46-81b1-560fa39375ce")
 
 
 class CreateProvider(Protocol):
+    def recovery_identity(self) -> str: ...
     async def create_child(
         self, parent_task_gid: str, title: str, notes: str, operation_id: UUID,
     ) -> str: ...
@@ -59,6 +60,13 @@ class CreateGateway:
             raise ValueError("create qualification missing from durable intent")
         return value
 
+    @staticmethod
+    def recovery_identity(record: EffectRecord) -> str:
+        value = record.intent.get("recovery_identity")
+        if not isinstance(value, str) or not value:
+            raise ValueError("create recovery identity missing from durable intent")
+        return value
+
     async def create(self, principal: PrincipalContext, request: ProtectedCreate) -> GuardOutcome:
         possible_send = False
         history_known = False
@@ -75,7 +83,7 @@ class CreateGateway:
                         return record.outcome
                     return await self._reconcile(
                         principal, request, record.grant_id, record.grant_version,
-                        self.qualification(record),
+                        self.qualification(record), self.recovery_identity(record),
                     )
 
                 if grant is None or grant.principal != principal or not grant.current():
@@ -92,7 +100,13 @@ class CreateGateway:
                 if parent is None:
                     return self.guard(request, "denied", "parent_not_bound")
                 provider = self.providers.get(parent.provider)
-                if provider is None or not hasattr(provider, "create_child") or not hasattr(provider, "recover_created"):
+                if (provider is None or not hasattr(provider, "create_child")
+                        or not hasattr(provider, "recover_created")
+                        or not hasattr(provider, "recovery_identity")):
+                    return self.guard(request, "denied", "provider_create_not_supported")
+                create_provider = cast(CreateProvider, provider)
+                recovery_identity = create_provider.recovery_identity()
+                if not recovery_identity:
                     return self.guard(request, "denied", "provider_create_not_supported")
                 current = await provider.source_task(parent.provider_work_id)
                 if current is None:
@@ -103,14 +117,15 @@ class CreateGateway:
                 await self.grants.prepare({
                     "request": request.model_dump(mode="json"), "provider": parent.provider,
                     "parent_task_gid": parent.provider_work_id, "qualification": qualification,
+                    "recovery_identity": recovery_identity,
                 }, grant, fingerprint, unknown)
                 possible_send = True
                 if not grant.current():
                     outcome = self.guard(request, "not_applied", "grant_expired_before_send")
                 else:
                     outcome = await self._send(
-                        principal, request, grant.id, grant.version, qualification, parent.provider,
-                        parent.provider_work_id, cast(CreateProvider, provider),
+                        principal, request, grant.id, grant.version, qualification, recovery_identity,
+                        parent.provider, parent.provider_work_id, create_provider,
                     )
                 await self.grants.finish(outcome)
                 return outcome
@@ -120,7 +135,7 @@ class CreateGateway:
 
     async def _send(
         self, principal: PrincipalContext, request: ProtectedCreate,
-        grant_id: UUID, grant_version: int, qualification: str,
+        grant_id: UUID, grant_version: int, qualification: str, recovery_identity: str,
         provider_name: str, parent_task_gid: str, provider: CreateProvider,
     ) -> GuardOutcome:
         try:
@@ -129,7 +144,7 @@ class CreateGateway:
             )
         except UnknownEffect:
             return await self._reconcile(
-                principal, request, grant_id, grant_version, qualification,
+                principal, request, grant_id, grant_version, qualification, recovery_identity,
             )
         except ProviderError:
             return self.guard(request, "not_applied", "provider_rejected_send")
@@ -140,17 +155,19 @@ class CreateGateway:
 
     async def _reconcile(
         self, principal: PrincipalContext, request: ProtectedCreate,
-        grant_id: UUID, grant_version: int, qualification: str,
+        grant_id: UUID, grant_version: int, qualification: str, recovery_identity: str,
     ) -> GuardOutcome:
         parent = await self.state.get(request.parent_work_id)
         if parent is None:
             return self.guard(request, "unknown", "parent_binding_unavailable", possible_send=True)
         provider = self.providers.get(parent.provider)
-        if provider is None or not hasattr(provider, "recover_created"):
+        if (provider is None or not hasattr(provider, "recover_created")
+                or not hasattr(provider, "recovery_identity")):
             return self.guard(request, "unknown", "create_recovery_unavailable", possible_send=True)
-        task_gid = await cast(CreateProvider, provider).recover_created(
-            parent.provider_work_id, request.operation_id,
-        )
+        create_provider = cast(CreateProvider, provider)
+        if create_provider.recovery_identity() != recovery_identity:
+            return self.guard(request, "unknown", "create_recovery_binding_changed", possible_send=True)
+        task_gid = await create_provider.recover_created(parent.provider_work_id, request.operation_id)
         if task_gid is None:
             return self.guard(request, "unknown", "create_not_yet_reconciled", possible_send=True)
         outcome = await self._applied(
