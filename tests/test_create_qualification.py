@@ -25,6 +25,7 @@ class Client:
         self.create_calls = 0
         self.search_rows = [{"gid": CREATED}]
         self.fail_created_readback_once = False
+        self.parent_project = TEST_PROJECT
 
     async def request(self, method, path, json):
         assert method == "POST" and path == "/tasks"
@@ -37,7 +38,7 @@ class Client:
             return response("GET", path, {"data": {
                 "gid": PARENT, "name": "Parent", "notes": "", "completed": False,
                 "modified_at": "r1", "parent": None, "custom_fields": [],
-                "memberships": [{"project": {"gid": TEST_PROJECT}}],
+                "memberships": [{"project": {"gid": self.parent_project}}],
             }})
         if path == f"/tasks/{CREATED}":
             if self.fail_created_readback_once:
@@ -68,6 +69,9 @@ async def test_test_provider_create_and_recovery_bind_exact_correlation():
     assert provider.recovery_identity() == (
         "asana-custom-field-v1:1200569426771227:999001:999002"
     )
+    assert provider.recovery_identity() != TestCreateAsanaProvider(
+        Client(operation_id), TEST_PROJECT, "999003"
+    ).recovery_identity()
     created = await provider.create_child(PARENT, "Created", "notes", operation_id)
     assert created == CREATED
     assert client.create_json == {"data": {
@@ -90,6 +94,19 @@ async def test_committed_create_failed_readback_recovers_without_second_post():
     assert client.create_calls == 1
     assert await provider.recover_created(PARENT, operation_id) == CREATED
     assert client.create_calls == 1
+
+
+async def test_test_provider_denies_production_parent_before_create():
+    operation_id = uuid4()
+    client = Client(operation_id)
+    client.parent_project = PROJECT
+    provider = TestCreateAsanaProvider(client, TEST_PROJECT, CORRELATION_FIELD)
+
+    source = await provider.source_task(PARENT)
+    assert source is not None and source.canonical is False
+    with pytest.raises(ProviderError, match="create parent denied"):
+        await provider.create_child(PARENT, "Created", "notes", operation_id)
+    assert client.create_calls == 0
 
 
 async def test_test_provider_rejects_ambiguous_or_production_correlation():
