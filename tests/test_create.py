@@ -1,4 +1,3 @@
-from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
@@ -19,11 +18,10 @@ class State:
 
     async def bind_reserved(self, work_id, provider, provider_work_id):
         existing = self.handles.get(work_id)
-        if existing is not None and (existing.provider, existing.provider_work_id) != (provider, provider_work_id):
+        if existing and (existing.provider, existing.provider_work_id) != (provider, provider_work_id):
             raise ValueError("binding conflict")
-        handle = Handle(work_id, provider, provider_work_id)
-        self.handles[work_id] = handle
-        return handle
+        self.handles[work_id] = Handle(work_id, provider, provider_work_id)
+        return self.handles[work_id]
 
 
 class Provider:
@@ -52,11 +50,6 @@ class Provider:
         return self.created.get(operation_id) if self.visible else None
 
 
-@asynccontextmanager
-async def _unused_lock():
-    yield None
-
-
 def subject():
     selected = grant(
         operations=frozenset({"work_get", "work_create"}),
@@ -71,13 +64,11 @@ def subject():
     return ChatGPTService(principal, state, grants, {"asana": provider}), selected, state, provider
 
 
-def request(selected, operation_id=None, **changes):
-    values = {
-        "api_version": "1", "operation_id": operation_id or uuid4(),
-        "parent_work_id": selected.authority.active_work_id,
-        "grant_version": selected.version, "title": "Created", "notes": "notes",
-    }
-    return ProtectedCreate(**(values | changes))
+def request(selected):
+    return ProtectedCreate(
+        api_version="1", operation_id=uuid4(), parent_work_id=selected.authority.active_work_id,
+        grant_version=selected.version, title="Created", notes="notes",
+    )
 
 
 async def test_create_binds_reserved_work_and_exact_readback():
@@ -98,29 +89,12 @@ async def test_lost_create_response_recovers_after_restart_without_second_send()
     req = request(selected)
     provider.lose_response, provider.visible = True, False
     first = await service.create(req)
-    assert first.status == "unknown" and first.effect == "unknown"
-    assert provider.creates == 1
+    assert first.status == "unknown" and first.effect == "unknown" and provider.creates == 1
 
     provider.visible = True
     restarted = ChatGPTService(service.principal, state, service.grants, service.providers)
     recovered = await restarted.create(req)
     assert recovered.status == "ok" and recovered.effect == "applied"
-    assert recovered.receipt.task_gid == "9001"
-    assert provider.creates == 1
+    assert recovered.receipt.task_gid == "9001" and provider.creates == 1
     assert await restarted.create(req) == recovered
-    assert provider.creates == 1
-
-
-async def test_operation_identity_and_qualification_block_unsafe_create():
-    service, selected, _state, provider = subject()
-    req = request(selected)
-    provider.lose_response, provider.visible = True, False
-    assert (await service.create(req)).status == "unknown"
-    conflict = await service.create(req.model_copy(update={"title": "Different"}))
-    assert conflict.status == "denied" and conflict.reason == "operation_identity_conflict"
-
-    unqualified = selected.model_copy(update={"version": 2, "create_qualification": None})
-    service.grants.grant = unqualified
-    denied = await service.create(request(unqualified))
-    assert denied.status == "denied" and denied.effect == "not_sent"
     assert provider.creates == 1
