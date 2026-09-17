@@ -27,6 +27,7 @@ from switchstand.state import PostgresState, metadata
 
 TOOLS = {
     "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
+    "required_result_save",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -124,6 +125,15 @@ def _server(env, port):
             process.wait(timeout=5)
 
 
+def _environment(url, subject, port, effects):
+    return os.environ | {
+        "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+
+
 async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
@@ -141,6 +151,20 @@ async def _exercise(endpoint, selected, operation_id):
         return result.structured_content
 
 
+async def _save_required_result(endpoint, selected):
+    transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+    async with Client(transport) as client:
+        assert {tool.name for tool in await client.list_tools()} == TOOLS
+        result = await client.call_tool("required_result_save", {
+            "api_version": "1",
+            "work_id": str(selected.authority.active_work_id),
+            "grant_version": 1,
+            "observed_revision": "r1",
+            "text": "durable required result",
+        })
+        return result.structured_content
+
+
 async def test_process_with_fixture_identity_replays_durable_append_after_restart(tmp_path):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
@@ -149,12 +173,7 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     subject = str(uuid4().int)
     selected, operation_id, port = await _provision(url, subject), uuid4(), _free_port()
     effects = tmp_path / "effects"
-    env = os.environ | {
-        "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
-        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
-        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
-        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
-    }
+    env = _environment(url, subject, port, effects)
     with _server(env, port) as endpoint:
         first = await _exercise(endpoint, selected, operation_id)
         assert first["status"] == "ok" and first["effect"] == "applied"
@@ -165,6 +184,35 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     with _server(env, port) as endpoint:
         assert await _exercise(endpoint, selected, operation_id) == first
         assert effects.read_text().splitlines() == ["sent"]
+
+
+async def test_required_result_tool_owns_identity_and_replays_after_process_restart(tmp_path):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
+    assert make_url(url).database == "switchstand_test"
+    subject = str(uuid4().int)
+    selected, port = await _provision(url, subject), _free_port()
+    effects = tmp_path / "required-result-effects"
+    env = _environment(url, subject, port, effects)
+
+    with _server(env, port) as endpoint:
+        first = await _save_required_result(endpoint, selected)
+        assert first["status"] == "ok" and first["effect"] == "applied"
+        assert first["operation"] == "required_result_save"
+        operation_id = first["operation_id"]
+        assert operation_id and first["receipt"]["operation_id"] == operation_id
+        replay = await _save_required_result(endpoint, selected)
+        assert replay["status"] == "ok" and replay["effect"] == "not_sent"
+        assert replay["reason"] == "required_result_already_persisted"
+        assert replay["operation_id"] == operation_id
+
+    with _server(env, port) as endpoint:
+        recovered = await _save_required_result(endpoint, selected)
+        assert recovered["status"] == "ok" and recovered["effect"] == "not_sent"
+        assert recovered["reason"] == "required_result_already_persisted"
+        assert recovered["operation_id"] == operation_id
+    assert effects.read_text().splitlines() == ["sent"]
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--serve"]:

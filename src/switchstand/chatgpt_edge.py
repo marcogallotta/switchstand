@@ -19,7 +19,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .chatgpt import ChatGPTService
+from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
     SourceStoriesRequest,
     SourceStoriesResult,
@@ -30,6 +30,7 @@ from .contracts import (
 )
 from .grant_state import GrantState
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend
+from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
@@ -161,6 +162,7 @@ def create_app(
         service.state,
         service.grants,
         service.providers,
+        required_results=service.required_results,
     )
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
@@ -230,8 +232,25 @@ def create_app(
         _audit("work_append", str(work_id), result.status)
         return result
 
+    async def required_result_save(
+        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        observed_revision: str, text: str,
+    ) -> GuardOutcome:
+        """Save one required result; operation identity is server-owned."""
+        result = await service.required_result_save(RequiredResultSaveRequest(
+            api_version=api_version,
+            work_id=work_id,
+            grant_version=grant_version,
+            observed_revision=observed_revision,
+            text=text,
+        ))
+        _audit("required_result_save", str(work_id), result.status)
+        return result
+
     for tool in (grant_get, work_get, source_task, source_stories, source_story, work_append):
         server.tool(tool)
+    if service.required_results is not None:
+        server.tool(required_result_save)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 
 
@@ -246,9 +265,10 @@ async def serve() -> None:
         async def unresolved_principal():
             return None
 
+        required_results = RequiredResultPersistence(LifecycleRepository(engine))
         service = ChatGPTService(unresolved_principal, PostgresState(engine), GrantState(engine), {
             "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
-        })
+        }, required_results=required_results)
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
