@@ -27,6 +27,7 @@ from switchstand.state import PostgresState, metadata
 
 TOOLS = {
     "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
+    "required_result_save",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
