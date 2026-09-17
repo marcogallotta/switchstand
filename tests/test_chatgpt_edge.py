@@ -114,7 +114,7 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         assert authorization["code_challenge_methods_supported"] == ["S256"]
 
 
-async def test_authenticated_registry_includes_authorized_write(monkeypatch):
+async def test_authenticated_registry_routes_create_under_grant(monkeypatch):
     async def verified(_self, token):
         return AccessToken(
             token=token,
@@ -135,7 +135,9 @@ async def test_authenticated_registry_includes_authorized_write(monkeypatch):
             client_id="chatgpt-client",
             assurance="authenticated",
         ),
-        append_qualification="disposable:chatgpt-test",
+        operations=frozenset({"work_get", "work_append", "work_create"}),
+        append_qualification="test:chatgpt-edge",
+        create_qualification="test:chatgpt-edge",
     )
     app = create_app(subject, CONFIG, client_storage=MemoryStore())
 
@@ -167,11 +169,22 @@ async def test_authenticated_registry_includes_authorized_write(monkeypatch):
             "observed_revision": "r1",
             "text": "ChatGPT authorized feedback",
         })
+        create = await client.call_tool("work_create", {
+            "api_version": "1",
+            "operation_id": str(uuid4()),
+            "parent_work_id": str(ACTIVE),
+            "grant_version": 1,
+            "title": "Qualified child",
+            "notes": "edge route proof",
+        })
     assert names == {
-        "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
+        "grant_get", "work_get", "source_task", "source_stories", "source_story",
+        "work_append", "work_create",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
     if append.structured_content["status"] != "ok":
         raise AssertionError(str(append.structured_content))
     assert replay.structured_content == append.structured_content
+    assert create.structured_content["status"] == "denied"
+    assert create.structured_content["reason"] == "provider_create_not_supported"
     assert subject.providers["asana"].sends == 1
