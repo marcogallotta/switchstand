@@ -35,6 +35,7 @@ This file is the repository bootstrap for both ordinary Codex work and Switchsta
 - Managed runs use their bound Switchstand source/history/feedback capability (`work_get`, `source_task`, `source_stories`, `source_story`, `work_append`) for routine work/source access. A temporary raw Asana bridge needs an exact grant and ends once the work is Switchstand-bound.
 - Ordinary Codex sessions may use repository Git/source and read-only exact Asana tasks named by Marco or the assignment when needed; this does not grant Asana writes, broad discovery, or provider effects. Never claim a raw Asana read proves a bound Switchstand canary.
 - In the ordinary primary `main` checkout, Git reads, fetches and creating an owned linked writer worktree are allowed; perform source edits, staging, commits and working-tree mutations in that writer. Do not reset, clean, or switch the shared primary checkout to make a task fit.
+- Never place worktrees, clones, virtual environments, caches, evidence, or handoffs under `/tmp`. Store unique or restart-worthy state under `~/.local/state/switchstand`; store reproducible caches under `~/.cache/switchstand`. Reserve `/tmp` for process-scoped temporary files with immediate local cleanup. If the durable path is unavailable, report the blocker; do not fall back to `/tmp`.
 - Reread before replacement writes. Never blind-retry an append or external effect after an ambiguous response; reconcile actual state and retain UNKNOWN where necessary.
 
 ## Active inbox and continuity
