@@ -12,7 +12,7 @@ from .contracts import (
     SourceTaskRequest,
     SourceTaskResult,
 )
-from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend
+from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
 from .mcp import closed_tool
 
 
@@ -63,8 +63,19 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             grant_version=grant_version, observed_revision=observed_revision, text=text,
         ))
 
+    async def work_create(
+        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
+        grant_version: int, title: str, notes: str = "",
+    ) -> GuardOutcome:
+        """Create only through a test-qualified grant. Reuse OperationId to reconcile UNKNOWN."""
+        return await service.create(ProtectedCreate(
+            api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
+            grant_version=grant_version, title=title, notes=notes,
+        ))
+
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("source_task", source_task), ("source_stories", source_stories),
-                           ("source_story", source_story), ("work_append", work_append)):
+                           ("source_story", source_story), ("work_append", work_append),
+                           ("work_create", work_create)):
         closed_tool(server, name, function)
     return server
