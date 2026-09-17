@@ -5,8 +5,8 @@ from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
 from sqlalchemy.exc import SQLAlchemyError
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import Routing
-from switchstand.core import Handle, ProviderSourceTask, ProviderWork, UnknownEffect
+from switchstand.contracts import SourceTaskRequest
+from switchstand.core import Handle, ProviderSourceTask, UnknownEffect
 from switchstand.creates import CreateGateway
 from switchstand.grants import ProtectedCreate
 
@@ -40,15 +40,6 @@ class Provider:
         if task_gid in self.created.values():
             return ProviderSourceTask("Created", "notes", False, "r2", True)
         return None
-
-    async def get(self, task_gid):
-        task = await self.source_task(task_gid)
-        if task is None:
-            return None
-        return ProviderWork(
-            task.title, task.notes, task.completed, task.revision,
-            Routing(priority="P0"), task.canonical,
-        )
 
     async def create_child(self, parent_task_gid, title, notes, operation_id):
         self.creates += 1
@@ -85,7 +76,7 @@ def request(selected, operation_id=None, **changes):
     return ProtectedCreate(**(values | changes))
 
 
-async def test_create_binds_reserved_work_and_normal_work_readback():
+async def test_create_binds_reserved_work_and_exact_provider_readback():
     service, selected, state, provider = subject()
     req = request(selected)
     result = await service.create(req)
@@ -93,9 +84,9 @@ async def test_create_binds_reserved_work_and_normal_work_readback():
     assert result.receipt.task_gid == "9001" and result.receipt.parent_task_gid == "123"
     assert result.work_id == CreateGateway.work_id(req.operation_id)
     assert (await state.get(result.work_id)).provider_work_id == "9001"
-    readback = await service.get(result.work_id)
-    assert readback.status == "ok" and readback.item.id == result.work_id
-    assert readback.item.title == "Created" and provider.creates == 1
+    source = await service.source_task(SourceTaskRequest(api_version="1", task_gid="9001"))
+    assert source.status == "ok" and source.item.title == "Created"
+    assert provider.creates == 1
 
 
 async def test_lost_create_response_recovers_after_restart_without_second_send():
@@ -113,7 +104,6 @@ async def test_lost_create_response_recovers_after_restart_without_second_send()
     assert recovered.receipt.task_gid == "9001"
     assert provider.creates == 1
     assert await restarted.create(req) == recovered
-    assert (await restarted.get(recovered.work_id)).status == "ok"
     assert provider.creates == 1
 
 
@@ -144,7 +134,6 @@ async def test_unresolved_create_recovers_after_grant_renewal_with_original_rece
     recovered = await service.create(req)
     assert recovered.status == "ok" and recovered.receipt.grant_id == selected.id
     assert recovered.receipt.grant_version == selected.version and provider.creates == 1
-    assert (await service.get(recovered.work_id)).status == "ok"
 
 
 async def test_unresolved_create_recovers_after_original_grant_expiry_without_send():
