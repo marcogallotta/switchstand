@@ -14,6 +14,7 @@ from switchstand.core import (
     ProviderWork,
     UnknownEffect,
 )
+from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
@@ -95,6 +96,7 @@ class MemoryGrants:
     def __init__(self, initial):
         self.grant = initial
         self.effects = {}
+        self.intent_metadata = {}
 
     async def current(self, key):
         return self.grant if self.grant and self.grant.principal.key == key else None
@@ -109,8 +111,21 @@ class MemoryGrants:
                       or v[2].work_id == work_id and v[2].effect == "unknown"]
         return candidates[0] if candidates else None
 
+    async def exact(self, operation_id):
+        effect = self.effects.get(operation_id)
+        metadata = self.intent_metadata.get(operation_id)
+        if effect is None or metadata is None:
+            return None
+        key, fingerprint, outcome = effect
+        request, selected = metadata
+        return EffectRecord(
+            principal_key=key, fingerprint=fingerprint, grant_id=selected.id,
+            grant_version=selected.version, intent=request, outcome=outcome,
+        )
+
     async def prepare(self, request, selected, fingerprint, unknown):
         self.effects[unknown.operation_id] = (selected.principal.key, fingerprint, unknown)
+        self.intent_metadata[unknown.operation_id] = (request, selected)
 
     async def finish(self, outcome):
         key, fingerprint, _ = self.effects[outcome.operation_id]

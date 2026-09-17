@@ -28,12 +28,13 @@ class WorkGrant(ClosedModel):
     version: int = Field(ge=1)
     principal: PrincipalContext
     authority: LaunchAuthority
-    operations: frozenset[Literal["work_get", "work_append"]]
+    operations: frozenset[Literal["work_get", "work_append", "work_create"]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
     expires_at: AwareDatetime
     state: Literal["active", "revoked", "terminal"] = "active"
     append_qualification: str | None = Field(default=None, min_length=1)
+    create_qualification: str | None = Field(default=None, min_length=1)
 
     def current(self) -> bool:
         return self.state == "active" and self.expires_at > datetime.now(UTC)
@@ -46,6 +47,15 @@ class ProtectedAppend(ClosedModel):
     grant_version: int = Field(ge=1)
     observed_revision: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=8000)
+
+
+class ProtectedCreate(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    parent_work_id: UUID
+    grant_version: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=500)
+    notes: str = Field(default="", max_length=8000)
 
 
 class EffectReceipt(ClosedModel):
@@ -61,6 +71,19 @@ class EffectReceipt(ClosedModel):
     qualification: str
 
 
+class CreateReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: str
+    task_gid: str
+    parent_task_gid: str
+    title: str
+    qualification: str
+
+
 class GuardOutcome(ClosedModel):
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
     operation: str
@@ -70,7 +93,7 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | None = None
+    receipt: EffectReceipt | CreateReceipt | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:
