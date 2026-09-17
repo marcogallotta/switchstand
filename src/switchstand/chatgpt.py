@@ -39,6 +39,8 @@ class ChatGPTService:
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
         self.create_gateway = CreateGateway(state, grants, providers)
+        # Only exact source methods use this controller; its dummy authority is
+        # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
 
     @staticmethod
