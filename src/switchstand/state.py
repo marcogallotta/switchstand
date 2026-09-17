@@ -39,15 +39,30 @@ class PostgresState:
         return frozenset(rows)
 
     async def bind(self, provider: str, provider_work_id: str) -> Handle:
-        values = {"id": uuid4(), "provider": provider, "provider_work_id": provider_work_id}
-        statement = insert(work_handles).values(values)
-        statement = statement.on_conflict_do_update(
-            index_elements=[work_handles.c.provider, work_handles.c.provider_work_id],
-            set_={"provider": provider},
-        ).returning(*columns)
+        return await self.bind_reserved(uuid4(), provider, provider_work_id, allow_existing=True)
+
+    async def bind_reserved(
+        self, work_id: UUID, provider: str, provider_work_id: str, *, allow_existing: bool = False,
+    ) -> Handle:
+        values = {"id": work_id, "provider": provider, "provider_work_id": provider_work_id}
+        statement = insert(work_handles).values(values).on_conflict_do_nothing().returning(*columns)
         async with self.engine.begin() as connection:
-            row = (await connection.execute(statement)).one()
-        return Handle(row[0], row[1], row[2])
+            row = (await connection.execute(statement)).one_or_none()
+            if row is not None:
+                return Handle(row[0], row[1], row[2])
+            existing = (await connection.execute(select(*columns).where(
+                (work_handles.c.id == work_id)
+                | ((work_handles.c.provider == provider)
+                   & (work_handles.c.provider_work_id == provider_work_id))
+            ))).all()
+        if len(existing) != 1:
+            raise ValueError("work binding conflict")
+        handle = Handle(existing[0][0], existing[0][1], existing[0][2])
+        if handle.provider != provider or handle.provider_work_id != provider_work_id:
+            raise ValueError("work binding conflict")
+        if handle.id != work_id and not allow_existing:
+            raise ValueError("reserved WorkId already bound differently")
+        return handle
 
     @asynccontextmanager
     async def locked(self, work_id: UUID) -> AsyncGenerator[Handle | None]:
