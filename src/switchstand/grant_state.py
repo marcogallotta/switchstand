@@ -90,6 +90,8 @@ class GrantState:
         self, operation_id: UUID, work_id: UUID,
     ) -> tuple[str, str, GuardOutcome] | None:
         async with self.engine.connect() as connection:
+            # Called under the work lock: unresolved sends block the entire target,
+            # including changed payloads, principals or new OperationIds.
             rows = (await connection.execute(select(effect_intents).where(
                 (effect_intents.c.operation_id == str(operation_id))
                 | ((effect_intents.c.work_id == str(work_id))
@@ -137,6 +139,8 @@ class GrantState:
         self, request: dict[str, object], grant: WorkGrant, fingerprint: str,
         unknown: GuardOutcome,
     ) -> None:
+        # Separate transaction: intent survives a crash/rollback of the held locks.
+        # No FK to those locked rows: a FK insertion could wait on our own locks.
         async with self.engine.begin() as connection:
             await connection.execute(insert(effect_intents).values(
                 operation_id=str(unknown.operation_id), fingerprint=fingerprint,
