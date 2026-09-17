@@ -16,9 +16,17 @@ from .contracts import (
     WorkGetRequest,
 )
 from .core import Controller, Provider, ProviderError, State
+from .creates import CreateGateway
 from .effects import AppendGateway
 from .grant_state import GrantState
-from .grants import GrantedWorkResult, GrantResult, GuardOutcome, PrincipalContext, ProtectedAppend
+from .grants import (
+    GrantedWorkResult,
+    GrantResult,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedAppend,
+    ProtectedCreate,
+)
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 
@@ -30,6 +38,7 @@ class ChatGPTService:
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
+        self.create_gateway = CreateGateway(state, grants, providers)
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
@@ -78,6 +87,12 @@ class ChatGPTService:
         if principal is None:
             return self.gateway.guard(request, "denied", "authenticated_principal_required")
         return await self.gateway.append(principal, request)
+
+    async def create(self, request: ProtectedCreate) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return self.create_gateway.guard(request, "denied", "authenticated_principal_required")
+        return await self.create_gateway.create(principal, request)
 
     async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
         if await self.principal() is None:
