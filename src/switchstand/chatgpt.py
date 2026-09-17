@@ -71,16 +71,10 @@ class ChatGPTService:
                     return GrantedWorkResult(status="denied",
                                              guard=self.denied("work_get", "no_current_grant"))
                 target = work_id or grant.authority.active_work_id
-                if "work_get" not in grant.operations:
+                if "work_get" not in grant.operations or not grant.authority.can_read(target):
                     return GrantedWorkResult(status="denied",
                                              guard=self.denied("work_get", "work_not_granted"))
-                authority = grant.authority
-                if not authority.can_read(target):
-                    if not await self.grants.created_work_allowed(principal.key, target):
-                        return GrantedWorkResult(status="denied",
-                                                 guard=self.denied("work_get", "work_not_granted"))
-                    authority = LaunchAuthority(active_work_id=target)
-                result = await Controller(authority, self.state, self.providers).get(
+                result = await Controller(grant.authority, self.state, self.providers).get(
                     WorkGetRequest(api_version="1", work_id=target, include_related=include_related)
                 )
                 return GrantedWorkResult(status=result.status, item=result.item,
