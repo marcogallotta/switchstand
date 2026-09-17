@@ -251,11 +251,10 @@ def create_app(
         _audit("required_result_save", str(work_id), result.status)
         return result
 
-    tools = [grant_get, work_get, source_task, source_stories, source_story, work_append]
-    if service.required_results is not None:
-        tools.append(required_result_save)
-    for tool in tools:
+    for tool in (grant_get, work_get, source_task, source_stories, source_story, work_append):
         server.tool(tool)
+    if service.required_results is not None:
+        server.tool(required_result_save)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 
 
