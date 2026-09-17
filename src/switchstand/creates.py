@@ -8,8 +8,8 @@ from uuid import UUID, uuid5
 from sqlalchemy.exc import SQLAlchemyError
 
 from .core import Provider, ProviderError, State, UnknownEffect
-from .grant_state import GrantState
-from .grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate, WorkGrant
+from .grant_state import EffectRecord, GrantState
+from .grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate
 
 CREATE_NAMESPACE = UUID("238ea5f0-fb67-4f46-81b1-560fa39375ce")
 
@@ -52,11 +52,33 @@ class CreateGateway:
             if possible_send else "Refresh the grant or ask the trusted issuer.",
         })
 
+    @staticmethod
+    def qualification(record: EffectRecord) -> str:
+        value = record.intent.get("qualification")
+        if not isinstance(value, str) or not value.startswith("test:"):
+            raise ValueError("create qualification missing from durable intent")
+        return value
+
     async def create(self, principal: PrincipalContext, request: ProtectedCreate) -> GuardOutcome:
         reserved = self.work_id(request.operation_id)
         possible_send = False
+        history_known = False
         try:
             async with self.grants.locked(principal.key, request.parent_work_id) as grant:
+                fingerprint = self.fingerprint(principal, request)
+                record = await self.grants.exact(request.operation_id)
+                history_known = True
+                if record is not None:
+                    possible_send = record.outcome.effect != "not_sent"
+                    if record.principal_key != principal.key or record.fingerprint != fingerprint:
+                        return self.guard(request, "denied", "operation_identity_conflict")
+                    if record.outcome.effect != "unknown":
+                        return record.outcome
+                    return await self._reconcile(
+                        principal, request, record.grant_id, record.grant_version,
+                        self.qualification(record),
+                    )
+
                 if grant is None or grant.principal != principal or not grant.current():
                     return self.guard(request, "denied", "no_current_grant")
                 if (request.parent_work_id != grant.authority.active_work_id
@@ -67,17 +89,6 @@ class CreateGateway:
                 qualification = grant.create_qualification
                 if qualification is None or not qualification.startswith("test:"):
                     return self.guard(request, "denied", "create_not_test_qualified")
-                fingerprint = self.fingerprint(principal, request)
-                previous = await self.grants.previous(request.operation_id, reserved)
-                if previous is not None:
-                    owner, previous_fingerprint, outcome = previous
-                    possible_send = outcome.effect != "not_sent"
-                    if owner != principal.key or previous_fingerprint != fingerprint:
-                        return self.guard(request, "denied", "operation_identity_conflict")
-                    if outcome.effect != "unknown":
-                        return outcome
-                    return await self._reconcile(principal, grant, request, qualification)
-
                 parent = await self.state.get(request.parent_work_id)
                 if parent is None:
                     return self.guard(request, "denied", "parent_not_bound")
@@ -99,34 +110,38 @@ class CreateGateway:
                     outcome = self.guard(request, "not_applied", "grant_expired_before_send")
                 else:
                     outcome = await self._send(
-                        principal, grant, request, qualification, parent.provider,
+                        principal, request, grant.id, grant.version, qualification, parent.provider,
                         parent.provider_work_id, cast(CreateProvider, provider),
                     )
                 await self.grants.finish(outcome)
                 return outcome
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return self.guard(request, "unknown", "state_or_effect_unavailable",
-                              possible_send=possible_send)
+                              possible_send=possible_send or not history_known)
 
     async def _send(
-        self, principal: PrincipalContext, grant: WorkGrant, request: ProtectedCreate,
-        qualification: str, provider_name: str, parent_task_gid: str, provider: CreateProvider,
+        self, principal: PrincipalContext, request: ProtectedCreate,
+        grant_id: UUID, grant_version: int, qualification: str,
+        provider_name: str, parent_task_gid: str, provider: CreateProvider,
     ) -> GuardOutcome:
         try:
             task_gid = await provider.create_child(
                 parent_task_gid, request.title, request.notes, request.operation_id,
             )
         except UnknownEffect:
-            return await self._reconcile(principal, grant, request, qualification)
+            return await self._reconcile(
+                principal, request, grant_id, grant_version, qualification,
+            )
         except ProviderError:
             return self.guard(request, "not_applied", "provider_rejected_send")
         return await self._applied(
-            principal, grant, request, qualification, provider_name, parent_task_gid, task_gid,
+            principal, request, grant_id, grant_version, qualification,
+            provider_name, parent_task_gid, task_gid,
         )
 
     async def _reconcile(
-        self, principal: PrincipalContext, grant: WorkGrant, request: ProtectedCreate,
-        qualification: str,
+        self, principal: PrincipalContext, request: ProtectedCreate,
+        grant_id: UUID, grant_version: int, qualification: str,
     ) -> GuardOutcome:
         parent = await self.state.get(request.parent_work_id)
         if parent is None:
@@ -140,14 +155,16 @@ class CreateGateway:
         if task_gid is None:
             return self.guard(request, "unknown", "create_not_yet_reconciled", possible_send=True)
         outcome = await self._applied(
-            principal, grant, request, qualification, parent.provider, parent.provider_work_id, task_gid,
+            principal, request, grant_id, grant_version, qualification,
+            parent.provider, parent.provider_work_id, task_gid,
         )
         await self.grants.finish(outcome)
         return outcome
 
     async def _applied(
-        self, principal: PrincipalContext, grant: WorkGrant, request: ProtectedCreate,
-        qualification: str, provider_name: str, parent_task_gid: str, task_gid: str,
+        self, principal: PrincipalContext, request: ProtectedCreate,
+        grant_id: UUID, grant_version: int, qualification: str,
+        provider_name: str, parent_task_gid: str, task_gid: str,
     ) -> GuardOutcome:
         provider = self.providers[provider_name]
         task = await provider.source_task(task_gid)
@@ -156,8 +173,8 @@ class CreateGateway:
         work_id = self.work_id(request.operation_id)
         await cast(CreateState, self.state).bind_reserved(work_id, provider_name, task_gid)
         receipt = CreateReceipt(
-            operation_id=request.operation_id, principal=principal, grant_id=grant.id,
-            grant_version=grant.version, work_id=work_id, provider=provider_name,
+            operation_id=request.operation_id, principal=principal, grant_id=grant_id,
+            grant_version=grant_version, work_id=work_id, provider=provider_name,
             task_gid=task_gid, parent_task_gid=parent_task_gid, title=request.title,
             qualification=qualification,
         )
