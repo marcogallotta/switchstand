@@ -60,7 +60,6 @@ class CreateGateway:
         return value
 
     async def create(self, principal: PrincipalContext, request: ProtectedCreate) -> GuardOutcome:
-        reserved = self.work_id(request.operation_id)
         possible_send = False
         history_known = False
         try:
@@ -115,7 +114,7 @@ class CreateGateway:
                     )
                 await self.grants.finish(outcome)
                 return outcome
-        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
             return self.guard(request, "unknown", "state_or_effect_unavailable",
                               possible_send=possible_send or not history_known)
 
