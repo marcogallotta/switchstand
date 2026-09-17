@@ -54,7 +54,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
     engine = create_async_engine(test_database_url())
     principal = PrincipalContext(
         issuer=arguments.issuer, subject=arguments.subject,
-        client_id=arguments.client_id, assurance=arguments.assurance,
+        client_id=arguments.client_id, assurance=getattr(arguments, "assurance", "test"),
     )
     grants = GrantState(engine)
     try:
