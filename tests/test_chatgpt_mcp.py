@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import SourceTaskRequest
-from switchstand.grants import PrincipalContext, ProtectedAppend
+from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
 
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
@@ -17,6 +17,10 @@ def test_append_cannot_accept_authority_arguments(field):
     values = {'api_version': "1", 'operation_id': uuid4(), 'work_id': ACTIVE, 'grant_version': 1, 'observed_revision': "r1", 'text': "feedback"}
     with pytest.raises(ValidationError):
         ProtectedAppend.model_validate(values | {field: "owner"})
+    create = {'api_version': "1", 'operation_id': uuid4(), 'parent_work_id': ACTIVE,
+              'grant_version': 1, 'title': "child"}
+    with pytest.raises(ValidationError):
+        ProtectedCreate.model_validate(create | {field: "owner"})
 
 
 async def test_broad_reads_survive_missing_revoked_or_unqualified_write_grant():
@@ -67,6 +71,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
             "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
+            "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
