@@ -21,6 +21,10 @@ class CreateProvider(Protocol):
     async def recover_created(self, parent_task_gid: str, operation_id: UUID) -> str | None: ...
 
 
+class CreateState(Protocol):
+    async def bind_reserved(self, work_id: UUID, provider: str, provider_work_id: str) -> object: ...
+
+
 class CreateGateway:
     def __init__(self, state: State, grants: GrantState, providers: dict[str, Provider]):
         self.state, self.grants, self.providers = state, grants, providers
@@ -150,7 +154,7 @@ class CreateGateway:
         if task is None or not task.canonical:
             return self.guard(request, "unknown", "created_task_readback_unconfirmed", possible_send=True)
         work_id = self.work_id(request.operation_id)
-        await self.state.bind_reserved(work_id, provider_name, task_gid)
+        await cast(CreateState, self.state).bind_reserved(work_id, provider_name, task_gid)
         receipt = CreateReceipt(
             operation_id=request.operation_id, principal=principal, grant_id=grant.id,
             grant_version=grant.version, work_id=work_id, provider=provider_name,
