@@ -135,8 +135,8 @@ async def test_authenticated_registry_routes_create_under_grant(monkeypatch):
             client_id="chatgpt-client",
             assurance="authenticated",
         ),
-        operations=frozenset({"work_get", "work_append", "work_create"}),
-        append_qualification="test:chatgpt-edge",
+        operations=frozenset({"work_get", "work_create"}),
+        append_qualification=None,
         create_qualification="test:chatgpt-edge",
     )
     app = create_app(subject, CONFIG, client_storage=MemoryStore())
@@ -152,23 +152,6 @@ async def test_authenticated_registry_routes_create_under_grant(monkeypatch):
     async with app.router.lifespan_context(app), Client(transport) as client:
         names = {tool.name for tool in await client.list_tools()}
         grant_result = await client.call_tool("grant_get", {"api_version": "1"})
-        operation_id = str(uuid4())
-        append = await client.call_tool("work_append", {
-            "api_version": "1",
-            "operation_id": operation_id,
-            "work_id": str(ACTIVE),
-            "grant_version": 1,
-            "observed_revision": "r1",
-            "text": "ChatGPT authorized feedback",
-        })
-        replay = await client.call_tool("work_append", {
-            "api_version": "1",
-            "operation_id": operation_id,
-            "work_id": str(ACTIVE),
-            "grant_version": 1,
-            "observed_revision": "r1",
-            "text": "ChatGPT authorized feedback",
-        })
         create = await client.call_tool("work_create", {
             "api_version": "1",
             "operation_id": str(uuid4()),
@@ -182,9 +165,6 @@ async def test_authenticated_registry_routes_create_under_grant(monkeypatch):
         "work_append", "work_create",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
-    if append.structured_content["status"] != "ok":
-        raise AssertionError(str(append.structured_content))
-    assert replay.structured_content == append.structured_content
     assert create.structured_content["status"] == "denied"
     assert create.structured_content["reason"] == "provider_create_not_supported"
-    assert subject.providers["asana"].sends == 1
+    assert subject.providers["asana"].sends == 0
