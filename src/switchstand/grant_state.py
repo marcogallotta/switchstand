@@ -2,6 +2,8 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import Column, Integer, Table, Text, select, update
@@ -27,6 +29,16 @@ effect_intents = Table(
     Column("intent", JSONB, nullable=False),
     Column("outcome", JSONB, nullable=False),
 )
+
+
+@dataclass(frozen=True)
+class EffectRecord:
+    principal_key: str
+    fingerprint: str
+    grant_id: UUID
+    grant_version: int
+    intent: dict[str, object]
+    outcome: GuardOutcome
 
 
 class GrantState:
@@ -90,6 +102,37 @@ class GrantState:
         row = next((r for r in rows if r["operation_id"] == str(operation_id)), rows[0])
         return str(row["principal_key"]), str(row["fingerprint"]), GuardOutcome.model_validate(
             row["outcome"]
+        )
+
+    async def exact(self, operation_id: UUID) -> EffectRecord | None:
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(effect_intents).where(
+                effect_intents.c.operation_id == str(operation_id)
+            ))).mappings().one_or_none()
+        if row is None:
+            return None
+        raw_intent = row["intent"]
+        if not isinstance(raw_intent, dict):
+            raise ValueError("effect intent invalid")
+        return EffectRecord(
+            principal_key=str(row["principal_key"]),
+            fingerprint=str(row["fingerprint"]),
+            grant_id=UUID(str(row["grant_id"])),
+            grant_version=int(row["grant_version"]),
+            intent=cast(dict[str, object], raw_intent),
+            outcome=GuardOutcome.model_validate(row["outcome"]),
+        )
+
+    async def created_work_allowed(self, principal_key: str, work_id: UUID) -> bool:
+        async with self.engine.connect() as connection:
+            values = (await connection.execute(select(effect_intents.c.outcome).where(
+                (effect_intents.c.principal_key == principal_key)
+                & (effect_intents.c.work_id == str(work_id))
+            ))).scalars().all()
+        return any(
+            (outcome := GuardOutcome.model_validate(value)).operation == "work_create"
+            and outcome.effect == "applied"
+            for value in values
         )
 
     async def prepare(
