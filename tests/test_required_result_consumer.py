@@ -30,9 +30,33 @@ async def result_engine() -> AsyncEngine:
         pytest.fail("required-result tests require the disposable switchstand_test database")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
-    yield engine
-    await engine.dispose()
+    try:
+        yield engine
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(metadata.drop_all)
+        await engine.dispose()
+
+
+def service_for(
+    engine: AsyncEngine,
+    principal: PrincipalContext,
+    provider: Provider,
+    required_results: RequiredResultPersistence | None = None,
+) -> ChatGPTService:
+    async def resolve_principal():
+        return principal
+
+    lifecycle = required_results or RequiredResultPersistence(LifecycleRepository(engine))
+    return ChatGPTService(
+        resolve_principal,
+        PostgresState(engine),
+        GrantState(engine),
+        {"asana": provider},
+        required_results=lifecycle,
+    )
 
 
 async def subject(
@@ -47,10 +71,6 @@ async def subject(
         client_id="local-test",
         assurance="test",
     )
-
-    async def resolve_principal():
-        return principal
-
     state = PostgresState(engine)
     handle = await state.bind("asana", "123")
     grants = GrantState(engine)
@@ -66,16 +86,9 @@ async def subject(
         append_qualification="test:required-result",
     )
     await grants.issue(selected, None)
-    lifecycle = required_results or RequiredResultPersistence(LifecycleRepository(engine))
     actual_provider = provider or Provider()
-    service = ChatGPTService(
-        resolve_principal,
-        state,
-        grants,
-        {"asana": actual_provider},
-        required_results=lifecycle,
-    )
-    return service, principal, selected, actual_provider, lifecycle
+    service = service_for(engine, principal, actual_provider, required_results)
+    return service, principal, selected, actual_provider, service.required_results
 
 
 def request(work_id, *, operation_id=None, grant_version=1, revision="r1", text="final result"):
@@ -93,6 +106,7 @@ async def test_required_result_real_write_readback_closes_and_replays_without_du
     result_engine: AsyncEngine,
 ) -> None:
     service, _, grant, provider, lifecycle = await subject(result_engine)
+    assert lifecycle is not None
     obligation_id = uuid4()
     action = request(grant.authority.active_work_id)
 
@@ -114,6 +128,7 @@ async def test_ambiguous_provider_send_is_durable_unknown_and_never_blindly_retr
     provider = Provider()
     provider.unknown = True
     service, _, grant, provider, lifecycle = await subject(result_engine, provider=provider)
+    assert lifecycle is not None
     obligation_id = uuid4()
     action = request(grant.authority.active_work_id)
 
@@ -141,14 +156,15 @@ class FailTerminalCommitOnce(RequiredResultPersistence):
         return await super().transition(obligation_id, currentness_token, event, **kwargs)
 
 
-async def test_crash_after_verified_write_replays_effect_and_finishes_without_duplicate(
+async def test_crash_after_verified_write_replays_effect_after_service_restart_without_duplicate(
     result_engine: AsyncEngine,
 ) -> None:
     lifecycle = FailTerminalCommitOnce(LifecycleRepository(result_engine))
-    service, _, grant, provider, lifecycle = await subject(
+    service, principal, grant, provider, stored_lifecycle = await subject(
         result_engine,
         required_results=lifecycle,
     )
+    assert stored_lifecycle is lifecycle
     obligation_id = uuid4()
     action = request(grant.authority.active_work_id)
 
@@ -158,10 +174,12 @@ async def test_crash_after_verified_write_replays_effect_and_finishes_without_du
     stored = await lifecycle.repository.get(obligation_id)
     assert stored is not None and stored.state is ProfileState.PERSIST_REQUIRED
 
-    recovered = await service.required_result_save(obligation_id, action)
+    restarted = service_for(result_engine, principal, provider)
+    recovered = await restarted.required_result_save(obligation_id, action)
     assert recovered.status == "ok" and recovered.effect == "applied"
     assert provider.sends == 1
-    stored = await lifecycle.repository.get(obligation_id)
+    assert restarted.required_results is not None
+    stored = await restarted.required_results.repository.get(obligation_id)
     assert stored is not None and stored.state is ProfileState.TERMINAL
 
 
@@ -169,6 +187,7 @@ async def test_same_obligation_rejects_changed_result_and_changed_grant_currentn
     result_engine: AsyncEngine,
 ) -> None:
     service, principal, grant, provider, lifecycle = await subject(result_engine)
+    assert lifecycle is not None
     obligation_id = uuid4()
     first = request(grant.authority.active_work_id, revision="stale-revision", text="result one")
 
@@ -209,4 +228,5 @@ async def test_same_obligation_rejects_changed_result_and_changed_grant_currentn
     currentness = await service.required_result_save(obligation_id, current_request)
     assert currentness.status == "stale" and currentness.reason == "lifecycle_currentness_changed"
     assert provider.sends == 0
-    assert (await lifecycle.repository.get(obligation_id)).state is ProfileState.PERSIST_REQUIRED
+    final = await lifecycle.repository.get(obligation_id)
+    assert final is not None and final.state is ProfileState.PERSIST_REQUIRED
