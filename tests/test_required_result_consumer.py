@@ -102,6 +102,20 @@ def request(work_id, *, grant_version=1, revision="r1", text="final result"):
     )
 
 
+def refreshed_grant(principal: PrincipalContext, grant: WorkGrant) -> WorkGrant:
+    return WorkGrant(
+        id=uuid4(),
+        version=grant.version + 1,
+        principal=principal,
+        authority=grant.authority,
+        operations=grant.operations,
+        issuer=grant.issuer,
+        provenance=grant.provenance,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        append_qualification=grant.append_qualification,
+    )
+
+
 async def test_required_result_real_write_readback_closes_and_replays_without_duplicate(
     result_engine: AsyncEngine,
 ) -> None:
@@ -210,17 +224,7 @@ async def test_same_duty_rejects_changed_result_and_changed_grant_currentness(
     assert conflict.operation_id == stale_source.operation_id
     assert provider.sends == 0
 
-    refreshed = WorkGrant(
-        id=uuid4(),
-        version=2,
-        principal=principal,
-        authority=grant.authority,
-        operations=grant.operations,
-        issuer=grant.issuer,
-        provenance=grant.provenance,
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-        append_qualification=grant.append_qualification,
-    )
+    refreshed = refreshed_grant(principal, grant)
     await service.grants.issue(refreshed, 1)
     current_request = request(
         grant.authority.active_work_id,
@@ -233,6 +237,31 @@ async def test_same_duty_rejects_changed_result_and_changed_grant_currentness(
     assert provider.sends == 0
     final = await lifecycle.repository.get(stale_source.operation_id)
     assert final is not None and final.state is ProfileState.PERSIST_REQUIRED
+
+
+async def test_grant_change_after_verified_write_cannot_terminalize_obligation(
+    result_engine: AsyncEngine,
+) -> None:
+    service, principal, grant, provider, lifecycle = await subject(result_engine)
+    assert lifecycle is not None
+    action = request(grant.authority.active_work_id)
+    original_append = service.gateway.append
+
+    async def append_then_replace(current_principal, effect):
+        outcome = await original_append(current_principal, effect)
+        assert outcome.effect == "applied"
+        await service.grants.issue(refreshed_grant(principal, grant), 1)
+        return outcome
+
+    service.gateway.append = append_then_replace
+    result = await service.required_result_save(action)
+
+    assert result.status == "stale"
+    assert result.reason == "lifecycle_currentness_changed_before_terminal"
+    assert result.effect == "unknown" and result.operation_id is not None
+    assert provider.sends == 1
+    stored = await lifecycle.repository.get(result.operation_id)
+    assert stored is not None and stored.state is ProfileState.PERSIST_REQUIRED
 
 
 async def test_concurrent_same_result_converges_on_one_operation_and_one_provider_write(
