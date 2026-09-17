@@ -123,6 +123,13 @@ class MemoryGrants:
             grant_version=selected.version, intent=request, outcome=outcome,
         )
 
+    async def created_work_allowed(self, principal_key, work_id):
+        return any(
+            key == principal_key and outcome.work_id == work_id
+            and outcome.operation == "work_create" and outcome.effect == "applied"
+            for key, _fingerprint, outcome in self.effects.values()
+        )
+
     async def prepare(self, request, selected, fingerprint, unknown):
         self.effects[unknown.operation_id] = (selected.principal.key, fingerprint, unknown)
         self.intent_metadata[unknown.operation_id] = (request, selected)

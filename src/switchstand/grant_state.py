@@ -123,6 +123,18 @@ class GrantState:
             outcome=GuardOutcome.model_validate(row["outcome"]),
         )
 
+    async def created_work_allowed(self, principal_key: str, work_id: UUID) -> bool:
+        async with self.engine.connect() as connection:
+            values = (await connection.execute(select(effect_intents.c.outcome).where(
+                (effect_intents.c.principal_key == principal_key)
+                & (effect_intents.c.work_id == str(work_id))
+            ))).scalars().all()
+        return any(
+            (outcome := GuardOutcome.model_validate(value)).operation == "work_create"
+            and outcome.effect == "applied"
+            for value in values
+        )
+
     async def prepare(
         self, request: dict[str, object], grant: WorkGrant, fingerprint: str,
         unknown: GuardOutcome,
