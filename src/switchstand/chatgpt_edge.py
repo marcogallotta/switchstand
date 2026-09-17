@@ -29,10 +29,11 @@ from .contracts import (
     SourceTaskResult,
 )
 from .grant_state import GrantState
-from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend
+from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
+from .test_create_provider import TestCreateAsanaProvider
 
 LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
@@ -230,7 +231,20 @@ def create_app(
         _audit("work_append", str(work_id), result.status)
         return result
 
-    for tool in (grant_get, work_get, source_task, source_stories, source_story, work_append):
+    async def work_create(
+        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
+        grant_version: int, title: str, notes: str = "",
+    ) -> GuardOutcome:
+        result = await service.create(ProtectedCreate(
+            api_version=api_version, operation_id=operation_id,
+            parent_work_id=parent_work_id, grant_version=grant_version,
+            title=title, notes=notes,
+        ))
+        _audit("work_create", str(parent_work_id), result.status)
+        return result
+
+    for tool in (grant_get, work_get, source_task, source_stories, source_story,
+                 work_append, work_create):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 
@@ -246,8 +260,14 @@ async def serve() -> None:
         async def unresolved_principal():
             return None
 
+        test_project = os.getenv("SWITCHSTAND_TEST_PROJECT_GID", "").strip()
+        correlation_field = os.getenv("SWITCHSTAND_CREATE_CORRELATION_FIELD_GID", "").strip()
+        if test_project and correlation_field:
+            provider = TestCreateAsanaProvider(client, test_project, correlation_field)
+        else:
+            provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
         service = ChatGPTService(unresolved_principal, PostgresState(engine), GrantState(engine), {
-            "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
+            "asana": provider,
         })
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
