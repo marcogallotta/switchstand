@@ -13,6 +13,8 @@ RECOVERY_DELAYS = (0.0, 0.15, 0.35, 0.75)
 
 
 class TestCreateAsanaProvider(AsanaProvider):
+    __test__ = False
+
     def __init__(
         self, client: httpx.AsyncClient, test_project_gid: str, correlation_field_gid: str,
     ):
