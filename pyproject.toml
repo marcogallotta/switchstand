@@ -19,6 +19,7 @@ dependencies = [
 switchstand = "switchstand.mcp:main"
 switchstand-chatgpt-edge = "switchstand.chatgpt_edge:main"
 switchstand-provision = "switchstand.provision:main"
+switchstand-test-grant = "switchstand.test_grant:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]

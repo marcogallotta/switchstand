@@ -49,6 +49,24 @@ def provider(*responses, test_project_gid=None):
 TEST_PROJECT = "9999999999999999"
 
 
+@pytest.mark.parametrize("project, allowed", [(PROJECT, False), (TEST_PROJECT, True)])
+@pytest.mark.parametrize("inherited", [False, True])
+async def test_test_only_admission_excludes_normal_projects(project, allowed, inherited):
+    responses = ([(200, task(parent="456"))] if inherited else [])
+    api = API(*responses, (200, task(project=project)))
+    async with httpx.AsyncClient(base_url="https://app.asana.com/api/1.0",
+                                transport=httpx.MockTransport(api)) as client:
+        subject = AsanaProvider(client, TEST_PROJECT, test_only=True)
+        result = await subject.get("123")
+    assert result.canonical is allowed
+    assert all(request.method == "GET" for request in api.requests)
+
+
+def test_test_only_admission_requires_explicit_test_project():
+    with pytest.raises(ValueError, match="test project"):
+        AsanaProvider(None, test_only=True)
+
+
 def root_field(value):
     return {"gid": ROOT_WORK_GID, "enabled": True,
             "resource_subtype": "text", "text_value": value}

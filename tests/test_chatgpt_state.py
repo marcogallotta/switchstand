@@ -1,9 +1,11 @@
 import asyncio
 import os
+from argparse import Namespace
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import httpx
 import pytest
 from chatgpt_fixture import PRINCIPAL, Provider, grant
 from sqlalchemy import select
@@ -11,7 +13,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand import test_grant
 from switchstand.chatgpt import ChatGPTService
+from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import (
     LaunchAuthority,
     SourceStoriesRequest,
@@ -21,7 +25,8 @@ from switchstand.contracts import (
 from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
-from switchstand.grants import ProtectedAppend
+from switchstand.grants import PrincipalContext, ProtectedAppend
+from switchstand.provider import PROJECT
 from switchstand.state import PostgresState, metadata
 
 
@@ -67,6 +72,74 @@ async def test_trusted_issuance_is_versioned_and_replacement_removes_old_work(su
     assert (await service.append(old_request)).status == "denied"
     assert (await service.get()).item.id == replacement.authority.active_work_id
     assert provider.sends == 0
+
+
+async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
+    with pytest.raises(ValueError, match="switchstand_test"):
+        test_grant.test_database_url({"TEST_DATABASE_URL": "postgresql:///production"})
+    if not os.getenv("TEST_DATABASE_URL"):
+        pytest.skip("TEST_DATABASE_URL is required for PostgreSQL grant/effect tests")
+    url = test_grant.test_database_url()
+    project, subject_id = "999001", str(uuid4())
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def get(self, path, **_kwargs):
+            task = path.split("/")[-1]
+            request = httpx.Request("GET", f"https://example.test{path}")
+            return httpx.Response(200, request=request, json={"data": {
+                "gid": task, "name": f"Task {task}", "notes": "disposable",
+                "completed": False, "modified_at": "r1", "custom_fields": [],
+                "parent": None, "memberships": [{"project": {"gid": project}}],
+            }})
+
+    monkeypatch.setattr(test_grant.httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setenv("ASANA_TOKEN", "credential-must-not-print")
+
+    def command(action, **changes):
+        values = {"command": action, "issuer": "test-issuer", "subject": subject_id,
+                  "client_id": "test-client", "task": "100", "test_project": project,
+                  "expected_version": 0, "ttl_seconds": 60,
+                  "qualification": "test:explicit-disposable"}
+        return Namespace(**(values | changes))
+
+    first = await test_grant.execute(command("set"))
+    assert first["grant"]["version"] == 1
+    viewed = await test_grant.execute(command("inspect"))
+    rendered = str(viewed)
+    assert "[redacted]" in rendered
+    assert all(value not in rendered for value in (
+        subject_id, "test-client", "credential-must-not-print",
+    ))
+    second = await test_grant.execute(command("set", task="200", expected_version=1))
+    assert second["grant"]["version"] == 2
+    with pytest.raises(ValueError, match="stale"):
+        await test_grant.execute(command("set", task="300", expected_version=1))
+    principal = PrincipalContext(issuer="test-issuer", subject=subject_id,
+                                 client_id="test-client", assurance="test")
+    assert (await GrantState(engine).current(principal.key)).version == 2
+    revoked = await test_grant.execute(command("revoke", expected_version=2))
+    assert (revoked["grant"]["version"], revoked["grant"]["state"]) == (3, "revoked")
+
+    test_project = project
+    project = PROJECT
+    with pytest.raises(PermissionError, match="canonical"):
+        await test_grant.execute(command("set", expected_version=3, test_project=test_project))
+    assert (await GrantState(engine).current(principal.key)).version == 3
+    project = test_project
+
+    expiring = principal.model_copy(update={"subject": str(uuid4())})
+    await test_grant.execute(command("set", subject=expiring.subject, ttl_seconds=1))
+    await asyncio.sleep(1.01)
+    async def resolve(): return expiring
+    service = ChatGPTService(resolve, PostgresState(engine), GrantState(engine), {})
+    result = await build_chatgpt_server(service).call_tool("grant_get", {"api_version": "1"})
+    assert result.structured_content["status"] == "denied"
+    await engine.dispose()
 
 
 @pytest.mark.parametrize("changes", [
