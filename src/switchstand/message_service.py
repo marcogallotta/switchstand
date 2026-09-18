@@ -239,7 +239,7 @@ class MessageService:
             principal, grant = current
             actor_work_id, actor_failure = await self._actor(grant, request.work_id)
             if actor_failure is not None or actor_work_id is None:
-                return MessageSubmitResult(status="denied", reason=actor_failure or "work_not_granted")
+                return MessagePendingResult(status="denied", reason=actor_failure or "work_not_granted")
             runtime_failure = await self._runtime_failure()
             if runtime_failure is not None:
                 return MessagePendingResult(
