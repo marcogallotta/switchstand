@@ -64,6 +64,17 @@ async def test_related_get_keeps_grant_guard_and_exact_bound_source():
     assert provider.related_calls == ["123"]
 
 
+async def test_workspace_attachment_read_requires_explicit_operation():
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get"}), append_qualification=None,
+    )
+    denied = await build_chatgpt_server(subject).call_tool("work_attachments", {
+        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+    })
+    assert denied.structured_content["status"] == "denied"
+
+
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     parameters = StdioServerParameters(command=sys.executable,
         args=[str(Path(__file__)), "serve"], env={"PYTHONPATH": str(Path.cwd() / "src")})
