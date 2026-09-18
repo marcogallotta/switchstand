@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from chatgpt_fixture import Handles, PRINCIPAL, Provider, grant
+from chatgpt_fixture import PRINCIPAL, Handles, Provider, grant
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
