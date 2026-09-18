@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .contracts import Routing, WorkSearchItem, WorkSearchRequest, WorkSearchResult
-from .core import ProviderError
+from .core import Handle, ProviderError
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class DiscoveryProvider(Protocol):
 
 
 class DiscoveryState(Protocol):
-    async def bind(self, provider: str, provider_work_id: str): ...
+    async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
 
 
 class WorkDiscovery:
