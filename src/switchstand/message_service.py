@@ -37,6 +37,7 @@ RuntimeFailure = tuple[
 
 class MessageSend(ClosedModel):
     api_version: ApiVersion
+    work_id: UUID | None = None
     message_id: UUID
     recipient_work_id: UUID
     route_ref: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_.-]*$")
@@ -45,6 +46,7 @@ class MessageSend(ClosedModel):
 
 class MessageReply(ClosedModel):
     api_version: ApiVersion
+    work_id: UUID | None = None
     message_id: UUID
     in_reply_to_delivery_id: UUID
     payload: JsonValue
@@ -52,17 +54,20 @@ class MessageReply(ClosedModel):
 
 class MessagePending(ClosedModel):
     api_version: ApiVersion
+    work_id: UUID | None = None
     cursor: UUID | None = None
     limit: int = Field(default=50, ge=1, le=100)
 
 
 class MessageDelivery(ClosedModel):
     api_version: ApiVersion
+    work_id: UUID | None = None
     delivery_id: UUID
 
 
 class MessageDisposition(ClosedModel):
     api_version: ApiVersion
+    work_id: UUID | None = None
     delivery_id: UUID
     result_message_id: UUID | None = None
     operation_id: UUID | None = None
@@ -104,6 +109,21 @@ class MessageService:
             return None
         return principal, grant
 
+    async def _actor(
+        self, grant: WorkGrant, requested_work_id: UUID | None,
+    ) -> tuple[UUID | None, Literal["explicit_work_id_required", "work_not_granted"] | None]:
+        if "message" not in grant.operations:
+            return None, "work_not_granted"
+        if grant.scope == "workspace":
+            if requested_work_id is None:
+                return None, "explicit_work_id_required"
+            if await self.state.get(requested_work_id) is None:
+                return None, "work_not_granted"
+            return requested_work_id, None
+        if requested_work_id is not None and requested_work_id != grant.authority.active_work_id:
+            return None, "work_not_granted"
+        return grant.authority.active_work_id, None
+
     async def _runtime(self) -> RuntimeCurrentness:
         current = None
         if self.current_generation is not None:
@@ -125,7 +145,7 @@ class MessageService:
         handle = await self.state.get(recipient_work_id)
         if handle is None or handle.provider != "asana":
             return None
-        recipient = await self.grants.current_for_active_work(recipient_work_id)
+        recipient = await self.grants.current_for_work(recipient_work_id)
         if recipient is None:
             return None
         return MessageRoute(
@@ -141,6 +161,9 @@ class MessageService:
             if current is None:
                 return MessageSubmitResult(status="denied", reason="no_current_grant")
             principal, grant = current
+            actor_work_id, actor_failure = await self._actor(grant, request.work_id)
+            if actor_failure is not None or actor_work_id is None:
+                return MessageSubmitResult(status="denied", reason=actor_failure or "work_not_granted")
             runtime_failure = await self._runtime_failure()
             if runtime_failure is not None:
                 return MessageSubmitResult(
@@ -162,6 +185,7 @@ class MessageService:
                     kind="request",
                     payload=request.payload,
                 ),
+                sender_work_id=actor_work_id,
             )
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
@@ -172,6 +196,9 @@ class MessageService:
             if current is None:
                 return MessageSubmitResult(status="denied", reason="no_current_grant")
             principal, grant = current
+            actor_work_id, actor_failure = await self._actor(grant, request.work_id)
+            if actor_failure is not None or actor_work_id is None:
+                return MessageSubmitResult(status="denied", reason=actor_failure or "work_not_granted")
             runtime_failure = await self._runtime_failure()
             if runtime_failure is not None:
                 return MessageSubmitResult(
@@ -199,6 +226,7 @@ class MessageService:
                     payload=request.payload,
                     in_reply_to_delivery_id=request.in_reply_to_delivery_id,
                 ),
+                sender_work_id=actor_work_id,
             )
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
@@ -209,6 +237,9 @@ class MessageService:
             if current is None:
                 return MessagePendingResult(status="denied", reason="no_current_grant")
             principal, grant = current
+            actor_work_id, actor_failure = await self._actor(grant, request.work_id)
+            if actor_failure is not None or actor_work_id is None:
+                return MessagePendingResult(status="denied", reason=actor_failure or "work_not_granted")
             runtime_failure = await self._runtime_failure()
             if runtime_failure is not None:
                 return MessagePendingResult(
@@ -222,6 +253,7 @@ class MessageService:
                     cursor=request.cursor,
                     limit=request.limit,
                 ),
+                recipient_work_id=actor_work_id,
             )
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
@@ -240,6 +272,9 @@ class MessageService:
             if current is None:
                 return MessageTransitionResult(status="denied", reason="no_current_grant")
             principal, grant = current
+            actor_work_id, actor_failure = await self._actor(grant, request.work_id)
+            if actor_failure is not None or actor_work_id is None:
+                return MessageTransitionResult(status="denied", reason=actor_failure or "work_not_granted")
             internal = MessageReceiveRequest(
                 api_version=request.api_version,
                 delivery_id=request.delivery_id,
@@ -247,9 +282,13 @@ class MessageService:
             )
             runtime = await self._runtime()
             if operation == "receive":
-                return await self.messages.receive(principal, runtime, internal)
+                return await self.messages.receive(
+                    principal, runtime, internal, recipient_work_id=actor_work_id
+                )
             if operation == "recover":
-                return await self.messages.recover(principal, runtime, internal)
+                return await self.messages.recover(
+                    principal, runtime, internal, recipient_work_id=actor_work_id
+                )
             raise ValueError("unsupported message transition")
         except (SQLAlchemyError, ValueError):
             return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
@@ -260,6 +299,9 @@ class MessageService:
             if current is None:
                 return MessageTransitionResult(status="denied", reason="no_current_grant")
             principal, grant = current
+            actor_work_id, actor_failure = await self._actor(grant, request.work_id)
+            if actor_failure is not None or actor_work_id is None:
+                return MessageTransitionResult(status="denied", reason=actor_failure or "work_not_granted")
             evidence = (
                 DispositionEvidence(kind="result", result_message_id=request.result_message_id)
                 if request.result_message_id is not None
@@ -273,7 +315,8 @@ class MessageService:
                 evidence=evidence,
             )
             return await self.messages.disposition(
-                principal, await self._runtime(), internal
+                principal, await self._runtime(), internal,
+                recipient_work_id=actor_work_id,
             )
         except (SQLAlchemyError, ValueError):
             return MessageTransitionResult(status="recovery_required", reason="state_unavailable")

@@ -69,6 +69,32 @@ class GrantState:
             raise ValueError("multiple current grants own the same active work")
         return matches[0] if matches else None
 
+    async def current_for_work(self, work_id: UUID) -> WorkGrant | None:
+        """Resolve server-owned messaging route: exact task owner first, workspace fallback."""
+        async with self.engine.connect() as connection:
+            values = (await connection.execute(select(work_grants.c.document).where(
+                work_grants.c.document.is_not(None)
+            ))).scalars().all()
+        current: list[WorkGrant] = []
+        for value in values:
+            if value is None:
+                continue
+            grant = WorkGrant.model_validate(value)
+            if grant.current() and "message" in grant.operations:
+                current.append(grant)
+        exact = [
+            grant for grant in current
+            if grant.scope == "launch" and grant.authority.active_work_id == work_id
+        ]
+        if len(exact) > 1:
+            raise ValueError("multiple current grants own the same active work")
+        if exact:
+            return exact[0]
+        workspace = [grant for grant in current if grant.scope == "workspace"]
+        if len(workspace) > 1:
+            raise ValueError("multiple current workspace messaging grants")
+        return workspace[0] if workspace else None
+
     async def issue(self, grant: WorkGrant, expected_version: int | None) -> None:
         """Trusted control path only; compare-and-replace also handles revoke/terminal."""
         key = grant.principal.key
