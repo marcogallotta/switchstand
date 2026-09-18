@@ -10,7 +10,6 @@ from .contracts import (
     Routing,
     WorkPatch,
 )
-from .discovery import ProviderSearchItem, ProviderSearchPage
 from .core import (
     ProviderError,
     ProviderHead,
@@ -20,6 +19,7 @@ from .core import (
     ProviderWork,
     UnknownEffect,
 )
+from .discovery import ProviderSearchItem, ProviderSearchPage
 
 PROJECTS = (
     "1218210259719507",
