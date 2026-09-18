@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from chatgpt_fixture import PRINCIPAL, Provider, grant
+from chatgpt_fixture import Handles, PRINCIPAL, Provider, grant
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -341,6 +341,7 @@ async def test_workspace_scope_requires_explicit_bound_canonical_targets(subject
     service, selected, provider = subject
     foreign = uuid4()
     noncanonical = uuid4()
+    assert isinstance(service.state, Handles)
     service.state.handles[foreign] = Handle(foreign, "asana", "789")
     service.state.handles[noncanonical] = Handle(noncanonical, "asana", "790")
     provider.canonical_ids.add("789")
