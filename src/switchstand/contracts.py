@@ -54,6 +54,34 @@ class WorkPatch(ClosedModel):
         return self
 
 
+class WorkSearchRequest(ClosedModel):
+    api_version: ApiVersion
+    text: str | None = Field(default=None, min_length=1, max_length=500)
+    completed: bool | None = None
+    cursor: str | None = Field(default=None, min_length=1, max_length=1024)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class WorkSearchItem(ClosedModel):
+    id: UUID
+    title: str
+    completed: bool
+    revision: str
+    routing: Routing
+
+
+class WorkSearchResult(ClosedModel):
+    status: Literal["ok", "denied", "unknown", "provider_error"]
+    items: tuple[WorkSearchItem, ...] = ()
+    next_cursor: str | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status != "ok" and (self.items or self.next_cursor is not None):
+            raise ValueError("failed work search must not claim result data")
+        return self
+
+
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID

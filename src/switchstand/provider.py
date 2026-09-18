@@ -19,6 +19,7 @@ from .core import (
     ProviderWork,
     UnknownEffect,
 )
+from .discovery import ProviderSearchItem, ProviderSearchPage
 
 PROJECTS = (
     "1218210259719507",
@@ -480,6 +481,205 @@ class AsanaProvider:
             return story_gid if isinstance(story_gid, str) else None
         except (KeyError, TypeError, ValueError):
             return None
+
+    def _search_routing(self, task: JSON) -> Routing:
+        raw_fields = task.get("custom_fields")
+        if not isinstance(raw_fields, list) or any(
+            not isinstance(field, dict) for field in cast(list[object], raw_fields)
+        ):
+            raise TypeError
+        fields = [cast(JSON, field) for field in cast(list[object], raw_fields)]
+        values: dict[str, str | None] = {}
+        for name, field_gid in FIELDS.items():
+            matches = [field for field in fields if field.get("gid") == field_gid]
+            if len(matches) > 1:
+                raise TypeError
+            if not matches:
+                values[name] = None
+                continue
+            field = matches[0]
+            options = field.get("enum_options")
+            value = field.get("display_value")
+            current = field.get("enum_value")
+            if (
+                field.get("enabled") is not True
+                or field.get("resource_subtype") != "enum"
+                or not isinstance(options, list)
+                or any(not isinstance(option, dict) for option in cast(list[object], options))
+            ):
+                raise TypeError
+            if value is None:
+                if current is not None:
+                    raise TypeError
+                values[name] = None
+                continue
+            current_gid = self._gid(current)
+            parsed_options = [
+                cast(JSON, option) for option in cast(list[object], options)
+            ]
+            valid = [
+                option for option in parsed_options if self._gid(option) == current_gid
+            ]
+            if (
+                not isinstance(value, str)
+                or not value
+                or current_gid is None
+                or len(valid) != 1
+                or valid[0].get("enabled") is not True
+                or valid[0].get("name") != value
+            ):
+                raise TypeError
+            values[name] = value
+        return Routing(**values)
+
+    def _search_owner_project(self, task: JSON) -> str:
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list):
+            raise TypeError
+        admitted: set[str] = set()
+        for raw in cast(list[object], memberships):
+            if not isinstance(raw, dict):
+                raise TypeError
+            project_gid = self._gid(cast(JSON, raw).get("project"))
+            if project_gid is None:
+                raise TypeError
+            if project_gid in self._admission_projects:
+                admitted.add(project_gid)
+        if not admitted:
+            raise TypeError
+        return min(admitted)
+
+    @staticmethod
+    def _search_position(cursor: str | None, project_count: int) -> tuple[int, str | None]:
+        if cursor is None:
+            return 0, None
+        index_text, separator, offset = cursor.partition(":")
+        if separator != ":" or not index_text.isdigit():
+            raise TypeError
+        index = int(index_text)
+        if index >= project_count:
+            raise TypeError
+        return index, offset or None
+
+    @staticmethod
+    def _search_cursor(index: int, offset: str | None) -> str:
+        value = f"{index}:{offset or ''}"
+        if len(value) > 1024:
+            raise TypeError
+        return value
+
+    async def search_work(
+        self, text: str | None, completed: bool | None, cursor: str | None, limit: int,
+    ) -> ProviderSearchPage:
+        try:
+            if not 1 <= limit <= 100:
+                raise ProviderError("provider request invalid")
+            if cursor is not None and (not cursor or len(cursor) > 1024):
+                raise ProviderError("provider request invalid")
+            if text is not None and (not text or len(text) > 500):
+                raise ProviderError("provider request invalid")
+
+            next_cursor: str | None = None
+            projects: tuple[str, ...] = ()
+            project: str | None = None
+            index = 0
+            offset: str | None = None
+
+            if text is not None:
+                if cursor is not None:
+                    raise ProviderError("text search is bounded and non-continuable")
+                params: dict[str, str | int] = {
+                    "projects.any": ",".join(sorted(self._admission_projects)),
+                    "limit": limit,
+                    "opt_fields": "gid",
+                    "text": text,
+                }
+                if completed is not None:
+                    params["completed"] = "true" if completed else "false"
+                response = await self.client.get(
+                    f"/workspaces/{WORKSPACE}/tasks/search", params=params
+                )
+            else:
+                projects = tuple(sorted(self._admission_projects))
+                index, offset = self._search_position(cursor, len(projects))
+                project = projects[index]
+                params = {
+                    "project": project,
+                    "completed_since": "1970-01-01T00:00:00Z",
+                    "limit": limit,
+                    "opt_fields": "gid",
+                }
+                if offset is not None:
+                    params["offset"] = offset
+                response = await self.client.get("/tasks", params=params)
+
+            response.raise_for_status()
+            payload = response.json()
+            raw_rows = payload["data"]
+            if not isinstance(raw_rows, list):
+                raise TypeError
+            rows = cast(list[object], raw_rows)
+            if len(rows) > limit:
+                raise TypeError
+            if text is not None and payload.get("next_page") is not None:
+                raise ProviderError("text search continuation unsupported")
+
+            if text is None:
+                next_page = payload.get("next_page")
+                if next_page is not None:
+                    next_offset = (
+                        cast(JSON, next_page).get("offset")
+                        if isinstance(next_page, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(next_offset, str)
+                        or not next_offset
+                        or next_offset == offset
+                    ):
+                        raise TypeError
+                    next_cursor = self._search_cursor(index, next_offset)
+                elif index + 1 < len(projects):
+                    next_cursor = self._search_cursor(index + 1, None)
+                else:
+                    next_cursor = None
+
+            seen: set[str] = set()
+            items: list[ProviderSearchItem] = []
+            for raw in rows:
+                gid = self._gid(raw)
+                if gid is None or not gid or gid in seen:
+                    raise TypeError
+                seen.add(gid)
+                task = await self._task(gid)
+                if task is None or self._gid(task) != gid or not await self._canonical(task):
+                    raise ProviderError("provider search readback failed")
+                if text is None:
+                    if project is None:
+                        raise TypeError
+                    if self._search_owner_project(task) != project:
+                        continue
+                title = task.get("name")
+                current_completed = task.get("completed")
+                revision = task.get("modified_at")
+                if (
+                    not isinstance(title, str)
+                    or not isinstance(current_completed, bool)
+                    or not isinstance(revision, str)
+                ):
+                    raise TypeError
+                if completed is not None and current_completed != completed:
+                    continue
+                items.append(ProviderSearchItem(
+                    provider_work_id=gid,
+                    title=title,
+                    completed=current_completed,
+                    revision=revision,
+                    routing=self._search_routing(task),
+                ))
+            return ProviderSearchPage(tuple(items), next_cursor)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
 
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None:
         try:
