@@ -135,7 +135,8 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             client_id="chatgpt-client",
             assurance="authenticated",
         ),
-        operations=frozenset({"work_get", "work_append", "work_create"}),
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search", "work_append", "work_create"}),
         append_qualification="real:chatgpt-edge",
         create_qualification="test:chatgpt-edge",
     )
@@ -152,6 +153,9 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
     async with app.router.lifespan_context(app), Client(transport) as client:
         names = {tool.name for tool in await client.list_tools()}
         grant_result = await client.call_tool("grant_get", {"api_version": "1"})
+        search = await client.call_tool("work_search", {
+            "api_version": "1", "text": "discover",
+        })
         operation_id = str(uuid4())
         append = await client.call_tool("work_append", {
             "api_version": "1",
@@ -178,10 +182,14 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "notes": "edge route proof",
         })
     assert names == {
-        "grant_get", "work_get", "source_task", "source_stories", "source_story",
-        "work_append", "work_create",
+        "grant_get", "work_get", "work_search", "source_task", "source_stories",
+        "source_story", "work_append", "work_create",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
+    assert search.structured_content["status"] == "ok"
+    assert search.structured_content["items"][0]["title"] == "Discovered"
+    assert "provider" not in str(search.structured_content)
+    assert "789" not in str(search.structured_content)
     assert append.structured_content["status"] == "ok"
     assert replay.structured_content == append.structured_content
     assert create.structured_content["status"] == "denied"
