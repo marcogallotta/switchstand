@@ -27,6 +27,10 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkAttachmentRequest,
+    WorkAttachmentResult,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
 )
 from .grant_state import GrantState
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
