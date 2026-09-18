@@ -8,7 +8,7 @@ from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
 from switchstand.chatgpt_mcp import build_chatgpt_server
-from switchstand.contracts import SourceTaskRequest
+from switchstand.contracts import SourceTaskRequest, WorkSearchRequest
 from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
 
 
@@ -53,6 +53,32 @@ async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     assert (await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))).status == "denied"
 
 
+async def test_workspace_search_binds_stable_work_and_launch_scope_is_denied():
+    subject = service()
+    request = WorkSearchRequest(api_version="1", text="discover")
+
+    denied = await subject.search(request)
+    assert denied.status == "denied"
+
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search"}),
+    )
+    first = await subject.search(request)
+    second = await subject.search(request)
+    assert first.status == second.status == "ok"
+    assert len(first.items) == 1
+    assert first.items[0].id == second.items[0].id
+    assert first.items[0].title == "Discovered"
+    rendered = first.model_dump(mode="json")
+    assert "789" not in str(rendered)
+    assert "provider" not in str(rendered)
+
+    discovered = await subject.get(first.items[0].id)
+    assert discovered.status == "ok"
+    assert discovered.item is not None and discovered.item.id == first.items[0].id
+
+
 async def test_related_get_keeps_grant_guard_and_exact_bound_source():
     subject = service()
     provider = subject.providers["asana"]
@@ -70,8 +96,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-            "work_create",
+            "grant_get", "work_get", "work_search", "source_task", "source_stories",
+            "source_story", "work_append", "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
@@ -85,6 +111,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "api_version": "1", "include_related": True,
         })).structured_content
         assert related["related"]["candidates"][0]["parent_gid"] == "123"
+        denied_search = await client.call_tool(
+            "work_search", {"api_version": "1", "text": "discover"}
+        )
+        assert denied_search.structured_content["status"] == "denied"
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'grant_version': 1, 'observed_revision': "r1", 'text': "protocol feedback"}
