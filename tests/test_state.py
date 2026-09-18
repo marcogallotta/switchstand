@@ -1,5 +1,6 @@
 import asyncio
 import os
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.engine import make_url
@@ -16,6 +17,7 @@ async def state():
     assert make_url(url).database == "switchstand_test", "state tests require switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     yield PostgresState(engine)
     await engine.dispose()
@@ -50,3 +52,26 @@ async def test_lock_serializes_two_writers(state):
     release.set()
     await asyncio.gather(*writers)
     assert not done and entered.is_set()
+
+
+async def test_event_binding_is_stable_opaque_and_exact_work_scoped(state):
+    work = await state.bind("asana", "task-1")
+    other = await state.bind("asana", "task-2")
+
+    first, concurrent = await asyncio.gather(
+        state.bind_event(work.id, "asana", "task-1", "story-1"),
+        state.bind_event(work.id, "asana", "task-1", "story-1"),
+    )
+    assert first == concurrent
+    assert first.id.version == 4
+    assert first.work_id == work.id
+    assert first.provider_work_id == "task-1" and first.provider_event_id == "story-1"
+    assert await state.get_event(work.id, first.id) == first
+    restarted = PostgresState(state.engine)
+    assert await restarted.get_event(work.id, first.id) == first
+
+    assert await state.get_event(other.id, first.id) is None
+    assert await state.get_event(work.id, uuid4()) is None
+
+    with pytest.raises(ValueError, match="does not match work binding"):
+        await state.bind_event(work.id, "asana", "task-2", "story-1")
