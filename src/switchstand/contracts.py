@@ -255,3 +255,70 @@ class SourceStoryResult(ClosedModel):
         elif self.task_gid is not None or self.revision is not None or self.item is not None:
             raise ValueError("failed story reread must not claim source data")
         return self
+
+
+class WorkEvent(ClosedModel):
+    id: UUID
+    work_id: UUID
+    subtype: str | None = None
+    text: str | None = None
+    created_at: str
+    actor: str | None = None
+
+
+class WorkHistoryRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    observed_revision: str = Field(min_length=1)
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class WorkEventRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    event_id: UUID
+    observed_revision: str = Field(min_length=1)
+
+
+class WorkHistoryResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    events: tuple[WorkEvent, ...] = ()
+    next_cursor: str | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None:
+                raise ValueError("successful work history requires work and revision")
+            if any(event.work_id != self.work_id for event in self.events):
+                raise ValueError("history events must belong to the requested work")
+        elif self.status == "stale":
+            if self.work_id is None or self.revision is None or self.events or self.next_cursor is not None:
+                raise ValueError("stale work history requires only current work and revision")
+        elif self.work_id is not None or self.revision is not None or self.events or self.next_cursor is not None:
+            raise ValueError("failed work history must not claim event data")
+        return self
+
+
+class WorkEventResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    item: WorkEvent | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None or self.item is None:
+                raise ValueError("successful event reread requires work, revision and event")
+            if self.item.work_id != self.work_id:
+                raise ValueError("event must belong to the requested work")
+        elif self.status == "stale":
+            if self.work_id is None or self.revision is None or self.item is not None:
+                raise ValueError("stale event reread requires current work and revision only")
+        elif self.work_id is not None or self.revision is not None or self.item is not None:
+            raise ValueError("failed event reread must not claim event data")
+        return self
