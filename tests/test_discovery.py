@@ -11,7 +11,7 @@ from switchstand.discovery import (
     ProviderSearchPage,
     WorkDiscovery,
 )
-from switchstand.provider import PROJECT, AsanaProvider
+from switchstand.provider import PROJECT, PROJECTS, AsanaProvider
 
 
 def task(
@@ -73,7 +73,7 @@ async def test_asana_search_is_bounded_to_admitted_projects_and_exact_filters():
     assert request.url.params["text"] == "needle"
     assert request.url.params["completed"] == "false"
     assert request.url.params["limit"] == "25"
-    assert set(request.url.params["projects.any"].split(",")) == set(subject._admission_projects)
+    assert set(request.url.params["projects.any"].split(",")) == set(PROJECTS)
     assert "offset" not in request.url.params
 
 
