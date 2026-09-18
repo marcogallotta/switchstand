@@ -54,6 +54,28 @@ class WorkPatch(ClosedModel):
         return self
 
 
+class WorkSearchRequest(ClosedModel):
+    api_version: ApiVersion
+    text: str | None = Field(default=None, min_length=1, max_length=500)
+    completed: bool | None = None
+    cursor: str | None = Field(default=None, min_length=1)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class WorkSearchItem(ClosedModel):
+    id: UUID
+    title: str
+    completed: bool
+    revision: str
+    routing: Routing
+
+
+class WorkSearchResult(ClosedModel):
+    status: Literal["ok", "provider_error"]
+    items: tuple[WorkSearchItem, ...] = ()
+    next_cursor: str | None = None
+
+
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
