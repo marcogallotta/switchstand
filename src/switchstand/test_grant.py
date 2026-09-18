@@ -21,7 +21,7 @@ from .state import PostgresState
 from .task_ref import asana_task_id
 
 MAX_TTL_SECONDS = 3600
-Operation = Literal["work_get", "work_append", "work_create"]
+Operation = Literal["work_get", "work_search", "work_append", "work_create"]
 
 
 def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
@@ -88,14 +88,17 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                     PostgresState(engine), "asana",
                     AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
+            scope = getattr(arguments, "scope", "launch")
             operations: set[Operation] = {"work_get", "work_create"}
+            if scope == "workspace":
+                operations.add("work_search")
             append_qualification = None
             if principal.assurance == "test":
                 operations.add("work_append")
                 append_qualification = arguments.qualification
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
-                authority=authority, scope=getattr(arguments, "scope", "launch"),
+                authority=authority, scope=scope,
                 operations=frozenset(operations),
                 issuer="switchstand-test-grant",
                 provenance=f"explicit disposable task {arguments.task}",
