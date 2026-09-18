@@ -117,6 +117,23 @@ async def test_list_uses_real_project_offsets_then_advances_admitted_projects():
     assert requests[4].url.params["project"] == projects[1]
 
 
+async def test_multihomed_task_is_emitted_only_by_first_admitted_project():
+    projects = sorted(PROJECTS)
+    shared = task("101", project=projects[0])
+    shared["memberships"].append({"project": {"gid": projects[1]}})
+    subject, _ = asana_provider(
+        {"data": [{"gid": "101"}], "next_page": None},
+        {"data": shared},
+        {"data": [{"gid": "101"}], "next_page": None},
+        {"data": shared},
+    )
+    first = await subject.search_work(None, None, None, 1)
+    second = await subject.search_work(None, None, first.next_cursor, 1)
+    assert [item.provider_work_id for item in first.items] == ["101"]
+    assert second.items == ()
+    assert second.next_cursor == "2:"
+
+
 @pytest.mark.parametrize(
     "problem",
     ["duplicate", "disabled", "wrong_subtype", "bad_option", "wrong_option", "malformed_value"],
