@@ -128,7 +128,11 @@ def _server(env, port):
 async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
-        assert {tool.name for tool in await client.list_tools()} == TOOLS
+        tools = await client.list_tools()
+        assert {tool.name for tool in tools} == TOOLS
+        for tool in tools:
+            assert tool.input_schema.get("additionalProperties") is False
+            assert tool.output_schema.get("additionalProperties") is False
         observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
@@ -139,6 +143,27 @@ async def _exercise(endpoint, selected, operation_id):
             "work_id": str(selected.authority.active_work_id), "grant_version": 1,
             "observed_revision": "r1", "text": "durable vertical append",
         })
+        assert result.structured_content["status"] == "ok"
+        history = await client.call_tool("work_history", {
+            "api_version": "1",
+            "work_id": str(selected.authority.active_work_id),
+            "observed_revision": "r2",
+        })
+        assert history.structured_content["status"] == "ok"
+        assert history.structured_content["work_id"] == str(selected.authority.active_work_id)
+        event = history.structured_content["events"][0]
+        assert event["work_id"] == str(selected.authority.active_work_id)
+        assert event["text"] == "durable vertical append"
+        assert event["id"] != result.structured_content["receipt"]["story_gid"]
+        assert "task_gid" not in event and "story_gid" not in event
+        reread = await client.call_tool("work_event", {
+            "api_version": "1",
+            "work_id": str(selected.authority.active_work_id),
+            "event_id": event["id"],
+            "observed_revision": "r2",
+        })
+        assert reread.structured_content["status"] == "ok"
+        assert reread.structured_content["item"] == event
         return result.structured_content
 
 
