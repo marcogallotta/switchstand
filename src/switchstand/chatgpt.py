@@ -1,6 +1,7 @@
 """Authenticated-caller seam; authentication adapters are trusted host code, never tools."""
 
 from collections.abc import Awaitable, Callable
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,9 +19,12 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkSearchRequest,
+    WorkSearchResult,
 )
 from .core import Controller, Provider, ProviderError, State
 from .creates import CreateGateway
+from .discovery import DiscoveryProvider, WorkDiscovery
 from .effects import AppendGateway
 from .grant_state import GrantState
 from .grants import (
@@ -43,6 +47,11 @@ class ChatGPTService:
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
         self.create_gateway = CreateGateway(state, grants, providers)
+        provider = providers.get("asana")
+        self.discovery = (
+            None if provider is None
+            else WorkDiscovery("asana", cast(DiscoveryProvider, provider), state)
+        )
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
@@ -64,6 +73,22 @@ class ChatGPTService:
             return GrantResult(status="ok", principal=principal, grant=grant)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantResult(status="unknown", principal=principal)
+
+    async def search(self, request: WorkSearchRequest) -> WorkSearchResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkSearchResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkSearchResult(status="denied")
+                if grant.scope != "workspace" or "work_search" not in grant.operations:
+                    return WorkSearchResult(status="denied")
+                if self.discovery is None:
+                    return WorkSearchResult(status="provider_error")
+                return await self.discovery.search(request)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return WorkSearchResult(status="unknown")
 
     async def get(self, work_id: UUID | None = None, *, include_related: bool = False) -> GrantedWorkResult:
         principal = await self.principal()
