@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import pytest
+from chatgpt_fixture import PRINCIPAL, MemoryGrants, grant
 from pydantic import ValidationError
 
+from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     GroupedCandidate,
     GroupedLookup,
@@ -29,6 +31,7 @@ from switchstand.core import (
     ProviderStoriesPage,
     ProviderWork,
 )
+from switchstand.grants import CreateReceipt, GuardOutcome
 
 WORK_ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -388,3 +391,57 @@ async def test_work_history_provider_error_empty_and_pagination_are_distinct(set
         api_version="1", work_id=WORK_ID, observed_revision="r1"
     ))
     assert empty.status == "ok" and empty.events == () and empty.next_cursor is None
+
+
+async def test_chatgpt_created_work_history_requires_exact_applied_create_evidence():
+    state, provider = FakeState(), FakeProvider()
+    created, merely_bound = uuid4(), uuid4()
+    state.handles[created] = Handle(created, "asana", "789")
+    state.handles[merely_bound] = Handle(merely_bound, "asana", "790")
+    selected = grant(active=WORK_ID, reference=REFERENCE_ID)
+    grants = MemoryGrants(selected)
+
+    async def principal():
+        return PRINCIPAL
+
+    service = ChatGPTService(principal, state, grants, {"asana": provider})
+    operation_id = uuid4()
+    receipt = CreateReceipt(
+        operation_id=operation_id,
+        principal=PRINCIPAL,
+        grant_id=selected.id,
+        grant_version=selected.version,
+        work_id=created,
+        provider="asana",
+        task_gid="789",
+        parent_task_gid=TASK_GID,
+        title="Created",
+        qualification="test:create",
+    )
+    outcome = GuardOutcome(
+        status="ok",
+        operation="work_create",
+        work_id=created,
+        operation_id=operation_id,
+        reason="exact_create_verified",
+        effect="applied",
+        retry="none",
+        next_action="Use the recorded create receipt.",
+        receipt=receipt,
+    )
+    grants.effects[operation_id] = (PRINCIPAL.key, "fingerprint", outcome)
+
+    page = await service.history(WorkHistoryRequest(
+        api_version="1", work_id=created, observed_revision="r1"
+    ))
+    assert page.status == "ok" and page.events
+    exact = await service.event(WorkEventRequest(
+        api_version="1", work_id=created,
+        event_id=page.events[0].id, observed_revision="r1",
+    ))
+    assert exact.status == "ok" and exact.item == page.events[0]
+
+    denied = await service.history(WorkHistoryRequest(
+        api_version="1", work_id=merely_bound, observed_revision="r1"
+    ))
+    assert denied.status == "denied"
