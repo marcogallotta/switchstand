@@ -243,6 +243,60 @@ async def test_workspace_actor_is_explicit_and_reply_routes_to_same_work(engine)
     assert wrong.status == "denied" and wrong.reason == "work_not_granted"
 
 
+async def test_workspace_messaging_requires_explicit_capability(engine):
+    state = PostgresState(engine)
+    grants = GrantState(engine)
+    messages = MessageState(engine, grants)
+    actor_work = await state.bind("asana", "101")
+    recipient_work = await state.bind("asana", "202")
+    who = principal("workspace-no-message")
+    selected = WorkGrant(
+        id=uuid4(), version=1, principal=who,
+        authority=LaunchAuthority(active_work_id=actor_work.id),
+        scope="workspace",
+        operations=frozenset({"work_get"}),
+        issuer="fixture-operator", provenance="no message capability",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    await grants.issue(selected, None)
+    subject = await service(who, state, grants, messages, "workspace")
+    denied = await subject.send(MessageSend(
+        api_version="1", work_id=actor_work.id, message_id=uuid4(),
+        recipient_work_id=recipient_work.id, route_ref="review", payload={},
+    ))
+    assert denied.status == "denied" and denied.reason == "work_not_granted"
+
+
+async def test_workspace_route_ambiguity_fails_closed(engine):
+    state = PostgresState(engine)
+    grants = GrantState(engine)
+    messages = MessageState(engine, grants)
+    sender_work = await state.bind("asana", "101")
+    recipient_work = await state.bind("asana", "303")
+    sender = principal("sender")
+    await grants.issue(grant(sender, sender_work.id), None)
+    for index in range(2):
+        anchor = await state.bind("asana", f"40{index}")
+        who = principal(f"workspace-{index}")
+        selected = WorkGrant(
+            id=uuid4(), version=1, principal=who,
+            authority=LaunchAuthority(active_work_id=anchor.id),
+            scope="workspace",
+            operations=frozenset({"work_get", "message"}),
+            issuer="fixture-operator", provenance="ambiguous workspace route",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        await grants.issue(selected, None)
+
+    subject = await service(sender, state, grants, messages, "sender-run")
+    blocked = await subject.send(MessageSend(
+        api_version="1", message_id=uuid4(), recipient_work_id=recipient_work.id,
+        route_ref="review", payload={"text": "must fail closed"},
+    ))
+    assert blocked.status == "recovery_required"
+    assert blocked.reason == "state_unavailable"
+
+
 async def test_missing_authoritative_generation_fails_closed(engine):
     (
         state, grants, messages,
