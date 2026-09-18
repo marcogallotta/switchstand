@@ -514,10 +514,11 @@ class AsanaProvider:
                 values[name] = None
                 continue
             current_gid = self._gid(current)
+            parsed_options = [
+                cast(JSON, option) for option in cast(list[object], options)
+            ]
             valid = [
-                cast(JSON, option)
-                for option in cast(list[object], options)
-                if isinstance(option, dict) and self._gid(option) == current_gid
+                option for option in parsed_options if self._gid(option) == current_gid
             ]
             if (
                 not isinstance(value, str)
@@ -561,6 +562,11 @@ class AsanaProvider:
             if text is not None and (not text or len(text) > 500):
                 raise ProviderError("provider request invalid")
 
+            next_cursor: str | None = None
+            projects: tuple[str, ...] = ()
+            index = 0
+            offset: str | None = None
+
             if text is not None:
                 if cursor is not None:
                     raise ProviderError("text search is bounded and non-continuable")
@@ -575,7 +581,6 @@ class AsanaProvider:
                 response = await self.client.get(
                     f"/workspaces/{WORKSPACE}/tasks/search", params=params
                 )
-                next_cursor = None
             else:
                 projects = tuple(sorted(self._admission_projects))
                 index, offset = self._search_position(cursor, len(projects))
@@ -597,6 +602,8 @@ class AsanaProvider:
             rows = cast(list[object], raw_rows)
             if len(rows) > limit:
                 raise TypeError
+            if text is not None and payload.get("next_page") is not None:
+                raise ProviderError("text search continuation unsupported")
 
             if text is None:
                 next_page = payload.get("next_page")
