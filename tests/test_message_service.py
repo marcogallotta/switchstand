@@ -195,3 +195,113 @@ async def test_missing_authoritative_generation_fails_closed(engine):
     blocked_pending = await subject.pending(MessagePending(api_version="1"))
     assert blocked_pending.status == "recovery_required"
     assert blocked_pending.reason == "runtime_currentness_unavailable"
+
+
+async def test_replacement_recovers_same_received_delivery_identity(engine):
+    (
+        state, grants, messages,
+        sender, _sender_grant, sender_work,
+        recipient, recipient_grant, recipient_work,
+    ) = await setup(engine)
+    sender_service = await service(sender, state, grants, messages, "chatgpt-1")
+    recipient_generation = {"value": "run-1"}
+    old_recipient = await service(
+        recipient, state, grants, messages, "run-1", recipient_generation
+    )
+
+    submitted = await sender_service.send(MessageSend(
+        api_version="1",
+        message_id=uuid4(),
+        recipient_work_id=recipient_work.id,
+        route_ref="handoff",
+        payload={"text": "continue"},
+    ))
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery = MessageDelivery(api_version="1", delivery_id=submitted.message.delivery_id)
+    first = await old_recipient.receive(delivery)
+    assert first.status == "ok" and first.state == "RECEIVED"
+
+    replacement_grant = grant(recipient, recipient_work.id, version=2)
+    await grants.issue(replacement_grant, recipient_grant.version)
+    recipient_generation["value"] = "run-2"
+    replacement = await service(
+        recipient, state, grants, messages, "run-2", recipient_generation
+    )
+
+    blocked = await replacement.receive(delivery)
+    assert blocked.status == "recovery_required"
+    assert blocked.reason == "receiving_binding_changed"
+
+    recovered = await replacement.recover(delivery)
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
+    assert await replacement.receive(delivery) == recovered
+
+    stale_receive = await old_recipient.receive(delivery)
+    assert stale_receive.status == "stale"
+    assert stale_receive.reason == "runtime_generation_changed"
+
+    stale_recover = await old_recipient.recover(delivery)
+    assert stale_recover.status == "stale"
+    assert stale_recover.reason == "runtime_generation_changed"
+
+    stale_pending = await old_recipient.pending(MessagePending(api_version="1"))
+    assert stale_pending.status == "stale"
+    assert stale_pending.reason == "runtime_generation_changed"
+
+    stale_send = await old_recipient.send(MessageSend(
+        api_version="1",
+        message_id=uuid4(),
+        recipient_work_id=sender_work.id,
+        route_ref="handoff",
+        payload={"text": "stale send"},
+    ))
+    assert stale_send.status == "stale"
+    assert stale_send.reason == "runtime_generation_changed"
+
+    stale_reply = await old_recipient.reply(MessageReply(
+        api_version="1",
+        message_id=uuid4(),
+        in_reply_to_delivery_id=delivery.delivery_id,
+        payload={"text": "stale reply"},
+    ))
+    assert stale_reply.status == "stale"
+    assert stale_reply.reason == "runtime_generation_changed"
+
+    stale_disposition = await old_recipient.disposition(MessageDisposition(
+        api_version="1",
+        delivery_id=delivery.delivery_id,
+        result_message_id=uuid4(),
+    ))
+    assert stale_disposition.status == "stale"
+    assert stale_disposition.reason == "runtime_generation_changed"
+
+
+async def test_missing_recipient_route_fails_without_provider_identity(engine):
+    (
+        state, grants, messages,
+        sender, _sender_grant, _sender_work,
+        _recipient, _recipient_grant, _recipient_work,
+    ) = await setup(engine)
+    sender_service = await service(sender, state, grants, messages, "chatgpt-1")
+    unowned = await state.bind("asana", "303")
+    result = await sender_service.send(MessageSend(
+        api_version="1",
+        message_id=uuid4(),
+        recipient_work_id=unowned.id,
+        route_ref="review",
+        payload={"text": "should not route"},
+    ))
+    assert result.status == "recovery_required"
+    assert result.reason == "recipient_route_unavailable"
+
+
+def test_semantic_disposition_requires_one_exact_evidence_identity():
+    with pytest.raises(ValueError):
+        MessageDisposition(api_version="1", delivery_id=uuid4())
+    with pytest.raises(ValueError):
+        MessageDisposition(
+            api_version="1",
+            delivery_id=uuid4(),
+            result_message_id=uuid4(),
+            operation_id=uuid4(),
+        )
