@@ -17,6 +17,7 @@ async def state():
     assert make_url(url).database == "switchstand_test", "state tests require switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     yield PostgresState(engine)
     await engine.dispose()
@@ -66,6 +67,8 @@ async def test_event_binding_is_stable_opaque_and_exact_work_scoped(state):
     assert first.work_id == work.id
     assert first.provider_work_id == "task-1" and first.provider_event_id == "story-1"
     assert await state.get_event(work.id, first.id) == first
+    restarted = PostgresState(state.engine)
+    assert await restarted.get_event(work.id, first.id) == first
 
     assert await state.get_event(other.id, first.id) is None
     assert await state.get_event(work.id, uuid4()) is None
