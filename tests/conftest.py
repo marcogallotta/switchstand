@@ -13,6 +13,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         "test_lifecycle.py",
         "test_lifecycle_projection.py",
         "test_migration.py",
+        "test_required_result_consumer.py",
         "test_state.py",
     }
     selected = [item for item in items if Path(str(item.path)).name in database_tests]
