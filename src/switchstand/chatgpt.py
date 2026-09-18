@@ -70,12 +70,25 @@ class ChatGPTService:
                 if not self.gateway.admitted(principal, grant) or grant is None:
                     return GrantedWorkResult(status="denied",
                                              guard=self.denied("work_get", "no_current_grant"))
+                explicit_target = work_id is not None
+                if grant.scope == "workspace" and not explicit_target:
+                    return GrantedWorkResult(
+                        status="denied",
+                        guard=self.denied("work_get", "explicit_work_id_required"),
+                    )
                 target = work_id or grant.authority.active_work_id
                 if "work_get" not in grant.operations:
                     return GrantedWorkResult(status="denied",
                                              guard=self.denied("work_get", "work_not_granted"))
                 authority = grant.authority
-                if not authority.can_read(target):
+                if grant.scope == "workspace":
+                    if await self.state.get(target) is None:
+                        return GrantedWorkResult(
+                            status="denied",
+                            guard=self.denied("work_get", "work_not_granted"),
+                        )
+                    authority = LaunchAuthority(active_work_id=target)
+                elif not grant.can_read(target, explicit_target=explicit_target):
                     if not await self.grants.created_work_allowed(principal.key, target):
                         return GrantedWorkResult(status="denied",
                                                  guard=self.denied("work_get", "work_not_granted"))
