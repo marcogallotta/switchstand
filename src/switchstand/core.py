@@ -1,6 +1,6 @@
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from .contracts import (
@@ -19,8 +19,13 @@ from .contracts import (
     SourceTaskResult,
     SuggestionResult,
     WorkAppendRequest,
+    WorkEvent,
+    WorkEventRequest,
+    WorkEventResult,
     WorkGetRequest,
     WorkHead,
+    WorkHistoryRequest,
+    WorkHistoryResult,
     WorkItem,
     WorkPatch,
     WorkResult,
@@ -42,6 +47,15 @@ class Handle:
     id: UUID
     provider: str
     provider_work_id: str
+
+
+@dataclass(frozen=True)
+class EventBinding:
+    id: UUID
+    work_id: UUID
+    provider: str
+    provider_work_id: str
+    provider_event_id: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +112,13 @@ class State(Protocol):
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
 
 
+class EventState(Protocol):
+    async def bind_event(
+        self, work_id: UUID, provider: str, provider_work_id: str, provider_event_id: str,
+    ) -> EventBinding: ...
+    async def get_event(self, work_id: UUID, event_id: UUID) -> EventBinding | None: ...
+
+
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
     async def find_related(self, work_task_gid: str) -> RelatedLookup: ...
@@ -142,6 +163,19 @@ class Controller:
             text=story.text,
             created_at=story.created_at,
             created_by=story.created_by,
+        )
+
+    @staticmethod
+    def _work_event(
+        work_id: UUID, event_id: UUID, story: ProviderSourceStory,
+    ) -> WorkEvent:
+        return WorkEvent(
+            id=event_id,
+            work_id=work_id,
+            subtype=story.subtype,
+            text=story.text,
+            created_at=story.created_at,
+            actor=story.created_by,
         )
 
     async def _read(self, work_id: UUID, handle: Handle) -> WorkResult:
@@ -212,6 +246,100 @@ class Controller:
             return WorkResult(status="unknown")
         except ProviderError:
             return WorkResult(status="provider_error")
+
+    async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
+        if not self.authority.can_read(request.work_id):
+            return WorkHistoryResult(status="denied")
+        try:
+            handle = await self.state.get(request.work_id)
+            if handle is None:
+                return WorkHistoryResult(status="unknown")
+            provider = self.providers.get(handle.provider)
+            if provider is None:
+                return WorkHistoryResult(status="provider_error")
+            page = await provider.source_stories(
+                handle.provider_work_id, request.observed_revision, request.cursor, request.limit
+            )
+            if page is None:
+                return WorkHistoryResult(status="unknown")
+            if not page.canonical:
+                return WorkHistoryResult(status="denied")
+            if (page.task_gid != handle.provider_work_id or len(page.stories) > request.limit
+                    or any(story.task_gid != handle.provider_work_id for story in page.stories)):
+                return WorkHistoryResult(status="provider_error")
+            if page.stale or page.revision != request.observed_revision:
+                return WorkHistoryResult(
+                    status="stale", work_id=request.work_id, revision=page.revision
+                )
+            event_state = cast(EventState, self.state)
+            events: list[WorkEvent] = []
+            for story in page.stories:
+                binding = await event_state.bind_event(
+                    request.work_id, handle.provider, handle.provider_work_id, story.story_gid
+                )
+                events.append(self._work_event(request.work_id, binding.id, story))
+            return WorkHistoryResult(
+                status="ok",
+                work_id=request.work_id,
+                revision=page.revision,
+                events=tuple(events),
+                next_cursor=page.next_offset,
+            )
+        except UnknownEffect:
+            return WorkHistoryResult(status="unknown")
+        except ProviderError:
+            return WorkHistoryResult(status="provider_error")
+
+    async def event(self, request: WorkEventRequest) -> WorkEventResult:
+        if not self.authority.can_read(request.work_id):
+            return WorkEventResult(status="denied")
+        try:
+            handle = await self.state.get(request.work_id)
+            if handle is None:
+                return WorkEventResult(status="unknown")
+            event_state = cast(EventState, self.state)
+            binding = await event_state.get_event(request.work_id, request.event_id)
+            if (binding is None or binding.provider != handle.provider
+                    or binding.provider_work_id != handle.provider_work_id):
+                return WorkEventResult(status="denied")
+            provider_event_id = binding.provider_event_id
+            provider = self.providers.get(handle.provider)
+            if provider is None:
+                return WorkEventResult(status="provider_error")
+            before = await provider.source_task(handle.provider_work_id)
+            if before is None:
+                return WorkEventResult(status="unknown")
+            if not before.canonical:
+                return WorkEventResult(status="denied")
+            if before.revision != request.observed_revision:
+                return WorkEventResult(
+                    status="stale", work_id=request.work_id, revision=before.revision
+                )
+            story = await provider.source_story(handle.provider_work_id, provider_event_id)
+            if story is None:
+                return WorkEventResult(status="unknown")
+            if (story.task_gid != handle.provider_work_id
+                    or story.story_gid != provider_event_id):
+                return WorkEventResult(status="denied")
+            after = await provider.source_task(handle.provider_work_id)
+            if after is None:
+                return WorkEventResult(status="unknown")
+            if not after.canonical:
+                return WorkEventResult(status="denied")
+            if after.revision != before.revision:
+                return WorkEventResult(
+                    status="stale", work_id=request.work_id, revision=after.revision
+                )
+            return WorkEventResult(
+                status="ok",
+                work_id=request.work_id,
+                revision=after.revision,
+                item=self._work_event(request.work_id, request.event_id, story),
+            )
+        except UnknownEffect:
+            return WorkEventResult(status="unknown")
+        except ProviderError:
+            return WorkEventResult(status="provider_error")
 
     async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
         provider = self._source_provider()
