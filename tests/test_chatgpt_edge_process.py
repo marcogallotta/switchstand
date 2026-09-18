@@ -26,8 +26,8 @@ from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState, metadata
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "source_task", "source_stories", "source_story",
+    "work_history", "work_event", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
