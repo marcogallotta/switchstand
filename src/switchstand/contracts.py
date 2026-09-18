@@ -54,6 +54,78 @@ class WorkPatch(ClosedModel):
         return self
 
 
+class WorkAttachment(ClosedModel):
+    id: UUID
+    work_id: UUID
+    name: str = Field(min_length=1)
+    download_url: str | None = Field(default=None, min_length=1)
+    view_url: str | None = Field(default=None, min_length=1)
+
+
+class WorkAttachmentsRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    observed_revision: str = Field(min_length=1)
+    cursor: str | None = Field(default=None, min_length=1)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class WorkAttachmentsResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    attachments: tuple[WorkAttachment, ...] = ()
+    next_cursor: str | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None:
+                raise ValueError("successful attachment page requires work and revision")
+            if any(item.work_id != self.work_id for item in self.attachments):
+                raise ValueError("attachments must belong to the requested work")
+        elif self.status == "stale":
+            if (
+                self.work_id is None or self.revision is None
+                or self.attachments or self.next_cursor is not None
+            ):
+                raise ValueError("stale attachment page requires only current work and revision")
+        elif (
+            self.work_id is not None or self.revision is not None
+            or self.attachments or self.next_cursor is not None
+        ):
+            raise ValueError("failed attachment page must not claim attachment data")
+        return self
+
+
+class WorkAttachmentRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    attachment_id: UUID
+    observed_revision: str = Field(min_length=1)
+
+
+class WorkAttachmentResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    item: WorkAttachment | None = None
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None or self.item is None:
+                raise ValueError("successful attachment read requires work, revision and item")
+            if self.item.work_id != self.work_id:
+                raise ValueError("attachment must belong to the requested work")
+        elif self.status == "stale":
+            if self.work_id is None or self.revision is None or self.item is not None:
+                raise ValueError("stale attachment read requires current work and revision only")
+        elif self.work_id is not None or self.revision is not None or self.item is not None:
+            raise ValueError("failed attachment read must not claim attachment data")
+        return self
+
+
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
