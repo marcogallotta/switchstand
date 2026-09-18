@@ -14,6 +14,7 @@ from switchstand.core import (
     ProviderWork,
     UnknownEffect,
 )
+from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
 
@@ -32,15 +33,27 @@ class Handles:
     def __init__(self, active=ACTIVE, reference=REFERENCE):
         self.handles = {active: Handle(active, "asana", "123"),
                         reference: Handle(reference, "asana", "456")}
+        self.by_source = {
+            (handle.provider, handle.provider_work_id): handle
+            for handle in self.handles.values()
+        }
 
     async def get(self, work_id):
         return self.handles.get(work_id)
+
+    async def bind(self, provider, provider_work_id):
+        key = provider, provider_work_id
+        if key not in self.by_source:
+            handle = Handle(uuid4(), provider, provider_work_id)
+            self.by_source[key] = handle
+            self.handles[handle.id] = handle
+        return self.by_source[key]
 
 
 class Provider:
     def __init__(self):
         self.notes, self.revision, self.stories = "initial notes", "r1", []
-        self.canonical_ids = {"123", "456"}
+        self.canonical_ids = {"123", "456", "789"}
         self.sends = 0
         self.related_calls = []
         self.unknown = self.mismatch = self.cancel = False
@@ -49,6 +62,20 @@ class Provider:
     async def get(self, task_gid):
         return ProviderWork("Task", self.notes, False, self.revision, Routing(priority="P0"),
                             task_gid in self.canonical_ids)
+
+    async def search_work(self, text, completed, cursor, limit):
+        return ProviderSearchPage(
+            items=(
+                ProviderSearchItem(
+                    provider_work_id="789",
+                    title="Discovered",
+                    completed=False,
+                    revision=self.revision,
+                    routing=Routing(priority="P1"),
+                ),
+            ),
+            next_cursor=None,
+        )
 
     async def find_related(self, task_gid):
         self.related_calls.append(task_gid)
