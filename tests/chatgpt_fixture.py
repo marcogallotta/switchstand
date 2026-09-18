@@ -37,6 +37,18 @@ class Handles:
     async def get(self, work_id):
         return self.handles.get(work_id)
 
+    async def bind(self, provider, provider_work_id):
+        existing = next(
+            (handle for handle in self.handles.values()
+             if handle.provider == provider and handle.provider_work_id == provider_work_id),
+            None,
+        )
+        if existing is not None:
+            return existing
+        handle = Handle(uuid4(), provider, provider_work_id)
+        self.handles[handle.id] = handle
+        return handle
+
 
 class Provider:
     def __init__(self):
