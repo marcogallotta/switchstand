@@ -26,8 +26,8 @@ from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState, metadata
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "work_search", "source_task", "source_stories",
+    "source_story", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -78,6 +78,8 @@ async def _provision(url, subject):
     )
     selected = grant(
         principal=principal, active=active.id, reference=uuid4(),
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search", "work_append"}),
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
         append_qualification="real:disposable-switchstand-test",
     )
@@ -129,8 +131,17 @@ async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         assert {tool.name for tool in await client.list_tools()} == TOOLS
-        observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
+        observed = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(selected.authority.active_work_id),
+        })).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
+        search = (await client.call_tool("work_search", {
+            "api_version": "1", "text": "discover",
+        })).structured_content
+        assert search["status"] == "ok"
+        assert search["items"][0]["title"] == "Discovered"
+        assert "provider" not in str(search) and "789" not in str(search)
+        search_id = search["items"][0]["id"]
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
             "grant"
         ]["id"] == str(selected.id)
@@ -139,7 +150,7 @@ async def _exercise(endpoint, selected, operation_id):
             "work_id": str(selected.authority.active_work_id), "grant_version": 1,
             "observed_revision": "r1", "text": "durable vertical append",
         })
-        return result.structured_content
+        return result.structured_content, search_id
 
 
 async def test_process_with_fixture_identity_replays_durable_append_after_restart(tmp_path):
@@ -157,14 +168,16 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
     }
     with _server(env, port) as endpoint:
-        first = await _exercise(endpoint, selected, operation_id)
+        first, search_id = await _exercise(endpoint, selected, operation_id)
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
         assert first["receipt"]["work_id"] == str(selected.authority.active_work_id)
         assert first["receipt"]["grant_id"] == str(selected.id)
-        assert await _exercise(endpoint, selected, operation_id) == first
+        replay, replay_search_id = await _exercise(endpoint, selected, operation_id)
+        assert replay == first and replay_search_id == search_id
     with _server(env, port) as endpoint:
-        assert await _exercise(endpoint, selected, operation_id) == first
+        restarted, restarted_search_id = await _exercise(endpoint, selected, operation_id)
+        assert restarted == first and restarted_search_id == search_id
         assert effects.read_text().splitlines() == ["sent"]
 
 
