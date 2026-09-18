@@ -1,7 +1,9 @@
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx
 
+from .attachment_types import ProviderAttachment, ProviderAttachmentPage
 from .contracts import (
     GroupedCandidate,
     GroupedLookup,
@@ -47,6 +49,8 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
+ATTACHMENT_FIELDS = "gid,name,parent.gid,download_url,view_url"
+ATTACHMENT_CURSOR_MAX = 1024
 JSON = dict[str, Any]
 PRIORITIES = {f"P{value}": value for value in range(4)}
 
@@ -430,6 +434,128 @@ class AsanaProvider:
         if self._gid(story) != provider_story_id:
             raise ProviderError("provider response invalid")
         return self._story_value(story)
+
+    @staticmethod
+    def _https_attachment_pointer(value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or any(char.isspace() for char in value):
+            raise ProviderError("provider response invalid")
+        parsed = urlparse(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ProviderError("provider response invalid")
+        return value
+
+    @staticmethod
+    def _attachment_gid(value: object) -> str:
+        if not isinstance(value, str) or not value.isdigit():
+            raise ProviderError("provider response invalid")
+        return value
+
+    @classmethod
+    def _attachment_value(cls, payload: JSON) -> ProviderAttachment:
+        attachment_id = cls._attachment_gid(payload.get("gid"))
+        name = payload.get("name")
+        parent_id = cls._attachment_gid(cls._gid(payload.get("parent")))
+        download_url = cls._https_attachment_pointer(payload.get("download_url"))
+        view_url = cls._https_attachment_pointer(payload.get("view_url"))
+        if not isinstance(name, str) or not name:
+            raise ProviderError("provider response invalid")
+        return ProviderAttachment(
+            provider_attachment_id=attachment_id,
+            provider_work_id=parent_id,
+            name=name,
+            download_url=download_url,
+            view_url=view_url,
+        )
+
+    async def list_attachments(
+        self, provider_work_id: str, cursor: str | None, limit: int,
+    ) -> ProviderAttachmentPage:
+        try:
+            self._attachment_gid(provider_work_id)
+            if not 1 <= limit <= 100:
+                raise ProviderError("provider request invalid")
+            if cursor is not None and (not cursor or len(cursor) > ATTACHMENT_CURSOR_MAX):
+                raise ProviderError("provider request invalid")
+            params: dict[str, str | int] = {
+                "parent": provider_work_id,
+                "limit": limit,
+                "opt_fields": ATTACHMENT_FIELDS,
+            }
+            if cursor is not None:
+                params["offset"] = cursor
+            response = await self.client.get("/attachments", params=params)
+            response.raise_for_status()
+            payload = response.json()
+            raw_rows: object = payload["data"]
+            next_page = payload.get("next_page")
+            if not isinstance(raw_rows, list):
+                raise TypeError
+            rows = cast(list[object], raw_rows)
+            if len(rows) > limit:
+                raise TypeError
+            if next_page is None:
+                next_cursor = None
+            else:
+                next_cursor = (
+                    cast(JSON, next_page).get("offset")
+                    if isinstance(next_page, dict) else None
+                )
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or len(next_cursor) > ATTACHMENT_CURSOR_MAX
+                ):
+                    raise TypeError
+            seen: set[str] = set()
+            attachments: list[ProviderAttachment] = []
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    raise TypeError
+                attachment = self._attachment_value(cast(JSON, raw))
+                if (
+                    attachment.provider_attachment_id in seen
+                    or attachment.provider_work_id != provider_work_id
+                ):
+                    raise TypeError
+                seen.add(attachment.provider_attachment_id)
+                attachments.append(attachment)
+            return ProviderAttachmentPage(tuple(attachments), next_cursor)
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
+
+    async def get_attachment(
+        self, provider_attachment_id: str,
+    ) -> ProviderAttachment | None:
+        try:
+            self._attachment_gid(provider_attachment_id)
+            response = await self.client.get(
+                f"/attachments/{provider_attachment_id}",
+                params={"opt_fields": ATTACHMENT_FIELDS},
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            data = response.json()["data"]
+            if not isinstance(data, dict):
+                raise TypeError
+            attachment = self._attachment_value(cast(JSON, data))
+            if attachment.provider_attachment_id != provider_attachment_id:
+                raise TypeError
+            return attachment
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
 
     async def _write(
         self, method: str, path: str, data: JSON, *, unknown_on_server_error: bool = False
