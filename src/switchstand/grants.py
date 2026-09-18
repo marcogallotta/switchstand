@@ -28,6 +28,7 @@ class WorkGrant(ClosedModel):
     version: int = Field(ge=1)
     principal: PrincipalContext
     authority: LaunchAuthority
+    scope: Literal["launch", "workspace"] = "launch"
     operations: frozenset[Literal["work_get", "work_append", "work_create"]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -38,6 +39,16 @@ class WorkGrant(ClosedModel):
 
     def current(self) -> bool:
         return self.state == "active" and self.expires_at > datetime.now(UTC)
+
+    def can_read(self, work_id: UUID, *, explicit_target: bool) -> bool:
+        if self.scope == "workspace":
+            return explicit_target
+        return self.authority.can_read(work_id)
+
+    def can_write(self, work_id: UUID) -> bool:
+        if self.scope == "workspace":
+            return True
+        return work_id == self.authority.active_work_id
 
 
 class ProtectedAppend(ClosedModel):

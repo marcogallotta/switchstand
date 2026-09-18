@@ -38,7 +38,7 @@ class AppendGateway:
             async with self.grants.locked(principal.key, request.work_id) as grant:
                 if not self.admitted(principal, grant) or grant is None:
                     return self.guard(request, "denied", "no_current_grant")
-                if (request.work_id != grant.authority.active_work_id
+                if (not grant.can_write(request.work_id)
                         or "work_append" not in grant.operations):
                     return self.guard(request, "denied", "operation_or_work_not_granted")
                 if request.grant_version != grant.version:

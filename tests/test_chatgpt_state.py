@@ -335,3 +335,43 @@ async def test_inbox_arrival_reread_receipt_and_reentry(subject):
     second = await service.source_stories(page.model_copy(update={
         "observed_revision": current, "offset": first_page.next_offset}))
     assert second.stories[0].story_gid == receipt.receipt.story_gid and second.next_offset is None
+
+
+async def test_workspace_scope_requires_explicit_bound_canonical_targets(subject):
+    service, selected, provider = subject
+    foreign = uuid4()
+    noncanonical = uuid4()
+    assert isinstance(service.state, PostgresState)
+    foreign = (await service.state.bind("asana", "789")).id
+    noncanonical = (await service.state.bind("asana", "790")).id
+    provider.canonical_ids.add("789")
+
+    workspace = selected.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "workspace",
+    })
+    await service.grants.issue(workspace, 1)
+
+    omitted = await service.get()
+    assert omitted.status == "denied"
+    assert omitted.guard is not None and omitted.guard.reason == "explicit_work_id_required"
+
+    readable = await service.get(foreign)
+    assert readable.status == "ok" and readable.item is not None
+    assert readable.item.id == foreign
+
+    assert (await service.get(uuid4())).status == "denied"
+    assert (await service.get(noncanonical)).status == "denied"
+
+    write = request(workspace, work_id=foreign, grant_version=2)
+    applied = await service.append(write)
+    assert applied.status == "ok" and applied.receipt is not None
+    assert applied.receipt.work_id == foreign and applied.receipt.task_gid == "789"
+
+    launch = workspace.model_copy(update={
+        "id": uuid4(), "version": 3, "scope": "launch",
+    })
+    await service.grants.issue(launch, 2)
+    denied = await service.append(request(
+        launch, work_id=foreign, grant_version=3, observed_revision=provider.revision,
+    ))
+    assert denied.status == "denied" and denied.effect == "not_sent"

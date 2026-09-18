@@ -40,6 +40,7 @@ class Handles:
 class Provider:
     def __init__(self):
         self.notes, self.revision, self.stories = "initial notes", "r1", []
+        self.canonical_ids = {"123", "456"}
         self.sends = 0
         self.related_calls = []
         self.unknown = self.mismatch = self.cancel = False
@@ -47,7 +48,7 @@ class Provider:
 
     async def get(self, task_gid):
         return ProviderWork("Task", self.notes, False, self.revision, Routing(priority="P0"),
-                            task_gid in {"123", "456"})
+                            task_gid in self.canonical_ids)
 
     async def find_related(self, task_gid):
         self.related_calls.append(task_gid)
@@ -58,7 +59,7 @@ class Provider:
 
     async def source_task(self, task_gid):
         return ProviderSourceTask("Task", self.notes, False, self.revision,
-                                  task_gid in {"123", "456"})
+                                  task_gid in self.canonical_ids)
 
     async def append(self, task_gid, text):
         if self.before_send:
