@@ -31,3 +31,12 @@ def test_authenticated_qualification_grant_mode_is_explicit():
         "--assurance", "authenticated", "inspect",
     ])
     assert args.assurance == "authenticated"
+
+
+def test_workspace_qualification_grant_mode_is_explicit():
+    args = test_grant.parser().parse_args([
+        "--issuer", "https://switchstand.example.com/",
+        "--subject", "192548", "--client-id", "chatgpt-client",
+        "--assurance", "authenticated", "--scope", "workspace", "inspect",
+    ])
+    assert args.scope == "workspace"
