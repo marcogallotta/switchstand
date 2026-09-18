@@ -56,7 +56,7 @@ def grant(who: PrincipalContext, work_id, version: int = 1) -> WorkGrant:
         version=version,
         principal=who,
         authority=LaunchAuthority(active_work_id=work_id),
-        operations=frozenset({"work_get", "work_append"}),
+        operations=frozenset({"work_get", "message", "work_append"}),
         issuer="fixture-operator",
         provenance="semantic message service",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -167,6 +167,80 @@ async def test_semantic_send_reply_disposition_hides_provider_route(engine):
     sender_pending = await sender_service.pending(MessagePending(api_version="1"))
     assert sender_pending.status == "ok"
     assert [item.message_id for item in sender_pending.messages] == [result_id]
+
+
+async def test_workspace_actor_is_explicit_and_reply_routes_to_same_work(engine):
+    state = PostgresState(engine)
+    grants = GrantState(engine)
+    messages = MessageState(engine, grants)
+    sender_work = await state.bind("asana", "101")
+    workspace_anchor = await state.bind("asana", "102")
+    recipient_work = await state.bind("asana", "202")
+    sender, recipient = principal("workspace-sender"), principal("recipient")
+    sender_grant = WorkGrant(
+        id=uuid4(),
+        version=1,
+        principal=sender,
+        authority=LaunchAuthority(active_work_id=workspace_anchor.id),
+        scope="workspace",
+        operations=frozenset({"work_get", "message"}),
+        issuer="fixture-operator",
+        provenance="workspace semantic message service",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    recipient_grant = grant(recipient, recipient_work.id)
+    await grants.issue(sender_grant, None)
+    await grants.issue(recipient_grant, None)
+    sender_service = await service(sender, state, grants, messages, "workspace")
+    recipient_service = await service(recipient, state, grants, messages, "codex-1")
+
+    missing = await sender_service.send(MessageSend(
+        api_version="1",
+        message_id=uuid4(),
+        recipient_work_id=recipient_work.id,
+        route_ref="review",
+        payload={"text": "missing actor"},
+    ))
+    assert missing.status == "denied" and missing.reason == "explicit_work_id_required"
+
+    submitted = await sender_service.send(MessageSend(
+        api_version="1",
+        work_id=sender_work.id,
+        message_id=uuid4(),
+        recipient_work_id=recipient_work.id,
+        route_ref="review",
+        payload={"text": "review candidate"},
+    ))
+    assert submitted.status == "ok" and submitted.message is not None
+    assert submitted.message.sender_work_id == sender_work.id
+    assert submitted.message.sender_work_id != workspace_anchor.id
+
+    delivery = MessageDelivery(
+        api_version="1", delivery_id=submitted.message.delivery_id
+    )
+    received = await recipient_service.receive(delivery)
+    assert received.status == "ok"
+
+    reply_id = uuid4()
+    reply = await recipient_service.reply(MessageReply(
+        api_version="1",
+        message_id=reply_id,
+        in_reply_to_delivery_id=delivery.delivery_id,
+        payload={"text": "PASS"},
+    ))
+    assert reply.status == "ok" and reply.message is not None
+    assert reply.message.recipient_work_id == sender_work.id
+
+    pending = await sender_service.pending(MessagePending(
+        api_version="1", work_id=sender_work.id
+    ))
+    assert pending.status == "ok"
+    assert [item.message_id for item in pending.messages] == [reply_id]
+
+    wrong = await sender_service.pending(MessagePending(
+        api_version="1", work_id=uuid4()
+    ))
+    assert wrong.status == "denied" and wrong.reason == "work_not_granted"
 
 
 async def test_missing_authoritative_generation_fails_closed(engine):
