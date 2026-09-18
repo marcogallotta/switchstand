@@ -486,6 +486,12 @@ class AsanaProvider:
         self, text: str | None, completed: bool | None, cursor: str | None, limit: int,
     ) -> ProviderSearchPage:
         try:
+            if not 1 <= limit <= 100:
+                raise ProviderError("provider request invalid")
+            if cursor is not None and (not cursor or len(cursor) > 1024):
+                raise ProviderError("provider request invalid")
+            if text is not None and (not text or len(text) > 500):
+                raise ProviderError("provider request invalid")
             params: dict[str, str | int] = {
                 "projects.any": ",".join(sorted(self._admission_projects)),
                 "limit": limit,
@@ -502,9 +508,12 @@ class AsanaProvider:
             )
             response.raise_for_status()
             payload = response.json()
-            rows = payload["data"]
+            raw_rows: object = payload["data"]
             next_page = payload.get("next_page")
-            if not isinstance(rows, list) or len(rows) > limit:
+            if not isinstance(raw_rows, list):
+                raise TypeError
+            rows = cast(list[object], raw_rows)
+            if len(rows) > limit:
                 raise TypeError
             if next_page is None:
                 next_cursor = None
@@ -513,11 +522,15 @@ class AsanaProvider:
                     cast(JSON, next_page).get("offset")
                     if isinstance(next_page, dict) else None
                 )
-                if not isinstance(next_cursor, str) or not next_cursor:
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or len(next_cursor) > 1024
+                ):
                     raise TypeError
             seen: set[str] = set()
             items: list[ProviderSearchItem] = []
-            for raw in cast(list[object], rows):
+            for raw in rows:
                 if not isinstance(raw, dict):
                     raise TypeError
                 task = cast(JSON, raw)
@@ -537,19 +550,24 @@ class AsanaProvider:
                 seen.add(gid)
                 if not await self._canonical(task):
                     raise ProviderError("provider search returned non-canonical work")
-                fields = self._custom_fields(task)
-                values = {
-                    name: next(
-                        (field.get("display_value") for field in fields
-                         if field.get("gid") == field_gid),
-                        None,
-                    )
-                    for name, field_gid in FIELDS.items()
-                }
-                routing = Routing(**{
-                    key: value if isinstance(value, str) else None
-                    for key, value in values.items()
-                })
+                raw_values = cast(list[object], raw_fields)
+                if any(not isinstance(field, dict) for field in raw_values):
+                    raise TypeError
+                fields = [cast(JSON, field) for field in raw_values]
+                values: dict[str, str | None] = {}
+                for name, field_gid in FIELDS.items():
+                    matches = [field for field in fields if field.get("gid") == field_gid]
+                    if len(matches) > 1:
+                        raise TypeError
+                    if not matches:
+                        values[name] = None
+                        continue
+                    field = matches[0]
+                    value = field.get("display_value")
+                    if value is not None and not isinstance(value, str):
+                        raise TypeError
+                    values[name] = value
+                routing = Routing(**values)
                 items.append(ProviderSearchItem(
                     provider_work_id=gid,
                     title=title,
