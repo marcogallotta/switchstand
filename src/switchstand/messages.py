@@ -128,13 +128,18 @@ class PendingMessage(ClosedModel):
     receiving_generation: str | None = None
 
 
+class MessageReplyContext(ClosedModel):
+    recipient_work_id: UUID
+    route_ref: str
+
+
 class MessageSubmitResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
     message: PendingMessage | None = None
     reason: Literal[
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
-        "state_unavailable",
+        "recipient_route_unavailable", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -246,6 +251,10 @@ def _json_digest(value: object) -> str:
     ).hexdigest()
 
 
+def disposition_digest(evidence: DispositionEvidence) -> str:
+    return _json_digest(evidence.model_dump(mode="json"))
+
+
 def message_effect_operation_id(delivery_id: UUID) -> UUID:
     """Return the sole V1 provider-effect identity bound to a delivery."""
     return uuid5(PROCESSING_EFFECT_NAMESPACE, str(delivery_id))
@@ -278,6 +287,23 @@ def _transition(
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
+
+    async def reply_context(self, delivery_id: UUID) -> MessageReplyContext | None:
+        try:
+            async with self.engine.connect() as connection:
+                row = (await connection.execute(select(
+                    message_deliveries.c.sender_work_id, messages.c.route_ref,
+                ).join(messages, and_(
+                    messages.c.sender_work_id == message_deliveries.c.sender_work_id,
+                    messages.c.message_id == message_deliveries.c.message_id,
+                )).where(
+                    message_deliveries.c.delivery_id == delivery_id
+                ))).one_or_none()
+            if row is None:
+                return None
+            return MessageReplyContext(recipient_work_id=row[0], route_ref=row[1])
+        except SQLAlchemyError:
+            return None
 
     @staticmethod
     def _admission(
@@ -433,6 +459,41 @@ class MessageState:
                     ).values(
                         state="RECEIVED", recipient_grant_version=grant.version,
                         receiving_generation=runtime.generation, received_at=func.now(),
+                    ).returning(*message_deliveries.c))
+                    return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
+
+    async def recover(
+        self, principal: PrincipalContext, runtime: RuntimeCurrentness,
+        request: MessageReceiveRequest,
+    ) -> MessageTransitionResult:
+        """Rebind one already-received delivery to an authorized replacement runtime."""
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                failure = (self._admission(principal, grant, request.grant_version)
+                           or self._runtime(runtime))
+                if failure is not None:
+                    return _transition(failure[0], failure[1])
+                assert grant is not None
+                async with self.engine.begin() as connection:
+                    raw = (await connection.execute(select(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).with_for_update())).mappings().one_or_none()
+                    row = None if raw is None else dict(raw)
+                    failure_result = self._delivery_access(row, grant)
+                    if failure_result is not None:
+                        return failure_result
+                    assert row is not None
+                    if row["state"] == "DISPOSITIONED":
+                        return _transition("conflict", "delivery_already_dispositioned", row)
+                    if row["state"] != "RECEIVED":
+                        return _transition("conflict", "delivery_not_received", row)
+                    result = await connection.execute(update(message_deliveries).where(
+                        message_deliveries.c.delivery_id == request.delivery_id
+                    ).values(
+                        recipient_grant_version=grant.version,
+                        receiving_generation=runtime.generation,
                     ).returning(*message_deliveries.c))
                     return _transition("ok", row=dict(result.mappings().one()))
         except (SQLAlchemyError, ValueError):

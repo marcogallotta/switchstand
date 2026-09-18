@@ -261,3 +261,139 @@ async def test_provider_effect_disposition_requires_exact_delivery_correlation(s
     replay = await state.disposition(recipient_principal, runtime, disposition)
     assert first.status == replay.status == "ok"
     assert first.state == replay.state == "DISPOSITIONED"
+
+
+async def test_current_recipient_grant_resolution_and_ambiguity(subject):
+    _state, _engine, grants, _sender_principal, _sender, _recipient_principal, recipient = subject
+    resolved = await grants.current_for_active_work(recipient.authority.active_work_id)
+    assert resolved == recipient
+
+    alternate_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
+    alternate = grant(
+        principal=alternate_principal,
+        active=recipient.authority.active_work_id,
+        reference=uuid4(),
+    )
+    await grants.issue(alternate, None)
+    with pytest.raises(ValueError, match="multiple current grants own the same active work"):
+        await grants.current_for_active_work(recipient.authority.active_work_id)
+
+
+async def test_reply_context_and_authorized_replacement_rebind_same_delivery(subject):
+    state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    submitted = await state.submit(sender_principal, route(recipient), request(sender))
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery_id = submitted.message.delivery_id
+
+    context = await state.reply_context(delivery_id)
+    assert context is not None
+    assert context.recipient_work_id == sender.authority.active_work_id
+    assert context.route_ref == "review"
+
+    run1 = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    first = await state.receive(recipient_principal, run1, receive)
+    assert first.status == "ok" and first.state == "RECEIVED"
+
+    replacement = recipient.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(replacement, 1)
+    run2 = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+
+    blocked = await state.receive(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert blocked.status == "recovery_required"
+    assert blocked.reason == "receiving_binding_changed"
+
+    recovered = await state.recover(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
+
+    replay = await state.receive(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert replay == recovered
+
+    stale_old = await state.receive(recipient_principal, run1, receive)
+    assert stale_old.status == "stale"
+    assert stale_old.reason == "grant_version_changed"
+
+
+async def test_current_recipient_resolution_returns_none_with_zero_current_grants(subject):
+    _state, _engine, grants, _sender_principal, _sender, _recipient_principal, recipient = subject
+    revoked = recipient.model_copy(update={"id": uuid4(), "version": 2, "state": "revoked"})
+    await grants.issue(revoked, 1)
+    assert await grants.current_for_active_work(recipient.authority.active_work_id) is None
+
+
+async def test_replacement_recovery_checks_runtime_after_current_grant(subject):
+    state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    submitted = await state.submit(sender_principal, route(recipient), request(sender))
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery_id = submitted.message.delivery_id
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    run1 = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    assert (await state.receive(recipient_principal, run1, receive)).status == "ok"
+
+    replacement = recipient.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(replacement, 1)
+    stale_runtime = RuntimeCurrentness(generation="run-1", current_generation="run-2")
+    blocked = await state.recover(
+        recipient_principal, stale_runtime, receive.model_copy(update={"grant_version": 2})
+    )
+    assert blocked.status == "stale"
+    assert blocked.reason == "runtime_generation_changed"
+
+
+async def test_recover_never_rewrites_available_or_dispositioned_delivery(subject):
+    state, engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+
+    available = await state.submit(sender_principal, route(recipient), request(sender))
+    assert available.status == "ok" and available.message is not None
+    available_id = available.message.delivery_id
+    run1 = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    available_request = MessageReceiveRequest(
+        api_version="1", delivery_id=available_id, grant_version=1
+    )
+    rejected = await state.recover(recipient_principal, run1, available_request)
+    assert rejected.status == "conflict" and rejected.reason == "delivery_not_received"
+    async with engine.connect() as connection:
+        available_row = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == available_id
+        ))).mappings().one()
+    assert available_row["state"] == "AVAILABLE"
+    assert available_row["recipient_grant_version"] == 1
+    assert available_row["receiving_generation"] is None
+
+    received = await state.submit(
+        sender_principal, route(recipient), request(sender, message_id=uuid4())
+    )
+    assert received.status == "ok" and received.message is not None
+    delivery_id = received.message.delivery_id
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    assert (await state.receive(recipient_principal, run1, receive)).status == "ok"
+    reply = request(recipient, kind="result", in_reply_to_delivery_id=delivery_id)
+    assert (await state.submit(recipient_principal, route(sender), reply)).status == "ok"
+    evidence = DispositionEvidence(kind="result", result_message_id=reply.message_id)
+    disposition = MessageDispositionRequest(
+        api_version="1", delivery_id=delivery_id, grant_version=1,
+        disposition_digest=digest(evidence), evidence=evidence,
+    )
+    assert (await state.disposition(recipient_principal, run1, disposition)).state == "DISPOSITIONED"
+
+    replacement = recipient.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(replacement, 1)
+    run2 = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+    blocked = await state.recover(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert blocked.status == "conflict"
+    assert blocked.reason == "delivery_already_dispositioned"
+    async with engine.connect() as connection:
+        disposed_row = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id
+        ))).mappings().one()
+    assert disposed_row["state"] == "DISPOSITIONED"
+    assert disposed_row["recipient_grant_version"] == 1
+    assert disposed_row["receiving_generation"] == "run-1"
