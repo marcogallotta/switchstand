@@ -149,3 +149,35 @@ async def test_grant_change_after_verified_write_cannot_terminalize_obligation(
     assert provider.sends == 1
     stored = await lifecycle.repository.get(result.operation_id)
     assert stored is not None and stored.state is ProfileState.PERSIST_REQUIRED
+
+
+async def test_workspace_required_result_allows_explicit_bound_target_but_launch_denies(
+    result_engine: AsyncEngine,
+) -> None:
+    service, principal, grant, provider, lifecycle = await subject(result_engine)
+    assert lifecycle is not None
+    assert isinstance(service.state, PostgresState)
+    target = await service.state.bind("asana", "789")
+    provider.canonical_ids.add("789")
+
+    workspace = grant.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "workspace",
+    })
+    await service.grants.issue(workspace, 1)
+    action = request(target.id).model_copy(update={"grant_version": 2})
+    applied = await service.required_result_save(action)
+    assert applied.status == "ok" and applied.effect == "applied"
+    assert applied.operation_id is not None and provider.sends == 1
+    stored = await lifecycle.repository.get(applied.operation_id)
+    assert stored is not None and stored.state is ProfileState.TERMINAL
+
+    launch = workspace.model_copy(update={
+        "id": uuid4(), "version": 3, "scope": "launch",
+    })
+    await service.grants.issue(launch, 2)
+    denied = await service.required_result_save(
+        action.model_copy(update={"grant_version": 3, "text": "another result"})
+    )
+    assert denied.status == "denied" and denied.effect == "not_sent"
+    assert denied.reason == "operation_or_work_not_granted"
+    assert provider.sends == 1
