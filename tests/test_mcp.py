@@ -19,6 +19,9 @@ from switchstand.contracts import (
     SourceStoryResult,
     SourceTask,
     SourceTaskResult,
+    WorkEvent,
+    WorkEventResult,
+    WorkHistoryResult,
     WorkItem,
     WorkResult,
 )
@@ -33,6 +36,7 @@ ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
 TASK_GID = "121"
 STORY_GID = "456"
+EVENT_ID = UUID("11111111-1111-4111-8111-111111111111")
 
 
 def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
@@ -74,6 +78,24 @@ class FakeService:
                 story_gid=request.story_gid, task_gid=request.task_gid,
                 subtype="comment_added", text="history",
                 created_at="2026-09-12T00:00:00Z", created_by="Marco",
+            ),
+        )
+
+    async def history(self, request):
+        return WorkHistoryResult(
+            status="ok", work_id=request.work_id, revision=request.observed_revision,
+            events=(WorkEvent(
+                id=EVENT_ID, work_id=request.work_id, subtype="comment_added",
+                text="history", created_at="2026-09-12T00:00:00Z", actor="Marco",
+            ),),
+        )
+
+    async def event(self, request):
+        return WorkEventResult(
+            status="ok", work_id=request.work_id, revision=request.observed_revision,
+            item=WorkEvent(
+                id=request.event_id, work_id=request.work_id, subtype="comment_added",
+                text="history", created_at="2026-09-12T00:00:00Z", actor="Marco",
             ),
         )
 
@@ -144,7 +166,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "source_task", "source_stories", "source_story", "work_append",
+            "work_get", "source_task", "source_stories", "source_story",
+            "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
@@ -198,6 +221,22 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         )
         assert story.structured_content["status"] == "ok"
         assert story.structured_content["item"]["task_gid"] == TASK_GID
+
+        history = await client.call_tool(
+            "work_history", {"api_version": "1", "observed_revision": "r1"}
+        )
+        assert history.structured_content["status"] == "ok"
+        assert history.structured_content["events"][0]["id"] == str(EVENT_ID)
+        assert "task_gid" not in history.structured_content["events"][0]
+        event = await client.call_tool(
+            "work_event",
+            {
+                "api_version": "1", "event_id": str(EVENT_ID),
+                "observed_revision": "r1",
+            },
+        )
+        assert event.structured_content["status"] == "ok"
+        assert event.structured_content["item"]["work_id"] == str(ID)
 
         base = {"api_version": "1", "work_id": str(ID)}
         appended = await client.call_tool("work_append", base | {"text": "history"})
