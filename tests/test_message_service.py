@@ -200,7 +200,7 @@ async def test_missing_authoritative_generation_fails_closed(engine):
 async def test_replacement_recovers_same_received_delivery_identity(engine):
     (
         state, grants, messages,
-        sender, _sender_grant, _sender_work,
+        sender, _sender_grant, sender_work,
         recipient, recipient_grant, recipient_work,
     ) = await setup(engine)
     sender_service = await service(sender, state, grants, messages, "chatgpt-1")
@@ -251,7 +251,7 @@ async def test_replacement_recovers_same_received_delivery_identity(engine):
     stale_send = await old_recipient.send(MessageSend(
         api_version="1",
         message_id=uuid4(),
-        recipient_work_id=sender.authority.active_work_id,
+        recipient_work_id=sender_work.id,
         route_ref="handoff",
         payload={"text": "stale send"},
     ))
