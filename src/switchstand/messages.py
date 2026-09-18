@@ -139,6 +139,7 @@ class MessageSubmitResult(ClosedModel):
     reason: Literal[
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
+        "runtime_currentness_unavailable", "runtime_generation_changed",
         "recipient_route_unavailable", "state_unavailable",
     ] | None = None
 
@@ -163,7 +164,10 @@ class MessagePendingResult(ClosedModel):
     messages: tuple[PendingMessage, ...] = ()
     next_cursor: UUID | None = None
     has_more: bool = False
-    reason: Literal["no_current_grant", "grant_version_changed", "state_unavailable"] | None = None
+    reason: Literal[
+        "no_current_grant", "grant_version_changed", "runtime_currentness_unavailable",
+        "runtime_generation_changed", "state_unavailable",
+    ] | None = None
 
     @model_validator(mode="after")
     def exact_page(self) -> Self:
