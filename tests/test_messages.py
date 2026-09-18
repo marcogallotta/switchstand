@@ -261,3 +261,60 @@ async def test_provider_effect_disposition_requires_exact_delivery_correlation(s
     replay = await state.disposition(recipient_principal, runtime, disposition)
     assert first.status == replay.status == "ok"
     assert first.state == replay.state == "DISPOSITIONED"
+
+
+async def test_current_recipient_grant_resolution_and_ambiguity(subject):
+    _state, _engine, grants, _sender_principal, _sender, recipient_principal, recipient = subject
+    resolved = await grants.current_for_active_work(recipient.authority.active_work_id)
+    assert resolved == recipient
+
+    alternate_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
+    alternate = grant(
+        principal=alternate_principal,
+        active=recipient.authority.active_work_id,
+        reference=uuid4(),
+    )
+    await grants.issue(alternate, None)
+    with pytest.raises(ValueError, match="multiple current grants own the same active work"):
+        await grants.current_for_active_work(recipient.authority.active_work_id)
+
+
+async def test_reply_context_and_authorized_replacement_rebind_same_delivery(subject):
+    state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    submitted = await state.submit(sender_principal, route(recipient), request(sender))
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery_id = submitted.message.delivery_id
+
+    context = await state.reply_context(delivery_id)
+    assert context is not None
+    assert context.recipient_work_id == sender.authority.active_work_id
+    assert context.route_ref == "review"
+
+    run1 = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    first = await state.receive(recipient_principal, run1, receive)
+    assert first.status == "ok" and first.state == "RECEIVED"
+
+    replacement = recipient.model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(replacement, 1)
+    run2 = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+
+    blocked = await state.receive(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert blocked.status == "recovery_required"
+    assert blocked.reason == "receiving_binding_changed"
+
+    recovered = await state.recover(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
+
+    replay = await state.receive(
+        recipient_principal, run2, receive.model_copy(update={"grant_version": 2})
+    )
+    assert replay == recovered
+
+    stale_old = await state.receive(recipient_principal, run1, receive)
+    assert stale_old.status == "stale"
+    assert stale_old.reason == "grant_version_changed"
