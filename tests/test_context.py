@@ -80,8 +80,9 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
         events.append(("provision", repo, active, references, dict(env)))
         return Authority(ACTIVE, ())
 
-    def fake_exec(file, command, env):
-        events.append(("codex", file, command, dict(env)))
+    def fake_supervise(command, env, temporary_parent):
+        assert temporary_parent == tmp_path / "writer/.git"
+        events.append(("codex", "codex", command, dict(env)))
         raise RuntimeError("stop after readback")
 
     writer = tmp_path / "writer"
@@ -109,7 +110,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     )
     monkeypatch.setattr(context.subprocess, "run", fake_run)
     monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: "/bin/true")
-    monkeypatch.setattr(context.os, "execvpe", fake_exec)
+    monkeypatch.setattr(context, "supervise", fake_supervise)
 
     with pytest.raises(RuntimeError, match="readback"):
         context.run("1218242783900077")
