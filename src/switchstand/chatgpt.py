@@ -1,6 +1,7 @@
 """Authenticated-caller seam; authentication adapters are trusted host code, never tools."""
 
 from collections.abc import Awaitable, Callable
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,9 +19,12 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkSearchRequest,
+    WorkSearchResult,
 )
 from .core import Controller, Provider, ProviderError, State
 from .creates import CreateGateway
+from .discovery import DiscoveryProvider, WorkDiscovery
 from .effects import AppendGateway
 from .grant_state import GrantState
 from .grants import (
@@ -64,6 +68,25 @@ class ChatGPTService:
             return GrantResult(status="ok", principal=principal, grant=grant)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantResult(status="unknown", principal=principal)
+
+    async def search(self, request: WorkSearchRequest) -> WorkSearchResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkSearchResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkSearchResult(status="denied")
+                if grant.scope != "workspace" or "work_search" not in grant.operations:
+                    return WorkSearchResult(status="denied")
+                provider = self.providers.get("asana")
+                if provider is None:
+                    return WorkSearchResult(status="provider_error")
+                return await WorkDiscovery(
+                    "asana", cast(DiscoveryProvider, provider), self.state
+                ).search(request)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return WorkSearchResult(status="unknown")
 
     async def get(self, work_id: UUID | None = None, *, include_related: bool = False) -> GrantedWorkResult:
         principal = await self.principal()
