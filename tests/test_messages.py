@@ -264,7 +264,7 @@ async def test_provider_effect_disposition_requires_exact_delivery_correlation(s
 
 
 async def test_current_recipient_grant_resolution_and_ambiguity(subject):
-    _state, _engine, grants, _sender_principal, _sender, recipient_principal, recipient = subject
+    _state, _engine, grants, _sender_principal, _sender, _recipient_principal, recipient = subject
     resolved = await grants.current_for_active_work(recipient.authority.active_work_id)
     assert resolved == recipient
 
