@@ -19,7 +19,11 @@ from .contracts import (
     SourceTaskRequest,
     SourceTaskResult,
     WorkAppendRequest,
+    WorkEventRequest,
+    WorkEventResult,
     WorkGetRequest,
+    WorkHistoryRequest,
+    WorkHistoryResult,
     WorkResult,
 )
 from .core import Controller
@@ -132,6 +136,30 @@ def build_server(
             )
         )
 
+    async def _work_history(
+        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+        cursor: str | None = None, limit: int = 50,
+    ) -> WorkHistoryResult:
+        """Read provider-neutral history for launch-authorized work."""
+        return await service.history(  # type: ignore[attr-defined]
+            WorkHistoryRequest(
+                api_version=api_version, work_id=work_id or active_work_id,
+                observed_revision=observed_revision, cursor=cursor, limit=limit,
+            )
+        )
+
+    async def _work_event(
+        api_version: Literal["1"], event_id: UUID, observed_revision: str,
+        work_id: UUID | None = None,
+    ) -> WorkEventResult:
+        """Reread one exact provider-neutral event for launch-authorized work."""
+        return await service.event(  # type: ignore[attr-defined]
+            WorkEventRequest(
+                api_version=api_version, work_id=work_id or active_work_id,
+                event_id=event_id, observed_revision=observed_revision,
+            )
+        )
+
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
@@ -140,6 +168,8 @@ def build_server(
     closed_tool(server, "source_task", _source_task)
     closed_tool(server, "source_stories", _source_stories)
     closed_tool(server, "source_story", _source_story)
+    closed_tool(server, "work_history", _work_history)
+    closed_tool(server, "work_event", _work_event)
     closed_tool(server, "work_append", _work_append)
     return server
 
