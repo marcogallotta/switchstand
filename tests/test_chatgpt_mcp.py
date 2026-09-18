@@ -70,8 +70,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-            "work_create",
+            "grant_get", "work_get", "work_attachments", "work_attachment",
+            "source_task", "source_stories", "source_story", "work_append", "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
@@ -81,6 +81,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
+        attachments = (await client.call_tool("work_attachments", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+        })).structured_content
+        assert attachments["status"] == "denied"
         related = (await client.call_tool("work_get", {
             "api_version": "1", "include_related": True,
         })).structured_content
