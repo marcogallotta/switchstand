@@ -418,6 +418,16 @@ async def test_chatgpt_created_work_history_requires_exact_applied_create_eviden
         title="Created",
         qualification="test:create",
     )
+    unknown = GuardOutcome(
+        status="unknown",
+        operation="work_create",
+        work_id=created,
+        operation_id=operation_id,
+        reason="prepared_or_unconfirmed_send",
+        effect="unknown",
+        retry="reconcile",
+        next_action="Reconcile the recorded create.",
+    )
     outcome = GuardOutcome(
         status="ok",
         operation="work_create",
@@ -429,7 +439,10 @@ async def test_chatgpt_created_work_history_requires_exact_applied_create_eviden
         next_action="Use the recorded create receipt.",
         receipt=receipt,
     )
-    grants.effects[operation_id] = (PRINCIPAL.key, "fingerprint", outcome)
+    await grants.prepare({}, selected, "fingerprint", unknown)
+    await grants.finish(outcome)
+    assert await grants.created_work_allowed(PRINCIPAL.key, created)
+    assert (await service.get(created)).status == "ok"
 
     page = await service.history(WorkHistoryRequest(
         api_version="1", work_id=created, observed_revision="r1"
