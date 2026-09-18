@@ -190,6 +190,28 @@ def create_app(
         _audit("work_get", None if work_id is None else str(work_id), result.status)
         return result
 
+    async def work_attachments(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: str | None = None, limit: int = 50,
+    ) -> WorkAttachmentsResult:
+        result = await service.attachments(WorkAttachmentsRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+            cursor=cursor, limit=limit,
+        ))
+        _audit("work_attachments", str(work_id), result.status)
+        return result
+
+    async def work_attachment(
+        api_version: Literal["1"], work_id: UUID, attachment_id: UUID,
+        observed_revision: str,
+    ) -> WorkAttachmentResult:
+        result = await service.attachment(WorkAttachmentRequest(
+            api_version=api_version, work_id=work_id, attachment_id=attachment_id,
+            observed_revision=observed_revision,
+        ))
+        _audit("work_attachment", str(work_id), result.status)
+        return result
+
     async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
         result = await service.source_task(SourceTaskRequest(api_version=api_version, task_gid=task_gid))
         _audit("source_task", task_gid, result.status)
@@ -243,7 +265,8 @@ def create_app(
         _audit("work_create", str(parent_work_id), result.status)
         return result
 
-    for tool in (grant_get, work_get, source_task, source_stories, source_story,
+    for tool in (grant_get, work_get, work_attachments, work_attachment,
+                 source_task, source_stories, source_story,
                  work_append, work_create):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
