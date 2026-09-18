@@ -31,6 +31,7 @@ class Provider:
     def __init__(self):
         self.created = {}
         self.creates = 0
+        self.parent_ids = {"123"}
         self.lose_response = False
         self.visible = True
         self.binding = "fixture-recovery-v1"
@@ -39,7 +40,7 @@ class Provider:
         return self.binding
 
     async def source_task(self, task_gid):
-        if task_gid == "123":
+        if task_gid in self.parent_ids:
             return ProviderSourceTask("Parent", "", False, "r1", True)
         if task_gid in self.created.values():
             return ProviderSourceTask("Created", "notes", False, "r2", True)
@@ -198,3 +199,20 @@ async def test_operation_identity_and_qualification_block_unsafe_create():
     denied = await service.create(request(unqualified))
     assert denied.status == "denied" and denied.effect == "not_sent"
     assert provider.creates == 1
+
+
+async def test_workspace_scope_can_create_under_explicit_bound_canonical_parent():
+    service, selected, state, provider = subject()
+    foreign = uuid4()
+    state.handles[foreign] = Handle(foreign, "asana", "124")
+    provider.parent_ids.add("124")
+    workspace = selected.model_copy(update={"scope": "workspace"})
+
+    result = await service.create(request(workspace, parent_work_id=foreign))
+    assert result.status == "ok" and result.receipt is not None
+    assert result.receipt.parent_task_gid == "124"
+
+    launch = workspace.model_copy(update={"scope": "launch"})
+    service.grants.grant = launch
+    denied = await service.create(request(launch, parent_work_id=foreign))
+    assert denied.status == "denied" and denied.effect == "not_sent"
