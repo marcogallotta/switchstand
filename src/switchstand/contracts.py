@@ -58,7 +58,7 @@ class WorkSearchRequest(ClosedModel):
     api_version: ApiVersion
     text: str | None = Field(default=None, min_length=1, max_length=500)
     completed: bool | None = None
-    cursor: str | None = Field(default=None, min_length=1)
+    cursor: str | None = Field(default=None, min_length=1, max_length=1024)
     limit: int = Field(default=50, ge=1, le=100)
 
 
