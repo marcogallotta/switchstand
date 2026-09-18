@@ -14,8 +14,8 @@ from switchstand.core import (
     ProviderWork,
     UnknownEffect,
 )
-from switchstand.grant_state import EffectRecord
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
+from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
