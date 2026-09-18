@@ -207,6 +207,7 @@ async def test_workspace_scope_can_create_under_explicit_bound_canonical_parent(
     state.handles[foreign] = Handle(foreign, "asana", "124")
     provider.parent_ids.add("124")
     workspace = selected.model_copy(update={"scope": "workspace"})
+    service.grants.grant = workspace
 
     result = await service.create(request(workspace, parent_work_id=foreign))
     assert result.status == "ok" and result.receipt is not None
