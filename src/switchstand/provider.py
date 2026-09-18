@@ -2,6 +2,7 @@ from typing import Any, cast
 
 import httpx
 
+from .attachments import ProviderAttachment, ProviderAttachmentPage
 from .contracts import (
     GroupedCandidate,
     GroupedLookup,
@@ -47,6 +48,7 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
+ATTACHMENT_FIELDS = "gid,name,parent.gid,download_url,view_url"
 JSON = dict[str, Any]
 PRIORITIES = {f"P{value}": value for value in range(4)}
 
@@ -430,6 +432,100 @@ class AsanaProvider:
         if self._gid(story) != provider_story_id:
             raise ProviderError("provider response invalid")
         return self._story_value(story)
+
+    @staticmethod
+    def _attachment_value(payload: JSON) -> ProviderAttachment:
+        attachment_id = payload.get("gid")
+        name = payload.get("name")
+        parent_id = AsanaProvider._gid(payload.get("parent"))
+        download_url = payload.get("download_url")
+        view_url = payload.get("view_url")
+        if (
+            not isinstance(attachment_id, str) or not attachment_id
+            or not isinstance(parent_id, str) or not parent_id
+            or not isinstance(name, str) or not name
+            or download_url is not None
+            and (not isinstance(download_url, str) or not download_url.startswith("https://"))
+            or view_url is not None
+            and (not isinstance(view_url, str) or not view_url.startswith("https://"))
+        ):
+            raise ProviderError("provider response invalid")
+        return ProviderAttachment(
+            provider_attachment_id=attachment_id,
+            provider_work_id=parent_id,
+            name=name,
+            download_url=download_url,
+            view_url=view_url,
+        )
+
+    async def list_attachments(
+        self, provider_work_id: str, cursor: str | None, limit: int,
+    ) -> ProviderAttachmentPage:
+        try:
+            params: dict[str, str | int] = {
+                "parent": provider_work_id,
+                "limit": limit,
+                "opt_fields": ATTACHMENT_FIELDS,
+            }
+            if cursor is not None:
+                params["offset"] = cursor
+            response = await self.client.get("/attachments", params=params)
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload["data"]
+            next_page = payload.get("next_page")
+            if not isinstance(rows, list) or len(rows) > limit:
+                raise TypeError
+            if next_page is None:
+                next_cursor = None
+            else:
+                next_cursor = (
+                    cast(JSON, next_page).get("offset")
+                    if isinstance(next_page, dict) else None
+                )
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    raise TypeError
+            seen: set[str] = set()
+            attachments: list[ProviderAttachment] = []
+            for raw in cast(list[object], rows):
+                if not isinstance(raw, dict):
+                    raise TypeError
+                attachment = self._attachment_value(cast(JSON, raw))
+                if (
+                    attachment.provider_attachment_id in seen
+                    or attachment.provider_work_id != provider_work_id
+                ):
+                    raise TypeError
+                seen.add(attachment.provider_attachment_id)
+                attachments.append(attachment)
+            return ProviderAttachmentPage(tuple(attachments), next_cursor)
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
+
+    async def get_attachment(
+        self, provider_attachment_id: str,
+    ) -> ProviderAttachment | None:
+        try:
+            response = await self.client.get(
+                f"/attachments/{provider_attachment_id}",
+                params={"opt_fields": ATTACHMENT_FIELDS},
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            data = response.json()["data"]
+            if not isinstance(data, dict):
+                raise TypeError
+            attachment = self._attachment_value(cast(JSON, data))
+            if attachment.provider_attachment_id != provider_attachment_id:
+                raise TypeError
+            return attachment
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
 
     async def _write(
         self, method: str, path: str, data: JSON, *, unknown_on_server_error: bool = False
