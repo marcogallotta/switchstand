@@ -33,8 +33,8 @@ from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "work_search", "source_task", "source_stories",
+    "source_story", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -95,6 +95,8 @@ async def _provision(url, subject):
     )
     selected = grant(
         principal=principal, active=active.id, reference=reference.id,
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search", "work_append"}),
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
         append_qualification="real:disposable-switchstand-test",
     )
@@ -134,8 +136,15 @@ async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         assert {tool.name for tool in await client.list_tools()} == TOOLS
-        observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
+        observed = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(selected.authority.active_work_id),
+        })).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
+        search = (await client.call_tool("work_search", {
+            "api_version": "1", "text": "Task", "limit": 10,
+        })).structured_content
+        assert search["status"] == "ok" and len(search["items"]) == 1
+        assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
             "grant"
         ]["id"] == str(selected.id)
