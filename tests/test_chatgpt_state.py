@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from chatgpt_fixture import PRINCIPAL, Handles, Provider, grant
+from chatgpt_fixture import PRINCIPAL, Provider, grant
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -22,7 +22,7 @@ from switchstand.contracts import (
     SourceStoryRequest,
     SourceTaskRequest,
 )
-from switchstand.core import Handle, ProviderError
+from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedAppend
@@ -341,9 +341,9 @@ async def test_workspace_scope_requires_explicit_bound_canonical_targets(subject
     service, selected, provider = subject
     foreign = uuid4()
     noncanonical = uuid4()
-    assert isinstance(service.state, Handles)
-    service.state.handles[foreign] = Handle(foreign, "asana", "789")
-    service.state.handles[noncanonical] = Handle(noncanonical, "asana", "790")
+    assert isinstance(service.state, PostgresState)
+    foreign = (await service.state.bind("asana", "789")).id
+    noncanonical = (await service.state.bind("asana", "790")).id
     provider.canonical_ids.add("789")
 
     workspace = selected.model_copy(update={
