@@ -49,6 +49,15 @@ action.
   The launcher binds only the canonical `.venv` path and dependency-manifest digest for `scripts/check`, which
   verifies candidate manifests and reuses that environment without bootstrap or Docker. This editable development
   convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
+  A launcher supervisor now retains ownership of a fresh child process group. On
+  child exit or supervisor HUP/INT/QUIT/TERM, it sends TERM, waits one second,
+  escalates to KILL if needed, and verifies no live group members remain before
+  removing that invocation's `TMPDIR`. It holds the child PID until group cleanup
+  completes and restores terminal foreground ownership. Other process groups,
+  durable writers and persistent Codex/task state are retained. An unverifiable
+  cleanup fails visibly and retains scratch files. Startup does not adopt or kill
+  older sessions; SIGKILL of the supervisor and children that leave the owned
+  process group are outside this bounded guarantee.
   The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
 - Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work

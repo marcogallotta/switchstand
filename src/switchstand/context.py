@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .launch import clean_environment, provision
+from .session import supervise
 from .task_ref import asana_task_id
 
 
@@ -295,7 +296,7 @@ def run(active: str) -> None:
                 or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
                 or name.startswith("GH_")):
             env.pop(name, None)
-    os.execvpe("codex", codex_command(control, writer), env)
+    raise SystemExit(supervise(codex_command(control, writer), env, writer / ".git"))
 
 
 def main() -> None:
