@@ -45,6 +45,7 @@ def redacted(principal: PrincipalContext, grant: WorkGrant | None) -> dict[str, 
             "id": str(grant.id), "version": grant.version, "state": grant.state,
             "current": grant.current(), "expires_at": grant.expires_at.isoformat(),
             "active_work_id": str(grant.authority.active_work_id),
+            "scope": grant.scope,
             "qualification": "[redacted]",
         }
     return result
@@ -94,7 +95,8 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                 append_qualification = arguments.qualification
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
-                authority=authority, operations=frozenset(operations),
+                authority=authority, scope=getattr(arguments, "scope", "launch"),
+                operations=frozenset(operations),
                 issuer="switchstand-test-grant",
                 provenance=f"explicit disposable task {arguments.task}",
                 expires_at=datetime.now(UTC) + timedelta(seconds=arguments.ttl_seconds),
@@ -112,6 +114,7 @@ def parser() -> argparse.ArgumentParser:
     for field in ("issuer", "subject", "client-id"):
         result.add_argument(f"--{field}", required=True)
     result.add_argument("--assurance", choices=("test", "authenticated"), default="test")
+    result.add_argument("--scope", choices=("launch", "workspace"), default="launch")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("inspect")
     setting = commands.add_parser("set")
