@@ -140,7 +140,8 @@ class MessageSubmitResult(ClosedModel):
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
         "runtime_currentness_unavailable", "runtime_generation_changed",
-        "recipient_route_unavailable", "state_unavailable",
+        "recipient_route_unavailable", "explicit_work_id_required", "work_not_granted",
+        "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -166,7 +167,8 @@ class MessagePendingResult(ClosedModel):
     has_more: bool = False
     reason: Literal[
         "no_current_grant", "grant_version_changed", "runtime_currentness_unavailable",
-        "runtime_generation_changed", "state_unavailable",
+        "runtime_generation_changed", "explicit_work_id_required", "work_not_granted",
+        "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -237,7 +239,7 @@ class MessageTransitionResult(ClosedModel):
         "delivery_already_dispositioned", "disposition_identity_conflict",
         "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
         "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
-        "state_unavailable",
+        "explicit_work_id_required", "work_not_granted", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -335,6 +337,7 @@ class MessageState:
 
     async def submit(
         self, principal: PrincipalContext, route: MessageRoute, request: MessageSubmitRequest,
+        *, sender_work_id: UUID | None = None,
     ) -> MessageSubmitResult:
         try:
             async with self.grants.locked(principal.key) as grant:
@@ -342,7 +345,10 @@ class MessageState:
                 if failure is not None:
                     return MessageSubmitResult(status=failure[0], reason=failure[1])
                 assert grant is not None
-                return await self._store(grant.authority.active_work_id, route, request)
+                actor_work_id = sender_work_id or grant.authority.active_work_id
+                if not grant.can_write(actor_work_id):
+                    return MessageSubmitResult(status="denied", reason="work_not_granted")
+                return await self._store(actor_work_id, route, request)
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
@@ -403,6 +409,7 @@ class MessageState:
 
     async def pending(
         self, principal: PrincipalContext, request: MessagePendingRequest,
+        *, recipient_work_id: UUID | None = None,
     ) -> MessagePendingResult:
         try:
             async with self.grants.locked(principal.key) as grant:
@@ -410,8 +417,11 @@ class MessageState:
                 if failure is not None:
                     return MessagePendingResult(status=failure[0], reason=failure[1])
                 assert grant is not None
+                actor_work_id = recipient_work_id or grant.authority.active_work_id
+                if not grant.can_write(actor_work_id):
+                    return MessagePendingResult(status="denied", reason="work_not_granted")
                 query = self._pending_query().where(
-                    message_deliveries.c.recipient_work_id == grant.authority.active_work_id,
+                    message_deliveries.c.recipient_work_id == actor_work_id,
                     message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
                 )
                 if request.cursor is not None:
@@ -431,7 +441,7 @@ class MessageState:
 
     async def receive(
         self, principal: PrincipalContext, runtime: RuntimeCurrentness,
-        request: MessageReceiveRequest,
+        request: MessageReceiveRequest, *, recipient_work_id: UUID | None = None,
     ) -> MessageTransitionResult:
         try:
             async with self.grants.locked(principal.key) as grant:
@@ -440,12 +450,15 @@ class MessageState:
                 if failure is not None:
                     return _transition(failure[0], failure[1])
                 assert grant is not None
+                actor_work_id = recipient_work_id or grant.authority.active_work_id
+                if not grant.can_write(actor_work_id):
+                    return _transition("denied", "work_not_granted")
                 async with self.engine.begin() as connection:
                     raw = (await connection.execute(select(message_deliveries).where(
                         message_deliveries.c.delivery_id == request.delivery_id
                     ).with_for_update())).mappings().one_or_none()
                     row = None if raw is None else dict(raw)
-                    failure_result = self._delivery_access(row, grant)
+                    failure_result = self._delivery_access(row, actor_work_id)
                     if failure_result is not None:
                         return failure_result
                     assert row is not None
@@ -470,7 +483,7 @@ class MessageState:
 
     async def recover(
         self, principal: PrincipalContext, runtime: RuntimeCurrentness,
-        request: MessageReceiveRequest,
+        request: MessageReceiveRequest, *, recipient_work_id: UUID | None = None,
     ) -> MessageTransitionResult:
         """Rebind one already-received delivery to an authorized replacement runtime."""
         try:
@@ -480,12 +493,15 @@ class MessageState:
                 if failure is not None:
                     return _transition(failure[0], failure[1])
                 assert grant is not None
+                actor_work_id = recipient_work_id or grant.authority.active_work_id
+                if not grant.can_write(actor_work_id):
+                    return _transition("denied", "work_not_granted")
                 async with self.engine.begin() as connection:
                     raw = (await connection.execute(select(message_deliveries).where(
                         message_deliveries.c.delivery_id == request.delivery_id
                     ).with_for_update())).mappings().one_or_none()
                     row = None if raw is None else dict(raw)
-                    failure_result = self._delivery_access(row, grant)
+                    failure_result = self._delivery_access(row, actor_work_id)
                     if failure_result is not None:
                         return failure_result
                     assert row is not None
@@ -505,7 +521,7 @@ class MessageState:
 
     async def disposition(
         self, principal: PrincipalContext, runtime: RuntimeCurrentness,
-        request: MessageDispositionRequest,
+        request: MessageDispositionRequest, *, recipient_work_id: UUID | None = None,
     ) -> MessageTransitionResult:
         try:
             async with self.grants.locked(principal.key) as grant:
@@ -514,12 +530,15 @@ class MessageState:
                 if failure is not None:
                     return _transition(failure[0], failure[1])
                 assert grant is not None
+                actor_work_id = recipient_work_id or grant.authority.active_work_id
+                if not grant.can_write(actor_work_id):
+                    return _transition("denied", "work_not_granted")
                 async with self.engine.begin() as connection:
                     raw = (await connection.execute(select(message_deliveries).where(
                         message_deliveries.c.delivery_id == request.delivery_id
                     ).with_for_update())).mappings().one_or_none()
                     row = None if raw is None else dict(raw)
-                    failure_result = self._delivery_access(row, grant)
+                    failure_result = self._delivery_access(row, actor_work_id)
                     if failure_result is not None:
                         return failure_result
                     assert row is not None
@@ -534,7 +553,7 @@ class MessageState:
                             or row["receiving_generation"] != runtime.generation):
                         return _transition("recovery_required", "receiving_binding_changed", row)
                     evidence_failure = await self._evidence_failure(
-                        connection, grant, row, request.evidence
+                        connection, grant, actor_work_id, row, request.evidence
                     )
                     if evidence_failure is not None:
                         return _transition("recovery_required", evidence_failure, row)
@@ -551,24 +570,24 @@ class MessageState:
 
     @staticmethod
     def _delivery_access(
-        row: Mapping[str, Any] | None, grant: WorkGrant,
+        row: Mapping[str, Any] | None, work_id: UUID,
     ) -> MessageTransitionResult | None:
         if row is None:
             return _transition("denied", "delivery_not_found")
-        if row["recipient_work_id"] != grant.authority.active_work_id:
+        if row["recipient_work_id"] != work_id:
             return _transition("denied", "delivery_not_for_current_work")
         return None
 
     async def _evidence_failure(
-        self, connection: Any, grant: WorkGrant, delivery: Mapping[str, Any],
-        evidence: DispositionEvidence,
+        self, connection: Any, grant: WorkGrant, actor_work_id: UUID,
+        delivery: Mapping[str, Any], evidence: DispositionEvidence,
     ) -> Literal[
         "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
         "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
     ] | None:
         if evidence.kind == "result":
             result = (await connection.execute(select(messages).where(and_(
-                messages.c.sender_work_id == grant.authority.active_work_id,
+                messages.c.sender_work_id == actor_work_id,
                 messages.c.message_id == evidence.result_message_id,
             )))).mappings().one_or_none()
             if result is None:
@@ -580,7 +599,7 @@ class MessageState:
         if evidence.operation_id != message_effect_operation_id(delivery["delivery_id"]):
             return "effect_evidence_mismatch"
         previous = await self.grants.previous(
-            evidence.operation_id, grant.authority.active_work_id
+            evidence.operation_id, actor_work_id
         )
         if previous is None:
             return "effect_evidence_missing"
@@ -591,7 +610,7 @@ class MessageState:
             return "effect_evidence_unknown"
         if outcome.effect == "not_sent":
             return "effect_not_applied"
-        if outcome.receipt is None or outcome.receipt.work_id != grant.authority.active_work_id:
+        if outcome.receipt is None or outcome.receipt.work_id != actor_work_id:
             return "effect_evidence_mismatch"
         return None
 
