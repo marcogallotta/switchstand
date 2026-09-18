@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
-from .contracts import ClosedModel, LaunchAuthority, RelatedLookup, WorkItem
+from .contracts import ClosedModel, LaunchAuthority, RelatedLookup, WorkItem, WorkPatch
 
 
 class PrincipalContext(ClosedModel):
@@ -29,11 +29,12 @@ class WorkGrant(ClosedModel):
     principal: PrincipalContext
     authority: LaunchAuthority
     scope: Literal["launch", "workspace"] = "launch"
-    operations: frozenset[Literal["work_get", "work_append", "work_create"]]
+    operations: frozenset[Literal["work_get", "work_update", "work_append", "work_create"]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
     expires_at: AwareDatetime
     state: Literal["active", "revoked", "terminal"] = "active"
+    update_qualification: str | None = Field(default=None, min_length=1)
     append_qualification: str | None = Field(default=None, min_length=1)
     create_qualification: str | None = Field(default=None, min_length=1)
 
@@ -49,6 +50,15 @@ class WorkGrant(ClosedModel):
         if self.scope == "workspace":
             return True
         return work_id == self.authority.active_work_id
+
+
+class ProtectedUpdate(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    observed_revision: str = Field(min_length=1)
+    patch: WorkPatch
 
 
 class ProtectedAppend(ClosedModel):
@@ -67,6 +77,20 @@ class ProtectedCreate(ClosedModel):
     grant_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     notes: str = Field(default="", max_length=8000)
+
+
+class UpdateReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: str
+    task_gid: str
+    observed_revision: str
+    result_revision: str
+    patch: WorkPatch
+    qualification: str
 
 
 class EffectReceipt(ClosedModel):
@@ -104,7 +128,7 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | CreateReceipt | None = None
+    receipt: EffectReceipt | CreateReceipt | UpdateReceipt | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:
