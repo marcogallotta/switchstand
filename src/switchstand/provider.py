@@ -532,6 +532,23 @@ class AsanaProvider:
             values[name] = value
         return Routing(**values)
 
+    def _search_owner_project(self, task: JSON) -> str:
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list):
+            raise TypeError
+        admitted: set[str] = set()
+        for raw in cast(list[object], memberships):
+            if not isinstance(raw, dict):
+                raise TypeError
+            project_gid = self._gid(cast(JSON, raw).get("project"))
+            if project_gid is None:
+                raise TypeError
+            if project_gid in self._admission_projects:
+                admitted.add(project_gid)
+        if not admitted:
+            raise TypeError
+        return min(admitted)
+
     @staticmethod
     def _search_position(cursor: str | None, project_count: int) -> tuple[int, str | None]:
         if cursor is None:
@@ -564,6 +581,7 @@ class AsanaProvider:
 
             next_cursor: str | None = None
             projects: tuple[str, ...] = ()
+            project: str | None = None
             index = 0
             offset: str | None = None
 
@@ -584,8 +602,9 @@ class AsanaProvider:
             else:
                 projects = tuple(sorted(self._admission_projects))
                 index, offset = self._search_position(cursor, len(projects))
+                project = projects[index]
                 params = {
-                    "project": projects[index],
+                    "project": project,
                     "completed_since": "1970-01-01T00:00:00Z",
                     "limit": limit,
                     "opt_fields": "gid",
@@ -635,6 +654,11 @@ class AsanaProvider:
                 task = await self._task(gid)
                 if task is None or self._gid(task) != gid or not await self._canonical(task):
                     raise ProviderError("provider search readback failed")
+                if text is None:
+                    if project is None:
+                        raise TypeError
+                    if self._search_owner_project(task) != project:
+                        continue
                 title = task.get("name")
                 current_completed = task.get("completed")
                 revision = task.get("modified_at")
