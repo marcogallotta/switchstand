@@ -55,7 +55,7 @@ def asana_provider(
 
 async def test_text_search_is_bounded_non_continuable_and_exact_read_back():
     subject, requests = asana_provider(
-        {"data": [{"gid": "101"}], "next_page": {"offset": "not-supported-here"}},
+        {"data": [{"gid": "101"}], "next_page": None},
         {"data": task("101", title="Needle", priority="P1")},
     )
     page = await subject.search_work("needle", False, None, 25)
@@ -75,6 +75,16 @@ async def test_text_search_is_bounded_non_continuable_and_exact_read_back():
     assert set(request.url.params["projects.any"].split(",")) == set(PROJECTS)
     assert "offset" not in request.url.params
     assert requests[1].url.path.endswith("/tasks/101")
+
+
+async def test_text_search_rejects_uncontinuable_provider_page():
+    subject, requests = asana_provider({
+        "data": [{"gid": "101"}],
+        "next_page": {"offset": "not-supported-here"},
+    })
+    with pytest.raises(ProviderError):
+        await subject.search_work("needle", None, None, 25)
+    assert len(requests) == 1
 
 
 async def test_text_search_rejects_cursor_without_provider_request():
@@ -108,7 +118,8 @@ async def test_list_uses_real_project_offsets_then_advances_admitted_projects():
 
 
 @pytest.mark.parametrize(
-    "problem", ["duplicate", "disabled", "wrong_subtype", "bad_option", "malformed_value"]
+    "problem",
+    ["duplicate", "disabled", "wrong_subtype", "bad_option", "wrong_option", "malformed_value"],
 )
 async def test_search_rejects_ineligible_or_malformed_routing_truth(problem):
     project = "9999999999999999"
@@ -122,6 +133,8 @@ async def test_search_rejects_ineligible_or_malformed_routing_truth(problem):
         field["resource_subtype"] = "text"
     elif problem == "bad_option":
         field["enum_options"][0]["enabled"] = False
+    elif problem == "wrong_option":
+        field["enum_value"] = {"gid": "missing-option"}
     else:
         field["display_value"] = {"unexpected": True}
     subject, _ = asana_provider(
@@ -142,6 +155,17 @@ async def test_asana_search_rejects_unbounded_provider_inputs_before_request(tex
     with pytest.raises(ProviderError):
         await subject.search_work(text, None, cursor, limit)
     assert requests == []
+
+
+async def test_asana_search_fails_closed_on_provider_failure():
+    def fail(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    client = httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(fail)
+    )
+    with pytest.raises(ProviderError):
+        await AsanaProvider(client).search_work(None, None, None, 50)
 
 
 @pytest.mark.parametrize("problem", ["bad_cursor", "repeated_cursor", "too_many"])
