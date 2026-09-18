@@ -1,10 +1,12 @@
 """Authenticated-caller seam; authentication adapters are trusted host code, never tools."""
 
 from collections.abc import Awaitable, Callable
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from .attachments import AttachmentProvider, AttachmentState, WorkAttachments
 from .contracts import (
     LaunchAuthority,
     SourceStoriesRequest,
@@ -16,6 +18,10 @@ from .contracts import (
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
+    WorkAttachmentRequest,
+    WorkAttachmentResult,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
     WorkHistoryRequest,
     WorkHistoryResult,
 )
@@ -150,6 +156,60 @@ class ChatGPTService:
                 return await Controller(authority, self.state, self.providers).event(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkEventResult(status="unknown")
+
+    async def attachments(self, request: WorkAttachmentsRequest) -> WorkAttachmentsResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkAttachmentsResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkAttachmentsResult(status="denied")
+                if "work_attachments" not in grant.operations:
+                    return WorkAttachmentsResult(status="denied")
+                authority = grant.authority
+                if grant.scope == "workspace":
+                    if await self.state.get(request.work_id) is None:
+                        return WorkAttachmentsResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                elif not grant.can_read(request.work_id, explicit_target=True):
+                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
+                        return WorkAttachmentsResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                return await WorkAttachments(
+                    authority,
+                    cast(AttachmentState, self.state),
+                    cast(dict[str, AttachmentProvider], self.providers),
+                ).list(request)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return WorkAttachmentsResult(status="unknown")
+
+    async def attachment(self, request: WorkAttachmentRequest) -> WorkAttachmentResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkAttachmentResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkAttachmentResult(status="denied")
+                if "work_attachments" not in grant.operations:
+                    return WorkAttachmentResult(status="denied")
+                authority = grant.authority
+                if grant.scope == "workspace":
+                    if await self.state.get(request.work_id) is None:
+                        return WorkAttachmentResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                elif not grant.can_read(request.work_id, explicit_target=True):
+                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
+                        return WorkAttachmentResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                return await WorkAttachments(
+                    authority,
+                    cast(AttachmentState, self.state),
+                    cast(dict[str, AttachmentProvider], self.providers),
+                ).get(request)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return WorkAttachmentResult(status="unknown")
 
     async def append(self, request: ProtectedAppend) -> GuardOutcome:
         principal = await self.principal()
