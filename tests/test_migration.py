@@ -75,7 +75,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch):
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0004_required_result_persistence"
+            == "0005_work_event_handles"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation():
