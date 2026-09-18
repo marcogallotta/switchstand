@@ -90,6 +90,41 @@ async def test_asana_search_uses_returned_cursor_and_allows_list_without_text():
     assert "text" not in request.url.params
 
 
+async def test_asana_search_rejects_duplicate_or_malformed_routing_truth():
+    duplicate = task("101")
+    duplicate["custom_fields"] = [
+        duplicate["custom_fields"][0],
+        dict(duplicate["custom_fields"][0]),
+    ]
+    subject, _ = asana_provider({"data": [duplicate], "next_page": None})
+    with pytest.raises(ProviderError):
+        await subject.search_work(None, None, None, 50)
+
+    malformed = task("102")
+    malformed["custom_fields"][0]["display_value"] = {"unexpected": True}
+    subject, _ = asana_provider({"data": [malformed], "next_page": None})
+    with pytest.raises(ProviderError):
+        await subject.search_work(None, None, None, 50)
+
+
+@pytest.mark.parametrize(
+    "text, cursor, limit",
+    [
+        (None, "", 50),
+        (None, "x" * 1025, 50),
+        ("", None, 50),
+        ("x" * 501, None, 50),
+        (None, None, 0),
+        (None, None, 101),
+    ],
+)
+async def test_asana_search_rejects_unbounded_provider_inputs_before_request(text, cursor, limit):
+    subject, requests = asana_provider({"data": [], "next_page": None})
+    with pytest.raises(ProviderError):
+        await subject.search_work(text, None, cursor, limit)
+    assert requests == []
+
+
 @pytest.mark.parametrize("problem", ["foreign", "duplicate", "bad_cursor", "too_many"])
 async def test_asana_search_fails_closed_on_untrusted_or_invalid_page(problem):
     rows = [task("101")]
@@ -174,6 +209,7 @@ async def test_discovery_provider_failure_returns_closed_error_without_partial_d
 @pytest.mark.parametrize("values", [
     {"text": ""},
     {"cursor": ""},
+    {"cursor": "x" * 1025},
     {"limit": 0},
     {"limit": 101},
     {"unexpected": True},
