@@ -6,11 +6,7 @@ from pydantic import ValidationError
 
 from switchstand.contracts import Routing, WorkSearchRequest
 from switchstand.core import Handle, ProviderError
-from switchstand.discovery import (
-    ProviderSearchItem,
-    ProviderSearchPage,
-    WorkDiscovery,
-)
+from switchstand.discovery import ProviderSearchItem, ProviderSearchPage, WorkDiscovery
 from switchstand.provider import PROJECT, PROJECTS, AsanaProvider
 
 
@@ -32,12 +28,14 @@ def task(
             "enabled": True,
             "resource_subtype": "enum",
             "enum_value": {"gid": "priority-option"},
-            "enum_options": [],
+            "enum_options": [{"gid": "priority-option", "name": priority, "enabled": True}],
         }],
     }
 
 
-def asana_provider(*responses: dict) -> tuple[AsanaProvider, list[httpx.Request]]:
+def asana_provider(
+    *responses: dict, test_project_gid: str | None = None,
+) -> tuple[AsanaProvider, list[httpx.Request]]:
     pending = list(responses)
     requests: list[httpx.Request] = []
 
@@ -48,26 +46,27 @@ def asana_provider(*responses: dict) -> tuple[AsanaProvider, list[httpx.Request]
         return httpx.Response(200, request=request, json=pending.pop(0))
 
     client = httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0",
-        transport=httpx.MockTransport(answer),
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(answer)
     )
-    return AsanaProvider(client), requests
+    return AsanaProvider(
+        client, test_project_gid, test_only=test_project_gid is not None
+    ), requests
 
 
-async def test_asana_search_is_bounded_to_admitted_projects_and_exact_filters():
-    subject, requests = asana_provider({
-        "data": [task("101", title="Needle", priority="P1")],
-        "next_page": {"offset": "next-page"},
-    })
+async def test_text_search_is_bounded_non_continuable_and_exact_read_back():
+    subject, requests = asana_provider(
+        {"data": [{"gid": "101"}], "next_page": {"offset": "not-supported-here"}},
+        {"data": task("101", title="Needle", priority="P1")},
+    )
     page = await subject.search_work("needle", False, None, 25)
-    assert page.next_cursor == "next-page"
+    assert page.next_cursor is None
     assert page.items == (
         ProviderSearchItem(
             provider_work_id="101", title="Needle", completed=False,
             revision="r1", routing=Routing(priority="P1"),
         ),
     )
-    assert len(requests) == 1
+    assert len(requests) == 2
     request = requests[0]
     assert request.url.path.endswith("/workspaces/1200569426771227/tasks/search")
     assert request.url.params["text"] == "needle"
@@ -75,72 +74,91 @@ async def test_asana_search_is_bounded_to_admitted_projects_and_exact_filters():
     assert request.url.params["limit"] == "25"
     assert set(request.url.params["projects.any"].split(",")) == set(PROJECTS)
     assert "offset" not in request.url.params
+    assert requests[1].url.path.endswith("/tasks/101")
 
 
-async def test_asana_search_uses_returned_cursor_and_allows_list_without_text():
-    subject, requests = asana_provider({
-        "data": [task("102", completed=True)],
-        "next_page": None,
-    })
-    page = await subject.search_work(None, True, "cursor-2", 50)
-    assert page.next_cursor is None and page.items[0].completed is True
-    request = requests[0]
-    assert request.url.params["offset"] == "cursor-2"
-    assert request.url.params["completed"] == "true"
-    assert "text" not in request.url.params
-
-
-async def test_asana_search_rejects_duplicate_or_malformed_routing_truth():
-    duplicate = task("101")
-    duplicate["custom_fields"] = [
-        duplicate["custom_fields"][0],
-        dict(duplicate["custom_fields"][0]),
-    ]
-    subject, _ = asana_provider({"data": [duplicate], "next_page": None})
+async def test_text_search_rejects_cursor_without_provider_request():
+    subject, requests = asana_provider()
     with pytest.raises(ProviderError):
-        await subject.search_work(None, None, None, 50)
+        await subject.search_work("needle", None, "invented-offset", 25)
+    assert requests == []
 
-    malformed = task("102")
-    malformed["custom_fields"][0]["display_value"] = {"unexpected": True}
-    subject, _ = asana_provider({"data": [malformed], "next_page": None})
+
+async def test_list_uses_real_project_offsets_then_advances_admitted_projects():
+    subject, requests = asana_provider(
+        {"data": [{"gid": "101"}], "next_page": {"offset": "provider-offset"}},
+        {"data": task("101")},
+        {"data": [{"gid": "102"}], "next_page": None},
+        {"data": task("102", completed=True)},
+        {"data": [], "next_page": None},
+    )
+    first = await subject.search_work(None, None, None, 1)
+    second = await subject.search_work(None, None, first.next_cursor, 1)
+    third = await subject.search_work(None, None, second.next_cursor, 1)
+    projects = sorted(PROJECTS)
+    assert first.next_cursor == "0:provider-offset"
+    assert second.next_cursor == "1:" and third.next_cursor == "2:"
+    assert [item.provider_work_id for item in first.items + second.items] == ["101", "102"]
+    assert requests[0].url.path.endswith("/tasks")
+    assert requests[0].url.params["project"] == projects[0]
+    assert requests[0].url.params["completed_since"] == "1970-01-01T00:00:00Z"
+    assert "offset" not in requests[0].url.params
+    assert requests[2].url.params["offset"] == "provider-offset"
+    assert requests[4].url.params["project"] == projects[1]
+
+
+@pytest.mark.parametrize(
+    "problem", ["duplicate", "disabled", "wrong_subtype", "bad_option", "malformed_value"]
+)
+async def test_search_rejects_ineligible_or_malformed_routing_truth(problem):
+    project = "9999999999999999"
+    current = task("101", project=project)
+    field = current["custom_fields"][0]
+    if problem == "duplicate":
+        current["custom_fields"].append(dict(field))
+    elif problem == "disabled":
+        field["enabled"] = False
+    elif problem == "wrong_subtype":
+        field["resource_subtype"] = "text"
+    elif problem == "bad_option":
+        field["enum_options"][0]["enabled"] = False
+    else:
+        field["display_value"] = {"unexpected": True}
+    subject, _ = asana_provider(
+        {"data": [{"gid": "101"}], "next_page": None},
+        {"data": current},
+        test_project_gid=project,
+    )
     with pytest.raises(ProviderError):
         await subject.search_work(None, None, None, 50)
 
 
 @pytest.mark.parametrize(
     "text, cursor, limit",
-    [
-        (None, "", 50),
-        (None, "x" * 1025, 50),
-        ("", None, 50),
-        ("x" * 501, None, 50),
-        (None, None, 0),
-        (None, None, 101),
-    ],
+    [(None, "", 50), (None, "x" * 1025, 50), ("", None, 50), (None, None, 101)],
 )
 async def test_asana_search_rejects_unbounded_provider_inputs_before_request(text, cursor, limit):
-    subject, requests = asana_provider({"data": [], "next_page": None})
+    subject, requests = asana_provider()
     with pytest.raises(ProviderError):
         await subject.search_work(text, None, cursor, limit)
     assert requests == []
 
 
-@pytest.mark.parametrize("problem", ["foreign", "duplicate", "bad_cursor", "too_many"])
-async def test_asana_search_fails_closed_on_untrusted_or_invalid_page(problem):
-    rows = [task("101")]
-    next_page: object = None
-    if problem == "foreign":
-        rows = [task("101", project="999999")]
-    elif problem == "duplicate":
-        rows = [task("101"), task("101")]
-    elif problem == "bad_cursor":
+@pytest.mark.parametrize("problem", ["bad_cursor", "repeated_cursor", "too_many"])
+async def test_asana_list_fails_closed_on_invalid_provider_page(problem):
+    project = "9999999999999999"
+    cursor, rows, next_page = None, [], None
+    if problem == "bad_cursor":
         next_page = {"offset": ""}
+    elif problem == "repeated_cursor":
+        cursor, next_page = "0:same", {"offset": "same"}
     else:
-        rows = [task(str(index)) for index in range(3)]
-    subject, _requests = asana_provider({"data": rows, "next_page": next_page})
-    limit = 2 if problem == "too_many" else 50
+        rows = [{"gid": "101"}, {"gid": "102"}]
+    subject, _ = asana_provider(
+        {"data": rows, "next_page": next_page}, test_project_gid=project
+    )
     with pytest.raises(ProviderError):
-        await subject.search_work(None, None, None, limit)
+        await subject.search_work(None, None, cursor, 1)
 
 
 class MemoryState:
