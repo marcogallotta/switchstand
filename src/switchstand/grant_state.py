@@ -52,6 +52,23 @@ class GrantState:
             ))).scalar_one_or_none()
         return None if value is None else WorkGrant.model_validate(value)
 
+    async def current_for_active_work(self, work_id: UUID) -> WorkGrant | None:
+        """Resolve one current task-owner grant without exposing principal identity to callers."""
+        async with self.engine.connect() as connection:
+            values = (await connection.execute(select(work_grants.c.document).where(
+                work_grants.c.document.is_not(None)
+            ))).scalars().all()
+        matches: list[WorkGrant] = []
+        for value in values:
+            if value is None:
+                continue
+            grant = WorkGrant.model_validate(value)
+            if grant.current() and grant.authority.active_work_id == work_id:
+                matches.append(grant)
+        if len(matches) > 1:
+            raise ValueError("multiple current grants own the same active work")
+        return matches[0] if matches else None
+
     async def issue(self, grant: WorkGrant, expected_version: int | None) -> None:
         """Trusted control path only; compare-and-replace also handles revoke/terminal."""
         key = grant.principal.key
