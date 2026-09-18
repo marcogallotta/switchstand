@@ -89,7 +89,7 @@ class FakeProvider:
         self.grouped_calls = []
         self.grouped_revision = "r1"
         self.canonical = True
-        self.story_task_gid = TASK_GID
+        self.story_task_gid = None
         self.story_gid = STORY_GID
         self.story_text = "feedback"
         self.append_count = 0
@@ -142,7 +142,8 @@ class FakeProvider:
         if self.bump_revision_on_story:
             self.revision = "r2"
         return ProviderSourceStory(
-            self.story_gid, self.story_task_gid, "comment_added", self.story_text,
+            self.story_gid, self.story_task_gid or provider_task_id,
+            "comment_added", self.story_text,
             "2026-09-12T00:00:00Z", "Marco",
         )
 
