@@ -10,6 +10,7 @@ from .contracts import (
     Routing,
     WorkPatch,
 )
+from .discovery import ProviderSearchItem, ProviderSearchPage
 from .core import (
     ProviderError,
     ProviderHead,
@@ -480,6 +481,85 @@ class AsanaProvider:
             return story_gid if isinstance(story_gid, str) else None
         except (KeyError, TypeError, ValueError):
             return None
+
+    async def search_work(
+        self, text: str | None, completed: bool | None, cursor: str | None, limit: int,
+    ) -> ProviderSearchPage:
+        try:
+            params: dict[str, str | int] = {
+                "projects.any": ",".join(sorted(self._admission_projects)),
+                "limit": limit,
+                "opt_fields": OPT_FIELDS,
+            }
+            if text is not None:
+                params["text"] = text
+            if completed is not None:
+                params["completed"] = "true" if completed else "false"
+            if cursor is not None:
+                params["offset"] = cursor
+            response = await self.client.get(
+                f"/workspaces/{WORKSPACE}/tasks/search", params=params
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload["data"]
+            next_page = payload.get("next_page")
+            if not isinstance(rows, list) or len(rows) > limit:
+                raise TypeError
+            if next_page is None:
+                next_cursor = None
+            else:
+                next_cursor = (
+                    cast(JSON, next_page).get("offset")
+                    if isinstance(next_page, dict) else None
+                )
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    raise TypeError
+            seen: set[str] = set()
+            items: list[ProviderSearchItem] = []
+            for raw in cast(list[object], rows):
+                if not isinstance(raw, dict):
+                    raise TypeError
+                task = cast(JSON, raw)
+                gid = task.get("gid")
+                title = task.get("name")
+                completed_value = task.get("completed")
+                revision = task.get("modified_at")
+                raw_fields = task.get("custom_fields")
+                if (
+                    not isinstance(gid, str) or not gid or gid in seen
+                    or not isinstance(title, str)
+                    or not isinstance(completed_value, bool)
+                    or not isinstance(revision, str)
+                    or not isinstance(raw_fields, list)
+                ):
+                    raise TypeError
+                seen.add(gid)
+                if not await self._canonical(task):
+                    raise ProviderError("provider search returned non-canonical work")
+                fields = self._custom_fields(task)
+                values = {
+                    name: next(
+                        (field.get("display_value") for field in fields
+                         if field.get("gid") == field_gid),
+                        None,
+                    )
+                    for name, field_gid in FIELDS.items()
+                }
+                routing = Routing(**{
+                    key: value if isinstance(value, str) else None
+                    for key, value in values.items()
+                })
+                items.append(ProviderSearchItem(
+                    provider_work_id=gid,
+                    title=title,
+                    completed=completed_value,
+                    revision=revision,
+                    routing=routing,
+                ))
+            return ProviderSearchPage(tuple(items), next_cursor)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider request failed") from None
 
     async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None:
         try:
