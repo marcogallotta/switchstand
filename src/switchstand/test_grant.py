@@ -21,7 +21,7 @@ from .state import PostgresState
 from .task_ref import asana_task_id
 
 MAX_TTL_SECONDS = 3600
-Operation = Literal["work_get", "work_append", "work_create"]
+Operation = Literal["work_get", "work_attachments", "work_append", "work_create"]
 
 
 def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
@@ -89,6 +89,8 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                     AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
             operations: set[Operation] = {"work_get", "work_create"}
+            if getattr(arguments, "scope", "launch") == "workspace":
+                operations.add("work_attachments")
             append_qualification = None
             if principal.assurance == "test":
                 operations.add("work_append")

@@ -21,13 +21,14 @@ from mcp.server.auth.provider import AccessToken
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.attachment_types import ProviderAttachment, ProviderAttachmentPage
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState, metadata
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "work_attachments", "work_attachment",
+    "source_task", "source_stories", "source_story", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -35,11 +36,33 @@ CLIENT_ID = "chatgpt-client"
 
 
 class CountingProvider(Provider):
+    def __init__(self):
+        super().__init__()
+        self.attachment_parent = "123"
+
     async def get(self, task_gid):
         return await super().get("123")
 
     async def source_task(self, task_gid):
         return await super().source_task("123")
+
+    async def list_attachments(self, provider_work_id, cursor, limit):
+        self.attachment_parent = provider_work_id
+        return ProviderAttachmentPage(
+            attachments=(ProviderAttachment(
+                "2001", provider_work_id, "evidence.txt",
+                "https://download.example/evidence", "https://view.example/evidence",
+            ),),
+            next_cursor=None,
+        )
+
+    async def get_attachment(self, provider_attachment_id):
+        if provider_attachment_id != "2001":
+            return None
+        return ProviderAttachment(
+            "2001", self.attachment_parent, "evidence.txt",
+            "https://download.example/evidence", "https://view.example/evidence",
+        )
 
     async def append(self, task_gid, text):
         _record_effect()
@@ -78,6 +101,8 @@ async def _provision(url, subject):
     )
     selected = grant(
         principal=principal, active=active.id, reference=uuid4(),
+        scope="workspace",
+        operations=frozenset({"work_get", "work_attachments", "work_append"}),
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
         append_qualification="real:disposable-switchstand-test",
     )
@@ -129,8 +154,27 @@ async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         assert {tool.name for tool in await client.list_tools()} == TOOLS
-        observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
+        observed = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(selected.authority.active_work_id),
+        })).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
+        attachments = (await client.call_tool("work_attachments", {
+            "api_version": "1",
+            "work_id": str(selected.authority.active_work_id),
+            "observed_revision": observed["item"]["revision"],
+            "limit": 10,
+        })).structured_content
+        assert attachments["status"] == "ok" and len(attachments["attachments"]) == 1
+        attachment = attachments["attachments"][0]
+        assert attachment["work_id"] == str(selected.authority.active_work_id)
+        assert "provider" not in attachment and "provider_attachment_id" not in attachment
+        exact = (await client.call_tool("work_attachment", {
+            "api_version": "1",
+            "work_id": str(selected.authority.active_work_id),
+            "attachment_id": attachment["id"],
+            "observed_revision": observed["item"]["revision"],
+        })).structured_content
+        assert exact["status"] == "ok" and exact["item"] == attachment
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
             "grant"
         ]["id"] == str(selected.id)

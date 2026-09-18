@@ -64,14 +64,25 @@ async def test_related_get_keeps_grant_guard_and_exact_bound_source():
     assert provider.related_calls == ["123"]
 
 
+async def test_workspace_attachment_read_requires_explicit_operation():
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get"}), append_qualification=None,
+    )
+    denied = await build_chatgpt_server(subject).call_tool("work_attachments", {
+        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+    })
+    assert denied.structured_content["status"] == "denied"
+
+
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     parameters = StdioServerParameters(command=sys.executable,
         args=[str(Path(__file__)), "serve"], env={"PYTHONPATH": str(Path.cwd() / "src")})
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-            "work_create",
+            "grant_get", "work_get", "work_attachments", "work_attachment",
+            "source_task", "source_stories", "source_story", "work_append", "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
@@ -81,6 +92,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
+        attachments = (await client.call_tool("work_attachments", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+        })).structured_content
+        assert attachments["status"] == "denied"
         related = (await client.call_tool("work_get", {
             "api_version": "1", "include_related": True,
         })).structured_content
