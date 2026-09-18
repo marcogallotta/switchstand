@@ -88,7 +88,7 @@ class CreateGateway:
 
                 if grant is None or grant.principal != principal or not grant.current():
                     return self.guard(request, "denied", "no_current_grant")
-                if (request.parent_work_id != grant.authority.active_work_id
+                if (not grant.can_write(request.parent_work_id)
                         or "work_create" not in grant.operations):
                     return self.guard(request, "denied", "operation_or_parent_not_granted")
                 if request.grant_version != grant.version:
