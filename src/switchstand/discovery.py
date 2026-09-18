@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .contracts import Routing, WorkSearchItem, WorkSearchRequest, WorkSearchResult
+from .core import ProviderError
 
 
 @dataclass(frozen=True)
@@ -63,5 +64,5 @@ class WorkDiscovery:
             return WorkSearchResult(
                 status="ok", items=tuple(items), next_cursor=page.next_cursor
             )
-        except (TypeError, ValueError):
+        except (ProviderError, TypeError, ValueError):
             return WorkSearchResult(status="provider_error")
