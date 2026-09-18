@@ -179,7 +179,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         })
     assert names == {
         "grant_get", "work_get", "source_task", "source_stories", "source_story",
-        "work_append", "work_create",
+        "work_history", "work_event", "work_append", "work_create",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
     assert append.structured_content["status"] == "ok"
