@@ -64,14 +64,39 @@ async def test_related_get_keeps_grant_guard_and_exact_bound_source():
     assert provider.related_calls == ["123"]
 
 
+async def test_workspace_search_requires_explicit_operation_and_returns_only_work_ids():
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search"}),
+        append_qualification=None,
+    )
+    result = await build_chatgpt_server(subject).call_tool(
+        "work_search", {"api_version": "1", "text": "Task", "limit": 10}
+    )
+    value = result.structured_content
+    assert value["status"] == "ok" and len(value["items"]) == 1
+    assert value["items"][0]["title"] == "Task"
+    assert "provider" not in value["items"][0] and "task_gid" not in value["items"][0]
+    assert subject.providers["asana"].search_calls == [("Task", None, None, 10)]
+
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get"}), append_qualification=None,
+    )
+    denied = await build_chatgpt_server(subject).call_tool(
+        "work_search", {"api_version": "1"}
+    )
+    assert denied.structured_content["status"] == "denied"
+
+
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     parameters = StdioServerParameters(command=sys.executable,
         args=[str(Path(__file__)), "serve"], env={"PYTHONPATH": str(Path.cwd() / "src")})
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-            "work_create",
+            "grant_get", "work_get", "work_search", "source_task", "source_stories",
+            "source_story", "work_append", "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
@@ -81,6 +106,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
+        search = (await client.call_tool(
+            "work_search", {"api_version": "1", "text": "Task"}
+        )).structured_content
+        assert search["status"] == "denied" and search["items"] == []
         related = (await client.call_tool("work_get", {
             "api_version": "1", "include_related": True,
         })).structured_content
