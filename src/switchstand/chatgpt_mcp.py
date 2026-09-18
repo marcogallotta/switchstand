@@ -11,6 +11,8 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkSearchRequest,
+    WorkSearchResult,
 )
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
 from .mcp import closed_tool
@@ -29,6 +31,16 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
     ) -> GrantedWorkResult:
         """Read granted work; include_related adds bounded direct-child evidence or UH_OH."""
         return await service.get(work_id, include_related=include_related)
+
+    async def work_search(
+        api_version: Literal["1"], text: str | None = None,
+        completed: bool | None = None, cursor: str | None = None, limit: int = 50,
+    ) -> WorkSearchResult:
+        """Search admitted workspace work; workspace-scoped grant required."""
+        return await service.search(WorkSearchRequest(
+            api_version=api_version, text=text, completed=completed,
+            cursor=cursor, limit=limit,
+        ))
 
     async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
         """Read current notes/state of one exact canonical source task; reading grants no work."""
@@ -74,7 +86,7 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
         ))
 
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
-                           ("source_task", source_task), ("source_stories", source_stories),
+                           ("work_search", work_search), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
                            ("work_create", work_create)):
         closed_tool(server, name, function)
