@@ -222,7 +222,50 @@ def test_detached_control_fetches_and_fast_forwards_to_remote_main(tmp_path):
     assert git(control, "status", "--short") == ""
 
 
-def test_private_writer_is_independent_bound_and_preserves_dirty_on_refusal(tmp_path):
+def test_detached_control_preserves_dirty_and_divergent_state(tmp_path):
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    primary = tmp_path / "primary"
+    control = tmp_path / "control"
+    git(tmp_path, "init", "--bare", str(remote))
+    git(tmp_path, "clone", str(remote), str(seed))
+    git(seed, "switch", "-c", "main")
+    git(seed, "config", "user.name", "Switchstand Test")
+    git(seed, "config", "user.email", "switchstand-test@example.invalid")
+    (seed / "scripts").mkdir()
+    executable(seed / "scripts/codex-hook", "#!/bin/sh\nexit 0\n")
+    (seed / "tracked.txt").write_text("base\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-m", "base")
+    git(seed, "push", "-u", "origin", "main")
+    git(tmp_path, "clone", "--branch", "main", str(remote), str(primary))
+    git(primary, "config", "user.name", "Switchstand Test")
+    git(primary, "config", "user.email", "switchstand-test@example.invalid")
+    git(primary, "worktree", "add", "--detach", str(control))
+    original = git(control, "rev-parse", "HEAD")
+
+    (control / "unfinished.txt").write_text("preserve\n")
+    with pytest.raises(ValueError, match="dirty CONTROL; local work is intact"):
+        context.validate_control(control, dict(os.environ))
+    assert git(control, "rev-parse", "HEAD") == original
+    assert (control / "unfinished.txt").read_text() == "preserve\n"
+
+    (control / "unfinished.txt").unlink()
+    (control / "local.txt").write_text("local\n")
+    git(control, "add", "local.txt")
+    git(control, "commit", "-m", "divergent control")
+    divergent = git(control, "rev-parse", "HEAD")
+    (seed / "remote.txt").write_text("remote\n")
+    git(seed, "add", "remote.txt")
+    git(seed, "commit", "-m", "advance remote")
+    git(seed, "push", "origin", "main")
+
+    with pytest.raises(ValueError, match="not a clean ancestor; local work is intact"):
+        context.validate_control(control, dict(os.environ))
+    assert git(control, "rev-parse", "HEAD") == divergent
+
+
+def test_private_writer_is_independent_bound_and_resumes_dirty_progress(tmp_path):
     control = tmp_path / "control"
     control.mkdir()
     git(control, "init", "-b", "main")
@@ -246,10 +289,63 @@ def test_private_writer_is_independent_bound_and_preserves_dirty_on_refusal(tmp_
     assert (git_dir / "switchstand-green-sha").read_text() == green + "\n"
     (writer / "unfinished.txt").write_text("preserved\n")
     assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
-    with pytest.raises(ValueError, match="dirty writer; local work is intact"):
-        context.create_writer(control, "1218438438638352", environment)
+    assert context.create_writer(control, "1218438438638352", environment) == writer
     assert (writer / "unfinished.txt").read_text() == "preserved\n"
+    assert git(writer, "rev-parse", "HEAD") == green
     assert git(control, "status", "--short") == ""
+
+
+def test_private_writer_resumes_local_commit_when_main_advances(tmp_path):
+    control = tmp_path / "control"
+    control.mkdir()
+    git(control, "init", "-b", "main")
+    git(control, "config", "user.name", "Switchstand Test")
+    git(control, "config", "user.email", "switchstand-test@example.invalid")
+    (control / "tracked.txt").write_text("base\n")
+    git(control, "add", "tracked.txt")
+    git(control, "commit", "-m", "base")
+    green = git(control, "rev-parse", "HEAD")
+    git(control, "remote", "add", "origin", "git@github.com:example/switchstand.git")
+    environment = os.environ | {"HOME": str(tmp_path)}
+    writer = context.create_writer(control, "1218438438638352", environment)
+    (writer / "task.txt").write_text("progress\n")
+    git(writer, "add", "task.txt")
+    git(writer, "commit", "-m", "task progress")
+    task_head = git(writer, "rev-parse", "HEAD")
+    (control / "main.txt").write_text("advanced\n")
+    git(control, "add", "main.txt")
+    git(control, "commit", "-m", "advance main")
+
+    assert context.create_writer(control, "1218438438638352", environment) == writer
+    assert git(writer, "rev-parse", "HEAD") == task_head
+    assert (writer / ".git/switchstand-green-sha").read_text() == green + "\n"
+
+
+def test_run_reexecutes_updated_control_before_shared_effects(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    old, accepted = "a" * 40, "b" * 40
+    heads = iter((old, accepted))
+    monkeypatch.setattr(context, "_git", lambda *args, **kwargs: next(heads))
+    monkeypatch.setattr(context, "validate_control", lambda repo, env: repo.resolve())
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("shared effect ran before accepted launcher re-exec")
+
+    monkeypatch.setattr(context, "prepared_check_environment", forbidden)
+    monkeypatch.setattr(context, "create_writer", forbidden)
+    monkeypatch.setattr(context, "provision", forbidden)
+
+    class Reexec(Exception):
+        pass
+
+    def execv(path, arguments):
+        assert path == str(tmp_path / "scripts/switchstand")
+        assert arguments == [path, "--active", "1218483858041754"]
+        raise Reexec
+
+    monkeypatch.setattr(context.os, "execv", execv)
+    with pytest.raises(Reexec):
+        context.run("1218483858041754")
 
 
 def test_clean_private_writer_fast_forwards_to_control(tmp_path):

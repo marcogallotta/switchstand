@@ -142,15 +142,19 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     if writer.exists():
         validated = validate_writer(control, writer, active, env)
         head = _git(validated, "rev-parse", "HEAD", env=env)
+        green_path = validated / ".git/switchstand-green-sha"
+        green = green_path.read_text().strip()
         accepted = _git(control, "rev-parse", "HEAD", env=env)
         identity = f"writer {validated}: HEAD={head}; accepted main={accepted}"
-        if _git(validated, "status", "--porcelain", "--untracked-files=all", env=env):
-            raise ValueError(f"{identity}; dirty writer; local work is intact")
-        if head != accepted:
+        dirty = _git(validated, "status", "--porcelain", "--untracked-files=all", env=env)
+        # A writer with task progress is recovery state, not a stale checkout.
+        # Resume it exactly. Only an untouched writer (HEAD still at its recorded
+        # green baseline and no dirty files) may follow a newer accepted main.
+        if not dirty and head == green and head != accepted:
             _git(validated, "fetch", "--no-tags", "--no-write-fetch-head",
                  str(control), accepted, env=env)
             _fast_forward(validated, head, accepted, identity, env)
-        (validated / ".git/switchstand-green-sha").write_text(accepted + "\n")
+            green_path.write_text(accepted + "\n")
         _bind_git_identity(control, validated, env)
         return validated
     branch = f"v2-task-{task}"

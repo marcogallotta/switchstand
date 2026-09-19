@@ -235,7 +235,9 @@ def test_parse_authority_requires_exact_complete_response():
         parse_authority(f"ACTIVE_WORK_ID={ACTIVE}\n")
 
 
-def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatch):
+def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
+    monkeypatch, capsys
+):
     captured = []
 
     def fake_run(command, **kwargs):
@@ -247,7 +249,9 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
                 command, 0, stdout="a" * 40 + "\n/repo/.git\nHEAD\n", stderr=""
             )
         if command[0] == "/repo/scripts/switchstand-upgrade-state":
-            return subprocess.CompletedProcess(command, 0, stdout="current\n", stderr="")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="upgrade complete; backup=/private/state.dump\n", stderr=""
+            )
         return subprocess.CompletedProcess(
             command,
             0,
@@ -258,6 +262,7 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
     monkeypatch.setattr(subprocess, "run", fake_run)
     authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
     assert authority.active == ACTIVE
+    assert capsys.readouterr().out == "upgrade complete; backup=/private/state.dump\n"
     state, _identity, upgrade, controller = captured
     assert state[0] == [
         "docker", "compose", "--project-directory", "/repo", "-f",
