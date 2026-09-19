@@ -1,8 +1,7 @@
 """Real process/socket/PostgreSQL replay; token verification and provider are fixtures."""
 
+import json
 import os
-import socket
-import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -14,6 +13,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from chatgpt_fixture import Provider, grant
+from disposable_postgres import (
+    clean_environment,
+    exited,
+    free_port,
+    owned_process,
+    private_directory,
+)
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
@@ -21,9 +27,10 @@ from mcp.server.auth.provider import AccessToken
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.core import ProviderSourceStory, UnknownEffect
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
-from switchstand.state import PostgresState, metadata
+from switchstand.state import PostgresState
 
 TOOLS = {
     "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
@@ -35,20 +42,23 @@ CLIENT_ID = "chatgpt-client"
 
 
 class CountingProvider(Provider):
-    async def get(self, task_gid):
-        return await super().get("123")
+    """Persist only the synthetic provider's stories across edge restarts."""
 
-    async def source_task(self, task_gid):
-        return await super().source_task("123")
+    def __init__(self):
+        super().__init__()
+        self.path = Path(os.environ["EFFECT_FILE"])
+        if self.path.exists():
+            self.stories = [ProviderSourceStory(**row) for row in json.loads(self.path.read_text())]
+        self.sends = len(self.stories)
+        self.revision = f"r{self.sends + 1}"
 
     async def append(self, task_gid, text):
-        _record_effect()
-        return await super().append(task_gid, text)
-
-
-def _record_effect():
-    with Path(os.environ["EFFECT_FILE"]).open("a") as effects:
-        effects.write("sent\n")
+        from dataclasses import asdict
+        story = await super().append(task_gid, text)
+        self.path.write_text(json.dumps([asdict(row) for row in self.stories]))
+        if text == "injected lost response":
+            raise UnknownEffect("synthetic response lost after durable provider effect")
+        return story
 
 
 def _child_server() -> None:
@@ -69,15 +79,22 @@ def _child_server() -> None:
 
 async def _provision(url, subject):
     engine = create_async_engine(url)
-    async with engine.begin() as connection:
-        await connection.run_sync(metadata.create_all)
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    os.environ["DATABASE_URL"] = url
+    command.upgrade(config, "head")
     state, grants = PostgresState(engine), GrantState(engine)
-    active = await state.bind("asana", "vertical-" + str(uuid4()))
+    active = await state.bind("asana", "123")
+    reference = await state.bind("asana", "456")
+    await state.bind("asana", "789")
     principal = PrincipalContext(
         issuer=ISSUER, subject=subject, client_id=CLIENT_ID, assurance="authenticated",
     )
     selected = grant(
-        principal=principal, active=active.id, reference=uuid4(),
+        principal=principal, active=active.id, reference=reference.id,
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
         append_qualification="real:disposable-switchstand-test",
     )
@@ -86,43 +103,31 @@ async def _provision(url, subject):
     return selected
 
 
-def _free_port():
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
 @contextmanager
 def _server(env, port):
-    process = subprocess.Popen(
-        [sys.executable, __file__, "--serve"], env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    run = Path(env["EFFECT_FILE"]).parent
+    with owned_process([sys.executable, __file__, "--serve"], env,
+                       run / f"edge-{uuid4()}.log") as process:
+        yield from _ready_server(process, port)
+
+
+def _ready_server(process, port):
     endpoint = f"http://127.0.0.1:{port}"
-    try:
-        deadline = time.monotonic() + 10
-        with httpx.Client(trust_env=False, timeout=0.2) as client:
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise AssertionError(f"edge process exited {process.returncode}")
-                try:
-                    response = client.get(endpoint + "/.well-known/oauth-protected-resource/mcp")
-                    if response.status_code == 200:
-                        break
-                except httpx.TransportError:
-                    pass
-                time.sleep(0.05)
-            else:
-                raise AssertionError("edge process did not start")
-        yield endpoint
-    finally:
-        if process.poll() is None:
-            process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+    deadline = time.monotonic() + 10
+    with httpx.Client(trust_env=False, timeout=0.2) as client:
+        while time.monotonic() < deadline:
+            if exited(process) is not None:
+                raise AssertionError(f"edge process exited {process.returncode}")
+            try:
+                response = client.get(endpoint + "/.well-known/oauth-protected-resource/mcp")
+                if response.status_code == 200:
+                    break
+            except httpx.TransportError:
+                pass
+            time.sleep(0.05)
+        else:
+            raise AssertionError("edge process did not start")
+    yield endpoint
 
 
 async def _exercise(endpoint, selected, operation_id):
@@ -142,15 +147,22 @@ async def _exercise(endpoint, selected, operation_id):
         return result.structured_content
 
 
-async def test_process_with_fixture_identity_replays_durable_append_after_restart(tmp_path):
+async def test_process_with_fixture_identity_replays_durable_append_after_restart():
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
     assert make_url(url).database == "switchstand_test"
     subject = str(uuid4().int)
-    selected, operation_id, port = await _provision(url, subject), uuid4(), _free_port()
-    effects = tmp_path / "effects"
-    env = os.environ | {
+    selected, operation_id, port = await _provision(url, subject), uuid4(), free_port()
+    fallback = Path.home() / ".local/state/switchstand/qualification"
+    if not os.getenv("QUALIFICATION_DIRECTORY"):
+        fallback.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    run = Path(os.getenv("QUALIFICATION_DIRECTORY", fallback))
+    private_directory(run)
+    run = run / str(uuid4())
+    run.mkdir(mode=0o700)
+    effects = run / "effects"
+    env = clean_environment() | {
         "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
@@ -165,7 +177,55 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         assert await _exercise(endpoint, selected, operation_id) == first
     with _server(env, port) as endpoint:
         assert await _exercise(endpoint, selected, operation_id) == first
-        assert effects.read_text().splitlines() == ["sent"]
+        assert len(json.loads(effects.read_text())) == 1
+        await _boundaries(endpoint, selected, effects)
+    with _server(env, port) as endpoint:
+        await _contained_after_restart(endpoint, selected, effects)
+
+
+async def _boundaries(endpoint, selected, effects):
+    async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
+        async def call(tool, **args):
+            return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
+
+        active = str(selected.authority.active_work_id)
+        args = {"work_id": active, "grant_version": 1, "observed_revision": "r2", "text": "second"}
+        for target in [str(selected.authority.reference_work_ids[0]), str(uuid4())]:
+            denied = await call("work_append", **(args | {"work_id": target}),
+                                operation_id=str(uuid4()))
+            assert denied["status"] == "denied" and denied["effect"] == "not_sent"
+        assert len(json.loads(effects.read_text())) == 1
+        second = await call("work_append", **args, operation_id=str(uuid4()))
+        assert second["status"] == "ok"
+        receipt = second["receipt"]
+        readback = await call("source_story", task_gid="123", story_gid=receipt["story_gid"],
+                              observed_revision="r3")
+        assert readback["item"]["text"] == receipt["text"]
+        first = await call("source_stories", task_gid="123", observed_revision="r3", limit=1)
+        assert len(first["stories"]) == 1 and first["next_offset"] is not None
+        last = await call("source_stories", task_gid="123", observed_revision="r3", limit=1,
+                          offset=first["next_offset"])
+        assert len(last["stories"]) == 1 and last["next_offset"] is None
+        assert first["stories"][0]["story_gid"] != last["stories"][0]["story_gid"]
+        lost_id = str(uuid4())
+        lost_args = args | {"observed_revision": "r3", "text": "injected lost response",
+                            "operation_id": lost_id}
+        lost = await call("work_append", **lost_args)
+        assert lost["effect"] == "unknown"
+        assert (await call("work_append", **lost_args))["effect"] == "unknown"
+        assert len(json.loads(effects.read_text())) == 3
+        (effects.parent / "lost.json").write_text(json.dumps(lost_args))
+
+
+async def _contained_after_restart(endpoint, selected, effects):
+    args = json.loads((effects.parent / "lost.json").read_text())
+    async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
+        for request in [args, args | {"operation_id": str(uuid4()), "observed_revision": "r4"}]:
+            result = (await client.call_tool("work_append", {
+                "api_version": "1", **request,
+            })).structured_content
+            assert result["effect"] in {"unknown", "not_sent"} and result["status"] != "ok"
+        assert len(json.loads(effects.read_text())) == 3
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--serve"]:
