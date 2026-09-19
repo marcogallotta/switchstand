@@ -242,6 +242,12 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
         captured.append((command, kwargs))
         if "up" in command:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nHEAD\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="current\n", stderr="")
         return subprocess.CompletedProcess(
             command,
             0,
@@ -252,7 +258,7 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
     monkeypatch.setattr(subprocess, "run", fake_run)
     authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
     assert authority.active == ACTIVE
-    state, controller = captured
+    state, _identity, upgrade, controller = captured
     assert state[0] == [
         "docker", "compose", "--project-directory", "/repo", "-f",
         "/repo/compose.state.yaml", "up", "-d", "--wait", "postgres",
@@ -261,8 +267,37 @@ def test_provision_passes_human_task_ids_without_provider_credentials(monkeypatc
     assert controller[0][2:6] == [
         "--project-directory", "/repo", "-f", "/repo/compose.yaml"
     ]
+    assert upgrade[0] == ["/repo/scripts/switchstand-upgrade-state"]
+    assert upgrade[1]["env"] == {
+        "HOME": "/home/test",
+        "SWITCHSTAND_CONTROL_PATH": "/repo",
+        "SWITCHSTAND_CONTROL_SHA": "a" * 40,
+        "SWITCHSTAND_CONTROL_COMMON": "/repo/.git",
+    }
     assert all(call[1]["cwd"] == Path("/repo") for call in captured)
-    assert all(call[1]["env"] == {"HOME": "/home/test"} for call in captured)
+    assert state[1]["env"] == controller[1]["env"] == {"HOME": "/home/test"}
+
+
+def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nHEAD\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            command, 17, stdout="", stderr="unsupported shared schema: actual unexpected\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="unsupported shared schema: actual unexpected"):
+        provision(Path("/repo"), "123", (), {"HOME": "/home/test"})
+
+    assert not any("switchstand-provision" in command for command in calls)
 
 
 def test_candidate_runner_context_excludes_hostile_build_and_migration_files(

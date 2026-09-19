@@ -334,6 +334,24 @@ def provision(
          "up", "-d", "--wait", "postgres"],
         cwd=control, env=env, check=True, capture_output=True,
     )
+    identity = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "HEAD", "--git-common-dir",
+         "--abbrev-ref", "HEAD"],
+        cwd=control, env=env, check=True, text=True, capture_output=True,
+    ).stdout.splitlines()
+    upgrade_env = dict(env)
+    if identity[2] == "HEAD":
+        upgrade_env.update({
+            "SWITCHSTAND_CONTROL_PATH": str(control.resolve()),
+            "SWITCHSTAND_CONTROL_SHA": identity[0],
+            "SWITCHSTAND_CONTROL_COMMON": identity[1],
+        })
+    upgrade = subprocess.run(
+        [str(control / "scripts/switchstand-upgrade-state")],
+        cwd=control, env=upgrade_env, text=True, capture_output=True, check=False,
+    )
+    if upgrade.returncode:
+        raise RuntimeError(upgrade.stderr.strip() or "shared state upgrade failed")
     command = [
         "docker",
         "compose",

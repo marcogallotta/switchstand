@@ -28,7 +28,10 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch):
             "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
-    with pytest.raises(RuntimeError, match="shared CONTROL schema is stale"):
+    with pytest.raises(
+        RuntimeError,
+        match="shared CONTROL schema mismatch: expected 0005_work_event_handles; actual <none>",
+    ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
 
