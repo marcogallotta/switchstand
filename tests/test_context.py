@@ -127,7 +127,8 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert codex_env["SWITCHSTAND_MANAGED"] == "1"
     command = events[3][2]
     assert command[1:3] == ["-C", str(writer)]
-    assert command[3:6] == ["-a", "never", "--dangerously-bypass-hook-trust"]
+    assert command[3:7] == ["-m", "gpt-5.6-sol", "-a", "never"]
+    assert command[7] == "--dangerously-bypass-hook-trust"
     assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
     assert 'mcp_servers.switchstand.default_tools_approval_mode="auto"' in command
     assert 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"' in command
