@@ -212,22 +212,17 @@ def _write_managed(path: Path, content: str) -> None:
         raise
 
 
-def prepared_check_environment(control: Path, env: dict[str, str]) -> tuple[str, str]:
+def prepared_check_environment(control: Path, env: dict[str, str]) -> str:
     result = subprocess.run(
-        [str(control / "scripts/bootstrap"), "--verify-only"],
+        [str(control / "scripts/bootstrap"), "--print-uv"],
         env=env, capture_output=True, text=True, check=False,
     )
     if result.returncode:
         raise ValueError(result.stderr.strip())
-    lines = result.stdout.splitlines()
-    if len(lines) != 2:
-        raise ValueError("invalid bootstrap verification response; run scripts/bootstrap in the primary checkout")
-    venv, manifest = lines
-    path = Path(venv)
-    if (not path.is_absolute() or not path.is_dir() or str(path.resolve(strict=True)) != venv
-            or len(manifest) != 64 or any(char not in "0123456789abcdef" for char in manifest)):
-        raise ValueError("invalid bootstrap verification binding; run scripts/bootstrap in the primary checkout")
-    return venv, manifest
+    path = Path(result.stdout.strip())
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError("invalid pinned uv binding; run scripts/bootstrap in the primary checkout")
+    return str(path.resolve(strict=True))
 
 
 def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
@@ -266,7 +261,7 @@ trust_level = "untrusted"
 glob_scan_max_depth = 4
 ":minimal" = "read"
 "{codex_executable}" = "read"
-"{env["SWITCHSTAND_CHECK_VENV"]}" = "read"
+"{env["SWITCHSTAND_CHECK_UV"]}" = "read"
 "{managed}" = "deny"
 "{auth}" = "deny"
 "/var/run/docker.sock" = "deny"
@@ -319,9 +314,7 @@ def run(active: str) -> None:
         # Load the accepted launcher's code before using any shared services.
         os.execv(str(control / "scripts/switchstand"),
                  [str(control / "scripts/switchstand"), "--active", active])
-    venv, manifest = prepared_check_environment(control, env)
-    env["SWITCHSTAND_CHECK_VENV"] = venv
-    env["SWITCHSTAND_CHECK_MANIFEST"] = manifest
+    env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
     writer = create_writer(control, active, env)
     authority = provision(control, active, (), env)
     env["ACTIVE_WORK_ID"] = str(authority.active)

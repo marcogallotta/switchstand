@@ -4,8 +4,8 @@ set -eu
 UV_VERSION=0.12.10
 mode=${1:-}
 case "$mode" in
-    ""|--verify-only) ;;
-    *) echo "usage: scripts/bootstrap [--verify-only]" >&2; exit 1 ;;
+    ""|--verify-only|--print-uv) ;;
+    *) echo "usage: scripts/bootstrap [--verify-only|--print-uv]" >&2; exit 1 ;;
 esac
 missing() {
     echo "bootstrap prerequisite '$1' is missing; make '$1' available on PATH, then rerun scripts/bootstrap in the primary checkout" >&2
@@ -18,7 +18,7 @@ done
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 primary=$(dirname "$common")
-[ "$mode" = --verify-only ] || [ "$repo" = "$primary" ] || {
+[ -n "$mode" ] || [ "$repo" = "$primary" ] || {
     echo "bootstrap must run from the primary checkout" >&2
     exit 1
 }
@@ -27,6 +27,11 @@ primary=$(dirname "$common")
 repo=$primary
 tools="$common/switchstand-tools"
 uv="$tools/uv-$UV_VERSION"
+if [ "$mode" = --print-uv ]; then
+    [ -x "$uv" ] || { echo "pinned uv missing; run scripts/bootstrap in the primary checkout" >&2; exit 1; }
+    printf '%s\n' "$uv"
+    exit 0
+fi
 venv="$primary/.venv"
 python=$(command -v python3.14 || command -v python3 || true)
 [ -n "$python" ] || missing "python3"

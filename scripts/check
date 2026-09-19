@@ -30,20 +30,25 @@ run() {
     esac
 }
 bound=false
-if [ "${SWITCHSTAND_CHECK_VENV+x}${SWITCHSTAND_CHECK_MANIFEST+x}" != "" ]; then
-    binding_error() {
-        echo "invalid shared check environment binding: $1; relaunch through scripts/switchstand" >&2
-        exit 1
-    }
-    venv=${SWITCHSTAND_CHECK_VENV:-}
-    expected=${SWITCHSTAND_CHECK_MANIFEST:-}
-    case "$venv" in /*) ;; *) binding_error "expected an absolute .venv path" ;; esac
-    [ -d "$venv" ] || binding_error "environment directory is missing"
-    canonical_venv=$(CDPATH= cd -- "$venv" && pwd -P)
-    [ "$canonical_venv" = "$venv" ] || binding_error "environment path is not canonical"
-    [ "${#expected}" -eq 64 ] || binding_error "missing or malformed manifest digest"
-    case "$expected" in *[!0-9a-f]*) binding_error "malformed manifest digest" ;; esac
+if [ "${SWITCHSTAND_CHECK_UV+x}" != "" ]; then
+    uv=$SWITCHSTAND_CHECK_UV
+    [ -x "$uv" ] || { echo "CONTROL pinned uv is missing; relaunch through scripts/switchstand" >&2; exit 1; }
+    for command_name in sha256sum cat rm; do
+        command -v "$command_name" >/dev/null 2>&1 || missing "$command_name"
+    done
+    venv=$repo/.venv
+    marker=$venv/.switchstand-inputs
+    inputs=$(sha256sum "$repo/pyproject.toml" "$repo/uv.lock")
+    if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$inputs" ]; then
+        rm -f "$marker"
+        run env UV_CACHE_DIR="$repo/.git/uv-cache" UV_PYTHON_INSTALL_DIR="$repo/.git/uv-python" \
+            UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
+            --no-install-project || exit $?
+    fi
     bound=true
+elif [ "${SWITCHSTAND_CHECK_VENV+x}${SWITCHSTAND_CHECK_MANIFEST+x}" != "" ]; then
+    echo "old shared environment binding; relaunch through scripts/switchstand for CONTROL pinned uv" >&2
+    exit 1
 elif [ -x "$bootstrap" ]; then
     run "$bootstrap" || {
         status=$?
@@ -58,7 +63,8 @@ elif [ ! -x "$venv/bin/python" ]; then
 fi
 for tool in python ruff pyright pytest; do
     [ -x "$venv/bin/$tool" ] || {
-        echo "focused check setup is incomplete ($venv/bin/$tool missing); run scripts/bootstrap in the primary checkout, then rerun scripts/check" >&2
+        [ "$bound" = false ] || rm -f "$marker"
+        echo "focused check setup is incomplete ($venv/bin/$tool missing); rerun scripts/check" >&2
         exit 1
     }
 done
@@ -67,16 +73,16 @@ manifest() {
         'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' \
         "$1"
 }
-repo_manifest=$(manifest "$repo") || exit $?
 if [ "$bound" = true ]; then
-    primary_manifest=$expected
+    printf '%s\n' "$inputs" > "$marker"
 else
+    repo_manifest=$(manifest "$repo") || exit $?
     primary_manifest=$(manifest "$primary") || exit $?
+    [ "$repo_manifest" = "$primary_manifest" ] || {
+        echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
+        exit 1
+    }
 fi
-[ "$repo_manifest" = "$primary_manifest" ] || {
-    echo "candidate dependency manifests differ from the pinned Stage-0 environment; relaunch required" >&2
-    exit 1
-}
 run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
 run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
 run env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" "$@"

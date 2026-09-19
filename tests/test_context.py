@@ -99,7 +99,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
 
     def fake_preflight(repo, env):
         events.append(("preflight", repo))
-        return str(tmp_path / "shared/.venv"), "a" * 64
+        return str(tmp_path / "pinned-uv")
 
     monkeypatch.setattr(context, "prepared_check_environment", fake_preflight)
     monkeypatch.setattr(context, "provision", fake_provision)
@@ -118,8 +118,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert [event[0] for event in events] == ["preflight", "writer", "provision", "codex"]
     provision_env = events[2][4]
     codex_env = events[3][3]
-    assert codex_env["SWITCHSTAND_CHECK_VENV"] == str(tmp_path / "shared/.venv")
-    assert codex_env["SWITCHSTAND_CHECK_MANIFEST"] == "a" * 64
+    assert codex_env["SWITCHSTAND_CHECK_UV"] == str(tmp_path / "pinned-uv")
     assert "ASANA_TOKEN" not in provision_env
     assert "ASANA_TOKEN" not in codex_env
     assert "REFERENCE_WORK_IDS" not in codex_env
@@ -433,11 +432,11 @@ def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
     target.mkdir()
     root.symlink_to(target, target_is_directory=True)
     with pytest.raises(ValueError, match="real user-owned 0700"):
-        context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv")})
+        context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
     root.unlink()
     root.mkdir(mode=0o755)
     with pytest.raises(ValueError, match="real user-owned 0700"):
-        context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv")})
+        context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
 
 
 def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch, tmp_path):
@@ -453,7 +452,7 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     auth.chmod(0o600)
 
     managed = context.managed_codex_home(control, writer, "1218438438638352",
-                                         os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv")})
+                                         os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
 
     assert (managed / "auth.json").is_symlink()
     assert (managed / "auth.json").resolve() == auth
@@ -465,7 +464,7 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     assert f'[projects."{writer}"]' in config
     assert 'trust_level = "untrusted"' in config
     assert f'"{control}" = "read"' not in config
-    assert f'"{tmp_path / "primary/.venv"}" = "read"' in config
+    assert f'"{tmp_path / "pinned-uv"}" = "read"' in config
     assert f'"{tmp_path / "primary"}" = "read"' not in config
     assert "pyproject.toml" not in config and "uv.lock" not in config
     assert '".git" = "write"' in config
@@ -493,7 +492,7 @@ def test_managed_codex_home_rejects_symlinked_config(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="unsafe"):
         context.managed_codex_home(control, writer, "1218438438638352",
-                                   os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv")})
+                                   os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
     assert victim.read_text() == "intact\n"
 
 
@@ -501,9 +500,7 @@ if __name__ == "__main__":
     build_context_server(FakeService(), ACTIVE).run()
 
 
-def test_preflight_from_linked_control_uses_primary_receipt(tmp_path):
-    import hashlib
-
+def test_preflight_from_linked_control_needs_only_pinned_uv(tmp_path):
     primary = tmp_path / "primary"
     primary.mkdir()
     git(primary, "init", "-b", "main")
@@ -522,15 +519,10 @@ def test_preflight_from_linked_control_uses_primary_receipt(tmp_path):
     tools = primary / ".git/switchstand-tools"
     tools.mkdir()
     executable(tools / "uv-0.12.10", "#!/bin/sh\nexit 0\n")
-    (primary / ".venv/bin").mkdir(parents=True)
-    for tool in ("python", "ruff", "pyright", "pytest"):
-        executable(primary / ".venv/bin" / tool, "#!/bin/sh\nexit 0\n")
-    subprocess.run([bootstrap], check=True)
-    assert context.prepared_check_environment(control, dict(os.environ)) == (
-        str(primary / ".venv"), hashlib.sha256(b"manifest\nlock\n").hexdigest(),
-    )
-    (primary / "uv.lock").write_text("stale\n")
-    with pytest.raises(ValueError, match="stale"):
+    assert context.prepared_check_environment(control, dict(os.environ)) == str(tools / "uv-0.12.10")
+    assert not (primary / ".venv").exists()
+    (tools / "uv-0.12.10").unlink()
+    with pytest.raises(ValueError, match="pinned uv missing"):
         context.prepared_check_environment(control, dict(os.environ))
 
 
