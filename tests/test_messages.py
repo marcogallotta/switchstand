@@ -47,8 +47,8 @@ async def subject():
     sync = create_engine(url)
     with sync.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, "
-            "message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, "
+            "lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")

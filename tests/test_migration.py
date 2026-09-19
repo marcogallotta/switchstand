@@ -25,7 +25,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch):
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     with pytest.raises(
@@ -42,14 +42,15 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch):
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
     assert set(inspect(engine).get_table_names()) == {
-        "work_event_handles", "lifecycle_obligations", "alembic_version", "work_handles",
+        "work_attachment_handles", "work_event_handles", "lifecycle_obligations",
+        "alembic_version", "work_handles",
         "work_grants", "effect_intents", "messages", "message_deliveries", "message_projection",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
@@ -63,7 +64,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch):
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     command.upgrade(config, "head")
@@ -78,7 +79,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch):
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0005_work_event_handles"
+            == "0006_work_attachment_handles"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation():
@@ -86,7 +87,7 @@ def test_lifecycle_downgrade_refuses_to_discard_obligation():
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -123,7 +124,7 @@ def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema():
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -140,7 +141,7 @@ def test_event_identity_downgrade_refuses_to_discard_mapping():
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_event_handles, lifecycle_obligations, "
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, lifecycle_obligations, "
             "message_projection, message_deliveries, messages, effect_intents, work_grants, "
             "work_handles CASCADE"
         ))
@@ -163,3 +164,35 @@ def test_event_identity_downgrade_refuses_to_discard_mapping():
         command.downgrade(config, "0004_required_result_persistence")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM work_event_handles")) == 1
+
+
+def test_attachment_identity_downgrade_refuses_to_discard_mapping():
+    url = disposable_url()
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, work_attachment_handles, work_event_handles, "
+            "lifecycle_obligations, message_projection, message_deliveries, messages, "
+            "effect_intents, work_grants, work_handles CASCADE"
+        ))
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    work_id, attachment_id = uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO work_handles (id, provider, provider_work_id) "
+            "VALUES (:id, 'asana', 'task-1')"
+        ), {"id": work_id})
+        connection.execute(text(
+            "INSERT INTO work_attachment_handles "
+            "(id, work_id, provider, provider_work_id, provider_attachment_id) "
+            "VALUES (:id, :work_id, 'asana', 'task-1', 'attachment-1')"
+        ), {"id": attachment_id, "work_id": work_id})
+
+    with pytest.raises(RuntimeError, match="preserve durable opaque work-attachment identities"):
+        command.downgrade(config, "0005_work_event_handles")
+    with engine.connect() as connection:
+        assert connection.scalar(text(
+            "SELECT count(*) FROM work_attachment_handles"
+        )) == 1
