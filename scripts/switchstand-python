@@ -1,0 +1,22 @@
+#!/bin/sh
+# Resolve the controller interpreter explicitly; never provision runtime state.
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [ -n "${SWITCHSTAND_CONTROLLER_PYTHON:-}" ]; then
+    python=$SWITCHSTAND_CONTROLLER_PYTHON
+    case "$python" in /*) ;; *) echo 'controller Python must be absolute' >&2; exit 1 ;; esac
+else
+    common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+    python=$(dirname "$common")/.venv/bin/python
+    if [ ! -x "$python" ]; then
+        coordinator=$(command -v python3.14 || command -v python3)
+        binding=$("$coordinator" "$repo/src/switchstand/check_environment.py" prepare "$repo")
+        python=$(printf '%s\n' "$binding" | sed -n '1p')/bin/python
+    fi
+fi
+[ -x "$python" ] || { echo 'controller Python is unavailable' >&2; exit 1; }
+"$python" -I -c 'import sys; assert sys.version_info[:2] == (3, 14); import mcp, sqlalchemy, httpx' || {
+    echo 'controller Python must be Python 3.14 with controller dependencies' >&2
+    exit 1
+}
+printf '%s\n' "$python"

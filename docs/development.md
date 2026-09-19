@@ -53,6 +53,10 @@ action.
   and inputs both before and after execution. The shared primary `.venv` is not a check dependency.
   Existing writers launched before this binding need a relaunch to receive the pinned tool.
   Primary and linked writers can acquire it from the Git common directory's `switchstand-tools`.
+  Controller entry scripts use `scripts/switchstand-python`, which validates Python 3.14 and controller
+  imports. `SWITCHSTAND_CONTROLLER_PYTHON` explicitly selects an absolute interpreter; otherwise the
+  primary/linked controller uses its primary `.venv`, and a standalone clone uses its private generation
+  when no local `.venv` exists. Unbound STDIO startup creates no database/provider service.
   Private checks are development evidence; exact-head CI remains required for qualification.
   A launcher supervisor now retains ownership of a fresh child process group. On
   child exit or supervisor HUP/INT/QUIT/TERM, it sends TERM, waits one second,
