@@ -65,3 +65,13 @@ async def test_provisioner_rejects_invalid_trusted_test_project(monkeypatch):
     monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
     with pytest.raises(ValueError, match="invalid test project GID"):
         await provision.run("123", ())
+
+
+def test_managed_agent_provisioning_is_explicit():
+    args = provision.parser().parse_args(["--active", "123", "--managed-agent"])
+    assert args.managed_agent is True
+
+
+def test_default_provisioning_does_not_issue_managed_agent_grant():
+    args = provision.parser().parse_args(["--active", "123"])
+    assert args.managed_agent is False
