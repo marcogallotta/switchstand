@@ -44,11 +44,16 @@ action.
   configuration; never put per-run work authority in it.
 - Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
   It creates or resumes the task's private durable writer with bound `work_get` and ordinary development access.
-  Before Codex starts, `scripts/bootstrap --verify-only` checks the primary's existing environment receipt;
-  missing or stale setup requires `scripts/bootstrap` in the primary checkout and a relaunch.
-  The launcher binds only the canonical `.venv` path and dependency-manifest digest for `scripts/check`, which
-  verifies candidate manifests and reuses that environment without bootstrap or Docker. This editable development
-  convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
+  CONTROL supplies the pinned uv 0.12.10 bootstrap binary. The launcher copies it into the writer's
+  ignored `.switchstand-check/` and prepares a writer-private dependency generation. `scripts/check`
+  reuses a completed generation for the exact candidate manifests, Python identity/version and uv
+  binary/version, or creates a new one with locked dependencies. One creator holds an OS lock;
+  completion is published atomically after input revalidation. Incomplete generations are retried
+  under that lock, and completed generations are never repaired in place. Checks validate the receipt
+  and inputs both before and after execution. The shared primary `.venv` is not a check dependency.
+  Existing writers launched before this binding need a relaunch to receive the pinned tool.
+  Primary and linked writers can acquire it from the Git common directory's `switchstand-tools`.
+  Private checks are development evidence; exact-head CI remains required for qualification.
   A launcher supervisor now retains ownership of a fresh child process group. On
   child exit or supervisor HUP/INT/QUIT/TERM, it sends TERM, waits one second,
   escalates to KILL if needed, and verifies no live group members remain before
@@ -68,7 +73,7 @@ action.
   starts a writer-local test network with egress for dependency resolution;
   the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools. Ordinary commands cannot reach the
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
-  During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
+  During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the writer-private
   environment. One shared 120-second deadline starts before bootstrap/setup; bootstrap, manifest verification and each
   focused command consume only the remaining budget. Timed commands reserve a one-second forced-kill phase so a
   TERM-resistant setup cannot continue indefinitely after the deadline. Missing focused/setup prerequisites fail with

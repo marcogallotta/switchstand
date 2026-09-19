@@ -3,6 +3,10 @@ import stat
 import subprocess
 from pathlib import Path
 
+from test_check_environment import fixture
+
+from switchstand.check_environment import prepare
+
 ROOT = Path(__file__).parents[1]
 
 
@@ -64,13 +68,10 @@ fi
 """,
     )
     executable(
-        repo / "scripts" / "bootstrap",
-        """#!/bin/sh
-trap 'printf term > "$FAKE_TERM"' TERM
-while :; do
-    sleep 0.1
-done
-""",
+        repo / "src/switchstand/check_environment.py",
+        "import os, pathlib, signal, time\n"
+        "signal.signal(signal.SIGTERM, lambda *_: pathlib.Path(os.environ['FAKE_TERM']).touch())\n"
+        "while True: time.sleep(0.1)\n",
     )
     executable(fake_bin / "docker", "#!/bin/sh\n: > \"$FAKE_DOCKER\"\n")
     environment = unbound_environment() | {
@@ -91,8 +92,6 @@ done
     )
     assert result.returncode == 124
     assert (tmp_path / "term.seen").exists()
-    assert "setup exceeded the 120-second stop-loss" in result.stderr
-    assert "run scripts/bootstrap in the primary checkout" in result.stderr
     assert not (tmp_path / "docker.ran").exists()
     assert not (tmp_path / "quality.log").exists()
 
@@ -136,25 +135,20 @@ def test_bootstrap_fails_actionably_when_docker_is_missing(tmp_path: Path) -> No
 
 
 def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    fake_bin = tmp_path / "bin"
+    repo, uv = fixture(tmp_path)
     check = copy_script("check", repo)
-    fake_bin.mkdir()
-    fake_git(fake_bin / "git")
-    executable(repo / "scripts" / "bootstrap", "#!/bin/sh\n: > \"$FAKE_BOOTSTRAP\"\n")
-    venv = repo / ".venv" / "bin"
-    executable(venv / "python", "#!/bin/sh\necho manifest\n")
+    helper = repo / "src/switchstand/check_environment.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes((ROOT / "src/switchstand/check_environment.py").read_bytes())
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    generation, _ = prepare(repo, uv)
+    venv = Path(generation) / "bin"
     for tool in ("ruff", "pyright", "pytest"):
         executable(
             venv / tool,
             f"#!/bin/sh\nprintf '%s %s\\n' '{tool}' \"$*\" >> \"$FAKE_QUALITY\"\n",
         )
-    environment = unbound_environment() | {
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "FAKE_REPO": str(repo),
-        "FAKE_BOOTSTRAP": str(tmp_path / "bootstrap.ran"),
-        "FAKE_QUALITY": str(tmp_path / "quality.log"),
-    }
+    environment = unbound_environment() | {"FAKE_QUALITY": str(tmp_path / "quality.log")}
     result = subprocess.run(
         [check, "tests/test_check.py"],
         cwd=repo,
@@ -164,11 +158,14 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "bootstrap.ran").exists()
     calls = (tmp_path / "quality.log").read_text().splitlines()
     assert calls[0] == "ruff check ."
     assert calls[1].startswith("pyright --pythonpath ")
     assert calls[2] == "pytest tests/test_check.py"
+
+    executable(venv / "ruff", "#!/bin/sh\nexit 42\n")
+    result = subprocess.run([check], cwd=repo, env=environment, capture_output=True, check=False)
+    assert result.returncode == 42
 
 
 def tree_bytes(root: Path) -> dict[str, bytes | str]:
@@ -219,46 +216,32 @@ def test_bootstrap_verify_reuses_receipt_without_mutation(tmp_path: Path) -> Non
 
 
 def test_bound_private_check_validates_binding_without_bootstrap(tmp_path: Path) -> None:
-    import hashlib
-    import sys
-
-    repo = tmp_path / "private"
+    repo, uv = fixture(tmp_path)
     check = copy_script("check", repo)
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
-    (repo / "pyproject.toml").write_text("manifest\n")
-    (repo / "uv.lock").write_text("lock\n")
+    helper = repo / "src/switchstand/check_environment.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes((ROOT / "src/switchstand/check_environment.py").read_bytes())
     executable(repo / "scripts/bootstrap", "#!/bin/sh\necho forbidden-bootstrap >&2\nexit 99\n")
-    venv = tmp_path / "primary/.venv"
-    (venv / "bin").mkdir(parents=True)
-    (venv / "bin/python").symlink_to(sys.executable)
+    generation, _ = prepare(repo, uv)
+    venv = Path(generation)
     log = tmp_path / "quality.log"
     for tool in ("ruff", "pyright", "pytest"):
         executable(venv / "bin" / tool, f"#!/bin/sh\necho {tool} >> '{log}'\n")
-    digest = hashlib.sha256(b"manifest\nlock\n").hexdigest()
     environment = unbound_environment()
-    binding = {"SWITCHSTAND_CHECK_VENV": str(venv), "SWITCHSTAND_CHECK_MANIFEST": digest}
+    # A stale launch binding must never select the shared environment.
+    binding = {"SWITCHSTAND_CHECK_VENV": str(tmp_path / "primary/.venv"),
+               "SWITCHSTAND_CHECK_MANIFEST": "a" * 64}
     result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
     assert not (repo / ".venv").exists()
-    alias = tmp_path / "alias"
-    alias.symlink_to(venv, target_is_directory=True)
-    invalid = [
-        {"SWITCHSTAND_CHECK_VENV": str(venv)},
-        {"SWITCHSTAND_CHECK_MANIFEST": digest},
-        binding | {"SWITCHSTAND_CHECK_VENV": "relative/.venv"},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(alias)},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(venv) + "/../.venv"},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(tmp_path / "missing")},
-        binding | {"SWITCHSTAND_CHECK_MANIFEST": "a" * 64},
-        binding | {"SWITCHSTAND_CHECK_MANIFEST": ""},
-    ]
-    for values in invalid:
-        result = subprocess.run([check], cwd=repo, env=environment | values, capture_output=True, text=True, check=False)
-        assert result.returncode == 1, values
-        assert "forbidden-bootstrap" not in result.stderr
-        assert "binding" in result.stderr or "manifests differ" in result.stderr
-        assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
+    for target in (repo / "uv.lock", venv / "complete.json"):
+        original = target.read_bytes()
+        executable(venv / "bin/ruff", f'#!/bin/sh\nprintf changed >> "{target}"\n')
+        result = subprocess.run([check], cwd=repo, env=environment, capture_output=True, text=True, check=False)
+        assert result.returncode != 0 and "changed" in result.stderr
+        target.write_bytes(original)
     (venv / "bin/pytest").unlink()
     result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
     assert result.returncode == 1 and "incomplete" in result.stderr

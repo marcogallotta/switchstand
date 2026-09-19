@@ -178,22 +178,11 @@ def _write_managed(path: Path, content: str) -> None:
         raise
 
 
-def prepared_check_environment(control: Path, env: dict[str, str]) -> tuple[str, str]:
-    result = subprocess.run(
-        [str(control / "scripts/bootstrap"), "--verify-only"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    if result.returncode:
-        raise ValueError(result.stderr.strip())
-    lines = result.stdout.splitlines()
-    if len(lines) != 2:
-        raise ValueError("invalid bootstrap verification response; run scripts/bootstrap in the primary checkout")
-    venv, manifest = lines
-    path = Path(venv)
-    if (not path.is_absolute() or not path.is_dir() or str(path.resolve(strict=True)) != venv
-            or len(manifest) != 64 or any(char not in "0123456789abcdef" for char in manifest)):
-        raise ValueError("invalid bootstrap verification binding; run scripts/bootstrap in the primary checkout")
-    return venv, manifest
+def prepared_check_environment(control: Path, writer: Path, env: dict[str, str]) -> tuple[str, str]:
+    from .check_environment import UV_VERSION, prepare
+
+    common = _git(control, "rev-parse", "--path-format=absolute", "--git-common-dir", env=env)
+    return prepare(writer, Path(common) / "switchstand-tools" / f"uv-{UV_VERSION}")
 
 
 def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
@@ -232,7 +221,6 @@ trust_level = "untrusted"
 glob_scan_max_depth = 4
 ":minimal" = "read"
 "{codex_executable}" = "read"
-"{env["SWITCHSTAND_CHECK_VENV"]}" = "read"
 "{managed}" = "deny"
 "{auth}" = "deny"
 "/var/run/docker.sock" = "deny"
@@ -280,11 +268,9 @@ def codex_command(control: Path, writer: Path) -> list[str]:
 def run(active: str) -> None:
     env = clean_environment(dict(os.environ))
     control = validate_control(Path.cwd(), env)
-    venv, manifest = prepared_check_environment(control, env)
-    env["SWITCHSTAND_CHECK_VENV"] = venv
-    env["SWITCHSTAND_CHECK_MANIFEST"] = manifest
     authority = provision(control, active, (), env)
     writer = create_writer(control, active, env)
+    prepared_check_environment(control, writer, env)
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)

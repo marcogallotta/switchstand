@@ -97,7 +97,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
         value = "v2-work-1218242783900077\n" if command[-2:] == ["branch", "--show-current"] else str(tmp_path / ".git") + "\n"
         return subprocess.CompletedProcess(command, 0, stdout=value)
 
-    def fake_preflight(repo, env):
+    def fake_preflight(repo, writer, env):
         events.append(("preflight", repo))
         return str(tmp_path / "shared/.venv"), "a" * 64
 
@@ -115,11 +115,9 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     with pytest.raises(RuntimeError, match="readback"):
         context.run("1218242783900077")
 
-    assert [event[0] for event in events] == ["preflight", "provision", "writer", "codex"]
-    provision_env = events[1][4]
+    assert [event[0] for event in events] == ["provision", "writer", "preflight", "codex"]
+    provision_env = events[0][4]
     codex_env = events[3][3]
-    assert codex_env["SWITCHSTAND_CHECK_VENV"] == str(tmp_path / "shared/.venv")
-    assert codex_env["SWITCHSTAND_CHECK_MANIFEST"] == "a" * 64
     assert "ASANA_TOKEN" not in provision_env
     assert "ASANA_TOKEN" not in codex_env
     assert "REFERENCE_WORK_IDS" not in codex_env
@@ -314,7 +312,7 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     assert f'[projects."{writer}"]' in config
     assert 'trust_level = "untrusted"' in config
     assert f'"{control}" = "read"' not in config
-    assert f'"{tmp_path / "primary/.venv"}" = "read"' in config
+    assert f'"{tmp_path / "primary/.venv"}" = "read"' not in config
     assert f'"{tmp_path / "primary"}" = "read"' not in config
     assert "pyproject.toml" not in config and "uv.lock" not in config
     assert '".git" = "write"' in config
@@ -350,52 +348,12 @@ if __name__ == "__main__":
     build_context_server(FakeService(), ACTIVE).run()
 
 
-def test_preflight_from_linked_control_uses_primary_receipt(tmp_path):
-    import hashlib
+def test_preflight_uses_control_tool_and_writer_manifests(monkeypatch, tmp_path):
+    from switchstand import check_environment
 
-    primary = tmp_path / "primary"
-    primary.mkdir()
-    git(primary, "init", "-b", "main")
-    git(primary, "config", "user.name", "Test")
-    git(primary, "config", "user.email", "test@example.invalid")
-    (primary / "scripts").mkdir()
-    bootstrap = primary / "scripts/bootstrap"
-    bootstrap.write_bytes((Path(__file__).parents[1] / "scripts/bootstrap").read_bytes())
-    bootstrap.chmod(0o755)
-    (primary / "pyproject.toml").write_text("manifest\n")
-    (primary / "uv.lock").write_text("lock\n")
-    git(primary, "add", "scripts/bootstrap", "pyproject.toml", "uv.lock")
-    git(primary, "commit", "-m", "fixture")
-    control = tmp_path / "control"
-    git(primary, "worktree", "add", "--detach", str(control))
-    tools = primary / ".git/switchstand-tools"
-    tools.mkdir()
-    executable(tools / "uv-0.12.10", "#!/bin/sh\nexit 0\n")
-    (primary / ".venv/bin").mkdir(parents=True)
-    for tool in ("python", "ruff", "pyright", "pytest"):
-        executable(primary / ".venv/bin" / tool, "#!/bin/sh\nexit 0\n")
-    subprocess.run([bootstrap], check=True)
-    assert context.prepared_check_environment(control, dict(os.environ)) == (
-        str(primary / ".venv"), hashlib.sha256(b"manifest\nlock\n").hexdigest(),
-    )
-    (primary / "uv.lock").write_text("stale\n")
-    with pytest.raises(ValueError, match="stale"):
-        context.prepared_check_environment(control, dict(os.environ))
-
-
-def test_failed_preflight_stops_before_provision_or_codex(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(context, "validate_control", lambda repo, env: repo)
-
-    def fail(*args):
-        raise ValueError("missing environment; run scripts/bootstrap")
-
-    def forbidden(*args):
-        pytest.fail("launch continued past failed preflight")
-
-    monkeypatch.setattr(context, "prepared_check_environment", fail)
-    monkeypatch.setattr(context, "provision", forbidden)
-    monkeypatch.setattr(context, "create_writer", forbidden)
-    monkeypatch.setattr(context.os, "execvpe", forbidden)
-    with pytest.raises(ValueError, match="run scripts/bootstrap"):
-        context.run("1218483858041754")
+    control, writer = tmp_path / "control", tmp_path / "writer"
+    monkeypatch.setattr(context, "_git", lambda *args, **kwargs: str(control / ".git"))
+    calls = []
+    monkeypatch.setattr(check_environment, "prepare", lambda *args: calls.append(args) or ("env", "key"))
+    assert context.prepared_check_environment(control, writer, {}) == ("env", "key")
+    assert calls == [(writer, control / ".git/switchstand-tools/uv-0.12.10")]
