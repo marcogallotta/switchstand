@@ -300,7 +300,8 @@ def codex_command(control: Path, writer: Path) -> list[str]:
               "without a WorkId before material work. Work only in this private task "
               "clone. This is ordinary development; the exact CONTROL hook remains active.")
     return [
-        "codex", "-C", str(writer), "-a", "never", "--dangerously-bypass-hook-trust",
+        "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
+        "--dangerously-bypass-hook-trust",
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
