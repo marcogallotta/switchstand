@@ -27,6 +27,88 @@ During implementation:
 - If a valid sequence of local fixes materially changes the whole mechanism, ownership/trust surfaces, implementation envelope, or test/support burden, stop local ratcheting and reset: should this solution still exist in this form, and is there now a smaller reuse/delete/reframe route?
 - Existing repository debt never authorizes new local debt.
 
+## Governed implementation packages
+
+For a governed implementation task, keep one compact inline package projection in the
+existing task/Execution Plan. It carries the approved record; it is not a new approval
+artifact, package database, or parallel review ceremony. Include:
+- Package identity and exact approved record reference/revision.
+- Immutable package base SHA, candidate/composition identity, and included surfaces.
+- Counting method and exclusions, with production, support (tests/fixtures/tools/docs),
+  and total envelopes; separate the forecast from each explicitly approved stop limit.
+- Strongest credible simpler alternative, economy proof, and expected lines allocated
+  by material mechanism. Estimates are alarms, never targets or budgets to spend.
+- Exact replan triggers, including approved limits and material mechanism/owner changes.
+
+Use a compact ledger within that projection to identify the retained contributions,
+their exact revisions, actual counts versus forecast/limits, and unresolved composition.
+Keep the projection current through implementation and pass it to existing exact-head
+review; the governing record remains authoritative if the projection disagrees with it.
+Do not invent an approved limit from a forecast or treat a forecast increase as approval.
+
+### Fixed-base accounting
+
+Measure aggregate retained package change once against the immutable package base,
+across all included surfaces and delivery slices. Report additions and deletions
+separately, and their sum as total changed lines (gross diff churn); additions alone
+are not that total. This measures the retained aggregate diff, not summed commit churn.
+Record generated/binary or otherwise uncountable surfaces explicitly rather than
+silently treating them as zero; use the governing package's stated counting method.
+
+For a single candidate containing the whole package, a fixed-base diff is sufficient.
+For a stack or partially landed package, identify the combined retained result and
+count shared contributions once. A per-PR diff or sum of overlapping diffs is not the
+package aggregate. Exclude unrelated changes only with an evidenced attribution.
+Splitting, stacking, rebasing, closing, superseding, or landing PRs cannot reset the
+base or erase changes retained in the package. Actual removal changes the retained
+result; administrative retirement alone does not. Preserve the original base when
+rebasing delivery branches. If composition or attribution cannot be established,
+report UNKNOWN and identify the missing evidence; do not assert envelope compliance.
+Use bounded repository evidence and the inline ledger, not a universal Git reconstructor.
+
+Package accounting supplements the existing >=500 actual PR/diff rule; it neither
+replaces that rule nor manufactures an exemption by splitting. A small PR can belong
+to an over-limit package, and an in-limit package can still trigger the per-PR rule.
+
+### Economy proof and solution disposition
+
+Before approving defensive machinery, exercise the smallest credible implementation
+at the real boundary, or use a precise skeleton where execution is not yet practical.
+Name the contract, the boundary case, expected result, and remaining unproved claims.
+Compare the proposed mechanisms and support cost with the strongest simpler route;
+hypothetical completeness alone cannot justify additional machinery.
+
+At an approved envelope breach, stated replan trigger, or material unapproved mechanism
+or owner change, stop affected expansion and publication. The implementation owner
+records the solution disposition before choosing a new delivery decomposition:
+- **KEEP:** retain the solution with evidence that the simpler alternative is inadequate.
+- **SIMPLIFY:** remove or reuse mechanisms while preserving the governing outcome.
+- **REPLACE:** adopt a smaller sound solution and identify the superseded mechanism.
+
+Record the reason, revised projection, evidence needed, and any still-required approval.
+KEEP does not waive a limit; a revised forecast does not raise an approved envelope.
+Resume the affected path only after the trigger is resolved within current authority
+or the controlling record explicitly approves the revised scope/limit as required.
+Then apply the existing KEEP ONE PR / SPLIT / REPLAN delivery decision. Solution
+disposition answers whether the mechanism should survive; decomposition answers how
+valid intermediate states should land. Neither decision substitutes for the other.
+Diagnosis, simplification, routine reversible mechanics, and unrelated authorized work
+continue. Routine implementation inside the approved outcome needs no fresh Human
+Review; route only decisions crossing existing authority/review boundaries.
+
+### Existing exact-head review handoff
+
+Supply the package projection/ledger with the exact head and governing record to the
+existing review. Reconcile retained aggregate counts and limits as well as actual PR
+size, including landed/superseded contributions and any UNKNOWN composition.
+For each material defensive mechanism, require a concrete contract failure,
+reproducible fault, or credible discriminating boundary case that a simpler solution
+would mishandle. Test that claim against the economy proof and simpler alternative;
+plausible-sounding completeness and green self-confirming tests are insufficient.
+Review any solution disposition before accepting the resulting delivery shape.
+Unresolved limits/triggers or unknown compliance hold only the affected readiness
+claim; use the existing findings and focused rereview process, not a second ceremony.
+
 ## Test quality and qualification
 
 Prefer the smallest maintainable test set that falsifies the governing behavior and plausible faults. Each material test should have a causal reason to exist; where practical, identify a plausible wrong implementation/fault that the material oracle would reject. Test quantity, assertion count, coverage, or mock realism is not a quality strategy by itself.

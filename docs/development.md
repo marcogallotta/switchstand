@@ -1,5 +1,10 @@
 # Development
 
+Governed implementation tasks carry the inline package projection and review handoff
+defined in [Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
+Keep its package base fixed across delivery branches and use its solution disposition
+before revising PR decomposition; routine implementation remains worker-owned.
+
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
 - Stable host tools: run `scripts/bootstrap`. The script reuses a lockfile-fingerprinted `.venv` shared by linked
   worktrees and obtains the pinned uv binary through Docker only when needed.
