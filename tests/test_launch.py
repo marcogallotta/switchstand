@@ -250,7 +250,11 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
             )
         if command[0] == "/repo/scripts/switchstand-upgrade-state":
             return subprocess.CompletedProcess(
-                command, 0, stdout="upgrade complete; backup=/private/state.dump\n", stderr=""
+                command, 0,
+                stdout=("state upgrade passed: 0004_required_result_persistence -> "
+                        "0005_work_event_handles; preserved counts 1|2; "
+                        "backup /private/state.dump\n"),
+                stderr="",
             )
         return subprocess.CompletedProcess(
             command,
@@ -262,7 +266,7 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
     monkeypatch.setattr(subprocess, "run", fake_run)
     authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
     assert authority.active == ACTIVE
-    assert capsys.readouterr().out == "upgrade complete; backup=/private/state.dump\n"
+    assert capsys.readouterr().out.endswith("backup /private/state.dump\n")
     state, _identity, upgrade, controller = captured
     assert state[0] == [
         "docker", "compose", "--project-directory", "/repo", "-f",

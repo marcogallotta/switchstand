@@ -352,7 +352,7 @@ def provision(
     )
     if upgrade.returncode:
         raise RuntimeError(upgrade.stderr.strip() or "shared state upgrade failed")
-    if upgrade.stdout and "backup=" in upgrade.stdout:
+    if upgrade.stdout and "; backup " in upgrade.stdout:
         # The backup path is the recovery receipt. Do not swallow it merely
         # because the automatic upgrade succeeded.
         sys.stdout.write(upgrade.stdout)
