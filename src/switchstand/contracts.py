@@ -15,6 +15,7 @@ class ClosedModel(BaseModel):
 
 class Routing(ClosedModel):
     priority: str | None = None
+    work_type: str | None = None
     horizon: str | None = None
     review_next_action: str | None = None
     stage3_gate: str | None = None
@@ -36,8 +37,11 @@ class WorkItem(ClosedModel):
 
 
 class WorkPatch(ClosedModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
     notes: str | None = None
     completed: bool | None = None
+    priority: str | None = Field(default=None, min_length=1)
+    work_type: str | None = Field(default=None, min_length=1)
     horizon: str | None = None
     review_next_action: str | None = None
     stage3_gate: str | None = None

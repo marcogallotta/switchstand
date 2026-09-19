@@ -35,10 +35,11 @@ PROJECT = PROJECTS[0]
 WORKSPACE = "1200569426771227"
 ROOT_WORK_GID = "1218524557926403"
 ANCESTRY_GETS = 9
-FIELDS = {
-    "priority": "1217653169990249", "horizon": "1218212397743203",
-    "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
 WORK_TYPE = "1218431623135287"
+FIELDS = {
+    "priority": "1217653169990249", "work_type": WORK_TYPE,
+    "horizon": "1218212397743203", "review_next_action": "1218212397743210",
+    "stage3_gate": "1218212397743217"}
 FINDER_LIMIT = 20
 FINDER_MAX_CHILDREN = 100
 OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
@@ -450,7 +451,9 @@ class AsanaProvider:
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
         data = {name: getattr(patch, name) for name in {"notes", "completed"} & changed}
-        routing = {name for name in FIELDS if name != "priority"} & changed
+        if "title" in changed:
+            data["name"] = patch.title
+        routing = set(FIELDS) & changed
         if routing:
             task = await self._task(provider_work_id)
             fields = [] if task is None else self._custom_fields(task)

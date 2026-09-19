@@ -261,6 +261,7 @@ async def test_unknown_task_and_routing_projection():
 def test_project_registry_does_not_expand_writable_routing_fields():
     assert FIELDS == {
         "priority": "1217653169990249",
+        "work_type": "1218431623135287",
         "horizon": "1218212397743203",
         "review_next_action": "1218212397743210",
         "stage3_gate": "1218212397743217",
@@ -278,6 +279,49 @@ async def test_routing_mapping_minimal_update_and_readback():
     assert json.loads(api.requests[1].content) == {"data": {"notes": "new", "custom_fields": {
         FIELDS["horizon"]: "option-gid"}}}
     assert result and result.routing.horizon == "Stage 3"
+async def test_required_scalar_fields_map_to_exact_provider_values():
+    priority = field(FIELDS["priority"], option="P-CRITICAL", display="P0")
+    work_type = field(FIELDS["work_type"], option="Implementation", display="Research")
+    subject, api = provider(
+        (200, task(fields=[priority, work_type])),
+        (200, {}),
+        (200, task(
+            project=PROJECT,
+            fields=[
+                field(FIELDS["priority"], option="P-CRITICAL", display="P-CRITICAL"),
+                field(FIELDS["work_type"], option="Implementation", display="Implementation"),
+            ],
+        )),
+    )
+    await subject.update("t", WorkPatch(
+        title="Renamed", priority="P-CRITICAL", work_type="Implementation"
+    ))
+    assert json.loads(api.requests[1].content) == {"data": {
+        "name": "Renamed",
+        "custom_fields": {
+            FIELDS["priority"]: "option-gid",
+            FIELDS["work_type"]: "option-gid",
+        },
+    }}
+    result = await subject.get("t")
+    assert result is not None
+    assert result.routing.priority == "P-CRITICAL"
+    assert result.routing.work_type == "Implementation"
+
+
+@pytest.mark.parametrize("name,value", [
+    ("priority", "Missing"),
+    ("work_type", "Missing"),
+])
+async def test_required_scalar_routing_denies_unconfigured_option(name, value):
+    subject, api = provider((200, task(fields=[
+        field(FIELDS[name], option="Other", display="Other"),
+    ])))
+    with pytest.raises(ProviderError, match="routing write denied"):
+        await subject.update("t", WorkPatch(**{name: value}))
+    assert len(api.requests) == 1
+
+
 async def test_update_is_narrow():
     subject, api = provider((200, {})); await subject.update("t", WorkPatch(completed=True))
     assert api.requests[0].method == "PUT" and json.loads(api.requests[0].content) == {
