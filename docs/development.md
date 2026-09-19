@@ -47,8 +47,13 @@ action.
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
-- Normal task-bound development: run `scripts/switchstand --active <Asana task URL or ID>`.
-  It creates or resumes the task's private durable writer with bound `work_get` and ordinary development access.
+- Normal task-bound development: run
+  `scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>`.
+  It creates or resumes the task's private durable writer with ordinary development access. Its single initial request
+  requires the agent to read bound `work_get`, then page bound `work_history` at that returned revision before material
+  work. A stale history read restarts from a fresh `work_get`, so later completion or supersession evidence is
+  reconciled without exposing arbitrary source-task reads. Both context tools are read-only and approval-free; the
+  active WorkId is launcher-bound and is not a tool argument.
   CONTROL supplies its existing pinned `uv` using `scripts/bootstrap --print-uv`.
   `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses its normal local cache and existing
   environment on re-entry. No primary `.venv` or separate freshness receipt is needed for checks. This development

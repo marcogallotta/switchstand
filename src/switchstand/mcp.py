@@ -20,6 +20,8 @@ from .contracts import (
     SourceTaskResult,
     WorkAppendRequest,
     WorkGetRequest,
+    WorkHistoryRequest,
+    WorkHistoryResult,
     WorkResult,
 )
 from .core import Controller
@@ -69,6 +71,31 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
         "and Root Work GID grouping candidates; completeness is always unknown."
     )
     closed_tool(server, "work_get", _work_get, ToolAnnotations(
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=False,
+    ))
+
+    async def _work_history(
+        api_version: Literal["1"], observed_revision: str,
+        cursor: str | None = None, limit: int = 50,
+    ) -> WorkHistoryResult:
+        return await service.history(  # type: ignore[attr-defined]
+            WorkHistoryRequest(
+                api_version=api_version,
+                work_id=active_work_id,
+                observed_revision=observed_revision,
+                cursor=cursor,
+                limit=limit,
+            )
+        )
+
+    _work_history.__doc__ = (
+        "Read one revision-checked page of the exact launch-bound work history. "
+        "Follow next_cursor until null; on stale, call work_get again and restart."
+    )
+    closed_tool(server, "work_history", _work_history, ToolAnnotations(
         read_only_hint=True,
         destructive_hint=False,
         idempotent_hint=True,

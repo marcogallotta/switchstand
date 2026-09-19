@@ -31,7 +31,7 @@ scripts/bootstrap
 docker compose up --build
 uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>
-scripts/switchstand --active <Asana task ID or URL>
+scripts/switchstand --active <Asana task ID or URL> -- <exact initial assignment>
 # In the printed linked worktree:
 scripts/switchstand-launch --active <Asana task ID or URL> --commit <exact-candidate-SHA>
 
