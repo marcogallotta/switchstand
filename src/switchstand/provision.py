@@ -67,8 +67,11 @@ def require_current_schema(root: str = ".") -> None:
     finally:
         engine.dispose()
     if current != expected:
+        expected_text = ",".join(sorted(expected)) or "<none>"
+        current_text = ",".join(sorted(current)) or "<none>"
         raise RuntimeError(
-            "shared CONTROL schema is stale; run the explicit trusted state upgrade first"
+            f"shared CONTROL schema mismatch: expected {expected_text}; "
+            f"actual {current_text}"
         )
 
 

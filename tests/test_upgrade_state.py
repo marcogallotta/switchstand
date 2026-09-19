@@ -53,12 +53,12 @@ case "$*" in
     echo "switchstand|postgres-data" ;;
   "exec shared psql "*version_num*)
     if [ -f "$FAKE_STATE/shared-new" ]; then
-      echo 0004_required_result_persistence
+      echo 0005_work_event_handles
     else
       echo "$FAKE_REVISION"
     fi ;;
   "exec shared psql "*pg_stat_activity*) echo "$FAKE_CLIENTS" ;;
-  "exec shared psql "*) echo "78|2|3" ;;
+  "exec shared psql "*) echo "$FAKE_COUNTS" ;;
   "exec shared pg_dump "*) printf DUMP ;;
   "run -d "*) : ;;
   "exec switchstand-upgrade-rehearsal-"*" pg_isready "*) : ;;
@@ -66,11 +66,11 @@ case "$*" in
   "exec switchstand-upgrade-rehearsal-"*" pg_restore "*) : ;;
   "exec switchstand-upgrade-rehearsal-"*" psql "*version_num*)
     if [ -f "$FAKE_STATE/rehearsal-new" ]; then
-      echo 0004_required_result_persistence
+      echo 0005_work_event_handles
     else
-      echo 0002_grants_and_effects
+      echo "$FAKE_REVISION"
     fi ;;
-  "exec switchstand-upgrade-rehearsal-"*" psql "*) echo "78|2|3" ;;
+  "exec switchstand-upgrade-rehearsal-"*" psql "*) echo "$FAKE_COUNTS" ;;
   "build "*) : ;;
   "run --rm --network container:switchstand-upgrade-rehearsal-"*)
     [ "$FAKE_FAIL_REHEARSAL" = 0 ] || exit 17
@@ -99,6 +99,7 @@ esac
         "FAKE_TRACE": str(trace),
         "FAKE_STATE": str(state),
         "FAKE_REVISION": "0002_grants_and_effects",
+        "FAKE_COUNTS": "78|2|3",
         "FAKE_IDENTITY": "switchstand|postgres|postgres:18-alpine|healthy",
         "FAKE_MOUNT": "switchstand_postgres-data|true",
         "FAKE_CLIENTS": "0",
@@ -126,7 +127,7 @@ def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 1
-    assert "expected shared schema 0002_grants_and_effects; found unexpected" in result.stderr
+    assert "expected one of 0002_grants_and_effects, 0004_required_result_persistence, 0005_work_event_handles; actual unexpected" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
     assert "build" not in trace
@@ -196,7 +197,7 @@ def test_ambiguous_shared_failure_reports_readback_without_retry(tmp_path):
 
     assert result.returncode == 17
     assert "shared migration outcome UNKNOWN" in result.stderr
-    assert "observed revision 0004_required_result_persistence" in result.stderr
+    assert "observed revision 0005_work_event_handles" in result.stderr
     assert "no retry or rollback attempted" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert trace.count("run --rm --network container:shared") == 1
@@ -208,7 +209,7 @@ def test_rehearses_before_shared_upgrade_and_preserves_backup(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0002_grants_and_effects -> 0004_required_result_persistence" in result.stdout
+    assert "0002_grants_and_effects -> 0005_work_event_handles" in result.stdout
     assert "preserved counts 78|2|3" in result.stdout
     backups = list((tmp_path / "backups").glob("*.dump"))
     assert len(backups) == 1
@@ -220,3 +221,28 @@ def test_rehearses_before_shared_upgrade_and_preserves_backup(tmp_path):
     assert rehearsal < shared
     assert (tmp_path / "state" / "rehearsal-new").exists()
     assert (tmp_path / "state" / "shared-new").exists()
+
+
+def test_upgrades_existing_0004_and_preserves_all_existing_counts(tmp_path):
+    repo, env = _repo(tmp_path)
+    env["FAKE_REVISION"] = "0004_required_result_persistence"
+    env["FAKE_COUNTS"] = "78|2|3|4|5|6|7"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "0004_required_result_persistence -> 0005_work_event_handles" in result.stdout
+    assert "preserved counts 78|2|3|4|5|6|7" in result.stdout
+
+
+def test_current_0005_is_a_noop_without_backup_or_build(tmp_path):
+    repo, env = _repo(tmp_path)
+    env["FAKE_REVISION"] = "0005_work_event_handles"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "already at 0005_work_event_handles" in result.stdout
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert "pg_dump" not in trace
+    assert "build" not in trace

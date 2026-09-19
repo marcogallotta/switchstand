@@ -4,8 +4,7 @@ set -eu
 [ "$#" -eq 0 ] || { echo "usage: scripts/switchstand-upgrade-state" >&2; exit 2; }
 umask 077
 
-EXPECTED_OLD=0002_grants_and_effects
-EXPECTED_NEW=0004_required_result_persistence
+EXPECTED_NEW=0005_work_event_handles
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data
@@ -82,9 +81,23 @@ volume_identity=$(docker volume inspect --format \
 
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 revision=$(sql 'SELECT version_num FROM alembic_version')
-[ "$revision" = "$EXPECTED_OLD" ] \
-    || { echo "expected shared schema $EXPECTED_OLD; found $revision" >&2; exit 1; }
-counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)"
+case "$revision" in
+    0005_work_event_handles)
+        printf 'state upgrade passed: already at %s; no migration required\n' "$EXPECTED_NEW"
+        exit 0
+        ;;
+    0002_grants_and_effects)
+        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)"
+        ;;
+    0004_required_result_persistence)
+        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)"
+        ;;
+    *)
+        echo "unsupported shared schema: expected one of 0002_grants_and_effects, 0004_required_result_persistence, $EXPECTED_NEW; actual ${revision:-<none>}" >&2
+        exit 1
+        ;;
+esac
+EXPECTED_OLD=$revision
 before_counts=$(sql "$counts_sql")
 quiescence_sql="SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'"
 assert_quiescent() {
