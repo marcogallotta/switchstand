@@ -24,9 +24,12 @@ def test_private_directory_refuses_foreign_shape_without_changing_it(tmp_path):
 
 def test_environment_excludes_provider_and_database_inputs(monkeypatch):
     for name in ("DATABASE_URL", "TEST_DATABASE_URL", "PGPASSWORD", "PGSERVICE",
-                 "ASANA_TOKEN", "SWITCHSTAND_TEST_PROJECT_GID", "HTTPS_PROXY"):
+                 "ASANA_TOKEN", "SWITCHSTAND_TEST_PROJECT_GID", "HTTPS_PROXY",
+                 "SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST"):
         monkeypatch.setenv(name, "production-must-not-be-used")
+    monkeypatch.setenv("SWITCHSTAND_CHECK_UV", "/control/pinned-uv")
     assert "production-must-not-be-used" not in clean_environment().values()
+    assert clean_environment()["SWITCHSTAND_CHECK_UV"] == "/control/pinned-uv"
 
 
 def test_failure_kills_owned_term_resistant_child_and_preserves_foreign_process(tmp_path):

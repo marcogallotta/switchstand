@@ -8,7 +8,7 @@ ROOT = Path(__file__).parents[1]
 
 def unbound_environment() -> dict[str, str]:
     return {name: value for name, value in os.environ.items()
-            if name not in {"SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST"}}
+            if name not in {"SWITCHSTAND_CHECK_UV", "SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST"}}
 
 
 def executable(path: Path, text: str) -> None:
@@ -218,48 +218,65 @@ def test_bootstrap_verify_reuses_receipt_without_mutation(tmp_path: Path) -> Non
         assert tree_bytes(repo) == before
 
 
-def test_bound_private_check_validates_binding_without_bootstrap(tmp_path: Path) -> None:
-    import hashlib
-    import sys
+def test_writer_check_locked_sync_failure_and_reentry(tmp_path: Path) -> None:
+    from switchstand import context
 
-    repo = tmp_path / "private"
-    check = copy_script("check", repo)
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
-    (repo / "pyproject.toml").write_text("manifest\n")
-    (repo / "uv.lock").write_text("lock\n")
-    executable(repo / "scripts/bootstrap", "#!/bin/sh\necho forbidden-bootstrap >&2\nexit 99\n")
-    venv = tmp_path / "primary/.venv"
-    (venv / "bin").mkdir(parents=True)
-    (venv / "bin/python").symlink_to(sys.executable)
-    log = tmp_path / "quality.log"
-    for tool in ("ruff", "pyright", "pytest"):
-        executable(venv / "bin" / tool, f"#!/bin/sh\necho {tool} >> '{log}'\n")
-    digest = hashlib.sha256(b"manifest\nlock\n").hexdigest()
-    environment = unbound_environment()
-    binding = {"SWITCHSTAND_CHECK_VENV": str(venv), "SWITCHSTAND_CHECK_MANIFEST": digest}
-    result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stderr
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    def git(repo: Path, *args: str) -> bytes:
+        return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
+
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    check = copy_script("check", primary)
+    (primary / "pyproject.toml").write_text("manifest\n")
+    (primary / "uv.lock").write_text("lock\n")
+    (primary / ".gitignore").write_text(".venv/\n")
+    git(primary, "add", ".")
+    git(primary, "commit", "-m", "base")
+    git(primary, "remote", "add", "origin", "https://github.com/example/repo.git")
+    environment = unbound_environment() | {"HOME": str(tmp_path)}
+    repo = context.create_writer(primary, "1218438438638352", environment)
+    check = repo / "scripts/check"
+    uv = primary / ".git/pinned-uv"
+    executable(uv, """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SYNC"
+[ ! -f "$FAKE_FAIL" ] || exit 42
+mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+for tool in python ruff pyright pytest; do
+    printf '#!/bin/sh\\necho %s >> "$FAKE_QUALITY"\\n' "$tool" > "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+    chmod +x "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+done
+""")
+    log, sync, fail = (tmp_path / name for name in ("quality", "sync", "fail"))
+    environment |= {"SWITCHSTAND_CHECK_UV": str(uv), "FAKE_QUALITY": str(log),
+                    "FAKE_SYNC": str(sync), "FAKE_FAIL": str(fail)}
+    def run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run([check], cwd=repo, env=environment, capture_output=True, text=True, check=False)
+
+    assert run().returncode == 0
+    assert not (primary / ".venv").exists()
     assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
-    assert not (repo / ".venv").exists()
-    alias = tmp_path / "alias"
-    alias.symlink_to(venv, target_is_directory=True)
-    invalid = [
-        {"SWITCHSTAND_CHECK_VENV": str(venv)},
-        {"SWITCHSTAND_CHECK_MANIFEST": digest},
-        binding | {"SWITCHSTAND_CHECK_VENV": "relative/.venv"},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(alias)},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(venv) + "/../.venv"},
-        binding | {"SWITCHSTAND_CHECK_VENV": str(tmp_path / "missing")},
-        binding | {"SWITCHSTAND_CHECK_MANIFEST": "a" * 64},
-        binding | {"SWITCHSTAND_CHECK_MANIFEST": ""},
-    ]
-    for values in invalid:
-        result = subprocess.run([check], cwd=repo, env=environment | values, capture_output=True, text=True, check=False)
-        assert result.returncode == 1, values
-        assert "forbidden-bootstrap" not in result.stderr
-        assert "binding" in result.stderr or "manifests differ" in result.stderr
-        assert log.read_text().splitlines() == ["ruff", "pyright", "pytest"]
-    (venv / "bin/pytest").unlink()
-    result = subprocess.run([check], cwd=repo, env=environment | binding, capture_output=True, text=True, check=False)
-    assert result.returncode == 1 and "incomplete" in result.stderr
-    assert "forbidden-bootstrap" not in result.stderr
+    assert "--locked --all-groups --no-install-project" in sync.read_text()
+    for name in ("pyproject.toml", "uv.lock"):
+        with (repo / name).open("a") as stream:
+            stream.write("changed\n")
+        assert run().returncode == 0
+    assert len(sync.read_text().splitlines()) == 3
+    git(repo, "add", "pyproject.toml")
+    (repo / "unfinished").write_text("preserve")
+    before = git(repo, "diff"), git(repo, "diff", "--cached"), git(repo, "status", "--porcelain")
+    assert context.create_writer(primary, "1218438438638352", environment) == repo
+    assert run().returncode == 0
+    assert len(sync.read_text().splitlines()) == 4
+    assert before == (git(repo, "diff"), git(repo, "diff", "--cached"), git(repo, "status", "--porcelain"))
+    (repo / "uv.lock").write_text("broken\n")
+    fail.touch()
+    previous_checks = log.read_text()
+    assert run().returncode == 42
+    (repo / "uv.lock").write_text("lock\nchanged\n")
+    assert run().returncode == 42
+    assert log.read_text() == previous_checks
+    fail.unlink()
+    assert run().returncode == 0

@@ -30,7 +30,7 @@ def private_directory(path):
 
 def clean_environment():
     # No ambient provider credentials, database settings, libpq defaults or proxy settings.
-    keys = ("PATH", "HOME", "LANG", "SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST")
+    keys = ("PATH", "HOME", "LANG", "SWITCHSTAND_CHECK_UV")
     return {key: os.environ[key] for key in keys if key in os.environ} | {
         "PYTHONPATH": str(ROOT / "src"),
     }
