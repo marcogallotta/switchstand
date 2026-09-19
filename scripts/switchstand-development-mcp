@@ -7,10 +7,5 @@ if [ "${SWITCHSTAND_MANAGED:-}" = 1 ]; then
     : "${SWITCHSTAND_GIT_COMMON:?managed development requires SWITCHSTAND_GIT_COMMON}"
 fi
 repo=${SWITCHSTAND_WORKTREE:-$script_repo}
-common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-python=$(dirname "$common")/.venv/bin/python
-if [ ! -x "$python" ]; then
-    echo "run the documented bootstrap in the primary checkout first" >&2
-    exit 1
-fi
+python=$("$script_repo/scripts/switchstand-python")
 PYTHONPATH="$script_repo/src" exec "$python" -m switchstand.development
