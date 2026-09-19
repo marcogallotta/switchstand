@@ -16,7 +16,9 @@ The runner generates its own authentication and explicit TEST_DATABASE_URL, init
 an exclusive cluster, verifies its data directory, and runs the candidate migrations.
 It never accepts a database URL or provider credential from the caller. The loopback
 port is selected dynamically; a startup collision fails without adopting the listener.
-Only directly spawned process groups are stopped. Existing source, other clusters,
+A Linux subreaper scope collects orphaned descendants, including GNU timeout groups,
+on cancellation; only children owned by this invocation are stopped. This requires
+Linux pidfds and starts before any child processes. Existing source, other clusters,
 and the owner-only `.qualification` evidence directories remain intact. Logs and
 synthetic state are retained on success and failure. SIGKILL of the runner is outside
 the cleanup guarantee; no later run adopts or kills residue.
@@ -27,3 +29,7 @@ Identity verification and the provider are explicit synthetic substitutions. Its
 fixtures required to exercise the existing edge contract, not evidence of real
 identity, real Asana, or an authority grant to a live caller. Real isolated-Asana
 qualification remains **NOT_RUN** until its existing external prerequisites exist.
+
+Cleanup and protocol evidence remain one slice: separating cleanup would leave the
+disposable qualification claim invalid. Cancellation tests include a TERM-resistant
+child, a nested timeout group and an unrelated sentinel process.

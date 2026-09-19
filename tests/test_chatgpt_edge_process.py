@@ -89,7 +89,7 @@ async def _provision(url, subject):
     state, grants = PostgresState(engine), GrantState(engine)
     active = await state.bind("asana", "123")
     reference = await state.bind("asana", "456")
-    await state.bind("asana", "789")
+    denied = await state.bind("asana", "789")
     principal = PrincipalContext(
         issuer=ISSUER, subject=subject, client_id=CLIENT_ID, assurance="authenticated",
     )
@@ -100,14 +100,14 @@ async def _provision(url, subject):
     )
     await grants.issue(selected, None)
     await engine.dispose()
-    return selected
+    return selected, denied.id
 
 
 @contextmanager
 def _server(env, port):
     run = Path(env["EFFECT_FILE"]).parent
     with owned_process([sys.executable, __file__, "--serve"], env,
-                       run / f"edge-{uuid4()}.log") as process:
+                       run / f"edge-{uuid4()}.log", new_session=False) as process:
         yield from _ready_server(process, port)
 
 
@@ -153,7 +153,8 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
     assert make_url(url).database == "switchstand_test"
     subject = str(uuid4().int)
-    selected, operation_id, port = await _provision(url, subject), uuid4(), free_port()
+    selected, denied = await _provision(url, subject)
+    operation_id, port = uuid4(), free_port()
     fallback = Path.home() / ".local/state/switchstand/qualification"
     if not os.getenv("QUALIFICATION_DIRECTORY"):
         fallback.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -178,19 +179,19 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     with _server(env, port) as endpoint:
         assert await _exercise(endpoint, selected, operation_id) == first
         assert len(json.loads(effects.read_text())) == 1
-        await _boundaries(endpoint, selected, effects)
+        await _boundaries(endpoint, selected, denied, effects)
     with _server(env, port) as endpoint:
         await _contained_after_restart(endpoint, selected, effects)
 
 
-async def _boundaries(endpoint, selected, effects):
+async def _boundaries(endpoint, selected, denied_work, effects):
     async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
         async def call(tool, **args):
             return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
 
         active = str(selected.authority.active_work_id)
         args = {"work_id": active, "grant_version": 1, "observed_revision": "r2", "text": "second"}
-        for target in [str(selected.authority.reference_work_ids[0]), str(uuid4())]:
+        for target in [str(selected.authority.reference_work_ids[0]), str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))
             assert denied["status"] == "denied" and denied["effect"] == "not_sent"

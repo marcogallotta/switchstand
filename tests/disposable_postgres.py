@@ -4,6 +4,7 @@ Run: python tests/disposable_postgres.py scripts/check tests/test_chatgpt_edge_p
 All durable state and logs remain in the private writer's .qualification directory.
 """
 
+import ctypes
 import os
 import secrets
 import signal
@@ -47,20 +48,21 @@ def exited(process):
 
 
 @contextmanager
-def owned_process(command, env, log):
+def owned_process(command, env, log, *, new_session=True):
     with log.open("xb") as output:
         process = subprocess.Popen(command, env=env, cwd=ROOT, stdout=output, stderr=output,
-                                   start_new_session=True)
+                                   start_new_session=new_session)
+        send = os.killpg if new_session else os.kill
         try:
             yield process
         finally:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                send(process.pid, signal.SIGTERM)
                 deadline = time.monotonic() + 5
                 while exited(process) is None and time.monotonic() < deadline:
                     time.sleep(0.05)
                 # Also stop any remaining descendants before releasing the leader's PID.
-                os.killpg(process.pid, signal.SIGKILL)
+                send(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.wait(timeout=5)
@@ -117,6 +119,40 @@ def disposable_postgres():
         yield env, run
 
 
+@contextmanager
+def reap_descendants():
+    """Linux subreaper contains nested timeout/session groups on runner cancellation."""
+    children = Path(f"/proc/self/task/{os.getpid()}/children")
+    if children.read_text().strip():
+        raise RuntimeError("qualification supervisor requires no pre-existing children")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), "cannot become qualification subreaper")
+    try:
+        yield
+    finally:
+        # Only our direct children are listed; orphaned descendants are adopted here.
+        # Pin each before signalling. Killing a parent exposes its children next pass.
+        deadline = time.monotonic() + 10
+        while children.read_text().strip():
+            for value in children.read_text().split():
+                pid = int(value)
+                try:
+                    descriptor = os.pidfd_open(pid)
+                    try:
+                        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    finally:
+                        os.close(descriptor)
+                    os.waitpid(pid, os.WNOHANG)
+                except ProcessLookupError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("owned descendant cleanup incomplete; preserve evidence")
+            time.sleep(0.02)
+        if libc.prctl(36, 0, 0, 0, 0):
+            raise OSError(ctypes.get_errno(), "cannot restore subreaper setting")
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("provide the qualification command to run")
@@ -125,7 +161,7 @@ def main():
 
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, interrupted)
-    with disposable_postgres() as (env, run):
+    with reap_descendants(), disposable_postgres() as (env, run):
         print(f"Disposable PostgreSQL evidence: {run}", flush=True)
         with owned_process(sys.argv[1:], env, run / "qualification.log") as process:
             result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)

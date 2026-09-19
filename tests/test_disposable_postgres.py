@@ -49,3 +49,43 @@ def test_failure_kills_owned_term_resistant_child_and_preserves_foreign_process(
         assert exited(foreign) is None
         os.kill(foreign.pid, 0)
         assert (tmp_path / "owned.log").exists()
+
+
+def test_supervisor_contains_timeout_group_and_orphaned_edge(tmp_path):
+    from pathlib import Path
+
+    env = clean_environment()
+    env["PYTHONPATH"] = str(Path(__file__).parent.resolve()) + os.pathsep + env["PYTHONPATH"]
+    child_pid = tmp_path / "child.pid"
+    supervisor_code = '''
+import signal,sys,time
+from pathlib import Path
+from disposable_postgres import owned_process,reap_descendants,clean_environment
+root = Path(sys.argv[1])
+def interrupted(signum, frame):
+    raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, interrupted)
+with reap_descendants():
+    with owned_process(
+        ["sh", "-c", 'timeout 60 "$@" & wait', "fixture", sys.executable, "-c",
+         'import os,sys,time; open(sys.argv[1], "w").write(str(os.getpid())); time.sleep(60)',
+         str(root / "child.pid")], clean_environment(), root / "nested.log"):
+        time.sleep(60)
+'''
+    with (owned_process([sys.executable, "-c", "import time; time.sleep(60)"], env,
+                        tmp_path / "sentinel.log") as sentinel,
+          owned_process([sys.executable, "-c", supervisor_code, str(tmp_path)], env,
+                        tmp_path / "supervisor.log") as supervisor):
+        deadline = time.monotonic() + 10
+        while not child_pid.exists():
+            assert exited(supervisor) is None and time.monotonic() < deadline
+            time.sleep(0.02)
+        pid = int(child_pid.read_text())
+        os.kill(supervisor.pid, signal.SIGTERM)
+        while exited(supervisor) is None:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert exited(supervisor).si_status == 128 + signal.SIGTERM
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        assert exited(sentinel) is None
