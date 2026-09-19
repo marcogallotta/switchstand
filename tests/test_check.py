@@ -218,7 +218,7 @@ def test_bootstrap_verify_reuses_receipt_without_mutation(tmp_path: Path) -> Non
         assert tree_bytes(repo) == before
 
 
-def test_writer_check_refresh_failure_and_reentry(tmp_path: Path) -> None:
+def test_writer_check_locked_sync_failure_and_reentry(tmp_path: Path) -> None:
     from switchstand import context
 
     primary = tmp_path / "primary"
@@ -269,15 +269,14 @@ done
     before = git(repo, "diff"), git(repo, "diff", "--cached"), git(repo, "status", "--porcelain")
     assert context.create_writer(primary, "1218438438638352", environment) == repo
     assert run().returncode == 0
-    assert len(sync.read_text().splitlines()) == 3
+    assert len(sync.read_text().splitlines()) == 4
     assert before == (git(repo, "diff"), git(repo, "diff", "--cached"), git(repo, "status", "--porcelain"))
     (repo / "uv.lock").write_text("broken\n")
     fail.touch()
     previous_checks = log.read_text()
     assert run().returncode == 42
-    assert not (repo / ".venv/.switchstand-inputs").exists()
     (repo / "uv.lock").write_text("lock\nchanged\n")
-    assert run().returncode == 42  # Even restoring the last valid inputs must retry.
+    assert run().returncode == 42
     assert log.read_text() == previous_checks
     fail.unlink()
     assert run().returncode == 0

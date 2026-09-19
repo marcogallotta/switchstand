@@ -33,18 +33,10 @@ bound=false
 if [ "${SWITCHSTAND_CHECK_UV+x}" != "" ]; then
     uv=$SWITCHSTAND_CHECK_UV
     [ -x "$uv" ] || { echo "CONTROL pinned uv is missing; relaunch through scripts/switchstand" >&2; exit 1; }
-    for command_name in sha256sum cat rm; do
-        command -v "$command_name" >/dev/null 2>&1 || missing "$command_name"
-    done
     venv=$repo/.venv
-    marker=$venv/.switchstand-inputs
-    inputs=$(sha256sum "$repo/pyproject.toml" "$repo/uv.lock")
-    if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$inputs" ]; then
-        rm -f "$marker"
-        run env UV_CACHE_DIR="$repo/.git/uv-cache" UV_PYTHON_INSTALL_DIR="$repo/.git/uv-python" \
-            UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
-            --no-install-project || exit $?
-    fi
+    run env UV_CACHE_DIR="$repo/.git/uv-cache" UV_PYTHON_INSTALL_DIR="$repo/.git/uv-python" \
+        UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
+        --no-install-project || exit $?
     bound=true
 elif [ "${SWITCHSTAND_CHECK_VENV+x}${SWITCHSTAND_CHECK_MANIFEST+x}" != "" ]; then
     echo "old shared environment binding; relaunch through scripts/switchstand for CONTROL pinned uv" >&2
@@ -63,7 +55,6 @@ elif [ ! -x "$venv/bin/python" ]; then
 fi
 for tool in python ruff pyright pytest; do
     [ -x "$venv/bin/$tool" ] || {
-        [ "$bound" = false ] || rm -f "$marker"
         echo "focused check setup is incomplete ($venv/bin/$tool missing); rerun scripts/check" >&2
         exit 1
     }
@@ -73,9 +64,7 @@ manifest() {
         'import hashlib, pathlib, sys; h=hashlib.sha256(); [h.update((pathlib.Path(sys.argv[1]) / n).read_bytes()) for n in ("pyproject.toml", "uv.lock")]; print(h.hexdigest())' \
         "$1"
 }
-if [ "$bound" = true ]; then
-    printf '%s\n' "$inputs" > "$marker"
-else
+if [ "$bound" = false ]; then
     repo_manifest=$(manifest "$repo") || exit $?
     primary_manifest=$(manifest "$primary") || exit $?
     [ "$repo_manifest" = "$primary_manifest" ] || {
