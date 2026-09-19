@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import LaunchAuthority, RelatedCandidate, RelatedLookup, Routing
 from switchstand.core import (
+    EventBinding,
     Handle,
     ProviderSourceStory,
     ProviderSourceTask,
@@ -32,9 +33,25 @@ class Handles:
     def __init__(self, active=ACTIVE, reference=REFERENCE):
         self.handles = {active: Handle(active, "asana", "123"),
                         reference: Handle(reference, "asana", "456")}
+        self.events = {}
 
     async def get(self, work_id):
         return self.handles.get(work_id)
+
+    async def bind_event(self, work_id, provider, provider_work_id, provider_event_id):
+        key = (work_id, provider, provider_work_id, provider_event_id)
+        binding = self.events.get(key)
+        if binding is None:
+            binding = EventBinding(uuid4(), work_id, provider, provider_work_id, provider_event_id)
+            self.events[key] = binding
+        return binding
+
+    async def get_event(self, work_id, event_id):
+        return next(
+            (binding for binding in self.events.values()
+             if binding.work_id == work_id and binding.id == event_id),
+            None,
+        )
 
 
 class Provider:

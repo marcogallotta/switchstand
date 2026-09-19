@@ -70,8 +70,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-            "work_create",
+            "grant_get", "work_get", "source_task", "source_stories", "source_story",
+            "work_history", "work_event", "work_append", "work_create",
         }
         for tool in tools:
             assert tool.input_schema.get("additionalProperties") is False
@@ -94,6 +94,20 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert first["status"] == "ok" and first["receipt"]["task_gid"] == "123"
         assert (await client.call_tool("work_append", args)).structured_content == first
 
+        history = (await client.call_tool("work_history", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r2",
+        })).structured_content
+        assert history["status"] == "ok"
+        event_id = history["events"][0]["id"]
+        assert history["events"][0]["work_id"] == str(ACTIVE)
+        assert "task_gid" not in history["events"][0] and "story_gid" not in history["events"][0]
+        event = (await client.call_tool("work_event", {
+            "api_version": "1", "work_id": str(ACTIVE),
+            "event_id": event_id, "observed_revision": "r2",
+        })).structured_content
+        assert event["status"] == "ok" and event["item"]["id"] == event_id
+
 
 if __name__ == "__main__":
     build_chatgpt_server(service()).run()
+

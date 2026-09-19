@@ -27,6 +27,10 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkEventRequest,
+    WorkEventResult,
+    WorkHistoryRequest,
+    WorkHistoryResult,
 )
 from .grant_state import GrantState
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
@@ -216,6 +220,27 @@ def create_app(
         _audit("source_story", task_gid, result.status)
         return result
 
+    async def work_history(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: str | None = None, limit: int = 50,
+    ) -> WorkHistoryResult:
+        result = await service.history(WorkHistoryRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+            cursor=cursor, limit=limit,
+        ))
+        _audit("work_history", str(work_id), result.status)
+        return result
+
+    async def work_event(
+        api_version: Literal["1"], work_id: UUID, event_id: UUID, observed_revision: str,
+    ) -> WorkEventResult:
+        result = await service.event(WorkEventRequest(
+            api_version=api_version, work_id=work_id, event_id=event_id,
+            observed_revision=observed_revision,
+        ))
+        _audit("work_event", str(work_id), result.status)
+        return result
+
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         grant_version: int, observed_revision: str, text: str,
@@ -244,7 +269,7 @@ def create_app(
         return result
 
     for tool in (grant_get, work_get, source_task, source_stories, source_story,
-                 work_append, work_create):
+                 work_history, work_event, work_append, work_create):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 

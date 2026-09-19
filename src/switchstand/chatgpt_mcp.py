@@ -11,6 +11,10 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkEventRequest,
+    WorkEventResult,
+    WorkHistoryRequest,
+    WorkHistoryResult,
 )
 from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
 from .mcp import closed_tool
@@ -53,6 +57,25 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             observed_revision=observed_revision,
         ))
 
+    async def work_history(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: str | None = None, limit: int = 50,
+    ) -> WorkHistoryResult:
+        """Read authorized work history without exposing provider task/story identifiers."""
+        return await service.history(WorkHistoryRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+            cursor=cursor, limit=limit,
+        ))
+
+    async def work_event(
+        api_version: Literal["1"], work_id: UUID, event_id: UUID, observed_revision: str,
+    ) -> WorkEventResult:
+        """Reread one exact provider-neutral work event under current work authority."""
+        return await service.event(WorkEventRequest(
+            api_version=api_version, work_id=work_id, event_id=event_id,
+            observed_revision=observed_revision,
+        ))
+
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         grant_version: int, observed_revision: str, text: str,
@@ -75,7 +98,8 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
 
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("source_task", source_task), ("source_stories", source_stories),
-                           ("source_story", source_story), ("work_append", work_append),
+                           ("source_story", source_story), ("work_history", work_history),
+                           ("work_event", work_event), ("work_append", work_append),
                            ("work_create", work_create)):
         closed_tool(server, name, function)
     return server

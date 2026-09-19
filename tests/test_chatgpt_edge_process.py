@@ -26,8 +26,8 @@ from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState, metadata
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "source_task", "source_stories", "source_story",
+    "work_history", "work_event", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -125,10 +125,14 @@ def _server(env, port):
             process.wait(timeout=5)
 
 
-async def _exercise(endpoint, selected, operation_id):
+async def _exercise(endpoint, selected, operation_id, *, check_history=True):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
-        assert {tool.name for tool in await client.list_tools()} == TOOLS
+        tools = await client.list_tools()
+        assert {tool.name for tool in tools} == TOOLS
+        for tool in tools:
+            assert tool.input_schema.get("additionalProperties") is False
+            assert tool.output_schema.get("additionalProperties") is False
         observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
@@ -139,6 +143,30 @@ async def _exercise(endpoint, selected, operation_id):
             "work_id": str(selected.authority.active_work_id), "grant_version": 1,
             "observed_revision": "r1", "text": "durable vertical append",
         })
+        assert result.structured_content["status"] == "ok"
+        if check_history:
+            history = await client.call_tool("work_history", {
+                "api_version": "1",
+                "work_id": str(selected.authority.active_work_id),
+                "observed_revision": "r2",
+            })
+            assert history.structured_content["status"] == "ok"
+            assert history.structured_content["work_id"] == str(
+                selected.authority.active_work_id
+            )
+            event = history.structured_content["events"][0]
+            assert event["work_id"] == str(selected.authority.active_work_id)
+            assert event["text"] == "durable vertical append"
+            assert event["id"] != result.structured_content["receipt"]["story_gid"]
+            assert "task_gid" not in event and "story_gid" not in event
+            reread = await client.call_tool("work_event", {
+                "api_version": "1",
+                "work_id": str(selected.authority.active_work_id),
+                "event_id": event["id"],
+                "observed_revision": "r2",
+            })
+            assert reread.structured_content["status"] == "ok"
+            assert reread.structured_content["item"] == event
         return result.structured_content
 
 
@@ -164,7 +192,9 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         assert first["receipt"]["grant_id"] == str(selected.id)
         assert await _exercise(endpoint, selected, operation_id) == first
     with _server(env, port) as endpoint:
-        assert await _exercise(endpoint, selected, operation_id) == first
+        assert await _exercise(
+            endpoint, selected, operation_id, check_history=False
+        ) == first
         assert effects.read_text().splitlines() == ["sent"]
 
 
