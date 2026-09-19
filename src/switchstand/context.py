@@ -13,9 +13,19 @@ from .session import supervise
 from .task_ref import asana_task_id
 
 
+def initial_assignment(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("initial assignment must not be empty")
+    return value
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Start development in a private task clone.")
     result.add_argument("--active", required=True, help="active Asana task URL or ID")
+    result.add_argument(
+        "assignment", nargs=1, type=initial_assignment,
+        help="exact initial assignment (pass after --)",
+    )
     return result
 
 
@@ -290,31 +300,40 @@ exclude = ["*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "SSH_AUTH_SOCK",
     return managed
 
 
-def codex_command(control: Path, writer: Path) -> list[str]:
-    prompt = ('Load the exact launch-bound context with work_get(api_version="1") '
-              "without a WorkId before material work. Work only in this private task "
-              "clone. This is ordinary development; the exact CONTROL hook remains active.")
+def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
+    if not assignment:
+        raise ValueError("initial assignment must not be empty")
+    prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
+              'Ground this assignment with work_get(api_version="1") '
+              "without a WorkId, then reconcile its current history with "
+              "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
+              "before material work. Follow next_cursor until null; if history is stale, "
+              "repeat work_get and restart the history read. Do not resume completed or "
+              "superseded intent. Work only in this private task clone. This is ordinary "
+              "development; the exact CONTROL hook remains active.")
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
-        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
+        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
         "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
+        "-c", 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
     ]
 
 
-def run(active: str) -> None:
+def run(active: str, assignment: str) -> None:
     env = clean_environment(dict(os.environ))
     loaded_head = _git(Path.cwd(), "rev-parse", "HEAD", env=env)
     control = validate_control(Path.cwd(), env)
     if _git(control, "rev-parse", "HEAD", env=env) != loaded_head:
         # Load the accepted launcher's code before using any shared services.
         os.execv(str(control / "scripts/switchstand"),
-                 [str(control / "scripts/switchstand"), "--active", active])
+                 [str(control / "scripts/switchstand"), "--active", active,
+                  "--", assignment])
     env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
     writer = create_writer(control, active, env)
     authority = provision(control, active, (), env)
@@ -329,13 +348,13 @@ def run(active: str) -> None:
                 or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
                 or name.startswith("GH_")):
             env.pop(name, None)
-    raise SystemExit(supervise(codex_command(control, writer), env, writer / ".git"))
+    raise SystemExit(supervise(codex_command(control, writer, assignment), env, writer / ".git"))
 
 
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        run(arguments.active)
+        run(arguments.active, arguments.assignment[0])
     except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
         parser().exit(1, f"switchstand launch failed: {error}\n")
 

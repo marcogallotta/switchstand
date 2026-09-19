@@ -10,6 +10,7 @@ import pytest
 from mcp import Client, StdioServerParameters
 
 from switchstand import context
+from switchstand.contracts import WorkHistoryResult
 from switchstand.launch import Authority
 from switchstand.mcp import build_context_server
 
@@ -19,6 +20,12 @@ ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 class FakeService:
     async def get(self, request):
         return {"work_id": request.work_id, "related": request.include_related}
+
+    async def history(self, request):
+        return WorkHistoryResult(
+            status="ok", work_id=request.work_id,
+            revision=request.observed_revision, next_cursor=request.cursor,
+        )
 
 
 def executable(path: Path, text: str) -> None:
@@ -45,19 +52,25 @@ def hook(repo: Path, command: str, environment: dict[str, str]) -> dict:
     return json.loads(result.stdout) if result.stdout else {}
 
 
-def test_context_server_exposes_only_active_work_get():
+def test_context_server_exposes_only_bound_read_context():
     server = build_context_server(FakeService(), ACTIVE)
-    assert set(server._tool_manager._tools) == {"work_get"}
+    assert set(server._tool_manager._tools) == {"work_get", "work_history"}
     schema = server._tool_manager.get_tool("work_get").parameters
     assert set(schema["properties"]) == {"api_version", "include_related"}
     assert "work_id" not in schema["properties"]
-    annotations = server._tool_manager.get_tool("work_get").annotations
-    assert annotations is not None
-    assert annotations.read_only_hint is True
-    assert annotations.destructive_hint is False
+    history = server._tool_manager.get_tool("work_history")
+    assert set(history.parameters["properties"]) == {
+        "api_version", "observed_revision", "cursor", "limit",
+    }
+    assert "work_id" not in history.parameters["properties"]
+    for name in ("work_get", "work_history"):
+        annotations = server._tool_manager.get_tool(name).annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is True
+        assert annotations.destructive_hint is False
 
 
-async def test_context_server_real_stdio_exposes_only_work_get():
+async def test_context_server_real_stdio_exposes_only_bound_read_context():
     server = StdioServerParameters(
         command=sys.executable,
         args=[str(Path(__file__))],
@@ -65,8 +78,14 @@ async def test_context_server_real_stdio_exposes_only_work_get():
     )
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
-        assert [tool.name for tool in tools] == ["work_get"]
-        assert "work_id" not in tools[0].input_schema["properties"]
+        assert [tool.name for tool in tools] == ["work_get", "work_history"]
+        assert all("work_id" not in tool.input_schema["properties"] for tool in tools)
+        history = await client.call_tool(
+            "work_history", {"api_version": "1", "observed_revision": "r1"}
+        )
+        assert history.structured_content == WorkHistoryResult(
+            status="ok", work_id=ACTIVE, revision="r1"
+        ).model_dump(mode="json")
 
 
 def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp_path):
@@ -113,7 +132,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     monkeypatch.setattr(context, "supervise", fake_supervise)
 
     with pytest.raises(RuntimeError, match="readback"):
-        context.run("1218242783900077")
+        context.run("1218242783900077", "repair the launcher")
 
     assert [event[0] for event in events] == ["preflight", "writer", "provision", "codex"]
     provision_env = events[2][4]
@@ -128,11 +147,44 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert command[1:3] == ["-C", str(writer)]
     assert command[3:7] == ["-m", "gpt-5.6-sol", "-a", "never"]
     assert command[7] == "--dangerously-bypass-hook-trust"
-    assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
+    assert 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]' in command
     assert 'mcp_servers.switchstand.default_tools_approval_mode="auto"' in command
     assert 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"' in command
+    assert 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"' in command
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
+    prompt = command[-1]
+    assert prompt.startswith("Exact launch assignment:\nrepair the launcher\n\n")
+    assert prompt.index('work_get(api_version="1")') < prompt.index("work_history(")
+    assert "before material work" in prompt
+    assert "Follow next_cursor until null" in prompt
+    assert "if history is stale" in prompt
+    assert "Do not resume completed or superseded intent" in prompt
+
+
+@pytest.mark.parametrize("assignment", ["inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
+def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
+    arguments = context.parser().parse_args(["--active", "123", "--", assignment])
+    command = context.codex_command(Path("/control"), Path("/writer"), arguments.assignment[0])
+    assert command[-1].startswith(f"Exact launch assignment:\n{assignment}\n\n")
+    assert command[-1].count(assignment) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments", [
+        ["--active", "123"],
+        ["--active", "123", "--", ""],
+        ["--active", "123", "--", "one", "two"],
+    ]
+)
+def test_parser_rejects_missing_or_multiple_initial_assignments(arguments):
+    with pytest.raises(SystemExit):
+        context.parser().parse_args(arguments)
+
+
+def test_command_rejects_empty_initial_assignment():
+    with pytest.raises(ValueError, match="must not be empty"):
+        context.codex_command(Path("/control"), Path("/writer"), "")
 
 
 def test_switchstand_script_selects_repository_python(tmp_path):
@@ -156,7 +208,7 @@ def test_switchstand_script_selects_repository_python(tmp_path):
     )
     result_file = tmp_path / "result"
     result = subprocess.run(
-        [launcher, "--active", "123"],
+        [launcher, "--active", "123", "--", "exact assignment"],
         env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "RESULT": str(result_file)},
         text=True,
         capture_output=True,
@@ -164,7 +216,7 @@ def test_switchstand_script_selects_repository_python(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result_file.read_text().splitlines() == [
-        "-m", "switchstand.context", "--active", "123"
+        "-m", "switchstand.context", "--active", "123", "--", "exact assignment"
     ]
 
 
@@ -340,12 +392,14 @@ def test_run_reexecutes_updated_control_before_shared_effects(monkeypatch, tmp_p
 
     def execv(path, arguments):
         assert path == str(tmp_path / "scripts/switchstand")
-        assert arguments == [path, "--active", "1218483858041754"]
+        assert arguments == [
+            path, "--active", "1218483858041754", "--", "assignment",
+        ]
         raise Reexec
 
     monkeypatch.setattr(context.os, "execv", execv)
     with pytest.raises(Reexec):
-        context.run("1218483858041754")
+        context.run("1218483858041754", "assignment")
 
 
 def test_clean_private_writer_fast_forwards_to_control(tmp_path):
@@ -543,4 +597,4 @@ def test_failed_preflight_stops_before_provision_or_codex(monkeypatch, tmp_path)
     monkeypatch.setattr(context, "create_writer", forbidden)
     monkeypatch.setattr(context.os, "execv", forbidden)
     with pytest.raises(ValueError, match="run scripts/bootstrap"):
-        context.run("1218483858041754")
+        context.run("1218483858041754", "assignment")
