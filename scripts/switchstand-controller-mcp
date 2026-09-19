@@ -6,11 +6,6 @@ if [ "${SWITCHSTAND_MANAGED:-}" = 1 ]; then
     cd "$repo"
     exec docker compose run --rm -T --no-deps controller
 fi
-common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-python=$(dirname "$common")/.venv/bin/python
-if [ ! -x "$python" ]; then
-    echo "run scripts/bootstrap before starting Codex" >&2
-    exit 1
-fi
+python=$("$repo/scripts/switchstand-python")
 unset ASANA_TOKEN DATABASE_URL ACTIVE_WORK_ID REFERENCE_WORK_IDS
 PYTHONPATH="$repo/src" exec "$python" -m switchstand.mcp

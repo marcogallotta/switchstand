@@ -123,14 +123,13 @@ def test_managed_controller_script_without_authority_fails():
     assert "managed controller requires ACTIVE_WORK_ID" in result.stderr
 
 
-@pytest.mark.skipif(
-    Path("/.dockerenv").exists(),
-    reason="real-host Stage-0 environment is not mounted into the quality container",
-)
 async def test_unbound_launcher_completes_stdio_handshake():
     script = Path(__file__).parents[1] / "scripts" / "switchstand-controller-mcp"
     server = StdioServerParameters(
-        command=str(script), env={"HOME": str(Path.home()), "PATH": os.environ["PATH"]}
+        command=str(script), env={"HOME": str(Path.home()), "PATH": os.environ["PATH"],
+                                 "SWITCHSTAND_CONTROLLER_PYTHON": sys.executable,
+                                 "DATABASE_URL": "invalid-must-not-be-opened",
+                                 "ASANA_TOKEN": "must-not-be-used"}
     )
     async with Client(server) as client:
         assert not (await client.list_tools()).tools

@@ -147,6 +147,7 @@ def test_switchstand_script_selects_repository_python(tmp_path):
     launcher = scripts / "switchstand"
     launcher.write_bytes(source.read_bytes())
     launcher.chmod(0o755)
+    executable(scripts / "switchstand-python", f"#!/bin/sh\necho '{python}'\n")
     executable(fake_bin / "git", f"#!/bin/sh\necho '{common}'\n")
     executable(
         python,
