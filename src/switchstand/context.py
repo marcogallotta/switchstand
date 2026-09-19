@@ -45,21 +45,41 @@ def validate_control(control: Path, env: dict[str, str]) -> Path:
     ).splitlines()
     if Path(root).resolve() != control:
         raise ValueError("launcher must run from the clean CONTROL checkout root")
+    _git(control, "fetch", "--no-tags", "origin",
+         "+refs/heads/main:refs/remotes/origin/main", env=env)
+    accepted = _git(control, "rev-parse", "origin/main", env=env)
+    identity = f"CONTROL {control}: HEAD={head}; origin/main={accepted}"
     if _git(control, "status", "--porcelain", "--untracked-files=all", env=env):
-        raise ValueError("launcher refuses dirty CONTROL; local work is intact")
+        raise ValueError(f"{identity}; dirty CONTROL; local work is intact")
     primary = Path(common).resolve().parent
     if Path(git_dir).resolve() == Path(common).resolve():
         if control != primary or branch != "main":
             raise ValueError("ordinary CONTROL must be the main checkout on branch main")
-        if head != _git(control, "rev-parse", "origin/main", env=env):
-            raise ValueError("ordinary CONTROL must match the locally accepted origin/main")
+        if head != accepted:
+            _fast_forward(control, head, accepted, identity, env)
     elif branch != "HEAD":
         raise ValueError("non-primary CONTROL must be detached at one exact revision")
+    elif head != accepted:
+        _fast_forward(control, head, accepted, identity, env)
     control_hook = control / "scripts/codex-hook"
     if (not control_hook.is_file() or not os.access(control_hook, os.X_OK)
             or control_hook.resolve(strict=True) != control / "scripts/codex-hook"):
         raise ValueError("exact CONTROL hook is unavailable")
     return control
+
+
+def _fast_forward(
+    repo: Path, head: str, accepted: str, identity: str, env: dict[str, str],
+) -> None:
+    if subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", head, accepted],
+        env=env, capture_output=True, check=False,
+    ).returncode:
+        raise ValueError(f"{identity}; not a clean ancestor; local work is intact")
+    _git(repo, "merge", "--ff-only", accepted, env=env)
+    if (_git(repo, "rev-parse", "HEAD", env=env) != accepted
+            or _git(repo, "status", "--porcelain", "--untracked-files=all", env=env)):
+        raise ValueError(f"{identity}; fast-forward readback failed")
 
 
 def _provider_origin(control: Path, env: dict[str, str]) -> str:
@@ -121,6 +141,16 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     writer = root / f"task-{task}"
     if writer.exists():
         validated = validate_writer(control, writer, active, env)
+        head = _git(validated, "rev-parse", "HEAD", env=env)
+        accepted = _git(control, "rev-parse", "HEAD", env=env)
+        identity = f"writer {validated}: HEAD={head}; accepted main={accepted}"
+        if _git(validated, "status", "--porcelain", "--untracked-files=all", env=env):
+            raise ValueError(f"{identity}; dirty writer; local work is intact")
+        if head != accepted:
+            _git(validated, "fetch", "--no-tags", "--no-write-fetch-head",
+                 str(control), accepted, env=env)
+            _fast_forward(validated, head, accepted, identity, env)
+        (validated / ".git/switchstand-green-sha").write_text(accepted + "\n")
         _bind_git_identity(control, validated, env)
         return validated
     branch = f"v2-task-{task}"
@@ -279,12 +309,17 @@ def codex_command(control: Path, writer: Path) -> list[str]:
 
 def run(active: str) -> None:
     env = clean_environment(dict(os.environ))
+    loaded_head = _git(Path.cwd(), "rev-parse", "HEAD", env=env)
     control = validate_control(Path.cwd(), env)
+    if _git(control, "rev-parse", "HEAD", env=env) != loaded_head:
+        # Load the accepted launcher's code before using any shared services.
+        os.execv(str(control / "scripts/switchstand"),
+                 [str(control / "scripts/switchstand"), "--active", active])
     venv, manifest = prepared_check_environment(control, env)
     env["SWITCHSTAND_CHECK_VENV"] = venv
     env["SWITCHSTAND_CHECK_MANIFEST"] = manifest
-    authority = provision(control, active, (), env)
     writer = create_writer(control, active, env)
+    authority = provision(control, active, (), env)
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)

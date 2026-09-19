@@ -115,8 +115,8 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     with pytest.raises(RuntimeError, match="readback"):
         context.run("1218242783900077")
 
-    assert [event[0] for event in events] == ["preflight", "provision", "writer", "codex"]
-    provision_env = events[1][4]
+    assert [event[0] for event in events] == ["preflight", "writer", "provision", "codex"]
+    provision_env = events[2][4]
     codex_env = events[3][3]
     assert codex_env["SWITCHSTAND_CHECK_VENV"] == str(tmp_path / "shared/.venv")
     assert codex_env["SWITCHSTAND_CHECK_MANIFEST"] == "a" * 64
@@ -192,7 +192,37 @@ def test_switchstand_isolated_dispatches_to_control_launcher(tmp_path):
     assert result_file.read_text().splitlines() == ["--active", "123", "--commit", "a" * 40]
 
 
-def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
+def test_detached_control_fetches_and_fast_forwards_to_remote_main(tmp_path):
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    primary = tmp_path / "primary"
+    control = tmp_path / "control"
+    git(tmp_path, "init", "--bare", str(remote))
+    git(tmp_path, "clone", str(remote), str(seed))
+    git(seed, "switch", "-c", "main")
+    git(seed, "config", "user.name", "Switchstand Test")
+    git(seed, "config", "user.email", "switchstand-test@example.invalid")
+    (seed / "scripts").mkdir()
+    executable(seed / "scripts/codex-hook", "#!/bin/sh\nexit 0\n")
+    (seed / "tracked.txt").write_text("base\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-m", "base")
+    git(seed, "push", "-u", "origin", "main")
+    git(tmp_path, "clone", "--branch", "main", str(remote), str(primary))
+    base = git(primary, "rev-parse", "HEAD")
+    git(primary, "worktree", "add", "--detach", str(control), base)
+    (seed / "tracked.txt").write_text("current\n")
+    git(seed, "add", "tracked.txt")
+    git(seed, "commit", "-m", "current")
+    git(seed, "push", "origin", "main")
+    current = git(seed, "rev-parse", "HEAD")
+
+    assert context.validate_control(control, dict(os.environ)) == control
+    assert git(control, "rev-parse", "HEAD") == current
+    assert git(control, "status", "--short") == ""
+
+
+def test_private_writer_is_independent_bound_and_preserves_dirty_on_refusal(tmp_path):
     control = tmp_path / "control"
     control.mkdir()
     git(control, "init", "-b", "main")
@@ -216,9 +246,34 @@ def test_private_writer_is_independent_bound_and_resumes_dirty(tmp_path):
     assert (git_dir / "switchstand-green-sha").read_text() == green + "\n"
     (writer / "unfinished.txt").write_text("preserved\n")
     assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
-    assert context.create_writer(control, "1218438438638352", environment) == writer
+    with pytest.raises(ValueError, match="dirty writer; local work is intact"):
+        context.create_writer(control, "1218438438638352", environment)
     assert (writer / "unfinished.txt").read_text() == "preserved\n"
     assert git(control, "status", "--short") == ""
+
+
+def test_clean_private_writer_fast_forwards_to_control(tmp_path):
+    control = tmp_path / "control"
+    control.mkdir()
+    git(control, "init", "-b", "main")
+    git(control, "config", "user.name", "Switchstand Test")
+    git(control, "config", "user.email", "switchstand-test@example.invalid")
+    (control / "tracked.txt").write_text("base\n")
+    git(control, "add", "tracked.txt")
+    git(control, "commit", "-m", "base")
+    git(control, "remote", "add", "origin", "git@github.com:example/switchstand.git")
+    environment = os.environ | {"HOME": str(tmp_path)}
+    writer = context.create_writer(control, "1218438438638352", environment)
+
+    (control / "tracked.txt").write_text("current\n")
+    git(control, "add", "tracked.txt")
+    git(control, "commit", "-m", "current")
+    current = git(control, "rev-parse", "HEAD")
+
+    assert context.create_writer(control, "1218438438638352", environment) == writer
+    assert git(writer, "rev-parse", "HEAD") == current
+    assert (writer / ".git/switchstand-green-sha").read_text() == current + "\n"
+    assert (writer / "tracked.txt").read_text() == "current\n"
 
 
 def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypatch, tmp_path):
@@ -386,6 +441,7 @@ def test_preflight_from_linked_control_uses_primary_receipt(tmp_path):
 def test_failed_preflight_stops_before_provision_or_codex(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(context, "validate_control", lambda repo, env: repo)
+    monkeypatch.setattr(context, "_git", lambda *args, **kwargs: "a" * 40)
 
     def fail(*args):
         raise ValueError("missing environment; run scripts/bootstrap")
@@ -396,6 +452,6 @@ def test_failed_preflight_stops_before_provision_or_codex(monkeypatch, tmp_path)
     monkeypatch.setattr(context, "prepared_check_environment", fail)
     monkeypatch.setattr(context, "provision", forbidden)
     monkeypatch.setattr(context, "create_writer", forbidden)
-    monkeypatch.setattr(context.os, "execvpe", forbidden)
+    monkeypatch.setattr(context.os, "execv", forbidden)
     with pytest.raises(ValueError, match="run scripts/bootstrap"):
         context.run("1218483858041754")
