@@ -346,6 +346,12 @@ def provision(
             "SWITCHSTAND_CONTROL_SHA": identity[0],
             "SWITCHSTAND_CONTROL_COMMON": identity[1],
         })
+    else:
+        for name in (
+            "SWITCHSTAND_CONTROL_PATH", "SWITCHSTAND_CONTROL_SHA",
+            "SWITCHSTAND_CONTROL_COMMON",
+        ):
+            upgrade_env.pop(name, None)
     upgrade = subprocess.run(
         [str(control / "scripts/switchstand-upgrade-state")],
         cwd=control, env=upgrade_env, text=True, capture_output=True, check=False,

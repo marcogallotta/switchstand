@@ -287,6 +287,38 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
     assert state[1]["env"] == controller[1]["env"] == {"HOME": "/home/test"}
 
 
+def test_provision_does_not_pass_partial_selector_to_attached_control(monkeypatch):
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append((command, kwargs))
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nmain\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provision(
+        Path("/repo"),
+        "123",
+        (),
+        {"HOME": "/home/test", "SWITCHSTAND_CONTROL_SHA": "a" * 40},
+    )
+
+    upgrade = captured[2]
+    assert upgrade[1]["env"] == {"HOME": "/home/test"}
+
+
 def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch):
     calls = []
 
