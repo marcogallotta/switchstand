@@ -1,0 +1,14 @@
+#!/bin/sh
+""":"
+repo=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel) || exit
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir) || exit
+primary=$(dirname "$common")
+PYTHONPATH="$repo/src" exec "$primary/.venv/bin/python" "$0" "$@"
+":"""
+"""Run the deterministic isolated ChatGPT CREATE/recovery qualification."""
+
+from switchstand.create_canary import main
+
+
+if __name__ == "__main__":
+    main()
