@@ -9,7 +9,7 @@ import httpx
 from .core import ProviderError, UnknownEffect
 from .provider import JSON, WORKSPACE, AsanaProvider
 
-RECOVERY_DELAYS = (0.0, 0.15, 0.35, 0.75)
+RECOVERY_DELAYS = (0.0, 1.0, 2.0, 5.0, 10.0, 15.0)
 
 
 class TestCreateAsanaProvider(AsanaProvider):
@@ -17,12 +17,15 @@ class TestCreateAsanaProvider(AsanaProvider):
 
     def __init__(
         self, client: httpx.AsyncClient, test_project_gid: str, correlation_field_gid: str,
+        *, lose_confirmation_after_post: bool = False,
     ):
         if not correlation_field_gid.isdigit():
             raise ValueError("create correlation field GID must be numeric")
         super().__init__(client, test_project_gid, test_only=True)
         self.test_project_gid = test_project_gid
         self.correlation_field_gid = correlation_field_gid
+        self.lose_confirmation_after_post = lose_confirmation_after_post
+        self._same_process_unknown: set[UUID] = set()
 
     def recovery_identity(self) -> str:
         return (
@@ -61,6 +64,9 @@ class TestCreateAsanaProvider(AsanaProvider):
             "projects": [self.test_project_gid],
             "custom_fields": {self.correlation_field_gid: str(operation_id)},
         }, unknown_on_server_error=True)
+        if self.lose_confirmation_after_post:
+            self._same_process_unknown.add(operation_id)
+            raise UnknownEffect("injected confirmation loss after successful provider POST")
         try:
             payload = response.json()["data"]
             task_gid = self._gid(payload)
@@ -75,6 +81,8 @@ class TestCreateAsanaProvider(AsanaProvider):
             raise UnknownEffect("created task readback unknown") from None
 
     async def recover_created(self, parent_task_gid: str, operation_id: UUID) -> str | None:
+        if operation_id in self._same_process_unknown:
+            return None
         for delay in RECOVERY_DELAYS:
             if delay:
                 await asyncio.sleep(delay)

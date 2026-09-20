@@ -96,6 +96,24 @@ async def test_committed_create_failed_readback_recovers_without_second_post():
     assert client.create_calls == 1
 
 
+async def test_explicit_post_confirmation_loss_requires_fresh_provider_for_recovery():
+    operation_id = uuid4()
+    client = Client(operation_id)
+    first = TestCreateAsanaProvider(
+        client, TEST_PROJECT, CORRELATION_FIELD, lose_confirmation_after_post=True,
+    )
+
+    with pytest.raises(UnknownEffect, match="after successful provider POST"):
+        await first.create_child(PARENT, "Created", "notes", operation_id)
+    assert client.create_calls == 1
+    assert await first.recover_created(PARENT, operation_id) is None
+    assert client.create_calls == 1
+
+    restarted = TestCreateAsanaProvider(client, TEST_PROJECT, CORRELATION_FIELD)
+    assert await restarted.recover_created(PARENT, operation_id) == CREATED
+    assert client.create_calls == 1
+
+
 async def test_test_provider_denies_production_parent_before_create():
     operation_id = uuid4()
     client = Client(operation_id)
