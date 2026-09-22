@@ -67,6 +67,17 @@ async def test_related_get_keeps_grant_guard_and_exact_bound_source():
 async def test_workspace_search_requires_explicit_operation_and_returns_only_work_ids():
     subject = service()
     subject.grants.grant = grant(
+        scope="launch",
+        operations=frozenset({"work_get", "work_search"}),
+        append_qualification=None,
+    )
+    denied = await build_chatgpt_server(subject).call_tool(
+        "work_search", {"api_version": "1"}
+    )
+    assert denied.structured_content["status"] == "denied"
+    assert subject.providers["asana"].search_calls == []
+
+    subject.grants.grant = grant(
         scope="workspace",
         operations=frozenset({"work_get", "work_search"}),
         append_qualification=None,
@@ -87,6 +98,7 @@ async def test_workspace_search_requires_explicit_operation_and_returns_only_wor
         "work_search", {"api_version": "1"}
     )
     assert denied.structured_content["status"] == "denied"
+    assert subject.providers["asana"].search_calls == [("Task", None, None, 10)]
 
 
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
