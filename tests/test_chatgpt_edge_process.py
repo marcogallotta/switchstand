@@ -33,8 +33,8 @@ from switchstand.grants import PrincipalContext
 from switchstand.state import PostgresState
 
 TOOLS = {
-    "grant_get", "work_get", "source_task", "source_stories", "source_story", "work_append",
-    "work_create",
+    "grant_get", "work_get", "work_search", "source_task", "source_stories",
+    "source_story", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -95,12 +95,26 @@ async def _provision(url, subject):
     )
     selected = grant(
         principal=principal, active=active.id, reference=reference.id,
+        scope="workspace",
+        operations=frozenset({"work_get", "work_search"}),
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        append_qualification="real:disposable-switchstand-test",
+        append_qualification=None,
     )
     await grants.issue(selected, None)
     await engine.dispose()
     return selected, denied.id
+
+
+async def _replace_with_launch(url, selected):
+    engine = create_async_engine(url)
+    launched = selected.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "launch",
+        "operations": frozenset({"work_get", "work_append"}),
+        "append_qualification": "real:disposable-switchstand-test",
+    })
+    await GrantState(engine).issue(launched, 1)
+    await engine.dispose()
+    return launched
 
 
 @contextmanager
@@ -130,18 +144,30 @@ def _ready_server(process, port):
     yield endpoint
 
 
-async def _exercise(endpoint, selected, operation_id):
+async def _discover(endpoint, selected):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         assert {tool.name for tool in await client.list_tools()} == TOOLS
-        observed = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
+        observed = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(selected.authority.active_work_id),
+        })).structured_content
         assert observed["item"]["id"] == str(selected.authority.active_work_id)
+        search = (await client.call_tool("work_search", {
+            "api_version": "1", "text": "Task", "limit": 10,
+        })).structured_content
+        assert search["status"] == "ok" and len(search["items"]) == 1
+        assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
             "grant"
         ]["id"] == str(selected.id)
+
+
+async def _exercise(endpoint, selected, operation_id):
+    transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+    async with Client(transport) as client:
         result = await client.call_tool("work_append", {
             "api_version": "1", "operation_id": str(operation_id),
-            "work_id": str(selected.authority.active_work_id), "grant_version": 1,
+            "work_id": str(selected.authority.active_work_id), "grant_version": selected.version,
             "observed_revision": "r1", "text": "durable vertical append",
         })
         return result.structured_content
@@ -170,6 +196,9 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
     }
     with _server(env, port) as endpoint:
+        await _discover(endpoint, selected)
+    selected = await _replace_with_launch(url, selected)
+    with _server(env, port) as endpoint:
         first = await _exercise(endpoint, selected, operation_id)
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
@@ -190,7 +219,8 @@ async def _boundaries(endpoint, selected, denied_work, effects):
             return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
 
         active = str(selected.authority.active_work_id)
-        args = {"work_id": active, "grant_version": 1, "observed_revision": "r2", "text": "second"}
+        args = {"work_id": active, "grant_version": selected.version,
+                "observed_revision": "r2", "text": "second"}
         for target in [str(selected.authority.reference_work_ids[0]), str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))

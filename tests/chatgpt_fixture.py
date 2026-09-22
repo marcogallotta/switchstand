@@ -14,6 +14,7 @@ from switchstand.core import (
     ProviderWork,
     UnknownEffect,
 )
+from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
 
@@ -36,6 +37,18 @@ class Handles:
     async def get(self, work_id):
         return self.handles.get(work_id)
 
+    async def bind(self, provider, provider_work_id):
+        existing = next(
+            (handle for handle in self.handles.values()
+             if handle.provider == provider and handle.provider_work_id == provider_work_id),
+            None,
+        )
+        if existing is not None:
+            return existing
+        handle = Handle(uuid4(), provider, provider_work_id)
+        self.handles[handle.id] = handle
+        return handle
+
 
 class Provider:
     def __init__(self):
@@ -43,12 +56,23 @@ class Provider:
         self.canonical_ids = {"123", "456"}
         self.sends = 0
         self.related_calls = []
+        self.search_calls = []
         self.unknown = self.mismatch = self.cancel = False
         self.before_send = None
 
     async def get(self, task_gid):
         return ProviderWork("Task", self.notes, False, self.revision, Routing(priority="P0"),
                             task_gid in self.canonical_ids)
+
+    async def search_work(self, text, completed, cursor, limit):
+        self.search_calls.append((text, completed, cursor, limit))
+        return ProviderSearchPage(
+            items=(ProviderSearchItem(
+                provider_work_id="123", title="Task", completed=False,
+                revision=self.revision, routing=Routing(priority="P0"),
+            ),),
+            next_cursor=None,
+        )
 
     async def find_related(self, task_gid):
         self.related_calls.append(task_gid)
