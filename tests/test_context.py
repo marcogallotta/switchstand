@@ -10,7 +10,7 @@ import pytest
 from mcp import Client, StdioServerParameters
 
 from switchstand import context
-from switchstand.contracts import WorkHistoryResult
+from switchstand.contracts import Routing, WorkHistoryResult, WorkItem, WorkResult, WorkSource
 from switchstand.launch import Authority
 from switchstand.mcp import build_context_server
 
@@ -19,7 +19,9 @@ ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 
 class FakeService:
     async def get(self, request):
-        return {"work_id": request.work_id, "related": request.include_related}
+        return WorkResult(status="ok", item=WorkItem(id=request.work_id, title="Task", notes="Notes",
+            completed=False, revision="r1", routing=Routing(),
+            source=WorkSource(provider="asana", task_gid="raw-task")))
 
     async def history(self, request):
         return WorkHistoryResult(
@@ -80,6 +82,9 @@ async def test_context_server_real_stdio_exposes_only_bound_read_context():
         tools = (await client.list_tools()).tools
         assert [tool.name for tool in tools] == ["work_get", "work_history"]
         assert all("work_id" not in tool.input_schema["properties"] for tool in tools)
+        got = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
+        assert got.structured_content["item"]["id"] == str(ACTIVE)
+        assert "raw-task" not in str(got) and "asana" not in str(got)
         history = await client.call_tool(
             "work_history", {"api_version": "1", "observed_revision": "r1"}
         )

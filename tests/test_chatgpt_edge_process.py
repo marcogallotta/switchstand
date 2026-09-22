@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from chatgpt_fixture import Provider, grant
+from chatgpt_fixture import Provider, assert_public, grant, read_chain
 from disposable_postgres import (
     clean_environment,
     exited,
@@ -34,7 +34,7 @@ from switchstand.state import PostgresState
 
 TOOLS = {
     "grant_get", "work_get", "work_search", "source_task", "source_stories",
-    "source_story", "work_append", "work_create",
+    "source_story", "work_history", "work_event", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -51,6 +51,20 @@ class CountingProvider(Provider):
             self.stories = [ProviderSourceStory(**row) for row in json.loads(self.path.read_text())]
         self.sends = len(self.stories)
         self.revision = f"r{self.sends + 1}"
+
+    async def source_stories(self, task_gid, revision, offset, limit):
+        if not self.stories:
+            from switchstand.core import ProviderStoriesPage
+            story = ProviderSourceStory("raw-read-event", task_gid, "comment_added", "history", "now", "Marco")
+            return ProviderStoriesPage(task_gid, self.revision,
+                                       (story,) if revision == self.revision else (), None, True,
+                                       stale=revision != self.revision)
+        return await super().source_stories(task_gid, revision, offset, limit)
+
+    async def source_story(self, task_gid, story_gid):
+        if story_gid == "raw-read-event":
+            return ProviderSourceStory(story_gid, task_gid, "comment_added", "history", "now", "Marco")
+        return await super().source_story(task_gid, story_gid)
 
     async def append(self, task_gid, text):
         from dataclasses import asdict
@@ -156,6 +170,11 @@ async def _discover(endpoint, selected):
             "api_version": "1", "text": "Task", "limit": 10,
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
+        for tool in await client.list_tools():
+            if tool.name in {"work_search", "work_get", "work_history", "work_event"}:
+                assert_public(tool.model_dump(mode="json"))
+                assert tool.inputSchema.get("additionalProperties") is False
+        await read_chain(client, search["items"][0]["id"])
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
             "grant"

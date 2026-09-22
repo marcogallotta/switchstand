@@ -3,7 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, grant, service
+from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, assert_public, grant, read_chain, service
 from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
@@ -108,9 +108,11 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
             "grant_get", "work_get", "work_search", "source_task", "source_stories",
-            "source_story", "work_append", "work_create",
+            "source_story", "work_history", "work_event", "work_append", "work_create",
         }
         for tool in tools:
+            if tool.name in {"work_get", "work_history", "work_event"}:
+                assert_public(tool.model_dump(mode="json"))
             assert tool.input_schema.get("additionalProperties") is False
             assert not {"principal", "role", "grant_id", "issuer", "allowed_operations"}.intersection(
                 tool.input_schema.get("properties", {}))
@@ -125,7 +127,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         related = (await client.call_tool("work_get", {
             "api_version": "1", "include_related": True,
         })).structured_content
-        assert related["related"]["candidates"][0]["parent_gid"] == "123"
+        assert related["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'grant_version': 1, 'observed_revision': "r1", 'text': "protocol feedback"}
@@ -134,6 +136,32 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         first = (await client.call_tool("work_append", args)).structured_content
         assert first["status"] == "ok" and first["receipt"]["task_gid"] == "123"
         assert (await client.call_tool("work_append", args)).structured_content == first
+
+
+async def test_workspace_read_chain_and_causal_denials(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from switchstand.core import ProviderSourceStory
+
+    subject = service()
+    subject.grants.grant = grant(scope="workspace", operations=frozenset({"work_get", "work_search"}))
+    provider = subject.providers["asana"]
+    provider.stories = [ProviderSourceStory("raw-event", "123", "comment_added", "history", "now", "Marco")]
+    server = build_chatgpt_server(subject)
+    found = await server.call_tool("work_search", {"api_version": "1"})
+    assert_public(found.model_dump(mode="json"))
+    await read_chain(server, found.structured_content["items"][0]["id"])
+    for selected, target in ((grant(scope="workspace", operations=frozenset({"work_search"})), ACTIVE),
+                             (grant(scope="launch"), uuid4())):
+        subject.grants.grant = selected
+        with monkeypatch.context() as patch:
+            for method in ("get", "source_task", "source_stories", "source_story", "find_related"):
+                patch.setattr(provider, method, AsyncMock(side_effect=AssertionError("unauthorized access")))
+            for tool, extra in (("work_get", {}), ("work_history", {"observed_revision": "r1"}),
+                                ("work_event", {"observed_revision": "r1", "event_id": str(uuid4())})):
+                denied = await server.call_tool(tool, {"api_version": "1", "work_id": str(target), **extra})
+                assert_public(denied.model_dump(mode="json"))
+                assert denied.structured_content["status"] == "denied"
 
 
 if __name__ == "__main__":

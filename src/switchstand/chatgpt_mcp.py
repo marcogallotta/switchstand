@@ -1,7 +1,8 @@
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from mcp.server import MCPServer
+from pydantic import Field
 
 from .chatgpt import ChatGPTService
 from .contracts import (
@@ -11,11 +12,15 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkEventRequest,
+    WorkEventResult,
+    WorkHistoryRequest,
+    WorkHistoryResult,
     WorkSearchRequest,
     WorkSearchResult,
 )
-from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
-from .mcp import closed_tool
+from .grants import GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
+from .mcp import PublicWorkResult, closed_tool, project_work
 
 
 def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = None) -> MCPServer:
@@ -28,9 +33,9 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
-    ) -> GrantedWorkResult:
+    ) -> PublicWorkResult:
         """Read granted work; include_related adds bounded direct-child evidence or UH_OH."""
-        return await service.get(work_id, include_related=include_related)
+        return project_work(await service.get(work_id, include_related=include_related), include_related)
 
     async def work_search(
         api_version: Literal["1"], text: str | None = None,
@@ -41,6 +46,26 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             api_version=api_version, text=text, completed=completed,
             cursor=cursor, limit=limit,
         ))
+
+    async def work_history(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> WorkHistoryResult:
+        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        result = await service.history(
+            WorkHistoryRequest(api_version=api_version, work_id=work_id,
+                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+        return result
+
+    async def work_event(
+        api_version: Literal["1"], event_id: UUID, observed_revision: str,
+        work_id: UUID,
+    ) -> WorkEventResult:
+        """Reread one opaque event at the observed work revision."""
+        result = await service.event(
+            WorkEventRequest(api_version=api_version, work_id=work_id,
+                             event_id=event_id, observed_revision=observed_revision))
+        return result
 
     async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
         """Read current notes/state of one exact canonical source task; reading grants no work."""
@@ -86,7 +111,8 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
         ))
 
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
-                           ("work_search", work_search), ("source_task", source_task), ("source_stories", source_stories),
+                           ("work_search", work_search), ("work_history", work_history),
+                           ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
                            ("work_create", work_create)):
         closed_tool(server, name, function)

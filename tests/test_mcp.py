@@ -4,9 +4,10 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
+from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import (
@@ -22,9 +23,11 @@ from switchstand.contracts import (
     WorkItem,
     WorkResult,
 )
+from switchstand.grants import GrantedWorkResult
 from switchstand.mcp import (
     build_server,
     controller_from_env,
+    project_work,
     protect_provider_logs,
     server_from_env,
 )
@@ -79,6 +82,45 @@ class FakeService:
 
     async def append(self, request):
         return AppendResult(status="ok", task_gid=TASK_GID, story_gid=STORY_GID)
+
+
+@pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
+@pytest.mark.parametrize("status", ["ok", "stale", "denied", "unknown", "provider_error"])
+@pytest.mark.parametrize("include_related", [False, True])
+def test_public_projection_allowlist(kind, status, include_related):
+    import json
+
+    from switchstand.contracts import GroupedCandidate, GroupedLookup, WorkSource
+    from switchstand.mcp import PublicWorkResult, project_work
+
+    value = item().model_copy(update={"source": WorkSource(provider="secret-provider", task_gid="raw-task")})
+    fields = {"status": status, "item": value if status in {"ok", "stale"} else None}
+    if kind is GrantedWorkResult and status == "denied":
+        from switchstand.chatgpt import ChatGPTService
+        fields["guard"] = ChatGPTService.denied("work_get")
+    if status == "ok":
+        fields["related"] = RelatedLookup(status="CANDIDATES", work_task_gid="raw-work",
+            observed_revision="r1", reason="raw-reason", candidates=(RelatedCandidate(
+                task_gid="raw-child", title="Review", revision="r1", parent_gid="raw-parent",
+                work_type_option_gid="raw-option"),))
+        if kind is WorkResult:
+            fields["grouped"] = GroupedLookup(status="CANDIDATES", root_task_gid="raw-root",
+                candidates=(GroupedCandidate(task_gid="raw-group", title="Group", revision="r1",
+                    root_work_gid="raw-root", source="asana_root_work_gid_search_exact_get"),))
+    output = project_work(kind(**fields), include_related).model_dump(mode="json")
+    serialized = json.dumps(output) + json.dumps(PublicWorkResult.model_json_schema())
+    for forbidden in ("raw-", "secret-provider", "asana", "task_gid", "parent_gid", "source", "receipt"):
+        assert forbidden not in serialized
+    assert output["status"] == status
+    if status in {"ok", "stale"}:
+        assert output["item"] == value.model_dump(mode="json", exclude={"source"})
+    else:
+        assert all(v is None for k, v in output.items() if k not in {"status", "guard"})
+    if include_related and status == "ok":
+        assert output["related"] == {"status": "CANDIDATES", "observed_revision": "r1",
+            "candidates": [{"title": "Review", "revision": "r1"}], "complete": False}
+    else:
+        assert output["related"] is None and output["grouped"] is None
 
 
 def test_provider_request_logs_are_suppressed(caplog):
@@ -144,7 +186,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "source_task", "source_stories", "source_story", "work_append",
+            "work_get", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
@@ -163,15 +205,15 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert not (await client.list_prompts()).prompts
 
         got = await client.call_tool("work_get", {"api_version": "1"})
-        assert got.structured_content == WorkResult(status="ok", item=item()).model_dump(mode="json")
+        assert got.structured_content == project_work(WorkResult(status="ok", item=item()), False).model_dump(mode="json")
         related = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
-        assert related.structured_content["related"]["candidates"][0]["parent_gid"] == TASK_GID
+        assert related.structured_content["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
         reference = await client.call_tool(
             "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
         )
-        assert reference.structured_content == WorkResult(
+        assert reference.structured_content == project_work(WorkResult(
             status="ok", item=item(work_id=REFERENCE_ID)
-        ).model_dump(mode="json")
+        ), False).model_dump(mode="json")
 
         source = await client.call_tool(
             "source_task", {"api_version": "1", "task_gid": TASK_GID}
@@ -208,5 +250,56 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert rejected.is_error
 
 
+async def test_managed_controller_stdio_read_chain():
+    server = StdioServerParameters(command=sys.executable, args=[__file__, "managed"],
+                                  env={"PYTHONPATH": str(Path.cwd() / "src")})
+    async with Client(server) as client:
+        for tool in (await client.list_tools()).tools:
+            if tool.name in {"work_get", "work_history", "work_event"}:
+                assert_public(tool.model_dump(mode="json"))
+        for target in (ID, REFERENCE_ID):
+            event_id = await read_chain(client, target)
+        for tool, extra in (("work_get", {}), ("work_history", {"observed_revision": "r1"}),
+                            ("work_event", {"observed_revision": "r1", "event_id": event_id})):
+            denied = await client.call_tool(tool, {"api_version": "1", "work_id": str(uuid4()), **extra})
+            assert_public(denied.model_dump(mode="json"))
+            assert denied.structured_content["status"] == "denied"
+
+
+async def test_managed_read_denial_precedes_provider_and_failure_projection(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from test_source_history import FakeProvider, FakeState
+
+    from switchstand.contracts import LaunchAuthority
+    from switchstand.core import Controller, ProviderError, UnknownEffect
+
+    provider, state = FakeProvider(), FakeState()
+    server = build_server(Controller(LaunchAuthority(active_work_id=ID), state, {"asana": provider}), ID)
+    binding = await state.bind_event(ID, "asana", "1218431511675555", "1218431592688855")
+    for failure, status in ((AssertionError("unauthorized access"), "denied"),
+                            (UnknownEffect("raw-provider-error"), "unknown"),
+                            (ProviderError("raw-provider-error"), "provider_error")):
+        target = uuid4() if status == "denied" else ID
+        with monkeypatch.context() as patch:
+            for method in ("get", "source_task", "source_stories", "source_story"):
+                patch.setattr(provider, method, AsyncMock(side_effect=failure))
+            for tool, extra in (("work_get", {}), ("work_history", {"observed_revision": "r1"}),
+                                ("work_event", {"observed_revision": "r1", "event_id": str(binding.id)})):
+                result = await server.call_tool(tool, {"api_version": "1", "work_id": str(target), **extra})
+                assert_public(result.model_dump(mode="json"))
+                assert "raw-provider-error" not in str(result)
+                assert result.structured_content["status"] == status
+
+
 if __name__ == "__main__":
-    build_server(FakeService(), ID, (REFERENCE_ID,)).run()
+    if sys.argv[-1] == "managed":
+        from test_source_history import FakeProvider, FakeState
+
+        from switchstand.contracts import LaunchAuthority
+        from switchstand.core import Controller
+
+        build_server(Controller(LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
+                                FakeState(), {"asana": FakeProvider()}), ID, (REFERENCE_ID,)).run()
+    else:
+        build_server(FakeService(), ID, (REFERENCE_ID,)).run()

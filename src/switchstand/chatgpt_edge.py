@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -16,7 +16,7 @@ from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
 from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, Field
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .chatgpt import ChatGPTService
@@ -27,11 +27,16 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkEventRequest,
+    WorkEventResult,
+    WorkHistoryRequest,
+    WorkHistoryResult,
     WorkSearchRequest,
     WorkSearchResult,
 )
 from .grant_state import GrantState
-from .grants import GrantedWorkResult, GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
+from .grants import GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
+from .mcp import PublicWorkResult, project_work
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
@@ -187,10 +192,10 @@ def create_app(
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
-    ) -> GrantedWorkResult:
+    ) -> PublicWorkResult:
         result = await service.get(work_id, include_related=include_related)
         _audit("work_get", None if work_id is None else str(work_id), result.status)
-        return result
+        return project_work(result, include_related)
 
     async def work_search(
         api_version: Literal["1"], text: str | None = None,
@@ -201,6 +206,28 @@ def create_app(
             cursor=cursor, limit=limit,
         ))
         _audit("work_search", None, result.status)
+        return result
+
+    async def work_history(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> WorkHistoryResult:
+        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        result = await service.history(
+            WorkHistoryRequest(api_version=api_version, work_id=work_id,
+                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+        _audit("work_history", str(work_id), result.status)
+        return result
+
+    async def work_event(
+        api_version: Literal["1"], event_id: UUID, observed_revision: str,
+        work_id: UUID,
+    ) -> WorkEventResult:
+        """Reread one opaque event at the observed work revision."""
+        result = await service.event(
+            WorkEventRequest(api_version=api_version, work_id=work_id,
+                             event_id=event_id, observed_revision=observed_revision))
+        _audit("work_event", str(work_id), result.status)
         return result
 
     async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
@@ -256,7 +283,7 @@ def create_app(
         _audit("work_create", str(parent_work_id), result.status)
         return result
 
-    for tool in (grant_get, work_get, work_search, source_task, source_stories, source_story,
+    for tool in (grant_get, work_get, work_search, work_history, work_event, source_task, source_stories, source_story,
                  work_append, work_create):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)

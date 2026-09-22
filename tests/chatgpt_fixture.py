@@ -1,5 +1,6 @@
 """Explicit fake caller/provider for local protocol tests; never a ChatGPT identity claim."""
 
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -7,6 +8,7 @@ from uuid import UUID, uuid4
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import LaunchAuthority, RelatedCandidate, RelatedLookup, Routing
 from switchstand.core import (
+    EventBinding,
     Handle,
     ProviderSourceStory,
     ProviderSourceTask,
@@ -31,6 +33,7 @@ def grant(principal=PRINCIPAL, active=ACTIVE, reference=REFERENCE, **changes):
 
 class Handles:
     def __init__(self, active=ACTIVE, reference=REFERENCE):
+        self.events = {}
         self.handles = {active: Handle(active, "asana", "123"),
                         reference: Handle(reference, "asana", "456")}
 
@@ -48,6 +51,15 @@ class Handles:
         handle = Handle(uuid4(), provider, provider_work_id)
         self.handles[handle.id] = handle
         return handle
+
+    async def bind_event(self, work_id, provider, provider_work_id, provider_event_id):
+        key = (work_id, provider, provider_work_id, provider_event_id)
+        if key not in self.events:
+            self.events[key] = EventBinding(uuid4(), *key)
+        return self.events[key]
+
+    async def get_event(self, work_id, event_id):
+        return next((e for e in self.events.values() if e.work_id == work_id and e.id == event_id), None)
 
 
 class Provider:
@@ -168,3 +180,32 @@ def service():
     async def principal():
         return PRINCIPAL
     return ChatGPTService(principal, Handles(), MemoryGrants(grant()), {"asana": Provider()})
+
+
+def assert_public(value):
+    serialized = json.dumps(value)
+    for forbidden in ("asana", "task_gid", "story_gid", "parent_gid", "root_work_gid",
+                      "work_type_option_gid", '"source"', '"123"', '"456"', '"789"',
+                      '"777"', '"888"', "1218431511675555", "1218431592688855"):
+        assert forbidden not in serialized
+
+
+async def read_chain(client, work_id):
+    call = getattr(client, "call_tool_mcp", client.call_tool)
+    args = {"api_version": "1", "work_id": str(work_id)}
+    got = await call("work_get", args | {"include_related": True})
+    assert_public(got.model_dump(mode="json"))
+    assert got.structured_content["item"]["id"] == str(work_id)
+    assert got.structured_content["related"]["candidates"][0]["title"] == "Review"
+    args["observed_revision"] = got.structured_content["item"]["revision"]
+    page = await call("work_history", args | {"limit": 1})
+    assert_public(page.model_dump(mode="json"))
+    event = page.structured_content["events"][0]
+    assert event["work_id"] == str(work_id) and event["text"]
+    reread = await call("work_event", args | {"event_id": event["id"]})
+    assert_public(reread.model_dump(mode="json"))
+    assert reread.structured_content["item"] == event
+    stale = await call("work_history", args | {"observed_revision": "old"})
+    assert_public(stale.model_dump(mode="json"))
+    assert stale.structured_content["status"] == "stale"
+    return event["id"]
