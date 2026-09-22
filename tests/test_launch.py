@@ -272,7 +272,9 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
         "docker", "compose", "--project-directory", "/repo", "-f",
         "/repo/compose.state.yaml", "up", "-d", "--wait", "postgres",
     ]
-    assert controller[0][-4:] == ["--active", "123", "--reference", "456"]
+    assert controller[0][-5:] == [
+        "--active", "123", "--managed-agent", "--reference", "456",
+    ]
     assert controller[0][2:6] == [
         "--project-directory", "/repo", "-f", "/repo/compose.yaml"
     ]

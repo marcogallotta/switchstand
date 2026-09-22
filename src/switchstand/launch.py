@@ -381,6 +381,7 @@ def provision(
         "switchstand-provision",
         "--active",
         asana_task_id(active),
+        "--managed-agent",
     ]
     for reference in references:
         command.extend(("--reference", asana_task_id(reference)))
