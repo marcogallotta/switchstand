@@ -1,32 +1,97 @@
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import Field
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
     AppendResult,
+    ClosedModel,
+    GroupedLookup,
     LaunchAuthority,
+    RelatedLookup,
     SourceStoriesRequest,
     SourceStoriesResult,
     SourceStoryRequest,
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    Status,
     WorkAppendRequest,
+    WorkEventRequest,
+    WorkEventResult,
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
     WorkResult,
+    WorkSearchItem,
 )
 from .core import Controller
+from .grants import GrantedWorkResult
 from .provider import AsanaProvider
 from .state import PostgresState
+
+
+class PublicWorkItem(WorkSearchItem):
+    notes: str
+
+
+class PublicCandidate(ClosedModel):
+    title: str
+    revision: str
+
+
+class PublicRelated(ClosedModel):
+    status: Literal["CANDIDATES", "UH_OH"]
+    observed_revision: str | None = None
+    candidates: tuple[PublicCandidate, ...] = ()
+    complete: Literal[False] = False
+
+
+class PublicReadGuard(ClosedModel):
+    status: Literal["denied"] = "denied"
+    operation: Literal["work_get"] = "work_get"
+    reason: str
+    next_action: str
+    effect: Literal["not_sent"] = "not_sent"
+    retry: Literal["none"] = "none"
+
+
+class PublicWorkResult(ClosedModel):
+    status: Status
+    item: PublicWorkItem | None = None
+    related: PublicRelated | None = None
+    grouped: PublicRelated | None = None
+    guard: PublicReadGuard | None = None
+
+
+def project_work(result: WorkResult | GrantedWorkResult, include_related: bool) -> PublicWorkResult:
+    """Present already-authorized work; never retrieve, authorize, or invent identities."""
+    public = PublicWorkResult(status=result.status)
+    if isinstance(result, GrantedWorkResult) and result.guard is not None:
+        public.guard = PublicReadGuard(reason=result.guard.reason, next_action=result.guard.next_action)
+    if result.status not in {"ok", "stale"}:
+        return public
+    if result.item is not None:
+        item = result.item
+        public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
+                                     completed=item.completed, revision=item.revision, routing=item.routing)
+    if include_related:
+        def related(value: RelatedLookup | GroupedLookup | None) -> PublicRelated | None:
+            if value is None:
+                return None
+            return PublicRelated(status=value.status, observed_revision=value.observed_revision,
+                                 candidates=tuple(PublicCandidate(title=c.title, revision=c.revision)
+                                                  for c in value.candidates))
+        public.related = related(result.related)
+        public.grouped = related(result.grouped) if isinstance(result, WorkResult) else None
+    return public
 
 
 def controller_from_env() -> Controller:
@@ -57,18 +122,18 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
 
     async def _work_get(
         api_version: Literal["1"], include_related: bool = False,
-    ) -> WorkResult:
-        return await service.get(  # type: ignore[attr-defined]
+    ) -> PublicWorkResult:
+        return project_work(await service.get(  # type: ignore[attr-defined]
             WorkGetRequest(
                 api_version=api_version,
                 work_id=active_work_id,
                 include_related=include_related,
             )
-        )
+        ), include_related)
 
     _work_get.__doc__ = (
         "Read the exact launch-bound work. Set include_related for bounded direct-child "
-        "and Root Work GID grouping candidates; completeness is always unknown."
+        "and grouped candidates; completeness is always unknown."
     )
     closed_tool(server, "work_get", _work_get, ToolAnnotations(
         read_only_hint=True,
@@ -111,18 +176,36 @@ def build_server(
 
     async def _work_get(
         api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
-    ) -> WorkResult:
+    ) -> PublicWorkResult:
         request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id,
                                  include_related=include_related)
-        return await service.get(request)  # type: ignore[attr-defined]
+        return project_work(await service.get(request), include_related)  # type: ignore[attr-defined]
 
     references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
         "Read launch-bound work. Set include_related for bounded direct-child and "
-        "Root Work GID grouping candidates; completeness is always unknown. "
+        "grouped candidates; completeness is always unknown. "
         "Omit work_id for the active assignment. "
         f"Bounded read-only reference WorkIds: {references}."
     )
+
+    async def _work_history(
+        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> WorkHistoryResult:
+        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        return await service.history(  # type: ignore[attr-defined]
+            WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
+                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+
+    async def _work_event(
+        api_version: Literal["1"], event_id: UUID, observed_revision: str,
+        work_id: UUID | None = None,
+    ) -> WorkEventResult:
+        """Reread one opaque event at the observed work revision."""
+        return await service.event(  # type: ignore[attr-defined]
+            WorkEventRequest(api_version=api_version, work_id=work_id or active_work_id,
+                             event_id=event_id, observed_revision=observed_revision))
 
     async def _source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
         """Read one exact canonical Asana task by Asana task GID; this is not a WorkId."""
@@ -164,6 +247,8 @@ def build_server(
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
 
     closed_tool(server, "work_get", _work_get)
+    closed_tool(server, "work_history", _work_history)
+    closed_tool(server, "work_event", _work_event)
     closed_tool(server, "source_task", _source_task)
     closed_tool(server, "source_stories", _source_stories)
     closed_tool(server, "source_story", _source_story)

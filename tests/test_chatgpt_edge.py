@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx2
 import pytest
-from chatgpt_fixture import ACTIVE, grant, service
+from chatgpt_fixture import ACTIVE, assert_public, grant, service
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.auth.providers.github import GitHubProvider
@@ -114,7 +114,12 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         assert authorization["code_challenge_methods_supported"] == ["S256"]
 
 
-async def test_authenticated_registry_preserves_append_and_routes_create(monkeypatch):
+async def test_authenticated_registry_preserves_append_and_routes_create(monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+
+    from switchstand.core import ProviderError, UnknownEffect
+
+    caplog.set_level("INFO", logger="switchstand.chatgpt_edge")
     async def verified(_self, token):
         return AccessToken(
             token=token,
@@ -156,6 +161,33 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         search = await client.call_tool("work_search", {
             "api_version": "1", "text": "Task", "limit": 10,
         })
+        for tool in ("work_get", "work_history", "work_event"):
+            args = {"api_version": "1", "work_id": str(ACTIVE)}
+            if tool != "work_get":
+                args["observed_revision"] = "r1"
+            if tool == "work_event":
+                args["event_id"] = str(uuid4())
+            result = await client.call_tool_mcp(tool, args)
+            assert_public(result.model_dump(mode="json"))
+        assert_public([r.message for r in caplog.records if "chatgpt_mcp tool=work_" in r.message])
+        assert all(f"tool={name}" in caplog.text for name in ("work_get", "work_history", "work_event"))
+        binding = await subject.state.bind_event(ACTIVE, "asana", "123", "raw-event")
+        for failure, expected in ((UnknownEffect("private-provider-detail"), "unknown"),
+                                  (ProviderError("private-provider-detail"), "provider_error")):
+            with monkeypatch.context() as patch:
+                for method in ("get", "source_task", "source_stories"):
+                    patch.setattr(subject.providers["asana"], method, AsyncMock(side_effect=failure))
+                for tool in ("work_get", "work_history", "work_event"):
+                    args = {"api_version": "1", "work_id": str(ACTIVE)}
+                    if tool != "work_get":
+                        args["observed_revision"] = "r1"
+                    if tool == "work_event":
+                        args["event_id"] = str(binding.id)
+                    result = await client.call_tool_mcp(tool, args)
+                    assert result.structured_content["status"] == expected
+                    assert_public(result.model_dump(mode="json"))
+                    assert "private-provider-detail" not in str(result)
+        assert "private-provider-detail" not in caplog.text
         operation_id = str(uuid4())
         append = await client.call_tool("work_append", {
             "api_version": "1",
@@ -183,7 +215,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         })
     assert names == {
         "grant_get", "work_get", "work_search", "source_task", "source_stories",
-        "source_story", "work_append", "work_create",
+        "source_story", "work_history", "work_event", "work_append", "work_create",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
     assert search.structured_content["status"] == "ok"
