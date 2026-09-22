@@ -148,7 +148,7 @@ class Controller:
 
     @staticmethod
     def _matches(item: WorkItem, patch: WorkPatch) -> bool:
-        routing = {"horizon", "review_next_action", "stage3_gate"}
+        routing = {"priority", "work_type", "horizon", "review_next_action", "stage3_gate"}
         return all(
             getattr(item.routing if field in routing else item, field) == getattr(patch, field)
             for field in patch.model_fields_set
