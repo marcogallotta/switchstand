@@ -10,7 +10,7 @@ import socket
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -20,7 +20,8 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from sqlalchemy.engine import make_url
+from sqlalchemy import text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -32,6 +33,7 @@ from .state import PostgresState
 
 TOOLS = {"grant_get", "work_get", "source_task", "source_stories", "source_story",
          "work_append", "work_create"}
+CLEANUP_SEARCH_DELAYS = (0.0, 1.0, 2.0, 5.0, 10.0, 15.0)
 
 
 class Blocked(RuntimeError):
@@ -87,6 +89,31 @@ def _port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
+
+
+def _schema_url(database_url: str, schema: str) -> URL:
+    url = make_url(database_url)
+    options = f"{url.query.get('options', '')} -csearch_path={schema}".strip()
+    return url.update_query_dict({"options": options})
+
+
+@asynccontextmanager
+async def _isolated_database(inputs: Inputs) -> AsyncGenerator[Inputs]:
+    schema = f"switchstand_canary_{uuid4().hex}"
+    engine = create_async_engine(inputs.database_url)
+    created = False
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        created = True
+        yield replace(inputs, database_url=_schema_url(inputs.database_url, schema).render_as_string(
+            hide_password=False,
+        ))
+    finally:
+        if created:
+            async with engine.begin() as connection:
+                await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await engine.dispose()
 
 
 async def _auth_smoke(inputs: Inputs) -> PrincipalContext:
@@ -168,7 +195,15 @@ async def _search(client: httpx.AsyncClient, inputs: Inputs, operation_id: UUID)
 async def _provision(inputs: Inputs, principal: PrincipalContext) -> tuple[WorkGrant, UUID]:
     config = AlembicConfig("alembic.ini")
     config.set_main_option("sqlalchemy.url", inputs.database_url)
-    command.upgrade(config, "head")
+    previous_database_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = inputs.database_url
+    try:
+        command.upgrade(config, "head")
+    finally:
+        if previous_database_url is None:
+            del os.environ["DATABASE_URL"]
+        else:
+            os.environ["DATABASE_URL"] = previous_database_url
     engine = create_async_engine(inputs.database_url)
     try:
         state, grants = PostgresState(engine), GrantState(engine)
@@ -311,7 +346,14 @@ async def _evidence_cleanup(inputs: Inputs, report: dict[str, Any]) -> None:
         base_url="https://app.asana.com/api/1.0", trust_env=False,
         headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
     ) as asana:
-        matches = await _search(asana, inputs, operation_id)
+        matches: list[str] = []
+        delays = CLEANUP_SEARCH_DELAYS if report.get("possible_provider_effect") else (0.0,)
+        for delay in delays:
+            if delay:
+                await asyncio.sleep(delay)
+            matches = await _search(asana, inputs, operation_id)
+            if matches:
+                break
         report["correlated_task_gids"] = matches
         report["correlated_task_count"] = len(matches)
         report["observed_post_count"] = None
@@ -345,24 +387,35 @@ async def _evidence_cleanup(inputs: Inputs, report: dict[str, Any]) -> None:
 async def execute(inputs: Inputs) -> dict[str, Any]:
     report: dict[str, Any] = {}
     try:
-        async with asyncio.timeout(inputs.timeout):
-            outcome = await _run(inputs, report)
-    except Blocked as error:
-        outcome = {"verdict": "BLOCKED", "reason": str(error)}
-    except httpx.HTTPError as error:
-        outcome = {"verdict": "BLOCKED", "reason": f"external test dependency unavailable: {error}"}
-    except TimeoutError:
-        outcome = {"verdict": "BLOCKED", "reason": "overall timeout exceeded"}
-    except Exception as error:  # noqa: BLE001 - the CLI must always return structured truth.
-        outcome = {"verdict": "FAIL", "reason": f"{type(error).__name__}: {error}"}
-    try:
-        await asyncio.wait_for(_evidence_cleanup(inputs, report), 10)
-    except Exception as error:  # noqa: BLE001 - preserve the primary result and cleanup truth.
-        report["cleanup"] = f"failed:{type(error).__name__}"
-        if outcome["verdict"] == "PASS":
-            outcome = {"verdict": "FAIL", "reason": "evidence preservation or cleanup failed"}
-    if outcome["verdict"] == "PASS" and report.get("correlated_task_count") != 1:
-        outcome = {"verdict": "FAIL", "reason": "correlated provider effect count was not one"}
+        async with _isolated_database(inputs) as isolated_inputs:
+            try:
+                async with asyncio.timeout(isolated_inputs.timeout):
+                    outcome = await _run(isolated_inputs, report)
+            except Blocked as error:
+                outcome = {"verdict": "BLOCKED", "reason": str(error)}
+            except httpx.HTTPError as error:
+                outcome = {
+                    "verdict": "BLOCKED",
+                    "reason": f"external test dependency unavailable: {error}",
+                }
+            except TimeoutError:
+                outcome = {"verdict": "BLOCKED", "reason": "overall timeout exceeded"}
+            except Exception as error:  # noqa: BLE001 - always return structured truth.
+                outcome = {"verdict": "FAIL", "reason": f"{type(error).__name__}: {error}"}
+            try:
+                await asyncio.wait_for(_evidence_cleanup(isolated_inputs, report), 45)
+            except Exception as error:  # noqa: BLE001 - preserve primary result and cleanup truth.
+                report["cleanup"] = f"failed:{type(error).__name__}"
+                if outcome["verdict"] == "PASS":
+                    outcome = {
+                        "verdict": "FAIL", "reason": "evidence preservation or cleanup failed",
+                    }
+            if outcome["verdict"] == "PASS" and report.get("correlated_task_count") != 1:
+                outcome = {
+                    "verdict": "FAIL", "reason": "correlated provider effect count was not one",
+                }
+    except Exception as error:  # noqa: BLE001 - include database setup/teardown in result truth.
+        outcome = {"verdict": "FAIL", "reason": f"database isolation failed: {type(error).__name__}"}
     return outcome | report
 
 

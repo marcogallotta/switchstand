@@ -71,3 +71,57 @@ async def test_failure_evidence_cleans_only_exact_owned_task(monkeypatch):
     assert report["correlated_task_count"] == 1
     assert report["observed_post_count"] is None
     assert report["cleanup"] == "deleted" and deleted == ["/tasks/500"]
+
+
+async def test_failure_cleanup_polls_before_claiming_provider_effect_absent(monkeypatch):
+    operation_id, searches, sleeps = uuid4(), 0, []
+    monkeypatch.setenv("ASANA_TOKEN", "test")
+
+    async def search(*_args):
+        nonlocal searches
+        searches += 1
+        return [] if searches < 3 else ["500"]
+
+    async def task(*_args, **_kwargs):
+        return {"parent": {"gid": "100"}, "memberships": [{"project": {"gid": "200"}}],
+                "custom_fields": [{"gid": "300", "text_value": str(operation_id)}]}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        async def delete(self, _path):
+            return httpx.Response(200, request=httpx.Request("DELETE", "https://test"))
+
+    async def sleep(delay): sleeps.append(delay)
+    monkeypatch.setattr(canary, "_search", search)
+    monkeypatch.setattr(canary, "_asana_get", task)
+    monkeypatch.setattr(canary.asyncio, "sleep", sleep)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
+    report = {"operation_id": str(operation_id), "possible_provider_effect": True}
+    await canary._evidence_cleanup(canary._inputs(arguments()), report)
+    assert searches == 3 and sleeps == [1.0, 2.0]
+    assert report["correlated_task_count"] == 1
+
+
+async def test_isolated_database_uses_owned_unique_schema_and_drops_it(monkeypatch):
+    statements = []
+
+    class Connection:
+        async def execute(self, statement): statements.append(str(statement))
+
+    class Begin:
+        async def __aenter__(self): return Connection()
+        async def __aexit__(self, *_args): pass
+
+    class Engine:
+        def begin(self): return Begin()
+        async def dispose(self): pass
+
+    monkeypatch.setattr(canary, "create_async_engine", lambda _url: Engine())
+    original = canary._inputs(arguments())
+    async with canary._isolated_database(original) as isolated:
+        assert isolated.database_url != original.database_url
+        schema = canary.make_url(isolated.database_url).query["options"].split("=")[-1]
+        assert schema.startswith("switchstand_canary_")
+        assert statements == [f'CREATE SCHEMA "{schema}"']
+    assert statements == [f'CREATE SCHEMA "{schema}"', f'DROP SCHEMA "{schema}" CASCADE']
