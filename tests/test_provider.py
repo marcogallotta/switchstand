@@ -306,16 +306,17 @@ async def test_routing_mapping_minimal_update_and_readback():
     assert json.loads(api.requests[1].content) == {"data": {"notes": "new", "custom_fields": {
         FIELDS["horizon"]: "option-gid"}}}
     assert result and result.routing.horizon == "Stage 3"
-@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation")])
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation"), ("review_next_action", FIELDS["review_next_action"], "Code Review")])
 async def test_strict_enum_mapping_minimal_update_and_readback(name, gid, value):
     before = field(gid, option=value, display="Other")
     after = field(gid, option=value, display=value)
     subject, api = provider((200, task(fields=[before])), (200, {}),
                             (200, task(project=PROJECT, fields=[after])))
-    await subject.update("t", WorkPatch(**{name: value}))
+    patch = {name: value} | ({"notes": "review evidence"} if name == "review_next_action" else {})
+    await subject.update("t", WorkPatch(**patch))
     result = await subject.get("t")
-    assert json.loads(api.requests[1].content) == {"data": {"custom_fields": {
-        gid: "option-gid"}}}
+    expected = {"custom_fields": {gid: "option-gid"}} | ({"notes": "review evidence"} if name == "review_next_action" else {})
+    assert json.loads(api.requests[1].content) == {"data": expected}
     assert result and getattr(result.routing, name) == value
 
 @pytest.mark.parametrize("mutate", [
@@ -331,13 +332,13 @@ async def test_strict_enum_mapping_minimal_update_and_readback(name, gid, value)
         {"gid": "duplicate", "name": fields[0]["enum_options"][0]["name"], "enabled": True}),
     lambda fields: fields.append(fields[0].copy()),
 ])
-@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation")])
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation"), ("review_next_action", FIELDS["review_next_action"], "Code Review")])
 async def test_invalid_strict_enum_catalogue_denies_before_put(mutate, name, gid, value):
     fields = [field(gid, option=value)]
     mutate(fields)
     subject, api = provider((200, task(fields=fields)))
     with pytest.raises(ProviderError, match="routing write denied"):
-        await subject.update("t", WorkPatch(**{name: value}))
+        await subject.update("t", WorkPatch(**({name: value} | ({"notes": "evidence"} if name == "review_next_action" else {}))))
     assert len(api.requests) == 1
 
 @pytest.mark.parametrize("fields", [
@@ -351,6 +352,41 @@ async def test_invalid_priority_readback_is_rejected(fields):
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
     with pytest.raises(ProviderError, match="provider response invalid"):
         await subject.get("t")
+
+async def test_review_next_action_accepts_unset_and_rejects_partial_truth():
+    subject, _ = provider((200, task(project=PROJECT)))
+    assert (await subject.get("t")).routing.review_next_action is None
+    unset = field(FIELDS["review_next_action"]); unset.update(display_value=None, enum_value=None)
+    subject, _ = provider((200, task(project=PROJECT, fields=[unset])))
+    result = await subject.get("t")
+    assert result and result.routing.review_next_action is None
+    for display, selected in (("Code Review", None), (None, {"gid": "option-gid"})):
+        partial = field(FIELDS["review_next_action"], option="Code Review")
+        partial.update(display_value=display, enum_value=selected)
+        subject, _ = provider((200, task(project=PROJECT, fields=[partial])))
+        with pytest.raises(ProviderError, match="provider response invalid"):
+            await subject.get("t")
+    malformed = field(FIELDS["review_next_action"]); malformed["enum_options"].append({"gid": "broken"})
+    malformed_selected = field(FIELDS["review_next_action"])
+    malformed_selected.update(display_value=None, enum_value={"gid": 7})
+    duplicate_selected = field(FIELDS["review_next_action"], option="Code Review",
+                               display="Code Review")
+    duplicate_selected["enum_options"].append(
+        {"gid": "option-gid", "name": "Other", "enabled": True})
+    invalid = [
+        [malformed],
+        [malformed_selected],
+        [duplicate_selected],
+        [field(FIELDS["review_next_action"]), field(FIELDS["review_next_action"])],
+        [field(FIELDS["review_next_action"], enabled=False)],
+        [field(FIELDS["review_next_action"], option="Code Review", display="Other")],
+        [field(FIELDS["review_next_action"], option="Code Review", display="Code Review")],
+    ]
+    invalid[-1][0]["enum_value"] = {"gid": "wrong"}
+    for fields in invalid:
+        subject, _ = provider((200, task(project=PROJECT, fields=fields)))
+        with pytest.raises(ProviderError, match="provider response invalid"):
+            await subject.get("t")
 
 async def test_only_priority_rejects_malformed_option_sibling():
     malformed = {"gid": "broken"}

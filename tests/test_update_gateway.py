@@ -25,6 +25,8 @@ PROJECT = "9999999999999999"
 PRIORITY = "1217653169990249"
 PRIORITY_OPTIONS = {"p0": "P0", "p1": "P1"}
 WORK_TYPE, WORK_TYPE_OPTIONS = "1218431623135287", {"w0": "Research", "w1": "Implementation"}
+REVIEW = "1218212397743210"
+REVIEW_OPTIONS = {"r0": "Code Review", "r1": "Needs Work"}
 
 
 class AsanaBoundary(httpx.AsyncBaseTransport):
@@ -39,7 +41,8 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
                          "enum_options": [
                              {"gid": gid, "name": name, "enabled": True}
                              for gid, name in PRIORITY_OPTIONS.items()]}, {"gid": WORK_TYPE, "enabled": True, "resource_subtype": "enum", "display_value": "Research", "enum_value": {"gid": "w0"},
-                         "enum_options": [{"gid": g, "name": n, "enabled": True} for g, n in WORK_TYPE_OPTIONS.items()]}]}
+                         "enum_options": [{"gid": g, "name": n, "enabled": True} for g, n in WORK_TYPE_OPTIONS.items()]}, {"gid": REVIEW, "enabled": True, "resource_subtype": "enum", "display_value": "Code Review", "enum_value": {"gid": "r0"},
+                         "enum_options": [{"gid": g, "name": n, "enabled": True} for g, n in REVIEW_OPTIONS.items()]}]}
 
     async def handle_async_request(self, request):
         if request.method == "GET":
@@ -61,7 +64,8 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
             if custom is not None:
                 for field in self.task["custom_fields"]:
                     if field["gid"] in custom:
-                        options = PRIORITY_OPTIONS if field["gid"] == PRIORITY else WORK_TYPE_OPTIONS
+                        options = {PRIORITY: PRIORITY_OPTIONS, WORK_TYPE: WORK_TYPE_OPTIONS,
+                                   REVIEW: REVIEW_OPTIONS}[field["gid"]]
                         field["display_value"] = options[custom[field["gid"]]]
                         field["enum_value"] = {"gid": custom[field["gid"]]}
             self.task["modified_at"] = f"r{len(self.puts) + 1}"
@@ -148,24 +152,28 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
 
 
 @pytest.mark.parametrize(("name", "gid", "changed_value", "old_value", "old_gid"), [
-    ("priority", PRIORITY, "P1", "P0", "p0"), ("work_type", WORK_TYPE, "Implementation", "Research", "w0")])
+    ("priority", PRIORITY, "P1", "P0", "p0"), ("work_type", WORK_TYPE, "Implementation", "Research", "w0"),
+    ("review_next_action", REVIEW, "Needs Work", "Code Review", "r0")])
 async def test_strict_enum_recovers_without_resend_and_blocks_on_mismatch(subject, name, gid, changed_value, old_value, old_gid):
     gateway, grants, principal, grant, boundary = subject
-    changed = request(grant, "r1", **{name: changed_value})
+    coupled = {"notes": "changed"} if name == "review_next_action" else {}
+    changed = request(grant, "r1", **{name: changed_value} | coupled)
     applied = await gateway.update(principal, changed)
     assert applied.effect == "applied" and applied.receipt.patch == changed.patch
-    assert boundary.puts == [{"custom_fields": {gid: "p1" if name == "priority" else "w1"}}]
+    option = {"priority": "p1", "work_type": "w1", "review_next_action": "r1"}[name]
+    assert boundary.puts == [coupled | {"custom_fields": {gid: option}}]
     restarted = UpdateGateway(gateway.state, GrantState(grants.engine), gateway.providers)
     assert await restarted.update(principal, changed) == applied
     assert len(boundary.puts) == 1
 
     boundary.mode = "lost"
-    unresolved = request(grant, "r2", **{name: old_value})
+    old_notes = {"notes": "old"} if name == "review_next_action" else {}
+    unresolved = request(grant, "r2", **{name: old_value} | old_notes)
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     reads = boundary.gets
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     assert boundary.gets == reads + 1 and len(boundary.puts) == 2
-    blocked = await restarted.update(principal, request(grant, "r2", **{name: changed_value}))
+    blocked = await restarted.update(principal, request(grant, "r2", **{name: changed_value} | coupled))
     assert blocked.reason == "target_has_unresolved_effect" and len(boundary.puts) == 2
     target = next(field for field in boundary.task["custom_fields"] if field["gid"] == gid)
     target["display_value"], target["enum_value"] = old_value, {"gid": old_gid}
@@ -174,6 +182,10 @@ async def test_strict_enum_recovers_without_resend_and_blocks_on_mismatch(subjec
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     assert len(boundary.puts) == 2
     target["enum_options"].pop()
+    if name == "review_next_action":
+        assert (await restarted.update(principal, unresolved)).effect == "unknown"
+        assert (await restarted.update(principal, request(grant, "r2", completed=True))).reason == "target_has_unresolved_effect"
+        boundary.task["notes"] = "old"
     assert (await restarted.update(principal, unresolved)).effect == "applied"
 
 
@@ -195,10 +207,14 @@ async def test_partial_patch_receipt_survives_restart(subject, patch, payload):
     assert boundary.puts == [payload]
 
 
-@pytest.mark.parametrize("field", ["title", "notes", "completed", "priority", "work_type"])
+@pytest.mark.parametrize("field", ["title", "notes", "completed", "priority", "work_type", "review_next_action"])
 def test_public_update_patch_rejects_explicit_null(field):
     with pytest.raises(ValidationError):
         ScalarPatch.model_validate({field: None})
+
+def test_review_next_action_requires_coupled_notes():
+    with pytest.raises(ValidationError, match="requires notes"):
+        ScalarPatch(review_next_action="Code Review")
 
 
 async def test_managed_update_derives_active_identity_and_current_grant(subject):
@@ -214,13 +230,13 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
     arguments = {
         "api_version": "1", "operation_id": str(operation_id),
         "observed_revision": "r1",
-        "patch": {"title": "Managed", "notes": "managed", "completed": True},
+        "patch": {"review_next_action": "Needs Work", "notes": "managed"},
     }
     async with Client(server) as client:
         tool = next(tool for tool in (await client.list_tools()).tools
                     if tool.name == "work_update")
         patch_schema = tool.input_schema["$defs"]["ScalarPatch"]
-        assert {"priority", "work_type"} <= patch_schema["properties"].keys() and "gid" not in json.dumps(patch_schema).lower()
+        assert {"priority", "work_type", "review_next_action"} <= patch_schema["properties"].keys() and "gid" not in json.dumps(patch_schema).lower()
         assert set(tool.input_schema["properties"]) == {
             "api_version", "operation_id", "observed_revision", "patch",
         }
@@ -230,7 +246,7 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
         assert first["receipt"]["grant_version"] == current.version
         assert first["receipt"]["qualification"] == "managed:task-bound"
         assert (await client.call_tool("work_update", arguments)).structured_content == first
-        assert boundary.puts == [{"name": "Managed", "notes": "managed", "completed": True}]
+        assert boundary.puts == [{"notes": "managed", "custom_fields": {REVIEW: "r1"}}]
         for forbidden in ({"work_id": str(uuid4())}, {"grant_version": current.version}):
             assert (await client.call_tool("work_update", arguments | forbidden)).is_error
 
@@ -246,7 +262,7 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
         assert len(boundary.puts) == 1
 
 
-@pytest.mark.parametrize("field", ["horizon", "review_next_action", "stage3_gate"])
+@pytest.mark.parametrize("field", ["horizon", "stage3_gate"])
 def test_public_update_patch_is_closed_to_scalar_fields(field):
     values = {"api_version": "1", "operation_id": uuid4(), "work_id": uuid4(),
               "grant_version": 1, "observed_revision": "r1", "patch": {field: "x"}}

@@ -164,32 +164,40 @@ class AsanaProvider:
         values = {name: next((f.get("display_value") for f in fields
                   if f.get("gid") == gid), None) for name, gid in FIELDS.items()}
         try:
-            for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE)):
+            for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE),
+                              ("review_next_action", FIELDS["review_next_action"])):
                 strict = [field for field in fields if field.get("gid") == gid]
-                if len(strict) > 1 and name == "priority": raise TypeError
+                required_truth = name in {"priority", "review_next_action"}
+                if len(strict) > 1 and required_truth: raise TypeError
                 if len(strict) != 1:
                     values[name] = None
                     continue
                 enum = strict[0]
                 options = enum.get("enum_options")
-                current, display = self._gid(enum.get("enum_value")), enum.get("display_value")
+                selected, display = enum.get("enum_value"), enum.get("display_value")
+                current = self._gid(selected)
                 if (enum.get("enabled") is not True or enum.get("resource_subtype") != "enum"
-                        or not isinstance(display, str) or not isinstance(options, list)
+                        or not isinstance(options, list)
                         or any(not isinstance(option, dict)
                                or not isinstance(cast(JSON, option).get("gid"), str)
                                or not cast(JSON, option)["gid"]
                                or not isinstance(cast(JSON, option).get("name"), str)
                                or not isinstance(cast(JSON, option).get("enabled"), bool)
                                for option in cast(list[object], options))):
-                    if name == "priority": raise TypeError
+                    if required_truth: raise TypeError
                     values[name] = None
                     continue
-                matches = [cast(JSON, option) for option in cast(list[object], options)
+                if selected is None and display is None:
+                    values[name] = None
+                    continue
+                identities = [cast(JSON, option) for option in cast(list[object], options)
                            if self._gid(option) == current
-                           and cast(JSON, option).get("enabled") is True
-                           and cast(JSON, option).get("name") == display]
-                if current is None or len(matches) != 1:
-                    if name == "priority": raise TypeError
+                           and cast(JSON, option).get("enabled") is True]
+                matches = [option for option in identities if option.get("name") == display]
+                if (not isinstance(selected, dict) or not current
+                        or not isinstance(display, str)
+                        or len(identities) != 1 or len(matches) != 1):
+                    if required_truth: raise TypeError
                     values[name] = None
                 else: values[name] = display
             title, notes, completed, revision = (task[key] for key in ("name", "notes", "completed", "modified_at"))
@@ -529,7 +537,7 @@ class AsanaProvider:
             if task is None or not isinstance(raw_fields, list):
                 raise ProviderError("routing write denied")
             fields = self._custom_fields(task)
-            if (routing & {"priority", "work_type"}
+            if (routing & {"priority", "work_type", "review_next_action"}
                     and len(fields) != len(cast(list[object], raw_fields))):
                 raise ProviderError("routing write denied")
             custom: dict[str, str] = {}
@@ -537,11 +545,11 @@ class AsanaProvider:
                 gid = WORK_TYPE if name == "work_type" else FIELDS[name]
                 matches = [field for field in fields if field.get("gid") == gid]
                 enabled = (len(matches) == 1 and matches[0].get("enabled") is True
-                           and (name not in {"priority", "work_type"}
+                           and (name not in {"priority", "work_type", "review_next_action"}
                                 or matches[0].get("resource_subtype") == "enum"))
                 raw_options: object = matches[0].get("enum_options", []) if enabled else []
                 options = self._custom_fields({"custom_fields": raw_options})
-                valid = (name not in {"priority", "work_type"} or isinstance(raw_options, list)
+                valid = (name not in {"priority", "work_type", "review_next_action"} or isinstance(raw_options, list)
                          and len(options) == len(cast(list[object], raw_options))
                          and all(isinstance(option.get("name"), str)
                                  and isinstance(option.get("enabled"), bool)
@@ -551,7 +559,7 @@ class AsanaProvider:
                             if option.get("name") == getattr(patch, name)
                             and option.get("enabled") is True] if valid else [])
                 if (len(choices) != 1 or not isinstance(choices[0].get("gid"), str)
-                        or name in {"priority", "work_type"} and not choices[0]["gid"]):
+                        or name in {"priority", "work_type", "review_next_action"} and not choices[0]["gid"]):
                     raise ProviderError("routing write denied")
                 custom[gid] = choices[0]["gid"]
             data["custom_fields"] = custom
