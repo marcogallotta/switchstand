@@ -191,6 +191,7 @@ async def _discover(endpoint, selected):
                 if tool.name == "work_attachments":
                     schema = tool.inputSchema
                     assert set(schema["required"]) == {"api_version", "work_id", "observed_revision"}
+                    assert schema["properties"]["observed_revision"]["minLength"] == 1
                     cursor_types = schema["properties"]["cursor"]["anyOf"]
                     assert next(item for item in cursor_types if item.get("type") == "string")[
                         "maxLength"
