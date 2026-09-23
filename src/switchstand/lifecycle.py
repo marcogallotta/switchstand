@@ -259,6 +259,34 @@ class LifecycleRepository:
             raise ValueError("stale lifecycle obligation or changed immutable binding")
         return LifecycleObligation.model_validate(row)
 
+    async def adopt_currentness(
+        self,
+        obligation: LifecycleObligation,
+        currentness_token: str,
+    ) -> LifecycleObligation:
+        """Adopt current authority before any persistence effect has been prepared."""
+        if obligation.state not in {ProfileState.PENDING_RESULT, ProfileState.PERSIST_REQUIRED}:
+            raise ValueError("only an unattempted obligation can adopt currentness")
+        statement = (
+            update(lifecycle_obligations)
+            .where(
+                lifecycle_obligations.c.obligation_id == obligation.obligation_id,
+                lifecycle_obligations.c.row_version == obligation.row_version,
+                lifecycle_obligations.c.currentness_token == obligation.currentness_token,
+                lifecycle_obligations.c.state == obligation.state,
+            )
+            .values(
+                currentness_token=currentness_token,
+                row_version=obligation.row_version + 1,
+            )
+            .returning(*_columns)
+        )
+        async with self.engine.begin() as connection:
+            row = (await connection.execute(statement)).mappings().one_or_none()
+        if row is None:
+            raise ValueError("stale lifecycle obligation during currentness adoption")
+        return LifecycleObligation.model_validate(row)
+
 
 def _encoded_evidence(evidence: Mapping[str, object] | None) -> str:
     if evidence is None:

@@ -19,7 +19,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl, Field
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .chatgpt import ChatGPTService
+from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .chatgpt_mcp import build_message_tools
 from .contracts import (
     SourceStoriesRequest,
@@ -46,6 +46,7 @@ from .grants import (
     ProtectedUpdate,
     ScalarPatch,
 )
+from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .mcp import PublicWorkResult, project_work
 from .messages import MessageState
 from .principal import RequestPrincipal
@@ -181,6 +182,7 @@ def create_app(
         service.grants,
         service.providers,
         service.messages,
+        service.required_results,
     )
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
@@ -320,9 +322,22 @@ def create_app(
         _audit("work_update", str(work_id), result.status)
         return result
 
+    async def required_result_save(
+        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
+    ) -> GuardOutcome:
+        """Save one required result; the server owns its stable operation identity."""
+        result = await service.required_result_save(RequiredResultSaveRequest(
+            api_version=api_version, work_id=work_id, grant_version=grant_version,
+            observed_revision=observed_revision, text=text,
+        ))
+        _audit("required_result_save", str(work_id), result.status)
+        return result
+
     for tool in (grant_get, work_get, work_search, work_history, work_attachments, work_event, source_task, source_stories, source_story,
                  work_append, work_create, work_update):
         server.tool(tool)
+    server.tool(required_result_save)
     for _, tool in build_message_tools(service, _audit):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
@@ -348,7 +363,7 @@ async def serve() -> None:
         grants = GrantState(engine)
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
-        }, MessageState(engine, grants))
+        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)))
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
