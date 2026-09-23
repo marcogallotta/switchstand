@@ -38,7 +38,13 @@ from .contracts import (
 )
 from .core import Controller
 from .grant_state import GrantState
-from .grants import GrantedWorkResult, PrincipalContext
+from .grants import (
+    GrantedWorkResult,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedUpdate,
+    ScalarPatch,
+)
 from .managed_identity import managed_principal
 from .messages import (
     DispositionEvidence,
@@ -58,6 +64,7 @@ from .messages import (
 from .provider import AsanaProvider
 from .run import managed_runtime_currentness
 from .state import PostgresState
+from .updates import UpdateGateway
 
 
 class PublicWorkItem(WorkSearchItem):
@@ -196,6 +203,7 @@ def build_server(
     messages: MessageState | None = None, grants: GrantState | None = None,
     principal: PrincipalContext | None = None,
     currentness: Callable[[], RuntimeCurrentness | None] | None = None,
+    updates: UpdateGateway | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
@@ -294,6 +302,20 @@ def build_server(
     closed_tool(server, "source_stories", _source_stories)
     closed_tool(server, "source_story", _source_story)
     closed_tool(server, "work_append", _work_append)
+    if updates is not None and grants is not None and principal is not None:
+        async def _work_update(
+            api_version: Literal["1"], operation_id: UUID,
+            observed_revision: Annotated[str, Field(min_length=1)], patch: ScalarPatch,
+        ) -> GuardOutcome:
+            grant = await grants.current(principal.key)
+            request = ProtectedUpdate(
+                api_version=api_version, operation_id=operation_id, work_id=active_work_id,
+                grant_version=1 if grant is None else grant.version,
+                observed_revision=observed_revision, patch=patch,
+            )
+            return await updates.update(principal, request)
+
+        closed_tool(server, "work_update", _work_update)
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:
             return currentness() or RuntimeCurrentness(
@@ -431,6 +453,7 @@ def server_from_env() -> MCPServer:
     engine = cast(PostgresState, service.state).engine
     grants = GrantState(engine)
     messages = MessageState(engine, grants)
+    updates = UpdateGateway(service.state, grants, service.providers)
     active = service.authority.active_work_id
 
     def currentness() -> RuntimeCurrentness | None:
@@ -446,7 +469,7 @@ def server_from_env() -> MCPServer:
     return build_server(
         service, active, service.authority.reference_work_ids,
         messages=messages, grants=grants, principal=managed_principal(active),
-        currentness=currentness,
+        currentness=currentness, updates=updates,
     )
 
 

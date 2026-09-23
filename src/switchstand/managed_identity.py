@@ -24,11 +24,12 @@ async def rotate_managed_grant(grants: GrantState, authority: LaunchAuthority) -
     grant = WorkGrant(
         id=uuid4(), version=(expected or 0) + 1, principal=principal,
         authority=authority, scope="launch",
-        operations=frozenset({"work_get", "work_append", "message"}),
+        operations=frozenset({"work_get", "work_append", "work_update", "message"}),
         issuer=MANAGED_ISSUER,
         provenance=f"trusted managed owner for WorkId {authority.active_work_id}",
         expires_at=datetime.max.replace(tzinfo=UTC),
         append_qualification="managed:task-bound",
+        update_qualification="managed:task-bound",
     )
     await grants.issue(grant, expected)
     return grant

@@ -5,14 +5,18 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from mcp import Client
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.contracts import LaunchAuthority
+from switchstand.core import Controller
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedUpdate, ScalarPatch, WorkGrant
+from switchstand.managed_identity import managed_principal, rotate_managed_grant
+from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
 from switchstand.state import PostgresState, metadata
 from switchstand.updates import UpdateGateway
@@ -146,6 +150,49 @@ async def test_partial_patch_receipt_survives_restart(subject, patch, payload):
 def test_public_update_patch_rejects_explicit_null(field):
     with pytest.raises(ValidationError):
         ScalarPatch.model_validate({field: None})
+
+
+async def test_managed_update_derives_active_identity_and_current_grant(subject):
+    gateway, grants, _, grant, boundary = subject
+    authority = LaunchAuthority(active_work_id=grant.authority.active_work_id)
+    await rotate_managed_grant(grants, authority)
+    current = await rotate_managed_grant(grants, authority)
+    server = build_server(
+        Controller(authority, gateway.state, gateway.providers), authority.active_work_id,
+        grants=grants, principal=managed_principal(authority.active_work_id), updates=gateway,
+    )
+    operation_id = uuid4()
+    arguments = {
+        "api_version": "1", "operation_id": str(operation_id),
+        "observed_revision": "r1",
+        "patch": {"title": "Managed", "notes": "managed", "completed": True},
+    }
+    async with Client(server) as client:
+        tool = next(tool for tool in (await client.list_tools()).tools
+                    if tool.name == "work_update")
+        assert set(tool.input_schema["properties"]) == {
+            "api_version", "operation_id", "observed_revision", "patch",
+        }
+        first = (await client.call_tool("work_update", arguments)).structured_content
+        assert first["receipt"]["work_id"] == str(authority.active_work_id)
+        assert first["receipt"]["principal"] == current.principal.model_dump(mode="json")
+        assert first["receipt"]["grant_version"] == current.version
+        assert first["receipt"]["qualification"] == "managed:task-bound"
+        assert (await client.call_tool("work_update", arguments)).structured_content == first
+        assert boundary.puts == [{"name": "Managed", "notes": "managed", "completed": True}]
+        for forbidden in ({"work_id": str(uuid4())}, {"grant_version": current.version}):
+            assert (await client.call_tool("work_update", arguments | forbidden)).is_error
+
+        denied_grant = current.model_copy(update={
+            "id": uuid4(), "version": current.version + 1,
+            "operations": frozenset({"work_get"}), "update_qualification": None,
+        })
+        await grants.issue(denied_grant, current.version)
+        denied = await client.call_tool("work_update", arguments | {
+            "operation_id": str(uuid4()), "observed_revision": "r2",
+        })
+        assert denied.structured_content["reason"] == "operation_or_work_not_granted"
+        assert len(boundary.puts) == 1
 
 
 @pytest.mark.parametrize("field", ["horizon", "review_next_action", "stage3_gate"])

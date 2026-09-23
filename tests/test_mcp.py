@@ -202,6 +202,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
             tool.name for tool in tools
         } | {
+            "work_update",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",
         }

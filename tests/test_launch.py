@@ -137,7 +137,7 @@ def test_managed_tools_have_narrow_approval_free_policy():
     expected = {
         "switchstand": {
             "work_get", "work_attachments", "source_task", "source_stories", "source_story",
-            "work_history", "work_event", "work_append", "message_pending",
+            "work_history", "work_event", "work_append", "work_update", "message_pending",
             "message_receive", "message_recover", "message_result_send",
             "message_disposition",
         },
