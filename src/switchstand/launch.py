@@ -381,6 +381,7 @@ def provision(
         "switchstand-provision",
         "--active",
         asana_task_id(active),
+        "--managed-agent",
     ]
     for reference in references:
         command.extend(("--reference", asana_task_id(reference)))
@@ -675,6 +676,7 @@ def run(arguments: argparse.Namespace) -> None:
     env["SWITCHSTAND_GIT_COMMON"] = str(Path(subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=candidate,
         env=env, check=True, text=True, capture_output=True).stdout.strip()).resolve())
+    env["SWITCHSTAND_GIT_DIR"] = str(git_dir)
     env["SWITCHSTAND_QUALITY_IMAGE"] = development.image
     env["SWITCHSTAND_QUALITY_NETWORK"] = development.network
     env["SWITCHSTAND_DATABASE_CONTAINER"] = development.database

@@ -109,7 +109,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert {t.name for t in tools} == {
             "grant_get", "work_get", "work_search", "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
-            "work_create",
+            "work_create", "work_update", "message_send", "message_pending",
         }
         for tool in tools:
             if tool.name in {"work_get", "work_history", "work_attachments", "work_event"}:
@@ -119,6 +119,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             assert tool.input_schema.get("additionalProperties") is False
             assert not {"principal", "role", "grant_id", "issuer", "allowed_operations"}.intersection(
                 tool.input_schema.get("properties", {}))
+        update = next(tool for tool in tools if tool.name == "work_update")
+        patch = update.input_schema["$defs"]["ScalarPatch"]
+        assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
         introspection = (await client.call_tool("grant_get", {"api_version": "1"})).structured_content
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content

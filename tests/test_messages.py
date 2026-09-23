@@ -59,8 +59,10 @@ async def subject():
     sender, recipient = uuid4(), uuid4()
     sender_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
     recipient_principal = PRINCIPAL.model_copy(update={"subject": str(uuid4())})
-    sender_grant = grant(principal=sender_principal, active=sender, reference=uuid4())
-    recipient_grant = grant(principal=recipient_principal, active=recipient, reference=uuid4())
+    sender_grant = grant(principal=sender_principal, active=sender, reference=uuid4(),
+                         operations=frozenset({"message"}))
+    recipient_grant = grant(principal=recipient_principal, active=recipient, reference=uuid4(),
+                            operations=frozenset({"message"}))
     await grants.issue(sender_grant, None)
     await grants.issue(recipient_grant, None)
     yield (MessageState(engine, grants), engine, grants, sender_principal, sender_grant,
@@ -150,6 +152,19 @@ async def test_result_correlation_disposition_replay_and_concurrency(subject):
     received = await asyncio.gather(state.receive(recipient_principal, runtime, receive),
                                     state.receive(recipient_principal, runtime, receive))
     assert [value.status for value in received] == ["ok", "ok"]
+    other = await state.submit(
+        sender_principal, route(recipient), request(sender, message_id=uuid4())
+    )
+    other_reply = request(
+        recipient, message_id=uuid4(), kind="result",
+        in_reply_to_delivery_id=other.message.delivery_id,
+    )
+    assert (await state.submit(recipient_principal, route(sender), other_reply)).status == "ok"
+    wrong = DispositionEvidence(kind="result", result_message_id=other_reply.message_id)
+    rejected = await state.disposition(recipient_principal, runtime,
+        MessageDispositionRequest(api_version="1", delivery_id=delivery_id, grant_version=1,
+            disposition_digest=digest(wrong), evidence=wrong))
+    assert rejected.reason == "result_evidence_mismatch"
     reply = request(recipient, kind="result", in_reply_to_delivery_id=delivery_id)
     assert (await state.submit(recipient_principal, route(sender), reply)).status == "ok"
     conflict = await state.submit(recipient_principal, route(sender),
@@ -164,9 +179,9 @@ async def test_result_correlation_disposition_replay_and_concurrency(subject):
     assert first.status == replay.status == "ok"
     assert first.state == replay.state == "DISPOSITIONED"
     async with engine.connect() as connection:
-        assert len((await connection.execute(select(messages))).all()) == 2
-        assert len((await connection.execute(select(message_deliveries))).all()) == 2
-        assert len((await connection.execute(select(message_projection))).all()) == 2
+        assert len((await connection.execute(select(messages))).all()) == 4
+        assert len((await connection.execute(select(message_deliveries))).all()) == 4
+        assert len((await connection.execute(select(message_projection))).all()) == 4
 
 
 async def test_restart_currentness_and_unknown_effect_are_fail_closed(subject):
@@ -247,12 +262,19 @@ async def test_provider_effect_disposition_requires_exact_delivery_correlation(s
             disposition_digest=digest(unrelated), evidence=unrelated))
     assert rejected.status == "recovery_required"
     assert rejected.reason == "effect_evidence_mismatch"
+
+    missing_id = message_effect_operation_id(delivery_id)
+    missing = DispositionEvidence(kind="provider_effect", operation_id=missing_id)
+    rejected = await state.disposition(recipient_principal, runtime,
+        MessageDispositionRequest(api_version="1", delivery_id=delivery_id, grant_version=1,
+            disposition_digest=digest(missing), evidence=missing))
+    assert rejected.reason == "effect_evidence_missing"
     async with engine.connect() as connection:
         row = (await connection.execute(select(message_deliveries).where(
             message_deliveries.c.delivery_id == delivery_id))).mappings().one()
     assert row["state"] == "RECEIVED"
 
-    exact_id = message_effect_operation_id(delivery_id)
+    exact_id = missing_id
     await applied_effect(exact_id)
     exact = DispositionEvidence(kind="provider_effect", operation_id=exact_id)
     disposition = MessageDispositionRequest(api_version="1", delivery_id=delivery_id,

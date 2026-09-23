@@ -152,6 +152,26 @@ class Provider(Protocol):
     ) -> ProviderSourceStory | None: ...
 
 
+async def apply_scalar(
+    provider: Provider, provider_work_id: str, patch: WorkPatch, *, send: bool = True,
+) -> ProviderWork | None:
+    """Apply at most once, then accept only canonical converged provider state."""
+    if send:
+        await provider.update(provider_work_id, patch)
+    try:
+        work = await provider.get(provider_work_id)
+    except ProviderError:
+        if send:
+            raise UnknownEffect("update readback unavailable") from None
+        raise
+    routing = {"priority", "work_type", "horizon", "review_next_action", "stage3_gate"}
+    matches = work is not None and all(
+        getattr(work.routing if field in routing else work, field) == getattr(patch, field)
+        for field in patch.model_fields_set
+    )
+    return work if work is not None and work.canonical and matches else None
+
+
 class Controller:
     def __init__(self, authority: LaunchAuthority, state: State, providers: dict[str, Provider]):
         self.authority, self.state, self.providers = authority, state, providers
@@ -161,14 +181,6 @@ class Controller:
             id=work_id, title=work.title, notes=work.notes, completed=work.completed,
             revision=work.revision, routing=work.routing,
             source=WorkSource(provider=handle.provider, task_gid=handle.provider_work_id),
-        )
-
-    @staticmethod
-    def _matches(item: WorkItem, patch: WorkPatch) -> bool:
-        routing = {"horizon", "review_next_action", "stage3_gate"}
-        return all(
-            getattr(item.routing if field in routing else item, field) == getattr(patch, field)
-            for field in patch.model_fields_set
         )
 
     @staticmethod
@@ -508,15 +520,16 @@ class Controller:
                 if current.item.revision != request.observed_revision:
                     return WorkResult(status="stale", item=current.item)
                 try:
-                    await self.providers[handle.provider].update(handle.provider_work_id, request.patch)
+                    work = await apply_scalar(
+                        self.providers[handle.provider], handle.provider_work_id, request.patch,
+                    )
                 except UnknownEffect:
                     update_may_have_applied = True
                     return WorkResult(status="unknown")
                 update_may_have_applied = True
-                readback = await self._read(request.work_id, handle)
-                if readback.status != "ok" or readback.item is None:
+                if work is None:
                     return WorkResult(status="unknown")
-                return readback if self._matches(readback.item, request.patch) else WorkResult(status="unknown")
+                return WorkResult(status="ok", item=self._item(request.work_id, work, handle))
         except UnknownEffect:
             return WorkResult(status="unknown")
         except ProviderError:

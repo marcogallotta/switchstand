@@ -13,13 +13,16 @@ from switchstand.provider import (
     PROJECT,
     PROJECTS,
     ROOT_WORK_GID,
+    WORK_TYPE,
     WORKSPACE,
     AsanaProvider,
 )
 
 
 def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Stage 2"):
-    return {"gid": gid, "enabled": enabled, "display_value": display, "enum_options": [{"gid": "option-gid", "name": option, "enabled": enabled}]}
+    return {"gid": gid, "enabled": enabled, "resource_subtype": "enum",
+            "display_value": display, "enum_value": {"gid": "option-gid"},
+            "enum_options": [{"gid": "option-gid", "name": option, "enabled": enabled}]}
 def task(*, parent=None, project=None, fields=()):
     projects = (project if isinstance(project, tuple) else (project,)) if project else ()
     memberships = [{"project": {"gid": gid}} for gid in projects]
@@ -28,7 +31,7 @@ def task(*, parent=None, project=None, fields=()):
                      "parent": None if parent is None else {"gid": parent},
                      "custom_fields": list(fields)}}
 def candidate(gid, priority, *, completed=False, horizon="Stage 3"):
-    fields = [field(FIELDS["priority"], display=priority),
+    fields = [field(FIELDS["priority"], option=priority, display=priority),
               field(FIELDS["horizon"], display=horizon)]
     return {"gid": gid, "name": f"Work {gid}", "completed": completed,
             "custom_fields": fields}
@@ -280,9 +283,9 @@ async def test_exact_get_and_effective_membership(responses, canonical, count):
     assert api.requests[0].url.params["opt_fields"] == OPT_FIELDS
 async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
-    fields = [field(gid, display=name) for name, gid in FIELDS.items()]
+    fields = [field(gid, option=name, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
-    result = await subject.get("t"); assert result and result.routing.model_dump() == {name: name for name in FIELDS}
+    result = await subject.get("t"); assert result and result.routing.model_dump() == ({name: name for name in FIELDS} | {"work_type": None})
 def test_project_registry_does_not_expand_writable_routing_fields():
     assert FIELDS == {
         "priority": "1217653169990249",
@@ -303,6 +306,107 @@ async def test_routing_mapping_minimal_update_and_readback():
     assert json.loads(api.requests[1].content) == {"data": {"notes": "new", "custom_fields": {
         FIELDS["horizon"]: "option-gid"}}}
     assert result and result.routing.horizon == "Stage 3"
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation"), ("review_next_action", FIELDS["review_next_action"], "Code Review")])
+async def test_strict_enum_mapping_minimal_update_and_readback(name, gid, value):
+    before = field(gid, option=value, display="Other")
+    after = field(gid, option=value, display=value)
+    subject, api = provider((200, task(fields=[before])), (200, {}),
+                            (200, task(project=PROJECT, fields=[after])))
+    patch = {name: value} | ({"notes": "review evidence"} if name == "review_next_action" else {})
+    await subject.update("t", WorkPatch(**patch))
+    result = await subject.get("t")
+    expected = {"custom_fields": {gid: "option-gid"}} | ({"notes": "review evidence"} if name == "review_next_action" else {})
+    assert json.loads(api.requests[1].content) == {"data": expected}
+    assert result and getattr(result.routing, name) == value
+
+@pytest.mark.parametrize("mutate", [
+    lambda fields: fields.clear(),
+    lambda fields: fields[0].update(enabled=False),
+    lambda fields: fields[0].update(resource_subtype="text"),
+    lambda fields: fields[0]["enum_options"].append("malformed"),
+    lambda fields: fields[0]["enum_options"][0].update(gid=""),
+    lambda fields: fields[0]["enum_options"][0].update(gid=7),
+    lambda fields: fields[0]["enum_options"][0].update(enabled=False),
+    lambda fields: fields[0]["enum_options"][0].update(name="Other"),
+    lambda fields: fields[0]["enum_options"].append(
+        {"gid": "duplicate", "name": fields[0]["enum_options"][0]["name"], "enabled": True}),
+    lambda fields: fields.append(fields[0].copy()),
+])
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation"), ("review_next_action", FIELDS["review_next_action"], "Code Review")])
+async def test_invalid_strict_enum_catalogue_denies_before_put(mutate, name, gid, value):
+    fields = [field(gid, option=value)]
+    mutate(fields)
+    subject, api = provider((200, task(fields=fields)))
+    with pytest.raises(ProviderError, match="routing write denied"):
+        await subject.update("t", WorkPatch(**({name: value} | ({"notes": "evidence"} if name == "review_next_action" else {}))))
+    assert len(api.requests) == 1
+
+@pytest.mark.parametrize("fields", [
+    [field(FIELDS["priority"]), field(FIELDS["priority"])],
+    [{"gid": FIELDS["priority"], "enabled": True, "display_value": "P0"}],
+    [field(FIELDS["priority"], option="P0", display="P0")],
+])
+async def test_invalid_priority_readback_is_rejected(fields):
+    if len(fields) == 1 and fields[0].get("enum_options"):
+        fields[0]["enum_options"].append({"gid": "broken"})
+    subject, _ = provider((200, task(project=PROJECT, fields=fields)))
+    with pytest.raises(ProviderError, match="provider response invalid"):
+        await subject.get("t")
+
+async def test_review_next_action_accepts_unset_and_rejects_partial_truth():
+    subject, _ = provider((200, task(project=PROJECT)))
+    assert (await subject.get("t")).routing.review_next_action is None
+    unset = field(FIELDS["review_next_action"]); unset.update(display_value=None, enum_value=None)
+    subject, _ = provider((200, task(project=PROJECT, fields=[unset])))
+    result = await subject.get("t")
+    assert result and result.routing.review_next_action is None
+    for display, selected in (("Code Review", None), (None, {"gid": "option-gid"})):
+        partial = field(FIELDS["review_next_action"], option="Code Review")
+        partial.update(display_value=display, enum_value=selected)
+        subject, _ = provider((200, task(project=PROJECT, fields=[partial])))
+        with pytest.raises(ProviderError, match="provider response invalid"):
+            await subject.get("t")
+    malformed = field(FIELDS["review_next_action"]); malformed["enum_options"].append({"gid": "broken"})
+    malformed_selected = field(FIELDS["review_next_action"])
+    malformed_selected.update(display_value=None, enum_value={"gid": 7})
+    duplicate_selected = field(FIELDS["review_next_action"], option="Code Review",
+                               display="Code Review")
+    duplicate_selected["enum_options"].append(
+        {"gid": "option-gid", "name": "Other", "enabled": True})
+    invalid = [
+        [malformed],
+        [malformed_selected],
+        [duplicate_selected],
+        [field(FIELDS["review_next_action"]), field(FIELDS["review_next_action"])],
+        [field(FIELDS["review_next_action"], enabled=False)],
+        [field(FIELDS["review_next_action"], option="Code Review", display="Other")],
+        [field(FIELDS["review_next_action"], option="Code Review", display="Code Review")],
+    ]
+    invalid[-1][0]["enum_value"] = {"gid": "wrong"}
+    for fields in invalid:
+        subject, _ = provider((200, task(project=PROJECT, fields=fields)))
+        with pytest.raises(ProviderError, match="provider response invalid"):
+            await subject.get("t")
+
+async def test_only_priority_rejects_malformed_option_sibling():
+    malformed = {"gid": "broken"}
+    horizon = field(FIELDS["horizon"], display="Stage 2")
+    horizon["enum_options"].append(malformed)
+    subject, api = provider((200, task(fields=[horizon])), (200, {}))
+    await subject.update("t", WorkPatch(notes="reason", horizon="Stage 3"))
+    assert json.loads(api.requests[1].content) == {"data": {"notes": "reason",
+        "custom_fields": {FIELDS["horizon"]: "option-gid"}}}
+
+    priority = field(FIELDS["priority"], option="P0")
+    priority["enum_options"].append(malformed)
+    subject, api = provider((200, task(fields=[priority])))
+    with pytest.raises(ProviderError, match="routing write denied"):
+        await subject.update("t", WorkPatch(notes="reason", priority="P0"))
+    assert len(api.requests) == 1
+async def test_malformed_work_type_does_not_poison_other_reads_or_writes():
+    broken = field(WORK_TYPE, option="Implementation", display="Implementation"); broken["enum_options"].append({"gid": "broken"}); fields = [field(FIELDS["priority"], option="P0", display="P0"), field(FIELDS["horizon"], display="Stage 3"), broken]; subject, api = provider((200, task(project=PROJECT, fields=fields)), (200, {}))
+    result = await subject.get("t"); await subject.update("t", WorkPatch(completed=True)); assert result and (result.routing.priority, result.routing.horizon, result.routing.work_type) == ("P0", "Stage 3", None) and not result.completed
+    assert json.loads(api.requests[1].content) == {"data": {"completed": True}}
 async def test_update_is_narrow():
     subject, api = provider((200, {})); await subject.update("t", WorkPatch(completed=True))
     assert api.requests[0].method == "PUT" and json.loads(api.requests[0].content) == {

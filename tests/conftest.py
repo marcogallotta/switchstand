@@ -9,6 +9,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         return
     database_tests = {
         "test_chatgpt_state.py",
+        "test_update_gateway.py",
         "test_chatgpt_edge_process.py",
         "test_lifecycle.py",
         "test_lifecycle_projection.py",

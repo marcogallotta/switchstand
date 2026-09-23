@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import Column, Integer, Table, Text, select, update
+from sqlalchemy import Column, Integer, Table, Text, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -68,6 +68,35 @@ class GrantState:
         if len(matches) > 1:
             raise ValueError("multiple current grants own the same active work")
         return matches[0] if matches else None
+
+    @asynccontextmanager
+    async def locked_message_route(
+        self, principal_key: str, sender_work_id: UUID, recipient_work_id: UUID | None,
+    ) -> AsyncGenerator[tuple[WorkGrant | None, WorkGrant | None]]:
+        """Serialize grant writers while selecting the unique message route."""
+        async with self.engine.begin() as connection:
+            await connection.execute(text(
+                "LOCK TABLE work_grants IN SHARE ROW EXCLUSIVE MODE"
+            ))
+            values = (await connection.execute(select(work_grants.c.document).where(
+                work_grants.c.document.is_not(None)
+            ))).scalars().all()
+            await connection.execute(select(work_handles.c.id).where(
+                work_handles.c.id == sender_work_id
+            ).with_for_update())
+            sender = None
+            matches: list[WorkGrant] = []
+            for value in values:
+                if value is None:
+                    continue
+                grant = WorkGrant.model_validate(value)
+                if grant.principal.key == principal_key:
+                    sender = grant
+                if (grant.current() and grant.scope == "launch"
+                        and "message" in grant.operations
+                        and grant.authority.active_work_id == recipient_work_id):
+                    matches.append(grant)
+            yield sender, matches[0] if len(matches) == 1 else None
 
     async def issue(self, grant: WorkGrant, expected_version: int | None) -> None:
         """Trusted control path only; compare-and-replace also handles revoke/terminal."""
@@ -170,7 +199,7 @@ class GrantState:
         async with self.engine.begin() as connection:
             result = await connection.execute(update(effect_intents).where(
                 effect_intents.c.operation_id == str(outcome.operation_id)
-            ).values(outcome=outcome.model_dump(mode="json")).returning(
+            ).values(outcome=outcome.model_dump(mode="json", exclude_none=True)).returning(
                 effect_intents.c.operation_id
             ))
             if result.scalar_one_or_none() is None:

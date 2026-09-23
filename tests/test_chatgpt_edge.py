@@ -141,9 +141,10 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             assurance="authenticated",
         ),
         scope="workspace",
-        operations=frozenset({"work_get", "work_search", "work_append", "work_create"}),
+        operations=frozenset({"work_get", "work_search", "work_append", "work_create", "work_update"}),
         append_qualification="real:chatgpt-edge",
         create_qualification="test:chatgpt-edge",
+        update_qualification="real:chatgpt-edge",
     )
     app = create_app(subject, CONFIG, client_storage=MemoryStore())
 
@@ -213,10 +214,14 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "title": "Qualified child",
             "notes": "edge route proof",
         })
+        updated = await client.call_tool("work_update", {
+            "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
+            "grant_version": 1, "observed_revision": "r2", "patch": {"completed": True},
+        })
     assert names == {
         "grant_get", "work_get", "work_search", "source_task", "source_stories",
         "source_story", "work_history", "work_attachments", "work_event", "work_append",
-        "work_create",
+        "work_create", "work_update", "message_send", "message_pending",
     }
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
     assert search.structured_content["status"] == "ok"
@@ -227,4 +232,5 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
     assert replay.structured_content == append.structured_content
     assert create.structured_content["status"] == "denied"
     assert create.structured_content["reason"] == "provider_create_not_supported"
+    assert updated.structured_content["status"] == "ok"
     assert subject.providers["asana"].sends == 1

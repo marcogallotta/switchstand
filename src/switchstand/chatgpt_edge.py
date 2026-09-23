@@ -20,6 +20,7 @@ from pydantic import AnyHttpUrl, Field
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .chatgpt import ChatGPTService
+from .chatgpt_mcp import build_message_tools
 from .contracts import (
     SourceStoriesRequest,
     SourceStoriesResult,
@@ -37,8 +38,16 @@ from .contracts import (
     WorkSearchResult,
 )
 from .grant_state import GrantState
-from .grants import GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
+from .grants import (
+    GrantResult,
+    GuardOutcome,
+    ProtectedAppend,
+    ProtectedCreate,
+    ProtectedUpdate,
+    ScalarPatch,
+)
 from .mcp import PublicWorkResult, project_work
+from .messages import MessageState
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
@@ -171,6 +180,7 @@ def create_app(
         service.state,
         service.grants,
         service.providers,
+        service.messages,
     )
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
@@ -299,8 +309,21 @@ def create_app(
         _audit("work_create", str(parent_work_id), result.status)
         return result
 
+    async def work_update(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        grant_version: int, observed_revision: str, patch: ScalarPatch,
+    ) -> GuardOutcome:
+        result = await service.update(ProtectedUpdate(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+        ))
+        _audit("work_update", str(work_id), result.status)
+        return result
+
     for tool in (grant_get, work_get, work_search, work_history, work_attachments, work_event, source_task, source_stories, source_story,
-                 work_append, work_create):
+                 work_append, work_create, work_update):
+        server.tool(tool)
+    for _, tool in build_message_tools(service, _audit):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 
@@ -322,9 +345,10 @@ async def serve() -> None:
             provider = TestCreateAsanaProvider(client, test_project, correlation_field)
         else:
             provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
-        service = ChatGPTService(unresolved_principal, PostgresState(engine), GrantState(engine), {
+        grants = GrantState(engine)
+        service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
-        })
+        }, MessageState(engine, grants))
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",

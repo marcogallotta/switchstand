@@ -23,18 +23,23 @@ from disposable_postgres import (
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
+from mcp import Client as MCPClient
+from mcp import StdioServerParameters
 from mcp.server.auth.provider import AccessToken
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderSourceStory, UnknownEffect
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
+from switchstand.managed_identity import rotate_managed_grant
+from switchstand.run import RunReceipt, process_start_token
 from switchstand.state import PostgresState
 
 TOOLS = {
     "grant_get", "work_get", "work_search", "source_task", "source_stories",
-    "source_story", "work_history", "work_attachments", "work_event", "work_append", "work_create",
+    "source_story", "work_history", "work_attachments", "work_event", "work_append", "work_create", "work_update", "message_send", "message_pending",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -47,10 +52,16 @@ class CountingProvider(Provider):
     def __init__(self):
         super().__init__()
         self.path = Path(os.environ["EFFECT_FILE"])
+        self.state_path = Path(os.environ["PROVIDER_STATE_FILE"])
         if self.path.exists():
             self.stories = [ProviderSourceStory(**row) for row in json.loads(self.path.read_text())]
         self.sends = len(self.stories)
-        self.revision = f"r{self.sends + 1}"
+        if self.state_path.exists():
+            state = json.loads(self.state_path.read_text())
+            self.title, self.notes = state["title"], state["notes"]
+            self.completed, self.revision = state["completed"], state["revision"]
+        else:
+            self.revision = f"r{self.sends + 1}"
 
     def _count(self, operation):
         path = Path(os.environ["PROVIDER_CALL_FILE"])
@@ -60,6 +71,10 @@ class CountingProvider(Provider):
 
     async def get(self, task_gid):
         self._count("get")
+        if self.state_path.exists():
+            state = json.loads(self.state_path.read_text())
+            self.title, self.notes = state["title"], state["notes"]
+            self.completed, self.revision = state["completed"], state["revision"]
         return await super().get(task_gid)
 
     async def list_attachments(self, task_gid, cursor, limit):
@@ -88,6 +103,14 @@ class CountingProvider(Provider):
             raise UnknownEffect("synthetic response lost after durable provider effect")
         return story
 
+    async def update(self, task_gid, patch):
+        self._count("update")
+        await super().update(task_gid, patch)
+        self.state_path.write_text(json.dumps({
+            "title": self.title, "notes": self.notes,
+            "completed": self.completed, "revision": self.revision,
+        }))
+
 
 def _child_server() -> None:
     import switchstand.chatgpt_edge as edge
@@ -103,6 +126,13 @@ def _child_server() -> None:
     edge.AsanaProvider = lambda _client, _project=None, **_kwargs: CountingProvider()
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     edge.main()
+
+
+def _managed_server() -> None:
+    import switchstand.mcp as managed
+
+    managed.AsanaProvider = lambda _client, _project=None: CountingProvider()
+    managed.main()
 
 
 async def _provision(url, subject):
@@ -143,6 +173,21 @@ async def _replace_with_launch(url, selected):
     await GrantState(engine).issue(launched, 1)
     await engine.dispose()
     return launched
+
+
+async def _provision_composed(url, subject):
+    selected, denied = await _provision(url, subject)
+    engine = create_async_engine(url)
+    grants = GrantState(engine)
+    selected = selected.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "launch",
+        "operations": frozenset({"work_get", "message"}),
+    })
+    await grants.issue(selected, 1)
+    recipient = selected.authority.reference_work_ids[0]
+    managed = await rotate_managed_grant(grants, LaunchAuthority(active_work_id=recipient))
+    await engine.dispose()
+    return selected, managed, denied
 
 
 @contextmanager
@@ -235,6 +280,7 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     provider_calls = run / "provider-calls.json"
     env = clean_environment() | {
         "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
+        "PROVIDER_STATE_FILE": str(run / "provider-state.json"),
         "PROVIDER_CALL_FILE": str(provider_calls),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
@@ -257,6 +303,156 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _boundaries(endpoint, selected, denied, effects)
     with _server(env, port) as endpoint:
         await _contained_after_restart(endpoint, selected, effects)
+
+
+async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_after_restart(
+    tmp_path: Path,
+):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
+    assert make_url(url).database == "switchstand_test"
+    subject = str(uuid4().int)
+    selected, managed_grant, denied = await _provision_composed(url, subject)
+    sender = selected.authority.active_work_id
+    recipient = managed_grant.authority.active_work_id
+    request_id, result_id, update_id = uuid4(), uuid4(), uuid4()
+    port = free_port()
+    run = tmp_path / str(uuid4())
+    run.mkdir(mode=0o700)
+    git_dir = run / "managed-git"
+    git_dir.mkdir(mode=0o700)
+    run_id = uuid4()
+    receipt = RunReceipt(
+        run_id=run_id, active_work_id=recipient, worktree=str(Path.cwd().resolve()),
+        branch="fixture", pid=os.getpid(), start_token=process_start_token(os.getpid()),
+        started_at=datetime.now(UTC),
+    )
+    (git_dir / "switchstand-run.json").write_text(receipt.model_dump_json() + "\n")
+    provider_calls = run / "provider-calls.json"
+    env = clean_environment() | {
+        "DATABASE_URL": url, "ASANA_TOKEN": "test-only",
+        "EFFECT_FILE": str(run / "effects"),
+        "PROVIDER_STATE_FILE": str(run / "provider-state.json"),
+        "PROVIDER_CALL_FILE": str(provider_calls),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    managed_env = env | {
+        "SWITCHSTAND_MANAGED": "1", "ACTIVE_WORK_ID": str(recipient),
+        "REFERENCE_WORK_IDS": "", "SWITCHSTAND_RUN_ID": str(run_id),
+        "SWITCHSTAND_WORKTREE": str(Path.cwd().resolve()),
+        "SWITCHSTAND_BRANCH": "fixture", "SWITCHSTAND_GIT_DIR": str(git_dir),
+    }
+    server = StdioServerParameters(
+        command=sys.executable, args=[__file__, "--serve-managed"], env=managed_env,
+    )
+
+    async def edge_call(endpoint, tool, arguments):
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="fixed-bearer"
+        )) as client:
+            return (await client.call_tool(tool, arguments)).structured_content
+
+    send = {
+        "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+        "message_id": str(request_id), "route_ref": "implementation",
+        "recipient_work_id": str(recipient), "payload": {"request": "complete"},
+    }
+    with _server(env, port) as endpoint:
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="fixed-bearer"
+        )) as edge:
+            schemas = {tool.name: tool.input_schema for tool in await edge.list_tools()}
+            assert schemas["message_send"].get("additionalProperties") is False
+            sent = (await edge.call_tool("message_send", send)).structured_content
+            denied_send = (await edge.call_tool("message_send", send | {
+                "message_id": str(uuid4()), "recipient_work_id": str(denied),
+            })).structured_content
+            assert denied_send == {"status": "denied", "message": None,
+                                   "reason": "recipient_route_unavailable"}
+        first = await _managed_workflow(server, sent, result_id, update_id)
+        reply = await edge_call(endpoint, "message_pending", {
+            "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+        })
+        updated = await edge_call(endpoint, "work_get", {
+            "api_version": "1", "work_id": str(recipient),
+        })
+        assert reply["messages"][0]["payload"] == {"result": "complete"}
+        assert updated["item"]["completed"] is True
+
+    with _server(env, port) as endpoint:
+        replayed_send = await edge_call(endpoint, "message_send", send)
+        assert replayed_send["status"] == "ok"
+        assert replayed_send["message"]["state"] == "DISPOSITIONED"
+        for field in ("delivery_id", "message_id", "sender_work_id",
+                      "recipient_work_id", "route_ref", "kind", "payload"):
+            assert replayed_send["message"][field] == sent["message"][field]
+        assert await _managed_replay(server, sent, result_id, update_id) == first
+        replayed_reply = await edge_call(endpoint, "message_pending", {
+            "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+        })
+        replayed_work = await edge_call(endpoint, "work_get", {
+            "api_version": "1", "work_id": str(recipient),
+        })
+        assert replayed_reply == reply and replayed_work == updated
+    assert json.loads(provider_calls.read_text())["update"] == 1
+
+
+async def _managed_workflow(server, sent, result_id, update_id):
+    delivery = sent["message"]["delivery_id"]
+    async with MCPClient(server) as managed:
+        tools = {tool.name: tool.input_schema for tool in (await managed.list_tools()).tools}
+        assert tools["work_update"].get("additionalProperties") is False
+        pending = (await managed.call_tool("message_pending", {
+            "api_version": "1",
+        })).structured_content
+        assert pending["messages"][0]["delivery_id"] == delivery
+        received = (await managed.call_tool("message_receive", {
+            "api_version": "1", "delivery_id": delivery,
+        })).structured_content
+        update = (await managed.call_tool("work_update", {
+            "api_version": "1", "operation_id": str(update_id),
+            "observed_revision": "r1", "patch": {"completed": True},
+        })).structured_content
+        result = (await managed.call_tool("message_result_send", {
+            "api_version": "1", "in_reply_to_delivery_id": delivery,
+            "message_id": str(result_id), "payload": {"result": "complete"},
+        })).structured_content
+        disposed = (await managed.call_tool("message_disposition", {
+            "api_version": "1", "delivery_id": delivery,
+            "result_message_id": str(result_id),
+        })).structured_content
+        assert received["state"] in {"RECEIVED", "DISPOSITIONED"}
+        assert update["effect"] == "applied" and result["status"] == "ok"
+        assert disposed["state"] == "DISPOSITIONED"
+        return update, result, disposed
+
+
+async def _managed_replay(server, sent, result_id, update_id):
+    delivery = sent["message"]["delivery_id"]
+    async with MCPClient(server) as managed:
+        pending = (await managed.call_tool("message_pending", {
+            "api_version": "1",
+        })).structured_content
+        assert pending["messages"] == []
+        update = (await managed.call_tool("work_update", {
+            "api_version": "1", "operation_id": str(update_id),
+            "observed_revision": "r1", "patch": {"completed": True},
+        })).structured_content
+        result = (await managed.call_tool("message_result_send", {
+            "api_version": "1", "in_reply_to_delivery_id": delivery,
+            "message_id": str(result_id), "payload": {"result": "complete"},
+        })).structured_content
+        disposed = (await managed.call_tool("message_disposition", {
+            "api_version": "1", "delivery_id": delivery,
+            "result_message_id": str(result_id),
+        })).structured_content
+        return update, result, disposed
 
 
 async def _attachments(endpoint, selected, denied_work, provider_calls):
@@ -336,3 +532,5 @@ async def _contained_after_restart(endpoint, selected, effects):
 
 if __name__ == "__main__" and sys.argv[1:] == ["--serve"]:
     _child_server()
+elif __name__ == "__main__" and sys.argv[1:] == ["--serve-managed"]:
+    _managed_server()

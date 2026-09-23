@@ -201,6 +201,10 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
             tool.name for tool in tools
+        } | {
+            "work_update",
+            "message_pending", "message_receive", "message_recover",
+            "message_result_send", "message_disposition",
         }
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)

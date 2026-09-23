@@ -115,6 +115,25 @@ class MessageSubmitRequest(ClosedModel):
         return self
 
 
+class MessageSendRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    message_id: UUID
+    route_ref: str | None = Field(default=None, min_length=1, pattern=r"^[a-z][a-z0-9_.-]*$")
+    payload: JsonValue
+    recipient_work_id: UUID | None = None
+    in_reply_to_delivery_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exact_route(self) -> Self:
+        if (self.recipient_work_id is None) == (self.in_reply_to_delivery_id is None):
+            raise ValueError("exactly one request recipient or result correlation is required")
+        if (self.recipient_work_id is None) == (self.route_ref is not None):
+            raise ValueError("only requests carry a route reference")
+        return self
+
+
 class PendingMessage(ClosedModel):
     delivery_id: UUID
     message_id: UUID
@@ -123,7 +142,7 @@ class PendingMessage(ClosedModel):
     route_ref: str
     kind: Literal["request", "result"]
     payload: JsonValue
-    state: Literal["AVAILABLE", "RECEIVED"]
+    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
     recipient_grant_version: int
     receiving_generation: str | None = None
 
@@ -139,7 +158,8 @@ class MessageSubmitResult(ClosedModel):
     reason: Literal[
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
-        "recipient_route_unavailable", "state_unavailable",
+        "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
+        "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -163,7 +183,10 @@ class MessagePendingResult(ClosedModel):
     messages: tuple[PendingMessage, ...] = ()
     next_cursor: UUID | None = None
     has_more: bool = False
-    reason: Literal["no_current_grant", "grant_version_changed", "state_unavailable"] | None = None
+    reason: Literal[
+        "no_current_grant", "grant_version_changed", "actor_not_admitted",
+        "message_not_granted", "state_unavailable",
+    ] | None = None
 
     @model_validator(mode="after")
     def exact_page(self) -> Self:
@@ -289,21 +312,43 @@ class MessageState:
         self.engine, self.grants = engine, grants
 
     async def reply_context(self, delivery_id: UUID) -> MessageReplyContext | None:
-        try:
-            async with self.engine.connect() as connection:
-                row = (await connection.execute(select(
-                    message_deliveries.c.sender_work_id, messages.c.route_ref,
-                ).join(messages, and_(
-                    messages.c.sender_work_id == message_deliveries.c.sender_work_id,
-                    messages.c.message_id == message_deliveries.c.message_id,
-                )).where(
-                    message_deliveries.c.delivery_id == delivery_id
-                ))).one_or_none()
-            if row is None:
-                return None
-            return MessageReplyContext(recipient_work_id=row[0], route_ref=row[1])
-        except SQLAlchemyError:
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(
+                message_deliveries.c.sender_work_id, messages.c.route_ref,
+            ).join(messages, and_(
+                messages.c.sender_work_id == message_deliveries.c.sender_work_id,
+                messages.c.message_id == message_deliveries.c.message_id,
+            )).where(message_deliveries.c.delivery_id == delivery_id))).one_or_none()
+        if row is None:
             return None
+        return MessageReplyContext(recipient_work_id=row[0], route_ref=row[1])
+
+    async def committed_public_replay(
+        self, sender_work_id: UUID, request: MessageSendRequest,
+    ) -> MessageSubmitResult | None:
+        query = self._pending_query().add_columns(messages.c.in_reply_to_delivery_id).where(
+            messages.c.sender_work_id == sender_work_id,
+            messages.c.message_id == request.message_id,
+        )
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(query)).mappings().one_or_none()
+        if row is None:
+            return None
+        is_request = request.in_reply_to_delivery_id is None
+        matches = (
+            row["kind"] == ("request" if is_request else "result")
+            and row["payload"] == request.payload
+            and row["in_reply_to_delivery_id"] == request.in_reply_to_delivery_id
+            and (not is_request or (
+                row["recipient_work_id"] == request.recipient_work_id
+                and row["route_ref"] == request.route_ref
+            ))
+        )
+        if not matches:
+            return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
+        view = dict(row)
+        view.pop("in_reply_to_delivery_id")
+        return MessageSubmitResult(status="ok", message=_view(view))
 
     @staticmethod
     def _admission(
@@ -315,6 +360,8 @@ class MessageState:
             return "denied", "no_current_grant"
         if grant.version != grant_version:
             return "stale", "grant_version_changed"
+        if "message" not in grant.operations:
+            return "denied", "no_current_grant"
         return None
 
     @staticmethod
@@ -344,6 +391,7 @@ class MessageState:
 
     async def _store(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
+        received_binding: tuple[int, str] | None = None,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
@@ -361,6 +409,14 @@ class MessageState:
                 if replied["recipient_work_id"] != sender_work_id:
                     return MessageSubmitResult(
                         status="denied", reason="reply_sender_not_recipient"
+                    )
+                if received_binding is not None and (
+                    replied["state"] != "RECEIVED"
+                    or replied["recipient_grant_version"] != received_binding[0]
+                    or replied["receiving_generation"] != received_binding[1]
+                ):
+                    return MessageSubmitResult(
+                        status="conflict", reason="reply_delivery_not_found"
                     )
                 prior_reply = (await connection.execute(select(
                     messages.c.sender_work_id, messages.c.message_id
@@ -397,6 +453,45 @@ class MessageState:
             ))).mappings().one()
         return MessageSubmitResult(status="ok", message=_view(dict(row)))
 
+    async def submit_admitted(
+        self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
+    ) -> MessageSubmitResult:
+        try:
+            return await self._store(sender_work_id, route, request)
+        except (SQLAlchemyError, ValueError):
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+
+    async def submit_received_result(
+        self, sender_work_id: UUID, grant_version: int, generation: str,
+        route: MessageRoute, request: MessageSubmitRequest,
+    ) -> MessageSubmitResult:
+        try:
+            return await self._store(
+                sender_work_id, route, request, (grant_version, generation)
+            )
+        except (SQLAlchemyError, ValueError):
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+
+    async def _pending(
+        self, work_id: UUID, request: MessagePendingRequest,
+    ) -> MessagePendingResult:
+        query = self._pending_query().where(
+            message_deliveries.c.recipient_work_id == work_id,
+            message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+        )
+        if request.cursor is not None:
+            query = query.where(message_deliveries.c.delivery_id > request.cursor)
+        query = query.order_by(message_deliveries.c.delivery_id).limit(request.limit + 1)
+        async with self.engine.connect() as connection:
+            rows = list((await connection.execute(query)).mappings())
+        has_more = len(rows) > request.limit
+        selected = rows[:request.limit]
+        return MessagePendingResult(
+            messages=tuple(_view(dict(row)) for row in selected),
+            next_cursor=selected[-1]["delivery_id"] if has_more else None,
+            has_more=has_more,
+        )
+
     async def pending(
         self, principal: PrincipalContext, request: MessagePendingRequest,
     ) -> MessagePendingResult:
@@ -406,22 +501,15 @@ class MessageState:
                 if failure is not None:
                     return MessagePendingResult(status=failure[0], reason=failure[1])
                 assert grant is not None
-                query = self._pending_query().where(
-                    message_deliveries.c.recipient_work_id == grant.authority.active_work_id,
-                    message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
-                )
-                if request.cursor is not None:
-                    query = query.where(message_deliveries.c.delivery_id > request.cursor)
-                query = query.order_by(message_deliveries.c.delivery_id).limit(request.limit + 1)
-                async with self.engine.connect() as connection:
-                    rows = list((await connection.execute(query)).mappings())
-                has_more = len(rows) > request.limit
-                selected = rows[:request.limit]
-                return MessagePendingResult(
-                    messages=tuple(_view(dict(row)) for row in selected),
-                    next_cursor=selected[-1]["delivery_id"] if has_more else None,
-                    has_more=has_more,
-                )
+                return await self._pending(grant.authority.active_work_id, request)
+        except (SQLAlchemyError, ValueError):
+            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
+
+    async def pending_admitted(
+        self, work_id: UUID, request: MessagePendingRequest,
+    ) -> MessagePendingResult:
+        try:
+            return await self._pending(work_id, request)
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 

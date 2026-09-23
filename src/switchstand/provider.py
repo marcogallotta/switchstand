@@ -164,6 +164,42 @@ class AsanaProvider:
         values = {name: next((f.get("display_value") for f in fields
                   if f.get("gid") == gid), None) for name, gid in FIELDS.items()}
         try:
+            for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE),
+                              ("review_next_action", FIELDS["review_next_action"])):
+                strict = [field for field in fields if field.get("gid") == gid]
+                required_truth = name in {"priority", "review_next_action"}
+                if len(strict) > 1 and required_truth: raise TypeError
+                if len(strict) != 1:
+                    values[name] = None
+                    continue
+                enum = strict[0]
+                options = enum.get("enum_options")
+                selected, display = enum.get("enum_value"), enum.get("display_value")
+                current = self._gid(selected)
+                if (enum.get("enabled") is not True or enum.get("resource_subtype") != "enum"
+                        or not isinstance(options, list)
+                        or any(not isinstance(option, dict)
+                               or not isinstance(cast(JSON, option).get("gid"), str)
+                               or not cast(JSON, option)["gid"]
+                               or not isinstance(cast(JSON, option).get("name"), str)
+                               or not isinstance(cast(JSON, option).get("enabled"), bool)
+                               for option in cast(list[object], options))):
+                    if required_truth: raise TypeError
+                    values[name] = None
+                    continue
+                if selected is None and display is None:
+                    values[name] = None
+                    continue
+                identities = [cast(JSON, option) for option in cast(list[object], options)
+                           if self._gid(option) == current
+                           and cast(JSON, option).get("enabled") is True]
+                matches = [option for option in identities if option.get("name") == display]
+                if (not isinstance(selected, dict) or not current
+                        or not isinstance(display, str)
+                        or len(identities) != 1 or len(matches) != 1):
+                    if required_truth: raise TypeError
+                    values[name] = None
+                else: values[name] = display
             title, notes, completed, revision = (task[key] for key in ("name", "notes", "completed", "modified_at"))
             if not all(isinstance(value, str) for value in (title, notes, revision)) or not isinstance(completed, bool): raise TypeError
             routing = Routing(**{key: value if isinstance(value, str) else None
@@ -492,21 +528,40 @@ class AsanaProvider:
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
-        data = {name: getattr(patch, name) for name in {"notes", "completed"} & changed}
-        routing = {name for name in FIELDS if name != "priority"} & changed
+        data = {("name" if name == "title" else name): getattr(patch, name)
+                for name in {"title", "notes", "completed"} & changed}
+        routing = (set(FIELDS) | {"work_type"}) & changed
         if routing:
             task = await self._task(provider_work_id)
-            fields = [] if task is None else self._custom_fields(task)
+            raw_fields = None if task is None else task.get("custom_fields")
+            if task is None or not isinstance(raw_fields, list):
+                raise ProviderError("routing write denied")
+            fields = self._custom_fields(task)
+            if (routing & {"priority", "work_type", "review_next_action"}
+                    and len(fields) != len(cast(list[object], raw_fields))):
+                raise ProviderError("routing write denied")
             custom: dict[str, str] = {}
             for name in routing:
-                matches = [field for field in fields if field.get("gid") == FIELDS[name]]
-                enabled = len(matches) == 1 and matches[0].get("enabled") is True
-                options: object = matches[0].get("enum_options", []) if enabled else []
-                choices = [o for o in self._custom_fields({"custom_fields": options})
-                           if o.get("name") == getattr(patch, name) and o.get("enabled") is True]
-                if len(choices) != 1 or not isinstance(choices[0].get("gid"), str):
+                gid = WORK_TYPE if name == "work_type" else FIELDS[name]
+                matches = [field for field in fields if field.get("gid") == gid]
+                enabled = (len(matches) == 1 and matches[0].get("enabled") is True
+                           and (name not in {"priority", "work_type", "review_next_action"}
+                                or matches[0].get("resource_subtype") == "enum"))
+                raw_options: object = matches[0].get("enum_options", []) if enabled else []
+                options = self._custom_fields({"custom_fields": raw_options})
+                valid = (name not in {"priority", "work_type", "review_next_action"} or isinstance(raw_options, list)
+                         and len(options) == len(cast(list[object], raw_options))
+                         and all(isinstance(option.get("name"), str)
+                                 and isinstance(option.get("enabled"), bool)
+                                 and isinstance(option.get("gid"), str) and option["gid"]
+                                 for option in options))
+                choices = ([option for option in options
+                            if option.get("name") == getattr(patch, name)
+                            and option.get("enabled") is True] if valid else [])
+                if (len(choices) != 1 or not isinstance(choices[0].get("gid"), str)
+                        or name in {"priority", "work_type", "review_next_action"} and not choices[0]["gid"]):
                     raise ProviderError("routing write denied")
-                custom[FIELDS[name]] = choices[0]["gid"]
+                custom[gid] = choices[0]["gid"]
             data["custom_fields"] = custom
         await self._write(
             "PUT", f"/tasks/{provider_work_id}", data,
