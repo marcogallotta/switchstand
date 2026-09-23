@@ -108,11 +108,14 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
             "grant_get", "work_get", "work_search", "source_task", "source_stories",
-            "source_story", "work_history", "work_event", "work_append", "work_create",
+            "source_story", "work_history", "work_attachments", "work_event", "work_append",
+            "work_create",
         }
         for tool in tools:
-            if tool.name in {"work_get", "work_history", "work_event"}:
+            if tool.name in {"work_get", "work_history", "work_attachments", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
+            if tool.name == "work_attachments":
+                assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
             assert tool.input_schema.get("additionalProperties") is False
             assert not {"principal", "role", "grant_id", "issuer", "allowed_operations"}.intersection(
                 tool.input_schema.get("properties", {}))

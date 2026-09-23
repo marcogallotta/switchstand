@@ -27,6 +27,8 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkHistoryRequest,
@@ -219,6 +221,20 @@ def create_app(
         _audit("work_history", str(work_id), result.status)
         return result
 
+    async def work_attachments(
+        api_version: Literal["1"], work_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1)],
+        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
+        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
+    ) -> WorkAttachmentsResult:
+        """List attachment names only; on stale, repeat work_get and restart pagination."""
+        result = await service.attachments(WorkAttachmentsRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+            cursor=cursor, limit=limit,
+        ))
+        _audit("work_attachments", str(work_id), result.status)
+        return result
+
     async def work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
         work_id: UUID,
@@ -283,7 +299,7 @@ def create_app(
         _audit("work_create", str(parent_work_id), result.status)
         return result
 
-    for tool in (grant_get, work_get, work_search, work_history, work_event, source_task, source_stories, source_story,
+    for tool in (grant_get, work_get, work_search, work_history, work_attachments, work_event, source_task, source_stories, source_story,
                  work_append, work_create):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)

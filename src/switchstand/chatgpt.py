@@ -14,6 +14,8 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
@@ -150,6 +152,29 @@ class ChatGPTService:
                 return await Controller(authority, self.state, self.providers).history(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkHistoryResult(status="unknown")
+
+    async def attachments(self, request: WorkAttachmentsRequest) -> WorkAttachmentsResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkAttachmentsResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkAttachmentsResult(status="denied")
+                if "work_get" not in grant.operations:
+                    return WorkAttachmentsResult(status="denied")
+                authority = grant.authority
+                if grant.scope == "workspace":
+                    if await self.state.get(request.work_id) is None:
+                        return WorkAttachmentsResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                elif not grant.can_read(request.work_id, explicit_target=True):
+                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
+                        return WorkAttachmentsResult(status="denied")
+                    authority = LaunchAuthority(active_work_id=request.work_id)
+                return await Controller(authority, self.state, self.providers).attachments(request)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return WorkAttachmentsResult(status="unknown")
 
     async def event(self, request: WorkEventRequest) -> WorkEventResult:
         principal = await self.principal()
