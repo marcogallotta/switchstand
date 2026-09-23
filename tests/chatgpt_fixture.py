@@ -8,8 +8,10 @@ from uuid import UUID, uuid4
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import LaunchAuthority, RelatedCandidate, RelatedLookup, Routing
 from switchstand.core import (
+    AttachmentPage,
     EventBinding,
     Handle,
+    ProviderAttachment,
     ProviderSourceStory,
     ProviderSourceTask,
     ProviderStoriesPage,
@@ -85,6 +87,9 @@ class Provider:
             ),),
             next_cursor=None,
         )
+
+    async def list_attachments(self, task_gid, cursor, limit):
+        return AttachmentPage((ProviderAttachment("brief.txt"),), None)
 
     async def find_related(self, task_gid):
         self.related_calls.append(task_gid)

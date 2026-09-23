@@ -34,7 +34,7 @@ from switchstand.state import PostgresState
 
 TOOLS = {
     "grant_get", "work_get", "work_search", "source_task", "source_stories",
-    "source_story", "work_history", "work_event", "work_append", "work_create",
+    "source_story", "work_history", "work_attachments", "work_event", "work_append", "work_create",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
@@ -51,6 +51,20 @@ class CountingProvider(Provider):
             self.stories = [ProviderSourceStory(**row) for row in json.loads(self.path.read_text())]
         self.sends = len(self.stories)
         self.revision = f"r{self.sends + 1}"
+
+    def _count(self, operation):
+        path = Path(os.environ["PROVIDER_CALL_FILE"])
+        counts = json.loads(path.read_text()) if path.exists() else {}
+        counts[operation] = counts.get(operation, 0) + 1
+        path.write_text(json.dumps(counts))
+
+    async def get(self, task_gid):
+        self._count("get")
+        return await super().get(task_gid)
+
+    async def list_attachments(self, task_gid, cursor, limit):
+        self._count("list_attachments")
+        return await super().list_attachments(task_gid, cursor, limit)
 
     async def source_stories(self, task_gid, revision, offset, limit):
         if not self.stories:
@@ -171,9 +185,18 @@ async def _discover(endpoint, selected):
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
         for tool in await client.list_tools():
-            if tool.name in {"work_search", "work_get", "work_history", "work_event"}:
+            if tool.name in {"work_search", "work_get", "work_history", "work_attachments", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
                 assert tool.inputSchema.get("additionalProperties") is False
+                if tool.name == "work_attachments":
+                    schema = tool.inputSchema
+                    assert set(schema["required"]) == {"api_version", "work_id", "observed_revision"}
+                    cursor_types = schema["properties"]["cursor"]["anyOf"]
+                    assert next(item for item in cursor_types if item.get("type") == "string")[
+                        "maxLength"
+                    ] == 1024
+                    limit = schema["properties"]["limit"]
+                    assert (limit["default"], limit["minimum"], limit["maximum"]) == (50, 1, 100)
         await read_chain(client, search["items"][0]["id"])
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
         assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
@@ -208,8 +231,10 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     run = run / str(uuid4())
     run.mkdir(mode=0o700)
     effects = run / "effects"
+    provider_calls = run / "provider-calls.json"
     env = clean_environment() | {
         "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
+        "PROVIDER_CALL_FILE": str(provider_calls),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
@@ -218,6 +243,7 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _discover(endpoint, selected)
     selected = await _replace_with_launch(url, selected)
     with _server(env, port) as endpoint:
+        await _attachments(endpoint, selected, denied, provider_calls)
         first = await _exercise(endpoint, selected, operation_id)
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
@@ -230,6 +256,35 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _boundaries(endpoint, selected, denied, effects)
     with _server(env, port) as endpoint:
         await _contained_after_restart(endpoint, selected, effects)
+
+
+async def _attachments(endpoint, selected, denied_work, provider_calls):
+    async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
+        async def call(work_id, revision):
+            result = await client.call_tool("work_attachments", {
+                "api_version": "1", "work_id": str(work_id), "observed_revision": revision,
+            })
+            assert_public(result.structured_content)
+            return result.structured_content
+
+        active = selected.authority.active_work_id
+        stable = await call(active, "r1")
+        assert stable == {
+            "status": "ok", "work_id": str(active), "revision": "r1",
+            "attachments": [{"name": "brief.txt"}], "next_cursor": None,
+        }
+        stale = await call(active, "old")
+        assert stale == {
+            "status": "stale", "work_id": str(active), "revision": "r1",
+            "attachments": [], "next_cursor": None,
+        }
+        before_denied = json.loads(provider_calls.read_text())
+        denied = await call(denied_work, "r1")
+        assert denied == {
+            "status": "denied", "work_id": None, "revision": None,
+            "attachments": [], "next_cursor": None,
+        }
+        assert json.loads(provider_calls.read_text()) == before_denied
 
 
 async def _boundaries(endpoint, selected, denied_work, effects):

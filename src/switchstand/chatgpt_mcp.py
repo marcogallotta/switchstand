@@ -12,6 +12,8 @@ from .contracts import (
     SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkHistoryRequest,
@@ -56,6 +58,17 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             WorkHistoryRequest(api_version=api_version, work_id=work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
         return result
+
+    async def work_attachments(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
+        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
+    ) -> WorkAttachmentsResult:
+        """List attachment names only; on stale, repeat work_get and restart pagination."""
+        return await service.attachments(WorkAttachmentsRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+            cursor=cursor, limit=limit,
+        ))
 
     async def work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
@@ -112,6 +125,7 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
 
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("work_search", work_search), ("work_history", work_history),
+                           ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
                            ("work_create", work_create)):
