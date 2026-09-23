@@ -88,6 +88,40 @@ class WorkGetRequest(ClosedModel):
     include_related: bool = False
 
 
+class WorkAttachmentsRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    observed_revision: str = Field(min_length=1)
+    cursor: str | None = Field(default=None, min_length=1, max_length=1024)
+    limit: int = Field(default=50, strict=True, ge=1, le=100)
+
+
+class WorkAttachment(ClosedModel):
+    name: str = Field(min_length=1)
+
+
+class WorkAttachmentsResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    attachments: tuple[WorkAttachment, ...] = ()
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None:
+                raise ValueError("successful attachment page requires work and revision")
+        elif self.status == "stale":
+            if (self.work_id is None or self.revision is None
+                    or self.attachments or self.next_cursor is not None):
+                raise ValueError("stale attachment page requires only current work and revision")
+        elif (self.work_id is not None or self.revision is not None
+              or self.attachments or self.next_cursor is not None):
+            raise ValueError("failed attachment page must not claim result data")
+        return self
+
+
 class WorkUpdateRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID

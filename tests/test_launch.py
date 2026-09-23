@@ -135,7 +135,10 @@ def test_managed_tools_have_narrow_approval_free_policy():
     assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
     expected = {
-        "switchstand": {"work_get", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append"},
+        "switchstand": {
+            "work_get", "work_attachments", "source_task", "source_stories", "source_story",
+            "work_history", "work_event", "work_append",
+        },
         "switchstand_development": {
             "check",
             "commit_all_current_worktree",

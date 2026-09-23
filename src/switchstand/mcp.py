@@ -24,6 +24,8 @@ from .contracts import (
     SourceTaskResult,
     Status,
     WorkAppendRequest,
+    WorkAttachmentsRequest,
+    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
@@ -198,6 +200,21 @@ def build_server(
             WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
 
+    async def _work_attachments(
+        api_version: Literal["1"],
+        observed_revision: Annotated[str, Field(min_length=1)],
+        work_id: UUID | None = None,
+        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
+        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
+    ) -> WorkAttachmentsResult:
+        """Read one bounded name-only attachment page; on stale, repeat work_get and restart."""
+        return await service.attachments(  # type: ignore[attr-defined]
+            WorkAttachmentsRequest(
+                api_version=api_version, work_id=work_id or active_work_id,
+                observed_revision=observed_revision, cursor=cursor, limit=limit,
+            )
+        )
+
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
         work_id: UUID | None = None,
@@ -247,6 +264,7 @@ def build_server(
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
 
     closed_tool(server, "work_get", _work_get)
+    closed_tool(server, "work_attachments", _work_attachments)
     closed_tool(server, "work_history", _work_history)
     closed_tool(server, "work_event", _work_event)
     closed_tool(server, "source_task", _source_task)

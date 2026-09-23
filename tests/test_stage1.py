@@ -8,13 +8,16 @@ from switchstand.contracts import (
     LaunchAuthority,
     Routing,
     WorkAppendRequest,
+    WorkAttachmentsRequest,
     WorkGetRequest,
     WorkPatch,
     WorkUpdateRequest,
 )
 from switchstand.core import (
+    AttachmentPage,
     Controller,
     Handle,
+    ProviderAttachment,
     ProviderError,
     ProviderHead,
     ProviderSourceStory,
@@ -42,7 +45,10 @@ class FakeState:
 
 class FakeProvider:
     def __init__(self, work):
-        self.work, self.updates, self.appends = work, [], []
+        self.work, self.gets, self.updates, self.appends = work, [], [], []
+        self.attachment_calls = []
+        self.attachment_page = AttachmentPage((ProviderAttachment("brief.txt"),), "next")
+        self.after_attachment_work = None
         self.ignore_update = self.unknown_update = self.reject_update = False
         self.fail_after_update = self.deny_after_update = False
         self.unknown_append = self.fail_get = False
@@ -52,9 +58,15 @@ class FakeProvider:
         self.suggestion = None
         self.excluded = frozenset()
     async def get(self, provider_work_id):
+        self.gets.append(provider_work_id)
         if self.fail_get:
             raise ProviderError("secret provider detail")
         return self.work
+    async def list_attachments(self, provider_work_id, cursor, limit):
+        self.attachment_calls.append((provider_work_id, cursor, limit))
+        if self.after_attachment_work is not None:
+            self.work = self.after_attachment_work
+        return self.attachment_page
     async def update(self, provider_work_id, patch):
         self.updates.append(patch)
         if self.reject_update:
@@ -115,11 +127,75 @@ def test_contracts_are_closed_and_patch_is_coherent():
     with pytest.raises(ValidationError): WorkPatch(notes=None)
     with pytest.raises(ValidationError): WorkPatch(horizon="Stage 3")
 
+
+@pytest.mark.parametrize("limit", ["1", 1.0, True])
+def test_attachment_request_rejects_non_integer_limit(limit):
+    with pytest.raises(ValidationError):
+        WorkAttachmentsRequest(
+            api_version="1", work_id=uuid4(), observed_revision="r1", limit=limit
+        )
+
+
 async def test_reads_bound_handles_and_denies_unbound(setup_controller):
     active, reference, _, controller = setup_controller
     assert (await controller.get(WorkGetRequest(api_version="1", work_id=active))).status == "ok"
     assert (await controller.get(WorkGetRequest(api_version="1", work_id=reference))).status == "ok"
     assert (await controller.get(WorkGetRequest(api_version="1", work_id=uuid4()))).status == "denied"
+
+
+async def test_attachment_read_suppresses_page_when_revision_changes_after_listing(
+    setup_controller,
+):
+    active, _, provider, controller = setup_controller
+    provider.after_attachment_work = ProviderWork(
+        "Title", "Notes", False, "r2", Routing(priority="P0"), True
+    )
+    result = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=active, observed_revision="r1", cursor="opaque", limit=7
+    ))
+    assert result.model_dump() == {
+        "status": "stale", "work_id": active, "revision": "r2",
+        "attachments": (), "next_cursor": None,
+    }
+    assert provider.attachment_calls == [("a", "opaque", 7)]
+    assert provider.gets == ["a", "a"]
+
+
+async def test_attachment_read_returns_name_only_page_when_revision_is_stable(
+    setup_controller,
+):
+    active, _, _, controller = setup_controller
+    result = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=active, observed_revision="r1"
+    ))
+    assert result.status == "ok" and result.revision == "r1"
+    assert [item.name for item in result.attachments] == ["brief.txt"]
+    assert result.next_cursor == "next"
+
+
+async def test_attachment_read_suppresses_all_fields_when_canonicality_is_lost(
+    setup_controller,
+):
+    active, _, provider, controller = setup_controller
+    provider.after_attachment_work = ProviderWork(
+        "Title", "Notes", False, "r1", Routing(priority="P0"), False
+    )
+    result = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=active, observed_revision="r1"
+    ))
+    assert result.model_dump() == {
+        "status": "denied", "work_id": None, "revision": None,
+        "attachments": (), "next_cursor": None,
+    }
+
+
+async def test_attachment_denial_precedes_all_provider_io(setup_controller):
+    _, _, provider, controller = setup_controller
+    result = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=uuid4(), observed_revision="r1"
+    ))
+    assert result.status == "denied"
+    assert provider.gets == [] and provider.attachment_calls == []
 
 async def test_reference_write_denied_and_stale_update_has_no_effect(setup_controller):
     active, reference, provider, controller = setup_controller
