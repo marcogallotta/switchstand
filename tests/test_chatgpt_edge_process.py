@@ -34,7 +34,7 @@ from switchstand.state import PostgresState
 
 TOOLS = {
     "grant_get", "work_get", "work_search", "source_task", "source_stories",
-    "source_story", "work_history", "work_attachments", "work_event", "work_append", "work_create",
+    "source_story", "work_history", "work_attachments", "work_event", "work_append", "work_create", "message_send", "message_pending",
 }
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"

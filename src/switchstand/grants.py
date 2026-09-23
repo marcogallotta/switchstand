@@ -29,7 +29,9 @@ class WorkGrant(ClosedModel):
     principal: PrincipalContext
     authority: LaunchAuthority
     scope: Literal["launch", "workspace"] = "launch"
-    operations: frozenset[Literal["work_get", "work_search", "work_append", "work_create"]]
+    operations: frozenset[Literal[
+        "work_get", "work_search", "work_append", "work_create", "message"
+    ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
     expires_at: AwareDatetime

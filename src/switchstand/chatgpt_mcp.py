@@ -1,8 +1,9 @@
-from typing import Annotated, Literal
+from collections.abc import Callable
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from mcp.server import MCPServer
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from .chatgpt import ChatGPTService
 from .contracts import (
@@ -23,6 +24,50 @@ from .contracts import (
 )
 from .grants import GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
 from .mcp import PublicWorkResult, closed_tool, project_work
+from .messages import (
+    MessagePendingRequest,
+    MessagePendingResult,
+    MessageSendRequest,
+    MessageSubmitResult,
+)
+
+
+def build_message_tools(
+    service: ChatGPTService,
+    audit: Callable[[str, str, str], None] | None = None,
+) -> tuple[tuple[str, Callable[..., Any]], ...]:
+    async def message_send(
+        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        message_id: UUID, payload: JsonValue,
+        route_ref: Annotated[str | None, Field(min_length=1)] = None,
+        recipient_work_id: UUID | None = None,
+        in_reply_to_delivery_id: UUID | None = None,
+    ) -> MessageSubmitResult:
+        """Durably send one request or exactly correlated result."""
+        result = await service.message_send(MessageSendRequest(
+            api_version=api_version, work_id=work_id, grant_version=grant_version,
+            message_id=message_id, route_ref=route_ref, payload=payload,
+            recipient_work_id=recipient_work_id,
+            in_reply_to_delivery_id=in_reply_to_delivery_id,
+        ))
+        if audit is not None:
+            audit("message_send", f"{work_id}:{message_id}", result.status)
+        return result
+
+    async def message_pending(
+        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        cursor: UUID | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> MessagePendingResult:
+        """Inspect durable pending deliveries for one explicitly admitted actor."""
+        result = await service.message_pending(work_id, MessagePendingRequest(
+            api_version=api_version, grant_version=grant_version, cursor=cursor, limit=limit,
+        ))
+        if audit is not None:
+            audit("message_pending", str(work_id), result.status)
+        return result
+
+    return (("message_send", message_send), ("message_pending", message_pending))
 
 
 def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = None) -> MCPServer:
@@ -129,6 +174,6 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
                            ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
-                           ("work_create", work_create)):
+                           ("work_create", work_create), *build_message_tools(service)):
         closed_tool(server, name, function)
     return server
