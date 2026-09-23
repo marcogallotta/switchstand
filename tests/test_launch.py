@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tomllib
 from contextlib import contextmanager
+from ipaddress import ip_network
 from pathlib import Path
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from switchstand.launch import (
     clean_environment,
     cleanup_development,
     codex_command,
+    development_subnet,
     docker_run,
     exact_revision_preflight,
     filesystem_override,
@@ -33,6 +35,19 @@ from switchstand.launch import (
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
+
+
+def test_development_subnet_avoids_home_lan_space_and_is_identity_stable():
+    repo = Path("/candidate")
+    first = development_subnet(repo, UUID(int=1))
+    second = development_subnet(repo, UUID(int=2))
+
+    assert first == "10.248.248.0/24"
+    assert second == "10.243.192.0/24"
+    assert first == development_subnet(repo, UUID(int=1))
+    assert first != second
+    assert ip_network(first).subnet_of(ip_network("10.240.0.0/12"))
+    assert ip_network(first).prefixlen == 24
 
 
 def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
@@ -388,7 +403,7 @@ def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
     assert len(networks) == 1
     network = networks[0]
     assert network[:-1] == [
-        "network", "create",
+        "network", "create", "--subnet", development_subnet(candidate, ACTIVE),
         "--label", f"com.switchstand.run={ACTIVE}",
         "--label", "com.switchstand.role=qualification",
     ]

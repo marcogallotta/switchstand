@@ -113,7 +113,10 @@ def prepare_development(
         require_owned("image", image_id, str(owner), "runner", env)
         require_absent("network", network, env)
         created_network = docker_run(
-            ["network", "create", *docker_labels(str(owner), "qualification"), network],
+            [
+                "network", "create", "--subnet", development_subnet(candidate, owner),
+                *docker_labels(str(owner), "qualification"), network,
+            ],
             None,
             env,
         )
@@ -155,6 +158,13 @@ def development_names(repo: Path, owner: UUID | int | str) -> tuple[str, str, st
         f"switchstand-dev-{suffix}",
         f"switchstand-test-{suffix}",
     )
+
+
+def development_subnet(repo: Path, owner: UUID | int | str) -> str:
+    """Keep disposable development bridges out of common home-LAN address space."""
+    digest = hashlib.sha256(f"{repo}:{owner}".encode()).digest()
+    slot = int.from_bytes(digest[:2], "big") & 0x0FFF
+    return f"10.{240 + (slot >> 8)}.{slot & 0xFF}.0/24"
 
 
 def docker_run(
