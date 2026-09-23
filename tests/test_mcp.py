@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
@@ -20,6 +21,8 @@ from switchstand.contracts import (
     SourceStoryResult,
     SourceTask,
     SourceTaskResult,
+    WorkAttachment,
+    WorkAttachmentsResult,
     WorkItem,
     WorkResult,
 )
@@ -51,6 +54,12 @@ class FakeService:
                                              revision="r1", parent_gid=TASK_GID),))
                    if request.include_related else None)
         return WorkResult(status="ok", item=item(work_id=request.work_id), related=related)
+
+    async def attachments(self, request):
+        return WorkAttachmentsResult(
+            status="ok", work_id=request.work_id, revision=request.observed_revision,
+            attachments=(WorkAttachment(name="brief.txt"),), next_cursor="next",
+        )
 
     async def source_task(self, request):
         return SourceTaskResult(
@@ -186,7 +195,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append",
+            "work_get", "work_attachments", "source_task", "source_stories", "source_story",
+            "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
@@ -248,6 +258,57 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         }
         rejected = await client.call_tool("work_get", base | {"extra": "secret"})
         assert rejected.is_error
+
+
+async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
+    from test_source_history import FakeState
+
+    from switchstand.contracts import LaunchAuthority
+    from switchstand.core import Controller
+    from switchstand.provider import PROJECT, AsanaProvider
+
+    def respond(request):
+        if request.url.path.endswith("/attachments"):
+            return httpx.Response(200, json={
+                "data": [{"gid": "hidden", "name": "brief.txt",
+                          "parent": {"gid": "1218431511675555"},
+                          "download_url": "https://secret.invalid"}],
+                "next_page": {"offset": "next"},
+            })
+        return httpx.Response(200, json={"data": {
+            "name": "Task", "notes": "Notes", "completed": False, "modified_at": "r1",
+            "memberships": [{"project": {"gid": PROJECT}}], "parent": None,
+            "custom_fields": [],
+        }})
+
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(respond)
+    ) as http:
+        service = Controller(
+            LaunchAuthority(active_work_id=ID), FakeState(), {"asana": AsanaProvider(http)}
+        )
+        async with Client(build_server(service, ID)) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            schema = tools["work_attachments"].input_schema
+            assert "work_id" not in schema["required"]
+            assert schema["properties"]["limit"]["maximum"] == 100
+            assert schema["properties"]["cursor"]["anyOf"][0]["maxLength"] == 1024
+            revision = (await client.call_tool(
+                "work_get", {"api_version": "1"}
+            )).structured_content["item"]["revision"]
+            result = await client.call_tool(
+                "work_attachments", {"api_version": "1", "observed_revision": revision}
+            )
+            assert result.structured_content == {
+                "status": "ok", "work_id": str(ID), "revision": "r1",
+                "attachments": [{"name": "brief.txt"}], "next_cursor": "next",
+            }
+            assert "provider" not in str(result.structured_content)
+            rejected = await client.call_tool(
+                "work_attachments", {"api_version": "1", "observed_revision": "r1",
+                                     "extra": "secret"}
+            )
+            assert rejected.is_error
 
 
 async def test_managed_controller_stdio_read_chain():

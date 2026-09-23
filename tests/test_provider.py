@@ -7,6 +7,7 @@ from switchstand.contracts import WorkPatch
 from switchstand.core import ProviderError, UnknownEffect
 from switchstand.provider import (
     ANCESTRY_GETS,
+    ATTACHMENT_FIELDS,
     FIELDS,
     OPT_FIELDS,
     PROJECT,
@@ -47,6 +48,30 @@ def provider(*responses, test_project_gid=None):
 
 
 TEST_PROJECT = "9999999999999999"
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_attachment_page_is_bounded_name_only_and_validates_parent(malformed):
+    row = {
+        "gid": "attachment-secret", "name": "brief.txt",
+        "parent": {"gid": "wrong" if malformed else "123"},
+        "download_url": "https://secret.invalid/file",
+    }
+    subject, api = provider((200, {"data": [row], "next_page": {"offset": "next"}}))
+    if malformed:
+        with pytest.raises(ProviderError, match="provider request failed") as error:
+            await subject.list_attachments("123", "opaque", 7)
+        assert "wrong" not in str(error.value)
+    else:
+        result = await subject.list_attachments("123", "opaque", 7)
+        assert result.attachments[0].name == "brief.txt" and result.next_cursor == "next"
+    request = api.requests[0]
+    assert (request.method, request.url.path) == ("GET", "/api/1.0/attachments")
+    assert dict(request.url.params) == {
+        "parent": "123", "limit": "7", "opt_fields": ATTACHMENT_FIELDS,
+        "offset": "opaque",
+    }
+    assert len(api.requests) == 1
 
 
 @pytest.mark.parametrize("project, allowed", [(PROJECT, False), (TEST_PROJECT, True)])
