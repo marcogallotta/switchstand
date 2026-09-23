@@ -492,7 +492,8 @@ class AsanaProvider:
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
-        data = {name: getattr(patch, name) for name in {"notes", "completed"} & changed}
+        data = {("name" if name == "title" else name): getattr(patch, name)
+                for name in {"title", "notes", "completed"} & changed}
         routing = {name for name in FIELDS if name != "priority"} & changed
         if routing:
             task = await self._task(provider_work_id)

@@ -30,7 +30,7 @@ class WorkGrant(ClosedModel):
     authority: LaunchAuthority
     scope: Literal["launch", "workspace"] = "launch"
     operations: frozenset[Literal[
-        "work_get", "work_search", "work_append", "work_create", "message"
+        "work_get", "work_search", "work_append", "work_create", "work_update", "message"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -38,6 +38,7 @@ class WorkGrant(ClosedModel):
     state: Literal["active", "revoked", "terminal"] = "active"
     append_qualification: str | None = Field(default=None, min_length=1)
     create_qualification: str | None = Field(default=None, min_length=1)
+    update_qualification: str | None = Field(default=None, min_length=1)
 
     def current(self) -> bool:
         return self.state == "active" and self.expires_at > datetime.now(UTC)
@@ -71,6 +72,29 @@ class ProtectedCreate(ClosedModel):
     notes: str = Field(default="", max_length=8000)
 
 
+class ScalarPatch(ClosedModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    notes: str | None = Field(default=None, max_length=8000)
+    completed: bool | None = None
+
+    @model_validator(mode="after")
+    def nonempty(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("patch must not be empty")
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("patch values must not be null")
+        return self
+
+
+class ProtectedUpdate(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    observed_revision: str = Field(min_length=1)
+    patch: ScalarPatch
+
+
 class EffectReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -97,6 +121,20 @@ class CreateReceipt(ClosedModel):
     qualification: str
 
 
+class UpdateReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: str
+    task_gid: str
+    observed_revision: str
+    resulting_revision: str
+    patch: ScalarPatch
+    qualification: str
+
+
 class GuardOutcome(ClosedModel):
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
     operation: str
@@ -106,7 +144,7 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | CreateReceipt | None = None
+    receipt: EffectReceipt | CreateReceipt | UpdateReceipt | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:

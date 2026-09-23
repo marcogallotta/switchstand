@@ -36,7 +36,8 @@ class WorkItem(ClosedModel):
 
 
 class WorkPatch(ClosedModel):
-    notes: str | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    notes: str | None = Field(default=None, max_length=8000)
     completed: bool | None = None
     horizon: str | None = None
     review_next_action: str | None = None

@@ -36,6 +36,7 @@ from .grants import (
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedUpdate,
     WorkGrant,
 )
 from .messages import (
@@ -47,6 +48,7 @@ from .messages import (
     MessageSubmitRequest,
     MessageSubmitResult,
 )
+from .updates import UpdateGateway
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 
@@ -59,6 +61,7 @@ class ChatGPTService:
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
         self.create_gateway = CreateGateway(state, grants, providers)
+        self.update_gateway = UpdateGateway(state, grants, providers)
         self.messages = messages
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
@@ -221,6 +224,12 @@ class ChatGPTService:
         if principal is None:
             return self.create_gateway.guard(request, "denied", "authenticated_principal_required")
         return await self.create_gateway.create(principal, request)
+
+    async def update(self, request: ProtectedUpdate) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return self.update_gateway.guard(request, "denied", "authenticated_principal_required")
+        return await self.update_gateway.update(principal, request)
 
     async def message_send(self, request: MessageSendRequest) -> MessageSubmitResult:
         principal = await self.principal()

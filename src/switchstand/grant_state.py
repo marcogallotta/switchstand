@@ -199,7 +199,7 @@ class GrantState:
         async with self.engine.begin() as connection:
             result = await connection.execute(update(effect_intents).where(
                 effect_intents.c.operation_id == str(outcome.operation_id)
-            ).values(outcome=outcome.model_dump(mode="json")).returning(
+            ).values(outcome=outcome.model_dump(mode="json", exclude_none=True)).returning(
                 effect_intents.c.operation_id
             ))
             if result.scalar_one_or_none() is None:

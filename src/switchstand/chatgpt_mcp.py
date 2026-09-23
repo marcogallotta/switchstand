@@ -22,7 +22,14 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
-from .grants import GrantResult, GuardOutcome, ProtectedAppend, ProtectedCreate
+from .grants import (
+    GrantResult,
+    GuardOutcome,
+    ProtectedAppend,
+    ProtectedCreate,
+    ProtectedUpdate,
+    ScalarPatch,
+)
 from .mcp import PublicWorkResult, closed_tool, project_work
 from .messages import (
     MessagePendingRequest,
@@ -169,11 +176,22 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             grant_version=grant_version, title=title, notes=notes,
         ))
 
+    async def work_update(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        grant_version: int, observed_revision: str, patch: ScalarPatch,
+    ) -> GuardOutcome:
+        """Set bounded scalar state. Reuse OperationId to reconcile UNKNOWN without resending."""
+        return await service.update(ProtectedUpdate(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+        ))
+
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("work_search", work_search), ("work_history", work_history),
                            ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
-                           ("work_create", work_create), *build_message_tools(service)):
+                           ("work_create", work_create), ("work_update", work_update),
+                           *build_message_tools(service)):
         closed_tool(server, name, function)
     return server

@@ -66,7 +66,8 @@ class Handles:
 
 class Provider:
     def __init__(self):
-        self.notes, self.revision, self.stories = "initial notes", "r1", []
+        self.title, self.notes, self.completed = "Task", "initial notes", False
+        self.revision, self.stories = "r1", []
         self.canonical_ids = {"123", "456"}
         self.sends = 0
         self.related_calls = []
@@ -75,8 +76,13 @@ class Provider:
         self.before_send = None
 
     async def get(self, task_gid):
-        return ProviderWork("Task", self.notes, False, self.revision, Routing(priority="P0"),
+        return ProviderWork(self.title, self.notes, self.completed, self.revision, Routing(priority="P0"),
                             task_gid in self.canonical_ids)
+
+    async def update(self, task_gid, patch):
+        for field in patch.model_fields_set:
+            setattr(self, field, getattr(patch, field))
+        self.revision = f"r{int(self.revision[1:]) + 1}"
 
     async def search_work(self, text, completed, cursor, limit):
         self.search_calls.append((text, completed, cursor, limit))
@@ -99,7 +105,7 @@ class Provider:
                                          revision=self.revision, parent_gid=task_gid),))
 
     async def source_task(self, task_gid):
-        return ProviderSourceTask("Task", self.notes, False, self.revision,
+        return ProviderSourceTask(self.title, self.notes, self.completed, self.revision,
                                   task_gid in self.canonical_ids)
 
     async def append(self, task_gid, text):
