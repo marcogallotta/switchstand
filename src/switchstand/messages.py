@@ -142,7 +142,7 @@ class PendingMessage(ClosedModel):
     route_ref: str
     kind: Literal["request", "result"]
     payload: JsonValue
-    state: Literal["AVAILABLE", "RECEIVED"]
+    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
     recipient_grant_version: int
     receiving_generation: str | None = None
 
