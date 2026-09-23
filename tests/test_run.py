@@ -13,6 +13,7 @@ from switchstand.run import (
     RunReceipt,
     create_receipt,
     inspect_receipt,
+    managed_runtime_currentness,
     process_start_token,
     reserve_run,
     stop_receipt,
@@ -64,6 +65,52 @@ def test_inspect_receipt_reports_running_stopped_lost_and_unknown(tmp_path):
     assert inspect_receipt(path, tmp_path, "owned", proc).status == "stopped"
     path.write_text(json.dumps({"run_id": str(value.run_id)}))
     assert inspect_receipt(path, tmp_path, "owned", proc).status == "unknown"
+
+
+def test_managed_currentness_uses_only_exact_running_authoritative_receipt(tmp_path):
+    git_dir, proc = tmp_path / "git", tmp_path / "proc"
+    git_dir.mkdir()
+    process = proc / "123"
+    process.mkdir(parents=True)
+    (process / "stat").write_text(stat(42))
+    work_id, old_run, current_run = uuid4(), uuid4(), uuid4()
+
+    def write(run_id=old_run, **changes):
+        value = RunReceipt(
+            run_id=run_id, active_work_id=work_id, worktree=str(tmp_path), branch="owned",
+            pid=123, start_token=42, started_at="2026-09-08T12:00:00Z",
+        ).model_copy(update=changes)
+        (git_dir / RECEIPT).write_text(value.model_dump_json())
+
+    write()
+    assert managed_runtime_currentness(
+        str(old_run), work_id, tmp_path, "owned", git_dir, proc
+    ).current_generation == str(old_run)
+    write(current_run)
+    stale = managed_runtime_currentness(
+        str(old_run), work_id, tmp_path, "owned", git_dir, proc
+    )
+    assert stale.generation == str(old_run) and stale.current_generation == str(current_run)
+
+    for change in (
+        {"active_work_id": uuid4()}, {"worktree": str(tmp_path / "other")},
+        {"branch": "other"}, {"start_token": 41},
+    ):
+        write(current_run, **change)
+        assert managed_runtime_currentness(
+            str(current_run), work_id, tmp_path, "owned", git_dir, proc
+        ).current_generation is None
+    (git_dir / RECEIPT).write_text("invalid")
+    assert managed_runtime_currentness(
+        str(current_run), work_id, tmp_path, "owned", git_dir, proc
+    ).current_generation is None
+    (git_dir / RECEIPT).unlink()
+    assert managed_runtime_currentness(
+        str(current_run), work_id, tmp_path, "owned", git_dir, proc
+    ).current_generation is None
+    assert managed_runtime_currentness(
+        "not-a-run", work_id, tmp_path, "owned", git_dir, proc
+    ) is None
 
 
 def test_create_receipt_is_private_and_refuses_to_replace_live_run(tmp_path):

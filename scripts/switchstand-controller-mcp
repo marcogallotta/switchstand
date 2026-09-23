@@ -3,8 +3,17 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ "${SWITCHSTAND_MANAGED:-}" = 1 ]; then
     : "${ACTIVE_WORK_ID:?managed controller requires ACTIVE_WORK_ID}"
+    : "${SWITCHSTAND_WORKTREE:?managed controller requires SWITCHSTAND_WORKTREE}"
+    : "${SWITCHSTAND_BRANCH:?managed controller requires SWITCHSTAND_BRANCH}"
+    : "${SWITCHSTAND_GIT_DIR:?managed controller requires SWITCHSTAND_GIT_DIR}"
+    : "${SWITCHSTAND_RUN_ID:?managed controller requires SWITCHSTAND_RUN_ID}"
     cd "$repo"
-    exec docker compose run --rm -T --no-deps controller
+    exec docker compose run --rm -T --no-deps \
+        -e SWITCHSTAND_WORKTREE -e SWITCHSTAND_BRANCH -e SWITCHSTAND_GIT_DIR \
+        -e SWITCHSTAND_RUN_ID -e SWITCHSTAND_PROC_ROOT=/host/proc \
+        -v "$SWITCHSTAND_WORKTREE:$SWITCHSTAND_WORKTREE:ro" \
+        -v "$SWITCHSTAND_GIT_DIR:$SWITCHSTAND_GIT_DIR:ro" \
+        -v /proc:/host/proc:ro controller
 fi
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 python=$(dirname "$common")/.venv/bin/python

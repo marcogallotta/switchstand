@@ -15,6 +15,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .messages import RuntimeCurrentness
+
 RECEIPT = "switchstand-run.json"
 GRACE_SECONDS = 2.0
 FORCE_SECONDS = 2.0
@@ -151,6 +153,33 @@ def inspect_receipt(path: Path, repo: Path, branch: str, proc: Path = Path("/pro
     if state in {"X", "Z"} and status == "running":
         status = "stopped"
     return _known_status(status, receipt)
+
+
+def managed_runtime_currentness(
+    presented_run_id: str, active_work_id: UUID, repo: Path, branch: str,
+    git_dir: Path, proc: Path = Path("/proc"),
+) -> RuntimeCurrentness | None:
+    """Resolve current generation only from the exact authoritative run receipt."""
+    try:
+        presented = UUID(presented_run_id)
+        exact_repo = repo.resolve(strict=True)
+        exact_git_dir = git_dir.resolve(strict=True)
+        receipt = _read_receipt(exact_git_dir / RECEIPT)
+        status = inspect_receipt(exact_git_dir / RECEIPT, exact_repo, branch, proc)
+    except (OSError, ValueError):
+        return None
+    if receipt is None or status.status != "running":
+        return RuntimeCurrentness(generation=str(presented), current_generation=None)
+    if (
+        status.run_id != receipt.run_id
+        or status.active_work_id != receipt.active_work_id
+        or status.branch != receipt.branch
+        or receipt.active_work_id != active_work_id
+    ):
+        return RuntimeCurrentness(generation=str(presented), current_generation=None)
+    return RuntimeCurrentness(
+        generation=str(presented), current_generation=str(receipt.run_id)
+    )
 
 
 def _wait_for_exit(pidfd: int, seconds: float) -> bool:

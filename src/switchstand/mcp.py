@@ -1,13 +1,15 @@
 import logging
 import os
 from collections.abc import Callable
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 import httpx
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import Field, JsonValue
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
@@ -35,8 +37,26 @@ from .contracts import (
     WorkSearchItem,
 )
 from .core import Controller
-from .grants import GrantedWorkResult
+from .grant_state import GrantState
+from .grants import GrantedWorkResult, PrincipalContext
+from .managed_identity import managed_principal
+from .messages import (
+    DispositionEvidence,
+    MessageDispositionRequest,
+    MessagePendingRequest,
+    MessagePendingResult,
+    MessageReceiveRequest,
+    MessageRoute,
+    MessageSendRequest,
+    MessageState,
+    MessageSubmitRequest,
+    MessageSubmitResult,
+    MessageTransitionResult,
+    RuntimeCurrentness,
+    disposition_digest,
+)
 from .provider import AsanaProvider
+from .run import managed_runtime_currentness
 from .state import PostgresState
 
 
@@ -172,7 +192,10 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
 
 
 def build_server(
-    service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = ()
+    service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = (), *,
+    messages: MessageState | None = None, grants: GrantState | None = None,
+    principal: PrincipalContext | None = None,
+    currentness: Callable[[], RuntimeCurrentness | None] | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
@@ -271,6 +294,133 @@ def build_server(
     closed_tool(server, "source_stories", _source_stories)
     closed_tool(server, "source_story", _source_story)
     closed_tool(server, "work_append", _work_append)
+    if messages is not None and grants is not None and principal is not None and currentness is not None:
+        def runtime() -> RuntimeCurrentness:
+            return currentness() or RuntimeCurrentness(
+                generation="unavailable", current_generation=None
+            )
+
+        def runtime_is_current(value: RuntimeCurrentness) -> bool:
+            return (
+                value.current_generation is not None
+                and value.generation == value.current_generation
+            )
+
+        async def current_grant_version() -> int | None:
+            try:
+                grant = await grants.current(principal.key)
+                return 1 if grant is None else grant.version
+            except (SQLAlchemyError, ValueError):
+                return None
+
+        async def _message_pending(
+            api_version: Literal["1"],
+            cursor: UUID | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> MessagePendingResult:
+            if not runtime_is_current(runtime()):
+                return MessagePendingResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
+            version = await current_grant_version()
+            if version is None:
+                return MessagePendingResult(status="recovery_required", reason="state_unavailable")
+            return await messages.pending(principal, MessagePendingRequest(
+                api_version=api_version, grant_version=version,
+                cursor=cursor, limit=limit,
+            ))
+
+        async def transition(
+            operation: Literal["receive", "recover"], api_version: Literal["1"],
+            delivery_id: UUID,
+        ) -> MessageTransitionResult:
+            version = await current_grant_version()
+            if version is None:
+                return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
+            request = MessageReceiveRequest(
+                api_version=api_version, delivery_id=delivery_id,
+                grant_version=version,
+            )
+            return await getattr(messages, operation)(principal, runtime(), request)
+
+        async def _message_receive(
+            api_version: Literal["1"], delivery_id: UUID,
+        ) -> MessageTransitionResult:
+            return await transition("receive", api_version, delivery_id)
+
+        async def _message_recover(
+            api_version: Literal["1"], delivery_id: UUID,
+        ) -> MessageTransitionResult:
+            return await transition("recover", api_version, delivery_id)
+
+        async def _message_result_send(
+            api_version: Literal["1"], in_reply_to_delivery_id: UUID,
+            message_id: UUID, payload: JsonValue,
+        ) -> MessageSubmitResult:
+            active_runtime = runtime()
+            if not runtime_is_current(active_runtime):
+                return MessageSubmitResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
+            public = MessageSendRequest(
+                api_version=api_version, work_id=active_work_id,
+                grant_version=1, message_id=message_id, payload=payload,
+                in_reply_to_delivery_id=in_reply_to_delivery_id,
+            )
+            context = await messages.reply_context(in_reply_to_delivery_id)
+            recipient_work_id = None if context is None else context.recipient_work_id
+            async with grants.locked_message_route(
+                principal.key, active_work_id, recipient_work_id,
+            ) as (grant, recipient):
+                if grant is None or grant.principal != principal or not grant.current():
+                    return MessageSubmitResult(status="denied", reason="actor_not_admitted")
+                if "message" not in grant.operations:
+                    return MessageSubmitResult(status="denied", reason="message_not_granted")
+                public = public.model_copy(update={"grant_version": grant.version})
+                replay = await messages.committed_public_replay(active_work_id, public)
+                if replay is not None:
+                    return replay
+                if context is None:
+                    return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+                if recipient is None:
+                    return MessageSubmitResult(status="denied", reason="recipient_route_unavailable")
+                handle = await cast(Controller, service).state.get(context.recipient_work_id)
+                if handle is None or handle.provider != "asana":
+                    return MessageSubmitResult(status="denied", reason="recipient_route_unavailable")
+                return await messages.submit_received_result(
+                    active_work_id, grant.version, active_runtime.generation,
+                    MessageRoute(
+                        recipient_work_id=context.recipient_work_id,
+                        recipient_grant_version=recipient.version,
+                        projection_provider="asana", projection_target=handle.provider_work_id,
+                    ),
+                    MessageSubmitRequest(
+                        api_version=api_version, message_id=message_id,
+                        grant_version=grant.version, route_ref=context.route_ref,
+                        kind="result", payload=payload,
+                        in_reply_to_delivery_id=in_reply_to_delivery_id,
+                    ),
+                )
+
+        async def _message_disposition(
+            api_version: Literal["1"], delivery_id: UUID,
+            result_message_id: UUID,
+        ) -> MessageTransitionResult:
+            evidence = DispositionEvidence(kind="result", result_message_id=result_message_id)
+            version = await current_grant_version()
+            if version is None:
+                return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
+            return await messages.disposition(principal, runtime(), MessageDispositionRequest(
+                api_version=api_version, delivery_id=delivery_id,
+                grant_version=version,
+                disposition_digest=disposition_digest(evidence),
+                evidence=evidence,
+            ))
+
+        closed_tool(server, "message_pending", _message_pending)
+        closed_tool(server, "message_receive", _message_receive)
+        closed_tool(server, "message_recover", _message_recover)
+        closed_tool(server, "message_result_send", _message_result_send)
+        closed_tool(server, "message_disposition", _message_disposition)
     return server
 
 
@@ -278,8 +428,25 @@ def server_from_env() -> MCPServer:
     if os.getenv("SWITCHSTAND_MANAGED") != "1":
         return MCPServer("Switchstand (unbound)")
     service = controller_from_env()
+    engine = cast(PostgresState, service.state).engine
+    grants = GrantState(engine)
+    messages = MessageState(engine, grants)
+    active = service.authority.active_work_id
+
+    def currentness() -> RuntimeCurrentness | None:
+        try:
+            return managed_runtime_currentness(
+                os.environ["SWITCHSTAND_RUN_ID"], active,
+                Path(os.environ["SWITCHSTAND_WORKTREE"]), os.environ["SWITCHSTAND_BRANCH"],
+                Path(os.environ["SWITCHSTAND_GIT_DIR"]),
+                Path(os.getenv("SWITCHSTAND_PROC_ROOT", "/proc")),
+            )
+        except KeyError:
+            return None
     return build_server(
-        service, service.authority.active_work_id, service.authority.reference_work_ids
+        service, active, service.authority.reference_work_ids,
+        messages=messages, grants=grants, principal=managed_principal(active),
+        currentness=currentness,
     )
 
 

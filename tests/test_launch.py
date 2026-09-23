@@ -137,7 +137,9 @@ def test_managed_tools_have_narrow_approval_free_policy():
     expected = {
         "switchstand": {
             "work_get", "work_attachments", "source_task", "source_stories", "source_story",
-            "work_history", "work_event", "work_append",
+            "work_history", "work_event", "work_append", "message_pending",
+            "message_receive", "message_recover", "message_result_send",
+            "message_disposition",
         },
         "switchstand_development": {
             "check",
@@ -275,7 +277,7 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
         "docker", "compose", "--project-directory", "/repo", "-f",
         "/repo/compose.state.yaml", "up", "-d", "--wait", "postgres",
     ]
-    assert controller[0][-4:] == ["--active", "123", "--reference", "456"]
+    assert controller[0][-5:] == ["--active", "123", "--managed-agent", "--reference", "456"]
     assert controller[0][2:6] == [
         "--project-directory", "/repo", "-f", "/repo/compose.yaml"
     ]

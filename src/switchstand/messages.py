@@ -360,6 +360,8 @@ class MessageState:
             return "denied", "no_current_grant"
         if grant.version != grant_version:
             return "stale", "grant_version_changed"
+        if "message" not in grant.operations:
+            return "denied", "no_current_grant"
         return None
 
     @staticmethod
@@ -389,6 +391,7 @@ class MessageState:
 
     async def _store(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
+        received_binding: tuple[int, str] | None = None,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
@@ -406,6 +409,14 @@ class MessageState:
                 if replied["recipient_work_id"] != sender_work_id:
                     return MessageSubmitResult(
                         status="denied", reason="reply_sender_not_recipient"
+                    )
+                if received_binding is not None and (
+                    replied["state"] != "RECEIVED"
+                    or replied["recipient_grant_version"] != received_binding[0]
+                    or replied["receiving_generation"] != received_binding[1]
+                ):
+                    return MessageSubmitResult(
+                        status="conflict", reason="reply_delivery_not_found"
                     )
                 prior_reply = (await connection.execute(select(
                     messages.c.sender_work_id, messages.c.message_id
@@ -447,6 +458,17 @@ class MessageState:
     ) -> MessageSubmitResult:
         try:
             return await self._store(sender_work_id, route, request)
+        except (SQLAlchemyError, ValueError):
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+
+    async def submit_received_result(
+        self, sender_work_id: UUID, grant_version: int, generation: str,
+        route: MessageRoute, request: MessageSubmitRequest,
+    ) -> MessageSubmitResult:
+        try:
+            return await self._store(
+                sender_work_id, route, request, (grant_version, generation)
+            )
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
