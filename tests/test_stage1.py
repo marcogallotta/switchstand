@@ -127,6 +127,15 @@ def test_contracts_are_closed_and_patch_is_coherent():
     with pytest.raises(ValidationError): WorkPatch(notes=None)
     with pytest.raises(ValidationError): WorkPatch(horizon="Stage 3")
 
+
+@pytest.mark.parametrize("limit", ["1", 1.0, True])
+def test_attachment_request_rejects_non_integer_limit(limit):
+    with pytest.raises(ValidationError):
+        WorkAttachmentsRequest(
+            api_version="1", work_id=uuid4(), observed_revision="r1", limit=limit
+        )
+
+
 async def test_reads_bound_handles_and_denies_unbound(setup_controller):
     active, reference, _, controller = setup_controller
     assert (await controller.get(WorkGetRequest(api_version="1", work_id=active))).status == "ok"

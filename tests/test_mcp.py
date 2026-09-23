@@ -292,6 +292,7 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
             schema = tools["work_attachments"].input_schema
             assert "work_id" not in schema["required"]
             assert schema["properties"]["limit"]["maximum"] == 100
+            assert schema["properties"]["observed_revision"]["minLength"] == 1
             assert schema["properties"]["cursor"]["anyOf"][0]["maxLength"] == 1024
             revision = (await client.call_tool(
                 "work_get", {"api_version": "1"}
@@ -309,6 +310,13 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
                                      "extra": "secret"}
             )
             assert rejected.is_error
+            for invalid in ({"observed_revision": ""}, {"limit": "1"},
+                            {"limit": 1.0}, {"limit": True}):
+                rejected = await client.call_tool(
+                    "work_attachments",
+                    {"api_version": "1", "observed_revision": "r1", **invalid},
+                )
+                assert rejected.is_error
 
 
 async def test_managed_controller_stdio_read_chain():

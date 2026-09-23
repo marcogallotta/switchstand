@@ -201,9 +201,11 @@ def build_server(
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
 
     async def _work_attachments(
-        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+        api_version: Literal["1"],
+        observed_revision: Annotated[str, Field(min_length=1)],
+        work_id: UUID | None = None,
         cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
     ) -> WorkAttachmentsResult:
         """Read one bounded name-only attachment page; on stale, repeat work_get and restart."""
         return await service.attachments(  # type: ignore[attr-defined]

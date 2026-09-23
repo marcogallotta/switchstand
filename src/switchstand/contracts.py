@@ -93,7 +93,7 @@ class WorkAttachmentsRequest(ClosedModel):
     work_id: UUID
     observed_revision: str = Field(min_length=1)
     cursor: str | None = Field(default=None, min_length=1, max_length=1024)
-    limit: int = Field(default=50, ge=1, le=100)
+    limit: int = Field(default=50, strict=True, ge=1, le=100)
 
 
 class WorkAttachment(ClosedModel):
