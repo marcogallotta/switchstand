@@ -24,6 +24,7 @@ from switchstand.updates import UpdateGateway
 PROJECT = "9999999999999999"
 PRIORITY = "1217653169990249"
 PRIORITY_OPTIONS = {"p0": "P0", "p1": "P1"}
+WORK_TYPE, WORK_TYPE_OPTIONS = "1218431623135287", {"w0": "Research", "w1": "Implementation"}
 
 
 class AsanaBoundary(httpx.AsyncBaseTransport):
@@ -37,8 +38,8 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
                          "display_value": "P0", "enum_value": {"gid": "p0"},
                          "enum_options": [
                              {"gid": gid, "name": name, "enabled": True}
-                             for gid, name in PRIORITY_OPTIONS.items()],
-                     }]}
+                             for gid, name in PRIORITY_OPTIONS.items()]}, {"gid": WORK_TYPE, "enabled": True, "resource_subtype": "enum", "display_value": "Research", "enum_value": {"gid": "w0"},
+                         "enum_options": [{"gid": g, "name": n, "enabled": True} for g, n in WORK_TYPE_OPTIONS.items()]}]}
 
     async def handle_async_request(self, request):
         if request.method == "GET":
@@ -58,9 +59,11 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
             self.task.update({key: value for key, value in payload.items()
                               if key != "custom_fields"})
             if custom is not None:
-                priority = self.task["custom_fields"][0]
-                priority["display_value"] = PRIORITY_OPTIONS[custom[PRIORITY]]
-                priority["enum_value"] = {"gid": custom[PRIORITY]}
+                for field in self.task["custom_fields"]:
+                    if field["gid"] in custom:
+                        options = PRIORITY_OPTIONS if field["gid"] == PRIORITY else WORK_TYPE_OPTIONS
+                        field["display_value"] = options[custom[field["gid"]]]
+                        field["enum_value"] = {"gid": custom[field["gid"]]}
             self.task["modified_at"] = f"r{len(self.puts) + 1}"
         if self.mode in {"commit_lost", "lost"}:
             raise httpx.ReadError("response lost", request=request)
@@ -129,6 +132,8 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
     blocked = await restarted.update(principal, request(grant, "r2", completed=False))
     assert blocked.reason == "target_has_unresolved_effect" and len(boundary.puts) == 2
 
+    boundary.task["custom_fields"][1]["enum_options"].append({"gid": "broken"})
+    readback = await gateway.providers["asana"].get("123"); assert readback and (readback.routing.priority, readback.routing.work_type) == ("P0", None)
     boundary.task.update(name="Not visible", modified_at="r3")
     resolved = await restarted.update(principal, unresolved)
     assert resolved.effect == "applied" and resolved.receipt.resulting_revision == "r3"
@@ -142,31 +147,33 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
     assert reopened.effect == "applied" and boundary.puts[-1] == {"completed": False}
 
 
-async def test_priority_recovers_by_readback_without_resend_and_blocks_on_mismatch(subject):
+@pytest.mark.parametrize(("name", "gid", "changed_value", "old_value", "old_gid"), [
+    ("priority", PRIORITY, "P1", "P0", "p0"), ("work_type", WORK_TYPE, "Implementation", "Research", "w0")])
+async def test_strict_enum_recovers_without_resend_and_blocks_on_mismatch(subject, name, gid, changed_value, old_value, old_gid):
     gateway, grants, principal, grant, boundary = subject
-    changed = request(grant, "r1", priority="P1")
+    changed = request(grant, "r1", **{name: changed_value})
     applied = await gateway.update(principal, changed)
     assert applied.effect == "applied" and applied.receipt.patch == changed.patch
-    assert boundary.puts == [{"custom_fields": {PRIORITY: "p1"}}]
+    assert boundary.puts == [{"custom_fields": {gid: "p1" if name == "priority" else "w1"}}]
     restarted = UpdateGateway(gateway.state, GrantState(grants.engine), gateway.providers)
     assert await restarted.update(principal, changed) == applied
     assert len(boundary.puts) == 1
 
     boundary.mode = "lost"
-    unresolved = request(grant, "r2", priority="P0")
+    unresolved = request(grant, "r2", **{name: old_value})
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     reads = boundary.gets
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     assert boundary.gets == reads + 1 and len(boundary.puts) == 2
-    blocked = await restarted.update(principal, request(grant, "r2", priority="P1"))
+    blocked = await restarted.update(principal, request(grant, "r2", **{name: changed_value}))
     assert blocked.reason == "target_has_unresolved_effect" and len(boundary.puts) == 2
-    boundary.task["custom_fields"][0]["display_value"] = "P0"
-    boundary.task["custom_fields"][0]["enum_value"] = {"gid": "p0"}
+    target = next(field for field in boundary.task["custom_fields"] if field["gid"] == gid)
+    target["display_value"], target["enum_value"] = old_value, {"gid": old_gid}
     boundary.task["modified_at"] = "r3"
-    boundary.task["custom_fields"][0]["enum_options"].append({"gid": "broken"})
+    target["enum_options"].append({"gid": "broken"})
     assert (await restarted.update(principal, unresolved)).effect == "unknown"
     assert len(boundary.puts) == 2
-    boundary.task["custom_fields"][0]["enum_options"].pop()
+    target["enum_options"].pop()
     assert (await restarted.update(principal, unresolved)).effect == "applied"
 
 
@@ -188,7 +195,7 @@ async def test_partial_patch_receipt_survives_restart(subject, patch, payload):
     assert boundary.puts == [payload]
 
 
-@pytest.mark.parametrize("field", ["title", "notes", "completed", "priority"])
+@pytest.mark.parametrize("field", ["title", "notes", "completed", "priority", "work_type"])
 def test_public_update_patch_rejects_explicit_null(field):
     with pytest.raises(ValidationError):
         ScalarPatch.model_validate({field: None})
@@ -213,7 +220,7 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
         tool = next(tool for tool in (await client.list_tools()).tools
                     if tool.name == "work_update")
         patch_schema = tool.input_schema["$defs"]["ScalarPatch"]
-        assert "priority" in patch_schema["properties"] and "work_type" not in patch_schema["properties"]
+        assert {"priority", "work_type"} <= patch_schema["properties"].keys() and "gid" not in json.dumps(patch_schema).lower()
         assert set(tool.input_schema["properties"]) == {
             "api_version", "operation_id", "observed_revision", "patch",
         }

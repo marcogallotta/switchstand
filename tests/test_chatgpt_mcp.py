@@ -121,7 +121,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 tool.input_schema.get("properties", {}))
         update = next(tool for tool in tools if tool.name == "work_update")
         patch = update.input_schema["$defs"]["ScalarPatch"]
-        assert "priority" in patch["properties"] and "work_type" not in patch["properties"]
+        assert {"priority", "work_type"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
         introspection = (await client.call_tool("grant_get", {"api_version": "1"})).structured_content
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content

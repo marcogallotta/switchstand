@@ -77,6 +77,7 @@ class ScalarPatch(ClosedModel):
     notes: str | None = Field(default=None, max_length=8000)
     completed: bool | None = None
     priority: str | None = Field(default=None, min_length=1)
+    work_type: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def nonempty(self) -> Self:

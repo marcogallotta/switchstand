@@ -13,6 +13,7 @@ from switchstand.provider import (
     PROJECT,
     PROJECTS,
     ROOT_WORK_GID,
+    WORK_TYPE,
     WORKSPACE,
     AsanaProvider,
 )
@@ -284,7 +285,7 @@ async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
     fields = [field(gid, option=name, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
-    result = await subject.get("t"); assert result and result.routing.model_dump() == {name: name for name in FIELDS}
+    result = await subject.get("t"); assert result and result.routing.model_dump() == ({name: name for name in FIELDS} | {"work_type": None})
 def test_project_registry_does_not_expand_writable_routing_fields():
     assert FIELDS == {
         "priority": "1217653169990249",
@@ -305,18 +306,21 @@ async def test_routing_mapping_minimal_update_and_readback():
     assert json.loads(api.requests[1].content) == {"data": {"notes": "new", "custom_fields": {
         FIELDS["horizon"]: "option-gid"}}}
     assert result and result.routing.horizon == "Stage 3"
-async def test_priority_mapping_minimal_update_and_strict_readback():
-    before = field(FIELDS["priority"], option="P0", display="P1")
-    after = field(FIELDS["priority"], option="P0", display="P0")
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation")])
+async def test_strict_enum_mapping_minimal_update_and_readback(name, gid, value):
+    before = field(gid, option=value, display="Other")
+    after = field(gid, option=value, display=value)
     subject, api = provider((200, task(fields=[before])), (200, {}),
                             (200, task(project=PROJECT, fields=[after])))
-    await subject.update("t", WorkPatch(priority="P0"))
+    await subject.update("t", WorkPatch(**{name: value}))
     result = await subject.get("t")
     assert json.loads(api.requests[1].content) == {"data": {"custom_fields": {
-        FIELDS["priority"]: "option-gid"}}}
-    assert result and result.routing.priority == "P0"
+        gid: "option-gid"}}}
+    assert result and getattr(result.routing, name) == value
 
 @pytest.mark.parametrize("mutate", [
+    lambda fields: fields.clear(),
+    lambda fields: fields[0].update(enabled=False),
     lambda fields: fields[0].update(resource_subtype="text"),
     lambda fields: fields[0]["enum_options"].append("malformed"),
     lambda fields: fields[0]["enum_options"][0].update(gid=""),
@@ -324,15 +328,16 @@ async def test_priority_mapping_minimal_update_and_strict_readback():
     lambda fields: fields[0]["enum_options"][0].update(enabled=False),
     lambda fields: fields[0]["enum_options"][0].update(name="Other"),
     lambda fields: fields[0]["enum_options"].append(
-        {"gid": "duplicate", "name": "P0", "enabled": True}),
+        {"gid": "duplicate", "name": fields[0]["enum_options"][0]["name"], "enabled": True}),
     lambda fields: fields.append(fields[0].copy()),
 ])
-async def test_invalid_priority_catalogue_denies_before_put(mutate):
-    fields = [field(FIELDS["priority"], option="P0")]
+@pytest.mark.parametrize(("name", "gid", "value"), [("priority", FIELDS["priority"], "P0"), ("work_type", WORK_TYPE, "Implementation")])
+async def test_invalid_strict_enum_catalogue_denies_before_put(mutate, name, gid, value):
+    fields = [field(gid, option=value)]
     mutate(fields)
     subject, api = provider((200, task(fields=fields)))
     with pytest.raises(ProviderError, match="routing write denied"):
-        await subject.update("t", WorkPatch(priority="P0"))
+        await subject.update("t", WorkPatch(**{name: value}))
     assert len(api.requests) == 1
 
 @pytest.mark.parametrize("fields", [
@@ -362,6 +367,10 @@ async def test_only_priority_rejects_malformed_option_sibling():
     with pytest.raises(ProviderError, match="routing write denied"):
         await subject.update("t", WorkPatch(notes="reason", priority="P0"))
     assert len(api.requests) == 1
+async def test_malformed_work_type_does_not_poison_other_reads_or_writes():
+    broken = field(WORK_TYPE, option="Implementation", display="Implementation"); broken["enum_options"].append({"gid": "broken"}); fields = [field(FIELDS["priority"], option="P0", display="P0"), field(FIELDS["horizon"], display="Stage 3"), broken]; subject, api = provider((200, task(project=PROJECT, fields=fields)), (200, {}))
+    result = await subject.get("t"); await subject.update("t", WorkPatch(completed=True)); assert result and (result.routing.priority, result.routing.horizon, result.routing.work_type) == ("P0", "Stage 3", None) and not result.completed
+    assert json.loads(api.requests[1].content) == {"data": {"completed": True}}
 async def test_update_is_narrow():
     subject, api = provider((200, {})); await subject.update("t", WorkPatch(completed=True))
     assert api.requests[0].method == "PUT" and json.loads(api.requests[0].content) == {
