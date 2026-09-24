@@ -385,9 +385,9 @@ def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
             networks.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
 
-    monkeypatch.setattr("switchstand.launch.docker_run", docker)
-    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.docker_run", docker)
+    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -477,7 +477,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
     monkeypatch.setattr(
-        "switchstand.launch.inspect_docker", lambda *args: None
+        "switchstand.development.inspect", lambda *args: None
     )
     monkeypatch.setattr(
         "switchstand.launch.provision",
@@ -503,7 +503,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
 
 def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "switchstand.launch.docker_command",
+        "switchstand.development.docker_command",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args, 1, stdout="", stderr="could not find an available, non-overlapping IPv4 address pool"
         )
@@ -514,9 +514,9 @@ def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
 
 def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
     removed = []
-    monkeypatch.setattr("switchstand.launch.inspect_docker", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.inspect", lambda *args: None)
     monkeypatch.setattr(
-        "switchstand.launch.remove_owned",
+        "switchstand.development.remove_owned",
         lambda *args: removed.append(args),
     )
     cleanup_development(
@@ -545,9 +545,9 @@ def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatc
         assert role is not None
         return DockerObject(kind, name, f"{role}-id", str(ACTIVE), role)
 
-    monkeypatch.setattr("switchstand.launch.inspect_docker", inspect)
+    monkeypatch.setattr("switchstand.development.inspect", inspect)
     monkeypatch.setattr(
-        "switchstand.launch.remove_owned", lambda *args: removed.append(args)
+        "switchstand.development.remove_owned", lambda *args: removed.append(args)
     )
     cleanup_development(None, None, None, tmp_path, str(ACTIVE), {})
     assert [(args[0], args[2], args[3]) for args in removed] == [
@@ -570,11 +570,11 @@ def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
             raise KeyboardInterrupt
         return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
 
-    monkeypatch.setattr("switchstand.launch.docker_run", docker)
-    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.docker_run", docker)
+    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.development.cleanup_development",
         lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
             (image, network, database, candidate, owner)
         ),
@@ -610,7 +610,7 @@ def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.codex_runtime.cleanup_development",
         lambda image, network, database, candidate, owner, env: events.append(
             (image, network, database, candidate, owner)
         ),
@@ -650,10 +650,10 @@ def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Process())
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
-    monkeypatch.setattr("switchstand.launch.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("switchstand.codex_runtime.time.monotonic", lambda: next(ticks))
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.development.cleanup_development",
         lambda image, network, database, candidate, owner, env: events.append(
             (image, network, database, candidate, owner)
         ),
@@ -676,7 +676,7 @@ def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_
         f"Path({str(output)!r}).write_text(','.join(map(str, "
         "sorted(signal.pthread_sigmask(signal.SIG_BLOCK, set())))))"
     )
-    monkeypatch.setattr("switchstand.launch.cleanup_development", lambda *args: None)
+    monkeypatch.setattr("switchstand.codex_runtime.cleanup_development", lambda *args: None)
     development = DevelopmentBoundary("image", "network", "database", "manifest")
     assert supervise_codex(
         [sys.executable, "-c", code],
@@ -706,7 +706,7 @@ def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
     )
     del messages[0]["result"]["data"][0]["allowed"]
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
@@ -718,7 +718,7 @@ def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
     )
     messages[0]["result"]["data"][0]["allowed"] = False
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="permission profile.*not available"):
@@ -729,7 +729,7 @@ def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
                                                ("/home/test/.claude/CLAUDE.md", False)])
 def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: readback_messages([source, "/repo/AGENTS.md"]),
     )
     if accepted:
@@ -743,7 +743,7 @@ def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
     messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
     messages[1]["result"]["sandbox"]["writableRoots"] = ["/repo", "/writer"]
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="unexpected writable roots"):
@@ -754,7 +754,7 @@ def test_readback_rejects_disabled_network(monkeypatch):
     messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
     messages[1]["result"]["sandbox"]["networkAccess"] = False
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="unexpected sandbox"):
