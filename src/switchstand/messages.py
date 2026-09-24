@@ -27,6 +27,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ApiVersion, ClosedModel
+from .core import ProviderError, State
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
 from .state import metadata
@@ -307,6 +308,48 @@ def _transition(
     )
 
 
+MessageAdmissionFailure = tuple[
+    Literal["denied", "stale"],
+    Literal["actor_not_admitted", "grant_version_changed", "message_not_granted"],
+]
+RuntimeAdmissionFailure = tuple[
+    Literal["stale", "recovery_required"],
+    Literal["runtime_generation_changed", "runtime_currentness_unavailable"],
+]
+
+
+def message_admission(
+    principal: PrincipalContext,
+    grant: WorkGrant | None,
+    grant_version: int,
+    *,
+    work_id: UUID | None = None,
+) -> MessageAdmissionFailure | None:
+    """Canonical message grant/capability admission shared by every caller surface."""
+    if grant is None or grant.principal != principal or not grant.current():
+        return "denied", "actor_not_admitted"
+    if grant.version != grant_version:
+        return "stale", "grant_version_changed"
+    if "message" not in grant.operations:
+        return "denied", "message_not_granted"
+    if (
+        work_id is not None
+        and grant.scope == "launch"
+        and grant.authority.active_work_id != work_id
+    ):
+        return "denied", "actor_not_admitted"
+    return None
+
+
+def runtime_admission(runtime: RuntimeCurrentness) -> RuntimeAdmissionFailure | None:
+    """Canonical managed-runtime currentness admission for message transitions."""
+    if runtime.current_generation is None:
+        return "recovery_required", "runtime_currentness_unavailable"
+    if runtime.generation != runtime.current_generation:
+        return "stale", "runtime_generation_changed"
+    return None
+
+
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
@@ -356,13 +399,13 @@ class MessageState:
     ) -> tuple[Literal["denied", "stale"], Literal[
         "no_current_grant", "grant_version_changed"
     ]] | None:
-        if grant is None or grant.principal != principal or not grant.current():
-            return "denied", "no_current_grant"
-        if grant.version != grant_version:
-            return "stale", "grant_version_changed"
-        if "message" not in grant.operations:
-            return "denied", "no_current_grant"
-        return None
+        failure = message_admission(principal, grant, grant_version)
+        if failure is None:
+            return None
+        status, reason = failure
+        if reason == "grant_version_changed":
+            return status, reason
+        return "denied", "no_current_grant"
 
     @staticmethod
     def _runtime(runtime: RuntimeCurrentness) -> tuple[
@@ -370,11 +413,7 @@ class MessageState:
             "runtime_generation_changed", "runtime_currentness_unavailable"
         ]
     ] | None:
-        if runtime.current_generation is None:
-            return "recovery_required", "runtime_currentness_unavailable"
-        if runtime.generation != runtime.current_generation:
-            return "stale", "runtime_generation_changed"
-        return None
+        return runtime_admission(runtime)
 
     async def submit(
         self, principal: PrincipalContext, route: MessageRoute, request: MessageSubmitRequest,
@@ -691,3 +730,146 @@ class MessageState:
             messages.c.sender_work_id == message_deliveries.c.sender_work_id,
             messages.c.message_id == message_deliveries.c.message_id,
         ))
+
+
+async def current_message_grant_version(
+    grants: GrantState, principal: PrincipalContext,
+) -> int | None:
+    """Infer the bound managed caller's current grant version; None means state unavailable."""
+    try:
+        grant = await grants.current(principal.key)
+        return 1 if grant is None else grant.version
+    except (SQLAlchemyError, ValueError):
+        return None
+
+
+async def send_message(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    request: MessageSendRequest,
+    *,
+    runtime: RuntimeCurrentness | None = None,
+    infer_grant_version: bool = False,
+    require_received: bool = False,
+) -> MessageSubmitResult:
+    """Shared message admission, replay, route resolution, and durable submit."""
+    try:
+        if runtime is not None and runtime_admission(runtime) is not None:
+            return MessageSubmitResult(
+                status="recovery_required", reason="state_unavailable"
+            )
+        context = None
+        recipient_work_id = request.recipient_work_id
+        if request.in_reply_to_delivery_id is not None:
+            context = await messages.reply_context(request.in_reply_to_delivery_id)
+            recipient_work_id = None if context is None else context.recipient_work_id
+        async with grants.locked_message_route(
+            principal.key, request.work_id, recipient_work_id,
+        ) as (grant, recipient):
+            version = (
+                grant.version
+                if infer_grant_version and grant is not None
+                else request.grant_version
+            )
+            failure = message_admission(
+                principal, grant, version, work_id=request.work_id
+            )
+            if failure is not None:
+                return MessageSubmitResult(status=failure[0], reason=failure[1])
+            if await state.get(request.work_id) is None:
+                return MessageSubmitResult(
+                    status="denied", reason="actor_not_admitted"
+                )
+            assert grant is not None
+            if infer_grant_version:
+                request = request.model_copy(update={"grant_version": grant.version})
+            replay = await messages.committed_public_replay(request.work_id, request)
+            if replay is not None:
+                return replay
+            if context is None and request.in_reply_to_delivery_id is not None:
+                return MessageSubmitResult(
+                    status="conflict", reason="reply_delivery_not_found"
+                )
+            assert recipient_work_id is not None
+            if recipient is None:
+                return MessageSubmitResult(
+                    status="denied", reason="recipient_route_unavailable"
+                )
+            handle = await state.get(recipient_work_id)
+            if handle is None or handle.provider != "asana":
+                return MessageSubmitResult(
+                    status="denied", reason="recipient_route_unavailable"
+                )
+            route_ref = request.route_ref if context is None else context.route_ref
+            assert route_ref is not None
+            route = MessageRoute(
+                recipient_work_id=recipient_work_id,
+                recipient_grant_version=recipient.version,
+                projection_provider="asana",
+                projection_target=handle.provider_work_id,
+            )
+            submitted = MessageSubmitRequest(
+                api_version=request.api_version,
+                message_id=request.message_id,
+                grant_version=grant.version,
+                route_ref=route_ref,
+                kind="request" if context is None else "result",
+                payload=request.payload,
+                in_reply_to_delivery_id=request.in_reply_to_delivery_id,
+            )
+            if require_received:
+                assert runtime is not None
+                return await messages.submit_received_result(
+                    request.work_id, grant.version, runtime.generation, route, submitted
+                )
+            return await messages.submit_admitted(request.work_id, route, submitted)
+    except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+        return MessageSubmitResult(
+            status="recovery_required", reason="state_unavailable"
+        )
+
+
+async def pending_messages(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    work_id: UUID,
+    request: MessagePendingRequest,
+    *,
+    runtime: RuntimeCurrentness | None = None,
+    infer_grant_version: bool = False,
+) -> MessagePendingResult:
+    """Shared pending-message admission for explicit and managed callers."""
+    if runtime is not None and runtime_admission(runtime) is not None:
+        return MessagePendingResult(
+            status="recovery_required", reason="state_unavailable"
+        )
+    if infer_grant_version:
+        version = await current_message_grant_version(grants, principal)
+        if version is None:
+            return MessagePendingResult(
+                status="recovery_required", reason="state_unavailable"
+            )
+        return await messages.pending(
+            principal, request.model_copy(update={"grant_version": version})
+        )
+    try:
+        async with grants.locked(principal.key, work_id) as grant:
+            failure = message_admission(
+                principal, grant, request.grant_version, work_id=work_id
+            )
+            if failure is not None:
+                return MessagePendingResult(status=failure[0], reason=failure[1])
+            if await state.get(work_id) is None:
+                return MessagePendingResult(
+                    status="denied", reason="actor_not_admitted"
+                )
+            return await messages.pending_admitted(work_id, request)
+    except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+        return MessagePendingResult(
+            status="recovery_required", reason="state_unavailable"
+        )
+
