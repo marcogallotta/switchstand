@@ -15,8 +15,8 @@ from switchstand.codex_runtime import (
     codex_command,
     filesystem_override,
     readback,
-    validate_codex_args,
     supervise_codex,
+    validate_codex_args,
 )
 from switchstand.docker import DockerObject
 from switchstand.launch import (
@@ -33,7 +33,6 @@ from switchstand.launch import (
     prepare_managed_run,
     provision,
     run,
-    supervise_codex,
 )
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
