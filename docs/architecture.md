@@ -1,31 +1,67 @@
 # Architecture
 
-The STDIO MCP adapter projects exactly three tools onto a controller service. The service enforces launch-bound
-read/write authority, stale revision checks, approved-area membership, minimal provider effects, and
-authoritative readback. A thin provider adapter owns Asana/HTTPX details. A thin state adapter maps opaque UUID
-WorkIds to provider records and locks each mapping during writes.
+Switchstand keeps provider identity behind stable WorkIds. `PostgresState` owns WorkId and opaque event bindings;
+`AsanaProvider` owns Asana HTTP/provider semantics; controllers and application gateways consume those
+provider-neutral bindings rather than exposing provider credentials to agents.
 
-PostgreSQL contains one application table, `work_handles`, stored on a named Compose volume. Local configuration
-lives in `~/.config/switchstand/.env`; Compose passes it to the controller. The MCP surface exposes no raw provider
-operations. A separate operator-only command validates explicit Asana tasks against the configured approved-area
-registry, preserves exact task identity across project membership changes, binds them to stable opaque WorkIds,
-and prints the launch configuration without exposing provider IDs to agents.
+## Durable state and authority
 
-## Current development-control boundaries
+PostgreSQL is not a single-table store. Current durable application state includes:
 
-The landed Stage-1 repairs narrow three previously unsafe development paths without claiming the wider code-red
-recovery is complete. Git landing reconciliation follows the repository's GitHub merge-commit model: the landing must be
-the current result with exactly the reviewed base and reviewed candidate as its two ordered parents, the reviewed
-candidate must descend from that base, and the landing tree must equal the reviewed candidate tree. Existing writer reuse is repository-bound: a reusable target must
-be the expected clean linked worktree registered by the requesting repository, with the same absolute Git common
-directory, so another clone's same-named worktree is rejected. The `scripts/check` focused host path uses one
-120-second deadline beginning before bootstrap/setup and applies the remaining budget through manifest verification
-and the focused commands, with a forced-kill phase for TERM-resistant timeouts and no full-build fallback.
+- `work_handles` and `work_event_handles` for provider-neutral work/event identity;
+- `work_grants` and `effect_intents` for current caller authority and durable protected-effect
+  reconciliation;
+- `messages`, `message_deliveries` and `message_projection` for durable agent-message identity,
+  receipt and provider projection state;
+- `lifecycle_obligations` for required-result continuation/persistence state.
 
-Important recovery defects remain outside those repairs. Docker cleanup/cancellation still lacks exact ownership and
-cancellation proof for the affected resources. The development launcher/control path is still supplied
-from this repository and ambient host inputs rather than from an independently pinned CONTROL release, so the current
-development path must not be described as independent CONTROL.
+`WorkGrant` is the authority contract. Provider writes are mediated by bounded gateways that require current
+principal/grant/target authority, preserve one operation identity across retries, record possible sends before external
+effects, and require authoritative readback before claiming an applied result. UNKNOWN is a durable recovery state, not
+permission to resend with a new identity.
 
-Bootstrap excludes inbound HTTP, UI, orchestration, remote execution, claims, leases, fences, audit storage, and
-broad Asana APIs. The retired `switchstandold` tree supplies evidence only and is not an architectural ancestor.
+## MCP surfaces
+
+There are multiple deliberately different MCP surfaces; there is no three-tool global MCP contract.
+
+**Authenticated ChatGPT HTTP MCP** (`chatgpt_edge.py`) exposes the workspace/grant-aware ordinary surface:
+provider-neutral work discovery/read/structure/history/attachment/event operations, protected append/create/update,
+durable message send/pending, and required-result saving. `source_task`, `source_stories` and
+`source_story` remain public transitional raw-Asana reads for legacy recovery/reference workflows; they are not
+the preferred provider-neutral product vocabulary.
+
+**Managed task-bound STDIO MCP** (`mcp.py::build_server`) binds one active WorkId plus bounded references from
+trusted launch state. It exposes launch-bound work/history/attachment/event reads, the transitional exact-source reads,
+bounded append/update where configured, and managed message pending/receive/recover/result/disposition operations.
+The unbound server exposes no managed task authority. The smaller context server exposes only launch-bound
+`work_get` and `work_history`.
+
+**Development MCP** (`development.py`) is separate from product work authority. Its bound surface is
+`check`, `commit_all_current_worktree`, `quality` and `run_status`, operating only on the
+exact linked writer/run identity supplied by trusted launch state.
+
+## Development and launch control
+
+Managed launch is orchestration, but current ownership is still broader than the desired end state:
+`launch.py` validates the linked writer, prepares the candidate development image/network/database, performs
+Codex App Server configuration/readback, supervises the launched process and cleans up its prepared resources.
+`development.py` owns focused/full workload execution and exact workload-container cleanup, while `docker.py`
+provides the shared exact-owned Docker inspection/name/label/removal primitives. This overlap is current repository
+truth and remains a cleanup boundary; do not infer that Docker/runtime ownership has already fully converged.
+
+The isolated-launch path still has a host-side `launch_source.py` seam that performs protected Asana source
+reads and Git remote/ref verification before candidate materialization. That path is transitional current behavior, not
+a second provider architecture to copy into new code.
+
+Git landing reconciliation follows the repository's GitHub merge-commit model: the landing must be the current result
+with exactly the reviewed base and reviewed candidate as its two ordered parents, the reviewed candidate must descend
+from that base, and the landing tree must equal the reviewed candidate tree.
+
+## Transitional compatibility
+
+- raw `source_*` agent tools remain only until required ordinary/recovery/failback consumers have verified
+  provider-neutral replacements and outstanding legacy references are drained;
+- `scripts/switchstand-context` and `scripts/switchstand-start` are compatibility wrappers around current
+  entry paths;
+- provider IDs and credentials belong inside trusted provider/launch adapters, not normal agent-facing authority;
+- the retired `switchstandold` tree is evidence only and is not an architectural ancestor.
