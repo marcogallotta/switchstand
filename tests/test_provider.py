@@ -1,10 +1,12 @@
 import json
+from uuid import uuid4
 
 import httpx
 import pytest
 
 from switchstand.contracts import WorkContext, WorkPatch, WorkPlacement
-from switchstand.core import ProviderError, UnknownEffect
+from switchstand.core import Handle, ProviderError, UnknownEffect
+from switchstand.discovery import WorkDiscovery
 from switchstand.provider import (
     ANCESTRY_GETS,
     ATTACHMENT_FIELDS,
@@ -53,6 +55,69 @@ def provider(*responses, test_project_gid=None):
 
 
 TEST_PROJECT = "9999999999999999"
+
+
+def identified_task(gid, **values):
+    payload = task(**values)
+    payload["data"]["gid"] = gid
+    return payload
+
+
+class BindingState:
+    def __init__(self):
+        self.handles = {}
+
+    async def bind(self, provider_name, provider_work_id):
+        key = provider_name, provider_work_id
+        self.handles.setdefault(key, Handle(uuid4(), *key))
+        return self.handles[key]
+
+    async def bind_many(self, provider_name, provider_work_ids):
+        return tuple([await self.bind(provider_name, provider_work_id)
+                      for provider_work_id in provider_work_ids])
+
+
+@pytest.mark.parametrize("fault", [None, "changed_parent", "repeated_offset"])
+async def test_structure_boundary_is_complete_or_binds_nothing(fault):
+    target = identified_task("target", parent="parent", project=PROJECT)
+    parent = identified_task("parent", project=PROJECT)
+    child_one = identified_task(
+        "child-1", parent="other" if fault == "changed_parent" else "target",
+        project=PROJECT,
+    )
+    child_two = identified_task("child-2", parent="target", project=PROJECT)
+    responses = [
+        (200, target), (200, parent),
+        (200, {"data": [{"gid": "child-1"}],
+               "next_page": {"offset": "page-2"}}),
+        (200, child_one),
+    ]
+    if fault != "changed_parent":
+        responses.extend([
+            (200, {"data": [{"gid": "child-2"}], "next_page": (
+                {"offset": "page-2"} if fault == "repeated_offset" else None
+            )}),
+            (200, child_two),
+        ])
+    if fault is None:
+        responses.append((200, target))
+    subject, api = provider(*responses)
+    state = BindingState()
+
+    result = await WorkDiscovery("asana", subject, state).structure("target", "r1")
+
+    if fault is not None:
+        assert result is None
+        assert state.handles == {}
+        return
+    assert result is not None and result.status == "ok"
+    assert result.parent is not None and result.parent.title == "Title"
+    assert [child.title for child in result.children] == ["Title", "Title"]
+    assert set(state.handles) == {
+        ("asana", "parent"), ("asana", "child-1"), ("asana", "child-2"),
+    }
+    assert [request.url.params.get("offset") for request in api.requests
+            if request.url.path.endswith("/subtasks")] == [None, "page-2"]
 
 
 async def test_work_context_uses_exact_task_read_and_hides_provider_ids():

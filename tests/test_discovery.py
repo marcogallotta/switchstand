@@ -6,7 +6,12 @@ from pydantic import ValidationError
 
 from switchstand.contracts import Routing, WorkContext, WorkSearchRequest
 from switchstand.core import Handle, ProviderError
-from switchstand.discovery import ProviderSearchItem, ProviderSearchPage, WorkDiscovery
+from switchstand.discovery import (
+    ProviderSearchItem,
+    ProviderSearchPage,
+    ProviderStructure,
+    WorkDiscovery,
+)
 from switchstand.provider import PROJECT, PROJECTS, AsanaProvider
 
 
@@ -217,6 +222,12 @@ class MemoryState:
             self.handles[key] = Handle(uuid4(), provider, provider_work_id)
         return self.handles[key]
 
+    async def bind_many(
+        self, provider: str, provider_work_ids: tuple[str, ...]
+    ) -> tuple[Handle, ...]:
+        return tuple([await self.bind(provider, provider_work_id)
+                      for provider_work_id in provider_work_ids])
+
 
 class FakeProvider:
     def __init__(self):
@@ -240,6 +251,18 @@ class FakeProvider:
             next_cursor="next",
         )
 
+    async def structure_work(self, provider_work_id, observed_revision):
+        self.calls.append((provider_work_id, observed_revision))
+        def item(gid):
+            return ProviderSearchItem(
+                provider_work_id=gid, title=gid, completed=False, revision="r1",
+                routing=Routing(), context=WorkContext(),
+            )
+        return ProviderStructure(
+            status="ok", revision="r1", parent=item("parent"),
+            children=(item("child-1"), item("child-2")),
+        )
+
 
 async def test_discovery_returns_only_stable_provider_neutral_work_ids():
     provider = FakeProvider()
@@ -259,6 +282,60 @@ async def test_discovery_returns_only_stable_provider_neutral_work_ids():
     rendered = first.model_dump(mode="json")
     assert all("provider" not in item and "task_gid" not in item and "gid" not in item
                for item in rendered["items"])
+
+
+async def test_structure_binds_complete_provider_snapshot_to_stable_ids():
+    provider = FakeProvider()
+    state = MemoryState()
+    subject = WorkDiscovery("asana", provider, state)
+
+    first = await subject.structure("target", "r1")
+    second = await subject.structure("target", "r1")
+
+    assert first is not None and second is not None
+    assert first.status == second.status == "ok"
+    assert first.parent is not None and second.parent is not None
+    assert first.parent.id == second.parent.id
+    assert [child.id for child in first.children] == [
+        child.id for child in second.children
+    ]
+    assert set(state.handles) == {
+        ("asana", "parent"), ("asana", "child-1"), ("asana", "child-2"),
+    }
+
+
+async def test_structure_stale_snapshot_does_not_bind_relations():
+    class StaleProvider(FakeProvider):
+        async def structure_work(self, *_args):
+            return ProviderStructure(status="stale", revision="r2")
+
+    state = MemoryState()
+    result = await WorkDiscovery("asana", StaleProvider(), state).structure(
+        "target", "r1"
+    )
+
+    assert result is not None and result.status == "stale" and result.revision == "r2"
+    assert result.parent is None and result.children == () and state.handles == {}
+
+
+async def test_structure_later_batch_failure_leaves_no_bindings():
+    class FailingState(MemoryState):
+        async def bind_many(self, provider, provider_work_ids):
+            staged = dict(self.handles)
+            for index, provider_work_id in enumerate(provider_work_ids):
+                if index == 1:
+                    raise ValueError("injected later binding failure")
+                staged[(provider, provider_work_id)] = Handle(
+                    uuid4(), provider, provider_work_id
+                )
+            self.handles = staged
+            return tuple(staged[(provider, item)] for item in provider_work_ids)
+
+    state = FailingState()
+    result = await WorkDiscovery("asana", FakeProvider(), state).structure("target", "r1")
+
+    assert result is None
+    assert state.handles == {}
 
 
 class BrokenProvider:

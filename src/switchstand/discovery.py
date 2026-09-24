@@ -1,7 +1,7 @@
 """Provider-neutral work discovery over admitted backend scope."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderError
@@ -23,14 +23,37 @@ class ProviderSearchPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True)
+class ProviderStructure:
+    status: Literal["ok", "stale"]
+    revision: str
+    parent: ProviderSearchItem | None = None
+    children: tuple[ProviderSearchItem, ...] = ()
+
+
+@dataclass(frozen=True)
+class DiscoveredStructure:
+    status: Literal["ok", "stale"]
+    revision: str
+    parent: WorkSearchItem | None = None
+    children: tuple[WorkSearchItem, ...] = ()
+
+
 class DiscoveryProvider(Protocol):
     async def search_work(
         self, text: str | None, completed: bool | None, cursor: str | None, limit: int,
     ) -> ProviderSearchPage: ...
 
+    async def structure_work(
+        self, provider_work_id: str, observed_revision: str,
+    ) -> ProviderStructure: ...
+
 
 class DiscoveryState(Protocol):
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
+    async def bind_many(
+        self, provider: str, provider_work_ids: tuple[str, ...]
+    ) -> tuple[Handle, ...]: ...
 
 
 class WorkDiscovery:
@@ -68,3 +91,39 @@ class WorkDiscovery:
             )
         except (ProviderError, TypeError, ValueError):
             return WorkSearchResult(status="provider_error")
+
+    async def structure(
+        self, provider_work_id: str, observed_revision: str,
+    ) -> DiscoveredStructure | None:
+        """Bind relations only after the provider verifies one complete snapshot."""
+        try:
+            result = await self.provider.structure_work(
+                provider_work_id, observed_revision
+            )
+            if result.status == "stale":
+                return DiscoveredStructure(status="stale", revision=result.revision)
+
+            relations = ((result.parent,) if result.parent is not None else ()) + result.children
+            handles = await self.state.bind_many(
+                self.provider_name,
+                tuple(candidate.provider_work_id for candidate in relations),
+            )
+
+            def project(candidate: ProviderSearchItem, handle: Handle) -> WorkSearchItem:
+                return WorkSearchItem(
+                    id=handle.id, title=candidate.title,
+                    completed=candidate.completed, revision=candidate.revision,
+                    routing=candidate.routing, context=candidate.context,
+                )
+
+            items = tuple(project(candidate, handle) for candidate, handle in zip(
+                relations, handles, strict=True
+            ))
+            parent = items[0] if result.parent is not None else None
+            children = items[1:] if result.parent is not None else items
+            return DiscoveredStructure(
+                status="ok", revision=result.revision,
+                parent=parent, children=children,
+            )
+        except (ProviderError, TypeError, ValueError):
+            return None
