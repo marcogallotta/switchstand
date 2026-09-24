@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import switchstand.state as state_module
 from switchstand.state import PostgresState, metadata, work_handles
 
 
@@ -30,6 +31,19 @@ async def test_bind_has_stable_opaque_identity(state):
     assert first.id.version == 4
     await state.bind("other", "elsewhere")
     assert await state.bound_provider_ids("asana") == frozenset({"provider-id"})
+
+
+async def test_bind_many_rolls_back_earlier_insert_on_later_conflict(state, monkeypatch):
+    occupied = uuid4()
+    await state.bind_reserved(occupied, "other", "existing")
+    generated = iter((uuid4(), occupied))
+    monkeypatch.setattr(state_module, "uuid4", lambda: next(generated))
+
+    with pytest.raises(ValueError, match="binding conflict"):
+        await state.bind_many("asana", ("parent", "child"))
+
+    assert await state.bound_provider_ids("asana") == frozenset()
+    assert await state.get(occupied) is not None
 
 
 async def test_concurrent_bind_converges_on_one_durable_identity(state):

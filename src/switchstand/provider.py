@@ -23,7 +23,7 @@ from .core import (
     ProviderWork,
     UnknownEffect,
 )
-from .discovery import ProviderSearchItem, ProviderSearchPage
+from .discovery import ProviderSearchItem, ProviderSearchPage, ProviderStructure
 
 PROJECTS = (
     "1218210259719507",
@@ -171,6 +171,32 @@ class AsanaProvider:
             key=lambda placement: (placement.area, placement.stage or ""),
         ))
         return WorkContext(assignee=assignee, placements=placements)
+
+    def _structure_item(self, gid: str, task: JSON) -> ProviderSearchItem:
+        if self._gid(task) != gid:
+            raise TypeError
+        title, completed, revision = (
+            task.get("name"), task.get("completed"), task.get("modified_at")
+        )
+        if (not isinstance(title, str) or not isinstance(completed, bool)
+                or not isinstance(revision, str)):
+            raise TypeError
+        return ProviderSearchItem(
+            provider_work_id=gid, title=title, completed=completed,
+            revision=revision, routing=self._search_routing(task),
+            context=self._work_context(task),
+        )
+
+    def _parent_gid(self, task: JSON) -> str | None:
+        if "parent" not in task:
+            raise TypeError
+        parent = task["parent"]
+        if parent is None:
+            return None
+        gid = self._gid(parent)
+        if not gid:
+            raise TypeError
+        return gid
 
     def _related_candidate(self, gid: str, task: JSON, parent_gid: str) -> RelatedCandidate:
         title, revision = task.get("name"), task.get("modified_at")
@@ -390,6 +416,87 @@ class AsanaProvider:
                                  candidates=tuple(candidates))
         except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
             return uncertain("read_unavailable")
+
+    async def structure_work(
+        self, provider_work_id: str, observed_revision: str,
+    ) -> ProviderStructure:
+        """Return one verified immediate-family snapshot or fail without partial data."""
+        try:
+            target = await self._task(provider_work_id)
+            if (target is None or self._gid(target) != provider_work_id
+                    or not await self._canonical(target)):
+                raise ProviderError("provider structure unavailable")
+            revision = target.get("modified_at")
+            if not isinstance(revision, str):
+                raise TypeError
+            if revision != observed_revision:
+                return ProviderStructure(status="stale", revision=revision)
+            parent_gid = self._parent_gid(target)
+
+            parent: ProviderSearchItem | None = None
+            if parent_gid is not None:
+                parent_task = await self._task(parent_gid)
+                if (parent_task is None or not await self._canonical(parent_task)):
+                    raise ProviderError("provider structure unavailable")
+                parent = self._structure_item(parent_gid, parent_task)
+
+            children: list[ProviderSearchItem] = []
+            seen_children: set[str] = set()
+            seen_offsets: set[str] = set()
+            offset: str | None = None
+            while True:
+                params: dict[str, str | int] = {
+                    "limit": FINDER_LIMIT, "opt_fields": "gid",
+                }
+                if offset is not None:
+                    params["offset"] = offset
+                response = await self.client.get(
+                    f"/tasks/{provider_work_id}/subtasks", params=params
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows, next_page = payload["data"], payload["next_page"]
+                if not isinstance(rows, list):
+                    raise TypeError
+                raw_rows = cast(list[object], rows)
+                if len(raw_rows) > FINDER_LIMIT:
+                    raise TypeError
+                if len(seen_children) + len(raw_rows) > FINDER_MAX_CHILDREN:
+                    raise TypeError
+                for row in raw_rows:
+                    child_gid = self._gid(row)
+                    if not child_gid or child_gid in seen_children:
+                        raise TypeError
+                    seen_children.add(child_gid)
+                    child = await self._task(child_gid)
+                    if (child is None or self._parent_gid(child) != provider_work_id
+                            or not await self._canonical(child)):
+                        raise ProviderError("provider structure unavailable")
+                    children.append(self._structure_item(child_gid, child))
+                if next_page is None:
+                    break
+                next_offset = (
+                    cast(JSON, next_page).get("offset")
+                    if isinstance(next_page, dict) else None
+                )
+                if (not isinstance(next_offset, str) or not next_offset
+                        or len(next_offset) > 1024 or next_offset in seen_offsets):
+                    raise TypeError
+                seen_offsets.add(next_offset)
+                offset = next_offset
+
+            readback = await self._task(provider_work_id)
+            if (readback is None or self._gid(readback) != provider_work_id
+                    or readback.get("modified_at") != revision
+                    or self._parent_gid(readback) != parent_gid
+                    or not await self._canonical(readback)):
+                raise ProviderError("provider structure unavailable")
+            return ProviderStructure(
+                status="ok", revision=revision, parent=parent,
+                children=tuple(children),
+            )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("provider structure unavailable") from None
 
     async def find_grouped(self, root_task_gid: str) -> GroupedLookup:
         """Discover bounded field matches; verified candidates never prove family completeness."""
