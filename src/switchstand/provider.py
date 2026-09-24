@@ -56,6 +56,14 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
 ATTACHMENT_FIELDS = "name,parent.gid"
 JSON = dict[str, Any]
+
+
+class _TraversalFailure(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 PRIORITIES = {f"P{value}": value for value in range(4)}
 
 
@@ -83,6 +91,69 @@ class AsanaProvider:
             return cast(JSON, data)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None
+
+    async def _verified_task(self, gid: str) -> JSON:
+        task = await self._task(gid)
+        if task is None or self._gid(task) != gid:
+            raise _TraversalFailure("not_returned")
+        if not await self._canonical(task):
+            raise _TraversalFailure("not_canonical")
+        return task
+
+    async def _direct_children(
+        self, parent_gid: str, *, require_canonical: bool, offset_limit: int | None = None,
+    ) -> tuple[tuple[str, JSON], ...]:
+        children: list[tuple[str, JSON]] = []
+        seen_gids: set[str] = set()
+        seen_offsets: set[str] = set()
+        offset: str | None = None
+        while True:
+            params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
+            if offset is not None:
+                params["offset"] = offset
+            response = await self.client.get(
+                f"/tasks/{parent_gid}/subtasks", params=params
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows, next_page = payload["data"], payload["next_page"]
+            if not isinstance(rows, list):
+                raise _TraversalFailure("invalid_subtask_page")
+            raw_rows = cast(list[object], rows)
+            if len(raw_rows) > FINDER_LIMIT:
+                raise _TraversalFailure("invalid_subtask_page")
+            if len(children) + len(raw_rows) > FINDER_MAX_CHILDREN:
+                raise _TraversalFailure("subtask_cap")
+            for row in raw_rows:
+                child_gid = self._gid(row)
+                if child_gid is None:
+                    raise _TraversalFailure("invalid_subtask_page")
+                if child_gid in seen_gids:
+                    raise _TraversalFailure("duplicate_subtask")
+                seen_gids.add(child_gid)
+                child = await self._task(child_gid)
+                if child is None or self._gid(child) != child_gid:
+                    raise _TraversalFailure("candidate_not_returned")
+                if self._parent_gid(child) != parent_gid:
+                    raise _TraversalFailure("relationship_changed")
+                if require_canonical and not await self._canonical(child):
+                    raise _TraversalFailure("candidate_not_canonical")
+                children.append((child_gid, child))
+            if next_page is None:
+                return tuple(children)
+            next_offset = (
+                cast(JSON, next_page).get("offset")
+                if isinstance(next_page, dict) else None
+            )
+            if (
+                not isinstance(next_offset, str)
+                or not next_offset
+                or next_offset in seen_offsets
+                or offset_limit is not None and len(next_offset) > offset_limit
+            ):
+                raise _TraversalFailure("invalid_subtask_offset")
+            seen_offsets.add(next_offset)
+            offset = next_offset
 
     async def _story(self, gid: str) -> JSON | None:
         try:
@@ -338,82 +409,54 @@ class AsanaProvider:
         observed_revision: str | None = None
 
         def uncertain(reason: str) -> RelatedLookup:
-            return RelatedLookup(status="UH_OH", work_task_gid=work_task_gid,
-                                 observed_revision=observed_revision,
-                                 candidates=() if reason == "work_not_canonical" else tuple(candidates),
-                                 reason=reason)
+            return RelatedLookup(
+                status="UH_OH", work_task_gid=work_task_gid,
+                observed_revision=observed_revision,
+                candidates=() if reason == "work_not_canonical" else tuple(candidates),
+                reason=reason,
+            )
 
         try:
-            work = await self._task(work_task_gid)
-            if work is None or self._gid(work) != work_task_gid:
-                return uncertain("work_not_returned")
+            try:
+                work = await self._verified_task(work_task_gid)
+            except _TraversalFailure as failure:
+                return uncertain(
+                    "work_not_returned"
+                    if failure.reason == "not_returned"
+                    else "work_not_canonical"
+                )
             revision = work.get("modified_at")
             if not isinstance(revision, str):
                 return uncertain("work_revision_unavailable")
             observed_revision = revision
-            if not await self._canonical(work):
-                return uncertain("work_not_canonical")
 
-            offset: str | None = None
-            seen_offsets: set[str] = set()
-            seen_child_gids: set[str] = set()
-            incomplete_reason: str | None = None
-            while True:
-                params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
-                if offset is not None:
-                    params["offset"] = offset
-                response = await self.client.get(f"/tasks/{work_task_gid}/subtasks", params=params)
-                response.raise_for_status()
-                payload = response.json()
-                rows, next_page = payload["data"], payload["next_page"]
-                if not isinstance(rows, list):
-                    return uncertain("invalid_subtask_page")
-                raw_rows = cast(list[object], rows)
-                if len(raw_rows) > FINDER_LIMIT:
-                    return uncertain("invalid_subtask_page")
-                if len(candidates) + len(raw_rows) > FINDER_MAX_CHILDREN:
-                    incomplete_reason = "subtask_cap"
-                    break
-                for row in raw_rows:
-                    child_gid = self._gid(row)
-                    if child_gid is None:
-                        return uncertain("invalid_subtask_page")
-                    child = await self._task(child_gid)
-                    if child is None or self._gid(child) != child_gid:
-                        return uncertain("candidate_not_returned")
-                    if self._gid(child.get("parent")) != work_task_gid:
-                        return uncertain("relationship_changed")
-                    if child_gid in seen_child_gids:
-                        return uncertain("duplicate_subtask")
-                    seen_child_gids.add(child_gid)
-                    candidates.append(self._related_candidate(child_gid, child, work_task_gid))
-                if next_page is None:
-                    break
-                next_offset = cast(JSON, next_page).get("offset") if isinstance(next_page, dict) else None
-                if (not isinstance(next_offset, str) or not next_offset
-                        or next_offset in seen_offsets):
-                    incomplete_reason = "invalid_subtask_offset"
-                    break
-                if len(candidates) >= FINDER_MAX_CHILDREN:
-                    incomplete_reason = "subtask_cap"
-                    break
-                seen_offsets.add(next_offset)
-                offset = next_offset
+            try:
+                children = await self._direct_children(
+                    work_task_gid, require_canonical=False
+                )
+            except _TraversalFailure as failure:
+                return uncertain(failure.reason)
+            for child_gid, child in children:
+                candidates.append(
+                    self._related_candidate(child_gid, child, work_task_gid)
+                )
 
-            readback = await self._task(work_task_gid)
-            if readback is None or self._gid(readback) != work_task_gid:
-                return uncertain("work_readback_unavailable")
-            if not await self._canonical(readback):
-                return uncertain("work_not_canonical")
+            try:
+                readback = await self._verified_task(work_task_gid)
+            except _TraversalFailure as failure:
+                return uncertain(
+                    "work_readback_unavailable"
+                    if failure.reason == "not_returned"
+                    else "work_not_canonical"
+                )
             if readback.get("modified_at") != observed_revision:
                 return uncertain("work_stale")
-            if incomplete_reason is not None:
-                return uncertain(incomplete_reason)
             if not candidates:
                 return uncertain("no_direct_subtasks")
-            return RelatedLookup(status="CANDIDATES", work_task_gid=work_task_gid,
-                                 observed_revision=observed_revision,
-                                 candidates=tuple(candidates))
+            return RelatedLookup(
+                status="CANDIDATES", work_task_gid=work_task_gid,
+                observed_revision=observed_revision, candidates=tuple(candidates),
+            )
         except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
             return uncertain("read_unavailable")
 
@@ -422,10 +465,10 @@ class AsanaProvider:
     ) -> ProviderStructure:
         """Return one verified immediate-family snapshot or fail without partial data."""
         try:
-            target = await self._task(provider_work_id)
-            if (target is None or self._gid(target) != provider_work_id
-                    or not await self._canonical(target)):
-                raise ProviderError("provider structure unavailable")
+            try:
+                target = await self._verified_task(provider_work_id)
+            except _TraversalFailure:
+                raise ProviderError("provider structure unavailable") from None
             revision = target.get("modified_at")
             if not isinstance(revision, str):
                 raise TypeError
@@ -435,65 +478,35 @@ class AsanaProvider:
 
             parent: ProviderSearchItem | None = None
             if parent_gid is not None:
-                parent_task = await self._task(parent_gid)
-                if (parent_task is None or not await self._canonical(parent_task)):
-                    raise ProviderError("provider structure unavailable")
+                try:
+                    parent_task = await self._verified_task(parent_gid)
+                except _TraversalFailure:
+                    raise ProviderError("provider structure unavailable") from None
                 parent = self._structure_item(parent_gid, parent_task)
 
-            children: list[ProviderSearchItem] = []
-            seen_children: set[str] = set()
-            seen_offsets: set[str] = set()
-            offset: str | None = None
-            while True:
-                params: dict[str, str | int] = {
-                    "limit": FINDER_LIMIT, "opt_fields": "gid",
-                }
-                if offset is not None:
-                    params["offset"] = offset
-                response = await self.client.get(
-                    f"/tasks/{provider_work_id}/subtasks", params=params
+            try:
+                children = await self._direct_children(
+                    provider_work_id, require_canonical=True, offset_limit=1024
                 )
-                response.raise_for_status()
-                payload = response.json()
-                rows, next_page = payload["data"], payload["next_page"]
-                if not isinstance(rows, list):
-                    raise TypeError
-                raw_rows = cast(list[object], rows)
-                if len(raw_rows) > FINDER_LIMIT:
-                    raise TypeError
-                if len(seen_children) + len(raw_rows) > FINDER_MAX_CHILDREN:
-                    raise TypeError
-                for row in raw_rows:
-                    child_gid = self._gid(row)
-                    if not child_gid or child_gid in seen_children:
-                        raise TypeError
-                    seen_children.add(child_gid)
-                    child = await self._task(child_gid)
-                    if (child is None or self._parent_gid(child) != provider_work_id
-                            or not await self._canonical(child)):
-                        raise ProviderError("provider structure unavailable")
-                    children.append(self._structure_item(child_gid, child))
-                if next_page is None:
-                    break
-                next_offset = (
-                    cast(JSON, next_page).get("offset")
-                    if isinstance(next_page, dict) else None
-                )
-                if (not isinstance(next_offset, str) or not next_offset
-                        or len(next_offset) > 1024 or next_offset in seen_offsets):
-                    raise TypeError
-                seen_offsets.add(next_offset)
-                offset = next_offset
+            except _TraversalFailure:
+                raise ProviderError("provider structure unavailable") from None
+            child_items = tuple(
+                self._structure_item(child_gid, child)
+                for child_gid, child in children
+            )
 
-            readback = await self._task(provider_work_id)
-            if (readback is None or self._gid(readback) != provider_work_id
-                    or readback.get("modified_at") != revision
-                    or self._parent_gid(readback) != parent_gid
-                    or not await self._canonical(readback)):
+            try:
+                readback = await self._verified_task(provider_work_id)
+            except _TraversalFailure:
+                raise ProviderError("provider structure unavailable") from None
+            if (
+                readback.get("modified_at") != revision
+                or self._parent_gid(readback) != parent_gid
+            ):
                 raise ProviderError("provider structure unavailable")
             return ProviderStructure(
                 status="ok", revision=revision, parent=parent,
-                children=tuple(children),
+                children=child_items,
             )
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider structure unavailable") from None
@@ -519,15 +532,18 @@ class AsanaProvider:
                     and fields[0].get("text_value") == root_task_gid)
 
         try:
-            root = await self._task(root_task_gid)
-            if root is None or self._gid(root) != root_task_gid:
-                return uncertain("work_not_returned")
+            try:
+                root = await self._verified_task(root_task_gid)
+            except _TraversalFailure as failure:
+                return uncertain(
+                    "work_not_returned"
+                    if failure.reason == "not_returned"
+                    else "work_not_canonical"
+                )
             revision = root.get("modified_at")
             if not isinstance(revision, str):
                 return uncertain("work_revision_unavailable")
             observed_revision = revision
-            if not await self._canonical(root):
-                return uncertain("work_not_canonical")
             if not identifies_root(root):
                 return uncertain("root_identity_unverified")
 
@@ -555,17 +571,20 @@ class AsanaProvider:
                 seen.add(gid)
                 gids.append(gid)
             for gid in gids:
-                task = await self._task(gid)
-                if task is None or self._gid(task) != gid:
-                    return uncertain("candidate_not_returned")
+                try:
+                    task = await self._verified_task(gid)
+                except _TraversalFailure as failure:
+                    return uncertain(
+                        "candidate_not_returned"
+                        if failure.reason == "not_returned"
+                        else "candidate_not_canonical"
+                    )
                 fields = [field for field in self._custom_fields(task)
                           if field.get("gid") == ROOT_WORK_GID]
                 if (len(fields) != 1 or fields[0].get("enabled") is not True
                         or fields[0].get("resource_subtype") != "text"
                         or fields[0].get("text_value") != root_task_gid):
                     return uncertain("relationship_changed")
-                if not await self._canonical(task):
-                    return uncertain("candidate_not_canonical")
                 title, candidate_revision = task.get("name"), task.get("modified_at")
                 if not isinstance(title, str) or not isinstance(candidate_revision, str):
                     return uncertain("candidate_invalid")
@@ -575,18 +594,17 @@ class AsanaProvider:
                 ))
 
             try:
-                readback = await self._task(root_task_gid)
+                readback = await self._verified_task(root_task_gid)
+            except _TraversalFailure as failure:
+                return uncertain(
+                    "work_readback_unavailable"
+                    if failure.reason == "not_returned"
+                    else "work_not_canonical"
+                )
             except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-                return uncertain("work_readback_unavailable")
-            if readback is None or self._gid(readback) != root_task_gid:
                 return uncertain("work_readback_unavailable")
             if not identifies_root(readback):
                 return uncertain("root_identity_unverified")
-            try:
-                if not await self._canonical(readback):
-                    return uncertain("work_not_canonical")
-            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-                return uncertain("work_readback_unavailable")
             if readback.get("modified_at") != observed_revision:
                 return uncertain("work_stale")
             if not candidates:
