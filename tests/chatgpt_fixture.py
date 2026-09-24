@@ -52,6 +52,11 @@ class Handles:
     async def get(self, work_id):
         return self.handles.get(work_id)
 
+    async def get_by_provider(self, provider, provider_work_id):
+        return next((handle for handle in self.handles.values()
+                     if handle.provider == provider
+                     and handle.provider_work_id == provider_work_id), None)
+
     async def bind(self, provider, provider_work_id):
         existing = next(
             (handle for handle in self.handles.values()

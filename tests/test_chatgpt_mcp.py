@@ -8,7 +8,7 @@ from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
 from switchstand.chatgpt_mcp import build_chatgpt_server
-from switchstand.contracts import SourceTaskRequest
+from switchstand.contracts import SourceTaskRequest, WorkResolveReferenceRequest
 from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
 
 
@@ -104,19 +104,84 @@ async def test_workspace_search_requires_explicit_operation_and_returns_only_wor
     assert subject.providers["asana"].search_calls == [("Task", None, None, 10)]
 
 
+async def test_launch_reference_denies_unbound_canonical_task_without_binding(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    subject = service()
+    provider = subject.providers["asana"]
+    provider.canonical_ids.add("789")
+    before = dict(subject.state.handles)
+    with monkeypatch.context() as patch:
+        get = AsyncMock(side_effect=AssertionError("launch denial must precede provider read"))
+        patch.setattr(provider, "get", get)
+        result = await subject.resolve_reference(
+            WorkResolveReferenceRequest(api_version="1", reference="789")
+        )
+    assert result.status == "denied"
+    assert subject.state.handles == before
+    get.assert_not_awaited()
+
+
+async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neutral():
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get"}), append_qualification=None,
+    )
+    provider = subject.providers["asana"]
+    provider.canonical_ids.add("789")
+    server = build_chatgpt_server(subject)
+
+    first = await server.call_tool("work_resolve_reference", {
+        "api_version": "1", "reference": "https://app.asana.com/0/42/789/f",
+    })
+    assert_public(first.model_dump(mode="json"))
+    first_item = first.structured_content["item"]
+    assert first.structured_content["status"] == "ok" and first_item["title"] == "Task"
+    assert len(subject.state.handles) == 3
+
+    repeat = await server.call_tool(
+        "work_resolve_reference", {"api_version": "1", "reference": "789"}
+    )
+    assert repeat.structured_content["item"]["id"] == first_item["id"]
+    assert len(subject.state.handles) == 3
+
+    provider.canonical_ids.remove("789")
+    denied = await server.call_tool(
+        "work_resolve_reference", {"api_version": "1", "reference": "789"}
+    )
+    assert denied.structured_content == {
+        "status": "denied", "item": None, "related": None, "grouped": None, "guard": None,
+    }
+
+
+async def test_reference_rejects_unrecognized_syntax_without_provider_read(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    subject = service()
+    get = AsyncMock(side_effect=AssertionError("invalid syntax must be closed before provider read"))
+    monkeypatch.setattr(subject.providers["asana"], "get", get)
+    result = await subject.resolve_reference(WorkResolveReferenceRequest(
+        api_version="1", reference="https://example.com/task/123",
+    ))
+    assert result.status == "unknown" and result.item is None
+    get.assert_not_awaited()
+
+
 async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     parameters = StdioServerParameters(command=sys.executable,
         args=[str(Path(__file__)), "serve"], env={"PYTHONPATH": str(Path.cwd() / "src")})
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "work_search", "source_task", "source_stories",
+            "grant_get", "work_get", "work_search", "work_resolve_reference",
+            "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "message_send", "message_pending",
             "required_result_save",
         }
         for tool in tools:
-            if tool.name in {"work_get", "work_history", "work_attachments", "work_event"}:
+            if tool.name in {"work_get", "work_resolve_reference", "work_history",
+                             "work_attachments", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
             if tool.name == "work_attachments":
                 assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
@@ -132,6 +197,11 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert introspection["principal"] == PRINCIPAL.model_dump(mode="json")
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
+        resolved = await client.call_tool(
+            "work_resolve_reference", {"api_version": "1", "reference": "123"}
+        )
+        assert_public(resolved.model_dump(mode="json"))
+        assert resolved.structured_content["item"]["id"] == str(ACTIVE)
         search = (await client.call_tool(
             "work_search", {"api_version": "1", "text": "Task"}
         )).structured_content

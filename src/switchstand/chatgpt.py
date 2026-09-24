@@ -24,6 +24,7 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
 )
@@ -53,6 +54,7 @@ from .messages import (
     MessageSubmitRequest,
     MessageSubmitResult,
 )
+from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
@@ -119,6 +121,51 @@ class ChatGPTService:
                 ).search(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkSearchResult(status="unknown")
+
+    async def resolve_reference(
+        self, request: WorkResolveReferenceRequest,
+    ) -> GrantedWorkResult:
+        try:
+            parsed = parse_legacy_task_reference(request.reference)
+        except ValueError:
+            return GrantedWorkResult(status="unknown")
+        principal = await self.principal()
+        if principal is None:
+            return GrantedWorkResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return GrantedWorkResult(status="denied")
+                if "work_get" not in grant.operations:
+                    return GrantedWorkResult(status="denied")
+                handle = await self.state.get_by_provider(
+                    parsed.provider, parsed.provider_work_id
+                )
+                if grant.scope == "launch":
+                    if handle is None:
+                        return GrantedWorkResult(status="denied")
+                    if (not grant.can_read(handle.id, explicit_target=True)
+                            and not await self.grants.created_work_allowed(principal.key, handle.id)):
+                        return GrantedWorkResult(status="denied")
+                elif handle is None:
+                    provider = self.providers.get(parsed.provider)
+                    if provider is None:
+                        return GrantedWorkResult(status="provider_error")
+                    work = await provider.get(parsed.provider_work_id)
+                    if work is None:
+                        return GrantedWorkResult(status="unknown")
+                    if not work.canonical:
+                        return GrantedWorkResult(status="denied")
+                    handle = await self.state.bind(parsed.provider, parsed.provider_work_id)
+                authority = LaunchAuthority(active_work_id=handle.id)
+                result = await Controller(authority, self.state, self.providers).get(
+                    WorkGetRequest(api_version="1", work_id=handle.id)
+                )
+                return GrantedWorkResult(status=result.status, item=result.item)
+        except ProviderError:
+            return GrantedWorkResult(status="provider_error")
+        except (SQLAlchemyError, ValueError, KeyError):
+            return GrantedWorkResult(status="unknown")
 
     async def get(self, work_id: UUID | None = None, *, include_related: bool = False) -> GrantedWorkResult:
         principal = await self.principal()

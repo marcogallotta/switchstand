@@ -19,6 +19,7 @@ from .contracts import (
     WorkEventResult,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
 )
@@ -100,6 +101,16 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             api_version=api_version, text=text, completed=completed,
             cursor=cursor, limit=limit,
         ))
+
+    async def work_resolve_reference(
+        api_version: Literal["1"],
+        reference: Annotated[str, Field(min_length=1, max_length=2048)],
+    ) -> PublicWorkResult:
+        """Resolve one exact legacy task reference to current provider-neutral work."""
+        result = await service.resolve_reference(WorkResolveReferenceRequest(
+            api_version=api_version, reference=reference,
+        ))
+        return project_work(result, False)
 
     async def work_history(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
@@ -197,7 +208,9 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
         ))
 
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
-                           ("work_search", work_search), ("work_history", work_history),
+                           ("work_search", work_search),
+                           ("work_resolve_reference", work_resolve_reference),
+                           ("work_history", work_history),
                            ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
