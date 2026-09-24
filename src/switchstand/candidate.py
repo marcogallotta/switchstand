@@ -329,7 +329,7 @@ def _origin_repository(url: str) -> str:
 
 def _remote_sha(repo: Path, remote_ref: str) -> str:
     completed = _git(repo, "ls-remote", "--refs", "origin", remote_ref)
-    lines = [line.split("\\t", 1) for line in completed.stdout.splitlines() if line]
+    lines = [line.split("\t", 1) for line in completed.stdout.splitlines() if line]
     if len(lines) != 1 or len(lines[0]) != 2 or lines[0][1] != remote_ref:
         raise CandidateError(f"remote ref is missing or ambiguous: {remote_ref}")
     sha = lines[0][0]
