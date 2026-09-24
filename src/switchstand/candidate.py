@@ -41,6 +41,107 @@ def _git(repo: Path, *arguments: str, check: bool = True) -> subprocess.Complete
     )
 
 
+def _exact_sha(value: str) -> bool:
+    return len(value) == 40 and set(value) <= set("0123456789abcdef")
+
+
+def _github_repository(url: str) -> str:
+    value = url.strip()
+    prefixes = ("https://github.com/", "ssh://git@github.com/", "git@github.com:")
+    path = next((value[len(prefix):] for prefix in prefixes if value.startswith(prefix)), None)
+    if path is None:
+        raise CandidateError("origin must be a github.com repository")
+    path = path.removesuffix(".git")
+    parts = path.split("/")
+    if len(parts) != 2 or any(not part or not all(
+        character.isalnum() or character in "_.-" for character in part
+    ) for part in parts):
+        raise CandidateError("origin is not an exact github.com owner/repository")
+    return path
+
+
+def _remote_ref_sha(repo: Path, remote_ref: str) -> str:
+    completed = _git(repo, "ls-remote", "--refs", "origin", remote_ref)
+    lines = [line.split("\t", 1) for line in completed.stdout.splitlines() if line]
+    if len(lines) != 1 or len(lines[0]) != 2 or lines[0][1] != remote_ref:
+        raise CandidateError(f"remote ref is missing or ambiguous: {remote_ref}")
+    sha = lines[0][0]
+    if not _exact_sha(sha):
+        raise CandidateError(f"remote ref returned an invalid SHA: {remote_ref}")
+    return sha
+
+
+def _local_ref_sha(repo: Path, name: str) -> str | None:
+    presence = _git(repo, "show-ref", "--verify", "--quiet", name, check=False)
+    if presence.returncode == 1:
+        return None
+    if presence.returncode != 0:
+        raise CandidateError(f"cannot inspect prepared ref {name}")
+    value = _git(repo, "show-ref", "--verify", "--hash", name).stdout.strip()
+    if not _exact_sha(value):
+        raise CandidateError(f"prepared ref has invalid identity: {name}")
+    return value
+
+
+def _prepare_remote_ref(
+    repo: Path, task_id: str, label: str, remote_ref: str, expected_sha: str,
+) -> None:
+    remote_sha = _remote_ref_sha(repo, remote_ref)
+    if remote_sha != expected_sha:
+        raise CandidateError(
+            f"launch {label} moved: expected {expected_sha}, remote {remote_sha}"
+        )
+    local_ref = f"refs/switchstand/launch/{task_id}/{label}"
+    current = _local_ref_sha(repo, local_ref)
+    if current is not None and current != expected_sha:
+        raise CandidateError(f"prepared launch {label} ref is stale: {local_ref}")
+    if current is None:
+        try:
+            _git(
+                repo, "fetch", "--no-tags", "--no-recurse-submodules",
+                "--no-write-fetch-head", "origin", f"{remote_ref}:{local_ref}",
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout).strip()
+            raise CandidateError(
+                f"cannot fetch exact launch {label}: {detail or 'git fetch failed'}"
+            ) from None
+    if _local_ref_sha(repo, local_ref) != expected_sha:
+        raise CandidateError(f"prepared launch {label} did not retain exact identity")
+    if _git(repo, "cat-file", "-e", f"{expected_sha}^{{commit}}", check=False).returncode != 0:
+        raise CandidateError(f"launch {label} is not an available commit")
+
+
+def prepare_launch_source(
+    repo: Path,
+    task_id: str,
+    *,
+    repository: str,
+    base_ref: str,
+    base_sha: str,
+    candidate_ref: str,
+    candidate_sha: str,
+    control_sha: str,
+) -> None:
+    """Verify and materialize the exact remote candidate identities used by isolated launch."""
+    if not all(_exact_sha(value) for value in (base_sha, candidate_sha, control_sha)):
+        raise CandidateError("launch source requires exact lowercase 40-character SHAs")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if head != control_sha:
+        raise CandidateError("launch resolver is not executing from the selected CONTROL SHA")
+    if base_sha != control_sha:
+        raise CandidateError("launch task base does not match the selected CONTROL SHA")
+    origin = _git(repo, "remote", "get-url", "origin").stdout.strip()
+    if _github_repository(origin) != repository:
+        raise CandidateError("launch task repository does not match this checkout origin")
+    _prepare_remote_ref(repo, task_id, "base", base_ref, base_sha)
+    _prepare_remote_ref(repo, task_id, "candidate", candidate_ref, candidate_sha)
+    if _git(
+        repo, "merge-base", "--is-ancestor", base_sha, candidate_sha, check=False
+    ).returncode != 0:
+        raise CandidateError("launch candidate is not based on the accepted base")
+
+
 def _state_home_path(explicit: Path | None = None) -> Path:
     if explicit is not None:
         root = explicit
