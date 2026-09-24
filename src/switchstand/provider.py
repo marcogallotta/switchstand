@@ -95,12 +95,10 @@ class AsanaProvider:
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None
 
-    async def _verified_task(self, gid: str) -> JSON:
+    async def _exact_task(self, gid: str) -> JSON:
         task = await self._task(gid)
         if task is None or self._gid(task) != gid:
             raise _TraversalFailure("not_returned")
-        if not await self._canonical(task):
-            raise _TraversalFailure("not_canonical")
         return task
 
     async def _direct_children(
@@ -427,17 +425,15 @@ class AsanaProvider:
 
         try:
             try:
-                work = await self._verified_task(work_task_gid)
-            except _TraversalFailure as failure:
-                return uncertain(
-                    "work_not_returned"
-                    if failure.reason == "not_returned"
-                    else "work_not_canonical"
-                )
+                work = await self._exact_task(work_task_gid)
+            except _TraversalFailure:
+                return uncertain("work_not_returned")
             revision = work.get("modified_at")
             if not isinstance(revision, str):
                 return uncertain("work_revision_unavailable")
             observed_revision = revision
+            if not await self._canonical(work):
+                return uncertain("work_not_canonical")
 
             try:
                 children = await self._direct_children(
@@ -455,13 +451,11 @@ class AsanaProvider:
                 )
 
             try:
-                readback = await self._verified_task(work_task_gid)
-            except _TraversalFailure as failure:
-                return uncertain(
-                    "work_readback_unavailable"
-                    if failure.reason == "not_returned"
-                    else "work_not_canonical"
-                )
+                readback = await self._exact_task(work_task_gid)
+            except _TraversalFailure:
+                return uncertain("work_readback_unavailable")
+            if not await self._canonical(readback):
+                return uncertain("work_not_canonical")
             if readback.get("modified_at") != observed_revision:
                 return uncertain("work_stale")
             if not candidates:
@@ -479,9 +473,11 @@ class AsanaProvider:
         """Return one verified immediate-family snapshot or fail without partial data."""
         try:
             try:
-                target = await self._verified_task(provider_work_id)
+                target = await self._exact_task(provider_work_id)
             except _TraversalFailure:
                 raise ProviderError("provider structure unavailable") from None
+            if not await self._canonical(target):
+                raise ProviderError("provider structure unavailable")
             revision = target.get("modified_at")
             if not isinstance(revision, str):
                 raise TypeError
@@ -492,9 +488,11 @@ class AsanaProvider:
             parent: ProviderSearchItem | None = None
             if parent_gid is not None:
                 try:
-                    parent_task = await self._verified_task(parent_gid)
+                    parent_task = await self._exact_task(parent_gid)
                 except _TraversalFailure:
                     raise ProviderError("provider structure unavailable") from None
+                if not await self._canonical(parent_task):
+                    raise ProviderError("provider structure unavailable")
                 parent = self._structure_item(parent_gid, parent_task)
 
             try:
@@ -509,9 +507,11 @@ class AsanaProvider:
             )
 
             try:
-                readback = await self._verified_task(provider_work_id)
+                readback = await self._exact_task(provider_work_id)
             except _TraversalFailure:
                 raise ProviderError("provider structure unavailable") from None
+            if not await self._canonical(readback):
+                raise ProviderError("provider structure unavailable")
             if (
                 readback.get("modified_at") != revision
                 or self._parent_gid(readback) != parent_gid
@@ -546,17 +546,15 @@ class AsanaProvider:
 
         try:
             try:
-                root = await self._verified_task(root_task_gid)
-            except _TraversalFailure as failure:
-                return uncertain(
-                    "work_not_returned"
-                    if failure.reason == "not_returned"
-                    else "work_not_canonical"
-                )
+                root = await self._exact_task(root_task_gid)
+            except _TraversalFailure:
+                return uncertain("work_not_returned")
             revision = root.get("modified_at")
             if not isinstance(revision, str):
                 return uncertain("work_revision_unavailable")
             observed_revision = revision
+            if not await self._canonical(root):
+                return uncertain("work_not_canonical")
             if not identifies_root(root):
                 return uncertain("root_identity_unverified")
 
@@ -585,19 +583,17 @@ class AsanaProvider:
                 gids.append(gid)
             for gid in gids:
                 try:
-                    task = await self._verified_task(gid)
-                except _TraversalFailure as failure:
-                    return uncertain(
-                        "candidate_not_returned"
-                        if failure.reason == "not_returned"
-                        else "candidate_not_canonical"
-                    )
+                    task = await self._exact_task(gid)
+                except _TraversalFailure:
+                    return uncertain("candidate_not_returned")
                 fields = [field for field in self._custom_fields(task)
                           if field.get("gid") == ROOT_WORK_GID]
                 if (len(fields) != 1 or fields[0].get("enabled") is not True
                         or fields[0].get("resource_subtype") != "text"
                         or fields[0].get("text_value") != root_task_gid):
                     return uncertain("relationship_changed")
+                if not await self._canonical(task):
+                    return uncertain("candidate_not_canonical")
                 title, candidate_revision = task.get("name"), task.get("modified_at")
                 if not isinstance(title, str) or not isinstance(candidate_revision, str):
                     return uncertain("candidate_invalid")
