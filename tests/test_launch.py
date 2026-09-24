@@ -480,9 +480,8 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     authority = type("Authority", (), {"active": ACTIVE})()
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
-    monkeypatch.setattr(
-        "switchstand.development.inspect", lambda *args: None
-    )
+    monkeypatch.setattr("switchstand.launch.inspect_docker", lambda *args: None)
+    monkeypatch.setattr("switchstand.launch.cleanup_development", lambda *args: None)
     monkeypatch.setattr(
         "switchstand.launch.provision",
         lambda *args: events.append("provisioned") or authority,
@@ -657,7 +656,7 @@ def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
     monkeypatch.setattr("switchstand.codex_runtime.time.monotonic", lambda: next(ticks))
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
-        "switchstand.development.cleanup_development",
+        "switchstand.codex_runtime.cleanup_development",
         lambda image, network, database, candidate, owner, env: events.append(
             (image, network, database, candidate, owner)
         ),
