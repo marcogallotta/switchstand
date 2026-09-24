@@ -14,9 +14,9 @@ and prints the launch configuration without exposing provider IDs to agents.
 ## Current development-control boundaries
 
 The landed Stage-1 repairs narrow three previously unsafe development paths without claiming the wider code-red
-recovery is complete. Git landing reconciliation follows the repository's one-parent squash model: the landing must be
-the current result directly parented by the reviewed base, the reviewed candidate must descend from that base, and the
-landing tree must equal the reviewed candidate tree. Existing writer reuse is repository-bound: a reusable target must
+recovery is complete. Git landing reconciliation follows the repository's GitHub merge-commit model: the landing must be
+the current result with exactly the reviewed base and reviewed candidate as its two ordered parents, the reviewed
+candidate must descend from that base, and the landing tree must equal the reviewed candidate tree. Existing writer reuse is repository-bound: a reusable target must
 be the expected clean linked worktree registered by the requesting repository, with the same absolute Git common
 directory, so another clone's same-named worktree is rejected. The `scripts/check` focused host path uses one
 120-second deadline beginning before bootstrap/setup and applies the remaining budget through manifest verification
