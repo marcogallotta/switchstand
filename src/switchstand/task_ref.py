@@ -1,4 +1,11 @@
+from dataclasses import dataclass
 from urllib.parse import urlparse
+
+
+@dataclass(frozen=True)
+class ProviderTaskReference:
+    provider: str
+    provider_work_id: str
 
 
 def asana_task_id(value: str) -> str:
@@ -17,3 +24,7 @@ def asana_task_id(value: str) -> str:
     if len(parts) >= 3 and parts[0] == "0" and parts[-1].isdecimal():
         return parts[-1]
     raise ValueError("Asana URL does not contain a task ID")
+
+
+def parse_legacy_task_reference(value: str) -> ProviderTaskReference:
+    return ProviderTaskReference(provider="asana", provider_work_id=asana_task_id(value))

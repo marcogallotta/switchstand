@@ -104,6 +104,11 @@ class WorkGetRequest(ClosedModel):
     include_related: bool = False
 
 
+class WorkResolveReferenceRequest(ClosedModel):
+    api_version: ApiVersion
+    reference: str = Field(min_length=1, max_length=2048)
+
+
 class WorkAttachmentsRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
