@@ -44,6 +44,7 @@ from .grants import (
     ProtectedAppend,
     ProtectedCreate,
     ProtectedUpdate,
+    WorkGrant,
 )
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
