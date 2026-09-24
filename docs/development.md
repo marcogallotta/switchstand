@@ -109,12 +109,14 @@ action.
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
   Task IDs, references, and one optional prompt are forwarded unchanged.
   The old `scripts/switchstand-context` and `scripts/switchstand-start` names are compatibility wrappers that warn.
-- MCP server: `docker compose run --rm -T controller`
-- Codex: the checked-in project MCP configuration launches the same required STDIO server. It forwards only `HOME`
-  and the launch-scoped opaque authority; Compose obtains the provider credential from the protected shared file.
-  The command sandbox cannot read that file. Direct `codex` invocation is not the supported managed path.
-  A fresh head calls `work_get` with only `api_version="1"`; the tool defaults to its active assignment and advertises
-  the opaque IDs of its bounded read-only references.
+- Product MCP surfaces are intentionally distinct:
+  - authenticated ChatGPT uses the HTTP/OAuth edge in `chatgpt_edge.py` with workspace grants and explicit WorkIds;
+  - managed task-bound Codex uses the STDIO server from `mcp.py`, with active/reference WorkIds injected only by the
+    trusted launcher;
+  - the development MCP in `development.py` is a separate local development boundary for check/commit/quality/run
+    status and does not grant product work authority.
+  Raw `source_task/source_stories/source_story` remain transitional compatibility reads; prefer WorkId-based APIs for
+  new ordinary flows. Provider credentials remain in trusted host/service configuration and are not agent arguments.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
@@ -124,13 +126,19 @@ and the landed tree must equal the reviewed candidate tree. Integration admits S
 
 ## Known recovery limits
 
-The Stage-1 repairs above are bounded and do not close all code-red findings:
+The current development path is operational but still has explicit ownership/transition debt:
 
-- **Docker ownership/cancellation:** current cleanup and timed Docker paths do not yet prove exact ownership and exact
-  cancellation of every affected resource. Do not treat name matching or a timeout alone as ownership proof.
+- **Launch/Docker ownership:** `launch.py` still creates and cleans candidate image/network/database resources while
+  `development.py` owns workload containers and `docker.py` owns shared exact-object primitives. Treat this as
+  overlapping current ownership, not a finished convergence.
+- **Launch-source ownership:** isolated launch still uses `launch_source.py` for direct protected Asana reads plus Git
+  remote/ref verification before candidate materialization. Do not copy that duplicate source/currentness seam into
+  new product code.
+- **Legacy source MCP:** raw `source_*` tools remain exposed for recovery/reference compatibility until neutral
+  replacement coverage and legacy-drain proof exist.
 - **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration
   and working-directory inputs from this repository, with the Codex binary selected from the ambient host path. It is
-  therefore not the independently pinned CONTROL release required by the recovery design.
+  therefore not an independently pinned CONTROL release.
 
 Canonical cumulative handwritten Python LOC is counted with
 `git ls-files src tests | rg '\.py$' | xargs wc -l`; generated files and dependencies are excluded.
