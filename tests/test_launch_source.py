@@ -5,14 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from switchstand import launch_source
-from switchstand.launch_source import (
-    LaunchSource,
-    LaunchSourceError,
-    load_asana_token,
-    parse_notes,
-    prepare_source,
-)
+from switchstand import candidate, launch_source
+from switchstand.candidate import CandidateError, LaunchSource, prepare_launch_source
+from switchstand.launch_source import LaunchSourceError, load_asana_token, parse_notes
 
 BASE = "a" * 40
 CANDIDATE = "b" * 40
@@ -120,8 +115,8 @@ def test_exact_ref_rejects_remote_movement_before_local_mutation(monkeypatch: py
         raise AssertionError("local launch ref must not be inspected after remote movement")
 
     monkeypatch.setattr(launch_source, "_local_ref", no_local_ref)
-    with pytest.raises(LaunchSourceError, match="launch candidate moved"):
-        launch_source._fetch_exact_ref(
+    with pytest.raises(CandidateError, match="launch candidate moved"):
+        candidate._prepare_remote_ref(
             Path("."), "123", "candidate", source.candidate_ref, source.candidate_sha
         )
 
@@ -130,7 +125,7 @@ def test_local_ref_uses_real_git_missing_ref_exit_code(tmp_path: Path):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     name = "refs/switchstand/launch/123/base"
 
-    assert launch_source._local_ref(tmp_path, name) is None
+    assert candidate._local_launch_ref(tmp_path, name) is None
 
     subprocess.run(
         ["git", "-C", str(tmp_path), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"],
@@ -144,7 +139,7 @@ def test_local_ref_uses_real_git_missing_ref_exit_code(tmp_path: Path):
     ).stdout.strip()
     subprocess.run(["git", "-C", str(tmp_path), "update-ref", name, sha], check=True)
 
-    assert launch_source._local_ref(tmp_path, name) == sha
+    assert candidate._local_launch_ref(tmp_path, name) == sha
 
 
 def test_exact_ref_fetches_on_first_use_with_real_git(tmp_path: Path):
@@ -165,9 +160,9 @@ def test_exact_ref_fetches_on_first_use_with_real_git(tmp_path: Path):
     subprocess.run(["git", "-C", str(control), "remote", "add", "origin", str(remote)], check=True)
     name = "refs/switchstand/launch/123/base"
 
-    assert launch_source._local_ref(control, name) is None
-    launch_source._fetch_exact_ref(control, "123", "base", "refs/heads/main", sha)
-    assert launch_source._local_ref(control, name) == sha
+    assert candidate._local_launch_ref(control, name) is None
+    candidate._prepare_remote_ref(control, "123", "base", "refs/heads/main", sha)
+    assert candidate._local_launch_ref(control, name) == sha
 
 
 def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
@@ -181,8 +176,8 @@ def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
         raise AssertionError(arguments)
 
     monkeypatch.setattr(launch_source, "_git", fake_git)
-    with pytest.raises(LaunchSourceError, match="not an available commit"):
-        launch_source._fetch_exact_ref(
+    with pytest.raises(CandidateError, match="not an available commit"):
+        candidate._prepare_remote_ref(
             Path("."), "123", "candidate", source.candidate_ref, source.candidate_sha
         )
 
@@ -205,8 +200,8 @@ def test_prepare_source_rejects_task_base_before_fetch_when_control_differs(
         lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before fetch")),
     )
 
-    with pytest.raises(LaunchSourceError, match="task base does not match"):
-        prepare_source(Path("."), "123", source, "c" * 40)
+    with pytest.raises(CandidateError, match="task base does not match"):
+        prepare_launch_source(Path("."), "123", source, "c" * 40)
 
 
 def test_prepare_source_rejects_wrong_control_checkout(monkeypatch: pytest.MonkeyPatch):
@@ -219,8 +214,8 @@ def test_prepare_source_rejects_wrong_control_checkout(monkeypatch: pytest.Monke
         raise AssertionError(arguments)
 
     monkeypatch.setattr(launch_source, "_git", fake_git)
-    with pytest.raises(LaunchSourceError, match="not executing from the selected CONTROL SHA"):
-        prepare_source(Path("."), "123", source, BASE)
+    with pytest.raises(CandidateError, match="not executing from the selected CONTROL SHA"):
+        prepare_launch_source(Path("."), "123", source, BASE)
 
 
 def test_prepare_source_uses_selected_control_and_exact_remote_refs(
@@ -246,7 +241,7 @@ def test_prepare_source_uses_selected_control_and_exact_remote_refs(
         lambda _repo, _task, label, _ref, sha: fetched.append((label, sha)),
     )
 
-    assert prepare_source(Path("."), "123", source, BASE) == source
+    assert prepare_launch_source(Path("."), "123", source, BASE) == source
     assert fetched == [("base", BASE), ("candidate", CANDIDATE)]
 
 
