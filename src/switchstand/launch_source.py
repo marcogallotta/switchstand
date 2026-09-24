@@ -1,9 +1,8 @@
 import argparse
 import asyncio
-import re
 from pathlib import Path
 
-from .task_ref import asana_task_id
+import httpx
 
 from .candidate import (
     CANDIDATE_REF_PATTERN,
@@ -13,8 +12,9 @@ from .candidate import (
     LaunchSource,
     prepare_launch_source,
 )
+from .core import ProviderError
 from .provider import AsanaProvider
-import httpx
+from .task_ref import asana_task_id
 
 MARKERS = (
     "SWITCHSTAND_REPOSITORY",
@@ -66,7 +66,7 @@ async def _task_notes(task_id: str, token: str) -> str:
     ) as client:
         try:
             task = await AsanaProvider(client).source_task(task_id)
-        except Exception as error:
+        except (ProviderError, httpx.HTTPError, ValueError, KeyError) as error:
             raise LaunchSourceError("exact launch task read failed") from error
     if task is None or not task.canonical:
         raise LaunchSourceError("exact launch task is unavailable or not canonical")
