@@ -10,27 +10,29 @@ from uuid import UUID
 
 import pytest
 
+from switchstand.codex_runtime import (
+    PROFILE,
+    codex_command,
+    filesystem_override,
+    readback,
+    validate_codex_args,
+)
 from switchstand.docker import DockerObject
 from switchstand.launch import (
-    PROFILE,
     DevelopmentBoundary,
     clean_environment,
     cleanup_development,
-    codex_command,
     development_subnet,
     docker_run,
     exact_revision_preflight,
-    filesystem_override,
     linked_branch,
     parse_authority,
     parser,
     prepare_development,
     prepare_managed_run,
     provision,
-    readback,
     run,
     supervise_codex,
-    validate_codex_args,
 )
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
@@ -706,7 +708,7 @@ def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
     )
     del messages[0]["result"]["data"][0]["allowed"]
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
@@ -718,7 +720,7 @@ def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
     )
     messages[0]["result"]["data"][0]["allowed"] = False
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="permission profile.*not available"):
@@ -729,7 +731,7 @@ def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
                                                ("/home/test/.claude/CLAUDE.md", False)])
 def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: readback_messages([source, "/repo/AGENTS.md"]),
     )
     if accepted:
@@ -743,7 +745,7 @@ def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
     messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
     messages[1]["result"]["sandbox"]["writableRoots"] = ["/repo", "/writer"]
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="unexpected writable roots"):
@@ -754,7 +756,7 @@ def test_readback_rejects_disabled_network(monkeypatch):
     messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
     messages[1]["result"]["sandbox"]["networkAccess"] = False
     monkeypatch.setattr(
-        "switchstand.launch._rpc_messages",
+        "switchstand.codex_runtime._rpc_messages",
         lambda control, candidate, env: messages,
     )
     with pytest.raises(RuntimeError, match="unexpected sandbox"):
