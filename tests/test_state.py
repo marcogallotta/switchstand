@@ -30,6 +30,17 @@ async def test_bind_has_stable_opaque_identity(state):
     await state.bind("other", "elsewhere")
     assert await state.bound_provider_ids("asana") == frozenset({"provider-id"})
 
+
+async def test_provider_identity_reverse_lookup_is_exact_and_read_only(state):
+    assert await state.get_by_provider("asana", "provider-id") is None
+    assert await state.bound_provider_ids("asana") == frozenset()
+
+    expected = await state.bind("asana", "provider-id")
+    await state.bind("other", "provider-id")
+
+    assert await state.get_by_provider("asana", "provider-id") == expected
+    assert await state.get_by_provider("asana", "missing") is None
+
 async def test_lock_serializes_two_writers(state):
     handle = await state.bind("asana", "serialized")
     holding, release, attempted, entered = (asyncio.Event() for _ in range(4))
