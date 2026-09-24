@@ -12,10 +12,10 @@ from pathlib import Path
 from uuid import UUID
 
 
-SHA_PATTERN = re.compile(r"[0-9a-f]{40}\\Z")
-REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\Z")
+SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 CANDIDATE_REF_PATTERN = re.compile(
-    r"refs/(?:heads/[A-Za-z0-9._/-]+|pull/[1-9][0-9]*/head)\\Z"
+    r"refs/(?:heads/[A-Za-z0-9._/-]+|pull/[1-9][0-9]*/head)\Z"
 )
 
 
