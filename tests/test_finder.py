@@ -93,6 +93,19 @@ async def test_duplicate_child_across_pages_is_uh_oh_with_unique_evidence() -> N
     assert [candidate.task_gid for candidate in result.candidates] == ["review"]
 
 
+async def test_late_subtask_provider_failure_retains_verified_partial_evidence() -> None:
+    subject, requests = provider(
+        task("work"),
+        {"data": [{"gid": "review"}], "next_page": {"offset": "more"}},
+        task("review", parent="work"),
+        (500, {"errors": [{"message": "unavailable"}]}),
+    )
+    result = await subject.find_related("work")
+    assert (result.status, result.reason) == ("UH_OH", "read_unavailable")
+    assert [candidate.task_gid for candidate in result.candidates] == ["review"]
+    assert sum(request.url.path.endswith("/subtasks") for request in requests) == 2
+
+
 async def test_invalid_subtask_offset_returns_uh_oh_with_partial_evidence() -> None:
     subject, requests = provider(
         task("work"),
