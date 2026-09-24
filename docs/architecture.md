@@ -26,15 +26,16 @@ There are multiple deliberately different MCP surfaces; there is no three-tool g
 
 **Authenticated ChatGPT HTTP MCP** (`chatgpt_edge.py`) exposes the workspace/grant-aware ordinary surface:
 provider-neutral work discovery/read/structure/history/attachment/event operations, protected append/create/update,
-durable message send/pending, and required-result saving. `source_task`, `source_stories` and
-`source_story` remain public transitional raw-Asana reads for legacy recovery/reference workflows; they are not
-the preferred provider-neutral product vocabulary.
+durable message send/pending, and required-result saving. legacy task references are resolved through `work_resolve_reference`; history and exact-event rereads remain
+provider-neutral through `work_history` and `work_event`. Raw `source_*` methods remain internal provider/service
+implementation details only and are no longer agent-facing tools.
 
 **Managed task-bound STDIO MCP** (`mcp.py::build_server`) binds one active WorkId plus bounded references from
 trusted launch state. It exposes launch-bound work/history/attachment/event reads, the transitional exact-source reads,
 bounded append/update where configured, and managed message pending/receive/recover/result/disposition operations.
-The unbound server exposes no managed task authority. The smaller context server exposes only launch-bound
-`work_get` and `work_history`.
+Launch-bound active/reference WorkIds are read with `work_get`, `work_history`, and `work_event`; raw provider task
+or story GIDs are not a managed public interface. The unbound server exposes no managed task authority. The smaller
+context server exposes only launch-bound `work_get` and `work_history`.
 
 **Development MCP** (`development.py`) is separate from product work authority. Its bound surface is
 `check`, `commit_all_current_worktree`, `quality` and `run_status`, operating only on the
@@ -59,8 +60,8 @@ from that base, and the landing tree must equal the reviewed candidate tree.
 
 ## Transitional compatibility
 
-- raw `source_*` agent tools remain only until required ordinary/recovery/failback consumers have verified
-  provider-neutral replacements and outstanding legacy references are drained;
+- raw `source_*` agent tools are retired; internal provider source reads remain behind provider-neutral WorkId
+  history/event APIs;
 - `scripts/switchstand-context` and `scripts/switchstand-start` are compatibility wrappers around current
   entry paths;
 - provider IDs and credentials belong inside trusted provider/launch adapters, not normal agent-facing authority;
