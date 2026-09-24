@@ -44,17 +44,16 @@ from .grants import (
     ProtectedAppend,
     ProtectedCreate,
     ProtectedUpdate,
-    WorkGrant,
 )
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
     MessagePendingRequest,
     MessagePendingResult,
-    MessageRoute,
     MessageSendRequest,
     MessageState,
-    MessageSubmitRequest,
     MessageSubmitResult,
+    pending_messages,
+    send_message,
 )
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
@@ -527,58 +526,9 @@ class ChatGPTService:
             return MessageSubmitResult(status="denied", reason="actor_not_admitted")
         if self.messages is None:
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
-        try:
-            context = None
-            recipient_work_id = request.recipient_work_id
-            if request.in_reply_to_delivery_id is not None:
-                context = await self.messages.reply_context(request.in_reply_to_delivery_id)
-                recipient_work_id = None if context is None else context.recipient_work_id
-            async with self.grants.locked_message_route(
-                principal.key, request.work_id, recipient_work_id,
-            ) as (grant, recipient):
-                failure = await self._message_actor(
-                    principal, grant, request.work_id, request.grant_version
-                )
-                if failure is not None:
-                    return MessageSubmitResult(status=failure[0], reason=failure[1])
-                replay = await self.messages.committed_public_replay(request.work_id, request)
-                if replay is not None:
-                    return replay
-                if context is None and request.in_reply_to_delivery_id is not None:
-                    return MessageSubmitResult(
-                        status="conflict", reason="reply_delivery_not_found"
-                    )
-                assert recipient_work_id is not None
-                if recipient is None:
-                    return MessageSubmitResult(
-                        status="denied", reason="recipient_route_unavailable"
-                    )
-                handle = await self.state.get(recipient_work_id)
-                if handle is None or handle.provider != "asana":
-                    return MessageSubmitResult(
-                        status="denied", reason="recipient_route_unavailable"
-                    )
-                return await self.messages.submit_admitted(
-                        request.work_id,
-                        MessageRoute(
-                            recipient_work_id=recipient_work_id,
-                            recipient_grant_version=recipient.version,
-                            projection_provider="asana",
-                            projection_target=handle.provider_work_id,
-                        ),
-                        MessageSubmitRequest(
-                            api_version=request.api_version,
-                            message_id=request.message_id,
-                            grant_version=request.grant_version,
-                            route_ref=(cast(str, request.route_ref) if context is None
-                                       else context.route_ref),
-                            kind="request" if context is None else "result",
-                            payload=request.payload,
-                            in_reply_to_delivery_id=request.in_reply_to_delivery_id,
-                        ),
-                    )
-        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
-            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+        return await send_message(
+            self.state, self.grants, self.messages, principal, request
+        )
 
     async def message_pending(
         self, work_id: UUID, request: MessagePendingRequest,
@@ -588,32 +538,9 @@ class ChatGPTService:
             return MessagePendingResult(status="denied", reason="actor_not_admitted")
         if self.messages is None:
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
-        try:
-            async with self.grants.locked(principal.key, work_id) as grant:
-                failure = await self._message_actor(principal, grant, work_id, request.grant_version)
-                if failure is not None:
-                    return MessagePendingResult(status=failure[0], reason=failure[1])
-                return await self.messages.pending_admitted(work_id, request)
-        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
-            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
-
-    async def _message_actor(
-        self, principal: PrincipalContext, grant: WorkGrant | None,
-        work_id: UUID, grant_version: int,
-    ) -> tuple[Literal["denied", "stale"], Literal[
-        "actor_not_admitted", "grant_version_changed", "message_not_granted"
-    ]] | None:
-        if not self.gateway.admitted(principal, grant) or grant is None:
-            return "denied", "actor_not_admitted"
-        if grant.version != grant_version:
-            return "stale", "grant_version_changed"
-        if "message" not in grant.operations:
-            return "denied", "message_not_granted"
-        if grant.scope == "launch" and grant.authority.active_work_id != work_id:
-            return "denied", "actor_not_admitted"
-        if await self.state.get(work_id) is None:
-            return "denied", "actor_not_admitted"
-        return None
+        return await pending_messages(
+            self.state, self.grants, self.messages, principal, work_id, request
+        )
 
     async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
         if await self.principal() is None:
