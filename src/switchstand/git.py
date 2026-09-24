@@ -50,8 +50,8 @@ def reconcile(repo: Path, candidate: str, previous_base: str, merged: str,
                                    (candidate, previous_base, merged, current_base))
     if result[0] != current[0]:
         raise GitError("merged result is not the current protected base")
-    if result[2] != (base[0],):
-        raise GitError("landing is not a one-parent squash from the reviewed base")
+    if result[2] != (base[0], head[0]):
+        raise GitError("landing parents do not match the reviewed base and candidate")
     if not _is_ancestor(repo, base[0], head[0]):
         raise GitError("reviewed candidate is not based on the reviewed base")
     if result[1] != head[1]:
