@@ -9,7 +9,6 @@ import httpx
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field, JsonValue
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .contracts import (
@@ -52,14 +51,15 @@ from .messages import (
     MessagePendingRequest,
     MessagePendingResult,
     MessageReceiveRequest,
-    MessageRoute,
     MessageSendRequest,
     MessageState,
-    MessageSubmitRequest,
     MessageSubmitResult,
     MessageTransitionResult,
     RuntimeCurrentness,
+    current_message_grant_version,
     disposition_digest,
+    pending_messages,
+    send_message,
 )
 from .provider import AsanaProvider
 from .run import managed_runtime_currentness
@@ -323,42 +323,33 @@ def build_server(
                 generation="unavailable", current_generation=None
             )
 
-        def runtime_is_current(value: RuntimeCurrentness) -> bool:
-            return (
-                value.current_generation is not None
-                and value.generation == value.current_generation
-            )
-
-        async def current_grant_version() -> int | None:
-            try:
-                grant = await grants.current(principal.key)
-                return 1 if grant is None else grant.version
-            except (SQLAlchemyError, ValueError):
-                return None
-
         async def _message_pending(
             api_version: Literal["1"],
             cursor: UUID | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
         ) -> MessagePendingResult:
-            if not runtime_is_current(runtime()):
-                return MessagePendingResult(
-                    status="recovery_required", reason="state_unavailable"
-                )
-            version = await current_grant_version()
-            if version is None:
-                return MessagePendingResult(status="recovery_required", reason="state_unavailable")
-            return await messages.pending(principal, MessagePendingRequest(
-                api_version=api_version, grant_version=version,
-                cursor=cursor, limit=limit,
-            ))
+            return await pending_messages(
+                cast(Controller, service).state,
+                grants,
+                messages,
+                principal,
+                active_work_id,
+                MessagePendingRequest(
+                    api_version=api_version, grant_version=1,
+                    cursor=cursor, limit=limit,
+                ),
+                runtime=runtime(),
+                infer_grant_version=True,
+            )
 
         async def transition(
             operation: Literal["receive", "recover"], api_version: Literal["1"],
             delivery_id: UUID,
         ) -> MessageTransitionResult:
-            version = await current_grant_version()
+            version = await current_message_grant_version(grants, principal)
             if version is None:
-                return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
+                return MessageTransitionResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
             request = MessageReceiveRequest(
                 api_version=api_version, delivery_id=delivery_id,
                 grant_version=version,
@@ -379,59 +370,34 @@ def build_server(
             api_version: Literal["1"], in_reply_to_delivery_id: UUID,
             message_id: UUID, payload: JsonValue,
         ) -> MessageSubmitResult:
-            active_runtime = runtime()
-            if not runtime_is_current(active_runtime):
-                return MessageSubmitResult(
-                    status="recovery_required", reason="state_unavailable"
-                )
-            public = MessageSendRequest(
-                api_version=api_version, work_id=active_work_id,
-                grant_version=1, message_id=message_id, payload=payload,
-                in_reply_to_delivery_id=in_reply_to_delivery_id,
+            return await send_message(
+                cast(Controller, service).state,
+                grants,
+                messages,
+                principal,
+                MessageSendRequest(
+                    api_version=api_version,
+                    work_id=active_work_id,
+                    grant_version=1,
+                    message_id=message_id,
+                    payload=payload,
+                    in_reply_to_delivery_id=in_reply_to_delivery_id,
+                ),
+                runtime=runtime(),
+                infer_grant_version=True,
+                require_received=True,
             )
-            context = await messages.reply_context(in_reply_to_delivery_id)
-            recipient_work_id = None if context is None else context.recipient_work_id
-            async with grants.locked_message_route(
-                principal.key, active_work_id, recipient_work_id,
-            ) as (grant, recipient):
-                if grant is None or grant.principal != principal or not grant.current():
-                    return MessageSubmitResult(status="denied", reason="actor_not_admitted")
-                if "message" not in grant.operations:
-                    return MessageSubmitResult(status="denied", reason="message_not_granted")
-                public = public.model_copy(update={"grant_version": grant.version})
-                replay = await messages.committed_public_replay(active_work_id, public)
-                if replay is not None:
-                    return replay
-                if context is None:
-                    return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
-                if recipient is None:
-                    return MessageSubmitResult(status="denied", reason="recipient_route_unavailable")
-                handle = await cast(Controller, service).state.get(context.recipient_work_id)
-                if handle is None or handle.provider != "asana":
-                    return MessageSubmitResult(status="denied", reason="recipient_route_unavailable")
-                return await messages.submit_received_result(
-                    active_work_id, grant.version, active_runtime.generation,
-                    MessageRoute(
-                        recipient_work_id=context.recipient_work_id,
-                        recipient_grant_version=recipient.version,
-                        projection_provider="asana", projection_target=handle.provider_work_id,
-                    ),
-                    MessageSubmitRequest(
-                        api_version=api_version, message_id=message_id,
-                        grant_version=grant.version, route_ref=context.route_ref,
-                        kind="result", payload=payload,
-                        in_reply_to_delivery_id=in_reply_to_delivery_id,
-                    ),
-                )
 
         async def _message_disposition(
             api_version: Literal["1"], delivery_id: UUID,
             result_message_id: UUID,
         ) -> MessageTransitionResult:
             evidence = DispositionEvidence(kind="result", result_message_id=result_message_id)
-            version = await current_grant_version()
+            version = await current_message_grant_version(grants, principal)
             if version is None:
-                return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
+                return MessageTransitionResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
             return await messages.disposition(principal, runtime(), MessageDispositionRequest(
                 api_version=api_version, delivery_id=delivery_id,
                 grant_version=version,
