@@ -98,6 +98,38 @@ class WorkSearchResult(ClosedModel):
         return self
 
 
+class WorkStructureRequest(ClosedModel):
+    api_version: ApiVersion
+    work_id: UUID
+    observed_revision: str = Field(min_length=1)
+
+
+class WorkStructureResult(ClosedModel):
+    status: Status
+    work_id: UUID | None = None
+    revision: str | None = None
+    parent: WorkSearchItem | None = None
+    children: tuple[WorkSearchItem, ...] = ()
+
+    @model_validator(mode="after")
+    def valid_result(self) -> Self:
+        relations = self.parent is not None or bool(self.children)
+        if self.status == "ok":
+            if self.work_id is None or self.revision is None:
+                raise ValueError("successful structure requires work and revision")
+            ids = [item.id for item in self.children]
+            if self.parent is not None:
+                ids.append(self.parent.id)
+            if self.work_id in ids or len(ids) != len(set(ids)):
+                raise ValueError("structure identities must be distinct")
+        elif self.status == "stale":
+            if self.work_id is None or self.revision is None or relations:
+                raise ValueError("stale structure requires only current work and revision")
+        elif self.work_id is not None or self.revision is not None or relations:
+            raise ValueError("failed structure must not claim result data")
+        return self
+
+
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
