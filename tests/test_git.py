@@ -41,21 +41,34 @@ def _candidate(repo: Path, base: str, branch: str = "candidate") -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _squash(repo: Path, candidate: str, branch: str = "main") -> str:
+def _merge(repo: Path, candidate: str, branch: str = "main") -> str:
     _git(repo, "switch", branch)
-    _git(repo, "merge", "--squash", candidate)
-    _git(repo, "commit", "-m", "squash candidate")
+    _git(repo, "merge", "--no-ff", candidate, "-m", "merge candidate")
     return _git(repo, "rev-parse", "HEAD")
 
 
-def test_reconcile_accepts_current_base_one_parent_squash(tmp_path: Path):
+def test_reconcile_accepts_current_base_reviewed_two_parent_merge(tmp_path: Path):
     repo, base = _repo(tmp_path)
     candidate = _candidate(repo, base)
-    merged = _squash(repo, candidate)
+    merged = _merge(repo, candidate)
 
-    assert len(_git(repo, "rev-list", "--parents", "-n", "1", merged).split()) == 2
+    assert _git(repo, "rev-list", "--parents", "-n", "1", merged).split() == [
+        merged, base, candidate,
+    ]
     assert reconcile(repo, candidate, base, merged, merged).tree == _git(
         repo, "rev-parse", f"{candidate}^{{tree}}")
+
+
+def test_reconcile_rejects_squash_landing(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    candidate = _candidate(repo, base)
+    _git(repo, "switch", "main")
+    _git(repo, "merge", "--squash", candidate)
+    _git(repo, "commit", "-m", "squash candidate")
+    merged = _git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(GitError, match="two-parent merge"):
+        reconcile(repo, candidate, base, merged, merged)
 
 
 def test_reconcile_rejects_stale_base(tmp_path: Path):
@@ -63,7 +76,7 @@ def test_reconcile_rejects_stale_base(tmp_path: Path):
     candidate = _candidate(repo, base)
     _git(repo, "switch", "main")
     _git(repo, "commit", "--allow-empty", "-m", "main advanced")
-    merged = _squash(repo, candidate)
+    merged = _merge(repo, candidate)
 
     with pytest.raises(GitError, match="reviewed base"):
         reconcile(repo, candidate, base, merged, merged)
@@ -73,13 +86,14 @@ def test_reconcile_rejects_wrong_tree(tmp_path: Path):
     repo, base = _repo(tmp_path)
     candidate = _candidate(repo, base)
     _git(repo, "switch", "main")
-    _git(repo, "merge", "--squash", candidate)
-    (repo / "candidate.txt").write_text("wrong tree\n")
-    _git(repo, "add", "candidate.txt")
-    _git(repo, "commit", "-m", "tampered squash")
+    (repo / "base-only.txt").write_text("tamper before merge\n")
+    _git(repo, "add", "base-only.txt")
+    _git(repo, "commit", "-m", "unreviewed base change")
+    advanced = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "--no-ff", candidate, "-m", "merge candidate")
     merged = _git(repo, "rev-parse", "HEAD")
 
-    with pytest.raises(GitError, match="landing tree"):
+    with pytest.raises(GitError, match="two-parent merge|reviewed base"):
         reconcile(repo, candidate, base, merged, merged)
 
 
@@ -91,12 +105,10 @@ def test_reconcile_rejects_unrelated_head_with_matching_tree(tmp_path: Path):
     _git(repo, "commit", "-m", "unrelated candidate")
     candidate = _git(repo, "rev-parse", "HEAD")
     _git(repo, "switch", "main")
-    _git(repo, "merge", "--squash", "--allow-unrelated-histories", candidate)
-    _git(repo, "commit", "-m", "squash unrelated candidate")
+    _git(repo, "merge", "--no-ff", "--allow-unrelated-histories", candidate, "-m",
+         "merge unrelated candidate")
     merged = _git(repo, "rev-parse", "HEAD")
 
-    assert _git(repo, "rev-parse", f"{candidate}^{{tree}}") == _git(
-        repo, "rev-parse", f"{merged}^{{tree}}")
     with pytest.raises(GitError, match="not based"):
         reconcile(repo, candidate, base, merged, merged)
 
