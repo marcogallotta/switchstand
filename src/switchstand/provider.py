@@ -59,9 +59,12 @@ JSON = dict[str, Any]
 
 
 class _TraversalFailure(Exception):
-    def __init__(self, reason: str):
+    def __init__(
+        self, reason: str, children: tuple[tuple[str, JSON], ...] = (),
+    ):
         super().__init__(reason)
         self.reason = reason
+        self.children = children
 
 
 PRIORITIES = {f"P{value}": value for value in range(4)}
@@ -107,6 +110,10 @@ class AsanaProvider:
         seen_gids: set[str] = set()
         seen_offsets: set[str] = set()
         offset: str | None = None
+
+        def fail(reason: str) -> _TraversalFailure:
+            return _TraversalFailure(reason, tuple(children))
+
         while True:
             params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
             if offset is not None:
@@ -118,29 +125,31 @@ class AsanaProvider:
             payload = response.json()
             rows, next_page = payload["data"], payload["next_page"]
             if not isinstance(rows, list):
-                raise _TraversalFailure("invalid_subtask_page")
+                raise fail("invalid_subtask_page")
             raw_rows = cast(list[object], rows)
             if len(raw_rows) > FINDER_LIMIT:
-                raise _TraversalFailure("invalid_subtask_page")
+                raise fail("invalid_subtask_page")
             if len(children) + len(raw_rows) > FINDER_MAX_CHILDREN:
-                raise _TraversalFailure("subtask_cap")
+                raise fail("subtask_cap")
             for row in raw_rows:
                 child_gid = self._gid(row)
                 if child_gid is None:
-                    raise _TraversalFailure("invalid_subtask_page")
+                    raise fail("invalid_subtask_page")
                 if child_gid in seen_gids:
-                    raise _TraversalFailure("duplicate_subtask")
+                    raise fail("duplicate_subtask")
                 seen_gids.add(child_gid)
                 child = await self._task(child_gid)
                 if child is None or self._gid(child) != child_gid:
-                    raise _TraversalFailure("candidate_not_returned")
+                    raise fail("candidate_not_returned")
                 if self._parent_gid(child) != parent_gid:
-                    raise _TraversalFailure("relationship_changed")
+                    raise fail("relationship_changed")
                 if require_canonical and not await self._canonical(child):
-                    raise _TraversalFailure("candidate_not_canonical")
+                    raise fail("candidate_not_canonical")
                 children.append((child_gid, child))
             if next_page is None:
                 return tuple(children)
+            if len(children) >= FINDER_MAX_CHILDREN:
+                raise fail("subtask_cap")
             next_offset = (
                 cast(JSON, next_page).get("offset")
                 if isinstance(next_page, dict) else None
@@ -151,7 +160,7 @@ class AsanaProvider:
                 or next_offset in seen_offsets
                 or offset_limit is not None and len(next_offset) > offset_limit
             ):
-                raise _TraversalFailure("invalid_subtask_offset")
+                raise fail("invalid_subtask_offset")
             seen_offsets.add(next_offset)
             offset = next_offset
 
@@ -435,6 +444,10 @@ class AsanaProvider:
                     work_task_gid, require_canonical=False
                 )
             except _TraversalFailure as failure:
+                for child_gid, child in failure.children:
+                    candidates.append(
+                        self._related_candidate(child_gid, child, work_task_gid)
+                    )
                 return uncertain(failure.reason)
             for child_gid, child in children:
                 candidates.append(
@@ -594,17 +607,18 @@ class AsanaProvider:
                 ))
 
             try:
-                readback = await self._verified_task(root_task_gid)
-            except _TraversalFailure as failure:
-                return uncertain(
-                    "work_readback_unavailable"
-                    if failure.reason == "not_returned"
-                    else "work_not_canonical"
-                )
+                readback = await self._task(root_task_gid)
             except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+                return uncertain("work_readback_unavailable")
+            if readback is None or self._gid(readback) != root_task_gid:
                 return uncertain("work_readback_unavailable")
             if not identifies_root(readback):
                 return uncertain("root_identity_unverified")
+            try:
+                if not await self._canonical(readback):
+                    return uncertain("work_not_canonical")
+            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+                return uncertain("work_readback_unavailable")
             if readback.get("modified_at") != observed_revision:
                 return uncertain("work_stale")
             if not candidates:
