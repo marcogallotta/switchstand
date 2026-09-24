@@ -104,15 +104,48 @@ class ChatGPTService:
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantResult(status="unknown", principal=principal)
 
+    async def _read_authority(
+        self,
+        principal: PrincipalContext,
+        grant: WorkGrant | None,
+        *,
+        operations: frozenset[str],
+        work_id: UUID | None = None,
+        explicit_target: bool = False,
+        workspace_only: bool = False,
+    ) -> tuple[LaunchAuthority | None, str | None]:
+        """Return the sole admitted read authority and a closed denial reason."""
+        if not self.gateway.admitted(principal, grant) or grant is None:
+            return None, "no_current_grant"
+        if not operations <= set(grant.operations):
+            return None, "work_not_granted"
+        if workspace_only and grant.scope != "workspace":
+            return None, "work_not_granted"
+        if work_id is None:
+            return grant.authority, None
+        if grant.scope == "workspace":
+            if not explicit_target:
+                return None, "explicit_work_id_required"
+            if await self.state.get(work_id) is None:
+                return None, "work_not_granted"
+            return LaunchAuthority(active_work_id=work_id), None
+        if grant.can_read(work_id, explicit_target=explicit_target):
+            return grant.authority, None
+        if await self.grants.created_work_allowed(principal.key, work_id):
+            return LaunchAuthority(active_work_id=work_id), None
+        return None, "work_not_granted"
+
     async def search(self, request: WorkSearchRequest) -> WorkSearchResult:
         principal = await self.principal()
         if principal is None:
             return WorkSearchResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
-                    return WorkSearchResult(status="denied")
-                if grant.scope != "workspace" or "work_search" not in grant.operations:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_search"}),
+                    workspace_only=True,
+                )
+                if authority is None:
                     return WorkSearchResult(status="denied")
                 provider = self.providers.get("asana")
                 if provider is None:
@@ -129,14 +162,15 @@ class ChatGPTService:
             return WorkStructureResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
-                    return WorkStructureResult(status="denied")
-                if (grant.scope != "workspace"
-                        or not {"work_get", "work_search"} <= grant.operations):
+                authority, _ = await self._read_authority(
+                    principal, grant,
+                    operations=frozenset({"work_get", "work_search"}),
+                    work_id=request.work_id, explicit_target=True, workspace_only=True,
+                )
+                if authority is None:
                     return WorkStructureResult(status="denied")
                 handle = await self.state.get(request.work_id)
-                if handle is None:
-                    return WorkStructureResult(status="denied")
+                assert handle is not None
                 provider = self.providers.get(handle.provider)
                 if provider is None:
                     return WorkStructureResult(status="provider_error")
@@ -168,9 +202,10 @@ class ChatGPTService:
             return GrantedWorkResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
-                    return GrantedWorkResult(status="denied")
-                if "work_get" not in grant.operations:
+                base_authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"})
+                )
+                if base_authority is None or grant is None:
                     return GrantedWorkResult(status="denied")
                 handle = await self.state.get_by_provider(
                     parsed.provider, parsed.provider_work_id
@@ -178,8 +213,11 @@ class ChatGPTService:
                 if grant.scope == "launch":
                     if handle is None:
                         return GrantedWorkResult(status="denied")
-                    if (not grant.can_read(handle.id, explicit_target=True)
-                            and not await self.grants.created_work_allowed(principal.key, handle.id)):
+                    authority, _ = await self._read_authority(
+                        principal, grant, operations=frozenset({"work_get"}),
+                        work_id=handle.id, explicit_target=True,
+                    )
+                    if authority is None:
                         return GrantedWorkResult(status="denied")
                 elif handle is None:
                     provider = self.providers.get(parsed.provider)
@@ -207,32 +245,21 @@ class ChatGPTService:
             return GrantedWorkResult(status="denied", guard=self.denied("work_get"))
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
-                    return GrantedWorkResult(status="denied",
-                                             guard=self.denied("work_get", "no_current_grant"))
+                if grant is None:
+                    return GrantedWorkResult(
+                        status="denied", guard=self.denied("work_get", "no_current_grant")
+                    )
                 explicit_target = work_id is not None
-                if grant.scope == "workspace" and not explicit_target:
+                target = work_id or grant.authority.active_work_id
+                authority, reason = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=target, explicit_target=explicit_target,
+                )
+                if authority is None:
                     return GrantedWorkResult(
                         status="denied",
-                        guard=self.denied("work_get", "explicit_work_id_required"),
+                        guard=self.denied("work_get", reason or "work_not_granted"),
                     )
-                target = work_id or grant.authority.active_work_id
-                if "work_get" not in grant.operations:
-                    return GrantedWorkResult(status="denied",
-                                             guard=self.denied("work_get", "work_not_granted"))
-                authority = grant.authority
-                if grant.scope == "workspace":
-                    if await self.state.get(target) is None:
-                        return GrantedWorkResult(
-                            status="denied",
-                            guard=self.denied("work_get", "work_not_granted"),
-                        )
-                    authority = LaunchAuthority(active_work_id=target)
-                elif not grant.can_read(target, explicit_target=explicit_target):
-                    if not await self.grants.created_work_allowed(principal.key, target):
-                        return GrantedWorkResult(status="denied",
-                                                 guard=self.denied("work_get", "work_not_granted"))
-                    authority = LaunchAuthority(active_work_id=target)
                 result = await Controller(authority, self.state, self.providers).get(
                     WorkGetRequest(api_version="1", work_id=target, include_related=include_related)
                 )
@@ -247,19 +274,12 @@ class ChatGPTService:
             return WorkHistoryResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=request.work_id, explicit_target=True,
+                )
+                if authority is None:
                     return WorkHistoryResult(status="denied")
-                if "work_get" not in grant.operations:
-                    return WorkHistoryResult(status="denied")
-                authority = grant.authority
-                if grant.scope == "workspace":
-                    if await self.state.get(request.work_id) is None:
-                        return WorkHistoryResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
-                elif not grant.can_read(request.work_id, explicit_target=True):
-                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
-                        return WorkHistoryResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
                 return await Controller(authority, self.state, self.providers).history(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkHistoryResult(status="unknown")
@@ -270,19 +290,12 @@ class ChatGPTService:
             return WorkAttachmentsResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=request.work_id, explicit_target=True,
+                )
+                if authority is None:
                     return WorkAttachmentsResult(status="denied")
-                if "work_get" not in grant.operations:
-                    return WorkAttachmentsResult(status="denied")
-                authority = grant.authority
-                if grant.scope == "workspace":
-                    if await self.state.get(request.work_id) is None:
-                        return WorkAttachmentsResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
-                elif not grant.can_read(request.work_id, explicit_target=True):
-                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
-                        return WorkAttachmentsResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
                 return await Controller(authority, self.state, self.providers).attachments(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkAttachmentsResult(status="unknown")
@@ -293,19 +306,12 @@ class ChatGPTService:
             return WorkEventResult(status="denied")
         try:
             async with self.grants.locked(principal.key) as grant:
-                if not self.gateway.admitted(principal, grant) or grant is None:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=request.work_id, explicit_target=True,
+                )
+                if authority is None:
                     return WorkEventResult(status="denied")
-                if "work_get" not in grant.operations:
-                    return WorkEventResult(status="denied")
-                authority = grant.authority
-                if grant.scope == "workspace":
-                    if await self.state.get(request.work_id) is None:
-                        return WorkEventResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
-                elif not grant.can_read(request.work_id, explicit_target=True):
-                    if not await self.grants.created_work_allowed(principal.key, request.work_id):
-                        return WorkEventResult(status="denied")
-                    authority = LaunchAuthority(active_work_id=request.work_id)
                 return await Controller(authority, self.state, self.providers).event(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkEventResult(status="unknown")
