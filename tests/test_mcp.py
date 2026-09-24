@@ -198,8 +198,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "work_attachments", "source_task", "source_stories", "source_story",
-            "work_history", "work_event", "work_append",
+            "work_get", "work_attachments", "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
@@ -215,48 +214,9 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert "work_id" not in get_tool.input_schema["required"]
         assert "include_related" in get_tool.input_schema["properties"]
         assert str(REFERENCE_ID) in (get_tool.description or "")
-        source_tool = next(tool for tool in tools if tool.name == "source_task")
-        assert "task_gid" in source_tool.input_schema["required"]
-        assert "work_id" not in source_tool.input_schema.get("properties", {})
-        assert not (await client.list_resources()).resources
-        assert not (await client.list_prompts()).prompts
-
-        got = await client.call_tool("work_get", {"api_version": "1"})
-        assert got.structured_content == project_work(WorkResult(status="ok", item=item()), False).model_dump(mode="json")
-        related = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
-        assert related.structured_content["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
-        reference = await client.call_tool(
-            "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
-        )
-        assert reference.structured_content == project_work(WorkResult(
-            status="ok", item=item(work_id=REFERENCE_ID)
-        ), False).model_dump(mode="json")
-
-        source = await client.call_tool(
-            "source_task", {"api_version": "1", "task_gid": TASK_GID}
-        )
-        assert source.structured_content == SourceTaskResult(
-            status="ok",
-            item=SourceTask(
-                task_gid=TASK_GID, title="source", notes="notes",
-                completed=False, revision="r1",
-            ),
-        ).model_dump(mode="json")
-        stories = await client.call_tool(
-            "source_stories",
-            {"api_version": "1", "task_gid": TASK_GID, "observed_revision": "r1"},
-        )
-        assert stories.structured_content["status"] == "ok"
-        assert stories.structured_content["stories"][0]["story_gid"] == STORY_GID
-        story = await client.call_tool(
-            "source_story",
-            {
-                "api_version": "1", "task_gid": TASK_GID,
-                "story_gid": STORY_GID, "observed_revision": "r1",
-            },
-        )
-        assert story.structured_content["status"] == "ok"
-        assert story.structured_content["item"]["task_gid"] == TASK_GID
+        assert not {"source_task", "source_stories", "source_story"} & {
+            tool.name for tool in tools
+        }
 
         base = {"api_version": "1", "work_id": str(ID)}
         appended = await client.call_tool("work_append", base | {"text": "history"})
