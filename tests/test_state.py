@@ -3,10 +3,11 @@ import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.state import PostgresState, metadata
+from switchstand.state import PostgresState, metadata, work_handles
 
 
 @pytest.fixture
@@ -17,8 +18,8 @@ async def state():
     assert make_url(url).database == "switchstand_test", "state tests require switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
+        await connection.execute(text("TRUNCATE work_handles CASCADE"))
     yield PostgresState(engine)
     await engine.dispose()
 
@@ -29,6 +30,16 @@ async def test_bind_has_stable_opaque_identity(state):
     assert first.id.version == 4
     await state.bind("other", "elsewhere")
     assert await state.bound_provider_ids("asana") == frozenset({"provider-id"})
+
+
+async def test_concurrent_bind_converges_on_one_durable_identity(state):
+    first, concurrent = await asyncio.gather(
+        state.bind("asana", "provider-id"), state.bind("asana", "provider-id"),
+    )
+    assert first == concurrent
+    async with state.engine.connect() as connection:
+        ids = (await connection.execute(select(work_handles.c.id))).scalars().all()
+    assert ids == [first.id]
 
 
 async def test_provider_identity_reverse_lookup_is_exact_and_read_only(state):
