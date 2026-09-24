@@ -220,8 +220,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         })
     assert names == {
         "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
-        "source_task", "source_stories",
-        "source_story", "work_history", "work_attachments", "work_event", "work_append",
+        "work_history", "work_attachments", "work_event", "work_append",
         "work_create", "work_update", "message_send", "message_pending",
         "required_result_save",
     }
