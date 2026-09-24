@@ -479,7 +479,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
     monkeypatch.setattr(
-        "switchstand.development.inspect", lambda *args: None
+        "switchstand.launch.cleanup_development", lambda *args: None
     )
     monkeypatch.setattr(
         "switchstand.launch.provision",
