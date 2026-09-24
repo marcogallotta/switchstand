@@ -62,6 +62,10 @@ class FakeService:
         )
 
     async def history(self, request):
+        if request.observed_revision != "r1":
+            return WorkHistoryResult(
+                status="stale", work_id=request.work_id, revision="r1", events=(),
+            )
         event = WorkEvent(
             id=UUID("00000000-0000-0000-0000-000000000003"),
             work_id=request.work_id,
