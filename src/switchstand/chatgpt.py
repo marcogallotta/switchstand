@@ -1,12 +1,15 @@
 """Authenticated-caller seam; authentication adapters are trusted host code, never tools."""
 
+import hashlib
 from collections.abc import Awaitable, Callable
 from typing import Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
+from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from .contracts import (
+    ClosedModel,
     LaunchAuthority,
     SourceStoriesRequest,
     SourceStoriesResult,
@@ -30,6 +33,7 @@ from .discovery import DiscoveryProvider, WorkDiscovery
 from .effects import AppendGateway
 from .grant_state import GrantState
 from .grants import (
+    EffectReceipt,
     GrantedWorkResult,
     GrantResult,
     GuardOutcome,
@@ -39,6 +43,7 @@ from .grants import (
     ProtectedUpdate,
     WorkGrant,
 )
+from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
     MessagePendingRequest,
     MessagePendingResult,
@@ -51,18 +56,29 @@ from .messages import (
 from .updates import UpdateGateway
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
+REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
+
+
+class RequiredResultSaveRequest(ClosedModel):
+    api_version: Literal["1"]
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    observed_revision: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=8000)
 
 
 class ChatGPTService:
     def __init__(
         self, principal: PrincipalResolver, state: State,
         grants: GrantState, providers: dict[str, Provider], messages: MessageState | None = None,
+        required_results: RequiredResultPersistence | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
         self.create_gateway = CreateGateway(state, grants, providers)
         self.update_gateway = UpdateGateway(state, grants, providers)
         self.messages = messages
+        self.required_results = required_results
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
@@ -230,6 +246,198 @@ class ChatGPTService:
         if principal is None:
             return self.update_gateway.guard(request, "denied", "authenticated_principal_required")
         return await self.update_gateway.update(principal, request)
+
+    @staticmethod
+    def _result_guard(
+        request: RequiredResultSaveRequest,
+        status: Literal["denied", "stale", "unknown"],
+        reason: str,
+        operation_id: UUID | None = None,
+        possible_send: bool = False,
+    ) -> GuardOutcome:
+        return GuardOutcome(
+            status=status, operation="required_result_save", work_id=request.work_id,
+            operation_id=operation_id, reason=reason,
+            effect="unknown" if possible_send else "not_sent",
+            retry="reconcile" if possible_send else "refresh" if status == "stale" else "none",
+            next_action=("Reconcile the recorded effect; do not send a new operation."
+                         if possible_send else "Refresh work/grant or ask the trusted issuer."),
+        )
+
+    async def required_result_save(self, request: RequiredResultSaveRequest) -> GuardOutcome:
+        """Save one server-identified result through Lifecycle and the existing effect journal."""
+        principal = await self.principal()
+        if principal is None:
+            return self._result_guard(request, "denied", "authenticated_principal_required")
+        if self.required_results is None:
+            return self._result_guard(request, "denied", "required_result_persistence_unavailable")
+
+        operation_id: UUID | None = None
+        possible_send = False
+        try:
+            grant = await self.grants.current(principal.key)
+            if not self.gateway.admitted(principal, grant) or grant is None:
+                return self._result_guard(request, "denied", "no_current_grant")
+            if request.grant_version != grant.version:
+                return self._result_guard(request, "stale", "grant_version_changed")
+            if not grant.can_write(request.work_id) or "work_append" not in grant.operations:
+                return self._result_guard(request, "denied", "operation_or_work_not_granted")
+            handle = await self.state.get(request.work_id)
+            if handle is None:
+                return self._result_guard(request, "denied", "work_not_bound")
+
+            currentness = hashlib.sha256(
+                f"{principal.key}:{grant.id}:{grant.version}".encode()
+            ).hexdigest()
+            destination = f"{handle.provider}:task:{handle.provider_work_id}"
+            correlation = hashlib.sha256(request.text.encode()).hexdigest()
+            operation_id = uuid5(
+                REQUIRED_RESULT_NAMESPACE, f"{principal.key}:{request.work_id}:{destination}"
+            )
+            repository = self.required_results.repository
+            obligation = await repository.get(operation_id)
+            if obligation is None:
+                try:
+                    obligation = await repository.create(operation_id, request.work_id, currentness)
+                except SQLAlchemyError:
+                    obligation = await repository.get(operation_id)
+                    if obligation is None:
+                        raise
+            if obligation.work_id_ref != request.work_id:
+                return self._result_guard(
+                    request, "denied", "lifecycle_obligation_work_conflict", operation_id
+                )
+            if obligation.state is ProfileState.PENDING_RESULT:
+                identity = (None, None)
+            else:
+                identity = (obligation.destination_ref, obligation.result_correlation)
+            if identity not in {(None, None), (destination, correlation)}:
+                return self._result_guard(
+                    request, "denied", "lifecycle_result_identity_conflict", operation_id
+                )
+            if obligation.currentness_token != currentness:
+                async with self.grants.locked(principal.key, request.work_id) as locked_grant:
+                    if (locked_grant is None or not self.gateway.admitted(principal, locked_grant)
+                            or locked_grant.id != grant.id
+                            or locked_grant.version != grant.version
+                            or not locked_grant.can_write(request.work_id)
+                            or "work_append" not in locked_grant.operations):
+                        return self._result_guard(
+                            request, "stale", "lifecycle_currentness_changed", operation_id
+                        )
+                    effect = await self.grants.exact(operation_id)
+                    if effect is None:
+                        obligation = await repository.adopt_currentness(obligation, currentness)
+                    elif (
+                        effect.principal_key == principal.key
+                        and effect.outcome.effect == "applied"
+                        and isinstance(effect.outcome.receipt, EffectReceipt)
+                        and effect.outcome.receipt.operation_id == operation_id
+                        and effect.outcome.receipt.work_id == request.work_id
+                        and effect.outcome.receipt.text == request.text
+                        and effect.outcome.receipt.provider == handle.provider
+                        and effect.outcome.receipt.task_gid == handle.provider_work_id
+                    ):
+                        if obligation.state is ProfileState.TERMINAL:
+                            return GuardOutcome(
+                                status="ok", operation="required_result_save",
+                                work_id=request.work_id, operation_id=operation_id,
+                                reason="required_result_already_persisted",
+                                next_action="Use the durable Lifecycle terminal evidence.",
+                            )
+                        await self.required_results.transition(
+                            operation_id, obligation.currentness_token,
+                            LifecycleEvent.PERSIST_READBACK_MATCHED,
+                            evidence={
+                                "destination_ref": destination,
+                                "result_correlation": correlation,
+                                "operation_id": str(operation_id),
+                                "provider": effect.outcome.receipt.provider,
+                                "task_gid": effect.outcome.receipt.task_gid,
+                                "story_gid": effect.outcome.receipt.story_gid,
+                            },
+                        )
+                        return effect.outcome.model_copy(
+                            update={"operation": "required_result_save"}
+                        )
+                    else:
+                        return self._result_guard(
+                            request, "stale", "lifecycle_currentness_changed", operation_id
+                        )
+            if obligation.state is ProfileState.PENDING_RESULT:
+                try:
+                    obligation = await self.required_results.transition(
+                        operation_id, currentness, LifecycleEvent.RESULT_READY,
+                        destination_ref=destination, result_correlation=correlation,
+                    )
+                except ValueError:
+                    obligation = await repository.get(operation_id)
+                    if obligation is None:
+                        raise
+            if (obligation.destination_ref, obligation.result_correlation) != (destination, correlation):
+                return self._result_guard(
+                    request, "denied", "lifecycle_result_identity_conflict", operation_id
+                )
+            if obligation.state is ProfileState.TERMINAL:
+                return GuardOutcome(
+                    status="ok", operation="required_result_save", work_id=request.work_id,
+                    operation_id=operation_id, reason="required_result_already_persisted",
+                    next_action="Use the durable Lifecycle terminal evidence.",
+                )
+            if (obligation.state is ProfileState.UNKNOWN
+                    and obligation.unknown_reason != LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS.value):
+                return self._result_guard(
+                    request, "unknown", "lifecycle_currentness_unresolved", operation_id
+                )
+
+            outcome = await self.gateway.append(principal, ProtectedAppend(
+                api_version=request.api_version, operation_id=operation_id,
+                work_id=request.work_id, grant_version=request.grant_version,
+                observed_revision=request.observed_revision, text=request.text,
+            ))
+            possible_send = outcome.effect != "not_sent"
+            if outcome.effect == "applied" and isinstance(outcome.receipt, EffectReceipt):
+                evidence = {
+                    "destination_ref": destination, "result_correlation": correlation,
+                    "operation_id": str(operation_id), "provider": outcome.receipt.provider,
+                    "task_gid": outcome.receipt.task_gid, "story_gid": outcome.receipt.story_gid,
+                }
+                try:
+                    async with self.grants.locked(principal.key, request.work_id) as current:
+                        if (current is None or not self.gateway.admitted(principal, current)
+                                or current.id != grant.id or current.version != grant.version
+                                or not current.can_write(request.work_id)
+                                or "work_append" not in current.operations):
+                            return self._result_guard(
+                                request, "stale", "lifecycle_currentness_changed_before_terminal",
+                                operation_id, True,
+                            )
+                        await self.required_results.transition(
+                            operation_id, currentness, LifecycleEvent.PERSIST_READBACK_MATCHED,
+                            evidence=evidence,
+                        )
+                except (SQLAlchemyError, ValueError):
+                    confirmed = await repository.get(operation_id)
+                    if confirmed is None or confirmed.state is not ProfileState.TERMINAL:
+                        return self._result_guard(
+                            request, "unknown", "lifecycle_terminal_commit_unconfirmed",
+                            operation_id, True,
+                        )
+                return outcome.model_copy(update={"operation": "required_result_save"})
+            if outcome.effect == "unknown" and obligation.state is ProfileState.PERSIST_REQUIRED:
+                try:
+                    await self.required_results.transition(
+                        operation_id, currentness, LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS,
+                        evidence={"operation_id": str(operation_id), "reason": outcome.reason},
+                    )
+                except (SQLAlchemyError, ValueError):
+                    pass
+            return outcome.model_copy(update={"operation": "required_result_save"})
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return self._result_guard(
+                request, "unknown", "lifecycle_or_effect_state_unavailable",
+                operation_id, possible_send,
+            )
 
     async def message_send(self, request: MessageSendRequest) -> MessageSubmitResult:
         principal = await self.principal()

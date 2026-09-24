@@ -110,6 +110,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "grant_get", "work_get", "work_search", "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "message_send", "message_pending",
+            "required_result_save",
         }
         for tool in tools:
             if tool.name in {"work_get", "work_history", "work_attachments", "work_event"}:
@@ -119,6 +120,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             assert tool.input_schema.get("additionalProperties") is False
             assert not {"principal", "role", "grant_id", "issuer", "allowed_operations"}.intersection(
                 tool.input_schema.get("properties", {}))
+        required_result = next(tool for tool in tools if tool.name == "required_result_save")
+        assert "operation_id" not in required_result.input_schema["properties"]
         update = next(tool for tool in tools if tool.name == "work_update")
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()

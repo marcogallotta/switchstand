@@ -5,7 +5,7 @@ from uuid import UUID
 from mcp.server import MCPServer
 from pydantic import Field, JsonValue
 
-from .chatgpt import ChatGPTService
+from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
     SourceStoriesRequest,
     SourceStoriesResult,
@@ -186,12 +186,23 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             grant_version=grant_version, observed_revision=observed_revision, patch=patch,
         ))
 
+    async def required_result_save(
+        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
+    ) -> GuardOutcome:
+        """Save one required result; the server owns its stable operation identity."""
+        return await service.required_result_save(RequiredResultSaveRequest(
+            api_version=api_version, work_id=work_id, grant_version=grant_version,
+            observed_revision=observed_revision, text=text,
+        ))
+
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("work_search", work_search), ("work_history", work_history),
                            ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),
                            ("source_story", source_story), ("work_append", work_append),
                            ("work_create", work_create), ("work_update", work_update),
+                           ("required_result_save", required_result_save),
                            *build_message_tools(service)):
         closed_tool(server, name, function)
     return server
