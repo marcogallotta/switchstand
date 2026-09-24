@@ -23,21 +23,12 @@ env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS
             "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
             "SWITCHSTAND_RUN_ID"]
 required = false
-enabled_tools = ["work_get", "work_attachments", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
+enabled_tools = ["work_get", "work_attachments", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
 
 [mcp_servers.switchstand.tools.work_get]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.work_attachments]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_task]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_stories]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_story]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.work_history]
