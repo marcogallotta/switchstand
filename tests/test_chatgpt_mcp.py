@@ -163,6 +163,45 @@ async def test_structure_requires_workspace_read_and_discovery_and_projects_atom
     assert "private detail" not in str(failed)
 
 
+@pytest.mark.parametrize("parent_id, child_id", [
+    ("123", "child"),
+    ("same", "same"),
+])
+async def test_structure_invalid_snapshot_returns_no_structure_or_bindings(
+    monkeypatch, parent_id, child_id,
+):
+    from unittest.mock import AsyncMock
+
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get", "work_search"}),
+    )
+
+    def relation(provider_work_id):
+        return ProviderSearchItem(
+            provider_work_id, provider_work_id, False, "r1", Routing(), CONTEXT,
+        )
+
+    monkeypatch.setattr(
+        subject.providers["asana"], "structure_work",
+        AsyncMock(return_value=ProviderStructure(
+            "ok", "r1", relation(parent_id), (relation(child_id),)
+        )),
+        raising=False,
+    )
+    before = dict(subject.state.handles)
+
+    result = await build_chatgpt_server(subject).call_tool("work_structure", {
+        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+    })
+
+    assert result.structured_content == {
+        "status": "provider_error", "work_id": None, "revision": None,
+        "parent": None, "children": [],
+    }
+    assert subject.state.handles == before
+
+
 async def test_launch_reference_denies_unbound_canonical_task_without_binding(monkeypatch):
     from unittest.mock import AsyncMock
 
