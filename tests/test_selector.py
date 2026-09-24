@@ -1,5 +1,4 @@
 import os
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -74,47 +73,6 @@ def active(manifest: Path, sha: str, path: Path, repository='marcogallotta/switc
     )
 
 
-def selector_with_env_identity(
-    wrapper: Path,
-    env_link: Path,
-    candidates: list[Path],
-    trusted_find: Path | None = None,
-    status_file: Path | None = None,
-    overflow_uid_file: Path | None = None,
-    trusted_sed: Path | None = None,
-):
-    source = wrapper.read_text()
-    source = source.replace(
-        'env_link=/usr/bin/env', f'env_link={shlex.quote(str(env_link))}', 1
-    )
-    source = source.replace(
-        'env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"',
-        'env_candidates=' + shlex.quote(' '.join(map(str, candidates))),
-        1,
-    )
-    if trusted_find is not None:
-        source = source.replace(
-            'find_bin=/usr/bin/find', f'find_bin={shlex.quote(str(trusted_find))}', 1
-        )
-    if status_file is not None:
-        source = source.replace(
-            'status_file=/proc/self/status',
-            f'status_file={shlex.quote(str(status_file))}',
-            1,
-        )
-    if overflow_uid_file is not None:
-        source = source.replace(
-            'overflow_uid_file=/proc/sys/kernel/overflowuid',
-            f'overflow_uid_file={shlex.quote(str(overflow_uid_file))}',
-            1,
-        )
-    if trusted_sed is not None:
-        source = source.replace(
-            'sed_bin=/usr/bin/sed', f'sed_bin={shlex.quote(str(trusted_sed))}', 1
-        )
-    wrapper.write_text(source)
-
-
 def test_paused_fails_before_git_or_control_execution(selector_fixture, tmp_path):
     wrapper, manifest, _control, _sha, receipt, env, _controls = selector_fixture
     paused(manifest)
@@ -146,132 +104,6 @@ def test_active_ignores_caller_path_git(selector_fixture, tmp_path):
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
     assert receipt.with_suffix('.sha').read_text().strip() == sha
-
-
-def test_active_accepts_trusted_system_env_symlink(selector_fixture, tmp_path):
-    if not Path('/usr/bin/env').is_symlink():
-        pytest.skip('/usr/bin/env is a regular executable on this host')
-    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
-    active(manifest, sha, control)
-    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
-    assert result.returncode == 0, result.stderr
-    assert receipt.with_suffix('.sha').read_text().strip() == sha
-
-
-@pytest.mark.parametrize(('effective_uid', 'expected'), [('1000', 0), ('65534', 1)])
-def test_overflow_owned_system_env_is_trusted_only_for_other_users(
-    selector_fixture, tmp_path, effective_uid, expected
-):
-    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
-    active(manifest, sha, control)
-    target = tmp_path / 'system-env'
-    shutil.copy2('/usr/bin/env', target, follow_symlinks=True)
-    target.chmod(0o755)
-    env_link = tmp_path / 'env-link'
-    env_link.symlink_to(target)
-    find_log = tmp_path / 'find-log'
-    trusted_find = tmp_path / 'trusted-find'
-    trusted_find.write_text(
-        '#!/bin/sh\n'
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(find_log))}\n'
-        'case "$*" in *"-uid 65534 "*) printf "%s\\n" "$1";; esac\n'
-    )
-    trusted_find.chmod(0o755)
-    status_file = tmp_path / 'status'
-    status_file.write_text(
-        f'Name:\ttest\nUid:\t{effective_uid}\t{effective_uid}\t{effective_uid}'
-        f'\t{effective_uid}\n'
-    )
-    overflow_uid_file = tmp_path / 'overflowuid'
-    # Model the managed procfs short-read: a shell builtin sees only `6`, while
-    # the fixed reader returns the complete sysctl value.
-    overflow_uid_file.write_text('6\n')
-    sed_log = tmp_path / 'sed-log'
-    trusted_sed = tmp_path / 'trusted-sed'
-    trusted_sed.write_text(
-        '#!/bin/sh\n'
-        f'printf "%s\\n" "$*" > {shlex.quote(str(sed_log))}\n'
-        'printf "65534\\n"\n'
-    )
-    trusted_sed.chmod(0o755)
-    selector_with_env_identity(
-        wrapper,
-        env_link,
-        [target],
-        trusted_find,
-        status_file,
-        overflow_uid_file,
-        trusted_sed,
-    )
-
-    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
-
-    assert result.returncode == expected, result.stderr
-    assert receipt.with_suffix('.sha').exists() is (expected == 0)
-    if expected == 0:
-        assert receipt.with_suffix('.sha').read_text().strip() == sha
-    checks = find_log.read_text().splitlines()
-    assert any('-uid 0 ' in check for check in checks)
-    assert any('-uid 65534 ' in check for check in checks) is (expected == 0)
-    assert str(overflow_uid_file) in sed_log.read_text()
-
-
-@pytest.mark.parametrize('problem', ['unknown-target', 'symlink-candidate', 'writable-target',
-                                     'writable-parent'])
-def test_active_rejects_untrusted_env_symlink_target(selector_fixture, tmp_path, problem):
-    wrapper, manifest, control, sha, receipt, env, _controls = selector_fixture
-    active(manifest, sha, control)
-    target_parent = tmp_path / 'env-target'
-    target_parent.mkdir()
-    target = target_parent / 'env'
-    shutil.copy2('/usr/bin/env', target, follow_symlinks=True)
-    target.chmod(0o755)
-    env_link = tmp_path / 'env-link'
-    env_link.symlink_to(target)
-    candidates = [target]
-    rejected_path = None
-    if problem == 'unknown-target':
-        candidates = [tmp_path / 'different-env']
-        shutil.copy2('/usr/bin/env', candidates[0], follow_symlinks=True)
-        candidates[0].chmod(0o755)
-    elif problem == 'symlink-candidate':
-        candidate = tmp_path / 'candidate-link'
-        candidate.symlink_to(target)
-        candidates = [candidate]
-        env_link.unlink()
-        env_link.symlink_to(candidate)
-    elif problem == 'writable-target':
-        target.chmod(0o777)
-        rejected_path = target
-    else:
-        target_parent.chmod(0o777)
-        rejected_path = target_parent
-
-    # The production check requires root ownership all the way to `/`.  These
-    # fixtures necessarily live below pytest's user-owned temporary directory,
-    # so use a deterministic `find` double to let each case reach the guard it
-    # is intended to exercise instead of all failing at the `/tmp` ancestor.
-    find_log = tmp_path / 'find-log'
-    trusted_find = tmp_path / 'trusted-find'
-    rejected = '' if rejected_path is None else str(rejected_path)
-    trusted_find.write_text(
-        '#!/bin/sh\n'
-        f'printf "%s\\n" "$1" >> {shlex.quote(str(find_log))}\n'
-        f'[ "$1" = {shlex.quote(rejected)} ] && exit 0\n'
-        'printf "%s\\n" "$1"\n'
-    )
-    trusted_find.chmod(0o755)
-    selector_with_env_identity(wrapper, env_link, candidates, trusted_find)
-    result = run(str(wrapper), '--active', '123', cwd=tmp_path, env=env, check=False)
-    assert result.returncode == 1
-    assert 'trusted env executable is unavailable' in result.stderr
-    assert not receipt.with_suffix('.sha').exists()
-    checked = find_log.read_text().splitlines()
-    assert str(env_link.parent) in checked
-    if rejected_path is not None:
-        assert str(rejected_path) in checked
-    else:
-        assert str(target) not in checked
 
 
 def test_active_ignores_hostile_git_config(selector_fixture, tmp_path):

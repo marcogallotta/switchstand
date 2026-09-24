@@ -14,7 +14,11 @@ esac
 selector_root="$HOME/.local/state/switchstand/control"
 manifest="$selector_root/manifest"
 controls="$selector_root/controls"
+git_bin=/usr/bin/git
+env_bin=/usr/bin/env
 
+[ -f "$git_bin" ] && [ -x "$git_bin" ] || fail "host Git executable is unavailable"
+[ -x "$env_bin" ] || fail "host env executable is unavailable"
 [ -f "$manifest" ] && [ ! -L "$manifest" ] || fail "CONTROL manifest is missing or not a regular file"
 
 seen_state=0
@@ -94,65 +98,8 @@ controls_real=$(CDPATH= cd -- "$controls" && pwd -P)
 [ -d "$control_path" ] && [ ! -L "$control_path" ] || fail "CONTROL path is missing or is a symlink"
 control_real=$(CDPATH= cd -- "$control_path" && pwd -P)
 [ "$control_path" = "$control_real" ] || fail "CONTROL path must be canonical"
-[ "$control_real" = "$controls_real/$control_sha" ] || fail "CONTROL path must be the SHA-keyed snapshot inside the CONTROL root"
-
-env_link=/usr/bin/env
-env_candidates="/usr/bin/env /bin/env /usr/lib/cargo/bin/coreutils/env"
-find_bin=/usr/bin/find
-git_bin=/usr/bin/git
-sed_bin=/usr/bin/sed
-status_file=/proc/self/status
-overflow_uid_file=/proc/sys/kernel/overflowuid
-[ -f "$find_bin" ] && [ -x "$find_bin" ] && [ ! -L "$find_bin" ] \
-    || fail "trusted find executable is unavailable"
-[ -f "$git_bin" ] && [ -x "$git_bin" ] && [ ! -L "$git_bin" ] \
-    || fail "trusted git executable is unavailable"
-[ -f "$sed_bin" ] && [ -x "$sed_bin" ] && [ ! -L "$sed_bin" ] \
-    || fail "trusted sed executable is unavailable"
-
-effective_uid=
-while IFS=' 	' read -r label _ effective _; do
-    [ "$label" = "Uid:" ] || continue
-    effective_uid=$effective
-    break
-done < "$status_file"
-case "$effective_uid" in
-    *[!0-9]*|'') fail "trusted process identity is unavailable" ;;
-esac
-overflow_uid=
-overflow_uid=$("$sed_bin" -n '1p' "$overflow_uid_file" 2>/dev/null) || overflow_uid=
-case "$overflow_uid" in
-    *[!0-9]*|'') overflow_uid= ;;
-esac
-[ "$overflow_uid" != "$effective_uid" ] || overflow_uid=
-
-trusted_system_path() {
-    checked=$1
-    while :; do
-        match=$("$find_bin" "$checked" -maxdepth 0 -uid 0 ! -perm /022 -print 2>/dev/null) \
-            || return 1
-        if [ "$match" != "$checked" ] && [ -n "$overflow_uid" ]; then
-            match=$("$find_bin" "$checked" -maxdepth 0 -uid "$overflow_uid" ! -perm /022 -print 2>/dev/null) \
-                || return 1
-        fi
-        [ "$match" = "$checked" ] || return 1
-        [ "$checked" = / ] && break
-        checked=${checked%/*}
-        [ -n "$checked" ] || checked=/
-    done
-}
-
-env_parent=${env_link%/*}
-trusted_system_path "$env_parent" || fail "trusted env executable is unavailable"
-env_bin=
-for candidate in $env_candidates; do
-    [ -f "$candidate" ] && [ -x "$candidate" ] && [ ! -L "$candidate" ] \
-        && [ "$env_link" -ef "$candidate" ] \
-        && trusted_system_path "$candidate" || continue
-    env_bin=$candidate
-    break
-done
-[ -n "$env_bin" ] || fail "trusted env executable is unavailable"
+[ "$control_real" = "$controls_real/$control_sha" ] \
+    || fail "CONTROL path must be the SHA-keyed snapshot inside the CONTROL root"
 
 run_git() {
     "$env_bin" -i \
@@ -182,7 +129,8 @@ toplevel=$(run_git -C "$control_real" rev-parse --show-toplevel 2>/dev/null) \
     || fail "cannot inspect CONTROL effective worktree"
 [ "$head" = "$control_sha" ] && [ -z "$branch" ] && [ -n "$common" ] \
     || fail "CONTROL checkout is not the exact detached manifest SHA"
-[ "$toplevel" = "$control_real" ] || fail "CONTROL effective worktree does not match selected CONTROL path"
+[ "$toplevel" = "$control_real" ] \
+    || fail "CONTROL effective worktree does not match selected CONTROL path"
 [ -d "$common" ] || fail "CONTROL git common directory is missing"
 common_real=$(CDPATH= cd -- "$common" && pwd -P)
 case "$common_real" in
@@ -204,9 +152,9 @@ while IFS= read -r key; do
             break
             ;;
     esac
-done <<EOF
+done <<EOF_KEYS
 $local_keys
-EOF
+EOF_KEYS
 [ -z "$bad_key" ] || fail "CONTROL local Git config contains unsupported key: $bad_key"
 
 dirty=$(run_git -C "$control_real" status --porcelain --untracked-files=all 2>/dev/null) \
@@ -222,7 +170,8 @@ case "$origin" in
     *) fail "CONTROL origin must be a github.com repository" ;;
 esac
 origin_repository=${origin_repository%.git}
-[ "$origin_repository" = "$repository" ] || fail "CONTROL origin does not match manifest repository identity"
+[ "$origin_repository" = "$repository" ] \
+    || fail "CONTROL origin does not match manifest repository identity"
 
 entry="$control_real/scripts/switchstand-start"
 [ -f "$entry" ] && [ -x "$entry" ] || fail "CONTROL internal start entry is missing or not executable"
