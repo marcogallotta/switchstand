@@ -18,12 +18,6 @@ from .contracts import (
     GroupedLookup,
     LaunchAuthority,
     RelatedLookup,
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTaskRequest,
-    SourceTaskResult,
     Status,
     WorkAppendRequest,
     WorkAttachmentsRequest,
@@ -256,41 +250,6 @@ def build_server(
             WorkEventRequest(api_version=api_version, work_id=work_id or active_work_id,
                              event_id=event_id, observed_revision=observed_revision))
 
-    async def _source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
-        """Read one exact canonical Asana task by Asana task GID; this is not a WorkId."""
-        return await service.source_task(  # type: ignore[attr-defined]
-            SourceTaskRequest(api_version=api_version, task_gid=task_gid)
-        )
-
-    async def _source_stories(
-        api_version: Literal["1"], task_gid: str, observed_revision: str,
-        offset: str | None = None, limit: int = 50,
-    ) -> SourceStoriesResult:
-        """Read one revision-checked page of exact Asana task history/comments."""
-        return await service.source_stories(  # type: ignore[attr-defined]
-            SourceStoriesRequest(
-                api_version=api_version,
-                task_gid=task_gid,
-                observed_revision=observed_revision,
-                offset=offset,
-                limit=limit,
-            )
-        )
-
-    async def _source_story(
-        api_version: Literal["1"], task_gid: str, story_gid: str,
-        observed_revision: str,
-    ) -> SourceStoryResult:
-        """Reread one exact material Asana story and verify its task and task revision."""
-        return await service.source_story(  # type: ignore[attr-defined]
-            SourceStoryRequest(
-                api_version=api_version,
-                task_gid=task_gid,
-                story_gid=story_gid,
-                observed_revision=observed_revision,
-            )
-        )
-
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
@@ -299,9 +258,6 @@ def build_server(
     closed_tool(server, "work_attachments", _work_attachments)
     closed_tool(server, "work_history", _work_history)
     closed_tool(server, "work_event", _work_event)
-    closed_tool(server, "source_task", _source_task)
-    closed_tool(server, "source_stories", _source_stories)
-    closed_tool(server, "source_story", _source_story)
     closed_tool(server, "work_append", _work_append)
     if updates is not None and grants is not None and principal is not None:
         async def _work_update(
