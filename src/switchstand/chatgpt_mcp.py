@@ -22,6 +22,8 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
+    WorkStructureRequest,
+    WorkStructureResult,
 )
 from .grants import (
     GrantResult,
@@ -111,6 +113,15 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
             api_version=api_version, reference=reference,
         ))
         return project_work(result, False)
+
+    async def work_structure(
+        api_version: Literal["1"], work_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1)],
+    ) -> WorkStructureResult:
+        """Read the immediate parent and complete direct children of bound workspace work."""
+        return await service.structure(WorkStructureRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+        ))
 
     async def work_history(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
@@ -210,6 +221,7 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
     for name, function in (("grant_get", grant_get), ("work_get", work_get),
                            ("work_search", work_search),
                            ("work_resolve_reference", work_resolve_reference),
+                           ("work_structure", work_structure),
                            ("work_history", work_history),
                            ("work_attachments", work_attachments),
                            ("work_event", work_event), ("source_task", source_task), ("source_stories", source_stories),

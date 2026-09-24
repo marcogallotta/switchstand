@@ -69,6 +69,10 @@ class Handles:
         self.handles[handle.id] = handle
         return handle
 
+    async def bind_many(self, provider, provider_work_ids):
+        return tuple([await self.bind(provider, provider_work_id)
+                      for provider_work_id in provider_work_ids])
+
     async def bind_event(self, work_id, provider, provider_work_id, provider_event_id):
         key = (work_id, provider, provider_work_id, provider_event_id)
         if key not in self.events:

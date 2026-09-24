@@ -27,6 +27,8 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
+    WorkStructureRequest,
+    WorkStructureResult,
 )
 from .core import Controller, Provider, ProviderError, State
 from .creates import CreateGateway
@@ -121,6 +123,39 @@ class ChatGPTService:
                 ).search(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkSearchResult(status="unknown")
+
+    async def structure(self, request: WorkStructureRequest) -> WorkStructureResult:
+        principal = await self.principal()
+        if principal is None:
+            return WorkStructureResult(status="denied")
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return WorkStructureResult(status="denied")
+                if (grant.scope != "workspace"
+                        or not {"work_get", "work_search"} <= grant.operations):
+                    return WorkStructureResult(status="denied")
+                handle = await self.state.get(request.work_id)
+                if handle is None:
+                    return WorkStructureResult(status="denied")
+                provider = self.providers.get(handle.provider)
+                if provider is None:
+                    return WorkStructureResult(status="provider_error")
+                result = await WorkDiscovery(
+                    handle.provider, cast(DiscoveryProvider, provider), self.state
+                ).structure(handle.provider_work_id, request.observed_revision)
+                if result is None:
+                    return WorkStructureResult(status="provider_error")
+                if result.status == "stale":
+                    return WorkStructureResult(
+                        status="stale", work_id=request.work_id, revision=result.revision,
+                    )
+                return WorkStructureResult(
+                    status="ok", work_id=request.work_id, revision=result.revision,
+                    parent=result.parent, children=result.children,
+                )
+        except (SQLAlchemyError, ValueError, KeyError):
+            return WorkStructureResult(status="unknown")
 
     async def resolve_reference(
         self, request: WorkResolveReferenceRequest,

@@ -37,6 +37,8 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
+    WorkStructureRequest,
+    WorkStructureResult,
 )
 from .grant_state import GrantState
 from .grants import (
@@ -234,6 +236,16 @@ def create_app(
         _audit("work_resolve_reference", None, result.status)
         return project_work(result, False)
 
+    async def work_structure(
+        api_version: Literal["1"], work_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1)],
+    ) -> WorkStructureResult:
+        result = await service.structure(WorkStructureRequest(
+            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
+        ))
+        _audit("work_structure", str(work_id), result.status)
+        return result
+
     async def work_history(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
@@ -346,7 +358,8 @@ def create_app(
         _audit("required_result_save", str(work_id), result.status)
         return result
 
-    for tool in (grant_get, work_get, work_search, work_resolve_reference, work_history,
+    for tool in (grant_get, work_get, work_search, work_resolve_reference, work_structure,
+                 work_history,
                  work_attachments, work_event, source_task, source_stories, source_story,
                  work_append, work_create, work_update):
         server.tool(tool)

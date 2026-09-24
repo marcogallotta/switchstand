@@ -38,7 +38,7 @@ from switchstand.run import RunReceipt, process_start_token
 from switchstand.state import PostgresState
 
 TOOLS = {
-    "grant_get", "work_get", "work_search", "work_resolve_reference",
+    "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
     "source_task", "source_stories",
     "source_story", "work_history", "work_attachments", "work_event", "work_append",
     "work_create", "work_update", "message_send", "message_pending", "required_result_save",
@@ -232,7 +232,7 @@ async def _discover(endpoint, selected):
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
         for tool in await client.list_tools():
-            if tool.name in {"work_search", "work_get", "work_history", "work_attachments", "work_event"}:
+            if tool.name in {"work_search", "work_get", "work_structure", "work_history", "work_attachments", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
                 assert tool.inputSchema.get("additionalProperties") is False
                 if tool.name == "work_attachments":
