@@ -1,17 +1,14 @@
 import argparse
 import hashlib
-import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 from uuid import UUID
 
-from .codex_runtime import codex_command, readback, validate_codex_args
+from .codex_runtime import codex_command, readback, supervise_codex, validate_codex_args
 from .docker import DockerKind, owned_name, remove_owned, require_absent, require_owned
 from .docker import command as docker_command
 from .docker import inspect as inspect_docker
@@ -421,71 +418,6 @@ def prepare_managed_run(
         receipt = record(authority.active)
         development = prepare_development(control, candidate, receipt.run_id, env)
     return PreparedRun(authority, development, receipt)
-
-
-def supervise_codex(
-    command: list[str], env: dict[str, str], development: DevelopmentBoundary, owner: UUID
-) -> int:
-    forwarded = (
-        signal.SIGHUP,
-        signal.SIGINT,
-        signal.SIGQUIT,
-        signal.SIGTERM,
-        signal.SIGTSTP,
-        signal.SIGCONT,
-        signal.SIGWINCH,
-    )
-    process: subprocess.Popen[bytes] | None = None
-    previous_handlers: dict[signal.Signals, Any] = {}
-    termination: tuple[int, float] | None = None
-    pending: list[int] = []
-
-    def deliver(signum: int) -> None:
-        nonlocal termination
-        assert process is not None
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
-        if signum in {signal.SIGHUP, signal.SIGQUIT, signal.SIGTERM} and termination is None:
-            termination = (signum, time.monotonic() + CHILD_TERM_SECONDS)
-        if signum == signal.SIGTSTP:
-            os.kill(os.getpid(), signal.SIGSTOP)
-
-    def forward(signum: int, _frame: object) -> None:
-        if process is None:
-            pending.append(signum)
-        else:
-            deliver(signum)
-
-    try:
-        for handled in forwarded:
-            previous_handlers[handled] = signal.signal(handled, forward)
-        process = subprocess.Popen(command, env=env, start_new_session=True)
-        for signum in pending:
-            deliver(signum)
-        while True:
-            try:
-                returncode = process.wait(timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                if termination is not None and time.monotonic() >= termination[1]:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-        if termination is not None:
-            return 128 + termination[0]
-        return returncode if returncode >= 0 else 128 - returncode
-    finally:
-        try:
-            cleanup_development(
-                development.image, development.network, development.database,
-                Path(env["SWITCHSTAND_WORKTREE"]), str(owner), env
-            )
-        finally:
-            for handled, previous in previous_handlers.items():
-                signal.signal(handled, previous)
 
 
 def run(arguments: argparse.Namespace) -> None:
