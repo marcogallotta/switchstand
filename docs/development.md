@@ -118,9 +118,9 @@ action.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
-models the repository's squash flow: the landed result must be the current accepted result with the reviewed base as
-its only parent, the reviewed candidate must descend from that base, and the landed tree must equal the reviewed
-candidate tree. Integration admits State, Provider, then MCP and reruns affected plus full gates after each admission.
+models the repository's GitHub merge-commit flow: the landed result must be the current accepted result with exactly
+the reviewed base and reviewed candidate as its ordered parents, the reviewed candidate must descend from that base,
+and the landed tree must equal the reviewed candidate tree. Integration admits State, Provider, then MCP and reruns affected plus full gates after each admission.
 
 ## Known recovery limits
 
