@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 CANDIDATE_REF_PATTERN = re.compile(
