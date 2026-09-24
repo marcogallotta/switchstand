@@ -1,7 +1,9 @@
 name: Quality
+run-name: Quality / ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
 on: [push, pull_request]
 jobs:
   quality:
+    name: ${{ github.event_name == 'pull_request' && 'PR composition Quality' || 'Exact-head Quality' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -16,6 +18,16 @@ jobs:
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+      - name: Record immutable Quality subject
+        env:
+          QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
+          QUALITY_SUBJECT_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$QUALITY_SUBJECT_SHA"
+          printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\n' \
+            "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
       - run: docker build --target development --tag switchstand-quality .
       - run: >-
           docker run --rm --network host
