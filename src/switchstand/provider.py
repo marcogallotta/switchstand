@@ -113,54 +113,59 @@ class AsanaProvider:
             return _TraversalFailure(reason, tuple(children))
 
         while True:
-            params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
-            if offset is not None:
-                params["offset"] = offset
-            response = await self.client.get(
-                f"/tasks/{parent_gid}/subtasks", params=params
-            )
-            response.raise_for_status()
-            payload = response.json()
-            rows, next_page = payload["data"], payload["next_page"]
-            if not isinstance(rows, list):
-                raise fail("invalid_subtask_page")
-            raw_rows = cast(list[object], rows)
-            if len(raw_rows) > FINDER_LIMIT:
-                raise fail("invalid_subtask_page")
-            if len(children) + len(raw_rows) > FINDER_MAX_CHILDREN:
-                raise fail("subtask_cap")
-            for row in raw_rows:
-                child_gid = self._gid(row)
-                if child_gid is None:
+            try:
+                params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
+                if offset is not None:
+                    params["offset"] = offset
+                response = await self.client.get(
+                    f"/tasks/{parent_gid}/subtasks", params=params
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows, next_page = payload["data"], payload["next_page"]
+                if not isinstance(rows, list):
                     raise fail("invalid_subtask_page")
-                if child_gid in seen_gids:
-                    raise fail("duplicate_subtask")
-                seen_gids.add(child_gid)
-                child = await self._task(child_gid)
-                if child is None or self._gid(child) != child_gid:
-                    raise fail("candidate_not_returned")
-                if self._parent_gid(child) != parent_gid:
-                    raise fail("relationship_changed")
-                if require_canonical and not await self._canonical(child):
-                    raise fail("candidate_not_canonical")
-                children.append((child_gid, child))
-            if next_page is None:
-                return tuple(children)
-            if len(children) >= FINDER_MAX_CHILDREN:
-                raise fail("subtask_cap")
-            next_offset = (
-                cast(JSON, next_page).get("offset")
-                if isinstance(next_page, dict) else None
-            )
-            if (
-                not isinstance(next_offset, str)
-                or not next_offset
-                or next_offset in seen_offsets
-                or offset_limit is not None and len(next_offset) > offset_limit
-            ):
-                raise fail("invalid_subtask_offset")
-            seen_offsets.add(next_offset)
-            offset = next_offset
+                raw_rows = cast(list[object], rows)
+                if len(raw_rows) > FINDER_LIMIT:
+                    raise fail("invalid_subtask_page")
+                if len(children) + len(raw_rows) > FINDER_MAX_CHILDREN:
+                    raise fail("subtask_cap")
+                for row in raw_rows:
+                    child_gid = self._gid(row)
+                    if child_gid is None:
+                        raise fail("invalid_subtask_page")
+                    if child_gid in seen_gids:
+                        raise fail("duplicate_subtask")
+                    seen_gids.add(child_gid)
+                    child = await self._task(child_gid)
+                    if child is None or self._gid(child) != child_gid:
+                        raise fail("candidate_not_returned")
+                    if self._parent_gid(child) != parent_gid:
+                        raise fail("relationship_changed")
+                    if require_canonical and not await self._canonical(child):
+                        raise fail("candidate_not_canonical")
+                    children.append((child_gid, child))
+                if next_page is None:
+                    return tuple(children)
+                if len(children) >= FINDER_MAX_CHILDREN:
+                    raise fail("subtask_cap")
+                next_offset = (
+                    cast(JSON, next_page).get("offset")
+                    if isinstance(next_page, dict) else None
+                )
+                if (
+                    not isinstance(next_offset, str)
+                    or not next_offset
+                    or next_offset in seen_offsets
+                    or offset_limit is not None and len(next_offset) > offset_limit
+                ):
+                    raise fail("invalid_subtask_offset")
+                seen_offsets.add(next_offset)
+                offset = next_offset
+            except _TraversalFailure:
+                raise
+            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
+                raise fail("read_unavailable") from None
 
     async def _story(self, gid: str) -> JSON | None:
         try:
