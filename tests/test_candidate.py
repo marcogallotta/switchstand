@@ -6,7 +6,9 @@ from uuid import UUID
 
 import pytest
 
+from switchstand import candidate as candidate_module
 from switchstand.candidate import (
+    CandidateError,
     CandidateIdentity,
     WorkspaceAbsent,
     WorkspaceMissing,
@@ -14,6 +16,7 @@ from switchstand.candidate import (
     WriterBusy,
     inspect_candidate,
     prepare_candidate,
+    prepare_launch_source,
 )
 
 WORK_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -156,3 +159,149 @@ def test_inspect_candidate_distinguishes_absent_from_missing_contents(tmp_path: 
     git(repo, "worktree", "remove", "--force", str(candidate.path))
     with pytest.raises(WorkspaceMissing):
         inspect_candidate(repo, WORK_ID, state_home=state)
+
+
+def completed(*, stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["git"], returncode, stdout, "")
+
+
+def test_launch_source_remote_movement_fails_before_local_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(candidate_module, "_remote_ref_sha", lambda _repo, _ref: "c" * 40)
+
+    def no_local_ref(_repo: Path, _name: str) -> str | None:
+        raise AssertionError("local launch ref must not be inspected after remote movement")
+
+    monkeypatch.setattr(candidate_module, "_local_ref_sha", no_local_ref)
+    with pytest.raises(CandidateError, match="launch candidate moved"):
+        candidate_module._prepare_remote_ref(
+            Path("."), "123", "candidate", "refs/pull/37/head", "b" * 40
+        )
+
+
+def test_launch_local_ref_uses_real_git_missing_ref_exit_code(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    name = "refs/switchstand/launch/123/base"
+    assert candidate_module._local_ref_sha(tmp_path, name) is None
+
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=Test",
+         "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"],
+        check=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(tmp_path), "update-ref", name, sha], check=True)
+    assert candidate_module._local_ref_sha(tmp_path, name) == sha
+
+
+def test_launch_remote_ref_fetches_on_first_use_with_real_git(tmp_path: Path) -> None:
+    remote = tmp_path / "remote"
+    control = tmp_path / "control"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(remote)], check=True)
+    subprocess.run(
+        ["git", "-C", str(remote), "-c", "user.name=Test",
+         "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"],
+        check=True,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "init", "-q", str(control)], check=True)
+    subprocess.run(["git", "-C", str(control), "remote", "add", "origin", str(remote)], check=True)
+    name = "refs/switchstand/launch/123/base"
+
+    assert candidate_module._local_ref_sha(control, name) is None
+    candidate_module._prepare_remote_ref(control, "123", "base", "refs/heads/main", sha)
+    assert candidate_module._local_ref_sha(control, name) == sha
+
+
+def test_launch_remote_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = "b" * 40
+    monkeypatch.setattr(candidate_module, "_remote_ref_sha", lambda _repo, _ref: expected)
+    monkeypatch.setattr(candidate_module, "_local_ref_sha", lambda _repo, _name: expected)
+
+    def fake_git(_repo: Path, *arguments: str, check: bool = True):
+        if arguments[:2] == ("cat-file", "-e"):
+            return completed(returncode=1)
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(candidate_module, "_git", fake_git)
+    with pytest.raises(CandidateError, match="not an available commit"):
+        candidate_module._prepare_remote_ref(
+            Path("."), "123", "candidate", "refs/pull/37/head", expected
+        )
+
+
+def test_prepare_launch_source_rejects_task_base_before_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_git(_repo: Path, *arguments: str, check: bool = True):
+        del check
+        if arguments == ("rev-parse", "HEAD"):
+            return completed(stdout="c" * 40 + "\n")
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(candidate_module, "_git", fake_git)
+    monkeypatch.setattr(
+        candidate_module, "_prepare_remote_ref",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before fetch")),
+    )
+    with pytest.raises(CandidateError, match="task base does not match"):
+        prepare_launch_source(
+            Path("."), "123", repository="marcogallotta/switchstand",
+            base_ref="refs/heads/main", base_sha="a" * 40,
+            candidate_ref="refs/pull/37/head", candidate_sha="b" * 40,
+            control_sha="c" * 40,
+        )
+
+
+def test_prepare_launch_source_rejects_wrong_control_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        candidate_module, "_git",
+        lambda _repo, *arguments, **_kwargs: completed(stdout="c" * 40 + "\n")
+        if arguments == ("rev-parse", "HEAD") else (_ for _ in ()).throw(AssertionError(arguments)),
+    )
+    with pytest.raises(CandidateError, match="not executing from the selected CONTROL SHA"):
+        prepare_launch_source(
+            Path("."), "123", repository="marcogallotta/switchstand",
+            base_ref="refs/heads/main", base_sha="a" * 40,
+            candidate_ref="refs/pull/37/head", candidate_sha="b" * 40,
+            control_sha="a" * 40,
+        )
+
+
+def test_prepare_launch_source_uses_selected_control_and_exact_remote_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base, head = "a" * 40, "b" * 40
+
+    def fake_git(_repo: Path, *arguments: str, check: bool = True):
+        del check
+        if arguments == ("rev-parse", "HEAD"):
+            return completed(stdout=base + "\n")
+        if arguments == ("remote", "get-url", "origin"):
+            return completed(stdout="https://github.com/marcogallotta/switchstand.git\n")
+        if arguments[:2] == ("merge-base", "--is-ancestor"):
+            return completed()
+        raise AssertionError(arguments)
+
+    fetched: list[tuple[str, str]] = []
+    monkeypatch.setattr(candidate_module, "_git", fake_git)
+    monkeypatch.setattr(
+        candidate_module, "_prepare_remote_ref",
+        lambda _repo, _task, label, _ref, sha: fetched.append((label, sha)),
+    )
+    prepare_launch_source(
+        Path("."), "123", repository="marcogallotta/switchstand",
+        base_ref="refs/heads/main", base_sha=base,
+        candidate_ref="refs/pull/37/head", candidate_sha=head,
+        control_sha=base,
+    )
+    assert fetched == [("base", base), ("candidate", head)]
