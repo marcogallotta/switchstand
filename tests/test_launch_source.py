@@ -109,12 +109,12 @@ def test_parse_notes_requires_complete_unique_exact_markers():
 
 def test_exact_ref_rejects_remote_movement_before_local_mutation(monkeypatch: pytest.MonkeyPatch):
     source = parse_notes(NOTES)
-    monkeypatch.setattr(launch_source, "_remote_sha", lambda _repo, _ref: "c" * 40)
+    monkeypatch.setattr(candidate, "_remote_sha", lambda _repo, _ref: "c" * 40)
 
     def no_local_ref(_repo: Path, _name: str) -> str | None:
         raise AssertionError("local launch ref must not be inspected after remote movement")
 
-    monkeypatch.setattr(launch_source, "_local_ref", no_local_ref)
+    monkeypatch.setattr(candidate, "_local_launch_ref", no_local_ref)
     with pytest.raises(CandidateError, match="launch candidate moved"):
         candidate._prepare_remote_ref(
             Path("."), "123", "candidate", source.candidate_ref, source.candidate_sha
@@ -167,15 +167,15 @@ def test_exact_ref_fetches_on_first_use_with_real_git(tmp_path: Path):
 
 def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
     source = parse_notes(NOTES)
-    monkeypatch.setattr(launch_source, "_remote_sha", lambda _repo, _ref: CANDIDATE)
-    monkeypatch.setattr(launch_source, "_local_ref", lambda _repo, _name: CANDIDATE)
+    monkeypatch.setattr(candidate, "_remote_sha", lambda _repo, _ref: CANDIDATE)
+    monkeypatch.setattr(candidate, "_local_launch_ref", lambda _repo, _name: CANDIDATE)
 
     def fake_git(_repo: Path, *arguments: str, check: bool = True):
         if arguments[:2] == ("cat-file", "-e") and check:
             raise subprocess.CalledProcessError(1, ["git", *arguments])
         raise AssertionError(arguments)
 
-    monkeypatch.setattr(launch_source, "_git", fake_git)
+    monkeypatch.setattr(candidate, "_git", fake_git)
     with pytest.raises(CandidateError, match="not an available commit"):
         candidate._prepare_remote_ref(
             Path("."), "123", "candidate", source.candidate_ref, source.candidate_sha
@@ -193,10 +193,10 @@ def test_prepare_source_rejects_task_base_before_fetch_when_control_differs(
             return _completed(stdout="c" * 40 + "\n")
         raise AssertionError(arguments)
 
-    monkeypatch.setattr(launch_source, "_git", fake_git)
+    monkeypatch.setattr(candidate, "_git", fake_git)
     monkeypatch.setattr(
-        launch_source,
-        "_fetch_exact_ref",
+        candidate,
+        "_prepare_remote_ref",
         lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before fetch")),
     )
 
@@ -213,7 +213,7 @@ def test_prepare_source_rejects_wrong_control_checkout(monkeypatch: pytest.Monke
             return _completed(stdout="c" * 40 + "\n")
         raise AssertionError(arguments)
 
-    monkeypatch.setattr(launch_source, "_git", fake_git)
+    monkeypatch.setattr(candidate, "_git", fake_git)
     with pytest.raises(CandidateError, match="not executing from the selected CONTROL SHA"):
         prepare_launch_source(Path("."), "123", source, BASE)
 
@@ -234,10 +234,10 @@ def test_prepare_source_uses_selected_control_and_exact_remote_refs(
         raise AssertionError(arguments)
 
     fetched: list[tuple[str, str]] = []
-    monkeypatch.setattr(launch_source, "_git", fake_git)
+    monkeypatch.setattr(candidate, "_git", fake_git)
     monkeypatch.setattr(
-        launch_source,
-        "_fetch_exact_ref",
+        candidate,
+        "_prepare_remote_ref",
         lambda _repo, _task, label, _ref, sha: fetched.append((label, sha)),
     )
 
