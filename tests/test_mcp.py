@@ -31,7 +31,6 @@ from switchstand.grants import GrantedWorkResult
 from switchstand.mcp import (
     build_server,
     controller_from_env,
-    project_work,
     protect_provider_logs,
     server_from_env,
 )
@@ -217,6 +216,15 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert not {"source_task", "source_stories", "source_story"} & {
             tool.name for tool in tools
         }
+
+        active = await client.call_tool("work_get", {"api_version": "1"})
+        assert active.structured_content["item"]["id"] == str(ID)
+        reference = await client.call_tool(
+            "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
+        )
+        assert reference.structured_content["item"]["id"] == str(REFERENCE_ID)
+        await read_chain(client, ID)
+        await read_chain(client, REFERENCE_ID)
 
         base = {"api_version": "1", "work_id": str(ID)}
         appended = await client.call_tool("work_append", base | {"text": "history"})
