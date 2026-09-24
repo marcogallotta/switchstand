@@ -16,14 +16,12 @@ from switchstand.contracts import (
     RelatedCandidate,
     RelatedLookup,
     Routing,
-    SourceStoriesResult,
-    SourceStory,
-    SourceStoryResult,
-    SourceTask,
-    SourceTaskResult,
     WorkAttachment,
     WorkAttachmentsResult,
     WorkContext,
+    WorkEvent,
+    WorkEventResult,
+    WorkHistoryResult,
     WorkItem,
     WorkResult,
 )
@@ -63,31 +61,30 @@ class FakeService:
             attachments=(WorkAttachment(name="brief.txt"),), next_cursor="next",
         )
 
-    async def source_task(self, request):
-        return SourceTaskResult(
-            status="ok",
-            item=SourceTask(
-                task_gid=request.task_gid, title="source", notes="notes",
-                completed=False, revision="r1",
-            ),
+    async def history(self, request):
+        event = WorkEvent(
+            id=UUID("00000000-0000-0000-0000-000000000003"),
+            work_id=request.work_id,
+            subtype="comment_added",
+            text="history",
+            created_at="2026-09-12T00:00:00Z",
+            actor="Marco",
+        )
+        return WorkHistoryResult(
+            status="ok", work_id=request.work_id,
+            revision=request.observed_revision, events=(event,),
         )
 
-    async def source_stories(self, request):
-        return SourceStoriesResult(
-            status="ok", task_gid=request.task_gid, revision=request.observed_revision,
-            stories=(SourceStory(
-                story_gid=STORY_GID, task_gid=request.task_gid, subtype="comment_added",
-                text="history", created_at="2026-09-12T00:00:00Z", created_by="Marco",
-            ),),
-        )
-
-    async def source_story(self, request):
-        return SourceStoryResult(
-            status="ok", task_gid=request.task_gid, revision=request.observed_revision,
-            item=SourceStory(
-                story_gid=request.story_gid, task_gid=request.task_gid,
-                subtype="comment_added", text="history",
-                created_at="2026-09-12T00:00:00Z", created_by="Marco",
+    async def event(self, request):
+        return WorkEventResult(
+            status="ok", work_id=request.work_id, revision=request.observed_revision,
+            item=WorkEvent(
+                id=request.event_id,
+                work_id=request.work_id,
+                subtype="comment_added",
+                text="history",
+                created_at="2026-09-12T00:00:00Z",
+                actor="Marco",
             ),
         )
 
