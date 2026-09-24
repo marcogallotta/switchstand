@@ -3,12 +3,29 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import re
 import subprocess
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
+
+
+SHA_PATTERN = re.compile(r"[0-9a-f]{40}\\Z")
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\Z")
+CANDIDATE_REF_PATTERN = re.compile(
+    r"refs/(?:heads/[A-Za-z0-9._/-]+|pull/[1-9][0-9]*/head)\\Z"
+)
+
+
+@dataclass(frozen=True)
+class LaunchSource:
+    repository: str
+    base_ref: str
+    base_sha: str
+    candidate_ref: str
+    candidate_sha: str
 
 
 class CandidateError(RuntimeError):
@@ -294,3 +311,100 @@ def prepare_candidate(
         _git(repo, "worktree", "lock", "--reason", f"switchstand candidate {work_id}", str(target))
 
     return _attach(repo, target, branch, common_dir, work_id, repository_fingerprint)
+
+def _origin_repository(url: str) -> str:
+    value = url.strip()
+    prefixes = (
+        "https://github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+    )
+    path = next((value[len(prefix):] for prefix in prefixes if value.startswith(prefix)), None)
+    if path is None:
+        raise CandidateError("origin must be a github.com repository")
+    path = path.removesuffix(".git")
+    if REPOSITORY_PATTERN.fullmatch(path) is None:
+        raise CandidateError("origin is not an exact github.com owner/repository")
+    return path
+
+
+def _remote_sha(repo: Path, remote_ref: str) -> str:
+    completed = _git(repo, "ls-remote", "--refs", "origin", remote_ref)
+    lines = [line.split("\\t", 1) for line in completed.stdout.splitlines() if line]
+    if len(lines) != 1 or len(lines[0]) != 2 or lines[0][1] != remote_ref:
+        raise CandidateError(f"remote ref is missing or ambiguous: {remote_ref}")
+    sha = lines[0][0]
+    if SHA_PATTERN.fullmatch(sha) is None:
+        raise CandidateError(f"remote ref returned an invalid SHA: {remote_ref}")
+    return sha
+
+
+def _local_launch_ref(repo: Path, name: str) -> str | None:
+    presence = _git(repo, "show-ref", "--verify", "--quiet", name, check=False)
+    if presence.returncode == 1:
+        return None
+    if presence.returncode != 0:
+        raise CandidateError(f"cannot inspect prepared ref {name}")
+    completed = _git(repo, "show-ref", "--verify", "--hash", name)
+    value = completed.stdout.strip()
+    if SHA_PATTERN.fullmatch(value) is None:
+        raise CandidateError(f"prepared ref has invalid identity: {name}")
+    return value
+
+
+def _prepare_remote_ref(
+    repo: Path, task_id: str, label: str, remote_ref: str, expected_sha: str
+) -> None:
+    remote_sha = _remote_sha(repo, remote_ref)
+    if remote_sha != expected_sha:
+        raise CandidateError(
+            f"launch {label} moved: expected {expected_sha}, remote {remote_sha}"
+        )
+    local_ref = f"refs/switchstand/launch/{task_id}/{label}"
+    current = _local_launch_ref(repo, local_ref)
+    if current is not None and current != expected_sha:
+        raise CandidateError(f"prepared launch {label} ref is stale: {local_ref}")
+    if current is None:
+        try:
+            _git(
+                repo,
+                "fetch",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--no-write-fetch-head",
+                "origin",
+                f"{remote_ref}:{local_ref}",
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout).strip()
+            raise CandidateError(
+                f"cannot fetch exact launch {label}: {detail or 'git fetch failed'}"
+            ) from None
+    if _local_launch_ref(repo, local_ref) != expected_sha:
+        raise CandidateError(f"prepared launch {label} did not retain exact identity")
+    if _git(repo, "cat-file", "-e", f"{expected_sha}^{{commit}}", check=False).returncode != 0:
+        raise CandidateError(f"launch {label} is not an available commit")
+
+
+def prepare_launch_source(
+    repo: Path, task_id: str, source: LaunchSource, control_sha: str
+) -> LaunchSource:
+    """Verify/fetch exact launch refs through the canonical candidate/Git owner."""
+    if SHA_PATTERN.fullmatch(control_sha) is None:
+        raise CandidateError("selected CONTROL SHA must be exact lowercase 40-character hex")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if head != control_sha:
+        raise CandidateError("launch resolver is not executing from the selected CONTROL SHA")
+    if source.base_sha != control_sha:
+        raise CandidateError("launch task base does not match the selected CONTROL SHA")
+    origin = _git(repo, "remote", "get-url", "origin").stdout.strip()
+    if _origin_repository(origin) != source.repository:
+        raise CandidateError("launch task repository does not match this checkout origin")
+    _prepare_remote_ref(repo, task_id, "base", source.base_ref, source.base_sha)
+    _prepare_remote_ref(repo, task_id, "candidate", source.candidate_ref, source.candidate_sha)
+    if _git(
+        repo, "merge-base", "--is-ancestor", source.base_sha, source.candidate_sha, check=False
+    ).returncode != 0:
+        raise CandidateError("launch candidate is not based on the accepted base")
+    return source
+
