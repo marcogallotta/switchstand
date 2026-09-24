@@ -67,7 +67,7 @@ def test_reconcile_rejects_squash_landing(tmp_path: Path):
     _git(repo, "commit", "-m", "squash candidate")
     merged = _git(repo, "rev-parse", "HEAD")
 
-    with pytest.raises(GitError, match="two-parent merge"):
+    with pytest.raises(GitError, match="reviewed base"):
         reconcile(repo, candidate, base, merged, merged)
 
 
@@ -86,14 +86,19 @@ def test_reconcile_rejects_wrong_tree(tmp_path: Path):
     repo, base = _repo(tmp_path)
     candidate = _candidate(repo, base)
     _git(repo, "switch", "main")
-    (repo / "base-only.txt").write_text("tamper before merge\n")
-    _git(repo, "add", "base-only.txt")
-    _git(repo, "commit", "-m", "unreviewed base change")
-    advanced = _git(repo, "rev-parse", "HEAD")
-    _git(repo, "merge", "--no-ff", candidate, "-m", "merge candidate")
-    merged = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "read-tree", candidate)
+    (repo / "candidate.txt").write_text("wrong tree\n")
+    _git(repo, "add", "candidate.txt")
+    tree = _git(repo, "write-tree")
+    committed = subprocess.run(
+        ["git", "commit-tree", tree, "-p", base, "-p", candidate],
+        cwd=repo, text=True, input="tampered merge\n", capture_output=True, check=True,
+    )
+    merged = committed.stdout.strip()
+    _git(repo, "update-ref", "refs/heads/main", merged)
+    _git(repo, "reset", "--hard", merged)
 
-    with pytest.raises(GitError, match="two-parent merge|reviewed base"):
+    with pytest.raises(GitError, match="landing tree"):
         reconcile(repo, candidate, base, merged, merged)
 
 
