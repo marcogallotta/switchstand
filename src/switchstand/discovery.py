@@ -104,9 +104,11 @@ class WorkDiscovery:
                 return DiscoveredStructure(status="stale", revision=result.revision)
 
             relations = ((result.parent,) if result.parent is not None else ()) + result.children
+            relation_ids = tuple(candidate.provider_work_id for candidate in relations)
+            if provider_work_id in relation_ids or len(set(relation_ids)) != len(relation_ids):
+                return None
             handles = await self.state.bind_many(
-                self.provider_name,
-                tuple(candidate.provider_work_id for candidate in relations),
+                self.provider_name, relation_ids,
             )
 
             def project(candidate: ProviderSearchItem, handle: Handle) -> WorkSearchItem:

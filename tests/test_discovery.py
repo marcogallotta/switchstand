@@ -318,6 +318,36 @@ async def test_structure_stale_snapshot_does_not_bind_relations():
     assert result.parent is None and result.children == () and state.handles == {}
 
 
+@pytest.mark.parametrize("parent_id, child_id", [
+    ("target", "child"),
+    ("same", "same"),
+])
+async def test_structure_invalid_relation_identities_do_not_bind(parent_id, child_id):
+    class InvalidProvider(FakeProvider):
+        async def structure_work(self, *_args):
+            def item(provider_work_id):
+                return ProviderSearchItem(
+                    provider_work_id, provider_work_id, False, "r1",
+                    Routing(), WorkContext(),
+                )
+
+            return ProviderStructure(
+                "ok", "r1", item(parent_id), (item(child_id),)
+            )
+
+    class NoBindingState(MemoryState):
+        async def bind_many(self, *_args):
+            raise AssertionError("invalid identities must be rejected before binding")
+
+    state = NoBindingState()
+    result = await WorkDiscovery("asana", InvalidProvider(), state).structure(
+        "target", "r1"
+    )
+
+    assert result is None
+    assert state.handles == {}
+
+
 async def test_structure_later_batch_failure_leaves_no_bindings():
     class FailingState(MemoryState):
         async def bind_many(self, provider, provider_work_ids):
