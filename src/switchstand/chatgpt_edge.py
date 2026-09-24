@@ -22,12 +22,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .chatgpt_mcp import build_message_tools
 from .contracts import (
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTaskRequest,
-    SourceTaskResult,
     WorkAttachmentsRequest,
     WorkAttachmentsResult,
     WorkEventRequest,
@@ -282,32 +276,6 @@ def create_app(
         _audit("work_event", str(work_id), result.status)
         return result
 
-    async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
-        result = await service.source_task(SourceTaskRequest(api_version=api_version, task_gid=task_gid))
-        _audit("source_task", task_gid, result.status)
-        return result
-
-    async def source_stories(
-        api_version: Literal["1"], task_gid: str, observed_revision: str,
-        offset: str | None = None, limit: int = 50,
-    ) -> SourceStoriesResult:
-        result = await service.source_stories(SourceStoriesRequest(
-            api_version=api_version, task_gid=task_gid, observed_revision=observed_revision,
-            offset=offset, limit=limit,
-        ))
-        _audit("source_stories", task_gid, result.status)
-        return result
-
-    async def source_story(
-        api_version: Literal["1"], task_gid: str, story_gid: str, observed_revision: str,
-    ) -> SourceStoryResult:
-        result = await service.source_story(SourceStoryRequest(
-            api_version=api_version, task_gid=task_gid, story_gid=story_gid,
-            observed_revision=observed_revision,
-        ))
-        _audit("source_story", task_gid, result.status)
-        return result
-
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         grant_version: int, observed_revision: str, text: str,
@@ -360,8 +328,7 @@ def create_app(
 
     for tool in (grant_get, work_get, work_search, work_resolve_reference, work_structure,
                  work_history,
-                 work_attachments, work_event, source_task, source_stories, source_story,
-                 work_append, work_create, work_update):
+                 work_attachments, work_event, work_append, work_create, work_update):
         server.tool(tool)
     server.tool(required_result_save)
     for _, tool in build_message_tools(service, _audit):
