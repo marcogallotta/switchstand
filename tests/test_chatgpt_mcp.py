@@ -88,6 +88,9 @@ async def test_workspace_search_requires_explicit_operation_and_returns_only_wor
     value = result.structured_content
     assert value["status"] == "ok" and len(value["items"]) == 1
     assert value["items"][0]["title"] == "Task"
+    assert value["items"][0]["context"] == {
+        "assignee": "Ada", "placements": [{"area": "Engineering", "stage": "Doing"}],
+    }
     assert "provider" not in value["items"][0] and "task_gid" not in value["items"][0]
     assert subject.providers["asana"].search_calls == [("Task", None, None, 10)]
 
@@ -159,6 +162,7 @@ async def test_workspace_read_chain_and_causal_denials(monkeypatch):
     server = build_chatgpt_server(subject)
     found = await server.call_tool("work_search", {"api_version": "1"})
     assert_public(found.model_dump(mode="json"))
+    assert found.structured_content["items"][0]["context"]["assignee"] == "Ada"
     await read_chain(server, found.structured_content["items"][0]["id"])
     for selected, target in ((grant(scope="workspace", operations=frozenset({"work_search"})), ACTIVE),
                              (grant(scope="launch"), uuid4())):

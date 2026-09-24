@@ -26,6 +26,16 @@ class WorkSource(ClosedModel):
     task_gid: str
 
 
+class WorkPlacement(ClosedModel):
+    area: str = Field(min_length=1)
+    stage: str | None = Field(default=None, min_length=1)
+
+
+class WorkContext(ClosedModel):
+    assignee: str | None = Field(default=None, min_length=1)
+    placements: tuple[WorkPlacement, ...] = ()
+
+
 class WorkItem(ClosedModel):
     id: UUID
     title: str
@@ -33,6 +43,7 @@ class WorkItem(ClosedModel):
     completed: bool
     revision: str
     routing: Routing
+    context: WorkContext
     source: WorkSource | None = None
 
 
@@ -72,6 +83,7 @@ class WorkSearchItem(ClosedModel):
     completed: bool
     revision: str
     routing: Routing
+    context: WorkContext
 
 
 class WorkSearchResult(ClosedModel):

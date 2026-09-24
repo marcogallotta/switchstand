@@ -34,7 +34,9 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
         self.engine, self.puts, self.gets = engine, [], 0
         self.mode = "commit_lost"
         self.task = {"gid": "123", "name": "Initial", "notes": "old", "completed": False,
-                     "modified_at": "r1", "memberships": [{"project": {"gid": PROJECT}}],
+                     "modified_at": "r1", "assignee": None,
+                     "memberships": [{"project": {"gid": PROJECT, "name": "Test"},
+                                      "section": None}],
                      "parent": None, "custom_fields": [{
                          "gid": PRIORITY, "enabled": True, "resource_subtype": "enum",
                          "display_value": "P0", "enum_value": {"gid": "p0"},

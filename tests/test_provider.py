@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from switchstand.contracts import WorkPatch
+from switchstand.contracts import WorkContext, WorkPatch, WorkPlacement
 from switchstand.core import ProviderError, UnknownEffect
 from switchstand.provider import (
     ANCESTRY_GETS,
@@ -23,11 +23,13 @@ def field(gid=FIELDS["horizon"], *, enabled=True, option="Stage 3", display="Sta
     return {"gid": gid, "enabled": enabled, "resource_subtype": "enum",
             "display_value": display, "enum_value": {"gid": "option-gid"},
             "enum_options": [{"gid": "option-gid", "name": option, "enabled": enabled}]}
-def task(*, parent=None, project=None, fields=()):
+def task(*, parent=None, project=None, fields=(), assignee=None):
     projects = (project if isinstance(project, tuple) else (project,)) if project else ()
-    memberships = [{"project": {"gid": gid}} for gid in projects]
+    memberships = [{"project": {"gid": gid, "name": f"Area {gid}"}, "section": None}
+                   for gid in projects]
     return {"data": {"name": "Title", "notes": "Notes", "completed": False,
                      "modified_at": "r1", "memberships": memberships,
+                     "assignee": assignee,
                      "parent": None if parent is None else {"gid": parent},
                      "custom_fields": list(fields)}}
 def candidate(gid, priority, *, completed=False, horizon="Stage 3"):
@@ -51,6 +53,50 @@ def provider(*responses, test_project_gid=None):
 
 
 TEST_PROJECT = "9999999999999999"
+
+
+async def test_work_context_uses_exact_task_read_and_hides_provider_ids():
+    payload = task(assignee={"gid": "user-secret", "name": "Ada"})
+    payload["data"]["gid"] = "task-secret"
+    payload["data"]["memberships"] = [
+        {"project": {"gid": PROJECT, "name": "Zeta"},
+         "section": {"gid": "section-secret", "name": "Doing"}},
+        {"project": {"gid": PROJECTS[1], "name": "Alpha"}, "section": None},
+        {"project": {"gid": "outside-secret", "name": "Outside"},
+         "section": {"gid": "outside-section", "name": "Hidden"}},
+    ]
+    subject, api = provider((200, payload))
+
+    result = await subject.get("task-secret")
+
+    assert result is not None and result.context == WorkContext(
+        assignee="Ada",
+        placements=(WorkPlacement(area="Alpha"), WorkPlacement(area="Zeta", stage="Doing")),
+    )
+    assert len(api.requests) == 1
+    assert dict(api.requests[0].url.params) == {"opt_fields": OPT_FIELDS}
+    serialized = result.context.model_dump_json()
+    assert all(secret not in serialized for secret in (
+        "user-secret", "task-secret", "section-secret", "outside-secret", "outside-section",
+    ))
+
+
+@pytest.mark.parametrize("change", [
+    lambda data: data.pop("assignee"),
+    lambda data: data.update(assignee={"gid": "user-secret", "name": ""}),
+    lambda data: data.update(memberships=[{"project": {"gid": PROJECT}}]),
+    lambda data: data.update(memberships=[
+        {"project": {"gid": PROJECT, "name": "Area"}, "section": None},
+        {"project": {"gid": PROJECT, "name": "Changed"}, "section": None},
+    ]),
+])
+async def test_work_context_rejects_missing_malformed_or_conflicting_truth(change):
+    payload = task(project=PROJECT)
+    change(payload["data"])
+    subject, _ = provider((200, payload))
+
+    with pytest.raises(ProviderError, match="provider response invalid"):
+        await subject.get("123")
 
 
 @pytest.mark.parametrize("malformed", [False, True])

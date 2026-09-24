@@ -94,7 +94,9 @@ async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
             return httpx.Response(200, request=request, json={"data": {
                 "gid": task, "name": f"Task {task}", "notes": "disposable",
                 "completed": False, "modified_at": "r1", "custom_fields": [],
-                "parent": None, "memberships": [{"project": {"gid": project}}],
+                "assignee": None, "parent": None,
+                "memberships": [{"project": {"gid": project, "name": "Test"},
+                                 "section": None}],
             }})
 
     monkeypatch.setattr(test_grant.httpx, "AsyncClient", lambda **_kwargs: Client())

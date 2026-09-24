@@ -9,6 +9,7 @@ from switchstand.contracts import (
     Routing,
     WorkAppendRequest,
     WorkAttachmentsRequest,
+    WorkContext,
     WorkGetRequest,
     WorkPatch,
     WorkUpdateRequest,
@@ -83,14 +84,14 @@ class FakeProvider:
             self.work.title,
             patch.notes if "notes" in fields else self.work.notes,
             patch.completed if "completed" in fields else self.work.completed,
-            "r2", Routing(**routing), self.work.canonical,
+            "r2", Routing(**routing), self.work.context, self.work.canonical,
         )
         if self.fail_after_update:
             self.fail_get = True
         if self.deny_after_update:
             self.work = ProviderWork(
                 self.work.title, self.work.notes, self.work.completed,
-                self.work.revision, self.work.routing, False,
+                self.work.revision, self.work.routing, self.work.context, False,
             )
     async def append(self, provider_work_id, text):
         self.appends.append(text)
@@ -103,7 +104,7 @@ class FakeProvider:
         if self.deny_after_append:
             self.work = ProviderWork(
                 self.work.title, self.work.notes, self.work.completed,
-                self.work.revision, self.work.routing, False,
+                self.work.revision, self.work.routing, self.work.context, False,
             )
         return "story" if self.confirm_append else None
     async def source_story(self, provider_task_id, provider_story_id):
@@ -117,7 +118,9 @@ class FakeProvider:
 def setup_controller():
     active, reference = uuid4(), uuid4()
     state = FakeState({active: Handle(active, "fake", "a"), reference: Handle(reference, "fake", "r")})
-    provider = FakeProvider(ProviderWork("Title", "Notes", False, "r1", Routing(priority="P0"), True))
+    provider = FakeProvider(ProviderWork(
+        "Title", "Notes", False, "r1", Routing(priority="P0"), WorkContext(), True
+    ))
     return active, reference, provider, Controller(LaunchAuthority(active_work_id=active, reference_work_ids=(reference,)), state, {"fake": provider})
 
 def test_contracts_are_closed_and_patch_is_coherent():
@@ -148,7 +151,7 @@ async def test_attachment_read_suppresses_page_when_revision_changes_after_listi
 ):
     active, _, provider, controller = setup_controller
     provider.after_attachment_work = ProviderWork(
-        "Title", "Notes", False, "r2", Routing(priority="P0"), True
+        "Title", "Notes", False, "r2", Routing(priority="P0"), WorkContext(), True
     )
     result = await controller.attachments(WorkAttachmentsRequest(
         api_version="1", work_id=active, observed_revision="r1", cursor="opaque", limit=7
@@ -178,7 +181,7 @@ async def test_attachment_read_suppresses_all_fields_when_canonicality_is_lost(
 ):
     active, _, provider, controller = setup_controller
     provider.after_attachment_work = ProviderWork(
-        "Title", "Notes", False, "r1", Routing(priority="P0"), False
+        "Title", "Notes", False, "r1", Routing(priority="P0"), WorkContext(), False
     )
     result = await controller.attachments(WorkAttachmentsRequest(
         api_version="1", work_id=active, observed_revision="r1"
@@ -212,10 +215,10 @@ async def test_update_returns_authoritative_readback(setup_controller):
 
 async def test_write_denial_and_readback_mismatch_are_not_success(setup_controller):
     active, _, provider, controller = setup_controller
-    provider.work = ProviderWork("T", "N", False, "r1", Routing(), False)
+    provider.work = ProviderWork("T", "N", False, "r1", Routing(), WorkContext(), False)
     request = WorkUpdateRequest(api_version="1", work_id=active, observed_revision="r1", patch=WorkPatch(notes="new"))
     assert (await controller.update(request)).status == "denied" and provider.updates == []
-    provider.work = ProviderWork("T", "N", False, "r1", Routing(), True)
+    provider.work = ProviderWork("T", "N", False, "r1", Routing(), WorkContext(), True)
     provider.ignore_update = True
     assert (await controller.update(request)).status == "unknown" and len(provider.updates) == 1
 
@@ -304,7 +307,9 @@ async def test_suggest_next_returns_none_without_actionable_work(setup_controlle
 
 async def test_provision_launch_validates_all_work_before_stable_binding():
     state = FakeState({})
-    provider = FakeProvider(ProviderWork("T", "N", False, "r1", Routing(), True))
+    provider = FakeProvider(ProviderWork(
+        "T", "N", False, "r1", Routing(), WorkContext(), True
+    ))
     first = await provision_launch(state, "fake", provider, "active", ("reference",))
     again = await provision_launch(state, "fake", provider, "active", ("reference",))
     assert first == again
@@ -313,7 +318,7 @@ async def test_provision_launch_validates_all_work_before_stable_binding():
         first.reference_work_ids[0], "fake", "reference"
     )
 
-    provider.work = ProviderWork("T", "N", False, "r1", Routing(), False)
+    provider.work = ProviderWork("T", "N", False, "r1", Routing(), WorkContext(), False)
     empty = FakeState({})
     with pytest.raises(PermissionError, match="all work must be canonical"):
         await provision_launch(empty, "fake", provider, "active", ("reference",))
@@ -322,7 +327,9 @@ async def test_provision_launch_validates_all_work_before_stable_binding():
 
 async def test_provision_launch_rejects_invalid_bounds_before_provider_reads():
     state = FakeState({})
-    provider = FakeProvider(ProviderWork("T", "N", False, "r1", Routing(), True))
+    provider = FakeProvider(ProviderWork(
+        "T", "N", False, "r1", Routing(), WorkContext(), True
+    ))
     with pytest.raises(ValueError, match="distinct"):
         await provision_launch(state, "fake", provider, "same", ("same",))
     with pytest.raises(ValueError, match="eight"):

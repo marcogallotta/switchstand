@@ -17,6 +17,7 @@ from switchstand.contracts import (
     SourceStoryRequest,
     SourceTaskRequest,
     WorkAppendRequest,
+    WorkContext,
     WorkEventRequest,
     WorkGetRequest,
     WorkHistoryRequest,
@@ -99,7 +100,9 @@ class FakeProvider:
         self.history_next_offset = None
 
     async def get(self, provider_work_id):
-        return ProviderWork("Task", "Notes", False, self.revision, Routing(), self.canonical)
+        return ProviderWork(
+            "Task", "Notes", False, self.revision, Routing(), WorkContext(), self.canonical
+        )
 
     async def find_related(self, work_task_gid):
         self.related_calls.append(work_task_gid)
