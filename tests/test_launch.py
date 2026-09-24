@@ -16,6 +16,7 @@ from switchstand.codex_runtime import (
     filesystem_override,
     readback,
     validate_codex_args,
+    supervise_codex,
 )
 from switchstand.docker import DockerObject
 from switchstand.launch import (
@@ -612,7 +613,7 @@ def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.codex_runtime.cleanup_development",
         lambda image, network, database, candidate, owner, env: events.append(
             (image, network, database, candidate, owner)
         ),
@@ -652,7 +653,7 @@ def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Process())
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.setdefault(sig, handler))
-    monkeypatch.setattr("switchstand.launch.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("switchstand.codex_runtime.time.monotonic", lambda: next(ticks))
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
@@ -678,7 +679,7 @@ def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_
         f"Path({str(output)!r}).write_text(','.join(map(str, "
         "sorted(signal.pthread_sigmask(signal.SIG_BLOCK, set())))))"
     )
-    monkeypatch.setattr("switchstand.launch.cleanup_development", lambda *args: None)
+    monkeypatch.setattr("switchstand.codex_runtime.cleanup_development", lambda *args: None)
     development = DevelopmentBoundary("image", "network", "database", "manifest")
     assert supervise_codex(
         [sys.executable, "-c", code],
