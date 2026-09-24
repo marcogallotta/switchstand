@@ -115,8 +115,9 @@ action.
     trusted launcher;
   - the development MCP in `development.py` is a separate local development boundary for check/commit/quality/run
     status and does not grant product work authority.
-  Raw `source_task/source_stories/source_story` remain transitional compatibility reads; prefer WorkId-based APIs for
-  new ordinary flows. Provider credentials remain in trusted host/service configuration and are not agent arguments.
+  Raw `source_task/source_stories/source_story` are not public agent tools. Legacy HTTP task references resolve to
+  WorkIds, and managed active/reference work is already WorkId-bound; use `work_history/work_event` for history and
+  exact-event rereads. Provider credentials remain in trusted host/service configuration and are not agent arguments.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
@@ -134,8 +135,8 @@ The current development path is operational but still has explicit ownership/tra
 - **Launch-source ownership:** isolated launch still uses `launch_source.py` for direct protected Asana reads plus Git
   remote/ref verification before candidate materialization. Do not copy that duplicate source/currentness seam into
   new product code.
-- **Legacy source MCP:** raw `source_*` tools remain exposed for recovery/reference compatibility until neutral
-  replacement coverage and legacy-drain proof exist.
+- **Legacy provider reads:** provider/service `source_*` methods remain internal implementation seams behind WorkId
+  history/event reads; the agent-facing raw-GID tools have been retired.
 - **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration
   and working-directory inputs from this repository, with the Codex binary selected from the ambient host path. It is
   therefore not an independently pinned CONTROL release.
