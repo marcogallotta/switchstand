@@ -5,7 +5,7 @@ from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
 from sqlalchemy.exc import SQLAlchemyError
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import Routing
+from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderSourceTask, ProviderWork, UnknownEffect
 from switchstand.creates import CreateGateway
 from switchstand.grants import ProtectedCreate
@@ -52,7 +52,7 @@ class Provider:
             return None
         return ProviderWork(
             task.title, task.notes, task.completed, task.revision,
-            Routing(priority="P0"), task.canonical,
+            Routing(priority="P0"), WorkContext(), task.canonical,
         )
 
     async def create_child(self, parent_task_gid, title, notes, operation_id):

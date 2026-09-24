@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from .contracts import Routing, WorkSearchItem, WorkSearchRequest, WorkSearchResult
+from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderError
 
 
@@ -14,6 +14,7 @@ class ProviderSearchItem:
     completed: bool
     revision: str
     routing: Routing
+    context: WorkContext
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class WorkDiscovery:
                     completed=candidate.completed,
                     revision=candidate.revision,
                     routing=candidate.routing,
+                    context=candidate.context,
                 ))
             return WorkSearchResult(
                 status="ok", items=tuple(items), next_cursor=page.next_cursor

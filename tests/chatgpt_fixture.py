@@ -6,7 +6,14 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import LaunchAuthority, RelatedCandidate, RelatedLookup, Routing
+from switchstand.contracts import (
+    LaunchAuthority,
+    RelatedCandidate,
+    RelatedLookup,
+    Routing,
+    WorkContext,
+    WorkPlacement,
+)
 from switchstand.core import (
     AttachmentPage,
     EventBinding,
@@ -26,6 +33,9 @@ ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
 PRINCIPAL = PrincipalContext(issuer="fixture", subject="owner", client_id="local-test",
                              assurance="test")
+CONTEXT = WorkContext(
+    assignee="Ada", placements=(WorkPlacement(area="Engineering", stage="Doing"),)
+)
 
 
 def grant(principal=PRINCIPAL, active=ACTIVE, reference=REFERENCE, **changes):
@@ -77,7 +87,7 @@ class Provider:
 
     async def get(self, task_gid):
         return ProviderWork(self.title, self.notes, self.completed, self.revision, Routing(priority="P0"),
-                            task_gid in self.canonical_ids)
+                            CONTEXT, task_gid in self.canonical_ids)
 
     async def update(self, task_gid, patch):
         for field in patch.model_fields_set:
@@ -90,6 +100,7 @@ class Provider:
             items=(ProviderSearchItem(
                 provider_work_id="123", title="Task", completed=False,
                 revision=self.revision, routing=Routing(priority="P0"),
+                context=CONTEXT,
             ),),
             next_cursor=None,
         )

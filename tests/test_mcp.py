@@ -23,6 +23,7 @@ from switchstand.contracts import (
     SourceTaskResult,
     WorkAttachment,
     WorkAttachmentsResult,
+    WorkContext,
     WorkItem,
     WorkResult,
 )
@@ -43,7 +44,9 @@ STORY_GID = "456"
 
 def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
     return WorkItem(id=work_id, title="bounded", notes=notes, completed=False,
-                    revision="r1", routing=Routing(priority="P0"))
+                    revision="r1", routing=Routing(priority="P0"),
+                    context=WorkContext(assignee="Ada", placements=({"area": "Area",
+                                                                     "stage": "Doing"},)))
 
 
 class FakeService:
@@ -281,7 +284,10 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
             })
         return httpx.Response(200, json={"data": {
             "name": "Task", "notes": "Notes", "completed": False, "modified_at": "r1",
-            "memberships": [{"project": {"gid": PROJECT}}], "parent": None,
+            "assignee": {"gid": "hidden-user", "name": "Ada"},
+            "memberships": [{"project": {"gid": PROJECT, "name": "Engineering"},
+                             "section": {"gid": "hidden-section", "name": "Doing"}}],
+            "parent": None,
             "custom_fields": [],
         }})
 
@@ -298,9 +304,15 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
             assert schema["properties"]["limit"]["maximum"] == 100
             assert schema["properties"]["observed_revision"]["minLength"] == 1
             assert schema["properties"]["cursor"]["anyOf"][0]["maxLength"] == 1024
-            revision = (await client.call_tool(
+            work = (await client.call_tool(
                 "work_get", {"api_version": "1"}
-            )).structured_content["item"]["revision"]
+            )).structured_content["item"]
+            assert work["context"] == {
+                "assignee": "Ada",
+                "placements": [{"area": "Engineering", "stage": "Doing"}],
+            }
+            assert "hidden-user" not in str(work) and "hidden-section" not in str(work)
+            revision = work["revision"]
             result = await client.call_tool(
                 "work_attachments", {"api_version": "1", "observed_revision": revision}
             )

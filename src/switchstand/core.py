@@ -22,6 +22,7 @@ from .contracts import (
     WorkAttachment,
     WorkAttachmentsRequest,
     WorkAttachmentsResult,
+    WorkContext,
     WorkEvent,
     WorkEventRequest,
     WorkEventResult,
@@ -68,6 +69,7 @@ class ProviderWork:
     completed: bool
     revision: str
     routing: Routing
+    context: WorkContext
     canonical: bool
 
 
@@ -179,7 +181,7 @@ class Controller:
     def _item(self, work_id: UUID, work: ProviderWork, handle: Handle) -> WorkItem:
         return WorkItem(
             id=work_id, title=work.title, notes=work.notes, completed=work.completed,
-            revision=work.revision, routing=work.routing,
+            revision=work.revision, routing=work.routing, context=work.context,
             source=WorkSource(provider=handle.provider, task_gid=handle.provider_work_id),
         )
 

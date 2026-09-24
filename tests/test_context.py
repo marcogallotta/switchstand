@@ -10,7 +10,14 @@ import pytest
 from mcp import Client, StdioServerParameters
 
 from switchstand import context
-from switchstand.contracts import Routing, WorkHistoryResult, WorkItem, WorkResult, WorkSource
+from switchstand.contracts import (
+    Routing,
+    WorkContext,
+    WorkHistoryResult,
+    WorkItem,
+    WorkResult,
+    WorkSource,
+)
 from switchstand.launch import Authority
 from switchstand.mcp import build_context_server
 
@@ -20,7 +27,7 @@ ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 class FakeService:
     async def get(self, request):
         return WorkResult(status="ok", item=WorkItem(id=request.work_id, title="Task", notes="Notes",
-            completed=False, revision="r1", routing=Routing(),
+            completed=False, revision="r1", routing=Routing(), context=WorkContext(),
             source=WorkSource(provider="asana", task_gid="raw-task")))
 
     async def history(self, request):

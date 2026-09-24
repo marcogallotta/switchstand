@@ -8,7 +8,9 @@ from .contracts import (
     RelatedCandidate,
     RelatedLookup,
     Routing,
+    WorkContext,
     WorkPatch,
+    WorkPlacement,
 )
 from .core import (
     AttachmentPage,
@@ -44,7 +46,9 @@ WORK_TYPE = "1218431623135287"
 FINDER_LIMIT = 20
 FINDER_MAX_CHILDREN = 100
 OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
-              "memberships.project.gid,parent.gid,"
+              "assignee.gid,assignee.name,"
+              "memberships.project.gid,memberships.project.name,"
+              "memberships.section.gid,memberships.section.name,parent.gid,"
               "custom_fields.gid,custom_fields.display_value,custom_fields.enum_value.gid,"
               "custom_fields.enabled,custom_fields.resource_subtype,custom_fields.text_value,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
@@ -116,6 +120,57 @@ class AsanaProvider:
         fields = task.get("custom_fields")
         return ([cast(JSON, value) for value in cast(list[object], fields) if isinstance(value, dict)]
                 if isinstance(fields, list) else [])
+
+    def _work_context(self, task: JSON) -> WorkContext:
+        if "assignee" not in task:
+            raise TypeError
+        raw_assignee = task["assignee"]
+        assignee: str | None = None
+        if raw_assignee is not None:
+            if not isinstance(raw_assignee, dict):
+                raise TypeError
+            assignee_gid = self._gid(cast(JSON, raw_assignee))
+            assignee_name = cast(JSON, raw_assignee).get("name")
+            if not assignee_gid or not isinstance(assignee_name, str) or not assignee_name:
+                raise TypeError
+            assignee = assignee_name
+
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list):
+            raise TypeError
+        admitted: dict[str, tuple[str, str | None, str | None]] = {}
+        for raw in cast(list[object], memberships):
+            if not isinstance(raw, dict):
+                raise TypeError
+            membership = cast(JSON, raw)
+            project = membership.get("project")
+            project_gid = self._gid(project)
+            if project_gid is None:
+                raise TypeError
+            if project_gid not in self._admission_projects:
+                continue
+            area = cast(JSON, project).get("name") if isinstance(project, dict) else None
+            if not isinstance(area, str) or not area:
+                raise TypeError
+            raw_section = membership.get("section")
+            section_gid: str | None = None
+            stage: str | None = None
+            if raw_section is not None:
+                if not isinstance(raw_section, dict):
+                    raise TypeError
+                section_gid = self._gid(cast(JSON, raw_section))
+                stage = cast(JSON, raw_section).get("name")
+                if not section_gid or not isinstance(stage, str) or not stage:
+                    raise TypeError
+            value = (area, section_gid, stage)
+            if project_gid in admitted and admitted[project_gid] != value:
+                raise TypeError
+            admitted[project_gid] = value
+        placements = tuple(sorted(
+            (WorkPlacement(area=area, stage=stage) for area, _, stage in admitted.values()),
+            key=lambda placement: (placement.area, placement.stage or ""),
+        ))
+        return WorkContext(assignee=assignee, placements=placements)
 
     def _related_candidate(self, gid: str, task: JSON, parent_gid: str) -> RelatedCandidate:
         title, revision = task.get("name"), task.get("modified_at")
@@ -204,7 +259,10 @@ class AsanaProvider:
             if not all(isinstance(value, str) for value in (title, notes, revision)) or not isinstance(completed, bool): raise TypeError
             routing = Routing(**{key: value if isinstance(value, str) else None
                                for key, value in values.items()})
-            return ProviderWork(title, notes, completed, revision, routing, await self._canonical(task))
+            return ProviderWork(
+                title, notes, completed, revision, routing, self._work_context(task),
+                await self._canonical(task),
+            )
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
 
@@ -774,6 +832,7 @@ class AsanaProvider:
                     completed=current_completed,
                     revision=revision,
                     routing=self._search_routing(task),
+                    context=self._work_context(task),
                 ))
             return ProviderSearchPage(tuple(items), next_cursor)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):

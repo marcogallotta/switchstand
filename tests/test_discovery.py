@@ -4,7 +4,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switchstand.contracts import Routing, WorkSearchRequest
+from switchstand.contracts import Routing, WorkContext, WorkSearchRequest
 from switchstand.core import Handle, ProviderError
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage, WorkDiscovery
 from switchstand.provider import PROJECT, PROJECTS, AsanaProvider
@@ -20,7 +20,9 @@ def task(
         "notes": "",
         "completed": completed,
         "modified_at": revision,
-        "memberships": [{"project": {"gid": project}}],
+        "assignee": None,
+        "memberships": [{"project": {"gid": project, "name": f"Area {project}"},
+                         "section": None}],
         "parent": None,
         "custom_fields": [{
             "gid": "1217653169990249",
@@ -64,6 +66,7 @@ async def test_text_search_is_bounded_non_continuable_and_exact_read_back():
         ProviderSearchItem(
             provider_work_id="101", title="Needle", completed=False,
             revision="r1", routing=Routing(priority="P1"),
+            context=WorkContext(placements=({"area": f"Area {PROJECT}"},)),
         ),
     )
     assert len(requests) == 2
@@ -120,7 +123,9 @@ async def test_list_uses_real_project_offsets_then_advances_admitted_projects():
 async def test_multihomed_task_is_emitted_only_by_first_admitted_project():
     projects = sorted(PROJECTS)
     shared = task("101", project=projects[0])
-    shared["memberships"].append({"project": {"gid": projects[1]}})
+    shared["memberships"].append({"project": {"gid": projects[1],
+                                               "name": f"Area {projects[1]}"},
+                                   "section": None})
     subject, _ = asana_provider(
         {"data": [{"gid": "101"}], "next_page": None},
         {"data": shared},
@@ -224,10 +229,12 @@ class FakeProvider:
                 ProviderSearchItem(
                     provider_work_id="101", title="Alpha", completed=False,
                     revision="r1", routing=Routing(priority="P0"),
+                    context=WorkContext(assignee="Owner"),
                 ),
                 ProviderSearchItem(
                     provider_work_id="202", title="Beta", completed=True,
                     revision="r2", routing=Routing(priority="P1"),
+                    context=WorkContext(),
                 ),
             ),
             next_cursor="next",
@@ -247,9 +254,11 @@ async def test_discovery_returns_only_stable_provider_neutral_work_ids():
     assert first.next_cursor == second.next_cursor == "next"
     assert [item.id for item in first.items] == [item.id for item in second.items]
     assert [item.title for item in first.items] == ["Alpha", "Beta"]
+    assert [item.context.assignee for item in first.items] == ["Owner", None]
     assert provider.calls == [("task", None, None, 10), ("task", None, None, 10)]
     rendered = first.model_dump(mode="json")
-    assert all("provider" not in item and "task_gid" not in item for item in rendered["items"])
+    assert all("provider" not in item and "task_gid" not in item and "gid" not in item
+               for item in rendered["items"])
 
 
 class BrokenProvider:

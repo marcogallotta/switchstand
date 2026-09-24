@@ -110,7 +110,8 @@ def project_work(result: WorkResult | GrantedWorkResult, include_related: bool) 
     if result.item is not None:
         item = result.item
         public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
-                                     completed=item.completed, revision=item.revision, routing=item.routing)
+                                     completed=item.completed, revision=item.revision,
+                                     routing=item.routing, context=item.context)
     if include_related:
         def related(value: RelatedLookup | GroupedLookup | None) -> PublicRelated | None:
             if value is None:
