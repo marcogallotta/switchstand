@@ -171,8 +171,8 @@ def test_exact_ref_rejects_non_commit_object(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(candidate, "_local_launch_ref", lambda _repo, _name: CANDIDATE)
 
     def fake_git(_repo: Path, *arguments: str, check: bool = True):
-        if arguments[:2] == ("cat-file", "-e") and check:
-            raise subprocess.CalledProcessError(1, ["git", *arguments])
+        if arguments[:2] == ("cat-file", "-e"):
+            return subprocess.CompletedProcess(["git", *arguments], 1)
         raise AssertionError(arguments)
 
     monkeypatch.setattr(candidate, "_git", fake_git)
