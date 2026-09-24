@@ -272,8 +272,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
             "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
-            "source_task", "source_stories",
-            "source_story", "work_history", "work_attachments", "work_event", "work_append",
+            "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "message_send", "message_pending",
             "required_result_save",
         }
