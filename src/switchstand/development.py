@@ -12,7 +12,15 @@ from uuid import UUID
 from mcp.server import MCPServer
 from pydantic import BaseModel, ConfigDict
 
-from .docker import DockerKind, DockerObject, inspect, owned_name, remove_owned, require_absent, require_owned
+from .docker import (
+    DockerKind,
+    DockerObject,
+    inspect,
+    owned_name,
+    remove_owned,
+    require_absent,
+    require_owned,
+)
 from .docker import command as docker_command
 from .docker import labels as docker_labels
 from .mcp import closed_tool
