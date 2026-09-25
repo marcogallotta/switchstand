@@ -12,10 +12,9 @@ from .codex_runtime import codex_command, readback, validate_codex_args
 from .development import (
     DevelopmentBoundary,
     cleanup_development,
-    development_names,
     prepare_development,
+    reclaim_development,
 )
-from .docker import inspect as inspect_docker
 from .run import RunReceipt, reserve_run
 from .task_ref import asana_task_id
 
@@ -266,18 +265,7 @@ def prepare_managed_run(
     git_dir: Path,
 ) -> PreparedRun:
     def reclaim(receipt: RunReceipt) -> None:
-        image_name, network_name, database_name = development_names(candidate, receipt.run_id)
-        image = inspect_docker("image", image_name, env)
-        network = inspect_docker("network", network_name, env)
-        database = inspect_docker("container", database_name, env)
-        cleanup_development(
-            image.object_id if image is not None else None,
-            network.object_id if network is not None else None,
-            database.object_id if database is not None else None,
-            candidate,
-            str(receipt.run_id),
-            env,
-        )
+        reclaim_development(candidate, receipt.run_id, env)
 
     with reserve_run(candidate, branch, git_dir, reclaim) as record:
         authority = provision(control, active, references, env)
@@ -343,8 +331,7 @@ def supervise_codex(
     finally:
         try:
             cleanup_development(
-                development.image, development.network, development.database,
-                Path(env["SWITCHSTAND_WORKTREE"]), str(owner), env
+                development, Path(env["SWITCHSTAND_WORKTREE"]), owner, env
             )
         finally:
             for handled, previous in previous_handlers.items():
