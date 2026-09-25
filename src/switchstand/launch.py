@@ -1,21 +1,21 @@
 import argparse
-import hashlib
 import os
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import UUID
 
 from .codex_runtime import codex_command, readback, validate_codex_args
-from .docker import DockerKind, owned_name, remove_owned, require_absent, require_owned
-from .docker import command as docker_command
+from .development import (
+    DevelopmentBoundary,
+    cleanup_development,
+    development_names,
+    prepare_development,
+)
 from .docker import inspect as inspect_docker
-from .docker import labels as docker_labels
 from .run import RunReceipt, reserve_run
 from .task_ref import asana_task_id
 
@@ -28,13 +28,6 @@ CHILD_TERM_SECONDS = 1.0
 class Authority(NamedTuple):
     active: UUID
     references: tuple[UUID, ...]
-
-
-class DevelopmentBoundary(NamedTuple):
-    image: str
-    network: str
-    database: str
-    manifest: str
 
 
 class PreparedRun(NamedTuple):
@@ -76,136 +69,6 @@ def linked_branch(repo: Path, env: dict[str, str]) -> str:
             "or a task writer at its exact checkpoint"
         )
     return branch
-
-
-def prepare_development(
-    control: Path, candidate: Path, owner: UUID, env: dict[str, str]
-) -> DevelopmentBoundary:
-    image_name, network, database = development_names(candidate, owner)
-    image_id: str | None = None
-    network_id: str | None = None
-    database_id: str | None = None
-    try:
-        with tempfile.TemporaryDirectory(prefix="switchstand-runner-") as temporary:
-            context = Path(temporary)
-            for name in ("pyproject.toml", "uv.lock", "README.md"):
-                shutil.copyfile(candidate / name, context / name)
-            require_absent("image", image_name, env)
-            image = docker_run(
-                [
-                    "build", "--quiet", "--tag", image_name,
-                    *docker_labels(str(owner), "runner"),
-                    "-f", str(control / "Dockerfile.candidate-runner"), ".",
-                ],
-                context,
-                env,
-                timeout=600,
-            )
-        image_id = image.stdout.strip().splitlines()[-1]
-        require_owned("image", image_id, str(owner), "runner", env)
-        require_absent("network", network, env)
-        created_network = docker_run(
-            [
-                "network", "create", "--subnet", development_subnet(candidate, owner),
-                *docker_labels(str(owner), "qualification"), network,
-            ],
-            None,
-            env,
-        )
-        network_id = created_network.stdout.strip().splitlines()[-1]
-        require_owned("network", network_id, str(owner), "qualification", env)
-        require_absent("container", database, env)
-        created_database = docker_run([
-            "run", "-d", "--name", database, *docker_labels(str(owner), "database"),
-            "--network", network_id,
-            "--network-alias", "postgres-test", "--tmpfs", "/var/lib/postgresql",
-            "-e", "POSTGRES_DB=switchstand_test", "-e", "POSTGRES_USER=switchstand",
-            "-e", "POSTGRES_PASSWORD=switchstand", "postgres:18-alpine",
-        ], None, env)
-        database_id = created_database.stdout.strip().splitlines()[-1]
-        require_owned("container", database_id, str(owner), "database", env)
-        for _ in range(30):
-            ready = subprocess.run(["docker", "exec", database_id, "pg_isready", "-U", "switchstand"],
-                                   env=env, capture_output=True, check=False)
-            if ready.returncode == 0:
-                break
-            time.sleep(1)
-        else:
-            raise RuntimeError("development test database did not become ready")
-        digest = hashlib.sha256()
-        for name in ("pyproject.toml", "uv.lock"):
-            digest.update((candidate / name).read_bytes())
-        return DevelopmentBoundary(image_id, network_id, database_id, digest.hexdigest())
-    except BaseException:
-        cleanup_development(
-            image_id, network_id, database_id, candidate, str(owner), env, required=False
-        )
-        raise
-
-
-def development_names(repo: Path, owner: UUID | int | str) -> tuple[str, str, str]:
-    suffix = hashlib.sha256(f"{repo}:{owner}".encode()).hexdigest()[:12]
-    return (
-        f"switchstand-runner-{suffix}",
-        f"switchstand-dev-{suffix}",
-        f"switchstand-test-{suffix}",
-    )
-
-
-def development_subnet(repo: Path, owner: UUID | int | str) -> str:
-    """Keep disposable development bridges out of common home-LAN address space."""
-    digest = hashlib.sha256(f"{repo}:{owner}".encode()).digest()
-    slot = int.from_bytes(digest[:2], "big") & 0x0FFF
-    return f"10.{240 + (slot >> 8)}.{slot & 0xFF}.0/24"
-
-
-def docker_run(
-    arguments: list[str],
-    cwd: Path | None,
-    env: dict[str, str],
-    *,
-    timeout: float = 10,
-) -> subprocess.CompletedProcess[str]:
-    result = docker_command(
-        arguments, env, cwd=str(cwd) if cwd is not None else None, timeout=timeout
-    )
-    if result.returncode == 0:
-        return result
-    detail = (result.stderr or result.stdout or "no diagnostic output").strip()
-    raise RuntimeError(f"docker {' '.join(arguments)} failed: {detail}")
-
-
-def cleanup_development(
-    image: str | None,
-    network: str | None,
-    database: str | None,
-    candidate: Path,
-    owner: str,
-    env: dict[str, str],
-    *,
-    required: bool = True,
-) -> None:
-    failures: list[str] = []
-    image_name, network_name, database_name = development_names(candidate, owner)
-    operations: tuple[tuple[DockerKind, str | None, str, str], ...] = (
-        ("container", database, database_name, "database"),
-        ("container", None, owned_name(owner, "focused"), "focused"),
-        ("container", None, owned_name(owner, "quality"), "quality"),
-        ("network", network, network_name, "qualification"),
-        ("image", image, image_name, "runner"),
-    )
-    for kind, object_id, name, role in operations:
-        try:
-            if object_id is None:
-                observed = inspect_docker(kind, name, env)
-                if observed is None:
-                    continue
-                object_id = observed.object_id
-            remove_owned(kind, object_id, owner, role, env)
-        except RuntimeError as error:
-            failures.append(str(error))
-    if failures and required:
-        raise RuntimeError("development cleanup failed: " + "; ".join(failures))
 
 
 def parser() -> argparse.ArgumentParser:
