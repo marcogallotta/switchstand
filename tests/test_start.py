@@ -186,6 +186,7 @@ fi
 if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ]; then
   printf '%s\\n' "$*" > "$FAKE_SOURCE_ARGS"
   printf '%s\\n' "${ASANA_TOKEN:-}" > "$FAKE_SOURCE_TOKEN"
+  printf '%s\\n' "${PYTHONPATH:-}" > "$FAKE_SOURCE_PYTHONPATH"
   if [ "${FAKE_SOURCE_FAIL:-0}" = 1 ]; then
     echo 'launch source preparation failed: simulated exact source failure' >&2
     exit 1
@@ -196,6 +197,7 @@ fi
 pwd > "$FAKE_LAUNCH_CWD"
 printf '%s\\n' "${ASANA_TOKEN:-}" > "$FAKE_LAUNCH_TOKEN"
 printf '%s\n' "$@" > "$FAKE_LAUNCH_ARGS"
+printf '%s\n' "${PYTHONPATH:-}" > "$FAKE_LAUNCH_PYTHONPATH"
 printf '%s\n' "$SWITCHSTAND_REQUESTING_GIT_COMMON" > "$FAKE_LAUNCH_COMMON"
 printf '%s\n' "$SWITCHSTAND_CONTROL_ROOT" > "$FAKE_CONTROL_ROOT"
 printf '%s\n' "$SWITCHSTAND_CANDIDATE_ROOT" > "$FAKE_CANDIDATE_ROOT"
@@ -229,11 +231,13 @@ echo "$FAKE_TARGET"
         "FAKE_TASK_REF_LOG": str(tmp_path / "task-ref.log"),
         "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
         "FAKE_SOURCE_TOKEN": str(tmp_path / "source.token"),
+        "FAKE_SOURCE_PYTHONPATH": str(tmp_path / "source.pythonpath"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
         "FAKE_LAUNCH_CWD": str(tmp_path / "launch.cwd"),
         "FAKE_LAUNCH_TOKEN": str(tmp_path / "launch.token"),
         "FAKE_LAUNCH_ARGS": str(tmp_path / "launch.args"),
+        "FAKE_LAUNCH_PYTHONPATH": str(tmp_path / "launch.pythonpath"),
         "FAKE_LAUNCH_COMMON": str(tmp_path / "launch.common"),
         "FAKE_CONTROL_ROOT": str(tmp_path / "control.root"),
         "FAKE_CANDIDATE_ROOT": str(tmp_path / "candidate.root"),
@@ -276,6 +280,9 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
         "-P", "-m", "switchstand.launch", "--active", "9999999999999999",
         "--commit", "a" * 40, "--reference", "42", "do work",
     ]
+    expected_pythonpath = str(start.parents[1] / "src")
+    assert (tmp_path / "source.pythonpath").read_text().strip() == expected_pythonpath
+    assert (tmp_path / "launch.pythonpath").read_text().strip() == expected_pythonpath
     assert (tmp_path / "launch.common").read_text().strip() == environment["FAKE_COMMON"]
     assert (tmp_path / "control.root").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "candidate.root").read_text().strip() == str(target)
