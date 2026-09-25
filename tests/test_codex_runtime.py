@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ def test_real_stdio_app_server_boundary_returns_managed_profile(tmp_path: Path) 
     candidate.mkdir()
     bindir.mkdir()
 
+    argv_path = tmp_path / "codex-argv.json"
     codex = bindir / "codex"
     codex.write_text(
         f"""#!{sys.executable}
@@ -20,6 +22,8 @@ import json
 import os
 import sys
 from pathlib import Path
+
+Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]))
 
 for line in sys.stdin:
     request = json.loads(line)
@@ -64,3 +68,11 @@ for line in sys.stdin:
         str(Path.home() / ".codex/AGENTS.md"),
         str(control / "AGENTS.md"),
     }
+    argv = json.loads(argv_path.read_text())
+    for override in (
+        "mcp_servers.switchstand.enabled=false",
+        "mcp_servers.switchstand_managed.enabled=false",
+        "mcp_servers.switchstand_development.enabled=false",
+    ):
+        assert override in argv
+    assert argv[-3:] == ["app-server", "--listen", "stdio://"]
