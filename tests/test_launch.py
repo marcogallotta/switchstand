@@ -10,8 +10,8 @@ from ipaddress import ip_network
 from pathlib import Path
 from uuid import UUID
 
-from chatgpt_fixture import service as chatgpt_service
 import pytest
+from chatgpt_fixture import service as chatgpt_service
 
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.codex_runtime import (
