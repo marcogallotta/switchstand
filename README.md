@@ -10,21 +10,24 @@ The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX
 the MCP Python SDK v2. The retired implementation is preserved in `marcogallotta/switchstandold` for
 reference only; this repository is a clean implementation of the current contract.
 
-## Current recovery status
+## Current repository truth
 
-The landed Stage-1 code-red tranche contains three bounded repairs:
-
-- Git landing reconciliation now accepts the repository's one-parent squash flow only when the landing is directly
-  based on the reviewed base, the reviewed candidate descends from that base, and the landed tree equals the reviewed
-  candidate tree.
-- Existing writer reuse now requires a clean registered linked worktree whose Git common directory is exactly the
-  requesting repository's common directory, so a same-named worktree from another clone is rejected.
-- `scripts/check` starts its shared 120-second deadline before bootstrap/setup, applies the remaining budget through
-  setup, manifest verification and focused checks, forcibly terminates TERM-resistant timed-out setup, and does not
-  fall back to a full container build.
-
-These repairs do not close all code-red findings. Docker resource ownership/cancellation remains unresolved, and the
-development launch/control path is still repository-supplied rather than an independently pinned CONTROL surface.
+- Git landing reconciliation models the repository's reviewed two-parent GitHub merge-commit flow: the landing must
+  have the reviewed base and candidate as its ordered parents, the candidate must descend from that base, and the
+  landing tree must exactly match the reviewed candidate tree. Squash landings are rejected.
+- `launch.py` owns managed-launch orchestration and process supervision. `codex_runtime.py` owns Codex CLI/App
+  Server command construction, configuration/readback, and runtime profile validation. `development.py` owns the
+  development-resource/workload mechanics used by launch; `docker.py` supplies exact low-level Docker identity and
+  removal primitives. Remaining lifecycle-policy convergence is tracked separately rather than hidden in this summary.
+- `candidate.py` owns persistent candidate/worktree identity and exact remote Git-ref materialization for isolated
+  launch. `launch_source.py` owns the protected task-source parsing/bridge that supplies those exact identities.
+- The authenticated ordinary HTTP/OAuth MCP exposes provider-neutral search/read/structure/history/attachment/event
+  operations, protected append/create/update, message send/pending, and required-result saving. Raw `source_*` reads
+  remain transitional compatibility until their proof-gated retirement. Repository `.codex/config.toml` explicitly
+  allowlists the ordinary tool inventory.
+- Full Quality prints skipped/xfail reasons. Landing-reconciliation tests are mandatory CI evidence: absence of a Git
+  implementation capable of the production `--no-lazy-fetch` contract is a `MISSING_CAPABILITY` failure, not a
+  green skip.
 
 ```bash
 scripts/bootstrap

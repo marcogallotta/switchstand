@@ -15,7 +15,7 @@ def _git(repo: Path, *arguments: str) -> str:
 
 def _repo(tmp_path: Path) -> tuple[Path, str]:
     if shutil.which("git") is None:
-        pytest.skip("git is required for real repository reconciliation tests")
+        pytest.fail("MISSING_CAPABILITY: git is required for landing reconciliation evidence")
     supported = subprocess.run(
         ["git", "--no-lazy-fetch", "--version"],
         text=True,
@@ -23,7 +23,10 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
         check=False,
     )
     if supported.returncode != 0:
-        pytest.skip("git with --no-lazy-fetch is required for reconciliation tests")
+        pytest.fail(
+            "MISSING_CAPABILITY: CI/development Git must support --no-lazy-fetch "
+            "for landing reconciliation evidence"
+        )
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "--initial-branch=main")

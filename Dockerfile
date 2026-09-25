@@ -4,9 +4,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 CMD ["uv", "run", "--no-sync", "switchstand"]
 
-FROM base AS development
+FROM python:3.14-slim-trixie AS development
+COPY --from=base /bin/uv /bin/uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends git libatomic1 \
+    && git --no-lazy-fetch --version \
     && rm -rf /var/lib/apt/lists/*
 RUN uv sync --locked --all-groups --no-install-project
 COPY src ./src

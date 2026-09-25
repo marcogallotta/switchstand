@@ -75,7 +75,9 @@ action.
   instruction sources, then replaces itself with Codex. It refuses the ordinary checkout. Do not copy WorkIds or edit
   the shared environment file. Managed Codex runs have network access. At launch it pins a development image and
   starts a writer-local test network with egress for dependency resolution;
-  the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools. Ordinary commands cannot reach the
+  the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools.
+  `codex_runtime.py` owns Codex command/App Server configuration and readback; `launch.py` orchestrates that runtime
+  with the development boundary rather than owning those Codex semantics itself. Ordinary commands cannot reach the
   Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
   During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
   environment. One shared 120-second deadline starts before bootstrap/setup; bootstrap, manifest verification and each
@@ -108,6 +110,8 @@ action.
   The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
   Task IDs, references, and one optional prompt are forwarded unchanged.
+  `launch_source.py` resolves the protected task-source contract, while `candidate.py` verifies/materializes the
+  exact remote base/candidate refs used by isolated launch before `launch.py` performs its final provenance preflight.
   The old `scripts/switchstand-context` and `scripts/switchstand-start` names are compatibility wrappers that warn.
 - Product MCP surfaces are intentionally distinct:
   - authenticated ChatGPT uses the HTTP/OAuth edge in `chatgpt_edge.py` with workspace grants and explicit WorkIds;
@@ -119,7 +123,10 @@ action.
   new ordinary flows. Provider credentials remain in trusted host/service configuration and are not agent arguments.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
-review diffs. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
+review diffs. The development/Quality image must support the production Git command contract, including
+`--no-lazy-fetch`; landing-reconciliation tests fail with `MISSING_CAPABILITY` rather than skip if that prerequisite
+regresses. Pytest short summaries expose any remaining SKIPPED/XFAIL claims so aggregate Quality SUCCESS does not
+silently imply they ran. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
 models the repository's GitHub merge-commit flow: the landed result must be the current accepted result with exactly
 the reviewed base and reviewed candidate as its ordered parents, the reviewed candidate must descend from that base,
 and the landed tree must equal the reviewed candidate tree. Integration admits State, Provider, then MCP and reruns affected plus full gates after each admission.
@@ -128,12 +135,13 @@ and the landed tree must equal the reviewed candidate tree. Integration admits S
 
 The current development path is operational but still has explicit ownership/transition debt:
 
-- **Launch/Docker ownership:** `launch.py` still creates and cleans candidate image/network/database resources while
-  `development.py` owns workload containers and `docker.py` owns shared exact-object primitives. Treat this as
-  overlapping current ownership, not a finished convergence.
-- **Launch-source ownership:** isolated launch still uses `launch_source.py` for direct protected Asana reads plus Git
-  remote/ref verification before candidate materialization. Do not copy that duplicate source/currentness seam into
-  new product code.
+- **Launch/Docker ownership:** `development.py` now owns candidate development-resource preparation/cleanup and
+  workload mechanics, while `docker.py` owns shared exact-object primitives. `launch.py` still owns orchestration
+  decisions about when those lifecycle operations occur. Treat that remaining policy split as cleanup debt, not as
+  duplicate low-level Docker ownership.
+- **Launch-source ownership:** isolated launch still uses `launch_source.py` for protected task-source parsing/readback;
+  exact Git remote/ref verification/materialization is owned by `candidate.py`. Do not copy the transitional source
+  bridge into new product code.
 - **Legacy source MCP:** raw `source_*` tools remain exposed for recovery/reference compatibility until neutral
   replacement coverage and legacy-drain proof exist.
 - **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration

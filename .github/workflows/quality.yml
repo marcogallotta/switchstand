@@ -36,4 +36,4 @@ jobs:
           switchstand-quality sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
           PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
-          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider'
+          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider'
