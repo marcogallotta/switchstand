@@ -37,3 +37,13 @@ jobs:
           'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
           PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
           PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider'
+      - name: Prove real Docker lifecycle boundary
+        run: >-
+          docker run --rm
+          -e SWITCHSTAND_REAL_DOCKER=1
+          -e SWITCHSTAND_REAL_DOCKER_IMAGE=switchstand-quality
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v "$PWD:/workspace:ro" -w /workspace
+          switchstand-quality sh -c
+          'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
+          tests/test_docker_lifecycle_real.py'
