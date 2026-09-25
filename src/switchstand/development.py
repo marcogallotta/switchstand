@@ -299,7 +299,7 @@ def _container_arguments(
         "PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . && "
         "PYTHONPATH=/workspace/src /app/.venv/bin/pyright "
         "--pythonpath /app/.venv/bin/python && "
-        "PYTHONPATH=/workspace/src /app/.venv/bin/pytest -p no:cacheprovider"
+        "PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider"
     )
     if role == "focused":
         command.extend([script + ' \"$@\"', "switchstand-check", *(str(path) for path in test_paths)])

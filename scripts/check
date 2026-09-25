@@ -74,4 +74,4 @@ if [ "$bound" = false ]; then
 fi
 run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
 run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
-run env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" "$@"
+run env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" -ra "$@"

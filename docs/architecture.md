@@ -26,7 +26,8 @@ There are multiple deliberately different MCP surfaces; there is no three-tool g
 
 **Authenticated ChatGPT HTTP MCP** (`chatgpt_edge.py`) exposes the workspace/grant-aware ordinary surface:
 provider-neutral work discovery/read/structure/history/attachment/event operations, protected append/create/update,
-durable message send/pending, and required-result saving. `source_task`, `source_stories` and
+durable message send/pending, and required-result saving. The repository Codex config explicitly allowlists this
+ordinary inventory; edge registration and that allowlist must remain synchronized. `source_task`, `source_stories` and
 `source_story` remain public transitional raw-Asana reads for legacy recovery/reference workflows; they are not
 the preferred provider-neutral product vocabulary.
 
@@ -42,16 +43,18 @@ exact linked writer/run identity supplied by trusted launch state.
 
 ## Development and launch control
 
-Managed launch is orchestration, but current ownership is still broader than the desired end state:
-`launch.py` validates the linked writer, prepares the candidate development image/network/database, performs
-Codex App Server configuration/readback, supervises the launched process and cleans up its prepared resources.
-`development.py` owns focused/full workload execution and exact workload-container cleanup, while `docker.py`
-provides the shared exact-owned Docker inspection/name/label/removal primitives. This overlap is current repository
-truth and remains a cleanup boundary; do not infer that Docker/runtime ownership has already fully converged.
+Managed launch is orchestration. `launch.py` validates the linked writer, sequences candidate
+preflight/development preparation, supervises the launched process, and requests exact cleanup. `codex_runtime.py`
+owns Codex CLI/App Server command construction, configuration/readback, and runtime profile validation.
+`development.py` owns development image/network/database preparation plus focused/full workload mechanics and exact
+owned cleanup; `docker.py` provides shared low-level Docker inspection/name/label/removal primitives. Launch still
+decides when those lifecycle operations occur, so higher-level lifecycle-policy convergence remains a separate cleanup
+boundary rather than a claim that ownership is fully finished.
 
-The isolated-launch path still has a host-side `launch_source.py` seam that performs protected Asana source
-reads and Git remote/ref verification before candidate materialization. That path is transitional current behavior, not
-a second provider architecture to copy into new code.
+The isolated-launch path keeps a host-side `launch_source.py` seam for protected task-source parsing/readback.
+Exact Git repository/ref verification and materialization are delegated to `candidate.py::prepare_launch_source`
+before launch preflight. That bridge is transitional current behavior, not a second provider architecture to copy into
+new code.
 
 Git landing reconciliation follows the repository's GitHub merge-commit model: the landing must be the current result
 with exactly the reviewed base and reviewed candidate as its two ordered parents, the reviewed candidate must descend
