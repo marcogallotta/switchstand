@@ -1,5 +1,6 @@
 approval_policy = "never"
 default_permissions = "switchstand-development"
+approval_policy = "never"
 
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
