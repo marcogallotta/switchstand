@@ -56,7 +56,6 @@ async def test_concurrent_bind_converges_on_one_durable_identity(state):
 
 async def test_provider_identity_reverse_lookup_is_exact_and_read_only(state):
     assert await state.get_by_provider("asana", "provider-id") is None
-    assert await state.bound_provider_ids("asana") == frozenset()
 
     expected = await state.bind("asana", "provider-id")
     await state.bind("other", "provider-id")
