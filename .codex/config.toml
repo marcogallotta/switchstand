@@ -36,56 +36,6 @@ enabled_tools = ["grant_get", "work_get", "work_search", "work_resolve_reference
 [mcp_servers.switchstand_oauth_proof]
 enabled = false
 
-[mcp_servers.switchstand.tools.grant_get]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_get]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_search]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_resolve_reference]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_structure]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_task]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_stories]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.source_story]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_history]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_attachments]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_event]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_append]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_create]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.work_update]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.message_send]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.message_pending]
-approval_mode = "approve"
-
-[mcp_servers.switchstand.tools.required_result_save]
-approval_mode = "approve"
 
 [mcp_servers.switchstand_managed]
 command = "scripts/switchstand-controller-mcp"

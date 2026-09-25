@@ -11,7 +11,9 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from chatgpt_fixture import service as chatgpt_service
 
+from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.codex_runtime import (
     PROFILE,
     codex_command,
@@ -157,12 +159,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
 
-    ordinary = {
-        "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
-        "source_task", "source_stories", "source_story", "work_history", "work_attachments",
-        "work_event", "work_append", "work_create", "work_update", "message_send",
-        "message_pending", "required_result_save",
-    }
+    ordinary = {name for name, _ in build_ordinary_tools(chatgpt_service())}
     switchstand = servers["switchstand"]
     assert switchstand["required"] is False
     assert switchstand["auth"] == "oauth"
@@ -170,8 +167,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     assert "command" not in switchstand
     assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
     assert set(switchstand["enabled_tools"]) == ordinary
-    assert set(switchstand["tools"]) == ordinary
-    assert all(tool["approval_mode"] == "approve" for tool in switchstand["tools"].values())
+    assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
 
     managed = {
