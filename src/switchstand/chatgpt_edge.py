@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
+
 import httpx
 from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
