@@ -109,6 +109,7 @@ action.
   HEAD, wrong task branch, foreign worktree, running/UNKNOWN prior run, or stale task binding fails with work intact.
   The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
+  The selector's SHA-keyed CONTROL snapshot owns launcher Python, Codex project configuration and managed/development MCP wrapper code; the candidate is only an explicit linked-worktree/add-dir input. Qualification includes hostile candidate shadow code/config and must prove it cannot substitute those CONTROL implementations.
   Task IDs, references, and one optional prompt are forwarded unchanged.
   `launch_source.py` resolves the protected task-source contract, while `candidate.py` verifies/materializes the
   exact remote base/candidate refs used by isolated launch before `launch.py` performs its final provenance preflight.
