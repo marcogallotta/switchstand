@@ -6,51 +6,21 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Any
 from urllib.parse import urlparse
-from uuid import UUID
-
 import httpx
 from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
 from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .chatgpt import ChatGPTService, RequiredResultSaveRequest
-from .chatgpt_mcp import build_message_tools
-from .contracts import (
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTaskRequest,
-    SourceTaskResult,
-    WorkAttachmentsRequest,
-    WorkAttachmentsResult,
-    WorkEventRequest,
-    WorkEventResult,
-    WorkHistoryRequest,
-    WorkHistoryResult,
-    WorkResolveReferenceRequest,
-    WorkSearchRequest,
-    WorkSearchResult,
-    WorkStructureRequest,
-    WorkStructureResult,
-)
+from .chatgpt import ChatGPTService
+from .chatgpt_mcp import build_ordinary_tools
 from .grant_state import GrantState
-from .grants import (
-    GrantResult,
-    GuardOutcome,
-    ProtectedAppend,
-    ProtectedCreate,
-    ProtectedUpdate,
-    ScalarPatch,
-)
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
-from .mcp import PublicWorkResult, project_work
 from .messages import MessageState
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
@@ -201,170 +171,7 @@ def create_app(
         **auth_options,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
-
-    async def grant_get(api_version: Literal["1"]) -> GrantResult:
-        result = await service.grant_get()
-        _audit("grant_get", None, result.status)
-        return result
-
-    async def work_get(
-        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
-    ) -> PublicWorkResult:
-        result = await service.get(work_id, include_related=include_related)
-        _audit("work_get", None if work_id is None else str(work_id), result.status)
-        return project_work(result, include_related)
-
-    async def work_search(
-        api_version: Literal["1"], text: str | None = None,
-        completed: bool | None = None, cursor: str | None = None, limit: int = 50,
-    ) -> WorkSearchResult:
-        result = await service.search(WorkSearchRequest(
-            api_version=api_version, text=text, completed=completed,
-            cursor=cursor, limit=limit,
-        ))
-        _audit("work_search", None, result.status)
-        return result
-
-    async def work_resolve_reference(
-        api_version: Literal["1"],
-        reference: Annotated[str, Field(min_length=1, max_length=2048)],
-    ) -> PublicWorkResult:
-        """Resolve one exact legacy task reference to current provider-neutral work."""
-        result = await service.resolve_reference(WorkResolveReferenceRequest(
-            api_version=api_version, reference=reference,
-        ))
-        _audit("work_resolve_reference", None, result.status)
-        return project_work(result, False)
-
-    async def work_structure(
-        api_version: Literal["1"], work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)],
-    ) -> WorkStructureResult:
-        result = await service.structure(WorkStructureRequest(
-            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
-        ))
-        _audit("work_structure", str(work_id), result.status)
-        return result
-
-    async def work_history(
-        api_version: Literal["1"], work_id: UUID, observed_revision: str,
-        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> WorkHistoryResult:
-        """Read bounded history; on stale, repeat work_get and restart pagination."""
-        result = await service.history(
-            WorkHistoryRequest(api_version=api_version, work_id=work_id,
-                               observed_revision=observed_revision, cursor=cursor, limit=limit))
-        _audit("work_history", str(work_id), result.status)
-        return result
-
-    async def work_attachments(
-        api_version: Literal["1"], work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)],
-        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
-        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
-    ) -> WorkAttachmentsResult:
-        """List attachment names only; on stale, repeat work_get and restart pagination."""
-        result = await service.attachments(WorkAttachmentsRequest(
-            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
-            cursor=cursor, limit=limit,
-        ))
-        _audit("work_attachments", str(work_id), result.status)
-        return result
-
-    async def work_event(
-        api_version: Literal["1"], event_id: UUID, observed_revision: str,
-        work_id: UUID,
-    ) -> WorkEventResult:
-        """Reread one opaque event at the observed work revision."""
-        result = await service.event(
-            WorkEventRequest(api_version=api_version, work_id=work_id,
-                             event_id=event_id, observed_revision=observed_revision))
-        _audit("work_event", str(work_id), result.status)
-        return result
-
-    async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
-        result = await service.source_task(SourceTaskRequest(api_version=api_version, task_gid=task_gid))
-        _audit("source_task", task_gid, result.status)
-        return result
-
-    async def source_stories(
-        api_version: Literal["1"], task_gid: str, observed_revision: str,
-        offset: str | None = None, limit: int = 50,
-    ) -> SourceStoriesResult:
-        result = await service.source_stories(SourceStoriesRequest(
-            api_version=api_version, task_gid=task_gid, observed_revision=observed_revision,
-            offset=offset, limit=limit,
-        ))
-        _audit("source_stories", task_gid, result.status)
-        return result
-
-    async def source_story(
-        api_version: Literal["1"], task_gid: str, story_gid: str, observed_revision: str,
-    ) -> SourceStoryResult:
-        result = await service.source_story(SourceStoryRequest(
-            api_version=api_version, task_gid=task_gid, story_gid=story_gid,
-            observed_revision=observed_revision,
-        ))
-        _audit("source_story", task_gid, result.status)
-        return result
-
-    async def work_append(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        grant_version: int, observed_revision: str, text: str,
-    ) -> GuardOutcome:
-        result = await service.append(ProtectedAppend(
-            api_version=api_version,
-            operation_id=operation_id,
-            work_id=work_id,
-            grant_version=grant_version,
-            observed_revision=observed_revision,
-            text=text,
-        ))
-        _audit("work_append", str(work_id), result.status)
-        return result
-
-    async def work_create(
-        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
-        grant_version: int, title: str, notes: str = "",
-    ) -> GuardOutcome:
-        result = await service.create(ProtectedCreate(
-            api_version=api_version, operation_id=operation_id,
-            parent_work_id=parent_work_id, grant_version=grant_version,
-            title=title, notes=notes,
-        ))
-        _audit("work_create", str(parent_work_id), result.status)
-        return result
-
-    async def work_update(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        grant_version: int, observed_revision: str, patch: ScalarPatch,
-    ) -> GuardOutcome:
-        result = await service.update(ProtectedUpdate(
-            api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
-        ))
-        _audit("work_update", str(work_id), result.status)
-        return result
-
-    async def required_result_save(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
-        observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
-    ) -> GuardOutcome:
-        """Save one required result; the server owns its stable operation identity."""
-        result = await service.required_result_save(RequiredResultSaveRequest(
-            api_version=api_version, work_id=work_id, grant_version=grant_version,
-            observed_revision=observed_revision, text=text,
-        ))
-        _audit("required_result_save", str(work_id), result.status)
-        return result
-
-    for tool in (grant_get, work_get, work_search, work_resolve_reference, work_structure,
-                 work_history,
-                 work_attachments, work_event, source_task, source_stories, source_story,
-                 work_append, work_create, work_update):
-        server.tool(tool)
-    server.tool(required_result_save)
-    for _, tool in build_message_tools(service, _audit):
+    for _, tool in build_ordinary_tools(service, _audit):
         server.tool(tool)
     return server.http_app(path="/mcp", json_response=True, stateless_http=True)
 
