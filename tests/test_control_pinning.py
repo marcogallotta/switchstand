@@ -106,3 +106,70 @@ def test_managed_codex_and_mcp_wrappers_remain_control_rooted(tmp_path: Path) ->
     assert docker_cwd == str(ROOT)
     assert f"-v {candidate}:{candidate}:ro" in docker_args
     assert not marker.exists()
+
+
+def test_isolated_entry_uses_only_external_selector(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    home = tmp_path / "home"
+    external = home / ".local" / "bin" / "switchstand-start"
+    scripts.mkdir(parents=True)
+    external.parent.mkdir(parents=True)
+
+    switchstand = scripts / "switchstand"
+    switchstand.write_bytes((ROOT / "scripts" / "switchstand").read_bytes())
+    switchstand.chmod(0o755)
+
+    repo_fallback_marker = tmp_path / "repo-fallback"
+    executable(
+        scripts / "switchstand-start",
+        f"#!/bin/sh\ntouch {str(repo_fallback_marker)!r}\nexit 97\n",
+    )
+    args_receipt = tmp_path / "selector-args"
+    executable(
+        external,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SELECTOR_ARGS\"\n",
+    )
+    env = os.environ | {"HOME": str(home), "SELECTOR_ARGS": str(args_receipt)}
+    result = subprocess.run(
+        [switchstand, "--isolated", "--active", "123", "--commit", "a" * 40],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert args_receipt.read_text().splitlines() == [
+        "--active", "123", "--commit", "a" * 40,
+    ]
+    assert not repo_fallback_marker.exists()
+
+
+def test_isolated_entry_fails_closed_without_external_selector(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    home = tmp_path / "home"
+    scripts.mkdir(parents=True)
+    home.mkdir()
+
+    switchstand = scripts / "switchstand"
+    switchstand.write_bytes((ROOT / "scripts" / "switchstand").read_bytes())
+    switchstand.chmod(0o755)
+    fallback_marker = tmp_path / "fallback"
+    executable(
+        scripts / "switchstand-start",
+        f"#!/bin/sh\ntouch {str(fallback_marker)!r}\nexit 0\n",
+    )
+
+    result = subprocess.run(
+        [switchstand, "--isolated", "--active", "123", "--commit", "a" * 40],
+        cwd=repo,
+        env=os.environ | {"HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "trusted external selector is unavailable" in result.stderr
+    assert not fallback_marker.exists()
