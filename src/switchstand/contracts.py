@@ -253,24 +253,6 @@ class AppendResult(ClosedModel):
         return self
 
 
-class WorkHead(ClosedModel):
-    id: UUID
-    title: str
-    priority: str
-    horizon: str | None = None
-
-
-class SuggestionResult(ClosedModel):
-    status: Literal["ok", "none", "provider_error"]
-    item: WorkHead | None = None
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        if (self.status == "ok") != (self.item is not None):
-            raise ValueError("item presence does not match status")
-        return self
-
-
 class LaunchAuthority(ClosedModel):
     active_work_id: UUID
     reference_work_ids: tuple[UUID, ...] = Field(default=(), max_length=8)
