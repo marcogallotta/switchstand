@@ -52,7 +52,7 @@ Only a managed start supplies the active inbox and its initial request. Its `sou
 
 ## Roles and routed procedure
 
-Roles change duties, not authority. A managed role loads its current routed procedure from active work's governing references. An ordinary session uses the exact assigned scope and applicable repository contract without fabricating a managed role or route.
+Roles change duties, not authority. A managed role loads its current routed procedure from active work's governing references. An ordinary Codex session started from the canonical Switchstand repository defaults to the Coordinator role unless Marco explicitly assigns another role. This duty default creates no WorkId, grant, write authority, polling obligation, or provider effect. Ordinary in-repo Codex uses the authenticated provider-neutral `switchstand` HTTP/OAuth MCP declared by the repository project config; it must not replace that route with the managed stdio server or inject raw Asana/PostgreSQL credentials.
 
 - **Coordinator:** reconcile active lanes/owners and exact message/review state; keep disjoint authorized work moving; surface Marco only decision-changing deltas.
 - **Researcher:** gather scoped evidence, distinguish fact/inference/assumption/unknown, and use the cheapest representative proof that can settle the claim.

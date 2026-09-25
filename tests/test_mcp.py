@@ -202,7 +202,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
-        assert set(config["mcp_servers"]["switchstand"]["enabled_tools"]) == {
+        assert set(config["mcp_servers"]["switchstand_managed"]["enabled_tools"]) == {
             tool.name for tool in tools
         } | {
             "work_update",

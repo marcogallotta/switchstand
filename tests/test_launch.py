@@ -149,32 +149,53 @@ def test_exact_revision_preflight_rejects_ambiguous_identity(tmp_path, requested
         )
 
 
-def test_managed_tools_have_narrow_approval_free_policy():
+def test_switchstand_tools_have_narrow_approval_free_policy():
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    assert config["approval_policy"] == "never"
     assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
-    expected = {
-        "switchstand": {
-            "work_get", "work_attachments", "source_task", "source_stories", "source_story",
-            "work_history", "work_event", "work_append", "work_update", "message_pending",
-            "message_receive", "message_recover", "message_result_send",
-            "message_disposition",
-        },
-        "switchstand_development": {
-            "check",
-            "commit_all_current_worktree",
-            "quality",
-            "run_status",
-        },
-    }
-    for server, names in expected.items():
-        assert servers[server]["required"] is False
-        tools = servers[server]["tools"]
-        assert set(tools) == names
-        assert names == set(servers[server]["enabled_tools"])
-        assert all(tool["approval_mode"] == "approve" for tool in tools.values())
-    assert "SWITCHSTAND_RUN_ID" in servers["switchstand_development"]["env_vars"]
 
+    ordinary = {
+        "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
+        "source_task", "source_stories", "source_story", "work_history", "work_attachments",
+        "work_event", "work_append", "work_create", "work_update", "message_send",
+        "message_pending", "required_result_save",
+    }
+    switchstand = servers["switchstand"]
+    assert switchstand["required"] is True
+    assert switchstand["auth"] == "oauth"
+    assert switchstand["default_tools_approval_mode"] == "approve"
+    assert "command" not in switchstand
+    assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+    assert set(switchstand["tools"]) == ordinary
+    assert all(tool["approval_mode"] == "approve" for tool in switchstand["tools"].values())
+
+    managed = {
+        "work_get", "work_attachments", "source_task", "source_stories", "source_story",
+        "work_history", "work_event", "work_append", "work_update", "message_pending",
+        "message_receive", "message_recover", "message_result_send", "message_disposition",
+    }
+    switchstand_managed = servers["switchstand_managed"]
+    assert switchstand_managed["required"] is False
+    assert set(switchstand_managed["enabled_tools"]) == managed
+    assert set(switchstand_managed["tools"]) == managed
+    assert switchstand_managed["default_tools_approval_mode"] == "approve"
+    assert all(
+        tool["approval_mode"] == "approve"
+        for tool in switchstand_managed["tools"].values()
+    )
+
+    development = {"check", "commit_all_current_worktree", "quality", "run_status"}
+    switchstand_development = servers["switchstand_development"]
+    assert switchstand_development["required"] is False
+    assert set(switchstand_development["enabled_tools"]) == development
+    assert set(switchstand_development["tools"]) == development
+    assert switchstand_development["default_tools_approval_mode"] == "approve"
+    assert all(
+        tool["approval_mode"] == "approve"
+        for tool in switchstand_development["tools"].values()
+    )
+    assert "SWITCHSTAND_RUN_ID" in switchstand_development["env_vars"]
 
 def test_clean_environment_removes_secret_and_stale_authority():
     source = {"PATH": "/bin", "DOCKER_HOST": "remote", "ASANA_TOKEN": "secret", "ACTIVE_WORK_ID": "stale",
@@ -427,7 +448,8 @@ def test_validate_codex_args_blocks_boundary_overrides():
 
 def test_managed_codex_requires_both_mcp_servers():
     command = codex_command(Path("/control"), Path("/writer"), [])
-    assert "mcp_servers.switchstand.required=true" in command
+    assert "mcp_servers.switchstand.enabled=false" in command
+    assert "mcp_servers.switchstand_managed.required=true" in command
     assert "mcp_servers.switchstand_development.required=true" in command
 
 
@@ -437,7 +459,8 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
         "codex", "-C", "/control", "--add-dir", "/writer", "-a", "never", "-c",
         f'default_permissions="{PROFILE}"',
         "-c", filesystem_override(Path("/control")),
-        "-c", "mcp_servers.switchstand.required=true",
+        "-c", "mcp_servers.switchstand.enabled=false",
+        "-c", "mcp_servers.switchstand_managed.required=true",
         "-c", "mcp_servers.switchstand_development.required=true",
     ]
     assert 'work_get(api_version="1")' in command[-1]

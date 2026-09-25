@@ -1,3 +1,4 @@
+approval_policy = "never"
 default_permissions = "switchstand-development"
 
 [permissions.switchstand-development]
@@ -18,17 +19,26 @@ enabled = true
 "/var/run/docker.sock" = "deny"
 
 [mcp_servers.switchstand]
-command = "scripts/switchstand-controller-mcp"
-env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS",
-            "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
-            "SWITCHSTAND_RUN_ID"]
-required = false
-enabled_tools = ["work_get", "work_attachments", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
+# Ordinary in-repo Codex owns the authenticated provider-neutral HTTP/OAuth endpoint
+# directly; it must not depend on a pre-existing user-level server with the same name.
+url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+required = true
+auth = "oauth"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.grant_get]
+approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.work_get]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.work_attachments]
+[mcp_servers.switchstand.tools.work_search]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.work_resolve_reference]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.work_structure]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.source_task]
@@ -43,32 +53,84 @@ approval_mode = "approve"
 [mcp_servers.switchstand.tools.work_history]
 approval_mode = "approve"
 
+[mcp_servers.switchstand.tools.work_attachments]
+approval_mode = "approve"
+
 [mcp_servers.switchstand.tools.work_event]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.work_append]
 approval_mode = "approve"
 
+[mcp_servers.switchstand.tools.work_create]
+approval_mode = "approve"
+
 [mcp_servers.switchstand.tools.work_update]
+approval_mode = "approve"
+
+[mcp_servers.switchstand.tools.message_send]
 approval_mode = "approve"
 
 [mcp_servers.switchstand.tools.message_pending]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.message_receive]
+[mcp_servers.switchstand.tools.required_result_save]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.message_recover]
+[mcp_servers.switchstand_managed]
+command = "scripts/switchstand-controller-mcp"
+env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS",
+            "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
+            "SWITCHSTAND_RUN_ID"]
+required = false
+enabled_tools = ["work_get", "work_attachments", "source_task", "source_stories", "source_story", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
+default_tools_approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.work_get]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.message_result_send]
+[mcp_servers.switchstand_managed.tools.work_attachments]
 approval_mode = "approve"
 
-[mcp_servers.switchstand.tools.message_disposition]
+[mcp_servers.switchstand_managed.tools.source_task]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.source_stories]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.source_story]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.work_history]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.work_event]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.work_append]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.work_update]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.message_pending]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.message_receive]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.message_recover]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.message_result_send]
+approval_mode = "approve"
+
+[mcp_servers.switchstand_managed.tools.message_disposition]
 approval_mode = "approve"
 
 [mcp_servers.switchstand_development]
 command = "scripts/switchstand-development-mcp"
+default_tools_approval_mode = "approve"
 env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON",
             "SWITCHSTAND_RUN_ID",
             "SWITCHSTAND_QUALITY_IMAGE", "SWITCHSTAND_QUALITY_NETWORK",
