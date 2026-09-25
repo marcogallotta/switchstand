@@ -383,7 +383,12 @@ async def serve() -> None:
         test_project = os.getenv("SWITCHSTAND_TEST_PROJECT_GID", "").strip()
         correlation_field = os.getenv("SWITCHSTAND_CREATE_CORRELATION_FIELD_GID", "").strip()
         if test_project and correlation_field:
-            provider = TestCreateAsanaProvider(client, test_project, correlation_field)
+            provider = TestCreateAsanaProvider(
+                client, test_project, correlation_field,
+                lose_confirmation_after_post=(
+                    os.getenv("SWITCHSTAND_TEST_LOSE_CREATE_CONFIRMATION") == "1"
+                ),
+            )
         else:
             provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
         grants = GrantState(engine)
