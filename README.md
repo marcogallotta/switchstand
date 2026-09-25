@@ -35,10 +35,9 @@ docker compose up --build
 uv run pytest
 scripts/switchstand-worktree <writer-name> <exact-green-SHA>
 scripts/switchstand --active <Asana task ID or URL> -- <exact initial assignment>
-# In the printed linked worktree:
-scripts/switchstand-launch --active <Asana task ID or URL> --commit <exact-candidate-SHA>
-
 scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-candidate-SHA>
+# This route is fail-closed until the separately managed external selector is installed
+# with an ACTIVE CONTROL manifest; repository landing alone does not activate it.
 ```
 
 See [architecture](docs/architecture.md), [development](docs/development.md), and [agent routing](AGENTS.md).
