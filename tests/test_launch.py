@@ -27,6 +27,7 @@ from switchstand.development import (
     development_subnet,
     docker_run,
     prepare_development,
+    reclaim_development,
 )
 from switchstand.docker import DockerObject
 from switchstand.launch import (
@@ -504,10 +505,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     development = object()
     monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
     monkeypatch.setattr(
-        "switchstand.launch.inspect_docker", lambda *args: None
-    )
-    monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.launch.reclaim_development",
         lambda *args, **kwargs: events.append("reclaimed"),
     )
     monkeypatch.setattr(
@@ -552,7 +550,8 @@ def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
         lambda *args: removed.append(args),
     )
     cleanup_development(
-        "image-id", "network-id", "database-id", tmp_path, str(ACTIVE), {}
+        DevelopmentBoundary("image-id", "network-id", "database-id", "manifest"),
+        tmp_path, ACTIVE, {}
     )
     assert removed == [
         ("container", "database-id", str(ACTIVE), "database", {}),
@@ -581,7 +580,7 @@ def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatc
     monkeypatch.setattr(
         "switchstand.development.remove_owned", lambda *args: removed.append(args)
     )
-    cleanup_development(None, None, None, tmp_path, str(ACTIVE), {})
+    reclaim_development(tmp_path, ACTIVE, {})
     assert [(args[0], args[2], args[3]) for args in removed] == [
         ("container", str(ACTIVE), "database"),
         ("container", str(ACTIVE), "focused"),
@@ -606,7 +605,7 @@ def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
     monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
     monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
     monkeypatch.setattr(
-        "switchstand.development.cleanup_development",
+        "switchstand.development._cleanup_development",
         lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
             (image, network, database, candidate, owner)
         ),
@@ -643,8 +642,8 @@ def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
-        lambda image, network, database, candidate, owner, env: events.append(
-            (image, network, database, candidate, owner)
+        lambda boundary, candidate, owner, env: events.append(
+            (boundary.image, boundary.network, boundary.database, candidate, str(owner))
         ),
     )
     development = DevelopmentBoundary("image", "network", "database", "manifest")
@@ -686,8 +685,8 @@ def test_supervisor_kills_unresponsive_child_before_cleanup(monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append((pid, sig)))
     monkeypatch.setattr(
         "switchstand.launch.cleanup_development",
-        lambda image, network, database, candidate, owner, env: events.append(
-            (image, network, database, candidate, owner)
+        lambda boundary, candidate, owner, env: events.append(
+            (boundary.image, boundary.network, boundary.database, candidate, str(owner))
         ),
     )
     development = DevelopmentBoundary("image", "network", "database", "manifest")
