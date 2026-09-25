@@ -17,18 +17,20 @@ from switchstand.codex_runtime import (
     readback,
     validate_codex_args,
 )
-from switchstand.docker import DockerObject
-from switchstand.launch import (
+from switchstand.development import (
     DevelopmentBoundary,
-    clean_environment,
     cleanup_development,
     development_subnet,
     docker_run,
+    prepare_development,
+)
+from switchstand.docker import DockerObject
+from switchstand.launch import (
+    clean_environment,
     exact_revision_preflight,
     linked_branch,
     parse_authority,
     parser,
-    prepare_development,
     prepare_managed_run,
     provision,
     run,
@@ -387,9 +389,9 @@ def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
             networks.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
 
-    monkeypatch.setattr("switchstand.launch.docker_run", docker)
-    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.docker_run", docker)
+    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -482,6 +484,10 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "switchstand.launch.inspect_docker", lambda *args: None
     )
     monkeypatch.setattr(
+        "switchstand.launch.cleanup_development",
+        lambda *args, **kwargs: events.append("reclaimed"),
+    )
+    monkeypatch.setattr(
         "switchstand.launch.provision",
         lambda *args: events.append("provisioned") or authority,
     )
@@ -496,6 +502,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     )
     assert events == [
         "reserved",
+        "reclaimed",
         "provisioned",
         "recorded",
         "development",
@@ -505,7 +512,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
 
 def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "switchstand.launch.docker_command",
+        "switchstand.development.docker_command",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args, 1, stdout="", stderr="could not find an available, non-overlapping IPv4 address pool"
         )
@@ -516,9 +523,9 @@ def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
 
 def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
     removed = []
-    monkeypatch.setattr("switchstand.launch.inspect_docker", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.inspect", lambda *args: None)
     monkeypatch.setattr(
-        "switchstand.launch.remove_owned",
+        "switchstand.development.remove_owned",
         lambda *args: removed.append(args),
     )
     cleanup_development(
@@ -547,9 +554,9 @@ def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatc
         assert role is not None
         return DockerObject(kind, name, f"{role}-id", str(ACTIVE), role)
 
-    monkeypatch.setattr("switchstand.launch.inspect_docker", inspect)
+    monkeypatch.setattr("switchstand.development.inspect", inspect)
     monkeypatch.setattr(
-        "switchstand.launch.remove_owned", lambda *args: removed.append(args)
+        "switchstand.development.remove_owned", lambda *args: removed.append(args)
     )
     cleanup_development(None, None, None, tmp_path, str(ACTIVE), {})
     assert [(args[0], args[2], args[3]) for args in removed] == [
@@ -572,11 +579,11 @@ def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
             raise KeyboardInterrupt
         return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
 
-    monkeypatch.setattr("switchstand.launch.docker_run", docker)
-    monkeypatch.setattr("switchstand.launch.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.launch.require_owned", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.docker_run", docker)
+    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
+    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
     monkeypatch.setattr(
-        "switchstand.launch.cleanup_development",
+        "switchstand.development.cleanup_development",
         lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
             (image, network, database, candidate, owner)
         ),
