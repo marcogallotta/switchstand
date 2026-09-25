@@ -30,7 +30,6 @@ async def test_bind_has_stable_opaque_identity(state):
     assert first == again == await state.get(first.id)
     assert first.id.version == 4
     await state.bind("other", "elsewhere")
-    assert await state.bound_provider_ids("asana") == frozenset({"provider-id"})
 
 
 async def test_bind_many_rolls_back_earlier_insert_on_later_conflict(state, monkeypatch):
@@ -42,7 +41,6 @@ async def test_bind_many_rolls_back_earlier_insert_on_later_conflict(state, monk
     with pytest.raises(ValueError, match="binding conflict"):
         await state.bind_many("asana", ("parent", "child"))
 
-    assert await state.bound_provider_ids("asana") == frozenset()
     assert await state.get(occupied) is not None
 
 
@@ -58,7 +56,6 @@ async def test_concurrent_bind_converges_on_one_durable_identity(state):
 
 async def test_provider_identity_reverse_lookup_is_exact_and_read_only(state):
     assert await state.get_by_provider("asana", "provider-id") is None
-    assert await state.bound_provider_ids("asana") == frozenset()
 
     expected = await state.bind("asana", "provider-id")
     await state.bind("other", "provider-id")

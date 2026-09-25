@@ -34,13 +34,6 @@ def task(*, parent=None, project=None, fields=(), assignee=None):
                      "assignee": assignee,
                      "parent": None if parent is None else {"gid": parent},
                      "custom_fields": list(fields)}}
-def candidate(gid, priority, *, completed=False, horizon="Stage 3"):
-    fields = [field(FIELDS["priority"], option=priority, display=priority),
-              field(FIELDS["horizon"], display=horizon)]
-    return {"gid": gid, "name": f"Work {gid}", "completed": completed,
-            "custom_fields": fields}
-def page(*candidates):
-    return {"data": list(candidates), "next_page": None}
 class API:
     def __init__(self, *responses): self.responses, self.requests = list(responses), []
     def __call__(self, request):
@@ -342,22 +335,17 @@ async def test_grouped_lookup_preserves_unknown_for_incomplete_search(search_res
     assert all(request.method == "GET" for request in api.requests)
 
 
-async def test_exact_test_project_admission_and_production_only_discovery():
+async def test_exact_test_project_admission_is_bounded():
     subject, api = provider(
         (200, task(project=TEST_PROJECT)),
         (200, task(project="8888888888888888")),
-        *[(200, page()) for _ in PROJECTS],
         test_project_gid=TEST_PROJECT,
     )
     assert (await subject.get("test-only")).canonical
     assert not (await subject.get("wrong-project")).canonical
-    assert await subject.suggest_next(frozenset()) is None
     assert [request.url.path for request in api.requests] == [
         "/api/1.0/tasks/test-only", "/api/1.0/tasks/wrong-project",
-        *(f"/api/1.0/projects/{gid}/tasks" for gid in PROJECTS),
     ]
-
-
 async def test_test_project_ancestor_and_mixed_production_membership():
     subject, api = provider(
         (200, task(parent="parent")), (200, task(project=TEST_PROJECT)),
@@ -367,15 +355,10 @@ async def test_test_project_ancestor_and_mixed_production_membership():
     assert [request.url.path for request in api.requests] == [
         "/api/1.0/tasks/child", "/api/1.0/tasks/parent",
     ]
-    mixed = task(project=(TEST_PROJECT, PROJECT))
-    subject, _ = provider((200, mixed), (200, page(candidate("mixed", "P0"))),
-                          *[(200, page()) for _ in PROJECTS[1:]])
+    subject, _ = provider((200, task(project=(TEST_PROJECT, PROJECT))))
     assert (await subject.get("mixed")).canonical
-    assert (await subject.suggest_next(frozenset())).provider_work_id == "mixed"
     subject, _ = provider((200, task(project=TEST_PROJECT)))
     assert not (await subject.get("test-only")).canonical
-
-
 @pytest.mark.parametrize("gid", ["abc", " 123", "123 ", "+123", "１２３", PROJECT])
 def test_invalid_or_duplicate_test_project_gid_fails_closed(gid):
     with pytest.raises(ValueError, match="invalid test project GID"):
@@ -564,48 +547,6 @@ async def test_failures_are_sanitized():
     malformed = task(project=PROJECT); malformed["data"]["notes"] = {"secret": True}
     with pytest.raises(ProviderError) as malformed_error: await provider((200, malformed))[0].get("t")
     assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
-
-async def test_suggest_next_returns_only_highest_priority_actionable_head():
-    payloads = [page(candidate("bound", "P0"), candidate("later", "P2")),
-                page(), page(candidate("head", "P1"), candidate("unset", "UNSET"))]
-    payloads.extend(page() for _ in PROJECTS[len(payloads):])
-    subject, api = provider(*[(200, payload) for payload in payloads])
-    result = await subject.suggest_next(frozenset({"bound"}))
-    assert result and (result.provider_work_id, result.title, result.priority) == (
-        "head", "Work head", "P1")
-    assert [request.url.path for request in api.requests] == [
-        f"/api/1.0/projects/{project}/tasks" for project in PROJECTS
-    ]
-    assert all(request.url.params["limit"] == "100" for request in api.requests)
-
-async def test_suggest_next_discovers_area_only_task_without_exact_id():
-    payloads = [page() for _ in PROJECTS]
-    payloads[2] = page(candidate("area-only-fixture", "P0"))
-    subject, _ = provider(*[(200, payload) for payload in payloads])
-    result = await subject.suggest_next(frozenset())
-    assert result and result.provider_work_id == "area-only-fixture"
-
-async def test_suggest_next_deduplicates_cross_project_membership_by_identity():
-    payloads = [page() for _ in PROJECTS]
-    payloads[0] = page(candidate("shared", "P2"))
-    payloads[1] = page(candidate("shared", "P0"))
-    subject, _ = provider(*[(200, payload) for payload in payloads])
-    result = await subject.suggest_next(frozenset())
-    assert result and (result.provider_work_id, result.priority) == ("shared", "P2")
-
-async def test_suggest_next_fails_closed_on_truncated_provider_page():
-    subject, _ = provider((200, {"data": [candidate("head", "P0")],
-                                 "next_page": {"offset": "more"}}))
-    with pytest.raises(ProviderError, match="provider request failed"):
-        await subject.suggest_next(frozenset())
-
-async def test_suggest_next_fails_closed_on_malformed_actionable_row():
-    malformed = candidate("broken", "P0")
-    malformed["name"] = None
-    subject, _ = provider((200, page(malformed, candidate("lower", "P1"))))
-    with pytest.raises(ProviderError, match="provider request failed"):
-        await subject.suggest_next(frozenset())
-
 
 def source_task_payload(*, gid="123", revision="r1", canonical=True):
     payload = task(project=PROJECT if canonical else None)

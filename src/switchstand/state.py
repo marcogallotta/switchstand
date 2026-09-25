@@ -66,11 +66,6 @@ class PostgresState:
             row = (await connection.execute(query)).one_or_none()
         return _handle(row)
 
-    async def bound_provider_ids(self, provider: str) -> frozenset[str]:
-        async with self.engine.connect() as connection:
-            query = select(work_handles.c.provider_work_id).where(work_handles.c.provider == provider)
-            rows = (await connection.execute(query)).scalars()
-        return frozenset(rows)
 
     async def bind(self, provider: str, provider_work_id: str) -> Handle:
         return await self.bind_reserved(uuid4(), provider, provider_work_id, allow_existing=True)

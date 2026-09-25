@@ -17,7 +17,6 @@ from .contracts import (
     SourceTask,
     SourceTaskRequest,
     SourceTaskResult,
-    SuggestionResult,
     WorkAppendRequest,
     WorkAttachment,
     WorkAttachmentsRequest,
@@ -27,7 +26,6 @@ from .contracts import (
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
-    WorkHead,
     WorkHistoryRequest,
     WorkHistoryResult,
     WorkItem,
@@ -74,14 +72,6 @@ class ProviderWork:
 
 
 @dataclass(frozen=True)
-class ProviderHead:
-    provider_work_id: str
-    title: str
-    priority: str
-    horizon: str | None
-
-
-@dataclass(frozen=True)
 class ProviderSourceTask:
     title: str
     notes: str
@@ -124,7 +114,6 @@ class AttachmentPage:
 class State(Protocol):
     async def get(self, work_id: UUID) -> Handle | None: ...
     async def get_by_provider(self, provider: str, provider_work_id: str) -> Handle | None: ...
-    async def bound_provider_ids(self, provider: str) -> frozenset[str]: ...
     def locked(self, work_id: UUID) -> AbstractAsyncContextManager[Handle | None]: ...
     async def bind(self, provider: str, provider_work_id: str) -> Handle: ...
     async def bind_many(
@@ -148,7 +137,6 @@ class Provider(Protocol):
     async def find_grouped(self, root_task_gid: str) -> GroupedLookup: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
-    async def suggest_next(self, excluded: frozenset[str]) -> ProviderHead | None: ...
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None: ...
     async def source_stories(
         self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int
@@ -579,24 +567,6 @@ class Controller:
             if append_returned:
                 return AppendResult(status="unknown")
             raise
-
-    async def suggest_next(self) -> SuggestionResult:
-        try:
-            active = await self.state.get(self.authority.active_work_id)
-            if active is None or (provider := self.providers.get(active.provider)) is None:
-                return SuggestionResult(status="provider_error")
-            excluded = await self.state.bound_provider_ids(active.provider)
-            candidate = await provider.suggest_next(excluded)
-            if candidate is None:
-                return SuggestionResult(status="none")
-            handle = await self.state.bind(active.provider, candidate.provider_work_id)
-            return SuggestionResult(status="ok", item=WorkHead(
-                id=handle.id, title=candidate.title, priority=candidate.priority,
-                horizon=candidate.horizon,
-            ))
-        except (ProviderError, UnknownEffect):
-            return SuggestionResult(status="provider_error")
-
 
 async def provision_launch(
     state: State,
