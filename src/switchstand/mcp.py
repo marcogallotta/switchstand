@@ -58,8 +58,8 @@ from .messages import (
     RuntimeCurrentness,
     current_message_grant_version,
     disposition_digest,
-    pending_messages,
-    send_message,
+    pending_managed_messages,
+    send_managed_result,
 )
 from .provider import AsanaProvider
 from .run import managed_runtime_currentness
@@ -327,7 +327,7 @@ def build_server(
             api_version: Literal["1"],
             cursor: UUID | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
         ) -> MessagePendingResult:
-            return await pending_messages(
+            return await pending_managed_messages(
                 cast(Controller, service).state,
                 grants,
                 messages,
@@ -337,8 +337,7 @@ def build_server(
                     api_version=api_version, grant_version=1,
                     cursor=cursor, limit=limit,
                 ),
-                runtime=runtime(),
-                infer_grant_version=True,
+                runtime(),
             )
 
         async def transition(
@@ -370,7 +369,7 @@ def build_server(
             api_version: Literal["1"], in_reply_to_delivery_id: UUID,
             message_id: UUID, payload: JsonValue,
         ) -> MessageSubmitResult:
-            return await send_message(
+            return await send_managed_result(
                 cast(Controller, service).state,
                 grants,
                 messages,
@@ -383,9 +382,7 @@ def build_server(
                     payload=payload,
                     in_reply_to_delivery_id=in_reply_to_delivery_id,
                 ),
-                runtime=runtime(),
-                infer_grant_version=True,
-                require_received=True,
+                runtime(),
             )
 
         async def _message_disposition(

@@ -743,18 +743,18 @@ async def current_message_grant_version(
         return None
 
 
-async def send_message(
+async def _send_message(
     state: State,
     grants: GrantState,
     messages: MessageState,
     principal: PrincipalContext,
     request: MessageSendRequest,
     *,
-    runtime: RuntimeCurrentness | None = None,
-    infer_grant_version: bool = False,
-    require_received: bool = False,
+    runtime: RuntimeCurrentness | None,
+    infer_grant_version: bool,
+    require_received: bool,
 ) -> MessageSubmitResult:
-    """Shared message admission, replay, route resolution, and durable submit."""
+    """Single causal message engine behind the ordinary and managed façades."""
     try:
         if runtime is not None and runtime_admission(runtime) is not None:
             return MessageSubmitResult(
@@ -831,7 +831,38 @@ async def send_message(
         )
 
 
-async def pending_messages(
+async def send_message(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    request: MessageSendRequest,
+) -> MessageSubmitResult:
+    """Ordinary explicit-grant message entry point."""
+    return await _send_message(
+        state, grants, messages, principal, request,
+        runtime=None, infer_grant_version=False, require_received=False,
+    )
+
+
+async def send_managed_result(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    request: MessageSendRequest,
+    runtime: RuntimeCurrentness,
+) -> MessageSubmitResult:
+    """Managed result entry point: current grant + received-delivery semantics are mandatory."""
+    if request.in_reply_to_delivery_id is None:
+        raise ValueError("managed message result requires in_reply_to_delivery_id")
+    return await _send_message(
+        state, grants, messages, principal, request,
+        runtime=runtime, infer_grant_version=True, require_received=True,
+    )
+
+
+async def _pending_messages(
     state: State,
     grants: GrantState,
     messages: MessageState,
@@ -839,10 +870,10 @@ async def pending_messages(
     work_id: UUID,
     request: MessagePendingRequest,
     *,
-    runtime: RuntimeCurrentness | None = None,
-    infer_grant_version: bool = False,
+    runtime: RuntimeCurrentness | None,
+    infer_grant_version: bool,
 ) -> MessagePendingResult:
-    """Shared pending-message admission for explicit and managed callers."""
+    """Single pending-message engine behind ordinary and managed façades."""
     if runtime is not None and runtime_admission(runtime) is not None:
         return MessagePendingResult(
             status="recovery_required", reason="state_unavailable"
@@ -873,3 +904,33 @@ async def pending_messages(
             status="recovery_required", reason="state_unavailable"
         )
 
+
+async def pending_messages(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    work_id: UUID,
+    request: MessagePendingRequest,
+) -> MessagePendingResult:
+    """Ordinary explicit-grant pending-message entry point."""
+    return await _pending_messages(
+        state, grants, messages, principal, work_id, request,
+        runtime=None, infer_grant_version=False,
+    )
+
+
+async def pending_managed_messages(
+    state: State,
+    grants: GrantState,
+    messages: MessageState,
+    principal: PrincipalContext,
+    work_id: UUID,
+    request: MessagePendingRequest,
+    runtime: RuntimeCurrentness,
+) -> MessagePendingResult:
+    """Managed pending entry point: runtime currentness and current grant are mandatory."""
+    return await _pending_messages(
+        state, grants, messages, principal, work_id, request,
+        runtime=runtime, infer_grant_version=True,
+    )

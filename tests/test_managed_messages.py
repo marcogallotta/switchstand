@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 from unittest.mock import AsyncMock
@@ -29,9 +30,20 @@ from switchstand.messages import (
     message_deliveries,
     message_effect_operation_id,
     message_projection,
+    pending_managed_messages,
+    send_managed_result,
 )
 from switchstand.messages import messages as message_rows
 from switchstand.state import PostgresState
+
+
+def test_managed_message_facades_have_no_mode_flags():
+    pending = inspect.signature(pending_managed_messages)
+    result = inspect.signature(send_managed_result)
+    assert "runtime" in pending.parameters and "runtime" in result.parameters
+    for signature in (pending, result):
+        assert "infer_grant_version" not in signature.parameters
+        assert "require_received" not in signature.parameters
 
 
 async def test_managed_mcp_replacement_result_and_disposition_vertical(monkeypatch):
