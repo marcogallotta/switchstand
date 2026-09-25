@@ -168,7 +168,7 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
     calls = (tmp_path / "quality.log").read_text().splitlines()
     assert calls[0] == "ruff check ."
     assert calls[1].startswith("pyright --pythonpath ")
-    assert calls[2] == "pytest tests/test_check.py"
+    assert calls[2] == "pytest -ra tests/test_check.py"
 
 
 def tree_bytes(root: Path) -> dict[str, bytes | str]:
