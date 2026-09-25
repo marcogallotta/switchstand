@@ -1,4 +1,6 @@
+import json
 import os
+import selectors
 import signal
 import subprocess
 import sys
@@ -162,13 +164,15 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "message_pending", "required_result_save",
     }
     switchstand = servers["switchstand"]
-    assert switchstand["required"] is True
+    assert switchstand["required"] is False
     assert switchstand["auth"] == "oauth"
     assert switchstand["default_tools_approval_mode"] == "approve"
     assert "command" not in switchstand
     assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+    assert set(switchstand["enabled_tools"]) == ordinary
     assert set(switchstand["tools"]) == ordinary
     assert all(tool["approval_mode"] == "approve" for tool in switchstand["tools"].values())
+    assert servers["switchstand_oauth_proof"]["enabled"] is False
 
     managed = {
         "work_get", "work_attachments", "source_task", "source_stories", "source_story",
@@ -730,6 +734,63 @@ def readback_messages(sources):
                               "approvalPolicy": "never",
                               "instructionSources": sources}},
     ]
+
+
+def test_readback_disables_all_switchstand_servers(monkeypatch):
+    responses = iter(
+        json.dumps(message) + "\n"
+        for message in [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": []}},
+            {"id": 3, "result": {}},
+        ]
+    )
+    launched = {}
+
+    class Input:
+        def write(self, value):
+            pass
+
+        def flush(self):
+            pass
+
+    class Output:
+        def readline(self):
+            return next(responses)
+
+    class Process:
+        stdin = Input()
+        stdout = Output()
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    class Selector:
+        def register(self, *args):
+            pass
+
+        def select(self, timeout=None):
+            return [(object(), selectors.EVENT_READ)]
+
+        def close(self):
+            pass
+
+    def popen(arguments, **kwargs):
+        launched["arguments"] = arguments
+        return Process()
+
+    monkeypatch.setattr("switchstand.codex_runtime.subprocess.Popen", popen)
+    monkeypatch.setattr("switchstand.codex_runtime.selectors.DefaultSelector", Selector)
+    from switchstand.codex_runtime import _rpc_messages
+
+    _rpc_messages(Path("/repo"), Path("/writer"), {})
+    arguments = launched["arguments"]
+    assert "mcp_servers.switchstand.enabled=false" in arguments
+    assert "mcp_servers.switchstand_managed.enabled=false" in arguments
+    assert "mcp_servers.switchstand_development.enabled=false" in arguments
 
 
 def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):

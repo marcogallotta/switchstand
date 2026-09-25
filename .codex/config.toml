@@ -22,9 +22,19 @@ enabled = true
 # Ordinary in-repo Codex owns the authenticated provider-neutral HTTP/OAuth endpoint
 # directly; it must not depend on a pre-existing user-level server with the same name.
 url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
-required = true
+required = false
 auth = "oauth"
 default_tools_approval_mode = "approve"
+enabled_tools = ["grant_get", "work_get", "work_search", "work_resolve_reference",
+                 "work_structure", "source_task", "source_stories", "source_story",
+                 "work_history", "work_attachments", "work_event", "work_append",
+                 "work_create", "work_update", "message_send", "message_pending",
+                 "required_result_save"]
+
+# Supersede the temporary user-level proof alias. Both names target the same endpoint,
+# but only the repository-owned canonical server carries this project's tool policy.
+[mcp_servers.switchstand_oauth_proof]
+enabled = false
 
 [mcp_servers.switchstand.tools.grant_get]
 approval_mode = "approve"
