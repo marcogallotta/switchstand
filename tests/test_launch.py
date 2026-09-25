@@ -162,7 +162,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "message_pending", "required_result_save",
     }
     switchstand = servers["switchstand"]
-    assert switchstand["required"] is True
+    assert switchstand["required"] is False
     assert switchstand["auth"] == "oauth"
     assert switchstand["default_tools_approval_mode"] == "approve"
     assert "command" not in switchstand
