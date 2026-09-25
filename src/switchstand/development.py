@@ -73,7 +73,7 @@ def docker_run(
     raise RuntimeError(f"docker {' '.join(arguments)} failed: {detail}")
 
 
-def cleanup_development(
+def _cleanup_development(
     image: str | None,
     network: str | None,
     database: str | None,
@@ -105,6 +105,41 @@ def cleanup_development(
     if failures and required:
         raise RuntimeError("development cleanup failed: " + "; ".join(failures))
 
+
+
+def cleanup_development(
+    boundary: DevelopmentBoundary,
+    candidate: Path,
+    owner: UUID | int | str,
+    env: dict[str, str],
+    *,
+    required: bool = True,
+) -> None:
+    """Clean one prepared development boundary; callers do not reconstruct resource policy."""
+    _cleanup_development(
+        boundary.image, boundary.network, boundary.database,
+        candidate, str(owner), env, required=required,
+    )
+
+
+def reclaim_development(
+    candidate: Path,
+    owner: UUID | int | str,
+    env: dict[str, str],
+    *,
+    required: bool = True,
+) -> None:
+    """Reconcile and clean any exact owned resources left by an interrupted preparation."""
+    image_name, network_name, database_name = development_names(candidate, owner)
+    image = inspect("image", image_name, env)
+    network = inspect("network", network_name, env)
+    database = inspect("container", database_name, env)
+    _cleanup_development(
+        None if image is None else image.object_id,
+        None if network is None else network.object_id,
+        None if database is None else database.object_id,
+        candidate, str(owner), env, required=required,
+    )
 
 def prepare_development(
     control: Path, candidate: Path, owner: UUID, env: dict[str, str],
@@ -173,7 +208,7 @@ def prepare_development(
             digest.update((candidate / name).read_bytes())
         return DevelopmentBoundary(image_id, network_id, database_id, digest.hexdigest())
     except BaseException:
-        cleanup_development(
+        _cleanup_development(
             image_id, network_id, database_id, candidate, str(owner), env, required=False
         )
         raise
