@@ -160,7 +160,7 @@ class MessageSubmitResult(ClosedModel):
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
-        "state_unavailable",
+        "runtime_currentness_unavailable", "runtime_generation_changed", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -762,10 +762,12 @@ async def _send_message(
 ) -> MessageSubmitResult:
     """Single causal message engine behind the ordinary and managed façades."""
     try:
-        if runtime is not None and runtime_admission(runtime) is not None:
-            return MessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
+        if runtime is not None:
+            runtime_failure = runtime_admission(runtime)
+            if runtime_failure is not None:
+                return MessageSubmitResult(
+                    status=runtime_failure[0], reason=runtime_failure[1]
+                )
         context = None
         recipient_work_id = request.recipient_work_id
         if request.in_reply_to_delivery_id is not None:
