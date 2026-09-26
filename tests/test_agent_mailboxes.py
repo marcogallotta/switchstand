@@ -47,6 +47,9 @@ async def test_registration_is_idempotent_but_rejects_name_and_principal_collisi
     assert (duplicate.status, duplicate.reason) == (
         "conflict", "principal_already_registered"
     )
+    same_work = await mailboxes.register("Third Agent", first, "principal-c")
+    assert (same_work.status, same_work.reason) == ("conflict", "work_already_registered")
+    assert (await mailboxes.by_work_id(first)).mailbox == created.mailbox
 
 
 async def test_takeover_preserves_mailbox_identity_and_fences_old_principal(subject):
