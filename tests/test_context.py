@@ -232,21 +232,24 @@ def test_switchstand_script_selects_repository_python(tmp_path):
     ]
 
 
-def test_switchstand_isolated_dispatches_to_control_launcher(tmp_path):
+def test_switchstand_isolated_dispatches_to_external_selector(tmp_path):
     scripts = tmp_path / "scripts"
+    home = tmp_path / "home"
+    selector = home / ".local" / "bin" / "switchstand-start"
     scripts.mkdir()
+    selector.parent.mkdir(parents=True)
     launcher = scripts / "switchstand"
     launcher.write_bytes((Path(__file__).parents[1] / "scripts" / "switchstand").read_bytes())
     launcher.chmod(0o755)
     executable(
-        scripts / "switchstand-start",
+        selector,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RESULT\"\n",
     )
     result_file = tmp_path / "result"
 
     result = subprocess.run(
         [launcher, "--isolated", "--active", "123", "--commit", "a" * 40],
-        env=os.environ | {"RESULT": str(result_file)},
+        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
         text=True,
         capture_output=True,
         check=False,

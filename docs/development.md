@@ -69,33 +69,17 @@ action.
   process group are outside this bounded guarantee.
   The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
-- Managed Codex: run `scripts/switchstand-launch --active <Asana task URL> --commit <exact-candidate-SHA> --reference <reference URL>`. Task IDs work
-  too, and up to eight `--reference` arguments are accepted. The launcher binds those human-readable tasks, injects
-  their opaque handles for this process only, verifies the bounded `switchstand-development` profile and loaded
-  instruction sources, then replaces itself with Codex. It refuses the ordinary checkout. Do not copy WorkIds or edit
-  the shared environment file. Managed Codex runs have network access. At launch it pins a development image and
-  starts a writer-local test network with egress for dependency resolution;
-  the agent receives exact `quality`, `commit_all_current_worktree`, and read-only `run_status` tools.
-  `codex_runtime.py` owns Codex command/App Server configuration and readback; `launch.py` orchestrates that runtime
-  with the development boundary rather than owning those Codex semantics itself. Ordinary commands cannot reach the
-  Docker socket or shared Git metadata, and the quality tool never evaluates worktree-edited Docker instructions.
-  During implementation, `scripts/check <affected-test-paths>` runs Ruff, strict Pyright, and affected tests from the stable host
-  environment. One shared 120-second deadline starts before bootstrap/setup; bootstrap, manifest verification and each
-  focused command consume only the remaining budget. Timed commands reserve a one-second forced-kill phase so a
-  TERM-resistant setup cannot continue indefinitely after the deadline. Missing focused/setup prerequisites fail with
-  an explicit rerun/setup action, and the focused path does not fall back to a full container build. CI supplies the
-  routine full clean/container gate; real-host launch and recovery changes still require a real-host canary.
-  Selecting a database-backed test without a live `TEST_DATABASE_URL` fails rather than skips.
-  Focused and full-quality workload output has a 12,000-byte hard limit: output at or below the limit is accepted;
-  exceeding it stops and removes the workload and returns a failed result. Reduce test or tool output, then rerun.
-  Each launch writes a protected per-worktree run receipt with a fresh identity and Linux PID start token. The
-  read-only `run_status` tool reports `running`, `stopped`, `lost`, or `unknown` without accepting an arbitrary PID.
-  From that linked worktree, `scripts/switchstand-run-stop` uses the repository's bootstrapped Python environment and
-  stops only the receipt's exact process identity: pidfd-pinned `SIGTERM`, a fixed bounded wait, then pidfd-pinned
-  `SIGKILL`. It returns `lost` or `unknown` without signalling when identity cannot be proven, and never accepts a PID,
-  signal, timeout, path, or process group.
+- Managed exact-candidate Codex qualification uses the isolated CONTROL route below; there is no
+  candidate-local trusted launcher. The candidate remains writable work input only, while CONTROL owns launcher Python,
+  Codex project configuration and managed/development MCP wrappers. Live use remains fail-closed until the separately
+  managed external selector is installed with an ACTIVE CONTROL manifest; repository landing does not install, activate
+  or cut over that selector.
 - Isolated exact-candidate qualification: from the clean ordinary `main` checkout, run
-  `scripts/switchstand --isolated --active <Asana task URL> --commit <exact-candidate-SHA>`. It freshly fetches `origin/main`,
+  `scripts/switchstand --isolated --active <Asana task URL> --commit <exact-candidate-SHA>`. This command delegates
+  only to the fixed user-level external selector at `$HOME/.local/bin/switchstand-start`; there is no repository or
+  candidate fallback. Until that separately managed selector has an ACTIVE manifest/CONTROL readback, the command
+  intentionally fails closed and is not reliance-ready. Once active, the selected CONTROL-internal launcher freshly
+  fetches `origin/main`,
   fast-forwards a clean ancestor `main` to that exact revision, and reads back a clean HEAD. Dirty or divergent main
   fails with local work intact. The trusted resolver reads only `ASANA_TOKEN` from the protected host config;
   the token is not exported into the candidate launch environment. The task must still contain exact base and candidate
@@ -109,6 +93,7 @@ action.
   HEAD, wrong task branch, foreign worktree, running/UNKNOWN prior run, or stale task binding fails with work intact.
   The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.
+  The selector's SHA-keyed CONTROL snapshot owns launcher Python, Codex project configuration and managed/development MCP wrapper code; the candidate is only an explicit linked-worktree/add-dir input. Qualification includes hostile candidate shadow code/config and must prove it cannot substitute those CONTROL implementations.
   Task IDs, references, and one optional prompt are forwarded unchanged.
   `launch_source.py` resolves the protected task-source contract, while `candidate.py` verifies/materializes the
   exact remote base/candidate refs used by isolated launch before `launch.py` performs its final provenance preflight.
@@ -144,9 +129,10 @@ The current development path is operational but still has explicit ownership/tra
   bridge into new product code.
 - **Legacy source MCP:** raw `source_*` tools remain exposed for recovery/reference compatibility until neutral
   replacement coverage and legacy-drain proof exist.
-- **Independent CONTROL:** the current launcher/control path still receives launcher/Python source, Codex configuration
-  and working-directory inputs from this repository, with the Codex binary selected from the ambient host path. It is
-  therefore not an independently pinned CONTROL release.
+- **Independent CONTROL reliance:** repository trust convergence routes isolated launch only through the external
+  SHA-keyed selector and removes the candidate-local trusted launcher. Live ordinary-use reliance remains separately
+  blocked until the installed selector path and ACTIVE CONTROL manifest are authorized and read back; no repository
+  fallback is permitted during that gap.
 
 Canonical cumulative handwritten Python LOC is counted with
 `git ls-files src tests | rg '\.py$' | xargs wc -l`; generated files and dependencies are excluded.

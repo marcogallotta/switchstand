@@ -4,7 +4,13 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 if [ "${1:-}" = --isolated ]; then
     shift
-    SWITCHSTAND_COMPAT_SILENT=1 exec "$repo/scripts/switchstand-start" "$@"
+    : "${HOME:?HOME is required for isolated Switchstand launch}"
+    selector="$HOME/.local/bin/switchstand-start"
+    if [ ! -f "$selector" ] || [ ! -x "$selector" ]; then
+        echo "isolated launch is not reliance-ready: trusted external selector is unavailable" >&2
+        exit 1
+    fi
+    SWITCHSTAND_COMPAT_SILENT=1 exec "$selector" "$@"
 fi
 
 common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
