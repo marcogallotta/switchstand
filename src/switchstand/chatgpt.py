@@ -43,10 +43,12 @@ from .grants import (
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
     WorkGrant,
 )
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
+from .relations import RelationGateway
 from .messages import (
     MessagePendingRequest,
     MessagePendingResult,
@@ -81,6 +83,7 @@ class ChatGPTService:
         self.gateway = AppendGateway(state, grants, providers)
         self.create_gateway = CreateGateway(state, grants, providers)
         self.update_gateway = UpdateGateway(state, grants, providers)
+        self.relation_gateway = RelationGateway(state, grants, providers)
         self.messages = messages
         self.required_results = required_results
         # Only exact source methods use this controller; its dummy authority is
@@ -334,6 +337,14 @@ class ChatGPTService:
         if principal is None:
             return self.update_gateway.guard(request, "denied", "authenticated_principal_required")
         return await self.update_gateway.update(principal, request)
+
+    async def relate(self, request: ProtectedRelation) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return self.relation_gateway.guard(
+                request, "denied", "authenticated_principal_required"
+            )
+        return await self.relation_gateway.update(principal, request)
 
     @staticmethod
     def _result_guard(
