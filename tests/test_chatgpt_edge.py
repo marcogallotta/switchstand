@@ -19,6 +19,7 @@ from switchstand.chatgpt_edge import (
 )
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
+from switchstand.messages import MessageSubmitResult, MessageTransitionResult
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
@@ -113,6 +114,213 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         authorization = client.get("/.well-known/oauth-authorization-server").json()
         assert authorization["issuer"] == ISSUER
         assert authorization["code_challenge_methods_supported"] == ["S256"]
+
+
+async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
+    async def verified(_self, token):
+        subject, client_id = (
+            (GITHUB_ID, "client-a") if token == "token-a" else ("999999", "client-b")
+        )
+        return AccessToken(
+            token=token,
+            client_id=client_id,
+            scopes=[REQUIRED_SCOPE],
+            subject=subject,
+            claims={"iss": ISSUER},
+            resource=RESOURCE,
+            expires_at=int(time.time()) + 60,
+        )
+
+    monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
+
+    class SessionCapture:
+        def __init__(self):
+            self.seen = []
+
+        async def receive(self, principal, runtime, request, *, work_id=None):
+            self.seen.append((runtime.generation, work_id))
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+    subject = service()
+    subject.grants.grant = grant(
+        principal=PrincipalContext(
+            issuer=ISSUER,
+            subject=GITHUB_ID,
+            client_id="client-a",
+            assurance="authenticated",
+        ),
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    capture = SessionCapture()
+    subject.messages = capture
+    app = create_app(subject, CONFIG, client_storage=MemoryStore())
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {"name": "session-proof", "version": "1"},
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+        },
+    }
+    base_headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+    }
+
+    async with app.router.lifespan_context(app), httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url=ISSUER
+    ) as raw:
+        first = await raw.post(
+            "/mcp",
+            headers=base_headers | {"authorization": "Bearer token-a"},
+            json=initialize,
+        )
+        assert first.status_code == 200
+        first_session = first.headers["mcp-session-id"]
+        session_headers = base_headers | {
+            "authorization": "Bearer token-a",
+            "mcp-session-id": first_session,
+            "mcp-protocol-version": "2025-03-26",
+        }
+        ready = await raw.post(
+            "/mcp",
+            headers=session_headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert ready.status_code == 202
+        for request_id in (2, 3):
+            listed = await raw.post(
+                "/mcp",
+                headers=session_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            )
+            assert listed.status_code == 200
+
+        transition = await raw.post(
+            "/mcp",
+            headers=session_headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "message_receive",
+                    "arguments": {
+                        "api_version": "1",
+                        "work_id": str(ACTIVE),
+                        "grant_version": 1,
+                        "delivery_id": str(uuid4()),
+                    },
+                },
+            },
+        )
+        assert transition.status_code == 200
+        assert transition.json()["result"]["structuredContent"]["status"] == "ok"
+        assert capture.seen == [(first_session, ACTIVE)]
+
+        second = await raw.post(
+            "/mcp",
+            headers=base_headers | {"authorization": "Bearer token-a"},
+            json=initialize | {"id": 4},
+        )
+        assert second.status_code == 200
+        second_session = second.headers["mcp-session-id"]
+        assert second_session != first_session
+
+        rejected = await raw.post(
+            "/mcp",
+            headers=session_headers | {"authorization": "Bearer token-b"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/list",
+                "params": {},
+            },
+        )
+        assert rejected.status_code == 404
+        assert "Session not found" in rejected.text
+
+
+async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong(monkeypatch):
+    class FakeMessages:
+        fail_recover = False
+
+        async def receive(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+        async def recover(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            if self.fail_recover:
+                return MessageTransitionResult(status="conflict", reason="delivery_not_received")
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+        async def disposition(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            return MessageTransitionResult(status="ok", state="DISPOSITIONED")
+
+    generation = ["session-a"]
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    subject.messages = FakeMessages()
+
+    async def fake_result(*args, **kwargs):
+        return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+
+    monkeypatch.setattr("switchstand.chatgpt_mcp.send_received_result", fake_result)
+    tools = dict(build_ordinary_tools(
+        subject, session_generation=lambda: generation[0]
+    ))
+    delivery_id = uuid4()
+    base = ("1", ACTIVE, 1, delivery_id)
+
+    received = await tools["message_receive"](*base)
+    assert received.status == "ok"
+
+    generation[0] = "session-b"
+    before_recover = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "blocked"}
+    )
+    assert before_recover.status == "recovery_required"
+
+    recovered = await tools["message_recover"](*base)
+    assert recovered.status == "ok"
+
+    generation[0] = "session-a"
+    assert (await tools["message_recover"](*base)).reason == "runtime_generation_changed"
+    assert (await tools["message_disposition"](
+        "1", ACTIVE, 1, delivery_id, uuid4()
+    )).reason == "runtime_generation_changed"
+
+    generation[0] = "session-c"
+    subject.messages.fail_recover = True
+    failed = await tools["message_recover"](*base)
+    assert failed.status == "conflict"
+
+    generation[0] = "session-b"
+    assert (await tools["message_disposition"](
+        "1", ACTIVE, 1, delivery_id, uuid4()
+    )).status == "ok"
+
+    # A process restart has no ephemeral current generation. A fresh session can
+    # recover the same durable delivery and establish itself without reviving A.
+    subject.messages.fail_recover = False
+    generation[0] = "session-c"
+    restarted = dict(build_ordinary_tools(
+        subject, session_generation=lambda: generation[0]
+    ))
+    assert (await restarted["message_recover"](*base)).status == "ok"
 
 
 async def test_authenticated_registry_preserves_append_and_routes_create(monkeypatch, caplog):
