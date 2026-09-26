@@ -184,7 +184,7 @@ async def _provision_composed(url, subject):
     engine = create_async_engine(url)
     grants = GrantState(engine)
     selected = selected.model_copy(update={
-        "id": uuid4(), "version": 2, "scope": "launch",
+        "id": uuid4(), "version": 2, "scope": "workspace",
         "operations": frozenset({"work_get", "message"}),
     })
     await grants.issue(selected, 1)
