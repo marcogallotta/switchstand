@@ -68,7 +68,7 @@ def _payload(notes: str) -> dict[str, object]:
 def _entry(payload: dict[str, object], alias: str) -> tuple[str, dict[str, list[str]]]:
     raw = payload.get(alias)
     if not isinstance(raw, dict):
-        raise ValueError("resolver alias missing or malformed")
+        raise TypeError("resolver alias missing or malformed")
     raw_record = cast(dict[object, object], raw)
     if any(not isinstance(key, str) for key in raw_record):
         raise ValueError("resolver alias missing or malformed")
