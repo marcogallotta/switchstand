@@ -29,10 +29,26 @@ work_event_handles = Table(
     Column("provider_event_id", Text, nullable=False),
     UniqueConstraint("work_id", "provider", "provider_work_id", "provider_event_id"),
 )
+work_attachment_handles = Table(
+    "work_attachment_handles",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True), ForeignKey("work_handles.id", ondelete="RESTRICT"),
+           nullable=False, index=True),
+    Column("provider", Text, nullable=False),
+    Column("provider_work_id", Text, nullable=False),
+    Column("provider_attachment_id", Text, nullable=False),
+    UniqueConstraint("work_id", "provider", "provider_work_id", "provider_attachment_id"),
+)
 columns = (work_handles.c.id, work_handles.c.provider, work_handles.c.provider_work_id)
 event_columns = (
     work_event_handles.c.id, work_event_handles.c.work_id, work_event_handles.c.provider,
     work_event_handles.c.provider_work_id, work_event_handles.c.provider_event_id,
+)
+attachment_columns = (
+    work_attachment_handles.c.id, work_attachment_handles.c.work_id,
+    work_attachment_handles.c.provider, work_attachment_handles.c.provider_work_id,
+    work_attachment_handles.c.provider_attachment_id,
 )
 
 
@@ -43,6 +59,15 @@ class EventHandle:
     provider: str
     provider_work_id: str
     provider_event_id: str
+
+
+@dataclass(frozen=True)
+class AttachmentHandle:
+    id: UUID
+    work_id: UUID
+    provider: str
+    provider_work_id: str
+    provider_attachment_id: str
 
 def _handle(row: Row[tuple[UUID, str, str]] | None) -> Handle | None:
     return None if row is None else Handle(row[0], row[1], row[2])
@@ -159,6 +184,48 @@ class PostgresState:
                 & (work_event_handles.c.work_id == work_id)
             ))).one_or_none()
         return None if row is None else EventHandle(row[0], row[1], row[2], row[3], row[4])
+
+    async def bind_attachment(
+        self, work_id: UUID, provider: str, provider_work_id: str, provider_attachment_id: str,
+    ) -> AttachmentHandle:
+        if not provider or not provider_work_id or not provider_attachment_id:
+            raise ValueError("attachment binding values must be non-empty")
+        values = {
+            "id": uuid4(), "work_id": work_id, "provider": provider,
+            "provider_work_id": provider_work_id,
+            "provider_attachment_id": provider_attachment_id,
+        }
+        async with self.engine.begin() as connection:
+            bound = (await connection.execute(select(*columns).where(
+                work_handles.c.id == work_id
+            ).with_for_update())).one_or_none()
+            handle = _handle(bound)
+            if (handle is None or handle.provider != provider
+                    or handle.provider_work_id != provider_work_id):
+                raise ValueError("attachment target does not match work binding")
+            row = (await connection.execute(insert(work_attachment_handles).values(
+                values
+            ).on_conflict_do_nothing().returning(*attachment_columns))).one_or_none()
+            if row is None:
+                row = (await connection.execute(select(*attachment_columns).where(
+                    (work_attachment_handles.c.work_id == work_id)
+                    & (work_attachment_handles.c.provider == provider)
+                    & (work_attachment_handles.c.provider_work_id == provider_work_id)
+                    & (work_attachment_handles.c.provider_attachment_id == provider_attachment_id)
+                ))).one()
+        return AttachmentHandle(row[0], row[1], row[2], row[3], row[4])
+
+    async def get_attachment(
+        self, work_id: UUID, attachment_id: UUID,
+    ) -> AttachmentHandle | None:
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(*attachment_columns).where(
+                (work_attachment_handles.c.id == attachment_id)
+                & (work_attachment_handles.c.work_id == work_id)
+            ))).one_or_none()
+        return None if row is None else AttachmentHandle(
+            row[0], row[1], row[2], row[3], row[4]
+        )
 
     @asynccontextmanager
     async def locked(self, work_id: UUID) -> AsyncGenerator[Handle | None]:

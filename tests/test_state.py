@@ -108,3 +108,27 @@ async def test_event_binding_is_stable_opaque_and_exact_work_scoped(state):
 
     with pytest.raises(ValueError, match="does not match work binding"):
         await state.bind_event(work.id, "asana", "task-2", "story-1")
+
+
+async def test_attachment_binding_is_stable_opaque_and_exact_work_scoped(state):
+    work = await state.bind("asana", "task-1")
+    other = await state.bind("asana", "task-2")
+
+    first, concurrent = await asyncio.gather(
+        state.bind_attachment(work.id, "asana", "task-1", "attachment-1"),
+        state.bind_attachment(work.id, "asana", "task-1", "attachment-1"),
+    )
+    assert first == concurrent
+    assert first.id.version == 4
+    assert first.work_id == work.id
+    assert first.provider_work_id == "task-1"
+    assert first.provider_attachment_id == "attachment-1"
+    assert await state.get_attachment(work.id, first.id) == first
+    restarted = PostgresState(state.engine)
+    assert await restarted.get_attachment(work.id, first.id) == first
+
+    assert await state.get_attachment(other.id, first.id) is None
+    assert await state.get_attachment(work.id, uuid4()) is None
+
+    with pytest.raises(ValueError, match="does not match work binding"):
+        await state.bind_attachment(work.id, "asana", "task-2", "attachment-1")
