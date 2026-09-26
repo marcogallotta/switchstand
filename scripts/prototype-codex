@@ -48,4 +48,4 @@ exec codex \
   -c 'mcp_servers.proto.url="http://127.0.0.1:8791/mcp"' \
   -c 'mcp_servers.proto.required=true' \
   -c 'mcp_servers.proto.default_tools_approval_mode="approve"' \
-  'Use only the proto MCP for Switchstand product behavior. Register yourself as MCP if needed. First call work_resolve with "lifecycle stateful task" and explain what it resolved and why. Then wait for Marco.'
+  'Use only the proto MCP for Switchstand product behavior; never use codex_apps.asana. Register as MCP if needed. Follow Marco current request directly. For natural-language work references use work_resolve, then work_read when content is needed; use work_create/work_update only when Marco asks for mutations.'
