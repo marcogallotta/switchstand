@@ -92,7 +92,7 @@ class GrantState:
                 grant = WorkGrant.model_validate(value)
                 if grant.principal.key == principal_key:
                     sender = grant
-                if (grant.current() and grant.scope == "launch"
+                if (grant.current() and grant.scope in {"launch", "workspace"}
                         and "message" in grant.operations
                         and grant.authority.active_work_id == recipient_work_id):
                     matches.append(grant)
