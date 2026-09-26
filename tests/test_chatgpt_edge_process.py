@@ -785,7 +785,16 @@ async def _contained_after_restart(endpoint, selected, effects):
                 "api_version": "1", **request,
             })).structured_content
             assert result["effect"] in {"unknown", "not_sent"} and result["status"] != "ok"
-        assert len(json.loads(effects.read_text())) == 3
+
+        # Independent verifier readback of the isolated provider backing state:
+        # the ambiguous response produced exactly one provider story, and neither
+        # same-OperationId replay nor a fresh OperationId after restart duplicated it.
+        provider_rows = [ProviderSourceStory(**row) for row in json.loads(effects.read_text())]
+        lost_rows = [row for row in provider_rows if row.text == "injected lost response"]
+        assert len(lost_rows) == 1
+        assert lost_rows[0].task_gid == "123"
+        assert lost_rows[0].story_gid
+        assert len(provider_rows) == 3
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--serve"]:
