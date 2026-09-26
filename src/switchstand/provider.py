@@ -23,6 +23,7 @@ from .core import (
     UnknownEffect,
 )
 from .discovery import ProviderSearchItem, ProviderSearchPage, ProviderStructure
+from .grants import RelationPatch
 
 PROJECTS = (
     "1218210259719507",
@@ -720,6 +721,99 @@ class AsanaProvider:
                 raise UnknownEffect("provider effect unknown") from None
             raise ProviderError("provider write failed") from None
         return response
+
+    async def _dependency_gids(self, provider_work_id: str) -> frozenset[str]:
+        try:
+            response = await self.client.get(
+                f"/tasks/{provider_work_id}/dependencies",
+                params={"limit": 100, "opt_fields": "gid"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload["data"]
+            if not isinstance(rows, list):
+                raise TypeError
+            gids: set[str] = set()
+            for raw in cast(list[object], rows):
+                gid = self._gid(raw)
+                if gid is None or gid in gids:
+                    raise TypeError
+                gids.add(gid)
+            return frozenset(gids)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("dependency read failed") from None
+
+    async def relation_matches(self, provider_work_id: str, patch: RelationPatch) -> bool:
+        task = await self._task(provider_work_id)
+        if task is None or not await self._canonical(task):
+            raise ProviderError("relation read denied")
+        if patch.kind == "assignee":
+            assignee = task.get("assignee")
+            actual = None if assignee is None else self._gid(assignee)
+            return actual == patch.target_gid
+        if patch.kind == "placement":
+            memberships = task.get("memberships")
+            if not isinstance(memberships, list):
+                raise ProviderError("placement read failed")
+            matches: list[str | None] = []
+            for raw in cast(list[object], memberships):
+                if not isinstance(raw, dict):
+                    raise ProviderError("placement read failed")
+                membership = cast(JSON, raw)
+                if self._gid(membership.get("project")) == patch.project_gid:
+                    section = membership.get("section")
+                    matches.append(None if section is None else self._gid(section))
+            if patch.action == "remove":
+                return not matches
+            return len(matches) == 1 and matches[0] == patch.section_gid
+        if patch.kind == "parent":
+            return self._parent_gid(task) == patch.target_gid
+        dependencies = await self._dependency_gids(provider_work_id)
+        assert patch.target_gid is not None
+        return (patch.target_gid in dependencies) == (patch.action == "add")
+
+    async def update_relation(self, provider_work_id: str, patch: RelationPatch) -> None:
+        if patch.kind == "assignee":
+            await self._write(
+                "PUT", f"/tasks/{provider_work_id}", {"assignee": patch.target_gid},
+                unknown_on_server_error=True,
+            )
+            return
+        if patch.kind == "placement":
+            assert patch.project_gid is not None
+            if patch.project_gid not in self._admission_projects:
+                raise ProviderError("placement project denied")
+            if patch.action == "remove":
+                path, data = "removeProject", {"project": patch.project_gid}
+            else:
+                path = "addProject"
+                data = {"project": patch.project_gid}
+                if patch.section_gid is not None:
+                    data["section"] = patch.section_gid
+            await self._write(
+                "POST", f"/tasks/{provider_work_id}/{path}", data,
+                unknown_on_server_error=True,
+            )
+            return
+        if patch.kind == "parent":
+            if patch.target_gid is not None:
+                parent = await self._task(patch.target_gid)
+                if parent is None or not await self._canonical(parent):
+                    raise ProviderError("parent target denied")
+            await self._write(
+                "POST", f"/tasks/{provider_work_id}/setParent", {"parent": patch.target_gid},
+                unknown_on_server_error=True,
+            )
+            return
+        assert patch.target_gid is not None
+        target = await self._task(patch.target_gid)
+        if target is None or not await self._canonical(target):
+            raise ProviderError("dependency target denied")
+        path = "addDependencies" if patch.action == "add" else "removeDependencies"
+        await self._write(
+            "POST", f"/tasks/{provider_work_id}/{path}",
+            {"dependencies": [patch.target_gid]}, unknown_on_server_error=True,
+        )
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
