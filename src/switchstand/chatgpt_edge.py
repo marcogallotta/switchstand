@@ -13,6 +13,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.github import GitHubProvider
+from fastmcp.server.dependencies import get_context
 from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
@@ -172,9 +173,11 @@ def create_app(
         **auth_options,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
-    for _, tool in build_ordinary_tools(service, _audit):
+    for _, tool in build_ordinary_tools(
+        service, _audit, session_generation=lambda: get_context().session_id
+    ):
         server.tool(tool)
-    return server.http_app(path="/mcp", json_response=True, stateless_http=True)
+    return server.http_app(path="/mcp", json_response=True, stateless_http=False)
 
 
 async def serve() -> None:
@@ -201,7 +204,7 @@ async def serve() -> None:
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
-            json_response=True, stateless_http=True, show_banner=False,
+            json_response=True, stateless_http=False, show_banner=False,
         )
     finally:
         await client.aclose()
