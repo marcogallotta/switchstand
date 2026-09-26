@@ -160,7 +160,8 @@ class MessageSubmitResult(ClosedModel):
         "message_identity_conflict", "reply_identity_conflict", "reply_delivery_not_found",
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
-        "state_unavailable",
+        "delivery_not_for_current_work", "runtime_currentness_unavailable",
+        "runtime_generation_changed", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -552,6 +553,19 @@ class MessageState:
             return await self._pending(work_id, request)
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
+
+    async def has_received(self, work_id: UUID, grant_version: int) -> bool | None:
+        """Read whether this work/grant namespace still has nonterminal received work."""
+        try:
+            query = select(message_deliveries.c.delivery_id).where(and_(
+                message_deliveries.c.recipient_work_id == work_id,
+                message_deliveries.c.recipient_grant_version == grant_version,
+                message_deliveries.c.state == "RECEIVED",
+            )).limit(1)
+            async with self.engine.connect() as connection:
+                return (await connection.execute(query)).first() is not None
+        except (SQLAlchemyError, ValueError):
+            return None
 
     async def receive(
         self, principal: PrincipalContext, runtime: RuntimeCurrentness,
