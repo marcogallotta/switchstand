@@ -70,8 +70,11 @@ for line in sys.stdin:
     }
     argv = json.loads(argv_path.read_text())
     for override in (
+        'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"',
         "mcp_servers.switchstand.enabled=false",
+        'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"',
         "mcp_servers.switchstand_managed.enabled=false",
+        'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
         "mcp_servers.switchstand_development.enabled=false",
     ):
         assert override in argv

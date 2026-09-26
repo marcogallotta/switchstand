@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 PROFILE = "switchstand-development"
+SWITCHSTAND_HTTP_URL = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+MANAGED_COMMAND = "scripts/switchstand-controller-mcp"
+DEVELOPMENT_COMMAND = "scripts/switchstand-development-mcp"
 
 
 class CodexReadback(NamedTuple):
@@ -33,9 +36,15 @@ def _rpc_messages(
             "-c",
             filesystem_override(control),
             "-c",
+            f'mcp_servers.switchstand.url="{SWITCHSTAND_HTTP_URL}"',
+            "-c",
             "mcp_servers.switchstand.enabled=false",
             "-c",
+            f'mcp_servers.switchstand_managed.command="{MANAGED_COMMAND}"',
+            "-c",
             "mcp_servers.switchstand_managed.enabled=false",
+            "-c",
+            f'mcp_servers.switchstand_development.command="{DEVELOPMENT_COMMAND}"',
             "-c",
             "mcp_servers.switchstand_development.enabled=false",
             "app-server",
@@ -167,12 +176,17 @@ def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list
         "-c",
         filesystem_override(control),
         "-c",
+        f'mcp_servers.switchstand.url="{SWITCHSTAND_HTTP_URL}"',
+        "-c",
         "mcp_servers.switchstand.enabled=false",
         "-c",
+        f'mcp_servers.switchstand_managed.command="{MANAGED_COMMAND}"',
+        "-c",
         "mcp_servers.switchstand_managed.required=true",
+        "-c",
+        f'mcp_servers.switchstand_development.command="{DEVELOPMENT_COMMAND}"',
         "-c",
         "mcp_servers.switchstand_development.required=true",
         prompt,
     ]
-
 

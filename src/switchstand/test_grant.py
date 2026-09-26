@@ -21,7 +21,9 @@ from .state import PostgresState
 from .task_ref import asana_task_id
 
 MAX_TTL_SECONDS = 3600
-Operation = Literal["work_get", "work_search", "work_append", "work_create"]
+Operation = Literal[
+    "work_get", "work_search", "work_append", "work_create", "work_update", "message"
+]
 
 
 def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
@@ -49,6 +51,32 @@ def redacted(principal: PrincipalContext, grant: WorkGrant | None) -> dict[str, 
             "qualification": "[redacted]",
         }
     return result
+
+
+def grant_permissions(
+    arguments: argparse.Namespace,
+) -> tuple[set[Operation], str | None, str | None]:
+    operations: set[Operation] = {"work_get", "work_create"}
+    assurance = getattr(arguments, "assurance", "test")
+    certification = getattr(arguments, "profile", "basic") == "ordinary-certification"
+    if certification and (
+        assurance != "authenticated"
+        or getattr(arguments, "scope", "launch") != "workspace"
+    ):
+        raise ValueError("ordinary-certification requires authenticated workspace scope")
+    if getattr(arguments, "scope", "launch") == "workspace":
+        operations.add("work_search")
+    if assurance == "test" or certification:
+        operations.add("work_append")
+    if certification:
+        operations.update(("work_update", "message"))
+    effect_qualification = (
+        f"certification:{arguments.qualification.removeprefix('test:')}"
+        if certification else arguments.qualification
+    )
+    qualification = effect_qualification if "work_append" in operations else None
+    update_qualification = effect_qualification if "work_update" in operations else None
+    return operations, qualification, update_qualification
 
 
 async def execute(arguments: argparse.Namespace) -> dict[str, object]:
@@ -88,13 +116,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                     PostgresState(engine), "asana",
                     AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
-            operations: set[Operation] = {"work_get", "work_create"}
-            if getattr(arguments, "scope", "launch") == "workspace":
-                operations.add("work_search")
-            append_qualification = None
-            if principal.assurance == "test":
-                operations.add("work_append")
-                append_qualification = arguments.qualification
+            operations, append_qualification, update_qualification = grant_permissions(arguments)
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
                 authority=authority, scope=getattr(arguments, "scope", "launch"),
@@ -104,6 +126,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                 expires_at=datetime.now(UTC) + timedelta(seconds=arguments.ttl_seconds),
                 append_qualification=append_qualification,
                 create_qualification=arguments.qualification,
+                update_qualification=update_qualification,
             )
         await grants.issue(replacement, None if actual_version == 0 else actual_version)
         return redacted(principal, replacement)
@@ -117,6 +140,10 @@ def parser() -> argparse.ArgumentParser:
         result.add_argument(f"--{field}", required=True)
     result.add_argument("--assurance", choices=("test", "authenticated"), default="test")
     result.add_argument("--scope", choices=("launch", "workspace"), default="launch")
+    result.add_argument(
+        "--profile", choices=("basic", "ordinary-certification"), default="basic",
+        help="ordinary-certification explicitly enables the full disposable workflow",
+    )
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("inspect")
     setting = commands.add_parser("set")
