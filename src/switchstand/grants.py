@@ -100,6 +100,51 @@ class ProtectedUpdate(ClosedModel):
     patch: ScalarPatch
 
 
+class RelationPatch(ClosedModel):
+    kind: Literal["assignee", "placement", "parent", "dependency"]
+    action: Literal["set", "clear", "add", "remove", "move"]
+    target_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    section_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
+
+    @model_validator(mode="after")
+    def valid_relation(self) -> Self:
+        if self.kind == "assignee":
+            if self.action not in {"set", "clear"}:
+                raise ValueError("assignee relation requires set or clear")
+            if (self.action == "set") != (self.target_gid is not None):
+                raise ValueError("assignee target does not match action")
+            if self.project_gid is not None or self.section_gid is not None:
+                raise ValueError("assignee relation forbids placement fields")
+        elif self.kind == "placement":
+            if self.action not in {"add", "move", "remove"} or self.project_gid is None:
+                raise ValueError("placement relation requires project and add/move/remove")
+            if self.target_gid is not None or self.action == "remove" and self.section_gid is not None:
+                raise ValueError("placement relation fields do not match action")
+        elif self.kind == "parent":
+            if self.action not in {"set", "clear"}:
+                raise ValueError("parent relation requires set or clear")
+            if (self.action == "set") != (self.target_gid is not None):
+                raise ValueError("parent target does not match action")
+            if self.project_gid is not None or self.section_gid is not None:
+                raise ValueError("parent relation forbids placement fields")
+        else:
+            if self.action not in {"add", "remove"} or self.target_gid is None:
+                raise ValueError("dependency relation requires target and add/remove")
+            if self.project_gid is not None or self.section_gid is not None:
+                raise ValueError("dependency relation forbids placement fields")
+        return self
+
+
+class ProtectedRelation(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    observed_revision: str = Field(min_length=1)
+    patch: RelationPatch
+
+
 class EffectReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -126,6 +171,19 @@ class CreateReceipt(ClosedModel):
     qualification: str
 
 
+class RelationReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: str
+    task_gid: str
+    observed_revision: str
+    patch: RelationPatch
+    qualification: str
+
+
 class UpdateReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -149,7 +207,7 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | CreateReceipt | UpdateReceipt | None = None
+    receipt: EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:
