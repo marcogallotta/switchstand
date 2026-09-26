@@ -23,6 +23,7 @@ agent_mailboxes = Table(
     Column("principal_key", Text, nullable=False),
     Column("generation", Integer, nullable=False),
     UniqueConstraint("principal_key"),
+    UniqueConstraint("work_id"),
     CheckConstraint("generation >= 1"),
 )
 
@@ -39,7 +40,7 @@ class AgentMailboxResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "recovery_required"]
     mailbox: AgentMailbox | None = None
     reason: Literal[
-        "name_collision", "principal_already_registered", "work_not_bound",
+        "name_collision", "principal_already_registered", "work_already_registered", "work_not_bound",
         "mailbox_not_found", "principal_not_registered", "state_unavailable",
         "generation_changed",
     ] | None = None
@@ -98,6 +99,15 @@ class AgentMailboxState:
                     return AgentMailboxResult(
                         status="conflict", reason="principal_already_registered"
                     )
+                prior_work = (await connection.execute(
+                    select(agent_mailboxes.c.name_key).where(
+                        agent_mailboxes.c.work_id == work_id
+                    ).with_for_update()
+                )).scalar_one_or_none()
+                if prior_work is not None:
+                    return AgentMailboxResult(
+                        status="conflict", reason="work_already_registered"
+                    )
                 handle = (await connection.execute(
                     select(agent_mailboxes.metadata.tables["work_handles"].c.id).where(
                         agent_mailboxes.metadata.tables["work_handles"].c.id == work_id
@@ -122,6 +132,18 @@ class AgentMailboxState:
             async with self.engine.connect() as connection:
                 row = (await connection.execute(
                     select(agent_mailboxes).where(agent_mailboxes.c.name_key == key)
+                )).mappings().one_or_none()
+            if row is None:
+                return AgentMailboxResult(status="denied", reason="mailbox_not_found")
+            return AgentMailboxResult(status="ok", mailbox=self._view(row))
+        except (SQLAlchemyError, TypeError, ValueError):
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
+    async def by_work_id(self, work_id: UUID) -> AgentMailboxResult:
+        try:
+            async with self.engine.connect() as connection:
+                row = (await connection.execute(
+                    select(agent_mailboxes).where(agent_mailboxes.c.work_id == work_id)
                 )).mappings().one_or_none()
             if row is None:
                 return AgentMailboxResult(status="denied", reason="mailbox_not_found")
