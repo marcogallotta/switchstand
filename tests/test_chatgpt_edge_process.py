@@ -48,6 +48,7 @@ TOOLS = {
 ISSUER = "https://switchstand.example/"
 RESOURCE = ISSUER + "mcp"
 CLIENT_ID = "chatgpt-client"
+RECIPIENT_CLIENT_ID = "chatgpt-recipient"
 
 
 class CountingProvider(Provider):
@@ -120,8 +121,9 @@ def _child_server() -> None:
     import switchstand.chatgpt_edge as edge
 
     async def verified(_self, token):
+        client_id = RECIPIENT_CLIENT_ID if token == "recipient-bearer" else CLIENT_ID
         return AccessToken(
-            token=token, client_id=CLIENT_ID, scopes=[edge.REQUIRED_SCOPE],
+            token=token, client_id=client_id, scopes=[edge.REQUIRED_SCOPE],
             subject=os.environ["SWITCHSTAND_MCP_GITHUB_USER_ID"],
             claims={"iss": ISSUER}, resource=RESOURCE, expires_at=int(time.time()) + 300,
         )
@@ -192,6 +194,51 @@ async def _provision_composed(url, subject):
     managed = await rotate_managed_grant(grants, LaunchAuthority(active_work_id=recipient))
     await engine.dispose()
     return selected, managed, denied
+
+
+async def _provision_ordinary_stage5(url, subject):
+    engine = create_async_engine(url)
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    os.environ["DATABASE_URL"] = url
+    command.upgrade(config, "head")
+    state, grants = PostgresState(engine), GrantState(engine)
+    sender = await state.bind("asana", "123")
+    recipient = await state.bind("asana", "456")
+    sender_principal = PrincipalContext(
+        issuer=ISSUER, subject=subject, client_id=CLIENT_ID, assurance="authenticated",
+    )
+    recipient_principal = PrincipalContext(
+        issuer=ISSUER, subject=subject, client_id=RECIPIENT_CLIENT_ID, assurance="authenticated",
+    )
+    sender_grant = grant(
+        principal=sender_principal,
+        active=sender.id,
+        reference=recipient.id,
+        scope="workspace",
+        operations=frozenset({
+            "work_get", "work_search", "work_append", "work_update", "message"
+        }),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        append_qualification="real:stage5-process",
+        update_qualification="real:stage5-process",
+    )
+    recipient_grant = grant(
+        principal=recipient_principal,
+        active=recipient.id,
+        reference=sender.id,
+        scope="launch",
+        operations=frozenset({"work_get", "message"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        append_qualification=None,
+    )
+    await grants.issue(sender_grant, None)
+    await grants.issue(recipient_grant, None)
+    await engine.dispose()
+    return sender_grant, recipient_grant
 
 
 @contextmanager
@@ -307,6 +354,213 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _boundaries(endpoint, selected, denied, effects)
     with _server(env, port) as endpoint:
         await _contained_after_restart(endpoint, selected, effects)
+
+
+async def test_ordinary_stateful_review_loop_recovers_same_identities_after_restart(
+    tmp_path: Path,
+):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
+    assert make_url(url).database == "switchstand_test"
+    subject = str(uuid4().int)
+    sender_grant, recipient_grant = await _provision_ordinary_stage5(url, subject)
+    sender = sender_grant.authority.active_work_id
+    recipient = recipient_grant.authority.active_work_id
+    request_id, recovery_request_id, result_id = uuid4(), uuid4(), uuid4()
+    append_id, update_id = uuid4(), uuid4()
+    port = free_port()
+    run = tmp_path / str(uuid4())
+    run.mkdir(mode=0o700)
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "ASANA_TOKEN": "test-only",
+        "EFFECT_FILE": str(run / "effects"),
+        "PROVIDER_STATE_FILE": str(run / "provider-state.json"),
+        "PROVIDER_CALL_FILE": str(run / "provider-calls.json"),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+
+    first_request = {
+        "api_version": "1",
+        "work_id": str(sender),
+        "grant_version": sender_grant.version,
+        "message_id": str(request_id),
+        "route_ref": "review",
+        "recipient_work_id": str(recipient),
+        "payload": {"request": "review exact candidate"},
+    }
+    recovery_request = first_request | {
+        "message_id": str(recovery_request_id),
+        "payload": {"request": "continue after restart"},
+    }
+
+    with _server(env, port) as endpoint:
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="fixed-bearer"
+        )) as sender_client:
+            grant_readback = (await sender_client.call_tool(
+                "grant_get", {"api_version": "1"}
+            )).structured_content
+            assert grant_readback["grant"]["id"] == str(sender_grant.id)
+            found = (await sender_client.call_tool("work_search", {
+                "api_version": "1", "text": "Task", "limit": 10,
+            })).structured_content
+            assert found["status"] == "ok"
+            observed = (await sender_client.call_tool("work_get", {
+                "api_version": "1", "work_id": str(sender),
+            })).structured_content
+            history = (await sender_client.call_tool("work_history", {
+                "api_version": "1",
+                "work_id": str(sender),
+                "observed_revision": observed["item"]["revision"],
+                "limit": 10,
+            })).structured_content
+            assert history["status"] == "ok"
+
+            appended = (await sender_client.call_tool("work_append", {
+                "api_version": "1",
+                "operation_id": str(append_id),
+                "work_id": str(sender),
+                "grant_version": sender_grant.version,
+                "observed_revision": observed["item"]["revision"],
+                "text": "Stage-5 ordinary append",
+            })).structured_content
+            assert appended["effect"] == "applied"
+            after_append = (await sender_client.call_tool("work_get", {
+                "api_version": "1", "work_id": str(sender),
+            })).structured_content
+            updated = (await sender_client.call_tool("work_update", {
+                "api_version": "1",
+                "operation_id": str(update_id),
+                "work_id": str(sender),
+                "grant_version": sender_grant.version,
+                "observed_revision": after_append["item"]["revision"],
+                "patch": {"completed": True},
+            })).structured_content
+            assert updated["effect"] == "applied"
+
+            sent = (await sender_client.call_tool(
+                "message_send", first_request
+            )).structured_content
+            assert sent["status"] == "ok"
+            first_delivery = sent["message"]["delivery_id"]
+
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="recipient-bearer"
+        )) as recipient_client:
+            pending = (await recipient_client.call_tool("message_pending", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+            })).structured_content
+            assert pending["messages"][0]["delivery_id"] == first_delivery
+            received = (await recipient_client.call_tool("message_receive", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+                "delivery_id": first_delivery,
+            })).structured_content
+            assert received["state"] == "RECEIVED"
+            result = (await recipient_client.call_tool("message_result_send", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+                "in_reply_to_delivery_id": first_delivery,
+                "message_id": str(result_id),
+                "payload": {"result": "pass"},
+            })).structured_content
+            assert result["status"] == "ok"
+            result_delivery = result["message"]["delivery_id"]
+            disposed = (await recipient_client.call_tool("message_disposition", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+                "delivery_id": first_delivery,
+                "result_message_id": str(result_id),
+            })).structured_content
+            assert disposed["state"] == "DISPOSITIONED"
+
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="fixed-bearer"
+        )) as sender_client:
+            reply = (await sender_client.call_tool("message_pending", {
+                "api_version": "1",
+                "work_id": str(sender),
+                "grant_version": sender_grant.version,
+            })).structured_content
+            assert reply["messages"][0]["delivery_id"] == result_delivery
+            assert reply["messages"][0]["message_id"] == str(result_id)
+            current = (await sender_client.call_tool("work_get", {
+                "api_version": "1", "work_id": str(sender),
+            })).structured_content
+            saved = (await sender_client.call_tool("required_result_save", {
+                "api_version": "1",
+                "work_id": str(sender),
+                "grant_version": sender_grant.version,
+                "observed_revision": current["item"]["revision"],
+                "text": "Stage-5 required result",
+            })).structured_content
+            assert saved["status"] == "ok"
+
+            second = (await sender_client.call_tool(
+                "message_send", recovery_request
+            )).structured_content
+            second_delivery = second["message"]["delivery_id"]
+
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="recipient-bearer"
+        )) as recipient_client:
+            second_received = (await recipient_client.call_tool("message_receive", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+                "delivery_id": second_delivery,
+            })).structured_content
+            assert second_received["state"] == "RECEIVED"
+
+    # Edge restart clears transport sessions/currentness only. Durable message
+    # identities survive; a replacement session must explicitly recover.
+    with _server(env, port) as endpoint:
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="recipient-bearer"
+        )) as replacement:
+            recovered = (await replacement.call_tool("message_recover", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+                "delivery_id": second_delivery,
+            })).structured_content
+            assert recovered["status"] == "ok"
+            assert recovered["state"] == "RECEIVED"
+            pending = (await replacement.call_tool("message_pending", {
+                "api_version": "1",
+                "work_id": str(recipient),
+                "grant_version": recipient_grant.version,
+            })).structured_content
+            assert pending["messages"][0]["delivery_id"] == second_delivery
+            assert pending["messages"][0]["message_id"] == str(recovery_request_id)
+
+        async with Client(StreamableHttpTransport(
+            endpoint + "/mcp", auth="fixed-bearer"
+        )) as sender_client:
+            replay = (await sender_client.call_tool(
+                "message_send", recovery_request
+            )).structured_content
+            assert replay["message"]["delivery_id"] == second_delivery
+            assert replay["message"]["message_id"] == str(recovery_request_id)
+            reply = (await sender_client.call_tool("message_pending", {
+                "api_version": "1",
+                "work_id": str(sender),
+                "grant_version": sender_grant.version,
+            })).structured_content
+            assert reply["messages"][0]["delivery_id"] == result_delivery
+            assert reply["messages"][0]["message_id"] == str(result_id)
 
 
 async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_after_restart(
