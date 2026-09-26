@@ -16,11 +16,11 @@ from chatgpt_fixture import (
 from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
-from switchstand.chatgpt_mcp import build_chatgpt_server
+from switchstand.chatgpt_mcp import build_chatgpt_server, build_ordinary_tools
 from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferenceRequest
 from switchstand.core import ProviderError
 from switchstand.discovery import ProviderSearchItem, ProviderStructure
-from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
+from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
 
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
@@ -32,6 +32,36 @@ def test_append_cannot_accept_authority_arguments(field):
               'grant_version': 1, 'title': "child"}
     with pytest.raises(ValidationError):
         ProtectedCreate.model_validate(create | {field: "owner"})
+
+
+async def test_ordinary_facade_preserves_unknown_admission_without_sending(monkeypatch):
+    subject = service()
+    tools = dict(build_ordinary_tools(subject, session_generation=lambda: "session-a"))
+
+    async def unavailable():
+        return GrantResult(status="unknown", principal=PRINCIPAL)
+
+    monkeypatch.setattr(subject, "grant_get", unavailable)
+    operation_id = uuid4()
+    append = await tools["work_append"]("1", operation_id, ACTIVE, "r1", "feedback")
+    assert (append.status, append.effect, append.reason) == (
+        "unknown", "not_sent", "admission_state_unavailable"
+    )
+    assert subject.providers["asana"].sends == 0
+
+    pending = await tools["message_pending"]("1", ACTIVE)
+    assert (pending.status, pending.reason) == ("recovery_required", "state_unavailable")
+
+    delivery_id = uuid4()
+    transition = await tools["message_receive"]("1", ACTIVE, delivery_id)
+    assert (transition.status, transition.reason) == (
+        "recovery_required", "state_unavailable"
+    )
+
+    submitted = await tools["message_send"]("1", ACTIVE, uuid4(), {"request": "review"})
+    assert (submitted.status, submitted.reason) == (
+        "recovery_required", "state_unavailable"
+    )
 
 
 async def test_broad_reads_survive_missing_revoked_or_unqualified_write_grant():
