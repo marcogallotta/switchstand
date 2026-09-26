@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - mcp/stage5-stateful-ordinary
+      - mcp/stage5-stateful-ordinary-rebased
 
 jobs:
   codex-stateful-client:
