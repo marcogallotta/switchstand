@@ -1,13 +1,22 @@
 """Public agent-name views over the existing durable MessageState records."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import JsonValue, model_validator
 from uuid import UUID
 
-from .agent_mailboxes import AgentMailboxState
+from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .contracts import ClosedModel
+from .grants import PrincipalContext, WorkGrant
 from .messages import PendingMessage
+
+
+@dataclass(frozen=True)
+class AgentMessageContext:
+    principal: PrincipalContext
+    grant: WorkGrant
+    mailbox: AgentMailbox
 
 
 class AgentRegistrationResult(ClosedModel):
