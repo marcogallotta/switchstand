@@ -164,6 +164,17 @@ async def agent_status() -> dict:
 
 
 @MCP.tool
+async def work_focus(work_id: str) -> dict:
+    """Switch current work context without changing agent identity."""
+    async with LOCK:
+        state = _load()
+        _key_, agent = _actor(state)
+        agent["work_id"] = work_id
+        _save(state)
+        return {"status": "ok", "agent_name": agent["name"], "work_id": work_id}
+
+
+@MCP.tool
 async def message_send(
     recipient: str,
     payload: JsonValue,
