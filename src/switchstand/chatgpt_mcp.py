@@ -65,6 +65,8 @@ def build_message_tools(
     ) -> MessageSubmitResult:
         """Durably send one request or exactly correlated result."""
         grant = await service.grant_get()
+        if grant.status == "unknown":
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
         if grant.status != "ok" or grant.grant is None:
             return MessageSubmitResult(status="denied", reason="no_current_grant")
         result = await service.message_send(MessageSendRequest(
@@ -84,8 +86,10 @@ def build_message_tools(
     ) -> MessagePendingResult:
         """Inspect durable pending deliveries under current authenticated admission."""
         grant = await service.grant_get()
+        if grant.status == "unknown":
+            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
         if grant.status != "ok" or grant.grant is None:
-            return MessagePendingResult(status="denied")
+            return MessagePendingResult(status="denied", reason="no_current_grant")
         result = await service.message_pending(work_id, MessagePendingRequest(
             api_version=api_version, grant_version=grant.grant.version, cursor=cursor, limit=limit,
         ))
@@ -114,11 +118,22 @@ def build_ordinary_tools(
         if audit is not None:
             audit(tool, target, status)
 
-    async def current_grant_version() -> int | None:
+    async def current_grant_version() -> tuple[int | None, str]:
         result = await service.grant_get()
+        if result.status == "unknown":
+            return None, "unknown"
         if result.status != "ok" or result.grant is None:
-            return None
-        return result.grant.version
+            return None, "denied"
+        return result.grant.version, "ok"
+
+    def admission_unknown(
+        operation: str, work_id: UUID | None = None, operation_id: UUID | None = None,
+    ) -> GuardOutcome:
+        return GuardOutcome(
+            status="unknown", operation=operation, work_id=work_id, operation_id=operation_id,
+            reason="admission_state_unavailable", effect="not_sent", retry="none",
+            next_action="Retry after admission state is readable; no provider effect was sent.",
+        )
 
     async def grant_get(api_version: Literal["1"]) -> GrantResult:
         """Read this authenticated caller's current grant; this never issues or changes a grant."""
@@ -240,7 +255,9 @@ def build_ordinary_tools(
         observed_revision: str, text: str,
     ) -> GuardOutcome:
         """Append through current authenticated workspace admission; never blind-retry UNKNOWN."""
-        grant_version = await current_grant_version()
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_append", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_append", "no_current_grant")
         result = await service.append(ProtectedAppend(
@@ -255,7 +272,9 @@ def build_ordinary_tools(
         title: str, notes: str = "",
     ) -> GuardOutcome:
         """Create through current authenticated admission. Reuse OperationId to reconcile UNKNOWN."""
-        grant_version = await current_grant_version()
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_create", parent_work_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
         result = await service.create(ProtectedCreate(
@@ -270,7 +289,9 @@ def build_ordinary_tools(
         observed_revision: str, patch: ScalarPatch,
     ) -> GuardOutcome:
         """Set bounded scalar state using current admission; UNKNOWN is never resent blindly."""
-        grant_version = await current_grant_version()
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_update", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_update", "no_current_grant")
         result = await service.update(ProtectedUpdate(
@@ -285,7 +306,9 @@ def build_ordinary_tools(
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
     ) -> GuardOutcome:
         """Save one required result; admission and stable operation identity are server-owned."""
-        grant_version = await current_grant_version()
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("required_result_save", work_id, operation_id)
         if grant_version is None:
             return service.denied("required_result_save", "no_current_grant")
         result = await service.required_result_save(RequiredResultSaveRequest(
@@ -301,6 +324,8 @@ def build_ordinary_tools(
         PrincipalContext, WorkGrant, tuple[str, UUID, UUID, int], str
     ] | MessageTransitionResult:
         grant_result = await service.grant_get()
+        if grant_result.status == "unknown":
+            return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
         if (
             grant_result.status != "ok"
             or grant_result.principal is None
