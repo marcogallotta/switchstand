@@ -308,7 +308,7 @@ def build_ordinary_tools(
         """Save one required result; admission and stable operation identity are server-owned."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
-            return admission_unknown("required_result_save", work_id, operation_id)
+            return admission_unknown("required_result_save", work_id)
         if grant_version is None:
             return service.denied("required_result_save", "no_current_grant")
         result = await service.required_result_save(RequiredResultSaveRequest(
