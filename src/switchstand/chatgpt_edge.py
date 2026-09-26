@@ -174,7 +174,7 @@ def create_app(
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for _, tool in build_ordinary_tools(service, _audit):
         server.tool(tool)
-    return server.http_app(path="/mcp", json_response=True, stateless_http=True)
+    return server.http_app(path="/mcp", json_response=True, stateless_http=False)
 
 
 async def serve() -> None:
@@ -201,7 +201,7 @@ async def serve() -> None:
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
-            json_response=True, stateless_http=True, show_banner=False,
+            json_response=True, stateless_http=False, show_banner=False,
         )
     finally:
         await client.aclose()
