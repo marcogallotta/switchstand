@@ -173,18 +173,36 @@ async def test_actor_capability_recipient_and_route_contract_denials(messaging):
             send(works[0], 2, works[1], **changes)
 
 
-async def test_recipient_selection_excludes_workspace_and_detects_ambiguity(messaging):
+async def test_recipient_selection_uses_exact_active_anchor_and_detects_ambiguity(messaging):
     service, _actor, _principals, works, issued = messaging
     workspace = grant(principal=PrincipalContext(issuer="fixture", subject=str(uuid4()),
         client_id="test", assurance="test"), active=works[1], scope="workspace",
         operations=frozenset({"message"}))
     await service.grants.issue(workspace, None)
-    assert (await service.message_send(send(works[0], 1, works[1]))).status == "ok"
+
+    # The workspace grant owns only its exact active-work message route. With the
+    # existing launch owner still live, two current owners are ambiguous and closed.
+    ambiguous = await service.message_send(send(works[0], 1, works[1]))
+    assert ambiguous.status == "denied"
+    assert ambiguous.reason == "recipient_route_unavailable"
+
     unavailable = issued[1].model_copy(update={"version": 2, "id": uuid4(),
         "operations": frozenset({"work_get"})})
     await service.grants.issue(unavailable, 1)
-    assert (await service.message_send(send(works[0], 1, works[1]))).reason == "recipient_route_unavailable"
-    restored = unavailable.model_copy(update={"version": 3, "id": uuid4(), "operations": frozenset({"message"})})
+    assert (await service.message_send(send(works[0], 1, works[1]))).status == "ok"
+
+    moved = workspace.model_copy(update={
+        "version": 2, "id": uuid4(),
+        "authority": workspace.authority.model_copy(update={"active_work_id": works[0]}),
+    })
+    await service.grants.issue(moved, 1)
+    unavailable_route = await service.message_send(send(works[0], 1, works[1]))
+    assert unavailable_route.status == "denied"
+    assert unavailable_route.reason == "recipient_route_unavailable"
+
+    restored = unavailable.model_copy(update={
+        "version": 3, "id": uuid4(), "operations": frozenset({"message"})
+    })
     await service.grants.issue(restored, 2)
     duplicate = grant(principal=PrincipalContext(
         issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test"),
