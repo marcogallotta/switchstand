@@ -19,6 +19,7 @@ from switchstand.chatgpt_edge import (
 )
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
+from switchstand.messages import MessageSubmitResult, MessageTransitionResult
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
@@ -131,7 +132,29 @@ async def test_stateful_http_session_is_stable_distinct_and_credential_bound(mon
         )
 
     monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
-    app = create_app(service(), CONFIG, client_storage=MemoryStore())
+
+    class SessionCapture:
+        def __init__(self):
+            self.seen = []
+
+        async def receive(self, principal, runtime, request, *, work_id=None):
+            self.seen.append((runtime.generation, work_id))
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+    subject = service()
+    subject.grants.grant = grant(
+        principal=PrincipalContext(
+            issuer=ISSUER,
+            subject=GITHUB_ID,
+            client_id="client-a",
+            assurance="authenticated",
+        ),
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    capture = SessionCapture()
+    subject.messages = capture
+    app = create_app(subject, CONFIG, client_storage=MemoryStore())
     initialize = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -181,6 +204,28 @@ async def test_stateful_http_session_is_stable_distinct_and_credential_bound(mon
             )
             assert listed.status_code == 200
 
+        transition = await raw.post(
+            "/mcp",
+            headers=session_headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "message_receive",
+                    "arguments": {
+                        "api_version": "1",
+                        "work_id": str(ACTIVE),
+                        "grant_version": 1,
+                        "delivery_id": str(uuid4()),
+                    },
+                },
+            },
+        )
+        assert transition.status_code == 200
+        assert transition.json()["result"]["structuredContent"]["status"] == "ok"
+        assert capture.seen == [(first_session, ACTIVE)]
+
         second = await raw.post(
             "/mcp",
             headers=base_headers | {"authorization": "Bearer token-a"},
@@ -202,6 +247,153 @@ async def test_stateful_http_session_is_stable_distinct_and_credential_bound(mon
         )
         assert rejected.status_code == 404
         assert "Session not found" in rejected.text
+
+
+async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong(monkeypatch):
+    class FakeMessages:
+        fail_recover = False
+        received = False
+
+        async def receive(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            self.received = True
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+        async def recover(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            if self.fail_recover:
+                return MessageTransitionResult(status="conflict", reason="delivery_not_received")
+            self.received = True
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+        async def disposition(self, principal, runtime, request, *, work_id=None):
+            assert work_id == ACTIVE
+            self.received = False
+            return MessageTransitionResult(status="ok", state="DISPOSITIONED")
+
+        async def has_received(self, work_id, grant_version):
+            assert work_id == ACTIVE and grant_version == 1
+            return self.received
+
+    generation = ["session-a"]
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    subject.messages = FakeMessages()
+
+    async def fake_result(*args, **kwargs):
+        return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+
+    monkeypatch.setattr("switchstand.chatgpt_mcp.send_received_result", fake_result)
+    tools = dict(build_ordinary_tools(
+        subject, session_generation=lambda: generation[0]
+    ))
+    delivery_id = uuid4()
+    base = ("1", ACTIVE, 1, delivery_id)
+
+    received = await tools["message_receive"](*base)
+    assert received.status == "ok"
+
+    generation[0] = "session-b"
+    before_recover = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "blocked"}
+    )
+    assert (before_recover.status, before_recover.reason) == (
+        "stale", "runtime_generation_changed"
+    )
+
+    recovered = await tools["message_recover"](*base)
+    assert recovered.status == "ok"
+
+    generation[0] = "session-a"
+    assert (await tools["message_receive"](*base)).reason == "runtime_generation_changed"
+    assert (await tools["message_recover"](*base)).reason == "runtime_generation_changed"
+    retired_result = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "blocked"}
+    )
+    assert retired_result.status == "stale"
+    assert retired_result.reason == "runtime_generation_changed"
+    assert (await tools["message_disposition"](
+        "1", ACTIVE, 1, delivery_id, uuid4()
+    )).reason == "runtime_generation_changed"
+
+    generation[0] = "session-c"
+    subject.messages.fail_recover = True
+    assert (await tools["message_receive"](*base)).reason == "runtime_generation_changed"
+    failed = await tools["message_recover"](*base)
+    assert failed.status == "conflict"
+
+    generation[0] = "session-b"
+    assert (await tools["message_disposition"](
+        "1", ACTIVE, 1, delivery_id, uuid4()
+    )).status == "ok"
+
+    # Completed-cycle currentness is released only after no RECEIVED delivery remains.
+    generation[0] = "session-c"
+    next_delivery = uuid4()
+    assert (await tools["message_receive"](
+        "1", ACTIVE, 1, next_delivery
+    )).status == "ok"
+
+    # A process restart has no ephemeral current generation. A fresh session can
+    # recover the same durable delivery and establish itself without reviving A.
+    subject.messages.fail_recover = False
+    generation[0] = "session-c"
+    restarted = dict(build_ordinary_tools(
+        subject, session_generation=lambda: generation[0]
+    ))
+    assert (await restarted["message_recover"](*base)).status == "ok"
+
+
+async def test_message_result_send_preserves_preflight_failures(monkeypatch):
+    class FakeMessages:
+        async def receive(self, principal, runtime, request, *, work_id=None):
+            return MessageTransitionResult(status="ok", state="RECEIVED")
+
+    generation = ["session-a"]
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    subject.messages = FakeMessages()
+    tools = dict(build_ordinary_tools(
+        subject, session_generation=lambda: generation[0]
+    ))
+    delivery_id = uuid4()
+
+    subject.grants.grant = None
+    denied = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "x"}
+    )
+    assert (denied.status, denied.reason) == ("denied", "no_current_grant")
+
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"message"}),
+    )
+    stale = await tools["message_result_send"](
+        "1", ACTIVE, 2, delivery_id, uuid4(), {"answer": "x"}
+    )
+    assert (stale.status, stale.reason) == ("stale", "grant_version_changed")
+
+    missing = await tools["message_result_send"](
+        "1", uuid4(), 1, delivery_id, uuid4(), {"answer": "x"}
+    )
+    assert (missing.status, missing.reason) == ("denied", "delivery_not_for_current_work")
+
+    assert (await tools["message_receive"](
+        "1", ACTIVE, 1, delivery_id
+    )).status == "ok"
+    generation[0] = "session-b"
+    wrong_session = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "x"}
+    )
+    assert (wrong_session.status, wrong_session.reason) == (
+        "stale", "runtime_generation_changed"
+    )
 
 
 async def test_authenticated_registry_preserves_append_and_routes_create(monkeypatch, caplog):
