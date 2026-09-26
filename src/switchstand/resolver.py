@@ -57,22 +57,22 @@ def _payload(notes: str) -> dict[str, object]:
             raise ValueError("resolver block missing")
         tail = tail[newline + 1:]
     value, _ = json.JSONDecoder().raw_decode(tail)
-    if (
-        not isinstance(value, dict)
-        or any(not isinstance(key, str) for key in value)
-    ):
+    if not isinstance(value, dict):
         raise TypeError("resolver payload must be an object with string keys")
-    return cast(dict[str, object], value)
+    raw_payload = cast(dict[object, object], value)
+    if any(not isinstance(key, str) for key in raw_payload):
+        raise TypeError("resolver payload must be an object with string keys")
+    return cast(dict[str, object], raw_payload)
 
 
 def _entry(payload: dict[str, object], alias: str) -> tuple[str, dict[str, list[str]]]:
     raw = payload.get(alias)
-    if (
-        not isinstance(raw, dict)
-        or any(not isinstance(key, str) for key in raw)
-    ):
+    if not isinstance(raw, dict):
         raise ValueError("resolver alias missing or malformed")
-    record = cast(dict[str, object], raw)
+    raw_record = cast(dict[object, object], raw)
+    if any(not isinstance(key, str) for key in raw_record):
+        raise ValueError("resolver alias missing or malformed")
+    record = cast(dict[str, object], raw_record)
     if set(record) != {"owner", "roles"}:
         raise ValueError("resolver alias missing or malformed")
     owner, roles_raw = record["owner"], record["roles"]
@@ -80,10 +80,12 @@ def _entry(payload: dict[str, object], alias: str) -> tuple[str, dict[str, list[
         not isinstance(owner, str)
         or not owner.isdigit()
         or not isinstance(roles_raw, dict)
-        or any(not isinstance(key, str) for key in roles_raw)
     ):
         raise ValueError("resolver alias malformed")
-    roles = cast(dict[str, object], roles_raw)
+    raw_roles = cast(dict[object, object], roles_raw)
+    if any(not isinstance(key, str) for key in raw_roles):
+        raise ValueError("resolver alias malformed")
+    roles = cast(dict[str, object], raw_roles)
     typed: dict[str, list[str]] = {}
     for role, gids_raw in roles.items():
         if not role or not isinstance(gids_raw, list):
