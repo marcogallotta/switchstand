@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.core import Handle
 from switchstand.grant_state import GrantState
 from switchstand.grants import EffectReceipt, GuardOutcome
 from switchstand.messages import (
@@ -22,6 +23,7 @@ from switchstand.messages import (
     MessagePendingResult,
     MessageReceiveRequest,
     MessageRoute,
+    MessageSendRequest,
     MessageState,
     MessageSubmitRequest,
     MessageSubmitResult,
@@ -30,6 +32,7 @@ from switchstand.messages import (
     message_effect_operation_id,
     message_projection,
     messages,
+    send_received_result,
 )
 
 
@@ -141,6 +144,79 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
 def test_protocol_contracts_reject_unapproved_or_impossible_shapes(model, values):
     with pytest.raises(ValidationError):
         model.model_validate(values)
+
+
+async def test_workspace_message_transition_uses_explicit_work_id(subject):
+    state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    assert original.message is not None
+    delivery_id = original.message.delivery_id
+    target = recipient.authority.active_work_id
+
+    workspace = grant(
+        principal=recipient_principal,
+        active=uuid4(),
+        reference=uuid4(),
+        scope="workspace",
+        operations=frozenset({"message"}),
+    ).model_copy(update={"id": uuid4(), "version": 2})
+    await grants.issue(workspace, 1)
+    runtime = RuntimeCurrentness(generation="session-a", current_generation="session-a")
+    receive = MessageReceiveRequest(
+        api_version="1", delivery_id=delivery_id, grant_version=workspace.version
+    )
+
+    implicit = await state.receive(recipient_principal, runtime, receive)
+    assert implicit.status == "denied"
+    assert implicit.reason == "delivery_not_for_current_work"
+
+    explicit = await state.receive(
+        recipient_principal, runtime, receive, work_id=target
+    )
+    assert explicit.status == "ok" and explicit.state == "RECEIVED"
+
+    handles = {
+        target: Handle(target, "asana", "222"),
+        sender.authority.active_work_id: Handle(
+            sender.authority.active_work_id, "asana", "111"
+        ),
+    }
+
+    class BoundState:
+        async def get(self, work_id):
+            return handles.get(work_id)
+
+    result_id = uuid4()
+    result = await send_received_result(
+        BoundState(),
+        grants,
+        state,
+        recipient_principal,
+        MessageSendRequest(
+            api_version="1",
+            work_id=target,
+            grant_version=workspace.version,
+            message_id=result_id,
+            payload={"answer": "pass"},
+            in_reply_to_delivery_id=delivery_id,
+        ),
+        runtime,
+    )
+    assert result.status == "ok"
+    evidence = DispositionEvidence(kind="result", result_message_id=result_id)
+    disposed = await state.disposition(
+        recipient_principal,
+        runtime,
+        MessageDispositionRequest(
+            api_version="1",
+            delivery_id=delivery_id,
+            grant_version=workspace.version,
+            disposition_digest=digest(evidence),
+            evidence=evidence,
+        ),
+        work_id=target,
+    )
+    assert disposed.status == "ok" and disposed.state == "DISPOSITIONED"
 
 
 async def test_result_correlation_disposition_replay_and_concurrency(subject):
