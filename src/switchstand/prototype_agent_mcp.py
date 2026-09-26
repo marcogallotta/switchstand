@@ -16,6 +16,7 @@ import secrets
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from pydantic import JsonValue
@@ -29,7 +30,105 @@ STATE_PATH = Path(
 PORT = int(os.getenv("SWITCHSTAND_PROTO_PORT", "8791"))
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 LOCK = asyncio.Lock()
-MCP = FastMCP("Switchstand agent-addressing prototype", version="0")
+MCP = FastMCP("Switchstand product prototype", version="0")
+
+ASANA_API = "https://app.asana.com/api/1.0"
+PRODUCT_ROUTES = {
+    "stateful": {
+        "owner": "1218348601889574",
+        "map": "1218659756993596",
+        "implementation": "1218664323392679",
+        "correction": "1218890890941815",
+    },
+    "lifecycle": {"owner": "1218348601889574"},
+}
+
+
+def _asana_token() -> str:
+    token = os.getenv("ASANA_TOKEN")
+    if token:
+        return token
+    env_path = Path("~/.config/switchstand/.env").expanduser()
+    if env_path.exists():
+        for raw in env_path.read_text().splitlines():
+            if raw.startswith("ASANA_TOKEN="):
+                return raw.split("=", 1)[1].strip().strip("'\"")
+    raise ValueError("ASANA_TOKEN unavailable")
+
+
+async def _asana_task(gid: str) -> dict:
+    fields = "gid,name,notes,completed,modified_at,parent.gid,permalink_url"
+    async with httpx.AsyncClient(
+        base_url=ASANA_API,
+        headers={"Authorization": f"Bearer {_asana_token()}"},
+        timeout=10,
+        trust_env=False,
+    ) as client:
+        response = await client.get(f"/tasks/{gid}", params={"opt_fields": fields})
+        response.raise_for_status()
+        return response.json()["data"]
+
+
+def _task_summary(task: dict, role: str) -> dict:
+    notes = task.get("notes") or ""
+    return {
+        "role": role,
+        "gid": task["gid"],
+        "name": task["name"],
+        "completed": task.get("completed", False),
+        "modified_at": task.get("modified_at"),
+        "parent_gid": (task.get("parent") or {}).get("gid"),
+        "permalink_url": task.get("permalink_url"),
+        "headline": notes.splitlines()[0] if notes else None,
+    }
+
+
+async def work_resolve(query: str) -> dict:
+    """Resolve Marco's natural work reference to canonical current Switchstand work."""
+    q = query.strip().lower()
+    gid_match = re.search(r"(?<!\d)(\d{13,})(?!\d)", q)
+    if gid_match:
+        task = await _asana_task(gid_match.group(1))
+        return {"status": "ok", "confidence": 1.0, "resolved": _task_summary(task, "exact")}
+
+    route = None
+    for alias, candidate in PRODUCT_ROUTES.items():
+        if alias in q:
+            route = candidate
+            break
+    if route is None:
+        return {
+            "status": "unknown",
+            "confidence": 0.0,
+            "reason": "no_canonical_route_known",
+            "next": "capture this product-usage gap instead of guessing from search",
+        }
+
+    target_role = "owner"
+    if "implement" in q or "spec" in q:
+        target_role = "implementation"
+    elif "map" in q or "rollout" in q or "capabilit" in q:
+        target_role = "map"
+    elif any(word in q for word in ("correct", "prune", "audit", "follow-up", "blocker")):
+        target_role = "correction"
+
+    target_gid = route.get(target_role) or route["owner"]
+    target = await _asana_task(target_gid)
+    related = []
+    for role, gid in route.items():
+        if gid != target_gid:
+            related.append(_task_summary(await _asana_task(gid), role))
+
+    return {
+        "status": "ok",
+        "confidence": 0.97,
+        "resolved": _task_summary(target, target_role),
+        "canonical_owner_gid": route["owner"],
+        "related_current_work": related,
+        "reason": (
+            "resolved through the known semantic owner route; text search is not authority"
+        ),
+    }
 
 
 def _empty() -> dict:
@@ -273,7 +372,7 @@ async def message_done(message_id: str) -> dict:
 
 
 for tool in (
-    agent_register, agent_resume, agent_takeover, agent_status, work_focus,
+    agent_register, agent_resume, agent_takeover, agent_status, work_focus, work_resolve,
     message_send, message_pending, message_receive, message_reply, message_done,
 ):
     MCP.tool(tool)
