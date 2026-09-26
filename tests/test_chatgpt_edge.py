@@ -299,6 +299,11 @@ async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong
 
     generation[0] = "session-a"
     assert (await tools["message_recover"](*base)).reason == "runtime_generation_changed"
+    stale_result = await tools["message_result_send"](
+        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "stale"}
+    )
+    assert stale_result.status == "recovery_required"
+    assert stale_result.reason == "state_unavailable"
     assert (await tools["message_disposition"](
         "1", ACTIVE, 1, delivery_id, uuid4()
     )).reason == "runtime_generation_changed"
