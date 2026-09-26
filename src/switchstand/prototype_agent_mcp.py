@@ -1,394 +1,247 @@
-"""Disposable MCP prototype for agent-addressed messaging.
+"""Disposable Switchstand MCP prototype. Not production code."""
 
-This deliberately ignores production WorkGrant/message machinery. It exists only to
-test whether ordinary agents feel better when identity is an agent name instead of a
-task. State is one local JSON file so separate MCP sessions can interact.
-"""
-
-from __future__ import annotations
-
-import asyncio
-import hashlib
-import json
-import os
-import re
-import secrets
+import asyncio, hashlib, json, os, re, secrets
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import httpx
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
-from pydantic import JsonValue
 
-STATE_PATH = Path(
-    os.getenv(
-        "SWITCHSTAND_PROTO_STATE",
-        "~/.local/state/switchstand/agent-messaging-prototype.json",
-    )
-).expanduser()
+STATE = Path("~/.local/state/switchstand/proto.json").expanduser()
 PORT = int(os.getenv("SWITCHSTAND_PROTO_PORT", "8791"))
-NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+MCP = FastMCP("Switchstand prototype", version="0")
 LOCK = asyncio.Lock()
-MCP = FastMCP("Switchstand product prototype", version="0")
+NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 
-ASANA_API = "https://app.asana.com/api/1.0"
-PRODUCT_ROUTES = {
+# Temporary compatibility fixture until Asana installs alias->owner + typed child fields.
+ROUTES = {
     "stateful": {
         "owner": "1218348601889574",
-        "map": "1218659756993596",
-        "implementation": "1218664323392679",
-        "correction": "1218890890941815",
+        "map": ["1218659756993596"],
+        "execution": ["1218664323392679"],
+        "correction": ["1218890890941815"],
     },
     "lifecycle": {"owner": "1218348601889574"},
 }
 
 
-def _asana_token() -> str:
-    token = os.getenv("ASANA_TOKEN")
-    if token:
-        return token
-    env_path = Path("~/.config/switchstand/.env").expanduser()
-    if env_path.exists():
-        for raw in env_path.read_text().splitlines():
-            if raw.startswith("ASANA_TOKEN="):
-                return raw.split("=", 1)[1].strip().strip("'\"")
+def load() -> dict:
+    return json.loads(STATE.read_text()) if STATE.exists() else {
+        "agents": {}, "sessions": {}, "messages": []
+    }
+
+
+def save(s: dict) -> None:
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(s, indent=2))
+
+
+def digest(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def key(name: str) -> str:
+    if not NAME.fullmatch(name):
+        raise ValueError("bad agent name")
+    return name.casefold()
+
+
+def session() -> str:
+    sid = get_context().session_id
+    if not sid:
+        raise ValueError("missing MCP session")
+    return sid
+
+
+def actor(s: dict) -> tuple[str, dict]:
+    b = s["sessions"].get(session())
+    if not b:
+        raise ValueError("register/resume first")
+    a = s["agents"].get(b["key"])
+    if not a or a["generation"] != b["generation"]:
+        raise ValueError("stale binding")
+    return b["key"], a
+
+
+def token() -> str:
+    if os.getenv("ASANA_TOKEN"):
+        return os.environ["ASANA_TOKEN"]
+    p = Path("~/.config/switchstand/.env").expanduser()
+    for line in p.read_text().splitlines():
+        if line.startswith("ASANA_TOKEN="):
+            return line.split("=", 1)[1].strip().strip("'\"")
     raise ValueError("ASANA_TOKEN unavailable")
 
 
-async def _asana_task(gid: str) -> dict:
+async def task(gid: str) -> dict:
     fields = "gid,name,notes,completed,modified_at,parent.gid,permalink_url"
     async with httpx.AsyncClient(
-        base_url=ASANA_API,
-        headers={"Authorization": f"Bearer {_asana_token()}"},
-        timeout=10,
-        trust_env=False,
-    ) as client:
-        response = await client.get(f"/tasks/{gid}", params={"opt_fields": fields})
-        response.raise_for_status()
-        return response.json()["data"]
+        headers={"Authorization": f"Bearer {token()}"}, trust_env=False, timeout=10
+    ) as c:
+        r = await c.get(
+            f"https://app.asana.com/api/1.0/tasks/{gid}",
+            params={"opt_fields": fields},
+        )
+        r.raise_for_status()
+        return r.json()["data"]
 
 
-def _task_summary(task: dict, role: str) -> dict:
-    notes = task.get("notes") or ""
+def summary(t: dict, role: str) -> dict:
     return {
-        "role": role,
-        "gid": task["gid"],
-        "name": task["name"],
-        "completed": task.get("completed", False),
-        "modified_at": task.get("modified_at"),
-        "parent_gid": (task.get("parent") or {}).get("gid"),
-        "permalink_url": task.get("permalink_url"),
-        "headline": notes.splitlines()[0] if notes else None,
+        "role": role, "gid": t["gid"], "name": t["name"],
+        "completed": t.get("completed", False), "modified_at": t.get("modified_at"),
+        "parent_gid": (t.get("parent") or {}).get("gid"),
+        "url": t.get("permalink_url"),
     }
 
 
 async def work_resolve(query: str) -> dict:
-    """Resolve Marco's natural work reference to canonical current Switchstand work."""
-    q = query.strip().lower()
-    gid_match = re.search(r"(?<!\d)(\d{13,})(?!\d)", q)
-    if gid_match:
-        task = await _asana_task(gid_match.group(1))
-        return {"status": "ok", "confidence": 1.0, "resolved": _task_summary(task, "exact")}
+    """Resolve exact IDs or alias->owner, then return owner-local typed current sets."""
+    q = query.lower()
+    m = re.search(r"(?<!\d)(\d{13,})(?!\d)", q)
+    if m:
+        return {"status": "EXACT", "owner": summary(await task(m.group(1)), "exact")}
 
-    route = None
-    for alias, candidate in PRODUCT_ROUTES.items():
-        if alias in q:
-            route = candidate
-            break
-    if route is None:
-        return {
-            "status": "unknown",
-            "confidence": 0.0,
-            "reason": "no_canonical_route_known",
-            "next": "capture this product-usage gap instead of guessing from search",
-        }
+    matches = [(a, r) for a, r in ROUTES.items() if a in q]
+    if not matches:
+        return {"status": "UNKNOWN", "reason": "no alias->owner route"}
+    owners = {r["owner"] for _, r in matches}
+    if len(owners) != 1:
+        return {"status": "AMBIGUOUS", "aliases": [a for a, _ in matches]}
 
-    target_role = "owner"
-    if "implement" in q or "spec" in q:
-        target_role = "implementation"
-    elif "map" in q or "rollout" in q or "capabilit" in q:
-        target_role = "map"
-    elif any(word in q for word in ("correct", "prune", "audit", "follow-up", "blocker")):
-        target_role = "correction"
-
-    target_gid = route.get(target_role) or route["owner"]
-    target = await _asana_task(target_gid)
-    related = []
-    for role, gid in route.items():
-        if gid != target_gid:
-            related.append(_task_summary(await _asana_task(gid), role))
-
-    return {
-        "status": "ok",
-        "confidence": 0.97,
-        "resolved": _task_summary(target, target_role),
-        "canonical_owner_gid": route["owner"],
-        "related_current_work": related,
-        "reason": (
-            "resolved through the known semantic owner route; text search is not authority"
-        ),
-    }
-
-
-def _empty() -> dict:
-    return {"agents": {}, "sessions": {}, "messages": []}
-
-
-def _load() -> dict:
-    return json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else _empty()
-
-
-def _save(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True))
-
-
-def _hash(secret: str) -> str:
-    return hashlib.sha256(secret.encode()).hexdigest()
-
-
-def _key(name: str) -> str:
-    if not NAME_RE.fullmatch(name):
-        raise ValueError("name must be 1-32 letters/digits/_/- and start with a letter")
-    return name.casefold()
-
-
-def _session() -> str:
-    session_id = get_context().session_id
-    if not session_id:
-        raise RuntimeError("MCP session unavailable")
-    return session_id
-
-
-def _actor(state: dict) -> tuple[str, dict]:
-    binding = state["sessions"].get(_session())
-    if binding is None:
-        raise ValueError("register or resume an agent first")
-    agent = state["agents"].get(binding["key"])
-    if agent is None or agent["generation"] != binding["generation"]:
-        raise ValueError("stale agent binding")
-    return binding["key"], agent
-
-
-def _owned_message(state: dict, message_id: str) -> tuple[dict, dict]:
-    key, agent = _actor(state)
-    for item in state["messages"]:
-        if item["id"] == message_id and item["recipient_key"] == key:
-            return item, agent
-    raise ValueError("message not found for current agent")
+    route = matches[0][1]
+    out = {"status": "UNAMBIGUOUS", "owner": summary(await task(route["owner"]), "owner")}
+    related: dict[str, list[dict]] = {}
+    for role, gids in route.items():
+        if role == "owner":
+            continue
+        related[role] = [summary(await task(gid), role) for gid in gids]
+    out["current"] = related
+    return out
 
 
 async def agent_register(name: str) -> dict:
-    """Choose an unused visible name and bind this MCP session to it."""
     async with LOCK:
-        state = _load()
-        key = _key(name)
-        if key in state["agents"]:
+        s, k = load(), key(name)
+        if k in s["agents"]:
             return {"status": "conflict", "reason": "name_taken"}
-        credential = secrets.token_urlsafe(24)
-        state["agents"][key] = {
-            "name": name,
-            "generation": 1,
-            "credential_hash": _hash(credential),
-        }
-        state["sessions"][_session()] = {"key": key, "generation": 1}
-        _save(state)
-        return {
-            "status": "ok",
-            "agent_name": name,
-            "generation": 1,
-            "resume_credential": credential,
-        }
+        cred = secrets.token_urlsafe(18)
+        s["agents"][k] = {"name": name, "generation": 1, "cred": digest(cred)}
+        s["sessions"][session()] = {"key": k, "generation": 1}
+        save(s)
+        return {"status": "ok", "name": name, "resume_credential": cred}
 
 
 async def agent_resume(name: str, resume_credential: str) -> dict:
-    """Bind a new MCP session to the same agent name after reconnect."""
     async with LOCK:
-        state = _load()
-        key = _key(name)
-        agent = state["agents"].get(key)
-        if agent is None or agent["credential_hash"] != _hash(resume_credential):
+        s, k = load(), key(name)
+        a = s["agents"].get(k)
+        if not a or a["cred"] != digest(resume_credential):
             return {"status": "denied"}
-        state["sessions"][_session()] = {"key": key, "generation": agent["generation"]}
-        _save(state)
-        return {
-            "status": "ok",
-            "agent_name": agent["name"],
-            "generation": agent["generation"],
-        }
+        s["sessions"][session()] = {"key": k, "generation": a["generation"]}
+        save(s)
+        return {"status": "ok", "name": a["name"], "generation": a["generation"]}
 
 
 async def agent_takeover(name: str, takeover_code: str) -> dict:
-    """Replace an old agent only when Marco hands over the prototype takeover code."""
-    expected = os.getenv("SWITCHSTAND_PROTO_TAKEOVER_CODE", "")
-    if not expected or not secrets.compare_digest(takeover_code, expected):
+    if not secrets.compare_digest(
+        takeover_code, os.getenv("SWITCHSTAND_PROTO_TAKEOVER_CODE", "")
+    ):
         return {"status": "denied"}
     async with LOCK:
-        state = _load()
-        key = _key(name)
-        agent = state["agents"].get(key)
-        if agent is None:
+        s, k = load(), key(name)
+        a = s["agents"].get(k)
+        if not a:
             return {"status": "not_found"}
-        credential = secrets.token_urlsafe(24)
-        agent["generation"] += 1
-        agent["credential_hash"] = _hash(credential)
-        state["sessions"][_session()] = {
-            "key": key,
-            "generation": agent["generation"],
-        }
-        _save(state)
-        return {
-            "status": "ok",
-            "agent_name": agent["name"],
-            "generation": agent["generation"],
-            "resume_credential": credential,
-        }
+        cred = secrets.token_urlsafe(18)
+        a["generation"] += 1
+        a["cred"] = digest(cred)
+        s["sessions"][session()] = {"key": k, "generation": a["generation"]}
+        save(s)
+        return {"status": "ok", "name": a["name"], "resume_credential": cred}
 
 
 async def agent_status() -> dict:
-    """Show the logical identity bound to this MCP session."""
-    async with LOCK:
-        state = _load()
-        _key_, agent = _actor(state)
-        return {
-            "status": "ok",
-            "agent_name": agent["name"],
-            "generation": agent["generation"],
-        }
+    s = load()
+    _, a = actor(s)
+    return {"status": "ok", "name": a["name"], "generation": a["generation"], "work": a.get("work")}
 
 
 async def work_focus(work_id: str) -> dict:
-    """Switch current work context without changing agent identity."""
     async with LOCK:
-        state = _load()
-        _key_, agent = _actor(state)
-        agent["work_id"] = work_id
-        _save(state)
-        return {"status": "ok", "agent_name": agent["name"], "work_id": work_id}
+        s = load()
+        _, a = actor(s)
+        a["work"] = work_id
+        save(s)
+        return {"status": "ok", "agent": a["name"], "work": work_id}
 
 
-async def message_send(
-    recipient: str,
-    payload: JsonValue,
-    context: dict[str, str] | None = None,
-) -> dict:
-    """Send to an agent name; task/work context is optional metadata."""
+async def message_send(recipient: str, payload: Any, context: dict | None = None) -> dict:
     async with LOCK:
-        state = _load()
-        _sender_key, sender = _actor(state)
-        recipient_key = _key(recipient)
-        target = state["agents"].get(recipient_key)
-        if target is None:
-            return {"status": "not_found", "reason": "recipient_unknown"}
-        message_id = str(uuid4())
-        state["messages"].append(
-            {
-                "id": message_id,
-                "sender": sender["name"],
-                "recipient": target["name"],
-                "recipient_key": recipient_key,
-                "payload": payload,
-                "context": context,
-                "state": "AVAILABLE",
-                "received_generation": None,
-                "in_reply_to": None,
-            }
-        )
-        _save(state)
-        return {"status": "ok", "message_id": message_id}
+        s, rk = load(), key(recipient)
+        _, sender = actor(s)
+        if rk not in s["agents"]:
+            return {"status": "not_found"}
+        mid = str(uuid4())
+        s["messages"].append({
+            "id": mid, "sender": sender["name"], "recipient_key": rk,
+            "payload": payload, "context": context, "state": "AVAILABLE",
+            "received_generation": None,
+        })
+        save(s)
+        return {"status": "ok", "message_id": mid}
 
 
 async def message_pending() -> dict:
-    """List this agent's available or received messages."""
-    async with LOCK:
-        state = _load()
-        key, _agent = _actor(state)
-        messages = [
-            item
-            for item in state["messages"]
-            if item["recipient_key"] == key and item["state"] != "DISPOSITIONED"
-        ]
-        return {"status": "ok", "messages": messages}
+    s = load()
+    k, _ = actor(s)
+    return {"status": "ok", "messages": [
+        m for m in s["messages"] if m["recipient_key"] == k and m["state"] != "DONE"
+    ]}
 
 
 async def message_receive(message_id: str) -> dict:
-    """Claim one exact message for the current agent generation."""
     async with LOCK:
-        state = _load()
-        item, agent = _owned_message(state, message_id)
-        if item["state"] == "DISPOSITIONED":
-            return {"status": "conflict", "reason": "already_dispositioned"}
-        item["state"] = "RECEIVED"
-        item["received_generation"] = agent["generation"]
-        _save(state)
-        return {"status": "ok", "message": item}
+        s = load()
+        k, a = actor(s)
+        for m in s["messages"]:
+            if m["id"] == message_id and m["recipient_key"] == k:
+                m["state"], m["received_generation"] = "RECEIVED", a["generation"]
+                save(s)
+                return {"status": "ok", "message": m}
+        return {"status": "not_found"}
 
 
-async def message_reply(
-    message_id: str,
-    payload: JsonValue,
-    context: dict[str, str] | None = None,
-) -> dict:
-    """Reply to the logical sender; task/work context remains optional."""
+async def message_reply(message_id: str, payload: Any) -> dict:
     async with LOCK:
-        state = _load()
-        item, agent = _owned_message(state, message_id)
-        if item["state"] != "RECEIVED":
-            return {"status": "conflict", "reason": "receive_first"}
-        if item["received_generation"] != agent["generation"]:
-            return {"status": "stale"}
-        reply_id = str(uuid4())
-        state["messages"].append(
-            {
-                "id": reply_id,
-                "sender": agent["name"],
-                "recipient": item["sender"],
-                "recipient_key": _key(item["sender"]),
-                "payload": payload,
-                "context": context,
-                "state": "AVAILABLE",
-                "received_generation": None,
-                "in_reply_to": item["id"],
-            }
-        )
-        item["state"] = "DISPOSITIONED"
-        _save(state)
-        return {"status": "ok", "message_id": reply_id}
+        s = load()
+        k, a = actor(s)
+        for m in s["messages"]:
+            if m["id"] != message_id or m["recipient_key"] != k:
+                continue
+            if m["state"] != "RECEIVED" or m["received_generation"] != a["generation"]:
+                return {"status": "stale"}
+            recipient = key(m["sender"])
+            rid = str(uuid4())
+            s["messages"].append({
+                "id": rid, "sender": a["name"], "recipient_key": recipient,
+                "payload": payload, "context": {"in_reply_to": message_id},
+                "state": "AVAILABLE", "received_generation": None,
+            })
+            m["state"] = "DONE"
+            save(s)
+            return {"status": "ok", "message_id": rid}
+        return {"status": "not_found"}
 
 
-async def message_done(message_id: str) -> dict:
-    """Mark one received message handled without replying."""
-    async with LOCK:
-        state = _load()
-        item, agent = _owned_message(state, message_id)
-        if item["state"] != "RECEIVED":
-            return {"status": "conflict", "reason": "receive_first"}
-        if item["received_generation"] != agent["generation"]:
-            return {"status": "stale"}
-        item["state"] = "DISPOSITIONED"
-        _save(state)
-        return {"status": "ok"}
-
-
-for tool in (
-    agent_register, agent_resume, agent_takeover, agent_status, work_focus, work_resolve,
-    message_send, message_pending, message_receive, message_reply, message_done,
+for fn in (
+    work_resolve, agent_register, agent_resume, agent_takeover, agent_status,
+    work_focus, message_send, message_pending, message_receive, message_reply,
 ):
-    MCP.tool(tool)
-
-
-async def _serve() -> None:
-    app = MCP.http_app(path="/mcp", json_response=True, stateless_http=False)
-    await app.state.fastmcp_server.run_http_async(
-        host="127.0.0.1",
-        port=PORT,
-        path="/mcp",
-        json_response=True,
-        stateless_http=False,
-        show_banner=False,
-    )
+    MCP.tool(fn)
 
 
 if __name__ == "__main__":
-    asyncio.run(_serve())
+    MCP.run(transport="http", host="127.0.0.1", port=PORT, path="/mcp")
