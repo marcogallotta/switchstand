@@ -58,7 +58,7 @@ def _payload(notes: str) -> dict[str, object]:
         tail = tail[newline + 1:]
     value, _ = json.JSONDecoder().raw_decode(tail)
     if not isinstance(value, dict):
-        raise ValueError("resolver payload must be an object")
+        raise TypeError("resolver payload must be an object")
     return value
 
 
@@ -94,7 +94,7 @@ async def resolve_alias(reference: str, reader: TaskReader) -> ResolverResult:
         return ResolverResult(status=registry.status, alias=alias)
     try:
         owner_gid, roles = _entry(_payload(registry.item.notes), alias)
-    except (ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, json.JSONDecodeError):
         return ResolverResult(status="unknown", alias=alias)
 
     async def exact(gid: str) -> ResolvedTask | None:
