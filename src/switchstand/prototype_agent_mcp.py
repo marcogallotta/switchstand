@@ -80,7 +80,6 @@ def _owned_message(state: dict, message_id: str) -> tuple[dict, dict]:
     raise ValueError("message not found for current agent")
 
 
-@MCP.tool
 async def agent_register(name: str) -> dict:
     """Choose an unused visible name and bind this MCP session to it."""
     async with LOCK:
@@ -104,7 +103,6 @@ async def agent_register(name: str) -> dict:
         }
 
 
-@MCP.tool
 async def agent_resume(name: str, resume_credential: str) -> dict:
     """Bind a new MCP session to the same agent name after reconnect."""
     async with LOCK:
@@ -122,7 +120,6 @@ async def agent_resume(name: str, resume_credential: str) -> dict:
         }
 
 
-@MCP.tool
 async def agent_takeover(name: str, takeover_code: str) -> dict:
     """Replace an old agent only when Marco hands over the prototype takeover code."""
     expected = os.getenv("SWITCHSTAND_PROTO_TAKEOVER_CODE", "")
@@ -150,7 +147,6 @@ async def agent_takeover(name: str, takeover_code: str) -> dict:
         }
 
 
-@MCP.tool
 async def agent_status() -> dict:
     """Show the logical identity bound to this MCP session."""
     async with LOCK:
@@ -163,7 +159,6 @@ async def agent_status() -> dict:
         }
 
 
-@MCP.tool
 async def work_focus(work_id: str) -> dict:
     """Switch current work context without changing agent identity."""
     async with LOCK:
@@ -174,7 +169,6 @@ async def work_focus(work_id: str) -> dict:
         return {"status": "ok", "agent_name": agent["name"], "work_id": work_id}
 
 
-@MCP.tool
 async def message_send(
     recipient: str,
     payload: JsonValue,
@@ -206,7 +200,6 @@ async def message_send(
         return {"status": "ok", "message_id": message_id}
 
 
-@MCP.tool
 async def message_pending() -> dict:
     """List this agent's available or received messages."""
     async with LOCK:
@@ -220,7 +213,6 @@ async def message_pending() -> dict:
         return {"status": "ok", "messages": messages}
 
 
-@MCP.tool
 async def message_receive(message_id: str) -> dict:
     """Claim one exact message for the current agent generation."""
     async with LOCK:
@@ -234,7 +226,6 @@ async def message_receive(message_id: str) -> dict:
         return {"status": "ok", "message": item}
 
 
-@MCP.tool
 async def message_reply(
     message_id: str,
     payload: JsonValue,
@@ -267,7 +258,6 @@ async def message_reply(
         return {"status": "ok", "message_id": reply_id}
 
 
-@MCP.tool
 async def message_done(message_id: str) -> dict:
     """Mark one received message handled without replying."""
     async with LOCK:
@@ -280,6 +270,13 @@ async def message_done(message_id: str) -> dict:
         item["state"] = "DISPOSITIONED"
         _save(state)
         return {"status": "ok"}
+
+
+for tool in (
+    agent_register, agent_resume, agent_takeover, agent_status, work_focus,
+    message_send, message_pending, message_receive, message_reply, message_done,
+):
+    MCP.tool(tool)
 
 
 async def _serve() -> None:
