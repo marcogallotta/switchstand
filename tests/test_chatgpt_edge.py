@@ -115,6 +115,95 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         assert authorization["code_challenge_methods_supported"] == ["S256"]
 
 
+async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
+    async def verified(_self, token):
+        subject, client_id = (
+            (GITHUB_ID, "client-a") if token == "token-a" else ("999999", "client-b")
+        )
+        return AccessToken(
+            token=token,
+            client_id=client_id,
+            scopes=[REQUIRED_SCOPE],
+            subject=subject,
+            claims={"iss": ISSUER},
+            resource=RESOURCE,
+            expires_at=int(time.time()) + 60,
+        )
+
+    monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
+    app = create_app(service(), CONFIG, client_storage=MemoryStore())
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {"name": "session-proof", "version": "1"},
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+        },
+    }
+    base_headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+    }
+
+    async with app.router.lifespan_context(app), httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url=ISSUER
+    ) as raw:
+        first = await raw.post(
+            "/mcp",
+            headers=base_headers | {"authorization": "Bearer token-a"},
+            json=initialize,
+        )
+        assert first.status_code == 200
+        first_session = first.headers["mcp-session-id"]
+        session_headers = base_headers | {
+            "authorization": "Bearer token-a",
+            "mcp-session-id": first_session,
+            "mcp-protocol-version": "2025-03-26",
+        }
+        ready = await raw.post(
+            "/mcp",
+            headers=session_headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert ready.status_code == 202
+        for request_id in (2, 3):
+            listed = await raw.post(
+                "/mcp",
+                headers=session_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            )
+            assert listed.status_code == 200
+
+        second = await raw.post(
+            "/mcp",
+            headers=base_headers | {"authorization": "Bearer token-a"},
+            json=initialize | {"id": 4},
+        )
+        assert second.status_code == 200
+        second_session = second.headers["mcp-session-id"]
+        assert second_session != first_session
+
+        rejected = await raw.post(
+            "/mcp",
+            headers=session_headers | {"authorization": "Bearer token-b"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/list",
+                "params": {},
+            },
+        )
+        assert rejected.status_code == 404
+        assert "Session not found" in rejected.text
+
+
 async def test_authenticated_registry_preserves_append_and_routes_create(monkeypatch, caplog):
     from unittest.mock import AsyncMock
 
