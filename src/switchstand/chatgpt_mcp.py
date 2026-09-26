@@ -8,6 +8,7 @@ from pydantic import Field, JsonValue
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .agent_messages import (
+    AgentMessageContext,
     AgentMessagePendingResult,
     AgentMessageSubmitResult,
     AgentRegistrationResult,
@@ -511,9 +512,7 @@ def build_ordinary_tools(
         audited("message_disposition", str(work_id), result.status)
         return result
 
-    async def agent_context() -> tuple[
-        PrincipalContext, WorkGrant, AgentMailbox
-    ] | tuple[str, str]:
+    async def agent_context() -> AgentMessageContext | tuple[str, str]:
         grant_result = await service.grant_get()
         if grant_result.status == "unknown":
             return "recovery_required", "state_unavailable"
@@ -535,7 +534,7 @@ def build_ordinary_tools(
             return "denied", "agent_not_registered"
         if binding.mailbox.work_id != grant.authority.active_work_id:
             return "stale", "agent_binding_changed"
-        return principal, grant, binding.mailbox
+        return AgentMessageContext(principal, grant, binding.mailbox)
 
     async def agent_register(
         api_version: Literal["1"],
@@ -578,9 +577,9 @@ def build_ordinary_tools(
     ) -> AgentMessageSubmitResult:
         """Send one durable request to a registered immutable agent name."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
-        _principal, grant, sender = context
+        grant, sender = context.grant, context.mailbox
         assert mailboxes is not None
         recipient = await mailboxes.by_name(recipient_name)
         if recipient.status == "recovery_required":
@@ -611,9 +610,9 @@ def build_ordinary_tools(
     ) -> AgentMessagePendingResult:
         """List this registered agent's durable pending deliveries without WorkId addressing."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return AgentMessagePendingResult(status=context[0], reason=context[1])
-        _principal, grant, mailbox = context
+        grant, mailbox = context.grant, context.mailbox
         assert mailboxes is not None
         result = await message_pending(
             api_version, mailbox.work_id, grant.version, cursor=cursor, limit=limit
@@ -638,9 +637,9 @@ def build_ordinary_tools(
     ) -> MessageTransitionResult:
         """Receive one delivery for this registered name under current MCP-session fencing."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return MessageTransitionResult(status=context[0], reason=context[1])
-        _principal, grant, mailbox = context
+        grant, mailbox = context.grant, context.mailbox
         return await message_receive(api_version, mailbox.work_id, grant.version, delivery_id)
 
     async def agent_message_recover(
@@ -648,9 +647,9 @@ def build_ordinary_tools(
     ) -> MessageTransitionResult:
         """Explicitly recover a received delivery after an authorized binding/session replacement."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return MessageTransitionResult(status=context[0], reason=context[1])
-        _principal, grant, mailbox = context
+        grant, mailbox = context.grant, context.mailbox
         return await message_recover(api_version, mailbox.work_id, grant.version, delivery_id)
 
     async def agent_message_result_send(
@@ -681,9 +680,9 @@ def build_ordinary_tools(
     ) -> MessageTransitionResult:
         """Disposition one received delivery using its exact reply as evidence."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return MessageTransitionResult(status=context[0], reason=context[1])
-        _principal, grant, mailbox = context
+        grant, mailbox = context.grant, context.mailbox
         return await message_disposition(
             api_version, mailbox.work_id, grant.version,
             delivery_id, result_message_id,
