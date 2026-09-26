@@ -25,7 +25,12 @@ from switchstand.contracts import (
 from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
-from switchstand.grants import PrincipalContext, ProtectedAppend
+from switchstand.grants import (
+    PrincipalContext,
+    ProtectedAppend,
+    ProtectedUpdate,
+    ScalarPatch,
+)
 from switchstand.provider import PROJECT
 from switchstand.state import PostgresState, metadata
 
@@ -72,6 +77,33 @@ async def test_trusted_issuance_is_versioned_and_replacement_removes_old_work(su
     assert (await service.append(old_request)).status == "denied"
     assert (await service.get()).item.id == replacement.authority.active_work_id
     assert provider.sends == 0
+
+
+async def test_authenticated_certification_grant_admits_append_and_update(subject):
+    service, selected, provider = subject
+    principal = selected.principal.model_copy(update={"assurance": "authenticated"})
+    arguments = Namespace(
+        assurance="authenticated", scope="workspace", profile="ordinary-certification",
+        qualification="test:native-cert",
+    )
+    operations, append_qualification, update_qualification = test_grant.grant_permissions(
+        arguments
+    )
+    certification = selected.model_copy(update={
+        "principal": principal,
+        "operations": frozenset(operations),
+        "append_qualification": append_qualification,
+        "update_qualification": update_qualification,
+    })
+    await service.grants.issue(certification, None)
+    appended = await service.gateway.append(principal, request(certification))
+    assert appended.status == "ok" and appended.effect == "applied"
+    updated = await service.update_gateway.update(principal, ProtectedUpdate(
+        api_version="1", operation_id=uuid4(), work_id=certification.authority.active_work_id,
+        grant_version=certification.version, observed_revision=provider.revision,
+        patch=ScalarPatch(title="Certified task"),
+    ))
+    assert updated.status == "ok" and updated.effect == "applied"
 
 
 async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):

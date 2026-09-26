@@ -23,7 +23,6 @@ enabled = true
 # directly; it must not depend on a pre-existing user-level server with the same name.
 url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 required = false
-auth = "oauth"
 default_tools_approval_mode = "approve"
 enabled_tools = ["grant_get", "work_get", "work_search", "work_resolve_reference",
                  "work_structure", "source_task", "source_stories", "source_story",

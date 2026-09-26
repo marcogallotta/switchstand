@@ -40,3 +40,35 @@ def test_workspace_qualification_grant_mode_is_explicit():
         "--assurance", "authenticated", "--scope", "workspace", "inspect",
     ])
     assert args.scope == "workspace"
+
+
+def test_ordinary_certification_profile_is_explicit_and_complete():
+    args = test_grant.parser().parse_args([
+        "--issuer", "https://switchstand.example.com/",
+        "--subject", "192548", "--client-id", "codex-client",
+        "--assurance", "authenticated", "--scope", "workspace",
+        "--profile", "ordinary-certification", "set", "--task", "100",
+        "--test-project", "200", "--expected-version", "0",
+        "--ttl-seconds", "60", "--qualification", "test:native-cert",
+    ])
+    operations, append_qualification, update_qualification = test_grant.grant_permissions(args)
+    assert operations == {
+        "work_get", "work_search", "work_create", "work_append", "work_update", "message",
+    }
+    assert append_qualification == update_qualification == "certification:native-cert"
+
+
+@pytest.mark.parametrize("flags", [
+    ["--assurance", "test", "--scope", "workspace"],
+    ["--assurance", "authenticated", "--scope", "launch"],
+])
+def test_ordinary_certification_profile_requires_authenticated_workspace(flags):
+    args = test_grant.parser().parse_args([
+        "--issuer", "https://switchstand.example.com/",
+        "--subject", "192548", "--client-id", "codex-client", *flags,
+        "--profile", "ordinary-certification", "set", "--task", "100",
+        "--test-project", "200", "--expected-version", "0",
+        "--ttl-seconds", "60", "--qualification", "test:native-cert",
+    ])
+    with pytest.raises(ValueError, match="authenticated workspace"):
+        test_grant.grant_permissions(args)

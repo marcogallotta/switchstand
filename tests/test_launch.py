@@ -163,10 +163,11 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     ordinary = {name for name, _ in build_ordinary_tools(chatgpt_service())}
     switchstand = servers["switchstand"]
     assert switchstand["required"] is False
-    assert switchstand["auth"] == "oauth"
     assert switchstand["default_tools_approval_mode"] == "approve"
     assert "command" not in switchstand
     assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+    assert "oauth_resource" not in switchstand
+    assert "auth" not in switchstand
     assert set(switchstand["enabled_tools"]) == ordinary
     assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
@@ -460,8 +461,11 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
         "codex", "-C", "/control", "--add-dir", "/writer", "-a", "never", "-c",
         f'default_permissions="{PROFILE}"',
         "-c", filesystem_override(Path("/control")),
+        "-c", 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"',
         "-c", "mcp_servers.switchstand.enabled=false",
+        "-c", 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"',
         "-c", "mcp_servers.switchstand_managed.required=true",
+        "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
         "-c", "mcp_servers.switchstand_development.required=true",
     ]
     assert 'work_get(api_version="1")' in command[-1]
@@ -783,8 +787,11 @@ def test_readback_disables_all_switchstand_servers(monkeypatch):
 
     _rpc_messages(Path("/repo"), Path("/writer"), {})
     arguments = launched["arguments"]
+    assert 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"' in arguments
     assert "mcp_servers.switchstand.enabled=false" in arguments
+    assert 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"' in arguments
     assert "mcp_servers.switchstand_managed.enabled=false" in arguments
+    assert 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"' in arguments
     assert "mcp_servers.switchstand_development.enabled=false" in arguments
 
 
