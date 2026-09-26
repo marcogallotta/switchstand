@@ -56,6 +56,12 @@ class CountingProvider(Provider):
 
     def __init__(self):
         super().__init__()
+        self.canonical_ids.update(
+            value for value in (
+                os.getenv("STAGE5_SENDER_GID"),
+                os.getenv("STAGE5_RECIPIENT_GID"),
+            ) if value
+        )
         self.path = Path(os.environ["EFFECT_FILE"])
         self.state_path = Path(os.environ["PROVIDER_STATE_FILE"])
         if self.path.exists():
@@ -81,6 +87,17 @@ class CountingProvider(Provider):
             self.title, self.notes = state["title"], state["notes"]
             self.completed, self.revision = state["completed"], state["revision"]
         return await super().get(task_gid)
+
+    async def search_work(self, text, completed, cursor, limit):
+        page = await super().search_work(text, completed, cursor, limit)
+        sender_gid = os.getenv("STAGE5_SENDER_GID")
+        if not sender_gid:
+            return page
+        from dataclasses import replace
+        return replace(
+            page,
+            items=(replace(page.items[0], provider_work_id=sender_gid),),
+        )
 
     async def list_attachments(self, task_gid, cursor, limit):
         self._count("list_attachments")
@@ -196,7 +213,7 @@ async def _provision_composed(url, subject):
     return selected, managed, denied
 
 
-async def _provision_ordinary_stage5(url, subject):
+async def _provision_ordinary_stage5(url, subject, sender_gid, recipient_gid):
     engine = create_async_engine(url)
     from alembic import command
     from alembic.config import Config
@@ -206,8 +223,8 @@ async def _provision_ordinary_stage5(url, subject):
     os.environ["DATABASE_URL"] = url
     command.upgrade(config, "head")
     state, grants = PostgresState(engine), GrantState(engine)
-    sender = await state.bind("asana", "123")
-    recipient = await state.bind("asana", "456")
+    sender = await state.bind("asana", sender_gid)
+    recipient = await state.bind("asana", recipient_gid)
     sender_principal = PrincipalContext(
         issuer=ISSUER, subject=subject, client_id=CLIENT_ID, assurance="authenticated",
     )
@@ -364,7 +381,10 @@ async def test_ordinary_stateful_review_loop_recovers_same_identities_after_rest
         pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
     assert make_url(url).database == "switchstand_test"
     subject = str(uuid4().int)
-    sender_grant, recipient_grant = await _provision_ordinary_stage5(url, subject)
+    sender_gid, recipient_gid = str(uuid4().int), str(uuid4().int)
+    sender_grant, recipient_grant = await _provision_ordinary_stage5(
+        url, subject, sender_gid, recipient_gid
+    )
     sender = sender_grant.authority.active_work_id
     recipient = recipient_grant.authority.active_work_id
     request_id, recovery_request_id, result_id = uuid4(), uuid4(), uuid4()
@@ -383,6 +403,8 @@ async def test_ordinary_stateful_review_loop_recovers_same_identities_after_rest
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
         "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "STAGE5_SENDER_GID": sender_gid,
+        "STAGE5_RECIPIENT_GID": recipient_gid,
         "SWITCHSTAND_MCP_BIND_PORT": str(port),
     }
 
