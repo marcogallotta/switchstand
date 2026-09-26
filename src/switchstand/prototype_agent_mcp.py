@@ -123,6 +123,34 @@ async def agent_resume(name: str, resume_credential: str) -> dict:
 
 
 @MCP.tool
+async def agent_takeover(name: str, takeover_code: str) -> dict:
+    """Replace an old agent only when Marco hands over the prototype takeover code."""
+    expected = os.getenv("SWITCHSTAND_PROTO_TAKEOVER_CODE", "")
+    if not expected or not secrets.compare_digest(takeover_code, expected):
+        return {"status": "denied"}
+    async with LOCK:
+        state = _load()
+        key = _key(name)
+        agent = state["agents"].get(key)
+        if agent is None:
+            return {"status": "not_found"}
+        credential = secrets.token_urlsafe(24)
+        agent["generation"] += 1
+        agent["credential_hash"] = _hash(credential)
+        state["sessions"][_session()] = {
+            "key": key,
+            "generation": agent["generation"],
+        }
+        _save(state)
+        return {
+            "status": "ok",
+            "agent_name": agent["name"],
+            "generation": agent["generation"],
+            "resume_credential": credential,
+        }
+
+
+@MCP.tool
 async def agent_status() -> dict:
     """Show the logical identity bound to this MCP session."""
     async with LOCK:
