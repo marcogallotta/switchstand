@@ -16,6 +16,7 @@ from .core import (
     AttachmentPage,
     ProviderAttachment,
     ProviderError,
+    ProviderRelation,
     ProviderSourceStory,
     ProviderSourceTask,
     ProviderStoriesPage,
@@ -23,7 +24,6 @@ from .core import (
     UnknownEffect,
 )
 from .discovery import ProviderSearchItem, ProviderSearchPage, ProviderStructure
-from .grants import RelationPatch
 
 PROJECTS = (
     "1218210259719507",
@@ -743,14 +743,14 @@ class AsanaProvider:
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("dependency read failed") from None
 
-    async def relation_matches(self, provider_work_id: str, patch: RelationPatch) -> bool:
+    async def relation_matches(self, provider_work_id: str, patch: ProviderRelation) -> bool:
         task = await self._task(provider_work_id)
         if task is None or not await self._canonical(task):
             raise ProviderError("relation read denied")
         if patch.kind == "assignee":
             assignee = task.get("assignee")
             actual = None if assignee is None else self._gid(assignee)
-            return actual == patch.target_gid
+            return actual == patch.assignee_gid
         if patch.kind == "placement":
             memberships = task.get("memberships")
             if not isinstance(memberships, list):
@@ -772,10 +772,10 @@ class AsanaProvider:
         assert patch.target_gid is not None
         return (patch.target_gid in dependencies) == (patch.action == "add")
 
-    async def update_relation(self, provider_work_id: str, patch: RelationPatch) -> None:
+    async def update_relation(self, provider_work_id: str, patch: ProviderRelation) -> None:
         if patch.kind == "assignee":
             await self._write(
-                "PUT", f"/tasks/{provider_work_id}", {"assignee": patch.target_gid},
+                "PUT", f"/tasks/{provider_work_id}", {"assignee": patch.assignee_gid},
                 unknown_on_server_error=True,
             )
             return
