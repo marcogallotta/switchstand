@@ -6,7 +6,7 @@ from uuid import UUID
 from mcp.server import MCPServer
 from pydantic import Field, JsonValue
 
-from .agent_mailboxes import AgentMailbox, AgentMailboxState
+from .agent_mailboxes import AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
     AgentMessagePendingResult,
