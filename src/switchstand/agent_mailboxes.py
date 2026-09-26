@@ -2,6 +2,7 @@
 
 import re
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, model_validator
 from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, Table, Text, UniqueConstraint, select, update
@@ -29,7 +30,7 @@ agent_mailboxes = Table(
 class AgentMailbox(ClosedModel):
     name: str = Field(min_length=1, max_length=80)
     name_key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9.-]*$")
-    work_id: str
+    work_id: UUID
     principal_key: str = Field(min_length=1)
     generation: int = Field(ge=1)
 
@@ -67,7 +68,7 @@ class AgentMailboxState:
     @staticmethod
     def _view(row) -> AgentMailbox:
         return AgentMailbox(
-            name=row["display_name"], name_key=row["name_key"], work_id=str(row["work_id"]),
+            name=row["display_name"], name_key=row["name_key"], work_id=row["work_id"],
             principal_key=row["principal_key"], generation=row["generation"],
         )
 
@@ -83,7 +84,7 @@ class AgentMailboxState:
                     mailbox = self._view(bound)
                     if (
                         mailbox.name == display
-                        and mailbox.work_id == str(work_id)
+                        and mailbox.work_id == work_id
                         and mailbox.principal_key == principal_key
                     ):
                         return AgentMailboxResult(status="ok", mailbox=mailbox)
