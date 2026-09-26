@@ -37,7 +37,6 @@ from .grants import (
     WorkGrant,
 )
 from .mcp import PublicWorkResult, closed_tool, project_work
-from .resolver import ResolverResult, resolve_alias
 from .messages import (
     DispositionEvidence,
     MessageDispositionRequest,
@@ -51,6 +50,7 @@ from .messages import (
     disposition_digest,
     send_received_result,
 )
+from .resolver import ResolverResult, resolve_alias
 
 
 def build_message_tools(
