@@ -122,6 +122,45 @@ async def work_resolve(query: str) -> dict:
     return out
 
 
+async def work_read(gid: str) -> dict:
+    """Read one exact Asana task by GID."""
+    return {"status": "ok", "work": await task(gid)}
+
+
+async def work_create(name: str, parent_gid: str, notes: str = "") -> dict:
+    """Create one real child task under an exact canonical owner/work item."""
+    data = {"name": name, "parent": parent_gid}
+    if notes:
+        data["notes"] = notes
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token()}"}, trust_env=False, timeout=10
+    ) as client:
+        r = await client.post("https://app.asana.com/api/1.0/tasks", json={"data": data})
+        r.raise_for_status()
+        made = r.json()["data"]
+    return {"status": "ok", "work": summary(await task(made["gid"]), "created")}
+
+
+async def work_update(
+    gid: str, name: str | None = None, notes: str | None = None,
+    completed: bool | None = None,
+) -> dict:
+    """Update title/notes/completion on one exact Asana task."""
+    data = {k: v for k, v in {
+        "name": name, "notes": notes, "completed": completed
+    }.items() if v is not None}
+    if not data:
+        return {"status": "no_change", "work": summary(await task(gid), "exact")}
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token()}"}, trust_env=False, timeout=10
+    ) as client:
+        r = await client.put(
+            f"https://app.asana.com/api/1.0/tasks/{gid}", json={"data": data}
+        )
+        r.raise_for_status()
+    return {"status": "ok", "work": summary(await task(gid), "updated")}
+
+
 async def agent_register(name: str) -> dict:
     async with LOCK:
         s, k = load(), key(name)
@@ -237,7 +276,8 @@ async def message_reply(message_id: str, payload: Any) -> dict:
 
 
 for fn in (
-    work_resolve, agent_register, agent_resume, agent_takeover, agent_status,
+    work_resolve, work_read, work_create, work_update,
+    agent_register, agent_resume, agent_takeover, agent_status,
     work_focus, message_send, message_pending, message_receive, message_reply,
 ):
     MCP.tool(fn)
