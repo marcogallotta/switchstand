@@ -397,7 +397,16 @@ def build_ordinary_tools(
         """Send a result only from the current MCP session bound to the received delivery."""
         context = await message_context(work_id, grant_version)
         if isinstance(context, MessageTransitionResult):
-            result = MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+            if context.reason == "grant_version_changed":
+                result = MessageSubmitResult(status="stale", reason="grant_version_changed")
+            elif context.reason == "runtime_currentness_unavailable":
+                result = MessageSubmitResult(
+                    status="recovery_required", reason="runtime_currentness_unavailable"
+                )
+            elif context.reason == "delivery_not_for_current_work":
+                result = MessageSubmitResult(status="denied", reason="actor_not_admitted")
+            else:
+                result = MessageSubmitResult(status="denied", reason="no_current_grant")
             audited("message_result_send", str(work_id), result.status)
             return result
         principal, _grant, namespace, session_id = context
@@ -411,7 +420,7 @@ def build_ordinary_tools(
             current = current_generations.get(namespace)
             if session_id in retired or current != session_id:
                 result = MessageSubmitResult(
-                    status="recovery_required", reason="state_unavailable"
+                    status="stale", reason="runtime_generation_changed"
                 )
             else:
                 result = await send_received_result(
