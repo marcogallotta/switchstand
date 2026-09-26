@@ -25,6 +25,7 @@ def upgrade() -> None:
             sa.ForeignKey("work_handles.id", ondelete="RESTRICT"), nullable=False,
         ),
         sa.Column("principal_key", sa.Text(), nullable=False, unique=True),
+        sa.UniqueConstraint("work_id", name="uq_agent_mailbox_work_id"),
         sa.Column("generation", sa.Integer(), nullable=False),
         sa.CheckConstraint("generation >= 1", name="ck_agent_mailbox_generation"),
     )
