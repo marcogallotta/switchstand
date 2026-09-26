@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "Run this from the Switchstand repo."
+  exit 1
+}
+PY="$ROOT/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+  PY="$(command -v python3.14 || command -v python3 || true)"
+fi
+[ -n "$PY" ] || { echo "Python not found."; exit 1; }
+
+STATE="$HOME/.local/state/switchstand"
+mkdir -p "$STATE"
+PIDFILE="$STATE/prototype-agent-mcp.pid"
+LOG="$STATE/prototype-agent-mcp.log"
+SOURCE="$STATE/prototype-agent-mcp.py"
+
+if [ -f "$PIDFILE" ]; then
+  old="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    kill "$old" 2>/dev/null || true
+    sleep 0.2
+  fi
+fi
+
+git fetch -q origin prototype/agent-addressing-mcp || exit 1
+git show origin/prototype/agent-addressing-mcp:src/switchstand/prototype_agent_mcp.py > "$SOURCE" || exit 1
+
+SWITCHSTAND_PROTO_TAKEOVER_CODE=43 "$PY" "$SOURCE" >"$LOG" 2>&1 &
+pid=$!
+echo "$pid" > "$PIDFILE"
+sleep 0.6
+if ! kill -0 "$pid" 2>/dev/null; then
+  cat "$LOG"
+  exit 1
+fi
+
+cleanup() {
+  kill "$pid" 2>/dev/null || true
+  rm -f "$PIDFILE"
+}
+trap cleanup EXIT INT TERM
+
+exec codex \
+  -c 'mcp_servers.switchstand.enabled=false' \
+  -c 'mcp_servers.proto.url="http://127.0.0.1:8791/mcp"' \
+  -c 'mcp_servers.proto.required=true' \
+  -c 'mcp_servers.proto.default_tools_approval_mode="approve"' \
+  'Use only the proto MCP for Switchstand product behavior. Register yourself as MCP if needed. First call work_resolve with "lifecycle stateful task" and explain what it resolved and why. Then wait for Marco.'
