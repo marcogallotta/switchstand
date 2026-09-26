@@ -283,5 +283,13 @@ for fn in (
     MCP.tool(fn)
 
 
+async def serve() -> None:
+    app = MCP.http_app(path="/mcp", json_response=True, stateless_http=False)
+    await app.state.fastmcp_server.run_http_async(
+        host="127.0.0.1", port=PORT, path="/mcp",
+        json_response=True, stateless_http=False, show_banner=False,
+    )
+
+
 if __name__ == "__main__":
-    MCP.run(transport="http", host="127.0.0.1", port=PORT, path="/mcp")
+    asyncio.run(serve())
