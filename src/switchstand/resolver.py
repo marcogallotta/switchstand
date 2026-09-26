@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field, model_validator
 
@@ -57,26 +57,42 @@ def _payload(notes: str) -> dict[str, object]:
             raise ValueError("resolver block missing")
         tail = tail[newline + 1:]
     value, _ = json.JSONDecoder().raw_decode(tail)
-    if not isinstance(value, dict):
-        raise TypeError("resolver payload must be an object")
-    return value
+    if (
+        not isinstance(value, dict)
+        or any(not isinstance(key, str) for key in value)
+    ):
+        raise TypeError("resolver payload must be an object with string keys")
+    return cast(dict[str, object], value)
 
 
 def _entry(payload: dict[str, object], alias: str) -> tuple[str, dict[str, list[str]]]:
     raw = payload.get(alias)
-    if not isinstance(raw, dict) or set(raw) != {"owner", "roles"}:
+    if (
+        not isinstance(raw, dict)
+        or any(not isinstance(key, str) for key in raw)
+    ):
         raise ValueError("resolver alias missing or malformed")
-    owner, roles = raw["owner"], raw["roles"]
-    if not isinstance(owner, str) or not owner.isdigit() or not isinstance(roles, dict):
+    record = cast(dict[str, object], raw)
+    if set(record) != {"owner", "roles"}:
+        raise ValueError("resolver alias missing or malformed")
+    owner, roles_raw = record["owner"], record["roles"]
+    if (
+        not isinstance(owner, str)
+        or not owner.isdigit()
+        or not isinstance(roles_raw, dict)
+        or any(not isinstance(key, str) for key in roles_raw)
+    ):
         raise ValueError("resolver alias malformed")
+    roles = cast(dict[str, object], roles_raw)
     typed: dict[str, list[str]] = {}
-    for role, gids in roles.items():
-        if (
-            not isinstance(role, str) or not role
-            or not isinstance(gids, list)
-            or any(not isinstance(gid, str) or not gid.isdigit() for gid in gids)
-        ):
+    for role, gids_raw in roles.items():
+        if not role or not isinstance(gids_raw, list):
             raise ValueError("resolver role malformed")
+        gids: list[str] = []
+        for gid in cast(list[object], gids_raw):
+            if not isinstance(gid, str) or not gid.isdigit():
+                raise ValueError("resolver role malformed")
+            gids.append(gid)
         typed[role] = gids
     all_gids = [owner, *(gid for gids in typed.values() for gid in gids)]
     if len(all_gids) != len(set(all_gids)):
