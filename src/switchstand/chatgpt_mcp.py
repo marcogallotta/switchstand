@@ -32,7 +32,9 @@ from .grants import (
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
+    RelationPatch,
     ScalarPatch,
     WorkGrant,
 )
@@ -257,6 +259,18 @@ def build_ordinary_tools(
             grant_version=grant_version, observed_revision=observed_revision, patch=patch,
         ))
         audited("work_update", str(work_id), result.status)
+        return result
+
+    async def work_relate(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        grant_version: int, observed_revision: str, patch: RelationPatch,
+    ) -> GuardOutcome:
+        """Apply one bounded assignee/placement/parent/dependency relation mutation."""
+        result = await service.relate(ProtectedRelation(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+        ))
+        audited("work_relate", str(work_id), result.status)
         return result
 
     async def required_result_save(
@@ -518,6 +532,7 @@ def build_ordinary_tools(
         ("work_append", work_append),
         ("work_create", work_create),
         ("work_update", work_update),
+        ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         *build_message_tools(service, audit),
         ("message_receive", message_receive),
