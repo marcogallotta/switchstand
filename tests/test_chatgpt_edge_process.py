@@ -531,6 +531,17 @@ async def _contained_after_restart(endpoint, selected, effects):
                 "api_version": "1", **request,
             })).structured_content
             assert result["effect"] in {"unknown", "not_sent"} and result["status"] != "ok"
+
+        persisted = json.loads(effects.read_text())
+        lost = [story for story in persisted if story["text"] == args["text"]]
+        assert len(persisted) == 3 and len(lost) == 1
+        readback = (await client.call_tool("source_story", {
+            "api_version": "1", "task_gid": "123", "story_gid": lost[0]["story_gid"],
+            "observed_revision": "r4",
+        })).structured_content
+        assert readback["status"] == "ok"
+        assert readback["item"]["story_gid"] == lost[0]["story_gid"]
+        assert readback["item"]["text"] == args["text"]
         assert len(json.loads(effects.read_text())) == 3
 
 
