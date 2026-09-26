@@ -1,5 +1,3 @@
-import json
-
 from switchstand.contracts import SourceTask, SourceTaskResult
 from switchstand.resolver import REGISTRY_TASK_GID, normalize_alias, resolve_alias
 
