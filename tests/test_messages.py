@@ -146,6 +146,59 @@ def test_protocol_contracts_reject_unapproved_or_impossible_shapes(model, values
         model.model_validate(values)
 
 
+async def test_result_routes_back_to_workspace_grant_active_work(subject):
+    state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
+    workspace_sender = sender.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "workspace",
+    })
+    await grants.issue(workspace_sender, 1)
+    submitted = await state.submit(
+        sender_principal, route(recipient), request(workspace_sender)
+    )
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery_id = submitted.message.delivery_id
+    runtime = RuntimeCurrentness(generation="session-recipient", current_generation="session-recipient")
+    received = await state.receive(
+        recipient_principal,
+        runtime,
+        MessageReceiveRequest(
+            api_version="1", delivery_id=delivery_id, grant_version=recipient.version
+        ),
+    )
+    assert received.status == "ok"
+
+    handles = {
+        workspace_sender.authority.active_work_id: Handle(
+            workspace_sender.authority.active_work_id, "asana", "111"
+        ),
+        recipient.authority.active_work_id: Handle(
+            recipient.authority.active_work_id, "asana", "222"
+        ),
+    }
+
+    class BoundState:
+        async def get(self, work_id):
+            return handles.get(work_id)
+
+    result = await send_received_result(
+        BoundState(),
+        grants,
+        state,
+        recipient_principal,
+        MessageSendRequest(
+            api_version="1",
+            work_id=recipient.authority.active_work_id,
+            grant_version=recipient.version,
+            message_id=uuid4(),
+            payload={"answer": "pass"},
+            in_reply_to_delivery_id=delivery_id,
+        ),
+        runtime,
+    )
+    assert result.status == "ok" and result.message is not None
+    assert result.message.recipient_work_id == workspace_sender.authority.active_work_id
+
+
 async def test_workspace_message_transition_uses_explicit_work_id(subject):
     state, _engine, grants, sender_principal, sender, recipient_principal, recipient = subject
     original = await state.submit(sender_principal, route(recipient), request(sender))
