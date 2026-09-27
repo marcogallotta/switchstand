@@ -208,11 +208,23 @@ class RelationGateway:
             section_gid=cast(str | None, optional["section_gid"]),
         )
         provider = self.providers.get(provider_name)
-        if provider is None or not hasattr(provider, "relation_matches"):
+        if (
+            provider is None
+            or not hasattr(provider, "update_relation")
+            or not hasattr(provider, "relation_matches")
+        ):
             return self.guard(
                 request, "unknown", "relation_recovery_unavailable", possible_send=True
             )
-        if not await cast(RelationProvider, provider).relation_matches(task_gid, resolved):
+        relation_provider = cast(RelationProvider, provider)
+        matches = await relation_provider.relation_matches(task_gid, resolved)
+        if not matches and resolved.kind == "placement" and resolved.action == "move":
+            try:
+                await relation_provider.update_relation(task_gid, resolved)
+            except (UnknownEffect, ProviderError):
+                pass
+            matches = await relation_provider.relation_matches(task_gid, resolved)
+        if not matches:
             return self.guard(
                 request, "unknown", "effect_readback_unconfirmed", possible_send=True
             )

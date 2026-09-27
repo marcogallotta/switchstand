@@ -13,16 +13,32 @@ class RelationProvider(Provider):
         self.relation = None
         self.relation_sends = 0
         self.lose_without_apply = False
+        self.partial_move = False
+        self.move_target_present = False
+        self.move_old_present = True
+        self.move_adds = 0
+        self.move_removals = 0
 
     async def update_relation(self, task_gid, patch):
         assert task_gid == "123"
         self.relation_sends += 1
+        if patch.kind == "placement" and patch.action == "move" and self.partial_move:
+            if not self.move_target_present:
+                self.move_target_present = True
+                self.move_adds += 1
+                raise UnknownEffect("lost after target add")
+            if self.move_old_present:
+                self.move_old_present = False
+                self.move_removals += 1
+            return
         if self.lose_without_apply:
             raise UnknownEffect("lost")
         self.relation = patch
 
     async def relation_matches(self, task_gid, patch):
         assert task_gid == "123"
+        if patch.kind == "placement" and patch.action == "move" and self.partial_move:
+            return self.move_target_present and not self.move_old_present
         return self.relation == patch
 
 
@@ -79,3 +95,34 @@ async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effe
     )
     assert blocked.reason == "target_has_unresolved_effect"
     assert provider.relation_sends == 1
+
+
+async def test_relation_gateway_resumes_partial_move_under_same_operation_id():
+    selected = grant(
+        scope="workspace", operations=frozenset({"work_update"}),
+        update_qualification="test:relations",
+    )
+    grants = MemoryGrants(selected)
+    provider = RelationProvider()
+    provider.partial_move = True
+    gateway = RelationGateway(Handles(), grants, {"asana": provider})
+    change = request(
+        selected,
+        RelationPatch(
+            kind="placement", action="move",
+            project_gid="1218210259719507", section_gid="42",
+        ),
+    )
+
+    unknown = await gateway.update(PRINCIPAL, change)
+    assert (unknown.status, unknown.effect) == ("unknown", "unknown")
+    assert (provider.move_adds, provider.move_removals) == (1, 0)
+
+    applied = await gateway.update(PRINCIPAL, change)
+
+    assert (applied.status, applied.effect) == ("ok", "applied")
+    assert applied.operation_id == change.operation_id
+    assert (provider.move_adds, provider.move_removals) == (1, 1)
+    assert provider.relation_sends == 2
+    assert await gateway.update(PRINCIPAL, change) == applied
+    assert provider.relation_sends == 2
