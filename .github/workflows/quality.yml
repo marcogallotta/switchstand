@@ -85,3 +85,78 @@ jobs:
           switchstand-quality sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
           tests/test_docker_lifecycle_real.py'
+
+  repository-bundle:
+    name: Current repository bundle
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: switchstand-repository-bundle-current
+      cancel-in-progress: false
+    env:
+      BUNDLE_NAME: switchstand-current.bundle
+      MANIFEST_NAME: switchstand-current.manifest.json
+      CHECKSUM_NAME: switchstand-current.bundle.sha256
+      RELEASE_TAG: switchstand-repository-bundle-current
+    steps:
+      - name: Build and verify current bundle
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          git init --bare repository.git
+          git -C repository.git remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C repository.git fetch --prune origin '+refs/heads/*:refs/heads/*'
+          git -C repository.git for-each-ref --format='%(refname) %(objectname)' refs/heads \
+            | LC_ALL=C sort > refs.txt
+          test -s refs.txt
+          git -C repository.git bundle create "$PWD/$BUNDLE_NAME" --branches
+          git init --bare verify.git
+          git -C verify.git bundle verify "$PWD/$BUNDLE_NAME"
+          git clone --quiet --branch main "$PWD/$BUNDLE_NAME" materialized
+          while read -r ref sha; do
+            branch="${ref#refs/heads/}"
+            test "$(git -C materialized rev-parse "refs/remotes/origin/$branch")" = "$sha"
+          done < refs.txt
+          bundle_sha256="$(sha256sum "$BUNDLE_NAME" | cut -d' ' -f1)"
+          snapshot_digest="$(sha256sum refs.txt | cut -d' ' -f1)"
+          BUNDLE_SHA256="$bundle_sha256" SNAPSHOT_DIGEST="$snapshot_digest" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          refs = dict(line.split() for line in Path("refs.txt").read_text().splitlines())
+          manifest = {
+              "repository": os.environ["REPOSITORY"],
+              "refs": refs,
+              "snapshot_digest": os.environ["SNAPSHOT_DIGEST"],
+              "bundle_sha256": os.environ["BUNDLE_SHA256"],
+              "provenance": {
+                  "event_sha": os.environ["EVENT_SHA"],
+                  "run_id": os.environ["RUN_ID"],
+                  "run_attempt": os.environ["RUN_ATTEMPT"],
+              },
+          }
+          Path(os.environ["MANIFEST_NAME"]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+          printf '%s  %s\n' "$bundle_sha256" "$BUNDLE_NAME" > "$CHECKSUM_NAME"
+      - name: Publish rolling cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target main \
+              --title "Current repository bundle cache" \
+              --notes "Rolling transport cache; GitHub refs remain source authority."
+          fi
+          gh release upload "$RELEASE_TAG" "$BUNDLE_NAME" --clobber
+          gh release upload "$RELEASE_TAG" "$CHECKSUM_NAME" --clobber
+          gh release upload "$RELEASE_TAG" "$MANIFEST_NAME" --clobber
