@@ -13,14 +13,15 @@ import uvicorn
 from chatgpt_fixture import Provider, grant, service
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
     SwitchstandGitHubProvider,
     create_app,
 )
-from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import LaunchAuthority, Routing, WorkContext
 from switchstand.core import (
     ProviderError,
@@ -36,7 +37,6 @@ from switchstand.lifecycle import LifecycleRepository, RequiredResultPersistence
 from switchstand.messages import MessageState
 from switchstand.resolver import REGISTRY_TASK_GID
 from switchstand.state import PostgresState, metadata
-from sqlalchemy.ext.asyncio import create_async_engine
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
