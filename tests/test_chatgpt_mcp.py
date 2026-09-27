@@ -279,7 +279,7 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
         "work_resolve_reference", {"api_version": "1", "reference": "789"}
     )
     assert denied.structured_content == {
-        "status": "denied", "item": None, "related": None, "grouped": None, "guard": None,
+        "status": "denied", "item": None, "guard": None,
     }
 
 
