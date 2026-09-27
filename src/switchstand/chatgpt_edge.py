@@ -27,7 +27,6 @@ from .messages import MessageState
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
-from .test_create_provider import TestCreateAsanaProvider
 
 LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
@@ -192,11 +191,7 @@ async def serve() -> None:
             return None
 
         test_project = os.getenv("SWITCHSTAND_TEST_PROJECT_GID", "").strip()
-        correlation_field = os.getenv("SWITCHSTAND_CREATE_CORRELATION_FIELD_GID", "").strip()
-        if test_project and correlation_field:
-            provider = TestCreateAsanaProvider(client, test_project, correlation_field)
-        else:
-            provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
+        provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
         grants = GrantState(engine)
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
