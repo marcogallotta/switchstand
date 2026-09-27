@@ -11,6 +11,7 @@ from .agent_messages import (
     AgentMessageContext,
     AgentMessagePendingResult,
     AgentMessageSubmitResult,
+    AgentPendingMessage,
     AgentRegistrationResult,
     public_message,
 )
@@ -512,7 +513,13 @@ def build_ordinary_tools(
         audited("message_disposition", str(work_id), result.status)
         return result
 
-    async def agent_context() -> AgentMessageContext | tuple[str, str]:
+    async def agent_context() -> AgentMessageContext | tuple[
+        Literal["denied", "stale", "recovery_required"],
+        Literal[
+            "state_unavailable", "no_current_grant",
+            "agent_not_registered", "agent_binding_changed",
+        ],
+    ]:
         grant_result = await service.grant_get()
         if grant_result.status == "unknown":
             return "recovery_required", "state_unavailable"
@@ -535,6 +542,21 @@ def build_ordinary_tools(
         if binding.mailbox.work_id != grant.authority.active_work_id:
             return "stale", "agent_binding_changed"
         return AgentMessageContext(principal, grant, binding.mailbox)
+
+    def agent_transition_failure(
+        failure: tuple[
+            Literal["denied", "stale", "recovery_required"],
+            Literal[
+                "state_unavailable", "no_current_grant",
+                "agent_not_registered", "agent_binding_changed",
+            ],
+        ],
+    ) -> MessageTransitionResult:
+        if failure[1] in {"agent_not_registered", "agent_binding_changed"}:
+            return MessageTransitionResult(
+                status=failure[0], reason="receiving_binding_changed"
+            )
+        return MessageTransitionResult(status=failure[0], reason=failure[1])
 
     async def agent_register(
         api_version: Literal["1"],
@@ -629,7 +651,7 @@ def build_ordinary_tools(
         )
         if result.status != "ok":
             return AgentMessagePendingResult(status=result.status, reason=result.reason)
-        views = []
+        views: list[AgentPendingMessage] = []
         for item in result.messages:
             view = await public_message(mailboxes, item)
             if view is None:
@@ -648,7 +670,7 @@ def build_ordinary_tools(
         """Receive one delivery for this registered name under current MCP-session fencing."""
         context = await agent_context()
         if isinstance(context, tuple):
-            return MessageTransitionResult(status=context[0], reason=context[1])
+            return agent_transition_failure(context)
         grant, mailbox = context.grant, context.mailbox
         return await message_receive(api_version, mailbox.work_id, grant.version, delivery_id)
 
@@ -658,7 +680,7 @@ def build_ordinary_tools(
         """Explicitly recover a received delivery after an authorized binding/session replacement."""
         context = await agent_context()
         if isinstance(context, tuple):
-            return MessageTransitionResult(status=context[0], reason=context[1])
+            return agent_transition_failure(context)
         grant, mailbox = context.grant, context.mailbox
         return await message_recover(api_version, mailbox.work_id, grant.version, delivery_id)
 
@@ -691,7 +713,7 @@ def build_ordinary_tools(
         """Disposition one received delivery using its exact reply as evidence."""
         context = await agent_context()
         if isinstance(context, tuple):
-            return MessageTransitionResult(status=context[0], reason=context[1])
+            return agent_transition_failure(context)
         grant, mailbox = context.grant, context.mailbox
         return await message_disposition(
             api_version, mailbox.work_id, grant.version,

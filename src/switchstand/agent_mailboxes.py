@@ -1,7 +1,6 @@
 """Temporary durable agent-name to MessageState mailbox binding."""
 
 import re
-from collections.abc import Mapping
 from typing import Literal, cast
 from uuid import UUID
 
@@ -19,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -78,7 +78,7 @@ class AgentMailboxState:
         self.engine = engine
 
     @staticmethod
-    def _view(row: Mapping[str, object]) -> AgentMailbox:
+    def _view(row: RowMapping) -> AgentMailbox:
         return AgentMailbox(
             name=cast(str, row["display_name"]),
             name_key=cast(str, row["name_key"]),
