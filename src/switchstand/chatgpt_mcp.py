@@ -189,7 +189,7 @@ def build_ordinary_tools(
                     type="text",
                     text=f"Repository bundle {result.status}: {result.reason or 'unavailable'}.",
                 )],
-                structuredContent=structured,
+                structured_content=structured,
             )
         return CallToolResult(
             content=[
@@ -208,7 +208,7 @@ def build_ordinary_tools(
                     mime_type="application/octet-stream",
                 ),
             ],
-            structuredContent=structured,
+            structured_content=structured,
         )
 
     async def work_get(
