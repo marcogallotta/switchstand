@@ -4,12 +4,13 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switchstand.core import ProviderRelation
+from switchstand.core import ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import AsanaProvider
+from switchstand.provider import PROJECTS, AsanaProvider
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
+UNRELATED_PROJECT = "7777777777777777"
 TASK = "123"
 TARGET = "456"
 
@@ -18,6 +19,7 @@ class Boundary(httpx.AsyncBaseTransport):
     def __init__(self):
         self.calls = []
         self.dependencies = set()
+        self.fail_remove_once = False
         self.tasks = {
             TASK: self.task(TASK),
             TARGET: self.task(TARGET),
@@ -52,16 +54,26 @@ class Boundary(httpx.AsyncBaseTransport):
         data = json.loads(request.content)["data"]
         self.calls.append((request.method, path, data))
         task = self.tasks[TASK]
+        if path.endswith("/removeProject") and self.fail_remove_once:
+            self.fail_remove_once = False
+            return httpx.Response(400, request=request, json={"errors": []})
         if path.endswith("/addProject"):
-            task["memberships"] = [{
+            membership = {
                 "project": {"gid": data["project"], "name": "Area"},
                 "section": (
                     None if "section" not in data
                     else {"gid": data["section"], "name": "Stage"}
                 ),
-            }]
+            }
+            task["memberships"] = [
+                row for row in task["memberships"]
+                if row["project"]["gid"] != data["project"]
+            ] + [membership]
         elif path.endswith("/removeProject"):
-            task["memberships"] = []
+            task["memberships"] = [
+                row for row in task["memberships"]
+                if row["project"]["gid"] != data["project"]
+            ]
         elif path.endswith("/setParent"):
             task["parent"] = (
                 None if data["parent"] is None
@@ -137,3 +149,66 @@ async def test_dependency_readback_exhausts_pages_before_proving_presence_or_abs
     await provider.update_relation(TASK, removal)
     assert len(boundary.calls) == before + 1
     assert await provider.relation_matches(TASK, removal)
+
+
+async def test_move_removes_old_admitted_membership_but_preserves_unrelated_membership():
+    boundary = Boundary()
+    old_project = PROJECTS[1]
+    boundary.tasks[TASK]["memberships"] = [
+        {"project": {"gid": old_project, "name": "Old Area"}, "section": None},
+        {
+            "project": {"gid": UNRELATED_PROJECT, "name": "Unrelated"},
+            "section": None,
+        },
+    ]
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, PROJECT)
+        move = ProviderRelation(
+            "placement", "move", project_gid=PROJECT, section_gid=SECTION,
+        )
+
+        await provider.update_relation(TASK, move)
+
+        assert boundary.calls == [
+            (
+                "POST", f"/api/1.0/tasks/{TASK}/addProject",
+                {"project": PROJECT, "section": SECTION},
+            ),
+            (
+                "POST", f"/api/1.0/tasks/{TASK}/removeProject",
+                {"project": old_project},
+            ),
+        ]
+        assert await provider.relation_matches(TASK, move)
+        assert {
+            row["project"]["gid"] for row in boundary.tasks[TASK]["memberships"]
+        } == {PROJECT, UNRELATED_PROJECT}
+
+
+async def test_partial_move_is_unknown_and_resume_sends_only_missing_removal():
+    boundary = Boundary()
+    old_project = PROJECTS[1]
+    boundary.tasks[TASK]["memberships"] = [
+        {"project": {"gid": old_project, "name": "Old Area"}, "section": None},
+    ]
+    boundary.fail_remove_once = True
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, PROJECT)
+        move = ProviderRelation(
+            "placement", "move", project_gid=PROJECT, section_gid=SECTION,
+        )
+
+        with pytest.raises(UnknownEffect):
+            await provider.update_relation(TASK, move)
+        assert not await provider.relation_matches(TASK, move)
+
+        await provider.update_relation(TASK, move)
+
+        assert [path.rsplit("/", 1)[-1] for _, path, _ in boundary.calls] == [
+            "addProject", "removeProject", "removeProject",
+        ]
+        assert await provider.relation_matches(TASK, move)
