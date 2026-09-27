@@ -3,9 +3,9 @@ import subprocess
 from pathlib import Path
 
 import httpx
+from chatgpt_fixture import service
 from mcp.types import ResourceLink
 
-from chatgpt_fixture import service
 from switchstand import repository_bundle
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.repository_bundle import (
