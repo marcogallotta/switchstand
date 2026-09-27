@@ -28,7 +28,6 @@ from switchstand.core import (
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
-from switchstand.provider import RelationMutation
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")

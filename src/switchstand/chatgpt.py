@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
+    ResolvedWorkReference,
     SourceStoriesRequest,
     SourceStoriesResult,
     SourceStoryRequest,
@@ -25,7 +26,6 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
-    ResolvedWorkReference,
     WorkResolution,
     WorkResolveReferenceRequest,
     WorkSearchItem,
