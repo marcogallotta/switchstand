@@ -17,6 +17,7 @@ from .core import (
     AttachmentPage,
     ProviderAttachment,
     ProviderError,
+    ProviderRelation,
     ProviderSourceStory,
     ProviderSourceTask,
     ProviderStoriesPage,
@@ -778,7 +779,191 @@ class AsanaProvider:
         """No heuristic create search: an ambiguous base-Asana create remains durable UNKNOWN."""
         del parent_task_gid, project_gid, operation_id
         return None
+    async def _dependency_gids(self, provider_work_id: str) -> frozenset[str]:
+        try:
+            gids: set[str] = set()
+            offset: str | None = None
+            while True:
+                params: dict[str, str | int] = {"limit": 100, "opt_fields": "gid"}
+                if offset is not None:
+                    params["offset"] = offset
+                response = await self.client.get(
+                    f"/tasks/{provider_work_id}/dependencies", params=params
+                )
+                response.raise_for_status()
+                payload = response.json()
+                rows = payload["data"]
+                if not isinstance(rows, list):
+                    raise TypeError
+                raw_rows = cast(list[object], rows)
+                if len(raw_rows) > 100:
+                    raise TypeError
+                for raw in raw_rows:
+                    gid = self._gid(raw)
+                    if gid is None or gid in gids:
+                        raise TypeError
+                    gids.add(gid)
+                next_page = payload.get("next_page")
+                if next_page is None:
+                    return frozenset(gids)
+                if not isinstance(next_page, dict):
+                    raise TypeError
+                next_offset = cast(JSON, next_page).get("offset")
+                if (
+                    not isinstance(next_offset, str)
+                    or not next_offset
+                    or next_offset == offset
+                ):
+                    raise TypeError
+                offset = next_offset
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("dependency read failed") from None
 
+    def _placement_memberships(self, task: JSON) -> dict[str, str | None]:
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list):
+            raise ProviderError("placement read failed")
+        result: dict[str, str | None] = {}
+        for raw in cast(list[object], memberships):
+            if not isinstance(raw, dict):
+                raise ProviderError("placement read failed")
+            membership = cast(JSON, raw)
+            project_gid = self._gid(membership.get("project"))
+            section = membership.get("section")
+            section_gid = None if section is None else self._gid(section)
+            if project_gid is None or section is not None and section_gid is None:
+                raise ProviderError("placement read failed")
+            if project_gid in result:
+                raise ProviderError("placement read failed")
+            result[project_gid] = section_gid
+        return result
+
+    async def relation_matches(self, provider_work_id: str, patch: ProviderRelation) -> bool:
+        task = await self._task(provider_work_id)
+        if task is None or not await self._canonical(task):
+            raise ProviderError("relation read denied")
+        if patch.kind == "assignee":
+            assignee = task.get("assignee")
+            actual = None if assignee is None else self._gid(assignee)
+            return actual == patch.assignee_gid
+        if patch.kind == "placement":
+            memberships = self._placement_memberships(task)
+            if patch.action == "remove":
+                return patch.project_gid not in memberships
+            target_matches = (
+                patch.project_gid in memberships
+                and memberships[patch.project_gid] == patch.section_gid
+            )
+            if patch.action == "add":
+                return target_matches
+            return target_matches and not any(
+                project_gid != patch.project_gid
+                and project_gid in self._admission_projects
+                for project_gid in memberships
+            )
+        if patch.kind == "parent":
+            return self._parent_gid(task) == patch.target_gid
+        dependencies = await self._dependency_gids(provider_work_id)
+        assert patch.target_gid is not None
+        return (patch.target_gid in dependencies) == (patch.action == "add")
+
+    async def update_relation(self, provider_work_id: str, patch: ProviderRelation) -> None:
+        if patch.kind == "assignee":
+            await self._write(
+                "PUT", f"/tasks/{provider_work_id}", {"assignee": patch.assignee_gid},
+                unknown_on_server_error=True,
+            )
+            return
+        if patch.kind == "placement":
+            assert patch.project_gid is not None
+            if patch.project_gid not in self._admission_projects:
+                raise ProviderError("placement project denied")
+            if patch.action == "remove":
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/removeProject",
+                    {"project": patch.project_gid}, unknown_on_server_error=True,
+                )
+                return
+            if patch.action == "add":
+                data = {"project": patch.project_gid}
+                if patch.section_gid is not None:
+                    data["section"] = patch.section_gid
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/addProject", data,
+                    unknown_on_server_error=True,
+                )
+                return
+            await self._move_placement(provider_work_id, patch)
+            return
+        if patch.kind == "parent":
+            if patch.target_gid is not None:
+                parent = await self._task(patch.target_gid)
+                if parent is None or not await self._canonical(parent):
+                    raise ProviderError("parent target denied")
+            await self._write(
+                "POST", f"/tasks/{provider_work_id}/setParent", {"parent": patch.target_gid},
+                unknown_on_server_error=True,
+            )
+            return
+        assert patch.target_gid is not None
+        target = await self._task(patch.target_gid)
+        if target is None or not await self._canonical(target):
+            raise ProviderError("dependency target denied")
+        path = "addDependencies" if patch.action == "add" else "removeDependencies"
+        await self._write(
+            "POST", f"/tasks/{provider_work_id}/{path}",
+            {"dependencies": [patch.target_gid]}, unknown_on_server_error=True,
+        )
+
+    async def _move_placement(
+        self, provider_work_id: str, patch: ProviderRelation,
+    ) -> None:
+        """Converge a placement move while preserving non-admitted memberships."""
+        assert patch.project_gid is not None
+        sent = False
+        try:
+            task = await self._task(provider_work_id)
+            if task is None or not await self._canonical(task):
+                raise ProviderError("relation read denied")
+            memberships = self._placement_memberships(task)
+            if (
+                patch.project_gid not in memberships
+                or memberships[patch.project_gid] != patch.section_gid
+            ):
+                data = {"project": patch.project_gid}
+                if patch.section_gid is not None:
+                    data["section"] = patch.section_gid
+                sent = True
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/addProject", data,
+                    unknown_on_server_error=True,
+                )
+                task = await self._task(provider_work_id)
+                if task is None:
+                    raise ProviderError("placement read failed")
+                memberships = self._placement_memberships(task)
+                if (
+                    patch.project_gid not in memberships
+                    or memberships[patch.project_gid] != patch.section_gid
+                ):
+                    raise ProviderError("placement target unconfirmed")
+            superseded = sorted(
+                project_gid for project_gid in memberships
+                if project_gid != patch.project_gid
+                and project_gid in self._admission_projects
+            )
+            for project_gid in superseded:
+                sent = True
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/removeProject",
+                    {"project": project_gid}, unknown_on_server_error=True,
+                )
+        except UnknownEffect:
+            raise
+        except ProviderError:
+            if sent:
+                raise UnknownEffect("placement move effect unknown") from None
+            raise
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
         data = {("name" if name == "title" else name): getattr(patch, name)
