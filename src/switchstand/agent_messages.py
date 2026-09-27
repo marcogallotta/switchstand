@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass
 from typing import Literal
+from uuid import UUID
 
 from pydantic import JsonValue, model_validator
-from uuid import UUID
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .contracts import ClosedModel
