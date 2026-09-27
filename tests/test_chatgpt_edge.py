@@ -216,7 +216,6 @@ async def test_stateful_http_session_is_stable_distinct_and_credential_bound(mon
                     "arguments": {
                         "api_version": "1",
                         "work_id": str(ACTIVE),
-                        "grant_version": 1,
                         "delivery_id": str(uuid4()),
                     },
                 },
@@ -291,14 +290,14 @@ async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong
         subject, session_generation=lambda: generation[0]
     ))
     delivery_id = uuid4()
-    base = ("1", ACTIVE, 1, delivery_id)
+    base = ("1", ACTIVE, delivery_id)
 
     received = await tools["message_receive"](*base)
     assert received.status == "ok"
 
     generation[0] = "session-b"
     before_recover = await tools["message_result_send"](
-        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "blocked"}
+        "1", ACTIVE, delivery_id, uuid4(), {"answer": "blocked"}
     )
     assert (before_recover.status, before_recover.reason) == (
         "stale", "runtime_generation_changed"
@@ -311,12 +310,12 @@ async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong
     assert (await tools["message_receive"](*base)).reason == "runtime_generation_changed"
     assert (await tools["message_recover"](*base)).reason == "runtime_generation_changed"
     retired_result = await tools["message_result_send"](
-        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "blocked"}
+        "1", ACTIVE, delivery_id, uuid4(), {"answer": "blocked"}
     )
     assert retired_result.status == "stale"
     assert retired_result.reason == "runtime_generation_changed"
     assert (await tools["message_disposition"](
-        "1", ACTIVE, 1, delivery_id, uuid4()
+        "1", ACTIVE, delivery_id, uuid4()
     )).reason == "runtime_generation_changed"
 
     generation[0] = "session-c"
@@ -327,14 +326,14 @@ async def test_ordinary_message_session_replacement_is_explicit_and_no_ping_pong
 
     generation[0] = "session-b"
     assert (await tools["message_disposition"](
-        "1", ACTIVE, 1, delivery_id, uuid4()
+        "1", ACTIVE, delivery_id, uuid4()
     )).status == "ok"
 
     # Completed-cycle currentness is released only after no RECEIVED delivery remains.
     generation[0] = "session-c"
     next_delivery = uuid4()
     assert (await tools["message_receive"](
-        "1", ACTIVE, 1, next_delivery
+        "1", ACTIVE, next_delivery
     )).status == "ok"
 
     # A process restart has no ephemeral current generation. A fresh session can
@@ -366,7 +365,7 @@ async def test_message_result_send_preserves_preflight_failures(monkeypatch):
 
     subject.grants.grant = None
     denied = await tools["message_result_send"](
-        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "x"}
+        "1", ACTIVE, delivery_id, uuid4(), {"answer": "x"}
     )
     assert (denied.status, denied.reason) == ("denied", "no_current_grant")
 
@@ -374,22 +373,17 @@ async def test_message_result_send_preserves_preflight_failures(monkeypatch):
         scope="workspace",
         operations=frozenset({"message"}),
     )
-    stale = await tools["message_result_send"](
-        "1", ACTIVE, 2, delivery_id, uuid4(), {"answer": "x"}
-    )
-    assert (stale.status, stale.reason) == ("stale", "grant_version_changed")
-
     missing = await tools["message_result_send"](
-        "1", uuid4(), 1, delivery_id, uuid4(), {"answer": "x"}
+        "1", uuid4(), delivery_id, uuid4(), {"answer": "x"}
     )
     assert (missing.status, missing.reason) == ("denied", "delivery_not_for_current_work")
 
     assert (await tools["message_receive"](
-        "1", ACTIVE, 1, delivery_id
+        "1", ACTIVE, delivery_id
     )).status == "ok"
     generation[0] = "session-b"
     wrong_session = await tools["message_result_send"](
-        "1", ACTIVE, 1, delivery_id, uuid4(), {"answer": "x"}
+        "1", ACTIVE, delivery_id, uuid4(), {"answer": "x"}
     )
     assert (wrong_session.status, wrong_session.reason) == (
         "stale", "runtime_generation_changed"
@@ -476,7 +470,6 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "api_version": "1",
             "operation_id": operation_id,
             "work_id": str(ACTIVE),
-            "grant_version": 1,
             "observed_revision": "r1",
             "text": "ChatGPT authorized feedback",
         })
@@ -484,7 +477,6 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "api_version": "1",
             "operation_id": operation_id,
             "work_id": str(ACTIVE),
-            "grant_version": 1,
             "observed_revision": "r1",
             "text": "ChatGPT authorized feedback",
         })
@@ -492,7 +484,6 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "api_version": "1",
             "operation_id": str(uuid4()),
             "parent_work_id": str(ACTIVE),
-            "grant_version": 1,
             "title": "Qualified child",
             "notes": "edge route proof",
         })
