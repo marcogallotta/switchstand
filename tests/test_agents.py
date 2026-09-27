@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agents import AgentDirectory
-from switchstand.state import metadata
+from switchstand.state import PostgresState, metadata
 
 
 @pytest.fixture
@@ -17,12 +17,14 @@ async def directory():
     async with engine.begin() as connection:
         await connection.run_sync(metadata.create_all)
     subject = AgentDirectory(engine)
-    yield subject
+    state = PostgresState(engine)
+    yield subject, state
     await engine.dispose()
 
 
 async def test_register_is_idempotent_and_name_is_immutable(directory):
-    mailbox = uuid4()
+    directory, state = directory
+    mailbox = (await state.bind("asana", str(uuid4().int))).id
     first = await directory.register("principal-a", "session-a", "agent-a", mailbox)
     assert first.status == "ok" and first.identity is not None
     assert (await directory.register(
@@ -33,10 +35,12 @@ async def test_register_is_idempotent_and_name_is_immutable(directory):
 
 
 async def test_name_collision_and_authorized_takeover_preserve_mailbox(directory):
-    mailbox = uuid4()
+    directory, state = directory
+    mailbox = (await state.bind("asana", str(uuid4().int))).id
     first = await directory.register("principal-a", "session-a", "agent-a", mailbox)
     assert first.identity is not None
-    collision = await directory.register("principal-b", "session-b", "agent-a", uuid4())
+    other_mailbox = (await state.bind("asana", str(uuid4().int))).id
+    collision = await directory.register("principal-b", "session-b", "agent-a", other_mailbox)
     assert collision.status == "conflict" and collision.reason == "name_unavailable"
     with pytest.raises(PermissionError):
         await directory.takeover("agent-a", "principal-b", "session-b")
