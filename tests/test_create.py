@@ -55,7 +55,7 @@ class Provider:
             Routing(priority="P0"), WorkContext(), task.canonical,
         )
 
-    async def create_child(self, parent_task_gid, title, notes, operation_id):
+    async def create_work(self, parent_task_gid, area, title, notes, operation_id):
         self.creates += 1
         task_gid = str(9000 + self.creates)
         self.created[operation_id] = task_gid
@@ -63,7 +63,7 @@ class Provider:
             raise UnknownEffect("lost response")
         return task_gid
 
-    async def recover_created(self, parent_task_gid, operation_id):
+    async def recover_created(self, parent_task_gid, area, operation_id):
         return self.created.get(operation_id) if self.visible else None
 
 
@@ -216,4 +216,24 @@ async def test_workspace_scope_can_create_under_explicit_bound_canonical_parent(
     launch = workspace.model_copy(update={"scope": "launch"})
     service.grants.grant = launch
     denied = await service.create(request(launch, parent_work_id=foreign))
+    assert denied.status == "denied" and denied.effect == "not_sent"
+
+
+async def test_workspace_scope_can_create_independent_work_in_named_area():
+    service, selected, _state, provider = subject()
+    workspace = selected.model_copy(
+        update={"scope": "workspace", "create_qualification": "test:create"}
+    )
+    service.grants.grant = workspace
+    req = ProtectedCreate(
+        api_version="1", operation_id=uuid4(), grant_version=workspace.version,
+        title="Independent", notes="notes", area="SW — ChatGPT MCP & Integrations",
+    )
+    result = await service.create(req)
+    assert result.status == "ok" and result.receipt.parent_task_gid is None
+    assert provider.creates == 1
+
+    launch = workspace.model_copy(update={"scope": "launch"})
+    service.grants.grant = launch
+    denied = await service.create(req.model_copy(update={"operation_id": uuid4()}))
     assert denied.status == "denied" and denied.effect == "not_sent"

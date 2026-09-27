@@ -62,7 +62,6 @@ def build_message_tools(
         route_ref: Annotated[str | None, Field(min_length=1)] = None,
         recipient_work_id: UUID | None = None,
         in_reply_to_delivery_id: UUID | None = None,
-        grant_version: int | None = None,
     ) -> MessageSubmitResult:
         """Durably send one request or exactly correlated result."""
         grant = await service.grant_get()
@@ -81,7 +80,6 @@ def build_message_tools(
         api_version: Literal["1"], work_id: UUID,
         cursor: UUID | None = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
-        grant_version: int | None = None,
     ) -> MessagePendingResult:
         """Inspect durable pending deliveries for one explicitly admitted actor."""
         grant = await service.grant_get()
@@ -231,7 +229,7 @@ def build_ordinary_tools(
 
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, text: str, grant_version: int | None = None,
+        observed_revision: str, text: str,
     ) -> GuardOutcome:
         """Append through the current grant. Reuse OperationId; UNKNOWN forbids new-ID retry."""
         grant = await service.grant_get()
@@ -244,22 +242,27 @@ def build_ordinary_tools(
         return result
 
     async def work_create(
-        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
-        title: str, notes: str = "", grant_version: int | None = None,
+        api_version: Literal["1"], operation_id: UUID, title: str, notes: str = "",
+        parent_work_id: UUID | None = None,
+        area: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
     ) -> GuardOutcome:
-        """Create only through a test-qualified grant. Reuse OperationId to reconcile UNKNOWN."""
+        """Create parented or independent work; reuse OperationId to reconcile UNKNOWN."""
         grant = await service.grant_get()
         version = grant.grant.version if grant.status == "ok" and grant.grant is not None else 1
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            grant_version=version, title=title, notes=notes,
+            area=area, grant_version=version, title=title, notes=notes,
         ))
-        audited("work_create", str(parent_work_id), result.status)
+        audited(
+            "work_create",
+            str(parent_work_id) if parent_work_id is not None else area,
+            result.status,
+        )
         return result
 
     async def work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: ScalarPatch, grant_version: int | None = None,
+        observed_revision: str, patch: ScalarPatch,
     ) -> GuardOutcome:
         """Set bounded scalar state. Reuse OperationId to reconcile UNKNOWN without resending."""
         grant = await service.grant_get()
@@ -274,7 +277,6 @@ def build_ordinary_tools(
     async def required_result_save(
         api_version: Literal["1"], work_id: UUID,
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
-        grant_version: int | None = None,
     ) -> GuardOutcome:
         """Save one required result; the server owns its stable operation identity."""
         grant = await service.grant_get()
@@ -343,7 +345,6 @@ def build_ordinary_tools(
 
     async def message_receive(
         api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
-        grant_version: int | None = None,
     ) -> MessageTransitionResult:
         """Receive one exact delivery under this server-owned MCP session generation."""
         context = await message_context(work_id)
@@ -384,7 +385,6 @@ def build_ordinary_tools(
 
     async def message_recover(
         api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
-        grant_version: int | None = None,
     ) -> MessageTransitionResult:
         """Explicitly transfer one received delivery to this replacement MCP session."""
         context = await message_context(work_id)
@@ -428,7 +428,6 @@ def build_ordinary_tools(
     async def message_result_send(
         api_version: Literal["1"], work_id: UUID,
         in_reply_to_delivery_id: UUID, message_id: UUID, payload: JsonValue,
-        grant_version: int | None = None,
     ) -> MessageSubmitResult:
         """Send a result only from the current MCP session bound to the received delivery."""
         context = await message_context(work_id)
@@ -473,7 +472,7 @@ def build_ordinary_tools(
 
     async def message_disposition(
         api_version: Literal["1"], work_id: UUID,
-        delivery_id: UUID, result_message_id: UUID, grant_version: int | None = None,
+        delivery_id: UUID, result_message_id: UUID,
     ) -> MessageTransitionResult:
         """Disposition one received delivery only from its current MCP session."""
         context = await message_context(work_id)
