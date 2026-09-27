@@ -29,7 +29,10 @@ enabled_tools = ["grant_get", "work_get", "work_search", "work_resolve_reference
                  "work_history", "work_attachments", "work_event", "work_append",
                  "work_create", "work_update", "work_relate", "message_send", "message_pending",
                  "message_receive", "message_recover", "message_result_send",
-                 "message_disposition", "required_result_save"]
+                 "message_disposition", "required_result_save", "agent_register",
+                 "agent_message_send", "agent_message_pending", "agent_message_receive",
+                 "agent_message_recover", "agent_message_result_send",
+                 "agent_message_disposition"]
 
 # Supersede the temporary user-level proof alias. Both names target the same endpoint,
 # but only the repository-owned canonical server carries this project's tool policy.
