@@ -17,10 +17,6 @@ from .agent_messages import (
 )
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
     SourceTaskRequest,
     SourceTaskResult,
     WorkAttachmentsRequest,
@@ -228,14 +224,6 @@ def build_ordinary_tools(
         audited("work_event", str(work_id), result.status)
         return result
 
-    async def source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
-        """Read current notes/state of one exact canonical source task; reading grants no work."""
-        result = await service.source_task(
-            SourceTaskRequest(api_version=api_version, task_gid=task_gid)
-        )
-        audited("source_task", task_gid, result.status)
-        return result
-
     async def work_resolve_alias(
         api_version: Literal["1"],
         alias: Annotated[str, Field(min_length=1, max_length=80)],
@@ -246,29 +234,6 @@ def build_ordinary_tools(
 
         result = await resolve_alias(alias, read)
         audited("work_resolve_alias", result.alias, result.status)
-        return result
-
-    async def source_stories(
-        api_version: Literal["1"], task_gid: str, observed_revision: str,
-        offset: str | None = None, limit: int = 50,
-    ) -> SourceStoriesResult:
-        """Read a bounded current history page; stale/error is not an empty inbox."""
-        result = await service.source_stories(SourceStoriesRequest(
-            api_version=api_version, task_gid=task_gid, observed_revision=observed_revision,
-            offset=offset, limit=limit,
-        ))
-        audited("source_stories", task_gid, result.status)
-        return result
-
-    async def source_story(
-        api_version: Literal["1"], task_gid: str, story_gid: str, observed_revision: str,
-    ) -> SourceStoryResult:
-        """Reread an exact material story and its target/currentness before relying on it."""
-        result = await service.source_story(SourceStoryRequest(
-            api_version=api_version, task_gid=task_gid, story_gid=story_gid,
-            observed_revision=observed_revision,
-        ))
-        audited("source_story", task_gid, result.status)
         return result
 
     async def work_append(
@@ -919,9 +884,6 @@ def build_ordinary_tools(
         ("work_history", work_history),
         ("work_attachments", work_attachments),
         ("work_event", work_event),
-        ("source_task", source_task),
-        ("source_stories", source_stories),
-        ("source_story", source_story),
         ("work_append", work_append),
         ("work_create", work_create),
         ("work_update", work_update),
