@@ -419,7 +419,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         scope="workspace",
         operations=frozenset({"work_get", "work_search", "work_append", "work_create", "work_update"}),
         append_qualification="real:chatgpt-edge",
-        create_qualification="test:chatgpt-edge",
+        create_qualification="real:chatgpt-edge",
         update_qualification="real:chatgpt-edge",
     )
     app = create_app(subject, CONFIG, client_storage=MemoryStore())
