@@ -96,8 +96,14 @@ message_projection = Table(
 class MessageRoute(ClosedModel):
     recipient_work_id: UUID
     recipient_grant_version: int = Field(ge=1)
-    projection_provider: Literal["asana"]
-    projection_target: str = Field(min_length=1, pattern=r"^[0-9]+$")
+    projection_provider: Literal["asana"] | None = None
+    projection_target: str | None = Field(default=None, min_length=1, pattern=r"^[0-9]+$")
+
+    @model_validator(mode="after")
+    def projection_pair(self) -> Self:
+        if (self.projection_provider is None) != (self.projection_target is None):
+            raise ValueError("message projection provider and target must be supplied together")
+        return self
 
 
 class MessageSubmitRequest(ClosedModel):
@@ -484,11 +490,12 @@ class MessageState:
                 message_id=request.message_id, recipient_work_id=route.recipient_work_id,
                 recipient_grant_version=route.recipient_grant_version,
             ).on_conflict_do_nothing())
-            await connection.execute(insert(message_projection).values(
-                projection_id=projection_id, sender_work_id=sender_work_id,
-                message_id=request.message_id, operation_id=projection_id,
-                provider=route.projection_provider, target=route.projection_target,
-            ).on_conflict_do_nothing())
+            if route.projection_provider is not None and route.projection_target is not None:
+                await connection.execute(insert(message_projection).values(
+                    projection_id=projection_id, sender_work_id=sender_work_id,
+                    message_id=request.message_id, operation_id=projection_id,
+                    provider=route.projection_provider, target=route.projection_target,
+                ).on_conflict_do_nothing())
             row = (await connection.execute(self._pending_query().where(
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()
@@ -566,6 +573,132 @@ class MessageState:
                 return (await connection.execute(query)).first() is not None
         except (SQLAlchemyError, ValueError):
             return None
+
+    @staticmethod
+    def _admitted_access(
+        row: Mapping[str, Any] | None, work_id: UUID,
+    ) -> MessageTransitionResult | None:
+        if row is None:
+            return _transition("denied", "delivery_not_found")
+        if row["recipient_work_id"] != work_id:
+            return _transition("denied", "delivery_not_for_current_work")
+        return None
+
+    async def receive_admitted(
+        self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
+        request: MessageReceiveRequest,
+    ) -> MessageTransitionResult:
+        failure = self._runtime(runtime)
+        if failure is not None:
+            return _transition(failure[0], failure[1])
+        try:
+            async with self.engine.begin() as connection:
+                raw = (await connection.execute(select(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).with_for_update())).mappings().one_or_none()
+                row = None if raw is None else dict(raw)
+                denied = self._admitted_access(row, work_id)
+                if denied is not None:
+                    return denied
+                assert row is not None
+                if row["state"] == "DISPOSITIONED":
+                    return _transition("conflict", "delivery_already_dispositioned", row)
+                if row["state"] == "RECEIVED":
+                    if (
+                        row["recipient_grant_version"] != binding_version
+                        or row["receiving_generation"] != runtime.generation
+                    ):
+                        return _transition(
+                            "recovery_required", "receiving_binding_changed", row
+                        )
+                    return _transition("ok", row=row)
+                result = await connection.execute(update(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).values(
+                    state="RECEIVED", recipient_grant_version=binding_version,
+                    receiving_generation=runtime.generation, received_at=func.now(),
+                ).returning(*message_deliveries.c))
+                return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
+
+    async def recover_admitted(
+        self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
+        request: MessageReceiveRequest,
+    ) -> MessageTransitionResult:
+        failure = self._runtime(runtime)
+        if failure is not None:
+            return _transition(failure[0], failure[1])
+        try:
+            async with self.engine.begin() as connection:
+                raw = (await connection.execute(select(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).with_for_update())).mappings().one_or_none()
+                row = None if raw is None else dict(raw)
+                denied = self._admitted_access(row, work_id)
+                if denied is not None:
+                    return denied
+                assert row is not None
+                if row["state"] == "DISPOSITIONED":
+                    return _transition("conflict", "delivery_already_dispositioned", row)
+                if row["state"] != "RECEIVED":
+                    return _transition("conflict", "delivery_not_received", row)
+                result = await connection.execute(update(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).values(
+                    recipient_grant_version=binding_version,
+                    receiving_generation=runtime.generation,
+                ).returning(*message_deliveries.c))
+                return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
+
+    async def disposition_admitted(
+        self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
+        request: MessageDispositionRequest,
+    ) -> MessageTransitionResult:
+        failure = self._runtime(runtime)
+        if failure is not None:
+            return _transition(failure[0], failure[1])
+        try:
+            async with self.engine.begin() as connection:
+                raw = (await connection.execute(select(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).with_for_update())).mappings().one_or_none()
+                row = None if raw is None else dict(raw)
+                denied = self._admitted_access(row, work_id)
+                if denied is not None:
+                    return denied
+                assert row is not None
+                if row["state"] == "DISPOSITIONED":
+                    if (
+                        row["disposition_digest"] == request.disposition_digest
+                        and row["evidence"] == request.evidence.model_dump(mode="json")
+                    ):
+                        return _transition("ok", row=row)
+                    return _transition("conflict", "disposition_identity_conflict", row)
+                if row["state"] != "RECEIVED":
+                    return _transition("conflict", "delivery_not_received", row)
+                if (
+                    row["recipient_grant_version"] != binding_version
+                    or row["receiving_generation"] != runtime.generation
+                ):
+                    return _transition("recovery_required", "receiving_binding_changed", row)
+                evidence_failure = await self._evidence_failure_for_work(
+                    connection, work_id, row, request.evidence
+                )
+                if evidence_failure is not None:
+                    return _transition("recovery_required", evidence_failure, row)
+                result = await connection.execute(update(message_deliveries).where(
+                    message_deliveries.c.delivery_id == request.delivery_id
+                ).values(
+                    state="DISPOSITIONED", dispositioned_at=func.now(),
+                    disposition_digest=request.disposition_digest,
+                    evidence=request.evidence.model_dump(mode="json"),
+                ).returning(*message_deliveries.c))
+                return _transition("ok", row=dict(result.mappings().one()))
+        except (SQLAlchemyError, ValueError):
+            return _transition("recovery_required", "state_unavailable")
 
     async def receive(
         self, principal: PrincipalContext, runtime: RuntimeCurrentness,
@@ -709,6 +842,17 @@ class MessageState:
         "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
     ] | None:
         expected_work_id = grant.authority.active_work_id if work_id is None else work_id
+        return await self._evidence_failure_for_work(
+            connection, expected_work_id, delivery, evidence
+        )
+
+    async def _evidence_failure_for_work(
+        self, connection: Any, expected_work_id: UUID, delivery: Mapping[str, Any],
+        evidence: DispositionEvidence,
+    ) -> Literal[
+        "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
+        "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
+    ] | None:
         if evidence.kind == "result":
             result = (await connection.execute(select(messages).where(and_(
                 messages.c.sender_work_id == expected_work_id,

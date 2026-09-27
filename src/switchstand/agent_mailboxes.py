@@ -2,7 +2,7 @@
 
 import re
 from typing import Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import Field, model_validator
 from sqlalchemy import (
@@ -24,6 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ClosedModel
 from .state import metadata, work_handles
+
+MAILBOX_NAMESPACE = UUID("bd780d58-20ff-4f74-8504-25743a297d9a")
+MAILBOX_PROVIDER = "agent-mailbox"
 
 agent_mailboxes = Table(
     "agent_mailboxes",
@@ -129,6 +132,51 @@ class AgentMailboxState:
                 )).scalar_one_or_none()
                 if handle is None:
                     return AgentMailboxResult(status="denied", reason="work_not_bound")
+                await connection.execute(insert(agent_mailboxes).values(
+                    name_key=key, display_name=display, work_id=work_id,
+                    principal_key=principal_key, generation=1,
+                ))
+                row = (await connection.execute(
+                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key)
+                )).mappings().one()
+                return AgentMailboxResult(status="ok", mailbox=self._view(row))
+        except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
+    async def register_agent(self, name: str, principal_key: str) -> AgentMailboxResult:
+        """Register an agent with a deterministic internal mailbox identity."""
+        try:
+            key = agent_name_key(name)
+            display = " ".join(name.strip().split())
+            work_id = uuid5(MAILBOX_NAMESPACE, key)
+            async with self.engine.begin() as connection:
+                bound = (await connection.execute(
+                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key).with_for_update()
+                )).mappings().one_or_none()
+                if bound is not None:
+                    mailbox = self._view(bound)
+                    if mailbox.name == display and mailbox.principal_key == principal_key:
+                        return AgentMailboxResult(status="ok", mailbox=mailbox)
+                    return AgentMailboxResult(status="conflict", reason="name_collision")
+                prior = (await connection.execute(
+                    select(agent_mailboxes.c.name_key).where(
+                        agent_mailboxes.c.principal_key == principal_key
+                    ).with_for_update()
+                )).scalar_one_or_none()
+                if prior is not None:
+                    return AgentMailboxResult(
+                        status="conflict", reason="principal_already_registered"
+                    )
+                await connection.execute(insert(work_handles).values(
+                    id=work_id, provider=MAILBOX_PROVIDER, provider_work_id=key,
+                ).on_conflict_do_nothing())
+                handle = (await connection.execute(select(
+                    work_handles.c.provider, work_handles.c.provider_work_id,
+                ).where(work_handles.c.id == work_id).with_for_update())).one_or_none()
+                if handle != (MAILBOX_PROVIDER, key):
+                    return AgentMailboxResult(
+                        status="recovery_required", reason="state_unavailable"
+                    )
                 await connection.execute(insert(agent_mailboxes).values(
                     name_key=key, display_name=display, work_id=work_id,
                     principal_key=principal_key, generation=1,
