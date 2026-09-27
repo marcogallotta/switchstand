@@ -279,7 +279,7 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
         "work_resolve_reference", {"api_version": "1", "reference": "789"}
     )
     assert denied.structured_content == {
-        "status": "denied", "item": None, "related": None, "grouped": None, "guard": None,
+        "status": "denied", "item": None, "guard": None,
     }
 
 
@@ -342,10 +342,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "work_search", {"api_version": "1", "text": "Task"}
         )).structured_content
         assert search["status"] == "denied" and search["items"] == []
-        related = (await client.call_tool("work_get", {
-            "api_version": "1", "include_related": True,
-        })).structured_content
-        assert related["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
+        get_tool = next(tool for tool in tools if tool.name == "work_get")
+        assert "include_related" not in get_tool.input_schema["properties"]
+        assert "related" not in get_tool.output_schema["properties"]
+        assert "grouped" not in get_tool.output_schema["properties"]
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'observed_revision': "r1", 'text': "protocol feedback"}
