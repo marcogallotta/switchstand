@@ -434,7 +434,6 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
     )
     async with app.router.lifespan_context(app), Client(transport) as client:
         names = {tool.name for tool in await client.list_tools()}
-        grant_result = await client.call_tool("grant_get", {"api_version": "1"})
         search = await client.call_tool("work_search", {
             "api_version": "1", "text": "Task", "limit": 10,
         })
@@ -492,7 +491,6 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "observed_revision": "r2", "patch": {"completed": True},
         })
     assert names == {name for name, _ in build_ordinary_tools(subject)}
-    assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
     assert search.structured_content["status"] == "ok"
     assert search.structured_content["items"][0]["id"] == str(ACTIVE)
     assert "provider" not in search.structured_content["items"][0]

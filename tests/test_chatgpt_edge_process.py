@@ -38,7 +38,7 @@ from switchstand.run import RunReceipt, process_start_token
 from switchstand.state import PostgresState
 
 TOOLS = {
-    "grant_get", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
+    "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
     "source_task", "source_stories",
     "source_story", "work_history", "work_attachments", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "message_send", "message_pending",
@@ -252,10 +252,6 @@ async def _discover(endpoint, selected):
                     assert (limit["default"], limit["minimum"], limit["maximum"]) == (50, 1, 100)
         await read_chain(client, search["items"][0]["id"])
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
-        assert (await client.call_tool("grant_get", {"api_version": "1"})).structured_content[
-            "grant"
-        ]["id"] == str(selected.id)
-
 
 async def _exercise(endpoint, selected, operation_id):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
