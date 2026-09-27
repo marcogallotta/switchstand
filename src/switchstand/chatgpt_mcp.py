@@ -753,8 +753,8 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        grant, mailbox = context.grant, context.mailbox
-        return await message_receive(api_version, mailbox.work_id, grant.version, delivery_id)
+        mailbox = context.mailbox
+        return await message_receive(api_version, mailbox.work_id, delivery_id)
 
     async def agent_message_recover(
         api_version: Literal["1"], delivery_id: UUID,
@@ -763,8 +763,8 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        grant, mailbox = context.grant, context.mailbox
-        return await message_recover(api_version, mailbox.work_id, grant.version, delivery_id)
+        mailbox = context.mailbox
+        return await message_recover(api_version, mailbox.work_id, delivery_id)
 
     async def agent_message_result_send(
         api_version: Literal["1"], delivery_id: UUID,
@@ -774,11 +774,10 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
-        grant, mailbox = context.grant, context.mailbox
+        mailbox = context.mailbox
         assert mailboxes is not None
         result = await message_result_send(
-            api_version, mailbox.work_id, grant.version,
-            delivery_id, message_id, payload,
+            api_version, mailbox.work_id, delivery_id, message_id, payload,
         )
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
@@ -796,10 +795,9 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        grant, mailbox = context.grant, context.mailbox
+        mailbox = context.mailbox
         return await message_disposition(
-            api_version, mailbox.work_id, grant.version,
-            delivery_id, result_message_id,
+            api_version, mailbox.work_id, delivery_id, result_message_id,
         )
 
     return (
