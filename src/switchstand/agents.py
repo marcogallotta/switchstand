@@ -1,6 +1,7 @@
 """Durable ordinary-agent names and replacement fencing."""
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -142,6 +143,27 @@ class AgentDirectory:
             return AgentDirectoryResult(
                 status="recovery_required", reason="agent_directory_unavailable"
             )
+
+    @asynccontextmanager
+    async def locked_current(
+        self, principal_key: str, session_generation: str,
+    ) -> AsyncGenerator[AgentBinding | None]:
+        async with self.engine.begin() as connection:
+            row = (await connection.execute(select(agent_bindings).where(
+                agent_bindings.c.principal_key == principal_key,
+                agent_bindings.c.session_generation == session_generation,
+            ).with_for_update())).mappings().one_or_none()
+            yield None if row is None else AgentBinding.from_row(row)
+
+    async def resolve_mailbox(self, mailbox_work_id: UUID) -> AgentBinding | None:
+        try:
+            async with self.engine.connect() as connection:
+                row = (await connection.execute(select(agent_bindings).where(
+                    agent_bindings.c.mailbox_work_id == mailbox_work_id
+                ))).mappings().one_or_none()
+            return None if row is None else AgentBinding.from_row(row)
+        except (SQLAlchemyError, TypeError, ValueError):
+            return None
 
     async def resolve(self, name: str) -> AgentBinding | None:
         try:

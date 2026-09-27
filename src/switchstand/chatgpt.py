@@ -9,6 +9,7 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from .agent_messages import AgentMessageFacade
 from .agents import AgentDirectory
 from .contracts import (
     ClosedModel,
@@ -95,6 +96,10 @@ class ChatGPTService:
         self.messages = messages
         self.required_results = required_results
         self.agents = agents
+        self.agent_messages = (
+            AgentMessageFacade(state, grants, messages, agents)
+            if messages is not None and agents is not None else None
+        )
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)

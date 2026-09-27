@@ -161,7 +161,7 @@ class MessageSubmitResult(ClosedModel):
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
-        "runtime_generation_changed", "state_unavailable",
+        "runtime_generation_changed", "agent_not_registered", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -187,7 +187,7 @@ class MessagePendingResult(ClosedModel):
     has_more: bool = False
     reason: Literal[
         "no_current_grant", "grant_version_changed", "actor_not_admitted",
-        "message_not_granted", "state_unavailable",
+        "message_not_granted", "agent_not_registered", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -257,7 +257,7 @@ class MessageTransitionResult(ClosedModel):
         "runtime_generation_changed", "receiving_binding_changed", "delivery_not_received",
         "delivery_already_dispositioned", "disposition_identity_conflict",
         "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
-        "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
+        "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch", "agent_not_registered",
         "state_unavailable",
     ] | None = None
 

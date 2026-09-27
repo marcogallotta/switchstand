@@ -164,6 +164,118 @@ def build_ordinary_tools(
         audited("agent_get", None, result.status)
         return result
 
+    async def agent_message_admission() -> tuple[
+        PrincipalContext, WorkGrant, str
+    ] | None:
+        grant_result = await service.grant_get()
+        if (grant_result.status != "ok" or grant_result.principal is None
+                or grant_result.grant is None or grant_result.grant.scope != "workspace"
+                or "message" not in grant_result.grant.operations):
+            return None
+        try:
+            session_id = generation()
+        except (KeyError, RuntimeError, ValueError):
+            return None
+        return grant_result.principal, grant_result.grant, session_id
+
+    async def agent_message_send(
+        api_version: Literal["1"],
+        recipient_agent: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")],
+        message_id: UUID,
+        payload: JsonValue,
+    ) -> MessageSubmitResult:
+        """Send one durable request to a registered agent name."""
+        admitted = await agent_message_admission()
+        if admitted is None or service.agents is None or service.agent_messages is None:
+            return MessageSubmitResult(status="denied", reason="agent_not_registered")
+        principal, grant, session_id = admitted
+        async with service.agents.locked_current(principal.key, session_id) as binding:
+            if binding is None:
+                return MessageSubmitResult(status="denied", reason="agent_not_registered")
+            result = await service.agent_messages.send(
+                principal, grant, binding, recipient_agent, message_id, payload
+            )
+        audited("agent_message_send", recipient_agent, result.status)
+        return result
+
+    async def agent_message_pending(
+        api_version: Literal["1"],
+        cursor: UUID | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> MessagePendingResult:
+        """Read pending deliveries for this registered agent."""
+        admitted = await agent_message_admission()
+        if admitted is None or service.agents is None or service.agent_messages is None:
+            return MessagePendingResult(status="denied", reason="agent_not_registered")
+        principal, grant, session_id = admitted
+        async with service.agents.locked_current(principal.key, session_id) as binding:
+            if binding is None:
+                return MessagePendingResult(status="denied", reason="agent_not_registered")
+            result = await service.agent_messages.pending(binding, grant, cursor, limit)
+        audited("agent_message_pending", binding.name, result.status)
+        return result
+
+    async def agent_message_transition(
+        operation: Literal["receive", "recover"],
+        api_version: Literal["1"], delivery_id: UUID,
+    ) -> MessageTransitionResult:
+        admitted = await agent_message_admission()
+        if admitted is None or service.agents is None or service.agent_messages is None:
+            return MessageTransitionResult(status="denied", reason="agent_not_registered")
+        principal, grant, session_id = admitted
+        async with service.agents.locked_current(principal.key, session_id) as binding:
+            if binding is None:
+                return MessageTransitionResult(status="denied", reason="agent_not_registered")
+            result = await service.agent_messages.transition(
+                operation, principal, grant, binding, session_id, delivery_id
+            )
+        audited(f"agent_message_{operation}", binding.name, result.status)
+        return result
+
+    async def agent_message_receive(
+        api_version: Literal["1"], delivery_id: UUID,
+    ) -> MessageTransitionResult:
+        return await agent_message_transition("receive", api_version, delivery_id)
+
+    async def agent_message_recover(
+        api_version: Literal["1"], delivery_id: UUID,
+    ) -> MessageTransitionResult:
+        return await agent_message_transition("recover", api_version, delivery_id)
+
+    async def agent_message_result_send(
+        api_version: Literal["1"], in_reply_to_delivery_id: UUID,
+        message_id: UUID, payload: JsonValue,
+    ) -> MessageSubmitResult:
+        admitted = await agent_message_admission()
+        if admitted is None or service.agents is None or service.agent_messages is None:
+            return MessageSubmitResult(status="denied", reason="agent_not_registered")
+        principal, grant, session_id = admitted
+        async with service.agents.locked_current(principal.key, session_id) as binding:
+            if binding is None:
+                return MessageSubmitResult(status="denied", reason="agent_not_registered")
+            result = await service.agent_messages.result_send(
+                principal, grant, binding, session_id,
+                in_reply_to_delivery_id, message_id, payload,
+            )
+        audited("agent_message_result_send", binding.name, result.status)
+        return result
+
+    async def agent_message_disposition(
+        api_version: Literal["1"], delivery_id: UUID, result_message_id: UUID,
+    ) -> MessageTransitionResult:
+        admitted = await agent_message_admission()
+        if admitted is None or service.agents is None or service.agent_messages is None:
+            return MessageTransitionResult(status="denied", reason="agent_not_registered")
+        principal, grant, session_id = admitted
+        async with service.agents.locked_current(principal.key, session_id) as binding:
+            if binding is None:
+                return MessageTransitionResult(status="denied", reason="agent_not_registered")
+            result = await service.agent_messages.disposition(
+                principal, grant, binding, session_id, delivery_id, result_message_id
+            )
+        audited("agent_message_disposition", binding.name, result.status)
+        return result
+
     async def grant_get(api_version: Literal["1"]) -> GrantResult:
         """Read this authenticated caller's current grant; this never issues or changes a grant."""
         result = await service.grant_get()
@@ -605,6 +717,12 @@ def build_ordinary_tools(
     return (
         ("agent_register", agent_register),
         ("agent_get", agent_get),
+        ("agent_message_send", agent_message_send),
+        ("agent_message_pending", agent_message_pending),
+        ("agent_message_receive", agent_message_receive),
+        ("agent_message_recover", agent_message_recover),
+        ("agent_message_result_send", agent_message_result_send),
+        ("agent_message_disposition", agent_message_disposition),
         ("grant_get", grant_get),
         ("work_get", work_get),
         ("work_search", work_search),
