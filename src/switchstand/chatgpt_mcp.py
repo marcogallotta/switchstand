@@ -50,6 +50,7 @@ from .messages import (
     disposition_digest,
     send_received_result,
 )
+from .resolver import ResolverResult, resolve_alias
 
 
 def build_message_tools(
@@ -225,6 +226,18 @@ def build_ordinary_tools(
             SourceTaskRequest(api_version=api_version, task_gid=task_gid)
         )
         audited("source_task", task_gid, result.status)
+        return result
+
+    async def work_resolve_alias(
+        api_version: Literal["1"],
+        alias: Annotated[str, Field(min_length=1, max_length=80)],
+    ) -> ResolverResult:
+        """Resolve one normalized alias through the temporary canonical registry index."""
+        async def read(task_gid: str) -> SourceTaskResult:
+            return await service.source_task(SourceTaskRequest(api_version=api_version, task_gid=task_gid))
+
+        result = await resolve_alias(alias, read)
+        audited("work_resolve_alias", result.alias, result.status)
         return result
 
     async def source_stories(
@@ -553,6 +566,7 @@ def build_ordinary_tools(
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
+        ("work_resolve_alias", work_resolve_alias),
         ("work_structure", work_structure),
         ("work_history", work_history),
         ("work_attachments", work_attachments),
