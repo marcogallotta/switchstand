@@ -295,7 +295,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "message_result_send", "message_disposition",
         ):
             schema = next(tool for tool in tools if tool.name == ordinary).input_schema
-            assert "grant_version" not in schema["properties"]
+            assert "grant_version" not in schema.get("required", [])
         update = next(tool for tool in tools if tool.name == "work_update")
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()

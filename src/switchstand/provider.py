@@ -1,4 +1,5 @@
 from typing import Any, cast
+from uuid import UUID
 
 import httpx
 
@@ -735,7 +736,7 @@ class AsanaProvider:
 
     async def create_work(
         self, parent_task_gid: str | None, area: str | None, title: str, notes: str,
-        operation_id: object,
+        operation_id: UUID,
     ) -> str:
         data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
         project_gid: str | None = None
@@ -776,7 +777,7 @@ class AsanaProvider:
             raise UnknownEffect("created task readback unknown") from None
 
     async def recover_created(
-        self, parent_task_gid: str | None, area: str | None, operation_id: object,
+        self, parent_task_gid: str | None, area: str | None, operation_id: UUID,
     ) -> str | None:
         # Production Asana has no trustworthy create-correlation key. Ambiguous create stays
         # UNKNOWN and is never resent; a later explicit reconciliation path may bind it.
