@@ -2,6 +2,13 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [ "$#" -eq 0 ] || [ "${1:-}" = --coordinator ]; then
+    if [ "${1:-}" = --coordinator ]; then
+        shift
+    fi
+    exec codex -C "$repo" --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
+fi
+
 if [ "${1:-}" = --isolated ]; then
     shift
     : "${HOME:?HOME is required for isolated Switchstand launch}"
