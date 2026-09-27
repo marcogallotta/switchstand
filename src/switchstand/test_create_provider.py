@@ -50,6 +50,12 @@ class TestCreateAsanaProvider(AsanaProvider):
             and await self._canonical(task)
         )
 
+    async def create_child(
+        self, parent_task_gid: str, title: str, notes: str, operation_id: UUID,
+    ) -> str:
+        """Compatibility shim for the isolated test-create adapter."""
+        return await self.create_work(parent_task_gid, None, title, notes, operation_id)
+
     async def create_work(
         self, parent_task_gid: str | None, area: str | None, title: str, notes: str,
         operation_id: UUID,
