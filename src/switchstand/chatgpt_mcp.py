@@ -6,6 +6,7 @@ from uuid import UUID
 from mcp.server import MCPServer
 from pydantic import Field, JsonValue
 
+from .agents import AgentDirectoryResult
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
     SourceStoriesRequest,
@@ -116,6 +117,52 @@ def build_ordinary_tools(
     def audited(tool: str, target: str | None, status: str) -> None:
         if audit is not None:
             audit(tool, target, status)
+
+    async def agent_register(
+        api_version: Literal["1"],
+        name: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")],
+    ) -> AgentDirectoryResult:
+        """Register this MCP session's immutable messaging name."""
+        if service.agents is None:
+            return AgentDirectoryResult(
+                status="recovery_required", reason="agent_directory_unavailable"
+            )
+        grant_result = await service.grant_get()
+        if (grant_result.status != "ok" or grant_result.principal is None
+                or grant_result.grant is None or grant_result.grant.scope != "workspace"
+                or "message" not in grant_result.grant.operations):
+            return AgentDirectoryResult(status="denied", reason="agent_not_admitted")
+        try:
+            session_id = generation()
+        except (KeyError, RuntimeError, ValueError):
+            return AgentDirectoryResult(
+                status="recovery_required", reason="runtime_currentness_unavailable"
+            )
+        result = await service.agents.register(
+            grant_result.principal.key, session_id, name,
+            grant_result.grant.authority.active_work_id,
+        )
+        audited("agent_register", name, result.status)
+        return result
+
+    async def agent_get(api_version: Literal["1"]) -> AgentDirectoryResult:
+        """Read this exact MCP session's registered messaging identity."""
+        if service.agents is None:
+            return AgentDirectoryResult(
+                status="recovery_required", reason="agent_directory_unavailable"
+            )
+        grant_result = await service.grant_get()
+        if grant_result.status != "ok" or grant_result.principal is None:
+            return AgentDirectoryResult(status="denied", reason="agent_not_admitted")
+        try:
+            session_id = generation()
+        except (KeyError, RuntimeError, ValueError):
+            return AgentDirectoryResult(
+                status="recovery_required", reason="runtime_currentness_unavailable"
+            )
+        result = await service.agents.current(grant_result.principal.key, session_id)
+        audited("agent_get", None, result.status)
+        return result
 
     async def grant_get(api_version: Literal["1"]) -> GrantResult:
         """Read this authenticated caller's current grant; this never issues or changes a grant."""
@@ -556,6 +603,8 @@ def build_ordinary_tools(
         return result
 
     return (
+        ("agent_register", agent_register),
+        ("agent_get", agent_get),
         ("grant_get", grant_get),
         ("work_get", work_get),
         ("work_search", work_search),

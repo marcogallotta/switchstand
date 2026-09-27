@@ -9,6 +9,7 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from .agents import AgentDirectory
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
@@ -84,6 +85,7 @@ class ChatGPTService:
         self, principal: PrincipalResolver, state: State,
         grants: GrantState, providers: dict[str, Provider], messages: MessageState | None = None,
         required_results: RequiredResultPersistence | None = None,
+        agents: AgentDirectory | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.gateway = AppendGateway(state, grants, providers)
@@ -92,6 +94,7 @@ class ChatGPTService:
         self.relation_gateway = RelationGateway(state, grants, providers)
         self.messages = messages
         self.required_results = required_results
+        self.agents = agents
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)

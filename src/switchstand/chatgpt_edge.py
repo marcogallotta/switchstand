@@ -19,6 +19,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .agents import AgentDirectory
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools
 from .grant_state import GrantState
@@ -158,6 +159,7 @@ def create_app(
         service.providers,
         service.messages,
         service.required_results,
+        service.agents,
     )
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
@@ -200,7 +202,8 @@ async def serve() -> None:
         grants = GrantState(engine)
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
-        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)))
+        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
+        AgentDirectory(engine))
         app = create_app(service, config)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
