@@ -1,9 +1,10 @@
 import os
 from uuid import uuid4
 
-from chatgpt_fixture import grant
 import pytest
+from chatgpt_fixture import grant
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
