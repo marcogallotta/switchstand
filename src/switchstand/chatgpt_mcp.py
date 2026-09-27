@@ -134,7 +134,7 @@ def build_ordinary_tools(
             audit(tool, target, status)
 
     async def current_grant_version() -> tuple[int | None, str]:
-        result = await service.grant_get()
+        result = await service.admission_get()
         if result.status == "unknown":
             return None, "unknown"
         if result.status != "ok" or result.grant is None:
