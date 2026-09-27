@@ -36,6 +36,7 @@ from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
 from switchstand.run import RunReceipt, process_start_token
 from switchstand.state import PostgresState
+from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
     "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
@@ -299,7 +300,9 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
         assert first["receipt"]["work_id"] == str(selected.authority.active_work_id)
-        assert first["receipt"]["grant_id"] == str(selected.id)
+        admission = WorkspaceAdmissionState.admission(selected.principal)
+        assert first["receipt"]["grant_id"] == str(admission.id)
+        assert first["receipt"]["grant_version"] == admission.version == 1
         assert await _exercise(endpoint, selected, operation_id) == first
     with _server(env, port) as endpoint:
         assert await _exercise(endpoint, selected, operation_id) == first
