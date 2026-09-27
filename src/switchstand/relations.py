@@ -1,0 +1,243 @@
+"""Durable bounded relational task mutations using the existing effect journal."""
+
+import hashlib
+import json
+from typing import Protocol, cast
+from uuid import UUID
+
+from sqlalchemy.exc import SQLAlchemyError
+
+from .core import Provider, ProviderError, ProviderRelation, State, UnknownEffect
+from .grant_state import EffectRecord, GrantState
+from .grants import (
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedRelation,
+    RelationReceipt,
+    WorkGrant,
+)
+
+
+class RelationProvider(Protocol):
+    async def update_relation(self, provider_work_id: str, patch: ProviderRelation) -> None: ...
+    async def relation_matches(self, provider_work_id: str, patch: ProviderRelation) -> bool: ...
+
+
+class RelationGateway:
+    def __init__(self, state: State, grants: GrantState, providers: dict[str, Provider]):
+        self.state, self.grants, self.providers = state, grants, providers
+
+    @staticmethod
+    def fingerprint(principal: PrincipalContext, request: ProtectedRelation) -> str:
+        payload = [
+            principal.key, str(request.work_id), request.grant_version,
+            request.observed_revision, request.patch.model_dump(mode="json"),
+        ]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def guard(
+        request: ProtectedRelation, status: str, reason: str, *, possible_send: bool = False,
+    ) -> GuardOutcome:
+        return GuardOutcome.model_validate({
+            "status": status, "operation": "work_relate", "work_id": request.work_id,
+            "operation_id": request.operation_id, "reason": reason,
+            "effect": "unknown" if possible_send else "not_sent",
+            "retry": "reconcile" if possible_send else "refresh" if status == "stale" else "none",
+            "next_action": (
+                "Retry only this OperationId to reconcile; do not send a new relation effect."
+                if possible_send else "Refresh work/admission or ask the trusted issuer."
+            ),
+        })
+
+    async def _resolved(
+        self, grant: WorkGrant, provider_name: str, request: ProtectedRelation,
+    ) -> ProviderRelation | None:
+        patch = request.patch
+        target_gid: str | None = None
+        if patch.target_work_id is not None:
+            if not grant.can_read(patch.target_work_id, explicit_target=True):
+                return None
+            handle = await self.state.get(patch.target_work_id)
+            if handle is None or handle.provider != provider_name:
+                return None
+            target_gid = handle.provider_work_id
+        return ProviderRelation(
+            kind=patch.kind, action=patch.action, target_gid=target_gid,
+            assignee_gid=patch.assignee_gid, project_gid=patch.project_gid,
+            section_gid=patch.section_gid,
+        )
+
+    async def update(
+        self, principal: PrincipalContext, request: ProtectedRelation,
+    ) -> GuardOutcome:
+        possible_send = False
+        history_known = False
+        try:
+            async with self.grants.locked(principal.key, request.work_id) as grant:
+                fingerprint = self.fingerprint(principal, request)
+                record = await self.grants.exact(request.operation_id)
+                history_known = True
+                if record is not None:
+                    possible_send = record.outcome.effect != "not_sent"
+                    if record.principal_key != principal.key or record.fingerprint != fingerprint:
+                        return self.guard(request, "denied", "operation_identity_conflict")
+                    if record.outcome.effect != "unknown":
+                        return record.outcome
+                    return await self._reconcile(principal, request, record)
+                blocked = await self.grants.previous(request.operation_id, request.work_id)
+                if blocked is not None:
+                    return self.guard(
+                        request, "unknown", "target_has_unresolved_effect", possible_send=True
+                    )
+                if grant is None or grant.principal != principal or not grant.current():
+                    return self.guard(request, "denied", "no_current_grant")
+                if not grant.can_write(request.work_id) or "work_update" not in grant.operations:
+                    return self.guard(request, "denied", "operation_or_work_not_granted")
+                if request.grant_version != grant.version:
+                    return self.guard(request, "stale", "grant_version_changed")
+                qualification = grant.update_qualification
+                if (
+                    qualification is None
+                    or (principal.assurance == "test") != qualification.startswith("test:")
+                ):
+                    return self.guard(
+                        request, "denied", "update_not_qualified_for_this_surface"
+                    )
+                handle = await self.state.get(request.work_id)
+                if handle is None:
+                    return self.guard(request, "denied", "work_not_bound")
+                provider = self.providers.get(handle.provider)
+                if (
+                    provider is None
+                    or not hasattr(provider, "update_relation")
+                    or not hasattr(provider, "relation_matches")
+                ):
+                    return self.guard(request, "denied", "provider_relation_not_supported")
+                current = await provider.get(handle.provider_work_id)
+                if current is None or not current.canonical:
+                    return self.guard(request, "not_applied", "source_read_unavailable")
+                if current.revision != request.observed_revision:
+                    return self.guard(request, "stale", "source_revision_changed")
+                resolved = await self._resolved(grant, handle.provider, request)
+                if resolved is None:
+                    return self.guard(request, "denied", "relation_target_not_granted")
+                unknown = self.guard(
+                    request, "unknown", "prepared_or_unconfirmed_send", possible_send=True
+                )
+                await self.grants.prepare({
+                    "request": request.model_dump(mode="json"),
+                    "provider": handle.provider,
+                    "task_gid": handle.provider_work_id,
+                    "qualification": qualification,
+                    "resolved": {
+                        "kind": resolved.kind, "action": resolved.action,
+                        "target_gid": resolved.target_gid,
+                        "assignee_gid": resolved.assignee_gid,
+                        "project_gid": resolved.project_gid,
+                        "section_gid": resolved.section_gid,
+                    },
+                }, grant, fingerprint, unknown)
+                possible_send = True
+                if not grant.current():
+                    outcome = self.guard(
+                        request, "not_applied", "grant_expired_before_send"
+                    )
+                else:
+                    outcome = await self._send(
+                        principal, request, grant, handle.provider,
+                        handle.provider_work_id, qualification, resolved,
+                        cast(RelationProvider, provider),
+                    )
+                await self.grants.finish(outcome)
+                return outcome
+        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
+            return self.guard(
+                request, "unknown", "state_or_effect_unavailable",
+                possible_send=possible_send or not history_known,
+            )
+
+    async def _send(
+        self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
+        provider_name: str, task_gid: str, qualification: str, resolved: ProviderRelation,
+        provider: RelationProvider,
+    ) -> GuardOutcome:
+        try:
+            await provider.update_relation(task_gid, resolved)
+        except UnknownEffect:
+            pass
+        except ProviderError:
+            return self.guard(request, "not_applied", "provider_rejected_send")
+        if not await provider.relation_matches(task_gid, resolved):
+            return self.guard(
+                request, "unknown", "effect_readback_unconfirmed", possible_send=True
+            )
+        return self._applied(
+            principal, request, grant.id, grant.version,
+            provider_name, task_gid, qualification,
+        )
+
+    async def _reconcile(
+        self, principal: PrincipalContext, request: ProtectedRelation, record: EffectRecord,
+    ) -> GuardOutcome:
+        provider_name = record.intent.get("provider")
+        task_gid = record.intent.get("task_gid")
+        qualification = record.intent.get("qualification")
+        raw = record.intent.get("resolved")
+        if (
+            not isinstance(provider_name, str) or not isinstance(task_gid, str)
+            or not isinstance(qualification, str) or not isinstance(raw, dict)
+        ):
+            raise TypeError("durable relation intent invalid")
+        values = cast(dict[object, object], raw)
+        kind, action = values.get("kind"), values.get("action")
+        optional = {
+            name: values.get(name)
+            for name in ("target_gid", "assignee_gid", "project_gid", "section_gid")
+        }
+        if (
+            not isinstance(kind, str) or not isinstance(action, str)
+            or any(value is not None and not isinstance(value, str) for value in optional.values())
+        ):
+            raise TypeError("durable relation intent invalid")
+        resolved = ProviderRelation(
+            kind=kind, action=action,
+            target_gid=cast(str | None, optional["target_gid"]),
+            assignee_gid=cast(str | None, optional["assignee_gid"]),
+            project_gid=cast(str | None, optional["project_gid"]),
+            section_gid=cast(str | None, optional["section_gid"]),
+        )
+        provider = self.providers.get(provider_name)
+        if provider is None or not hasattr(provider, "relation_matches"):
+            return self.guard(
+                request, "unknown", "relation_recovery_unavailable", possible_send=True
+            )
+        if not await cast(RelationProvider, provider).relation_matches(task_gid, resolved):
+            return self.guard(
+                request, "unknown", "effect_readback_unconfirmed", possible_send=True
+            )
+        outcome = self._applied(
+            principal, request, record.grant_id, record.grant_version,
+            provider_name, task_gid, qualification,
+        )
+        await self.grants.finish(outcome)
+        return outcome
+
+    @staticmethod
+    def _applied(
+        principal: PrincipalContext, request: ProtectedRelation,
+        grant_id: UUID, grant_version: int, provider_name: str, task_gid: str,
+        qualification: str,
+    ) -> GuardOutcome:
+        receipt = RelationReceipt(
+            operation_id=request.operation_id, principal=principal, grant_id=grant_id,
+            grant_version=grant_version, work_id=request.work_id, provider=provider_name,
+            task_gid=task_gid, observed_revision=request.observed_revision,
+            patch=request.patch, qualification=qualification,
+        )
+        return GuardOutcome(
+            status="ok", operation="work_relate", work_id=request.work_id,
+            operation_id=request.operation_id, reason="relation_state_converged",
+            effect="applied", retry="none", next_action="Use the recorded receipt.",
+            receipt=receipt,
+        )
