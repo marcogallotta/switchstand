@@ -23,11 +23,22 @@ jobs:
       - name: Record immutable Quality subject
         env:
           QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
-          QUALITY_SUBJECT_SHA: ${{ github.sha }}
+          QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$QUALITY_SUBJECT_SHA"
-          printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\n' \
-            "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
+          checked_out_sha="$(git rev-parse HEAD)"
+          if test "$QUALITY_SUBJECT_KIND" = composition; then
+            mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+            test "${#parents[@]}" -eq 2
+            test "${parents[0]}" = "$QUALITY_BASE_SHA"
+            test "${parents[1]}" = "$QUALITY_SUBJECT_SHA"
+            printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
+              "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
+          else
+            test "$checked_out_sha" = "$QUALITY_SUBJECT_SHA"
+            printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\n' \
+              "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
+          fi
       - run: docker build --target development --tag switchstand-quality .
       - run: >-
           docker run --rm --network host
