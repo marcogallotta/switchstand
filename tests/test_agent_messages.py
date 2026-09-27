@@ -2,7 +2,6 @@ import os
 from uuid import uuid4
 
 import pytest
-from chatgpt_fixture import grant
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxState
@@ -30,15 +29,6 @@ async def agent_messaging():
         )
         for _ in range(2)
     ]
-    works = [(await state.bind("asana", str(uuid4().int))).id for _ in range(2)]
-    for principal, work in zip(principals, works, strict=True):
-        await grants.issue(
-            grant(
-                principal=principal, active=work,
-                operations=frozenset({"message"}),
-            ),
-            None,
-        )
     actor = [principals[0]]
 
     async def resolve():
@@ -47,14 +37,15 @@ async def agent_messaging():
     service = ChatGPTService(resolve, state, grants, {}, MessageState(engine, grants))
     generation = ["session-1"]
     tools = dict(build_ordinary_tools(service, session_generation=lambda: generation[0]))
-    yield tools, actor, principals, works, service, AgentMailboxState(engine), generation
+    yield tools, actor, principals, service, AgentMailboxState(engine), generation
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
 
 async def test_agent_name_vertical_hides_workids_and_preserves_message_state(agent_messaging):
-    tools, actor, principals, _works, _service, _mailboxes, _generation = agent_messaging
+    tools, actor, principals, _service, _mailboxes, _generation = agent_messaging
+    assert await _service.grants.current(principals[0].key) is None
     assert (await tools["agent_register"]("1", "Agent Alpha")).status == "ok"
     actor[0] = principals[1]
     assert (await tools["agent_register"]("1", "Agent Beta")).status == "ok"
@@ -91,7 +82,7 @@ async def test_agent_name_vertical_hides_workids_and_preserves_message_state(age
 
 
 async def test_agent_name_collision_and_unregistered_sender_are_closed(agent_messaging):
-    tools, actor, principals, _works, _service, _mailboxes, _generation = agent_messaging
+    tools, actor, principals, _service, _mailboxes, _generation = agent_messaging
     assert (await tools["agent_register"]("1", "Lifecycle")).status == "ok"
     actor[0] = principals[1]
     collision = await tools["agent_register"]("1", "LIFECYCLE")
@@ -103,7 +94,7 @@ async def test_agent_name_collision_and_unregistered_sender_are_closed(agent_mes
 
 
 async def test_agent_recover_after_trusted_takeover_fences_old_actor(agent_messaging):
-    tools, actor, principals, works, service, mailboxes, generation = agent_messaging
+    tools, actor, principals, _service, mailboxes, generation = agent_messaging
     assert (await tools["agent_register"]("1", "Agent Alpha")).status == "ok"
     actor[0] = principals[1]
     assert (await tools["agent_register"]("1", "Agent Beta")).status == "ok"
@@ -123,16 +114,12 @@ async def test_agent_recover_after_trusted_takeover_fences_old_actor(agent_messa
     replacement = PrincipalContext(
         issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test"
     )
-    await service.grants.issue(
-        grant(
-            principal=replacement, active=works[1],
-            operations=frozenset({"message"}),
-        ),
-        None,
-    )
+    beta_before = await mailboxes.by_name("Agent Beta")
+    assert beta_before.status == "ok" and beta_before.mailbox is not None
     moved = await mailboxes.takeover("Agent Beta", 1, replacement.key)
     assert moved.status == "ok" and moved.mailbox is not None
-    assert moved.mailbox.generation == 2 and moved.mailbox.work_id == works[1]
+    assert moved.mailbox.generation == 2
+    assert moved.mailbox.work_id == beta_before.mailbox.work_id
 
     denied = await tools["agent_message_recover"]("1", delivery)
     assert (denied.status, denied.reason) == ("denied", "receiving_binding_changed")

@@ -4,7 +4,11 @@ import pytest
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState, agent_name_key
+from switchstand.agent_mailboxes import (
+    MAILBOX_PROVIDER,
+    AgentMailboxState,
+    agent_name_key,
+)
 from switchstand.state import PostgresState, metadata
 
 
@@ -18,10 +22,7 @@ async def subject():
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
-    state = PostgresState(engine)
-    first = await state.bind("asana", "111")
-    second = await state.bind("asana", "222")
-    yield AgentMailboxState(engine), first.id, second.id
+    yield AgentMailboxState(engine), PostgresState(engine)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
     await engine.dispose()
@@ -33,40 +34,42 @@ def test_agent_name_key_is_visible_name_collision_key():
 
 
 async def test_registration_is_idempotent_but_rejects_name_and_principal_collisions(subject):
-    mailboxes, first, second = subject
-    created = await mailboxes.register("Main Coordinator", first, "principal-a")
-    assert created.status == "ok"
+    mailboxes, state = subject
+    created = await mailboxes.register("Main Coordinator", "principal-a")
+    assert created.status == "ok" and created.mailbox is not None
     assert created.mailbox.name == "Main Coordinator"
-    assert created.mailbox.work_id == first
     assert created.mailbox.generation == 1
+    handle = await state.get(created.mailbox.work_id)
+    assert handle is not None
+    assert (handle.provider, handle.provider_work_id) == (
+        MAILBOX_PROVIDER, "main-coordinator"
+    )
 
-    replay = await mailboxes.register("Main Coordinator", first, "principal-a")
+    replay = await mailboxes.register("Main Coordinator", "principal-a")
     assert replay == created
 
-    collision = await mailboxes.register("main coordinator", second, "principal-b")
+    collision = await mailboxes.register("main coordinator", "principal-b")
     assert (collision.status, collision.reason) == ("conflict", "name_collision")
 
-    duplicate = await mailboxes.register("Other Agent", second, "principal-a")
+    duplicate = await mailboxes.register("Other Agent", "principal-a")
     assert (duplicate.status, duplicate.reason) == (
         "conflict", "principal_already_registered"
     )
-    same_work = await mailboxes.register("Third Agent", first, "principal-c")
-    assert (same_work.status, same_work.reason) == ("conflict", "work_already_registered")
-    assert (await mailboxes.by_work_id(first)).mailbox == created.mailbox
+    assert (await mailboxes.by_work_id(created.mailbox.work_id)).mailbox == created.mailbox
 
 
 async def test_takeover_preserves_mailbox_identity_and_fences_old_principal(subject):
-    mailboxes, first, _second = subject
-    created = await mailboxes.register("Lifecycle", first, "principal-old")
+    mailboxes, _state = subject
+    created = await mailboxes.register("Lifecycle", "principal-old")
     assert created.mailbox is not None
+    work_id = created.mailbox.work_id
 
     stale = await mailboxes.takeover("Lifecycle", 2, "principal-new")
     assert (stale.status, stale.reason) == ("conflict", "generation_changed")
 
     moved = await mailboxes.takeover("Lifecycle", 1, "principal-new")
-    assert moved.status == "ok"
-    assert moved.mailbox is not None
-    assert moved.mailbox.work_id == first
+    assert moved.status == "ok" and moved.mailbox is not None
+    assert moved.mailbox.work_id == work_id
     assert moved.mailbox.generation == 2
     assert (await mailboxes.for_principal("principal-old")).reason == "principal_not_registered"
     assert (await mailboxes.for_principal("principal-new")).mailbox == moved.mailbox

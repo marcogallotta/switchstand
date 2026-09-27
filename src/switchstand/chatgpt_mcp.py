@@ -53,7 +53,9 @@ from .messages import (
     MessagePendingRequest,
     MessagePendingResult,
     MessageReceiveRequest,
+    MessageRoute,
     MessageSendRequest,
+    MessageSubmitRequest,
     MessageSubmitResult,
     MessageTransitionResult,
     RuntimeCurrentness,
@@ -585,24 +587,19 @@ def build_ordinary_tools(
         audited("message_disposition", str(work_id), result.status)
         return result
 
+    agent_current_generations: dict[tuple[UUID, int], str] = {}
+    agent_retired_generations: dict[tuple[UUID, int], set[str]] = {}
+    agent_currentness_locks: dict[tuple[UUID, int], asyncio.Lock] = {}
+
     async def agent_context() -> AgentMessageContext | tuple[
-        Literal["denied", "stale", "recovery_required"],
-        Literal[
-            "state_unavailable", "no_current_grant",
-            "agent_not_registered", "agent_binding_changed",
-        ],
+        Literal["denied", "recovery_required"],
+        Literal["state_unavailable", "no_current_grant", "agent_not_registered"],
     ]:
-        grant_result = await service.grant_get()
-        if grant_result.status == "unknown":
+        try:
+            principal = await service.principal()
+        except (KeyError, RuntimeError, ValueError):
             return "recovery_required", "state_unavailable"
-        if (
-            grant_result.status != "ok"
-            or grant_result.principal is None
-            or grant_result.grant is None
-        ):
-            return "denied", "no_current_grant"
-        principal, grant = grant_result.principal, grant_result.grant
-        if "message" not in grant.operations:
+        if principal is None:
             return "denied", "no_current_grant"
         if mailboxes is None:
             return "recovery_required", "state_unavailable"
@@ -611,27 +608,34 @@ def build_ordinary_tools(
             return "recovery_required", "state_unavailable"
         if binding.status != "ok" or binding.mailbox is None:
             return "denied", "agent_not_registered"
-        if binding.mailbox.work_id != grant.authority.active_work_id:
-            return "stale", "agent_binding_changed"
-        return AgentMessageContext(principal, grant, binding.mailbox)
+        return AgentMessageContext(principal, binding.mailbox)
 
     def agent_transition_failure(
         failure: tuple[
-            Literal["denied", "stale", "recovery_required"],
-            Literal[
-                "state_unavailable", "no_current_grant",
-                "agent_not_registered", "agent_binding_changed",
-            ],
+            Literal["denied", "recovery_required"],
+            Literal["state_unavailable", "no_current_grant", "agent_not_registered"],
         ],
     ) -> MessageTransitionResult:
-        reason = failure[1]
-        if reason == "agent_not_registered" or reason == "agent_binding_changed":
+        if failure[1] == "agent_not_registered":
             return MessageTransitionResult(
                 status=failure[0], reason="receiving_binding_changed"
             )
-        if reason == "state_unavailable":
-            return MessageTransitionResult(status=failure[0], reason="state_unavailable")
-        return MessageTransitionResult(status=failure[0], reason="no_current_grant")
+        return MessageTransitionResult(status=failure[0], reason=failure[1])
+
+    def agent_runtime() -> RuntimeCurrentness | MessageTransitionResult:
+        try:
+            session_id = generation()
+        except (KeyError, RuntimeError, ValueError):
+            return MessageTransitionResult(
+                status="recovery_required", reason="runtime_currentness_unavailable"
+            )
+        if not session_id:
+            return MessageTransitionResult(
+                status="recovery_required", reason="runtime_currentness_unavailable"
+            )
+        return RuntimeCurrentness(
+            generation=session_id, current_generation=session_id,
+        )
 
     async def agent_register(
         api_version: Literal["1"],
@@ -639,32 +643,28 @@ def build_ordinary_tools(
     ) -> AgentRegistrationResult:
         """Register this authenticated actor's immutable visible agent name."""
         del api_version
-        grant_result = await service.grant_get()
-        if grant_result.status == "unknown":
-            result = AgentRegistrationResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-        elif (
-            grant_result.status != "ok"
-            or grant_result.principal is None
-            or grant_result.grant is None
-            or "message" not in grant_result.grant.operations
-        ):
-            result = AgentRegistrationResult(status="denied", reason="no_current_grant")
-        elif mailboxes is None:
+        try:
+            principal = await service.principal()
+        except (KeyError, RuntimeError, ValueError):
             result = AgentRegistrationResult(
                 status="recovery_required", reason="state_unavailable"
             )
         else:
-            stored = await mailboxes.register(
-                name, grant_result.grant.authority.active_work_id,
-                grant_result.principal.key,
-            )
-            result = (
-                AgentRegistrationResult(status="ok", name=stored.mailbox.name)
-                if stored.status == "ok" and stored.mailbox is not None
-                else AgentRegistrationResult(status=stored.status, reason=stored.reason)
-            )
+            if principal is None:
+                result = AgentRegistrationResult(
+                    status="denied", reason="no_current_grant"
+                )
+            elif mailboxes is None:
+                result = AgentRegistrationResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
+            else:
+                stored = await mailboxes.register(name, principal.key)
+                result = (
+                    AgentRegistrationResult(status="ok", name=stored.mailbox.name)
+                    if stored.status == "ok" and stored.mailbox is not None
+                    else AgentRegistrationResult(status=stored.status, reason=stored.reason)
+                )
         audited("agent_register", name, result.status)
         return result
 
@@ -676,8 +676,8 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
-        grant, sender = context.grant, context.mailbox
-        assert mailboxes is not None
+        sender = context.mailbox
+        assert mailboxes is not None and service.messages is not None
         recipient = await mailboxes.by_name(recipient_name)
         if recipient.status == "recovery_required":
             return AgentMessageSubmitResult(
@@ -687,15 +687,21 @@ def build_ordinary_tools(
             return AgentMessageSubmitResult(
                 status="denied", reason="recipient_not_registered"
             )
-        result = await service.message_send(MessageSendRequest(
-            api_version=api_version,
-            work_id=sender.work_id,
-            grant_version=grant.version,
-            message_id=message_id,
-            payload=payload,
-            route_ref=f"agent.{recipient.mailbox.name_key}",
+        route = MessageRoute(
             recipient_work_id=recipient.mailbox.work_id,
-        ))
+            recipient_grant_version=recipient.mailbox.generation,
+        )
+        submitted = MessageSubmitRequest(
+            api_version=api_version,
+            message_id=message_id,
+            grant_version=sender.generation,
+            route_ref=f"agent.{recipient.mailbox.name_key}",
+            kind="request",
+            payload=payload,
+        )
+        result = await service.messages.submit_admitted(
+            sender.work_id, route, submitted,
+        )
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         view = await public_message(mailboxes, result.message)
@@ -713,13 +719,13 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessagePendingResult(status=context[0], reason=context[1])
-        grant, mailbox = context.grant, context.mailbox
-        assert mailboxes is not None
-        result = await service.message_pending(
+        mailbox = context.mailbox
+        assert mailboxes is not None and service.messages is not None
+        result = await service.messages.pending_admitted(
             mailbox.work_id,
             MessagePendingRequest(
                 api_version=api_version,
-                grant_version=grant.version,
+                grant_version=mailbox.generation,
                 cursor=cursor,
                 limit=limit,
             ),
@@ -746,8 +752,32 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
+        runtime = agent_runtime()
+        if isinstance(runtime, MessageTransitionResult):
+            return runtime
         mailbox = context.mailbox
-        return await message_receive(api_version, mailbox.work_id, delivery_id)
+        assert service.messages is not None
+        key = (mailbox.work_id, mailbox.generation)
+        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            retired = agent_retired_generations.setdefault(key, set())
+            current = agent_current_generations.get(key)
+            if (
+                runtime.generation in retired
+                or current is not None and current != runtime.generation
+            ):
+                return stale_runtime()
+            result = await service.messages.receive_admitted(
+                mailbox.work_id, mailbox.generation, runtime,
+                MessageReceiveRequest(
+                    api_version=api_version,
+                    delivery_id=delivery_id,
+                    grant_version=mailbox.generation,
+                ),
+            )
+            if result.status == "ok" and current is None:
+                agent_current_generations[key] = runtime.generation
+            return result
 
     async def agent_message_recover(
         api_version: Literal["1"], delivery_id: UUID,
@@ -756,8 +786,31 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
+        runtime = agent_runtime()
+        if isinstance(runtime, MessageTransitionResult):
+            return runtime
         mailbox = context.mailbox
-        return await message_recover(api_version, mailbox.work_id, delivery_id)
+        assert service.messages is not None
+        key = (mailbox.work_id, mailbox.generation)
+        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            retired = agent_retired_generations.setdefault(key, set())
+            previous = agent_current_generations.get(key)
+            if runtime.generation in retired:
+                return stale_runtime()
+            result = await service.messages.recover_admitted(
+                mailbox.work_id, mailbox.generation, runtime,
+                MessageReceiveRequest(
+                    api_version=api_version,
+                    delivery_id=delivery_id,
+                    grant_version=mailbox.generation,
+                ),
+            )
+            if result.status == "ok":
+                if previous is not None and previous != runtime.generation:
+                    retired.add(previous)
+                agent_current_generations[key] = runtime.generation
+            return result
 
     async def agent_message_result_send(
         api_version: Literal["1"], delivery_id: UUID,
@@ -767,11 +820,47 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
+        runtime = agent_runtime()
+        if isinstance(runtime, MessageTransitionResult):
+            return AgentMessageSubmitResult(status=runtime.status, reason=runtime.reason)
         mailbox = context.mailbox
-        assert mailboxes is not None
-        result = await message_result_send(
-            api_version, mailbox.work_id, delivery_id, message_id, payload,
-        )
+        assert mailboxes is not None and service.messages is not None
+        key = (mailbox.work_id, mailbox.generation)
+        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            retired = agent_retired_generations.setdefault(key, set())
+            current = agent_current_generations.get(key)
+            if runtime.generation in retired or current != runtime.generation:
+                return AgentMessageSubmitResult(
+                    status="stale", reason="runtime_generation_changed"
+                )
+            reply = await service.messages.reply_context(delivery_id)
+            if reply is None:
+                return AgentMessageSubmitResult(
+                    status="conflict", reason="reply_delivery_not_found"
+                )
+            recipient = await mailboxes.by_work_id(reply.recipient_work_id)
+            if recipient.status != "ok" or recipient.mailbox is None:
+                return AgentMessageSubmitResult(
+                    status="recovery_required", reason="state_unavailable"
+                )
+            route = MessageRoute(
+                recipient_work_id=recipient.mailbox.work_id,
+                recipient_grant_version=recipient.mailbox.generation,
+            )
+            submitted = MessageSubmitRequest(
+                api_version=api_version,
+                message_id=message_id,
+                grant_version=mailbox.generation,
+                route_ref=reply.route_ref,
+                kind="result",
+                payload=payload,
+                in_reply_to_delivery_id=delivery_id,
+            )
+            result = await service.messages.submit_received_result(
+                mailbox.work_id, mailbox.generation, runtime.generation,
+                route, submitted,
+            )
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         view = await public_message(mailboxes, result.message)
@@ -788,10 +877,38 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
+        runtime = agent_runtime()
+        if isinstance(runtime, MessageTransitionResult):
+            return runtime
         mailbox = context.mailbox
-        return await message_disposition(
-            api_version, mailbox.work_id, delivery_id, result_message_id,
-        )
+        assert service.messages is not None
+        key = (mailbox.work_id, mailbox.generation)
+        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            retired = agent_retired_generations.setdefault(key, set())
+            current = agent_current_generations.get(key)
+            if runtime.generation in retired or current != runtime.generation:
+                return stale_runtime()
+            evidence = DispositionEvidence(
+                kind="result", result_message_id=result_message_id,
+            )
+            result = await service.messages.disposition_admitted(
+                mailbox.work_id, mailbox.generation, runtime,
+                MessageDispositionRequest(
+                    api_version=api_version,
+                    delivery_id=delivery_id,
+                    grant_version=mailbox.generation,
+                    disposition_digest=disposition_digest(evidence),
+                    evidence=evidence,
+                ),
+            )
+            if result.status == "ok" and result.state == "DISPOSITIONED":
+                has_received = await service.messages.has_received(
+                    mailbox.work_id, mailbox.generation
+                )
+                if has_received is False:
+                    agent_current_generations.pop(key, None)
+            return result
 
     return (
         ("work_get", work_get),
