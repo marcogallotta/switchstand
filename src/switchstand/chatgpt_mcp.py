@@ -20,6 +20,7 @@ from .contracts import (
     ClosedModel,
     SourceTaskRequest,
     SourceTaskResult,
+    Status,
     WorkAttachmentsRequest,
     WorkAttachmentsResult,
     WorkEventRequest,
@@ -31,7 +32,6 @@ from .contracts import (
     WorkSearchResult,
     WorkStructureRequest,
     WorkStructureResult,
-    Status,
 )
 from .grants import (
     GrantedWorkResult,
