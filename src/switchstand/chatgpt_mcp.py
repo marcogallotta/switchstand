@@ -36,7 +36,6 @@ from .contracts import (
     WorkStructureResult,
 )
 from .grants import (
-    GrantResult,
     GuardOutcome,
     PrincipalContext,
     ProtectedAppend,
@@ -148,12 +147,6 @@ def build_ordinary_tools(
             reason="admission_state_unavailable", effect="not_sent", retry="none",
             next_action="Retry after admission state is readable; no provider effect was sent.",
         )
-
-    async def grant_get(api_version: Literal["1"]) -> GrantResult:
-        """Read this authenticated caller's current grant; this never issues or changes a grant."""
-        result = await service.grant_get()
-        audited("grant_get", None, result.status)
-        return result
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
@@ -801,7 +794,6 @@ def build_ordinary_tools(
         )
 
     return (
-        ("grant_get", grant_get),
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import uvicorn
-from chatgpt_fixture import grant, service
+from chatgpt_fixture import ACTIVE, grant, service
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
 
@@ -122,7 +122,7 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
             if isinstance(item, dict) and item.get("name") == SERVER_NAME
         )
         tools = entry.get("tools")
-        assert isinstance(tools, dict) and "grant_get" in tools, entry
+        assert isinstance(tools, dict) and "work_get" in tools and "grant_get" not in tools, entry
 
         thread = response_result(client.request(
             "thread/start", {"cwd": str(workspace), "ephemeral": True}
@@ -138,24 +138,22 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
                 {
                     "threadId": thread_id,
                     "server": SERVER_NAME,
-                    "tool": "grant_get",
+                    "tool": "work_get",
                     "arguments": {"api_version": "1"},
                 },
             ))
             structured = called.get("structuredContent")
             assert isinstance(structured, dict), called
             assert structured["status"] == "ok"
-            principal = structured["principal"]
-            assert isinstance(principal, dict)
-            assert principal["issuer"] == ISSUER
-            assert principal["subject"] == GITHUB_ID
-            assert principal["client_id"] == "codex-proof"
+            item = structured["item"]
+            assert isinstance(item, dict)
+            assert item["id"] == str(ACTIVE)
     finally:
         client.close()
 
 
 @pytest.mark.asyncio
-async def test_current_codex_app_server_calls_grant_get_over_stateful_http(
+async def test_current_codex_app_server_calls_work_get_over_stateful_http(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     raw_binary = os.getenv("CODEX_EXEC_PATH")
@@ -215,7 +213,7 @@ async def test_current_codex_app_server_calls_grant_get_over_stateful_http(
             'bearer_token_env_var = "SWITCHSTAND_PROOF_TOKEN"\n'
             'required = true\n'
             'default_tools_approval_mode = "approve"\n'
-            'enabled_tools = ["grant_get"]\n'
+            'enabled_tools = ["work_get"]\n'
         )
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)

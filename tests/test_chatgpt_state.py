@@ -171,7 +171,7 @@ async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
     await asyncio.sleep(1.01)
     async def resolve(): return expiring
     service = ChatGPTService(resolve, PostgresState(engine), GrantState(engine), {})
-    result = await build_chatgpt_server(service).call_tool("grant_get", {"api_version": "1"})
+    result = await build_chatgpt_server(service).call_tool("work_get", {"api_version": "1"})
     assert result.structured_content["status"] == "denied"
     await engine.dispose()
 
