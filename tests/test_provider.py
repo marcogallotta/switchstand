@@ -16,6 +16,7 @@ from switchstand.provider import (
     PROJECTS,
     ROOT_WORK_GID,
     WORK_TYPE,
+    RelationMutation,
     WORKSPACE,
     AsanaProvider,
 )
@@ -633,3 +634,95 @@ async def test_exact_story_rereads_current_text_and_validates_identity():
         await subject.source_story("123", "456")
     subject, _ = provider((404, {}))
     assert await subject.source_story("123", "456") is None
+
+
+
+@pytest.mark.parametrize(
+    ("mutation", "responses", "write_path", "write_body"),
+    [
+        (
+            RelationMutation(kind="assignee", value="42"),
+            [
+                (200, identified_task("t", project=PROJECT)),
+                (200, {}),
+                (200, identified_task(
+                    "t", project=PROJECT, assignee={"gid": "42", "name": "Ada"}
+                )),
+            ],
+            "/api/1.0/tasks/t",
+            {"assignee": "42"},
+        ),
+        (
+            RelationMutation(kind="parent", value="p"),
+            [
+                (200, identified_task("t", project=PROJECT)),
+                (200, identified_task("p", project=PROJECT)),
+                (200, {}),
+                (200, identified_task("t", parent="p", project=PROJECT)),
+            ],
+            "/api/1.0/tasks/t/setParent",
+            {"parent": "p"},
+        ),
+        (
+            RelationMutation(kind="dependency", value="d", present=True),
+            [
+                (200, identified_task("t", project=PROJECT)),
+                (200, identified_task("d", project=PROJECT)),
+                (200, {}),
+                (200, identified_task("t", project=PROJECT)),
+                (200, {"data": [{"gid": "d"}], "next_page": None}),
+            ],
+            "/api/1.0/tasks/t/addDependencies",
+            {"dependencies": ["d"]},
+        ),
+    ],
+)
+async def test_relation_mutations_send_once_and_verify_exact_readback(
+    mutation, responses, write_path, write_body,
+):
+    subject, api = provider(*responses)
+    await subject.update_relation("t", mutation)
+    assert await subject.relation_matches("t", mutation)
+    writes = [request for request in api.requests if request.method != "GET"]
+    assert len(writes) == 1 and writes[0].url.path == write_path
+    assert json.loads(writes[0].content) == {"data": write_body}
+
+
+async def test_placement_resolves_exact_area_and_stage_then_verifies_membership():
+    project_gid = PROJECTS[5]
+    area = "SW — ChatGPT MCP & Integrations"
+    section = {"gid": "s1", "name": "IMPLEMENTATION"}
+    placed = identified_task("t")
+    placed["data"]["memberships"] = [{
+        "project": {"gid": project_gid, "name": area},
+        "section": section,
+    }]
+    subject, api = provider(
+        (200, identified_task("t", project=PROJECT)),
+        (200, {"data": [section], "next_page": None}),
+        (200, {}),
+        (200, placed),
+        (200, {"data": [section], "next_page": None}),
+    )
+    mutation = RelationMutation(kind="placement", value=area, stage="IMPLEMENTATION")
+    await subject.update_relation("t", mutation)
+    assert await subject.relation_matches("t", mutation)
+    write = next(request for request in api.requests if request.method == "POST")
+    assert write.url.path == "/api/1.0/tasks/t/addProject"
+    assert json.loads(write.content) == {
+        "data": {"project": project_gid, "section": "s1"}
+    }
+
+
+async def test_unparent_requires_direct_canonical_membership_before_send():
+    subject, api = provider((200, identified_task("t", parent="p")))
+    with pytest.raises(ProviderError, match="unparent would leave canonical work"):
+        await subject.update_relation("t", RelationMutation(kind="parent", value=None))
+    assert all(request.method == "GET" for request in api.requests)
+
+
+def test_relation_mutation_shape_is_closed():
+    with pytest.raises(ValueError):
+        RelationMutation(kind="dependency", value="d")
+    with pytest.raises(ValueError):
+        RelationMutation(kind="placement", value=None)

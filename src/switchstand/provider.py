@@ -1,4 +1,5 @@
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import httpx
@@ -65,6 +66,28 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
 ATTACHMENT_FIELDS = "name,parent.gid"
 JSON = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RelationMutation:
+    kind: Literal["assignee", "placement", "parent", "dependency"]
+    value: str | None = None
+    stage: str | None = None
+    present: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind == "assignee":
+            valid = self.stage is None and self.present is None and (
+                self.value is None or self.value.isdigit()
+            )
+        elif self.kind == "placement":
+            valid = bool(self.value) and self.present is None
+        elif self.kind == "parent":
+            valid = self.stage is None and self.present is None
+        else:
+            valid = bool(self.value) and self.stage is None and isinstance(self.present, bool)
+        if not valid:
+            raise ValueError("invalid relation mutation")
 
 
 class _TraversalFailure(Exception):
@@ -782,6 +805,135 @@ class AsanaProvider:
         # Production Asana has no trustworthy create-correlation key. Ambiguous create stays
         # UNKNOWN and is never resent; a later explicit reconciliation path may bind it.
         return None
+
+    async def _section_gid(self, project_gid: str, stage: str) -> str:
+        try:
+            response = await self.client.get(
+                f"/projects/{project_gid}/sections",
+                params={"limit": 100, "opt_fields": "gid,name"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload["data"]
+            if (not isinstance(rows, list) or len(rows) > 100
+                    or payload.get("next_page") is not None):
+                raise TypeError
+            matches = [
+                self._gid(row) for row in cast(list[object], rows)
+                if isinstance(row, dict) and cast(JSON, row).get("name") == stage
+            ]
+            if len(matches) != 1 or matches[0] is None:
+                raise TypeError
+            return cast(str, matches[0])
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("placement lookup failed") from None
+
+    async def relation_matches(
+        self, provider_work_id: str, mutation: RelationMutation,
+    ) -> bool:
+        task = await self._task(provider_work_id)
+        if task is None or not await self._canonical(task):
+            return False
+        if mutation.kind == "assignee":
+            assignee = task.get("assignee")
+            return (
+                assignee is None if mutation.value is None
+                else isinstance(assignee, dict) and self._gid(assignee) == mutation.value
+            )
+        if mutation.kind == "placement":
+            project_gid = CREATE_AREAS.get(mutation.value or "")
+            if project_gid is None:
+                return False
+            section_gid = (
+                None if mutation.stage is None
+                else await self._section_gid(project_gid, mutation.stage)
+            )
+            memberships = task.get("memberships")
+            if not isinstance(memberships, list):
+                return False
+            for raw in cast(list[object], memberships):
+                if not isinstance(raw, dict):
+                    return False
+                membership = cast(JSON, raw)
+                if self._gid(membership.get("project")) != project_gid:
+                    continue
+                if section_gid is None:
+                    return True
+                if self._gid(membership.get("section")) == section_gid:
+                    return True
+            return False
+        if mutation.kind == "parent":
+            return self._parent_gid(task) == mutation.value
+        assert mutation.value is not None and mutation.present is not None
+        try:
+            response = await self.client.get(
+                f"/tasks/{provider_work_id}/dependencies",
+                params={"limit": 100, "opt_fields": "gid"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload["data"]
+            if (not isinstance(rows, list) or len(rows) > 100
+                    or payload.get("next_page") is not None):
+                raise TypeError
+            gids = [self._gid(row) for row in cast(list[object], rows)]
+            if any(gid is None for gid in gids):
+                raise TypeError
+            return (mutation.value in gids) is mutation.present
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            raise ProviderError("dependency readback failed") from None
+
+    async def update_relation(
+        self, provider_work_id: str, mutation: RelationMutation,
+    ) -> None:
+        target = await self._task(provider_work_id)
+        if target is None or not await self._canonical(target):
+            raise ProviderError("relation target denied")
+        if mutation.kind == "assignee":
+            await self._write(
+                "PUT", f"/tasks/{provider_work_id}", {"assignee": mutation.value},
+                unknown_on_server_error=True,
+            )
+            return
+        if mutation.kind == "placement":
+            project_gid = CREATE_AREAS.get(mutation.value or "")
+            if project_gid is None or project_gid not in self._admission_projects:
+                raise ProviderError("placement denied")
+            data: JSON = {"project": project_gid}
+            if mutation.stage is not None:
+                data["section"] = await self._section_gid(project_gid, mutation.stage)
+            await self._write(
+                "POST", f"/tasks/{provider_work_id}/addProject", data,
+                unknown_on_server_error=True,
+            )
+            return
+        if mutation.kind == "parent":
+            if mutation.value is None:
+                memberships = target.get("memberships")
+                if not isinstance(memberships, list) or not any(
+                    isinstance(row, dict)
+                    and self._gid(cast(JSON, row).get("project")) in self._admission_projects
+                    for row in cast(list[object], memberships)
+                ):
+                    raise ProviderError("unparent would leave canonical work")
+            else:
+                parent = await self._task(mutation.value)
+                if parent is None or not await self._canonical(parent):
+                    raise ProviderError("parent denied")
+            await self._write(
+                "POST", f"/tasks/{provider_work_id}/setParent", {"parent": mutation.value},
+                unknown_on_server_error=True,
+            )
+            return
+        assert mutation.value is not None and mutation.present is not None
+        dependency = await self._task(mutation.value)
+        if dependency is None or not await self._canonical(dependency):
+            raise ProviderError("dependency denied")
+        action = "addDependencies" if mutation.present else "removeDependencies"
+        await self._write(
+            "POST", f"/tasks/{provider_work_id}/{action}",
+            {"dependencies": [mutation.value]}, unknown_on_server_error=True,
+        )
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
