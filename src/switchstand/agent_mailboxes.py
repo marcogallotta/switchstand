@@ -1,7 +1,8 @@
 """Temporary durable agent-name to MessageState mailbox binding."""
 
 import re
-from typing import Literal
+from collections.abc import Mapping
+from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -22,7 +23,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ClosedModel
-from .state import metadata
+from .state import metadata, work_handles
 
 agent_mailboxes = Table(
     "agent_mailboxes",
@@ -77,13 +78,16 @@ class AgentMailboxState:
         self.engine = engine
 
     @staticmethod
-    def _view(row) -> AgentMailbox:
+    def _view(row: Mapping[str, object]) -> AgentMailbox:
         return AgentMailbox(
-            name=row["display_name"], name_key=row["name_key"], work_id=row["work_id"],
-            principal_key=row["principal_key"], generation=row["generation"],
+            name=cast(str, row["display_name"]),
+            name_key=cast(str, row["name_key"]),
+            work_id=cast(UUID, row["work_id"]),
+            principal_key=cast(str, row["principal_key"]),
+            generation=cast(int, row["generation"]),
         )
 
-    async def register(self, name: str, work_id, principal_key: str) -> AgentMailboxResult:
+    async def register(self, name: str, work_id: UUID, principal_key: str) -> AgentMailboxResult:
         try:
             key = agent_name_key(name)
             display = " ".join(name.strip().split())
@@ -119,8 +123,8 @@ class AgentMailboxState:
                         status="conflict", reason="work_already_registered"
                     )
                 handle = (await connection.execute(
-                    select(agent_mailboxes.metadata.tables["work_handles"].c.id).where(
-                        agent_mailboxes.metadata.tables["work_handles"].c.id == work_id
+                    select(work_handles.c.id).where(
+                        work_handles.c.id == work_id
                     ).with_for_update()
                 )).scalar_one_or_none()
                 if handle is None:
