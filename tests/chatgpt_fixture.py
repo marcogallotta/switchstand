@@ -93,6 +93,7 @@ class Provider:
         self.search_calls = []
         self.unknown = self.mismatch = self.cancel = False
         self.before_send = None
+        self.relation = None
 
     async def get(self, task_gid):
         return ProviderWork(self.title, self.notes, self.completed, self.revision, Routing(priority="P0"),
@@ -102,6 +103,13 @@ class Provider:
         for field in patch.model_fields_set:
             setattr(self, field, getattr(patch, field))
         self.revision = f"r{int(self.revision[1:]) + 1}"
+
+    async def update_relation(self, task_gid, mutation):
+        self.relation = mutation
+        self.revision = f"r{int(self.revision[1:]) + 1}"
+
+    async def relation_matches(self, task_gid, mutation):
+        return self.relation == mutation
 
     async def search_work(self, text, completed, cursor, limit):
         self.search_calls.append((text, completed, cursor, limit))

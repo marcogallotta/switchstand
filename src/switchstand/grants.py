@@ -107,6 +107,43 @@ class ProtectedUpdate(ClosedModel):
     patch: ScalarPatch
 
 
+class RelationChange(ClosedModel):
+    kind: Literal["assignee", "placement", "parent", "dependency"]
+    value: str | None = Field(default=None, max_length=200)
+    stage: str | None = Field(default=None, min_length=1, max_length=200)
+    present: bool | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.kind == "assignee":
+            valid = self.stage is None and self.present is None and (
+                self.value is None or self.value.isdigit()
+            )
+        elif self.kind == "placement":
+            valid = bool(self.value) and self.present is None
+        elif self.kind == "parent":
+            valid = self.stage is None and self.present is None and (
+                self.value is None or self.value.isdigit()
+            )
+        else:
+            valid = (
+                bool(self.value) and self.value is not None and self.value.isdigit()
+                and self.stage is None and isinstance(self.present, bool)
+            )
+        if not valid:
+            raise ValueError("invalid relation change")
+        return self
+
+
+class ProtectedRelation(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    work_id: UUID
+    grant_version: int = Field(ge=1)
+    observed_revision: str = Field(min_length=1)
+    change: RelationChange
+
+
 class EffectReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -147,6 +184,20 @@ class UpdateReceipt(ClosedModel):
     qualification: str
 
 
+class RelationReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: str
+    task_gid: str
+    observed_revision: str
+    resulting_revision: str
+    change: RelationChange
+    qualification: str
+
+
 class GuardOutcome(ClosedModel):
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
     operation: str
@@ -156,7 +207,7 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | CreateReceipt | UpdateReceipt | None = None
+    receipt: EffectReceipt | CreateReceipt | UpdateReceipt | RelationReceipt | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:

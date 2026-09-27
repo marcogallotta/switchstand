@@ -32,7 +32,9 @@ from .grants import (
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
+    RelationChange,
     ScalarPatch,
     WorkGrant,
 )
@@ -62,6 +64,7 @@ def build_message_tools(
         route_ref: Annotated[str | None, Field(min_length=1)] = None,
         recipient_work_id: UUID | None = None,
         in_reply_to_delivery_id: UUID | None = None,
+        grant_version: int | None = None,
     ) -> MessageSubmitResult:
         """Durably send one request or exactly correlated result."""
         grant = await service.grant_get()
@@ -80,6 +83,7 @@ def build_message_tools(
         api_version: Literal["1"], work_id: UUID,
         cursor: UUID | None = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        grant_version: int | None = None,
     ) -> MessagePendingResult:
         """Inspect durable pending deliveries for one explicitly admitted actor."""
         grant = await service.grant_get()
@@ -229,7 +233,7 @@ def build_ordinary_tools(
 
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, text: str,
+        observed_revision: str, text: str, grant_version: int | None = None,
     ) -> GuardOutcome:
         """Append through the current grant. Reuse OperationId; UNKNOWN forbids new-ID retry."""
         grant = await service.grant_get()
@@ -245,6 +249,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], operation_id: UUID, title: str, notes: str = "",
         parent_work_id: UUID | None = None,
         area: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+        grant_version: int | None = None,
     ) -> GuardOutcome:
         """Create parented or independent work; reuse OperationId to reconcile UNKNOWN."""
         grant = await service.grant_get()
@@ -262,7 +267,7 @@ def build_ordinary_tools(
 
     async def work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: ScalarPatch,
+        observed_revision: str, patch: ScalarPatch, grant_version: int | None = None,
     ) -> GuardOutcome:
         """Set bounded scalar state. Reuse OperationId to reconcile UNKNOWN without resending."""
         grant = await service.grant_get()
@@ -274,9 +279,24 @@ def build_ordinary_tools(
         audited("work_update", str(work_id), result.status)
         return result
 
+    async def work_relate(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_revision: str, change: RelationChange, grant_version: int | None = None,
+    ) -> GuardOutcome:
+        """Mutate one bounded work relation through the current effect journal."""
+        grant = await service.grant_get()
+        version = grant.grant.version if grant.status == "ok" and grant.grant is not None else 1
+        result = await service.relate(ProtectedRelation(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=version, observed_revision=observed_revision, change=change,
+        ))
+        audited("work_relate", str(work_id), result.status)
+        return result
+
     async def required_result_save(
         api_version: Literal["1"], work_id: UUID,
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
+        grant_version: int | None = None,
     ) -> GuardOutcome:
         """Save one required result; the server owns its stable operation identity."""
         grant = await service.grant_get()
@@ -538,6 +558,7 @@ def build_ordinary_tools(
         ("work_append", work_append),
         ("work_create", work_create),
         ("work_update", work_update),
+        ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         *build_message_tools(service, audit),
         ("message_receive", message_receive),

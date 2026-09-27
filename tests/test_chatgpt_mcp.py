@@ -20,7 +20,12 @@ from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferenceRequest
 from switchstand.core import ProviderError
 from switchstand.discovery import ProviderSearchItem, ProviderStructure
-from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
+from switchstand.grants import (
+    PrincipalContext,
+    ProtectedAppend,
+    ProtectedCreate,
+    RelationChange,
+)
 
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
@@ -274,7 +279,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
-            "work_create", "work_update", "message_send", "message_pending",
+            "work_create", "work_update", "work_relate", "message_send", "message_pending",
             "message_receive", "message_recover", "message_result_send",
             "message_disposition", "required_result_save",
         }
@@ -290,7 +295,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
         for ordinary in (
-            "work_append", "work_create", "work_update", "required_result_save",
+            "work_append", "work_create", "work_update", "work_relate", "required_result_save",
             "message_send", "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",
         ):
@@ -355,3 +360,31 @@ async def test_workspace_read_chain_and_causal_denials(monkeypatch):
 
 if __name__ == "__main__":
     build_chatgpt_server(service()).run()
+
+
+
+async def test_ordinary_relation_tool_uses_current_workspace_grant_and_journal():
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace",
+        operations=frozenset({"work_get", "work_update"}),
+        update_qualification="test:update",
+    )
+    server = build_chatgpt_server(subject)
+    operation_id = uuid4()
+    args = {
+        "api_version": "1",
+        "operation_id": str(operation_id),
+        "work_id": str(ACTIVE),
+        "observed_revision": "r1",
+        "change": RelationChange(kind="assignee", value="42").model_dump(mode="json"),
+    }
+    first = (await server.call_tool("work_relate", args)).structured_content
+    assert first["status"] == "ok" and first["effect"] == "applied"
+    assert first["receipt"]["change"] == {"kind": "assignee", "value": "42",
+                                           "stage": None, "present": None}
+    assert (await server.call_tool("work_relate", args)).structured_content == first
+    schema = next(
+        tool for tool in await server.list_tools() if tool.name == "work_relate"
+    ).input_schema
+    assert "grant_version" not in schema.get("required", [])
