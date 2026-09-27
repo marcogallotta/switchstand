@@ -40,8 +40,7 @@ from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
     "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
-    "source_task", "source_stories",
-    "source_story", "work_history", "work_attachments", "work_event", "work_append",
+    "work_history", "work_attachments", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "message_send", "message_pending",
     "message_receive", "message_recover", "message_result_send", "message_disposition",
     "agent_register", "agent_message_send", "agent_message_pending",
@@ -508,15 +507,26 @@ async def _boundaries(endpoint, selected, denied_work, effects):
         second = await call("work_append", **args, operation_id=str(uuid4()))
         assert second["status"] == "ok"
         receipt = second["receipt"]
-        readback = await call("source_story", task_gid="123", story_gid=receipt["story_gid"],
-                              observed_revision="r3")
+        first = await call(
+            "work_history", work_id=active, observed_revision="r3", limit=1
+        )
+        assert len(first["events"]) == 1 and first["next_cursor"] is not None
+        last = await call(
+            "work_history", work_id=active, observed_revision="r3", limit=1,
+            cursor=first["next_cursor"],
+        )
+        assert len(last["events"]) == 1 and last["next_cursor"] is None
+        assert first["events"][0]["id"] != last["events"][0]["id"]
+        appended = next(
+            event for event in (*first["events"], *last["events"])
+            if event["text"] == receipt["text"]
+        )
+        readback = await call(
+            "work_event", work_id=active, event_id=appended["id"],
+            observed_revision="r3",
+        )
         assert readback["item"]["text"] == receipt["text"]
-        first = await call("source_stories", task_gid="123", observed_revision="r3", limit=1)
-        assert len(first["stories"]) == 1 and first["next_offset"] is not None
-        last = await call("source_stories", task_gid="123", observed_revision="r3", limit=1,
-                          offset=first["next_offset"])
-        assert len(last["stories"]) == 1 and last["next_offset"] is None
-        assert first["stories"][0]["story_gid"] != last["stories"][0]["story_gid"]
+        assert readback["item"]["id"] == appended["id"]
         lost_id = str(uuid4())
         lost_args = args | {"observed_revision": "r3", "text": "injected lost response",
                             "operation_id": lost_id}
