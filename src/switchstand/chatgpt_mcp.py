@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, ResourceLink, TextContent
 from pydantic import Field, JsonValue
 
 from .agent_mailboxes import AgentMailboxState
@@ -61,6 +62,7 @@ from .messages import (
     disposition_digest,
     send_received_result,
 )
+from .repository_bundle import BUNDLE_NAME, resolve_repository_bundle
 from .resolver import ResolverResult, resolve_alias
 
 
@@ -892,7 +894,51 @@ def build_ordinary_tools(
                     agent_current_generations.pop(key, None)
             return result
 
+    async def repository_bundle_get(
+        api_version: Literal["1"],
+        required_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")] | None = None,
+    ) -> CallToolResult:
+        """Return the verified current Git bundle; required_sha is only a local checkout target."""
+        del api_version
+        state = await resolve_repository_bundle(required_sha)
+        structured = state.model_dump(mode="json")
+        if state.status != "current":
+            return CallToolResult(
+                content=[TextContent(
+                    text=f"Repository bundle {state.status}: {state.reason or 'not ready'}."
+                )],
+                structured_content=structured,
+            )
+
+        assert state.bundle_url is not None
+        assert state.bundle_sha256 is not None
+        target = (
+            f" Required SHA {required_sha} is a local checkout target; prove it exists "
+            "after materialization."
+            if required_sha is not None else ""
+        )
+        return CallToolResult(
+            content=[
+                TextContent(
+                    text=(
+                        "Current repository bundle verified against authoritative GitHub "
+                        f"branch heads. Verify SHA-256 {state.bundle_sha256} before use."
+                        f"{target}"
+                    )
+                ),
+                ResourceLink(
+                    name=BUNDLE_NAME,
+                    uri=state.bundle_url,
+                    description="Current self-contained Switchstand Git repository bundle.",
+                    mime_type="application/octet-stream",
+                    size=state.bundle_size,
+                ),
+            ],
+            structured_content=structured,
+        )
+
     return (
+        ("repository_bundle_get", repository_bundle_get),
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
