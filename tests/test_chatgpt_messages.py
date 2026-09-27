@@ -201,9 +201,12 @@ async def test_stdio_schema_call_and_authenticated_http_vertical(messaging, monk
     tools = {tool.name: tool for tool in await server.list_tools()}
     assert {"message_send", "message_pending"} <= tools.keys()
     schema = tools["message_send"].input_schema
-    assert set(schema["required"]) == {"api_version", "work_id", "grant_version", "message_id", "payload"}
+    assert set(schema["required"]) == {"api_version", "work_id", "message_id", "payload"}
+    assert "grant_version" not in schema["properties"]
     assert not {"principal", "grant_id", "provider", "projection_target"} & schema["properties"].keys()
-    assert (await server.call_tool("message_send", send(works[0], 1, works[1]).model_dump())).structured_content["status"] == "ok"
+    request = send(works[0], 1, works[1]).model_dump()
+    request.pop("grant_version")
+    assert (await server.call_tool("message_send", request)).structured_content["status"] == "ok"
     config = chatgpt_edge.MCPAuthConfig("client", "secret", "42", "https://switchstand.example/mcp")
     async def verified(_self, token):
         return AccessToken(token=token, client_id="test", scopes=[chatgpt_edge.REQUIRED_SCOPE], subject="42",
@@ -219,17 +222,19 @@ async def test_stdio_schema_call_and_authenticated_http_vertical(messaging, monk
         httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=config.issuer_url, **kw))
     async with app.router.lifespan_context(app), Client(transport) as client:
         request = send(works[0], 1, works[1]).model_dump(mode="json")
+        request.pop("grant_version")
         sent = (await client.call_tool("message_send", request)).structured_content
         assert sent["status"] == "ok"
         replacement = replacement.model_copy(update={"version": 2, "id": uuid4(), "authority": issued[1].authority})
         await service.grants.issue(replacement, 1)
         pending = (await client.call_tool("message_pending", {"api_version": "1",
-            "work_id": str(works[1]), "grant_version": 2})).structured_content
+            "work_id": str(works[1])})).structured_content
         reply = send(works[1], 2, None, route_ref=None, recipient_work_id=None,
                      in_reply_to_delivery_id=sent["message"]["delivery_id"]).model_dump(mode="json")
+        reply.pop("grant_version")
         assert (await client.call_tool("message_send", reply)).structured_content["status"] == "ok"
         replacement = replacement.model_copy(update={"version": 3, "id": uuid4(), "authority": issued[0].authority})
         await service.grants.issue(replacement, 2)
         returned = (await client.call_tool("message_pending", {"api_version": "1",
-            "work_id": str(works[0]), "grant_version": 3})).structured_content
+            "work_id": str(works[0])})).structured_content
     assert sent["message"] in pending["messages"] and len(returned["messages"]) == 1

@@ -57,15 +57,20 @@ def build_message_tools(
     audit: Callable[[str, str | None, str], None] | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     async def message_send(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        api_version: Literal["1"], work_id: UUID,
         message_id: UUID, payload: JsonValue,
         route_ref: Annotated[str | None, Field(min_length=1)] = None,
         recipient_work_id: UUID | None = None,
         in_reply_to_delivery_id: UUID | None = None,
     ) -> MessageSubmitResult:
         """Durably send one request or exactly correlated result."""
+        grant = await service.grant_get()
+        if grant.status == "unknown":
+            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
+        if grant.status != "ok" or grant.grant is None:
+            return MessageSubmitResult(status="denied", reason="no_current_grant")
         result = await service.message_send(MessageSendRequest(
-            api_version=api_version, work_id=work_id, grant_version=grant_version,
+            api_version=api_version, work_id=work_id, grant_version=grant.grant.version,
             message_id=message_id, route_ref=route_ref, payload=payload,
             recipient_work_id=recipient_work_id,
             in_reply_to_delivery_id=in_reply_to_delivery_id,
@@ -75,13 +80,18 @@ def build_message_tools(
         return result
 
     async def message_pending(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        api_version: Literal["1"], work_id: UUID,
         cursor: UUID | None = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> MessagePendingResult:
-        """Inspect durable pending deliveries for one explicitly admitted actor."""
+        """Inspect durable pending deliveries under current authenticated admission."""
+        grant = await service.grant_get()
+        if grant.status == "unknown":
+            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
+        if grant.status != "ok" or grant.grant is None:
+            return MessagePendingResult(status="denied", reason="no_current_grant")
         result = await service.message_pending(work_id, MessagePendingRequest(
-            api_version=api_version, grant_version=grant_version, cursor=cursor, limit=limit,
+            api_version=api_version, grant_version=grant.grant.version, cursor=cursor, limit=limit,
         ))
         if audit is not None:
             audit("message_pending", str(work_id), result.status)
@@ -107,6 +117,23 @@ def build_ordinary_tools(
     def audited(tool: str, target: str | None, status: str) -> None:
         if audit is not None:
             audit(tool, target, status)
+
+    async def current_grant_version() -> tuple[int | None, str]:
+        result = await service.grant_get()
+        if result.status == "unknown":
+            return None, "unknown"
+        if result.status != "ok" or result.grant is None:
+            return None, "denied"
+        return result.grant.version, "ok"
+
+    def admission_unknown(
+        operation: str, work_id: UUID | None = None, operation_id: UUID | None = None,
+    ) -> GuardOutcome:
+        return GuardOutcome(
+            status="unknown", operation=operation, work_id=work_id, operation_id=operation_id,
+            reason="admission_state_unavailable", effect="not_sent", retry="none",
+            next_action="Retry after admission state is readable; no provider effect was sent.",
+        )
 
     async def grant_get(api_version: Literal["1"]) -> GrantResult:
         """Read this authenticated caller's current grant; this never issues or changes a grant."""
@@ -225,9 +252,14 @@ def build_ordinary_tools(
 
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        grant_version: int, observed_revision: str, text: str,
+        observed_revision: str, text: str,
     ) -> GuardOutcome:
-        """Append through the current grant. Reuse OperationId; UNKNOWN forbids new-ID retry."""
+        """Append through current authenticated workspace admission; never blind-retry UNKNOWN."""
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_append", work_id, operation_id)
+        if grant_version is None:
+            return service.denied("work_append", "no_current_grant")
         result = await service.append(ProtectedAppend(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, text=text,
@@ -237,9 +269,14 @@ def build_ordinary_tools(
 
     async def work_create(
         api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
-        grant_version: int, title: str, notes: str = "",
+        title: str, notes: str = "",
     ) -> GuardOutcome:
-        """Create only through a test-qualified grant. Reuse OperationId to reconcile UNKNOWN."""
+        """Create through current authenticated admission. Reuse OperationId to reconcile UNKNOWN."""
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_create", parent_work_id, operation_id)
+        if grant_version is None:
+            return service.denied("work_create", "no_current_grant")
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
             grant_version=grant_version, title=title, notes=notes,
@@ -249,9 +286,14 @@ def build_ordinary_tools(
 
     async def work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        grant_version: int, observed_revision: str, patch: ScalarPatch,
+        observed_revision: str, patch: ScalarPatch,
     ) -> GuardOutcome:
-        """Set bounded scalar state. Reuse OperationId to reconcile UNKNOWN without resending."""
+        """Set bounded scalar state using current admission; UNKNOWN is never resent blindly."""
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("work_update", work_id, operation_id)
+        if grant_version is None:
+            return service.denied("work_update", "no_current_grant")
         result = await service.update(ProtectedUpdate(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, patch=patch,
@@ -260,10 +302,15 @@ def build_ordinary_tools(
         return result
 
     async def required_result_save(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        api_version: Literal["1"], work_id: UUID,
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
     ) -> GuardOutcome:
-        """Save one required result; the server owns its stable operation identity."""
+        """Save one required result; admission and stable operation identity are server-owned."""
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("required_result_save", work_id)
+        if grant_version is None:
+            return service.denied("required_result_save", "no_current_grant")
         result = await service.required_result_save(RequiredResultSaveRequest(
             api_version=api_version, work_id=work_id, grant_version=grant_version,
             observed_revision=observed_revision, text=text,
@@ -272,11 +319,13 @@ def build_ordinary_tools(
         return result
 
     async def message_context(
-        work_id: UUID, grant_version: int,
+        work_id: UUID,
     ) -> tuple[
         PrincipalContext, WorkGrant, tuple[str, UUID, UUID, int], str
     ] | MessageTransitionResult:
         grant_result = await service.grant_get()
+        if grant_result.status == "unknown":
+            return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
         if (
             grant_result.status != "ok"
             or grant_result.principal is None
@@ -284,8 +333,6 @@ def build_ordinary_tools(
         ):
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         principal, grant = grant_result.principal, grant_result.grant
-        if grant.version != grant_version:
-            return MessageTransitionResult(status="stale", reason="grant_version_changed")
         if "message" not in grant.operations:
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         if grant.scope == "launch" and grant.authority.active_work_id != work_id:
@@ -312,8 +359,6 @@ def build_ordinary_tools(
         """Preserve closed admission/currentness semantics on result-send preflight."""
         if result.reason == "no_current_grant":
             return MessageSubmitResult(status=result.status, reason="no_current_grant")
-        if result.reason == "grant_version_changed":
-            return MessageSubmitResult(status=result.status, reason="grant_version_changed")
         if result.reason == "delivery_not_for_current_work":
             return MessageSubmitResult(
                 status=result.status, reason="delivery_not_for_current_work"
@@ -329,14 +374,14 @@ def build_ordinary_tools(
         return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
     async def message_receive(
-        api_version: Literal["1"], work_id: UUID, grant_version: int, delivery_id: UUID,
+        api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Receive one exact delivery under this server-owned MCP session generation."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_receive", str(work_id), context.status)
             return context
-        principal, _grant, namespace, session_id = context
+        principal, grant, namespace, session_id = context
         if service.messages is None:
             result = MessageTransitionResult(
                 status="recovery_required", reason="state_unavailable"
@@ -359,7 +404,7 @@ def build_ordinary_tools(
                     MessageReceiveRequest(
                         api_version=api_version,
                         delivery_id=delivery_id,
-                        grant_version=grant_version,
+                        grant_version=grant.version,
                     ),
                     work_id=work_id,
                 )
@@ -369,14 +414,14 @@ def build_ordinary_tools(
         return result
 
     async def message_recover(
-        api_version: Literal["1"], work_id: UUID, grant_version: int, delivery_id: UUID,
+        api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Explicitly transfer one received delivery to this replacement MCP session."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_recover", str(work_id), context.status)
             return context
-        principal, _grant, namespace, session_id = context
+        principal, grant, namespace, session_id = context
         if service.messages is None:
             result = MessageTransitionResult(
                 status="recovery_required", reason="state_unavailable"
@@ -399,7 +444,7 @@ def build_ordinary_tools(
                     MessageReceiveRequest(
                         api_version=api_version,
                         delivery_id=delivery_id,
-                        grant_version=grant_version,
+                        grant_version=grant.version,
                     ),
                     work_id=work_id,
                 )
@@ -411,16 +456,16 @@ def build_ordinary_tools(
         return result
 
     async def message_result_send(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        api_version: Literal["1"], work_id: UUID,
         in_reply_to_delivery_id: UUID, message_id: UUID, payload: JsonValue,
     ) -> MessageSubmitResult:
         """Send a result only from the current MCP session bound to the received delivery."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             result = submit_preflight(context)
             audited("message_result_send", str(work_id), result.status)
             return result
-        principal, _grant, namespace, session_id = context
+        principal, grant, namespace, session_id = context
         if service.messages is None:
             result = MessageSubmitResult(status="recovery_required", reason="state_unavailable")
             audited("message_result_send", str(work_id), result.status)
@@ -442,7 +487,7 @@ def build_ordinary_tools(
                     MessageSendRequest(
                         api_version=api_version,
                         work_id=work_id,
-                        grant_version=grant_version,
+                        grant_version=grant.version,
                         message_id=message_id,
                         payload=payload,
                         in_reply_to_delivery_id=in_reply_to_delivery_id,
@@ -456,15 +501,15 @@ def build_ordinary_tools(
         return result
 
     async def message_disposition(
-        api_version: Literal["1"], work_id: UUID, grant_version: int,
+        api_version: Literal["1"], work_id: UUID,
         delivery_id: UUID, result_message_id: UUID,
     ) -> MessageTransitionResult:
         """Disposition one received delivery only from its current MCP session."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_disposition", str(work_id), context.status)
             return context
-        principal, _grant, namespace, session_id = context
+        principal, grant, namespace, session_id = context
         if service.messages is None:
             result = MessageTransitionResult(
                 status="recovery_required", reason="state_unavailable"
@@ -490,14 +535,14 @@ def build_ordinary_tools(
                     MessageDispositionRequest(
                         api_version=api_version,
                         delivery_id=delivery_id,
-                        grant_version=grant_version,
+                        grant_version=grant.version,
                         disposition_digest=disposition_digest(evidence),
                         evidence=evidence,
                     ),
                     work_id=work_id,
                 )
                 if result.status == "ok" and result.state == "DISPOSITIONED":
-                    has_received = await service.messages.has_received(work_id, grant_version)
+                    has_received = await service.messages.has_received(work_id, grant.version)
                     if has_received is False:
                         current_generations.pop(namespace, None)
         audited("message_disposition", str(work_id), result.status)
