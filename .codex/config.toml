@@ -38,6 +38,20 @@ enabled_tools = ["work_get", "work_search", "work_resolve_reference",
 [mcp_servers.switchstand_oauth_proof]
 enabled = false
 
+[mcp_servers.switchstand_certification]
+enabled = false
+url = "https://laptop.tail46f0b9.ts.net:8446/mcp"
+required = false
+default_tools_approval_mode = "approve"
+enabled_tools = ["work_get", "work_search", "work_resolve_reference",
+                 "work_resolve_alias", "work_structure", "work_history", "work_attachments", "work_event", "work_append",
+                 "work_create", "work_update", "work_relate", "message_send", "message_pending",
+                 "message_receive", "message_recover", "message_result_send",
+                 "message_disposition", "required_result_save", "agent_register",
+                 "agent_message_send", "agent_message_pending", "agent_message_receive",
+                 "agent_message_recover", "agent_message_result_send",
+                 "agent_message_disposition"]
+
 
 [mcp_servers.switchstand_managed]
 command = "scripts/switchstand-controller-mcp"

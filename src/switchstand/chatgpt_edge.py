@@ -192,7 +192,11 @@ async def serve() -> None:
             return None
 
         test_project = os.getenv("SWITCHSTAND_TEST_PROJECT_GID", "").strip()
-        provider = AsanaProvider(client, test_project or None, test_only=bool(test_project))
+        marker = os.getenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "").strip()
+        provider = AsanaProvider(
+            client, test_project or None, test_only=bool(test_project),
+            create_notes_suffix=marker or None,
+        )
         grants = GrantState(engine)
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,

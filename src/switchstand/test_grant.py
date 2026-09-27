@@ -10,10 +10,10 @@ from typing import Literal
 from uuid import uuid4
 
 import httpx
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .core import provision_launch
+from .database import validate_test_database_url
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
 from .provider import AsanaProvider
@@ -30,11 +30,12 @@ def test_database_url(environment: Mapping[str, str] = os.environ) -> str:
     url = environment.get("TEST_DATABASE_URL", "")
     if not url:
         raise ValueError("TEST_DATABASE_URL must name switchstand_test")
-    parsed = make_url(url)
-    if (parsed.drivername != "postgresql+psycopg"
-            or parsed.database != "switchstand_test" or "dbname" in parsed.query):
-        raise ValueError("TEST_DATABASE_URL must name switchstand_test without a dbname override")
-    return url
+    try:
+        return validate_test_database_url(url)
+    except ValueError:
+        raise ValueError(
+            "TEST_DATABASE_URL must name switchstand_test without a dbname override"
+        ) from None
 
 
 def redacted(principal: PrincipalContext, grant: WorkGrant | None) -> dict[str, object]:
