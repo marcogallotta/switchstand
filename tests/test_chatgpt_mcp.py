@@ -289,6 +289,13 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 tool.input_schema.get("properties", {}))
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
+        for ordinary in (
+            "work_append", "work_create", "work_update", "required_result_save",
+            "message_send", "message_pending", "message_receive", "message_recover",
+            "message_result_send", "message_disposition",
+        ):
+            schema = next(tool for tool in tools if tool.name == ordinary).input_schema
+            assert "grant_version" not in schema["properties"]
         update = next(tool for tool in tools if tool.name == "work_update")
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
@@ -311,7 +318,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert related["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
-        args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'grant_version': 1, 'observed_revision': "r1", 'text': "protocol feedback"}
+        args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'observed_revision': "r1", 'text': "protocol feedback"}
         reference = await client.call_tool("work_append", args | {"work_id": str(REFERENCE)})
         assert reference.structured_content["status"] == "denied"
         first = (await client.call_tool("work_append", args)).structured_content
