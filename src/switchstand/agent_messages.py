@@ -8,14 +8,13 @@ from pydantic import JsonValue, model_validator
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .contracts import ClosedModel
-from .grants import PrincipalContext, WorkGrant
+from .grants import PrincipalContext
 from .messages import PendingMessage
 
 
 @dataclass(frozen=True)
 class AgentMessageContext:
     principal: PrincipalContext
-    grant: WorkGrant
     mailbox: AgentMailbox
 
 
