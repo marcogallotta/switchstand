@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferenceRequest
-from switchstand.core import ProviderError
+from switchstand.core import ProviderError, ProviderSourceTask
 from switchstand.discovery import ProviderSearchItem, ProviderStructure
 from switchstand.grants import PrincipalContext, ProtectedAppend, ProtectedCreate
 
@@ -252,6 +252,70 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
     }
 
 
+async def test_canonical_resolver_exact_workid_bypasses_registry(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    subject = service()
+    provider = subject.providers["asana"]
+    source = AsyncMock(side_effect=AssertionError("exact WorkId must bypass alias registry"))
+    monkeypatch.setattr(provider, "source_task", source)
+    result = await build_chatgpt_server(subject).call_tool("work_resolve", {
+        "api_version": "1", "reference": str(ACTIVE),
+    })
+    assert result.structured_content["status"] == "ok"
+    assert result.structured_content["owner"]["id"] == str(ACTIVE)
+    source.assert_not_awaited()
+
+
+async def test_canonical_resolver_uses_only_machine_registry_and_rereads_targets(monkeypatch):
+    subject = service()
+    subject.grants.grant = grant(scope="workspace", operations=frozenset({"work_get"}))
+    provider = subject.providers["asana"]
+    provider.canonical_ids.update({"789", "888", "1218432271807843"})
+    block = (
+        'MCP_RESOLVER_V1\n'
+        '{"aliases":{"mcp":{"owner":"789","refs":['
+        '{"type":"spec","task_gid":"888"}]}}}'
+    )
+    original = provider.source_task
+    registry_reads = 0
+
+    async def source(task_gid):
+        nonlocal registry_reads
+        if task_gid == "1218432271807843":
+            registry_reads += 1
+            return ProviderSourceTask("Registry", block, False, "registry-r1", True)
+        return await original(task_gid)
+
+    monkeypatch.setattr(provider, "source_task", source)
+    result = await build_chatgpt_server(subject).call_tool("work_resolve", {
+        "api_version": "1", "reference": "MCP",
+    })
+    value = result.structured_content
+    assert value["status"] == "ok" and value["alias"] == "mcp"
+    assert value["owner"]["id"] != value["references"][0]["item"]["id"]
+    assert value["references"][0]["role"] == "spec"
+    assert registry_reads == 2
+
+
+async def test_canonical_resolver_missing_or_invalid_registry_block_is_unknown(monkeypatch):
+    subject = service()
+    subject.grants.grant = grant(scope="workspace", operations=frozenset({"work_get"}))
+    provider = subject.providers["asana"]
+    provider.canonical_ids.add("1218432271807843")
+
+    async def source(_task_gid):
+        return ProviderSourceTask("Registry", "no resolver block", False, "registry-r1", True)
+
+    monkeypatch.setattr(provider, "source_task", source)
+    result = await build_chatgpt_server(subject).call_tool("work_resolve", {
+        "api_version": "1", "reference": "mcp",
+    })
+    assert result.structured_content == {
+        "status": "unknown", "alias": None, "owner": None, "references": [],
+    }
+
+
 async def test_reference_rejects_unrecognized_syntax_without_provider_read(monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -271,7 +335,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "work_search", "work_resolve_reference", "work_structure",
+            "grant_get", "work_get", "work_search", "work_resolve", "work_resolve_reference",
+            "work_structure",
             "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "message_send", "message_pending",

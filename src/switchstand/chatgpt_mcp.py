@@ -20,6 +20,7 @@ from .contracts import (
     WorkEventResult,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkResolution,
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
@@ -136,6 +137,17 @@ def build_ordinary_tools(
             cursor=cursor, limit=limit,
         ))
         audited("work_search", None, result.status)
+        return result
+
+    async def work_resolve(
+        api_version: Literal["1"],
+        reference: Annotated[str, Field(min_length=1, max_length=2048)],
+    ) -> WorkResolution:
+        """Resolve an exact WorkId/task directly or one canonical alias through MCP_RESOLVER_V1."""
+        result = await service.resolve(WorkResolveReferenceRequest(
+            api_version=api_version, reference=reference,
+        ))
+        audited("work_resolve", reference, result.status)
         return result
 
     async def work_resolve_reference(
@@ -289,7 +301,7 @@ def build_ordinary_tools(
         return result
 
     async def message_context(
-        work_id: UUID, grant_version: int | None = None,
+        work_id: UUID,
     ) -> tuple[
         PrincipalContext, WorkGrant, tuple[str, UUID, UUID, int], str
     ] | MessageTransitionResult:
@@ -301,8 +313,6 @@ def build_ordinary_tools(
         ):
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         principal, grant = grant_result.principal, grant_result.grant
-        if grant_version is not None and grant.version != grant_version:
-            return MessageTransitionResult(status="stale", reason="grant_version_changed")
         if "message" not in grant.operations:
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         if grant.scope == "launch" and grant.authority.active_work_id != work_id:
@@ -349,7 +359,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Receive one exact delivery under this server-owned MCP session generation."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_receive", str(work_id), context.status)
             return context
@@ -389,7 +399,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Explicitly transfer one received delivery to this replacement MCP session."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_recover", str(work_id), context.status)
             return context
@@ -432,7 +442,7 @@ def build_ordinary_tools(
         in_reply_to_delivery_id: UUID, message_id: UUID, payload: JsonValue,
     ) -> MessageSubmitResult:
         """Send a result only from the current MCP session bound to the received delivery."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             result = submit_preflight(context)
             audited("message_result_send", str(work_id), result.status)
@@ -477,7 +487,7 @@ def build_ordinary_tools(
         delivery_id: UUID, result_message_id: UUID,
     ) -> MessageTransitionResult:
         """Disposition one received delivery only from its current MCP session."""
-        context = await message_context(work_id, grant_version)
+        context = await message_context(work_id)
         if isinstance(context, MessageTransitionResult):
             audited("message_disposition", str(work_id), context.status)
             return context
@@ -524,6 +534,7 @@ def build_ordinary_tools(
         ("grant_get", grant_get),
         ("work_get", work_get),
         ("work_search", work_search),
+        ("work_resolve", work_resolve),
         ("work_resolve_reference", work_resolve_reference),
         ("work_structure", work_structure),
         ("work_history", work_history),
