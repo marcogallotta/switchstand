@@ -72,6 +72,21 @@ if [ "$bound" = false ]; then
         exit 1
     }
 fi
-run env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
-run env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
-run env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" -ra "$@"
+quality_status=0
+gate() {
+    gate_name=$1
+    shift
+    deadline=$(($(date +%s) + 120))
+    echo "==> $gate_name"
+    if run "$@"; then
+        echo "PASS: $gate_name"
+    else
+        status=$?
+        echo "FAIL: $gate_name (exit $status)" >&2
+        [ "$quality_status" -ne 0 ] || quality_status=$status
+    fi
+}
+gate Ruff env PYTHONPATH="$repo/src" "$venv/bin/ruff" check .
+gate Pyright env PYTHONPATH="$repo/src" "$venv/bin/pyright" --pythonpath "$venv/bin/python"
+gate pytest env SWITCHSTAND_REQUIRE_TEST_DATABASE=1 PYTHONPATH="$repo/src" "$venv/bin/pytest" -ra "$@"
+exit "$quality_status"

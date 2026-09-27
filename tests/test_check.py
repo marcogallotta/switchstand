@@ -171,6 +171,36 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
     assert calls[2] == "pytest -ra tests/test_check.py"
 
 
+def test_check_runs_and_reports_every_gate_after_failures(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    fake_bin = tmp_path / "bin"
+    check = copy_script("check", repo)
+    fake_bin.mkdir()
+    fake_git(fake_bin / "git")
+    executable(repo / "scripts" / "bootstrap", "#!/bin/sh\nexit 0\n")
+    venv = repo / ".venv" / "bin"
+    executable(venv / "python", "#!/bin/sh\necho manifest\n")
+    for tool, status in (("ruff", 3), ("pyright", 4), ("pytest", 5)):
+        executable(
+            venv / tool,
+            f"#!/bin/sh\necho {tool} >> \"$FAKE_QUALITY\"\nexit {status}\n",
+        )
+    environment = unbound_environment() | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_REPO": str(repo),
+        "FAKE_QUALITY": str(tmp_path / "quality.log"),
+    }
+    result = subprocess.run(
+        [check, "tests/test_check.py"], cwd=repo, env=environment,
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 3
+    assert (tmp_path / "quality.log").read_text().splitlines() == ["ruff", "pyright", "pytest"]
+    assert "FAIL: Ruff (exit 3)" in result.stderr
+    assert "FAIL: Pyright (exit 4)" in result.stderr
+    assert "FAIL: pytest (exit 5)" in result.stderr
+
+
 def tree_bytes(root: Path) -> dict[str, bytes | str]:
     return {
         str(path.relative_to(root)): (
