@@ -48,7 +48,7 @@ def exited(process):
 
 
 @contextmanager
-def owned_process(command, env, log, *, new_session=True):
+def owned_process(command, env, log, *, new_session=True, termination_grace=5):
     with log.open("xb") as output:
         process = subprocess.Popen(command, env=env, cwd=ROOT, stdout=output, stderr=output,
                                    start_new_session=new_session)
@@ -58,7 +58,7 @@ def owned_process(command, env, log, *, new_session=True):
         finally:
             try:
                 send(process.pid, signal.SIGTERM)
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + termination_grace
                 while exited(process) is None and time.monotonic() < deadline:
                     time.sleep(0.05)
                 # Also stop any remaining descendants before releasing the leader's PID.
