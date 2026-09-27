@@ -1,8 +1,9 @@
 """Authenticated-caller seam; authentication adapters are trusted host code, never tools."""
 
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid5
 
 from pydantic import Field
@@ -24,7 +25,10 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    ResolvedWorkReference,
+    WorkResolution,
     WorkResolveReferenceRequest,
+    WorkSearchItem,
     WorkSearchRequest,
     WorkSearchResult,
     WorkStructureRequest,
@@ -63,6 +67,8 @@ from .updates import UpdateGateway
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
+MCP_RESOLVER_TASK_GID = "1218432271807843"
+MCP_RESOLVER_MARKER = "MCP_RESOLVER_V1"
 
 
 class RequiredResultSaveRequest(ClosedModel):
@@ -193,6 +199,142 @@ class ChatGPTService:
                 )
         except (SQLAlchemyError, ValueError, KeyError):
             return WorkStructureResult(status="unknown")
+
+    @staticmethod
+    def _resolution_item(item: object) -> WorkSearchItem:
+        work = cast(Any, item)
+        return WorkSearchItem(
+            id=work.id, title=work.title, completed=work.completed,
+            revision=work.revision, routing=work.routing, context=work.context,
+        )
+
+    @staticmethod
+    def _resolver_entry(
+        notes: str, alias: str,
+    ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+        if notes.count(MCP_RESOLVER_MARKER) != 1:
+            return None
+        tail = notes.split(MCP_RESOLVER_MARKER, 1)[1]
+        start = tail.find("{")
+        if start < 0:
+            return None
+        try:
+            document, _ = json.JSONDecoder().raw_decode(tail[start:])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(document, dict) or not isinstance(document.get("aliases"), dict):
+            return None
+        aliases = cast(dict[str, object], document["aliases"])
+        raw = aliases.get(alias)
+        if not isinstance(raw, dict):
+            return None
+        entry = cast(dict[str, object], raw)
+        owner = entry.get("owner")
+        owner_alt = entry.get("owner_task_gid")
+        if owner is None:
+            owner = owner_alt
+        elif owner_alt is not None and owner_alt != owner:
+            return None
+        refs = entry.get("refs")
+        if not isinstance(owner, str) or not owner.isdigit() or not isinstance(refs, list):
+            return None
+        parsed: list[tuple[str, str]] = []
+        seen: set[str] = {owner}
+        for raw_ref in refs:
+            if not isinstance(raw_ref, dict):
+                return None
+            ref = cast(dict[str, object], raw_ref)
+            role = ref.get("type")
+            task = ref.get("task_gid", ref.get("task"))
+            if (not isinstance(role, str) or not role
+                    or not isinstance(task, str) or not task.isdigit() or task in seen):
+                return None
+            seen.add(task)
+            parsed.append((role, task))
+        return owner, tuple(parsed)
+
+    async def resolve(self, request: WorkResolveReferenceRequest) -> WorkResolution:
+        """Resolve exact WorkId/task references directly; aliases only through MCP_RESOLVER_V1."""
+        reference = request.reference.strip()
+        try:
+            work_id = UUID(reference)
+        except ValueError:
+            work_id = None
+        if work_id is not None:
+            exact = await self.get(work_id)
+            if exact.status != "ok" or exact.item is None:
+                status = exact.status if exact.status in {"denied", "unknown", "provider_error"} else "unknown"
+                return WorkResolution(status=status)
+            return WorkResolution(status="ok", owner=self._resolution_item(exact.item))
+
+        try:
+            parse_legacy_task_reference(reference)
+        except ValueError:
+            pass
+        else:
+            exact = await self.resolve_reference(request)
+            if exact.status != "ok" or exact.item is None:
+                status = exact.status if exact.status in {"denied", "unknown", "provider_error"} else "unknown"
+                return WorkResolution(status=status)
+            return WorkResolution(status="ok", owner=self._resolution_item(exact.item))
+
+        principal = await self.principal()
+        if principal is None:
+            return WorkResolution(status="denied")
+        alias = reference.casefold()
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}), workspace_only=True,
+                )
+                if authority is None:
+                    return WorkResolution(status="denied")
+                provider = self.providers.get("asana")
+                if provider is None:
+                    return WorkResolution(status="provider_error")
+                registry = await provider.source_task(MCP_RESOLVER_TASK_GID)
+                if registry is None or not registry.canonical:
+                    return WorkResolution(status="unknown")
+                entry = self._resolver_entry(registry.notes, alias)
+                if entry is None:
+                    return WorkResolution(status="unknown")
+                owner_gid, refs = entry
+
+                async def exact_item(task_gid: str) -> WorkSearchItem | None:
+                    current = await provider.get(task_gid)
+                    if current is None or not current.canonical:
+                        return None
+                    handle = await self.state.get_by_provider("asana", task_gid)
+                    if handle is None:
+                        handle = await self.state.bind("asana", task_gid)
+                    return WorkSearchItem(
+                        id=handle.id, title=current.title, completed=current.completed,
+                        revision=current.revision, routing=current.routing, context=current.context,
+                    )
+
+                owner = await exact_item(owner_gid)
+                if owner is None:
+                    return WorkResolution(status="unknown")
+                resolved: list[ResolvedWorkReference] = []
+                for role, task_gid in refs:
+                    item = await exact_item(task_gid)
+                    if item is None:
+                        return WorkResolution(status="unknown")
+                    try:
+                        resolved.append(ResolvedWorkReference(role=role, item=item))
+                    except ValueError:
+                        return WorkResolution(status="unknown")
+                readback = await provider.source_task(MCP_RESOLVER_TASK_GID)
+                if (readback is None or not readback.canonical
+                        or readback.revision != registry.revision or readback.notes != registry.notes):
+                    return WorkResolution(status="unknown")
+                return WorkResolution(
+                    status="ok", alias=alias, owner=owner, references=tuple(resolved),
+                )
+        except ProviderError:
+            return WorkResolution(status="provider_error")
+        except (SQLAlchemyError, TypeError, ValueError, KeyError):
+            return WorkResolution(status="unknown")
 
     async def resolve_reference(
         self, request: WorkResolveReferenceRequest,

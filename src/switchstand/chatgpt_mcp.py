@@ -20,6 +20,7 @@ from .contracts import (
     WorkEventResult,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkResolution,
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
@@ -140,6 +141,17 @@ def build_ordinary_tools(
             cursor=cursor, limit=limit,
         ))
         audited("work_search", None, result.status)
+        return result
+
+    async def work_resolve(
+        api_version: Literal["1"],
+        reference: Annotated[str, Field(min_length=1, max_length=2048)],
+    ) -> WorkResolution:
+        """Resolve an exact WorkId/task directly or one canonical alias through MCP_RESOLVER_V1."""
+        result = await service.resolve(WorkResolveReferenceRequest(
+            api_version=api_version, reference=reference,
+        ))
+        audited("work_resolve", reference, result.status)
         return result
 
     async def work_resolve_reference(
@@ -547,6 +559,7 @@ def build_ordinary_tools(
         ("grant_get", grant_get),
         ("work_get", work_get),
         ("work_search", work_search),
+        ("work_resolve", work_resolve),
         ("work_resolve_reference", work_resolve_reference),
         ("work_structure", work_structure),
         ("work_history", work_history),

@@ -141,6 +141,27 @@ class WorkResolveReferenceRequest(ClosedModel):
     reference: str = Field(min_length=1, max_length=2048)
 
 
+class ResolvedWorkReference(ClosedModel):
+    role: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")
+    item: WorkSearchItem
+
+
+class WorkResolution(ClosedModel):
+    status: Literal["ok", "denied", "unknown", "provider_error"]
+    alias: str | None = None
+    owner: WorkSearchItem | None = None
+    references: tuple[ResolvedWorkReference, ...] = ()
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok":
+            if self.owner is None:
+                raise ValueError("successful resolution requires an owner")
+        elif self.alias is not None or self.owner is not None or self.references:
+            raise ValueError("failed resolution must not claim targets")
+        return self
+
+
 class WorkAttachmentsRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
