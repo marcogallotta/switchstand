@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from switchstand.contracts import WorkContext, WorkPatch, WorkPlacement
-from switchstand.core import Handle, ProviderError, UnknownEffect
+from switchstand.core import Handle, ProviderError, ProviderRelation, UnknownEffect
 from switchstand.discovery import WorkDiscovery
 from switchstand.provider import (
     ANCESTRY_GETS,
@@ -192,6 +192,57 @@ async def test_test_only_admission_excludes_normal_projects(project, allowed, in
         result = await subject.get("123")
     assert result.canonical is allowed
     assert all(request.method == "GET" for request in api.requests)
+
+
+@pytest.mark.parametrize("foreign", [PROJECT, "8888888888888888"])
+async def test_test_only_admission_rejects_foreign_membership_anywhere_in_lineage(foreign):
+    responses = [
+        (200, task(parent="parent", project=TEST_PROJECT)),
+        (200, task(project=foreign)),
+    ]
+    api = API(*responses)
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        subject = AsanaProvider(client, TEST_PROJECT, test_only=True)
+        assert not (await subject.get("child")).canonical
+    assert [request.url.path for request in api.requests] == [
+        "/api/1.0/tasks/child", "/api/1.0/tasks/parent",
+    ]
+
+
+async def test_test_only_create_injects_server_owned_cleanup_marker():
+    created = task(project=TEST_PROJECT)
+    created["data"] |= {"gid": "created", "name": "Canary", "notes": "body\n\nmarker"}
+    api = API((201, {"data": {"gid": "created"}}), (200, created))
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        subject = AsanaProvider(
+            client, TEST_PROJECT, test_only=True, create_notes_suffix="marker",
+        )
+        assert await subject.create_work(
+            "Canary", "body", uuid4(), project_gid=TEST_PROJECT,
+        ) == "created"
+    assert json.loads(api.requests[0].content)["data"]["notes"] == "body\n\nmarker"
+
+
+async def test_test_only_update_preserves_cleanup_marker_and_denies_project_removal():
+    api = API((200, {"data": {}}))
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        subject = AsanaProvider(
+            client, TEST_PROJECT, test_only=True, create_notes_suffix="marker",
+        )
+        await subject.update("created", WorkPatch(notes="changed"))
+        with pytest.raises(ProviderError, match="placement removal denied"):
+            await subject.update_relation(
+                "created", ProviderRelation(
+                    kind="placement", action="remove", project_gid=TEST_PROJECT,
+                ),
+            )
+    assert json.loads(api.requests[0].content)["data"]["notes"] == "changed\n\nmarker"
 
 
 def test_test_only_admission_requires_explicit_test_project():

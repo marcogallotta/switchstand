@@ -71,13 +71,17 @@ class _TraversalFailure(Exception):
 
 class AsanaProvider:
     def __init__(self, client: httpx.AsyncClient, test_project_gid: str | None = None,
-                 *, test_only: bool = False):
+                 *, test_only: bool = False, create_notes_suffix: str | None = None):
         if test_only and not test_project_gid:
             raise ValueError("test-only admission requires a test project GID")
         if test_project_gid and (not all(digit in "0123456789" for digit in test_project_gid)
                                  or test_project_gid in PROJECTS):
             raise ValueError("invalid test project GID")
+        if create_notes_suffix is not None and (not test_only or not create_notes_suffix.strip()):
+            raise ValueError("create notes suffix requires test-only admission")
         self.client = client
+        self._test_project = test_project_gid if test_only else None
+        self._create_notes_suffix = create_notes_suffix
         self._admission_projects: frozenset[str] = (
             frozenset((test_project_gid,)) if test_only and test_project_gid else
             frozenset((*PROJECTS, test_project_gid)) if test_project_gid else frozenset(PROJECTS)
@@ -185,6 +189,31 @@ class AsanaProvider:
         return gid if isinstance(gid, str) else None
 
     async def _canonical(self, task: JSON) -> bool:
+        if self._test_project is not None:
+            admitted = False
+            seen: set[str] = set()
+            while True:
+                memberships = task.get("memberships")
+                if not isinstance(memberships, list):
+                    return False
+                projects = {
+                    gid for item in cast(list[object], memberships)
+                    if isinstance(item, dict)
+                    and (gid := self._gid(cast(JSON, item).get("project"))) is not None
+                }
+                if len(projects) != len(cast(list[object], memberships)):
+                    return False
+                if projects - {self._test_project}:
+                    return False
+                admitted = admitted or self._test_project in projects
+                if (parent := self._gid(task.get("parent"))) is None:
+                    return admitted
+                if parent in seen or len(seen) >= ANCESTRY_GETS - 1:
+                    return False
+                seen.add(parent)
+                if (ancestor := await self._task(parent)) is None:
+                    return False
+                task = ancestor
         seen: set[str] = set()
         while True:
             if not isinstance(memberships := task.get("memberships"), list): return False
@@ -734,6 +763,8 @@ class AsanaProvider:
         del operation_id
         if (parent_task_gid is None) == (project_gid is None):
             raise ProviderError("create target invalid")
+        if self._create_notes_suffix is not None:
+            notes = f"{notes.rstrip()}\n\n{self._create_notes_suffix}"
         data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
         if parent_task_gid is not None:
             parent = await self._task(parent_task_gid)
@@ -878,6 +909,8 @@ class AsanaProvider:
             assert patch.project_gid is not None
             if patch.project_gid not in self._admission_projects:
                 raise ProviderError("placement project denied")
+            if self._test_project is not None and patch.action == "remove":
+                raise ProviderError("test-only placement removal denied")
             if patch.action == "remove":
                 await self._write(
                     "POST", f"/tasks/{provider_work_id}/removeProject",
@@ -968,6 +1001,10 @@ class AsanaProvider:
         changed = patch.model_fields_set
         data = {("name" if name == "title" else name): getattr(patch, name)
                 for name in {"title", "notes", "completed"} & changed}
+        if self._create_notes_suffix is not None and "notes" in data:
+            notes = cast(str, data["notes"])
+            if self._create_notes_suffix not in notes.splitlines():
+                data["notes"] = f"{notes.rstrip()}\n\n{self._create_notes_suffix}"
         routing = (set(FIELDS) | {"work_type"}) & changed
         if routing:
             task = await self._task(provider_work_id)
