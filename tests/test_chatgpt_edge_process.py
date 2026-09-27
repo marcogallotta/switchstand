@@ -259,7 +259,7 @@ async def _exercise(endpoint, selected, operation_id):
     async with Client(transport) as client:
         result = await client.call_tool("work_append", {
             "api_version": "1", "operation_id": str(operation_id),
-            "work_id": str(selected.authority.active_work_id), "grant_version": selected.version,
+            "work_id": str(selected.authority.active_work_id),
             "observed_revision": "r1", "text": "durable vertical append",
         })
         return result.structured_content
@@ -363,7 +363,7 @@ async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_aft
             return (await client.call_tool(tool, arguments)).structured_content
 
     send = {
-        "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+        "api_version": "1", "work_id": str(sender),
         "message_id": str(request_id), "route_ref": "implementation",
         "recipient_work_id": str(recipient), "payload": {"request": "complete"},
     }
@@ -381,7 +381,7 @@ async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_aft
                                    "reason": "recipient_route_unavailable"}
         first = await _managed_workflow(server, sent, result_id, update_id)
         reply = await edge_call(endpoint, "message_pending", {
-            "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+            "api_version": "1", "work_id": str(sender),
         })
         updated = await edge_call(endpoint, "work_get", {
             "api_version": "1", "work_id": str(recipient),
@@ -398,7 +398,7 @@ async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_aft
             assert replayed_send["message"][field] == sent["message"][field]
         assert await _managed_replay(server, sent, result_id, update_id) == first
         replayed_reply = await edge_call(endpoint, "message_pending", {
-            "api_version": "1", "work_id": str(sender), "grant_version": selected.version,
+            "api_version": "1", "work_id": str(sender),
         })
         replayed_work = await edge_call(endpoint, "work_get", {
             "api_version": "1", "work_id": str(recipient),
@@ -494,8 +494,7 @@ async def _boundaries(endpoint, selected, denied_work, effects):
             return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
 
         active = str(selected.authority.active_work_id)
-        args = {"work_id": active, "grant_version": selected.version,
-                "observed_revision": "r2", "text": "second"}
+        args = {"work_id": active, "observed_revision": "r2", "text": "second"}
         for target in [str(selected.authority.reference_work_ids[0]), str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))
