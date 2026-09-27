@@ -495,3 +495,58 @@ async def test_recover_never_rewrites_available_or_dispositioned_delivery(subjec
     assert disposed_row["state"] == "DISPOSITIONED"
     assert disposed_row["recipient_grant_version"] == 1
     assert disposed_row["receiving_generation"] == "run-1"
+
+
+async def test_admitted_message_path_uses_binding_generation_without_work_grants(subject):
+    state, engine, grants, *_ = subject
+    sender_work, recipient_work = uuid4(), uuid4()
+    assert await grants.current_for_active_work(sender_work) is None
+    assert await grants.current_for_active_work(recipient_work) is None
+
+    submitted = await state.submit_admitted(
+        sender_work,
+        MessageRoute(recipient_work_id=recipient_work, recipient_grant_version=1),
+        MessageSubmitRequest(
+            api_version="1", message_id=uuid4(), grant_version=1,
+            route_ref="agent.recipient", kind="request", payload={"request": "review"},
+        ),
+    )
+    assert submitted.status == "ok" and submitted.message is not None
+    delivery_id = submitted.message.delivery_id
+    pending = await state.pending_admitted(
+        recipient_work, MessagePendingRequest(api_version="1", grant_version=1)
+    )
+    assert [item.delivery_id for item in pending.messages] == [delivery_id]
+
+    run1 = RuntimeCurrentness(generation="run-1", current_generation="run-1")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    assert (
+        await state.receive_admitted(recipient_work, 1, run1, receive)
+    ).state == "RECEIVED"
+
+    run2 = RuntimeCurrentness(generation="run-2", current_generation="run-2")
+    recovered = await state.recover_admitted(recipient_work, 2, run2, receive)
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
+
+    result_id = uuid4()
+    reply = await state.submit_received_result(
+        recipient_work, 2, "run-2",
+        MessageRoute(recipient_work_id=sender_work, recipient_grant_version=1),
+        MessageSubmitRequest(
+            api_version="1", message_id=result_id, grant_version=2,
+            route_ref="agent.recipient", kind="result", payload={"result": "pass"},
+            in_reply_to_delivery_id=delivery_id,
+        ),
+    )
+    assert reply.status == "ok"
+    evidence = DispositionEvidence(kind="result", result_message_id=result_id)
+    disposed = await state.disposition_admitted(
+        recipient_work, 2, run2,
+        MessageDispositionRequest(
+            api_version="1", delivery_id=delivery_id, grant_version=2,
+            disposition_digest=digest(evidence), evidence=evidence,
+        ),
+    )
+    assert disposed.status == "ok" and disposed.state == "DISPOSITIONED"
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(message_projection))).all() == []
