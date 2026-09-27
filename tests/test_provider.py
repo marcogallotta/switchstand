@@ -16,9 +16,9 @@ from switchstand.provider import (
     PROJECTS,
     ROOT_WORK_GID,
     WORK_TYPE,
-    RelationMutation,
     WORKSPACE,
     AsanaProvider,
+    RelationMutation,
 )
 
 
