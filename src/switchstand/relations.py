@@ -3,6 +3,7 @@
 import hashlib
 import json
 from typing import Protocol, cast
+from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -174,10 +175,9 @@ class RelationGateway:
 
     async def _readback(
         self, principal: PrincipalContext, request: ProtectedRelation,
-        grant_id: object, grant_version: int, provider_name: str, task_gid: str,
+        grant_id: UUID, grant_version: int, provider_name: str, task_gid: str,
         qualification: str,
     ) -> GuardOutcome:
-        from uuid import UUID
 
         provider = self.providers.get(provider_name)
         if (provider is None or not hasattr(provider, "relation_matches")):
@@ -197,7 +197,7 @@ class RelationGateway:
         receipt = RelationReceipt(
             operation_id=request.operation_id,
             principal=principal,
-            grant_id=cast(UUID, grant_id),
+            grant_id=grant_id,
             grant_version=grant_version,
             work_id=request.work_id,
             provider=provider_name,
