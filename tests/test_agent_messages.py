@@ -2,9 +2,9 @@ import os
 from uuid import uuid4
 
 import pytest
-from chatgpt_fixture import grant
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from chatgpt_fixture import grant
 from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
