@@ -61,6 +61,16 @@ class EventBinding:
 
 
 @dataclass(frozen=True)
+class ProviderRelation:
+    kind: str
+    action: str
+    target_gid: str | None = None
+    assignee_gid: str | None = None
+    project_gid: str | None = None
+    section_gid: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderWork:
     title: str
     notes: str
