@@ -66,10 +66,17 @@ class ProtectedAppend(ClosedModel):
 class ProtectedCreate(ClosedModel):
     api_version: Literal["1"]
     operation_id: UUID
-    parent_work_id: UUID
     grant_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     notes: str = Field(default="", max_length=8000)
+    parent_work_id: UUID | None = None
+    project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
+
+    @model_validator(mode="after")
+    def one_target(self) -> Self:
+        if (self.parent_work_id is None) == (self.project_gid is None):
+            raise ValueError("create requires exactly one parent_work_id or project_gid")
+        return self
 
 
 class ScalarPatch(ClosedModel):
@@ -121,7 +128,8 @@ class CreateReceipt(ClosedModel):
     work_id: UUID
     provider: str
     task_gid: str
-    parent_task_gid: str
+    parent_task_gid: str | None = None
+    project_gid: str | None = None
     title: str
     qualification: str
 

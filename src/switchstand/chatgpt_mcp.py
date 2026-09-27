@@ -281,10 +281,11 @@ def build_ordinary_tools(
         return result
 
     async def work_create(
-        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
-        title: str, notes: str = "",
+        api_version: Literal["1"], operation_id: UUID,
+        title: str, notes: str = "", parent_work_id: UUID | None = None,
+        project_gid: Annotated[str | None, Field(pattern=r"^[0-9]+$")] = None,
     ) -> GuardOutcome:
-        """Create through current authenticated admission. Reuse OperationId to reconcile UNKNOWN."""
+        """Create parented or admitted-project work through current authenticated admission."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_create", parent_work_id, operation_id)
@@ -292,9 +293,9 @@ def build_ordinary_tools(
             return service.denied("work_create", "no_current_grant")
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            grant_version=grant_version, title=title, notes=notes,
+            project_gid=project_gid, grant_version=grant_version, title=title, notes=notes,
         ))
-        audited("work_create", str(parent_work_id), result.status)
+        audited("work_create", str(parent_work_id or project_gid), result.status)
         return result
 
     async def work_update(

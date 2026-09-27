@@ -50,6 +50,14 @@ class TestCreateAsanaProvider(AsanaProvider):
             and await self._canonical(task)
         )
 
+    async def create_work(
+        self, title: str, notes: str, operation_id: UUID, *,
+        parent_task_gid: str | None = None, project_gid: str | None = None,
+    ) -> str:
+        if parent_task_gid is None or project_gid is not None:
+            raise ProviderError("test create target denied")
+        return await self.create_child(parent_task_gid, title, notes, operation_id)
+
     async def create_child(
         self, parent_task_gid: str, title: str, notes: str, operation_id: UUID,
     ) -> str:
@@ -74,7 +82,12 @@ class TestCreateAsanaProvider(AsanaProvider):
         except (ProviderError, KeyError, TypeError, ValueError):
             raise UnknownEffect("created task readback unknown") from None
 
-    async def recover_created(self, parent_task_gid: str, operation_id: UUID) -> str | None:
+    async def recover_created(
+        self, parent_task_gid: str | None, operation_id: UUID, *,
+        project_gid: str | None = None,
+    ) -> str | None:
+        if parent_task_gid is None or project_gid is not None:
+            return None
         for delay in RECOVERY_DELAYS:
             if delay:
                 await asyncio.sleep(delay)
