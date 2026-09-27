@@ -147,12 +147,12 @@ def build_ordinary_tools(
         )
 
     async def work_get(
-        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
+        api_version: Literal["1"], work_id: UUID | None = None,
     ) -> PublicWorkResult:
-        """Read granted work; include_related adds bounded direct-child evidence or UH_OH."""
-        result = await service.get(work_id, include_related=include_related)
+        """Read admitted work. Use work_structure for complete parent/child relationships."""
+        result = await service.get(work_id, include_related=False)
         audited("work_get", None if work_id is None else str(work_id), result.status)
-        return project_work(result, include_related)
+        return project_work(result, False)
 
     async def work_search(
         api_version: Literal["1"], text: str | None = None,

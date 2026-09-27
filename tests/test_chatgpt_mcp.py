@@ -342,10 +342,12 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "work_search", {"api_version": "1", "text": "Task"}
         )).structured_content
         assert search["status"] == "denied" and search["items"] == []
-        related = (await client.call_tool("work_get", {
-            "api_version": "1", "include_related": True,
+        get_tool = next(tool for tool in tools if tool.name == "work_get")
+        assert "include_related" not in get_tool.input_schema["properties"]
+        structured = (await client.call_tool("work_structure", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
         })).structured_content
-        assert related["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
+        assert structured["children"][0]["title"] == "Review"
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'observed_revision': "r1", 'text': "protocol feedback"}
