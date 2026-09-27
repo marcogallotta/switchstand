@@ -19,7 +19,6 @@ from switchstand.repository_bundle import (
     resolve_repository_bundle,
 )
 
-
 REFS = {
     "refs/heads/main": "a" * 40,
     "refs/heads/review": "b" * 40,
