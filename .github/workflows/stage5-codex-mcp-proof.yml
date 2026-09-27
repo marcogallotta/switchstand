@@ -6,11 +6,23 @@ on:
     branches:
       - mcp/stage5-4-real-client-proof
       - mcp/stage5-stateful-ordinary
+      - mcp/1218891495699859-phase1-proof
+      - mcp/1218891495699859-phase2-proof
 
 jobs:
   codex-stateful-client:
     name: Real Codex stateful MCP client
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: switchstand_test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,10 +42,11 @@ jobs:
           printf 'CODEX_NATIVE=%s\n' "$native" >> "$GITHUB_ENV"
       - name: Build Switchstand proof image
         run: docker build --target development --tag switchstand-codex-proof .
-      - name: Execute grant_get through real Codex app-server
+      - name: Execute full Phase-2 journey through real Codex app-server
         run: >-
-          docker run --rm
+          docker run --rm --network host
           -e CODEX_EXEC_PATH=/opt/codex
+          -e TEST_DATABASE_URL
           -v "$CODEX_NATIVE:/opt/codex:ro"
           -v "$PWD:/workspace:ro" -w /workspace
           switchstand-codex-proof sh -c
