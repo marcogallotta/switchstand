@@ -58,3 +58,83 @@ jobs:
           switchstand-quality sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
           tests/test_docker_lifecycle_real.py'
+
+  repository-bundle:
+    name: Current repository bundle
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: repository-bundle-current
+      cancel-in-progress: false
+    steps:
+      - name: Fetch authoritative branch refs
+        run: |
+          git init --bare repository.git
+          git -C repository.git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C repository.git fetch --prune origin '+refs/heads/*:refs/heads/*'
+          git -C repository.git for-each-ref \
+            --format='%(refname) %(objectname)' refs/heads | LC_ALL=C sort > refs.txt
+          test -s refs.txt
+
+      - name: Build and verify current bundle
+        run: |
+          git -C repository.git bundle create ../switchstand-current.bundle --branches
+          git -C repository.git bundle verify ../switchstand-current.bundle
+          git -C repository.git bundle list-heads ../switchstand-current.bundle |
+            awk '{print $2" "$1}' | LC_ALL=C sort > bundle-refs.txt
+          cmp refs.txt bundle-refs.txt
+          git init --bare materialized.git
+          git -C materialized.git fetch "$GITHUB_WORKSPACE/switchstand-current.bundle" \
+            '+refs/heads/*:refs/heads/*'
+          git -C materialized.git for-each-ref \
+            --format='%(refname) %(objectname)' refs/heads | LC_ALL=C sort > materialized-refs.txt
+          cmp refs.txt materialized-refs.txt
+          while read -r ref sha; do
+            git -C materialized.git cat-file -e "${sha}^{commit}"
+          done < refs.txt
+          sha256sum switchstand-current.bundle | awk '{print $1}' \
+            > switchstand-current.bundle.sha256
+
+      - name: Build manifest
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          refs = {}
+          for line in Path("refs.txt").read_text().splitlines():
+              ref, sha = line.split()
+              refs[ref] = sha
+          canonical = "".join(f"{ref} {refs[ref]}\n" for ref in sorted(refs)).encode()
+          manifest = {
+              "schema_version": "1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "refs": dict(sorted(refs.items())),
+              "snapshot_sha256": hashlib.sha256(canonical).hexdigest(),
+              "bundle_sha256": Path("switchstand-current.bundle.sha256").read_text().strip(),
+              "event_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          Path("switchstand-current.json").write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+
+      - name: Publish rolling repository cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=repository-bundle-current
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Current repository bundle" \
+              --notes "Rolling transport cache; GitHub refs remain authoritative."
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            switchstand-current.bundle switchstand-current.bundle.sha256
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            switchstand-current.json
