@@ -13,6 +13,7 @@ from .agents import AgentDirectory
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
+    ResolvedWorkReference,
     SourceStoriesRequest,
     SourceStoriesResult,
     SourceStoryRequest,
@@ -26,7 +27,6 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
-    ResolvedWorkReference,
     WorkResolution,
     WorkResolveReferenceRequest,
     WorkSearchItem,

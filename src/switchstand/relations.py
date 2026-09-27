@@ -14,7 +14,6 @@ from .grants import (
     PrincipalContext,
     ProtectedRelation,
     RelationReceipt,
-    WorkGrant,
 )
 from .provider import RelationMutation
 
