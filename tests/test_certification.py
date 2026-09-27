@@ -124,12 +124,15 @@ def test_certification_alias_matches_ordinary_tool_policy():
 
 
 def test_certification_client_uses_only_alias_and_strips_secrets(tmp_path):
+    root = Path(__file__).parents[1]
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake = fake_bin / "codex"
     fake.write_text("#!/bin/sh\nenv\nprintf 'ARG=%s\\n' \"$@\"\n")
     fake.chmod(0o755)
-    root = Path(__file__).parents[1]
+    fake_git = fake_bin / "git"
+    fake_git.write_text(f"#!/bin/sh\nprintf '%s\\n' '{root}'\n")
+    fake_git.chmod(0o755)
     result = subprocess.run(
         [str(root / "scripts/switchstand-native-certification-client"), "resume"],
         cwd=root, check=True, capture_output=True, text=True,
