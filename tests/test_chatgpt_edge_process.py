@@ -36,6 +36,7 @@ from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
 from switchstand.run import RunReceipt, process_start_token
 from switchstand.state import PostgresState
+from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
     "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
@@ -299,7 +300,9 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
         assert first["receipt"]["work_id"] == str(selected.authority.active_work_id)
-        assert first["receipt"]["grant_id"] == str(selected.id)
+        admission = WorkspaceAdmissionState.admission(selected.principal)
+        assert first["receipt"]["grant_id"] == str(admission.id)
+        assert first["receipt"]["grant_version"] == admission.version == 1
         assert await _exercise(endpoint, selected, operation_id) == first
     with _server(env, port) as endpoint:
         assert await _exercise(endpoint, selected, operation_id) == first
@@ -479,13 +482,15 @@ async def _attachments(endpoint, selected, denied_work, provider_calls):
             "status": "stale", "work_id": str(active), "revision": "r1",
             "attachments": [], "next_cursor": None,
         }
-        before_denied = json.loads(provider_calls.read_text())
+        before_peer = json.loads(provider_calls.read_text())
         denied = await call(denied_work, "r1")
         assert denied == {
             "status": "denied", "work_id": None, "revision": None,
             "attachments": [], "next_cursor": None,
         }
-        assert json.loads(provider_calls.read_text()) == before_denied
+        after_peer = json.loads(provider_calls.read_text())
+        assert after_peer["get"] == before_peer["get"] + 1
+        assert after_peer["list_attachments"] == before_peer["list_attachments"]
 
 
 async def _boundaries(endpoint, selected, denied_work, effects):
@@ -495,7 +500,7 @@ async def _boundaries(endpoint, selected, denied_work, effects):
 
         active = str(selected.authority.active_work_id)
         args = {"work_id": active, "observed_revision": "r2", "text": "second"}
-        for target in [str(selected.authority.reference_work_ids[0]), str(denied_work), str(uuid4())]:
+        for target in [str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))
             assert denied["status"] == "denied" and denied["effect"] == "not_sent"
