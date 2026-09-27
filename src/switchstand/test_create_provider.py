@@ -53,6 +53,15 @@ class TestCreateAsanaProvider(AsanaProvider):
     async def create_child(
         self, parent_task_gid: str, title: str, notes: str, operation_id: UUID,
     ) -> str:
+        """Compatibility shim for the isolated test-create adapter."""
+        return await self.create_work(parent_task_gid, None, title, notes, operation_id)
+
+    async def create_work(
+        self, parent_task_gid: str | None, area: str | None, title: str, notes: str,
+        operation_id: UUID,
+    ) -> str:
+        if parent_task_gid is None:
+            raise ProviderError("test create requires parent")
         parent = await self._task(parent_task_gid)
         if parent is None or not await self._canonical(parent):
             raise ProviderError("create parent denied")
@@ -74,7 +83,11 @@ class TestCreateAsanaProvider(AsanaProvider):
         except (ProviderError, KeyError, TypeError, ValueError):
             raise UnknownEffect("created task readback unknown") from None
 
-    async def recover_created(self, parent_task_gid: str, operation_id: UUID) -> str | None:
+    async def recover_created(
+        self, parent_task_gid: str | None, area: str | None, operation_id: UUID,
+    ) -> str | None:
+        if parent_task_gid is None:
+            return None
         for delay in RECOVERY_DELAYS:
             if delay:
                 await asyncio.sleep(delay)
