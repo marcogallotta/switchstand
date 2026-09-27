@@ -16,7 +16,9 @@ RUN apt-get update \
 RUN uv sync --locked --all-groups --no-install-project
 COPY src ./src
 COPY alembic.ini ./
+COPY compose.yaml ./
 COPY migrations ./migrations
+COPY docs/cutover-asana-coverage.json ./docs/cutover-asana-coverage.json
 COPY scripts ./scripts
 COPY tests ./tests
 COPY .codex/config.toml ./.codex/config.toml
