@@ -41,10 +41,11 @@ jobs:
           printf 'CODEX_NATIVE=%s\n' "$native" >> "$GITHUB_ENV"
       - name: Build Switchstand proof image
         run: docker build --target development --tag switchstand-codex-proof .
-      - name: Execute grant_get through real Codex app-server
+      - name: Execute full Phase-1 journey through real Codex app-server
         run: >-
-          docker run --rm
+          docker run --rm --network host
           -e CODEX_EXEC_PATH=/opt/codex
+          -e TEST_DATABASE_URL
           -v "$CODEX_NATIVE:/opt/codex:ro"
           -v "$PWD:/workspace:ro" -w /workspace
           switchstand-codex-proof sh -c
