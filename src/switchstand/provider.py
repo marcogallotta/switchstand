@@ -1,4 +1,5 @@
 from typing import Any, cast
+from uuid import UUID
 
 import httpx
 
@@ -720,6 +721,63 @@ class AsanaProvider:
                 raise UnknownEffect("provider effect unknown") from None
             raise ProviderError("provider write failed") from None
         return response
+
+    def recovery_identity(self) -> str:
+        """Base Asana create relies on exact response/readback; UNKNOWN is manual-reconcile only."""
+        return f"asana-exact-response-v1:{WORKSPACE}"
+
+    async def create_work(
+        self, title: str, notes: str, operation_id: UUID, *,
+        parent_task_gid: str | None = None, project_gid: str | None = None,
+    ) -> str:
+        del operation_id
+        if (parent_task_gid is None) == (project_gid is None):
+            raise ProviderError("create target invalid")
+        data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
+        if parent_task_gid is not None:
+            parent = await self._task(parent_task_gid)
+            if parent is None or not await self._canonical(parent):
+                raise ProviderError("create parent denied")
+            data["parent"] = parent_task_gid
+        else:
+            assert project_gid is not None
+            if project_gid not in self._admission_projects:
+                raise ProviderError("create project denied")
+            data["projects"] = [project_gid]
+        response = await self._write("POST", "/tasks", data, unknown_on_server_error=True)
+        try:
+            payload = response.json()["data"]
+            task_gid = self._gid(payload)
+            if task_gid is None:
+                raise UnknownEffect("created task response unknown")
+            task = await self._task(task_gid)
+            if task is None or self._gid(task) != task_gid or not await self._canonical(task):
+                raise UnknownEffect("created task readback unknown")
+            if task.get("name") != title or task.get("notes") != notes:
+                raise UnknownEffect("created task readback mismatch")
+            if parent_task_gid is not None:
+                if self._parent_gid(task) != parent_task_gid:
+                    raise UnknownEffect("created task parent mismatch")
+            else:
+                memberships = task.get("memberships")
+                if not isinstance(memberships, list) or not any(
+                    isinstance(raw, dict) and self._gid(cast(JSON, raw).get("project")) == project_gid
+                    for raw in cast(list[object], memberships)
+                ):
+                    raise UnknownEffect("created task project mismatch")
+            return task_gid
+        except UnknownEffect:
+            raise
+        except (ProviderError, KeyError, TypeError, ValueError):
+            raise UnknownEffect("created task readback unknown") from None
+
+    async def recover_created(
+        self, parent_task_gid: str | None, operation_id: UUID, *,
+        project_gid: str | None = None,
+    ) -> str | None:
+        """No heuristic create search: an ambiguous base-Asana create remains durable UNKNOWN."""
+        del parent_task_gid, project_gid, operation_id
+        return None
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
