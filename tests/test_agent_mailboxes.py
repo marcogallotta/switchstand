@@ -1,8 +1,8 @@
 import os
 
 import pytest
-from sqlalchemy.engine import make_url
 from sqlalchemy import select
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import (
