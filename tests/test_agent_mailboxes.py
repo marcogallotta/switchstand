@@ -1,11 +1,16 @@
 import os
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState, agent_name_key
-from switchstand.state import PostgresState, metadata
+from switchstand.agent_mailboxes import (
+    MAILBOX_PROVIDER,
+    AgentMailboxState,
+    agent_name_key,
+)
+from switchstand.state import PostgresState, metadata, work_handles
 
 
 @pytest.fixture
@@ -71,3 +76,19 @@ async def test_takeover_preserves_mailbox_identity_and_fences_old_principal(subj
     assert (await mailboxes.for_principal("principal-old")).reason == "principal_not_registered"
     assert (await mailboxes.for_principal("principal-new")).mailbox == moved.mailbox
     assert (await mailboxes.by_name("lifecycle")).mailbox == moved.mailbox
+
+
+async def test_agent_registration_uses_internal_mailbox_identity(subject):
+    mailboxes, _first, _second = subject
+    created = await mailboxes.register_agent("Agent Identity", "principal-agent")
+    assert created.status == "ok" and created.mailbox is not None
+    assert created.mailbox.generation == 1
+    assert created.mailbox.work_id != _first
+    async with mailboxes.engine.connect() as connection:
+        row = (await connection.execute(
+            select(work_handles.c.provider, work_handles.c.provider_work_id).where(
+                work_handles.c.id == created.mailbox.work_id
+            )
+        )).one()
+    assert row == (MAILBOX_PROVIDER, "agent-identity")
+    assert await mailboxes.register_agent("Agent Identity", "principal-agent") == created
