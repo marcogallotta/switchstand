@@ -668,11 +668,15 @@ def build_ordinary_tools(
             return AgentMessageSubmitResult(
                 status="denied", reason="recipient_not_registered"
             )
-        result = await message_send(
-            api_version, sender.work_id, grant.version, message_id, payload,
+        result = await service.message_send(MessageSendRequest(
+            api_version=api_version,
+            work_id=sender.work_id,
+            grant_version=grant.version,
+            message_id=message_id,
+            payload=payload,
             route_ref=f"agent.{recipient.mailbox.name_key}",
             recipient_work_id=recipient.mailbox.work_id,
-        )
+        ))
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         view = await public_message(mailboxes, result.message)
@@ -692,8 +696,14 @@ def build_ordinary_tools(
             return AgentMessagePendingResult(status=context[0], reason=context[1])
         grant, mailbox = context.grant, context.mailbox
         assert mailboxes is not None
-        result = await message_pending(
-            api_version, mailbox.work_id, grant.version, cursor=cursor, limit=limit
+        result = await service.message_pending(
+            mailbox.work_id,
+            MessagePendingRequest(
+                api_version=api_version,
+                grant_version=grant.version,
+                cursor=cursor,
+                limit=limit,
+            ),
         )
         if result.status != "ok":
             return AgentMessagePendingResult(status=result.status, reason=result.reason)
@@ -736,9 +746,9 @@ def build_ordinary_tools(
     ) -> AgentMessageSubmitResult:
         """Reply to one received delivery as this registered agent name."""
         context = await agent_context()
-        if isinstance(context[0], str):
+        if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
-        _principal, grant, mailbox = context
+        grant, mailbox = context.grant, context.mailbox
         assert mailboxes is not None
         result = await message_result_send(
             api_version, mailbox.work_id, grant.version,
