@@ -1,8 +1,8 @@
 import os
 from uuid import uuid4
 
-import pytest
 from chatgpt_fixture import grant
+import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
