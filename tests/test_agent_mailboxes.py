@@ -16,11 +16,14 @@ async def subject():
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     state = PostgresState(engine)
     first = await state.bind("asana", "111")
     second = await state.bind("asana", "222")
     yield AgentMailboxState(engine), first.id, second.id
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
 

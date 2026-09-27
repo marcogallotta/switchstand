@@ -112,7 +112,8 @@ def build_ordinary_tools(
     current_generations: dict[tuple[str, UUID, UUID, int], str] = {}
     retired_generations: dict[tuple[str, UUID, UUID, int], set[str]] = {}
     currentness_locks: dict[tuple[str, UUID, UUID, int], asyncio.Lock] = {}
-    mailboxes = None if service.messages is None else AgentMailboxState(service.messages.engine)
+    message_engine = None if service.messages is None else getattr(service.messages, "engine", None)
+    mailboxes = None if message_engine is None else AgentMailboxState(message_engine)
 
     def audited(tool: str, target: str | None, status: str) -> None:
         if audit is not None:

@@ -21,6 +21,7 @@ async def agent_messaging():
         pytest.skip("TEST_DATABASE_URL is required")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     state, grants = PostgresState(engine), GrantState(engine)
     principals = [
@@ -47,6 +48,8 @@ async def agent_messaging():
     generation = ["session-1"]
     tools = dict(build_ordinary_tools(service, session_generation=lambda: generation[0]))
     yield tools, actor, principals, works, service, AgentMailboxState(engine), generation
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
 
@@ -132,7 +135,7 @@ async def test_agent_recover_after_trusted_takeover_fences_old_actor(agent_messa
     assert moved.mailbox.generation == 2 and moved.mailbox.work_id == works[1]
 
     denied = await tools["agent_message_recover"]("1", delivery)
-    assert (denied.status, denied.reason) == ("denied", "agent_not_registered")
+    assert (denied.status, denied.reason) == ("denied", "receiving_binding_changed")
 
     generation[0] = "session-2"
     actor[0] = replacement
