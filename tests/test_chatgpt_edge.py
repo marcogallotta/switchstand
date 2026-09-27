@@ -489,7 +489,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         })
         updated = await client.call_tool("work_update", {
             "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
-            "grant_version": 1, "observed_revision": "r2", "patch": {"completed": True},
+            "observed_revision": "r2", "patch": {"completed": True},
         })
     assert names == {name for name, _ in build_ordinary_tools(subject)}
     assert grant_result.structured_content["principal"]["subject"] == GITHUB_ID
