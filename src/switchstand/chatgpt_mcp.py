@@ -242,17 +242,22 @@ def build_ordinary_tools(
         return result
 
     async def work_create(
-        api_version: Literal["1"], operation_id: UUID, parent_work_id: UUID,
-        title: str, notes: str = "",
+        api_version: Literal["1"], operation_id: UUID, title: str, notes: str = "",
+        parent_work_id: UUID | None = None,
+        area: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
     ) -> GuardOutcome:
-        """Create only through a test-qualified grant. Reuse OperationId to reconcile UNKNOWN."""
+        """Create parented or independent work; reuse OperationId to reconcile UNKNOWN."""
         grant = await service.grant_get()
         version = grant.grant.version if grant.status == "ok" and grant.grant is not None else 1
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            grant_version=version, title=title, notes=notes,
+            area=area, grant_version=version, title=title, notes=notes,
         ))
-        audited("work_create", str(parent_work_id), result.status)
+        audited(
+            "work_create",
+            str(parent_work_id) if parent_work_id is not None else area,
+            result.status,
+        )
         return result
 
     async def work_update(

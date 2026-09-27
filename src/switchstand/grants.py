@@ -66,10 +66,17 @@ class ProtectedAppend(ClosedModel):
 class ProtectedCreate(ClosedModel):
     api_version: Literal["1"]
     operation_id: UUID
-    parent_work_id: UUID
     grant_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     notes: str = Field(default="", max_length=8000)
+    parent_work_id: UUID | None = None
+    area: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def exact_destination(self) -> Self:
+        if (self.parent_work_id is None) == (self.area is None):
+            raise ValueError("create requires exactly one parent_work_id or area")
+        return self
 
 
 class ScalarPatch(ClosedModel):
@@ -121,7 +128,7 @@ class CreateReceipt(ClosedModel):
     work_id: UUID
     provider: str
     task_gid: str
-    parent_task_gid: str
+    parent_task_gid: str | None
     title: str
     qualification: str
 

@@ -35,6 +35,15 @@ PROJECTS = (
     "1218431586138793",
 )
 PROJECT = PROJECTS[0]
+CREATE_AREAS = {
+    "Switchstand v2": "1218210259719507",
+    "SW — Work Management & Asana": "1218431616678499",
+    "SW — Agentic Docs & Review": "1218431557603624",
+    "SW — Execution Foundation": "1218431557524230",
+    "SW — Lifecycle & Coordination": "1218431557368054",
+    "SW — ChatGPT MCP & Integrations": "1218431592956026",
+    "SW — Quality & Assurance": "1218431586138793",
+}
 WORKSPACE = "1200569426771227"
 ROOT_WORK_GID = "1218524557926403"
 ANCESTRY_GETS = 9
@@ -720,6 +729,58 @@ class AsanaProvider:
                 raise UnknownEffect("provider effect unknown") from None
             raise ProviderError("provider write failed") from None
         return response
+
+    def recovery_identity(self) -> str:
+        return f"asana-response-v1:{WORKSPACE}"
+
+    async def create_work(
+        self, parent_task_gid: str | None, area: str | None, title: str, notes: str,
+        operation_id: object,
+    ) -> str:
+        data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
+        project_gid: str | None = None
+        if parent_task_gid is not None:
+            parent = await self._task(parent_task_gid)
+            if (parent is None or not await self._canonical(parent)
+                    or parent.get("completed") is True):
+                raise ProviderError("create parent denied")
+            data["parent"] = parent_task_gid
+        else:
+            project_gid = CREATE_AREAS.get(area or "")
+            if project_gid is None or project_gid not in self._admission_projects:
+                raise ProviderError("create area denied")
+            data["projects"] = [project_gid]
+        response = await self._write("POST", "/tasks", data, unknown_on_server_error=True)
+        try:
+            payload = response.json()["data"]
+            task_gid = self._gid(payload)
+            task = None if task_gid is None else await self._task(task_gid)
+            if task_gid is None or task is None or self._gid(task) != task_gid:
+                raise UnknownEffect("created task readback unknown")
+            if parent_task_gid is not None and self._parent_gid(task) != parent_task_gid:
+                raise UnknownEffect("created task readback unknown")
+            if project_gid is not None:
+                memberships = task.get("memberships")
+                if not isinstance(memberships, list) or not any(
+                    isinstance(item, dict)
+                    and self._gid(cast(JSON, item).get("project")) == project_gid
+                    for item in cast(list[object], memberships)
+                ):
+                    raise UnknownEffect("created task readback unknown")
+            if not await self._canonical(task):
+                raise UnknownEffect("created task readback unknown")
+            return task_gid
+        except UnknownEffect:
+            raise
+        except (ProviderError, KeyError, TypeError, ValueError):
+            raise UnknownEffect("created task readback unknown") from None
+
+    async def recover_created(
+        self, parent_task_gid: str | None, area: str | None, operation_id: object,
+    ) -> str | None:
+        # Production Asana has no trustworthy create-correlation key. Ambiguous create stays
+        # UNKNOWN and is never resent; a later explicit reconciliation path may bind it.
+        return None
 
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
