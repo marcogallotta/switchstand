@@ -309,7 +309,7 @@ def build_ordinary_tools(
         return result
 
     async def message_context(
-        work_id: UUID,
+        work_id: UUID, grant_version: int | None = None,
     ) -> tuple[
         PrincipalContext, WorkGrant, tuple[str, UUID, UUID, int], str
     ] | MessageTransitionResult:
@@ -321,6 +321,8 @@ def build_ordinary_tools(
         ):
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         principal, grant = grant_result.principal, grant_result.grant
+        if grant_version is not None and grant.version != grant_version:
+            return MessageTransitionResult(status="stale", reason="grant_version_changed")
         if "message" not in grant.operations:
             return MessageTransitionResult(status="denied", reason="no_current_grant")
         if grant.scope == "launch" and grant.authority.active_work_id != work_id:
@@ -368,7 +370,7 @@ def build_ordinary_tools(
         grant_version: int | None = None,
     ) -> MessageTransitionResult:
         """Receive one exact delivery under this server-owned MCP session generation."""
-        context = await message_context(work_id)
+        context = await message_context(work_id, grant_version)
         if isinstance(context, MessageTransitionResult):
             audited("message_receive", str(work_id), context.status)
             return context
@@ -409,7 +411,7 @@ def build_ordinary_tools(
         grant_version: int | None = None,
     ) -> MessageTransitionResult:
         """Explicitly transfer one received delivery to this replacement MCP session."""
-        context = await message_context(work_id)
+        context = await message_context(work_id, grant_version)
         if isinstance(context, MessageTransitionResult):
             audited("message_recover", str(work_id), context.status)
             return context
@@ -453,7 +455,7 @@ def build_ordinary_tools(
         grant_version: int | None = None,
     ) -> MessageSubmitResult:
         """Send a result only from the current MCP session bound to the received delivery."""
-        context = await message_context(work_id)
+        context = await message_context(work_id, grant_version)
         if isinstance(context, MessageTransitionResult):
             result = submit_preflight(context)
             audited("message_result_send", str(work_id), result.status)
@@ -498,7 +500,7 @@ def build_ordinary_tools(
         delivery_id: UUID, result_message_id: UUID, grant_version: int | None = None,
     ) -> MessageTransitionResult:
         """Disposition one received delivery only from its current MCP session."""
-        context = await message_context(work_id)
+        context = await message_context(work_id, grant_version)
         if isinstance(context, MessageTransitionResult):
             audited("message_disposition", str(work_id), context.status)
             return context
