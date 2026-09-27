@@ -32,7 +32,9 @@ from .grants import (
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
+    RelationChange,
     ScalarPatch,
     WorkGrant,
 )
@@ -275,6 +277,20 @@ def build_ordinary_tools(
             grant_version=version, observed_revision=observed_revision, patch=patch,
         ))
         audited("work_update", str(work_id), result.status)
+        return result
+
+    async def work_relate(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_revision: str, change: RelationChange, grant_version: int | None = None,
+    ) -> GuardOutcome:
+        """Mutate one bounded work relation through the current effect journal."""
+        grant = await service.grant_get()
+        version = grant.grant.version if grant.status == "ok" and grant.grant is not None else 1
+        result = await service.relate(ProtectedRelation(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=version, observed_revision=observed_revision, change=change,
+        ))
+        audited("work_relate", str(work_id), result.status)
         return result
 
     async def required_result_save(
@@ -540,6 +556,7 @@ def build_ordinary_tools(
         ("work_append", work_append),
         ("work_create", work_create),
         ("work_update", work_update),
+        ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         *build_message_tools(service, audit),
         ("message_receive", message_receive),
