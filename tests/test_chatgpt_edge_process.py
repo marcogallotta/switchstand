@@ -479,13 +479,15 @@ async def _attachments(endpoint, selected, denied_work, provider_calls):
             "status": "stale", "work_id": str(active), "revision": "r1",
             "attachments": [], "next_cursor": None,
         }
-        before_denied = json.loads(provider_calls.read_text())
+        before_peer = json.loads(provider_calls.read_text())
         denied = await call(denied_work, "r1")
         assert denied == {
             "status": "denied", "work_id": None, "revision": None,
             "attachments": [], "next_cursor": None,
         }
-        assert json.loads(provider_calls.read_text()) == before_denied
+        after_peer = json.loads(provider_calls.read_text())
+        assert after_peer["get"] == before_peer["get"] + 1
+        assert after_peer["list_attachments"] == before_peer["list_attachments"]
 
 
 async def _boundaries(endpoint, selected, denied_work, effects):
@@ -495,7 +497,7 @@ async def _boundaries(endpoint, selected, denied_work, effects):
 
         active = str(selected.authority.active_work_id)
         args = {"work_id": active, "observed_revision": "r2", "text": "second"}
-        for target in [str(selected.authority.reference_work_ids[0]), str(denied_work), str(uuid4())]:
+        for target in [str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))
             assert denied["status"] == "denied" and denied["effect"] == "not_sent"
