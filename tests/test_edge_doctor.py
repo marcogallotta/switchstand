@@ -29,12 +29,19 @@ class EdgeHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def edge():
     server = ThreadingHTTPServer(("127.0.0.1", 0), EdgeHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    serving = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.01},
+        daemon=True,
+    )
+    serving.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}/mcp", server.server_port
     finally:
         server.shutdown()
         server.server_close()
+        serving.join(timeout=1)
+        assert not serving.is_alive(), "edge test server did not terminate"
 
 def env_file(tmp_path, port, *, missing=()):
     path = tmp_path / "edge.env"

@@ -37,17 +37,35 @@ def test_failure_kills_owned_term_resistant_child_and_preserves_foreign_process(
     with owned_process([sys.executable, "-c", "import time; time.sleep(60)"], env,
                        tmp_path / "foreign.log") as foreign:
         ready = tmp_path / "ready"
-        command = [sys.executable, "-c",
-                   ("import signal,time,pathlib,sys; "
-                   "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                   "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"), str(ready)]
+        term_received = tmp_path / "term-received"
+        command = [sys.executable, "-c", '''
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+def record_term(_signum, _frame):
+    descriptor = os.open(sys.argv[2], os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(descriptor, b"SIGTERM")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+signal.signal(signal.SIGTERM, record_term)
+Path(sys.argv[1]).touch()
+time.sleep(60)
+''', str(ready), str(term_received)]
         with (pytest.raises(ValueError, match="injected"),
-              owned_process(command, env, tmp_path / "owned.log") as owned):
+              owned_process(command, env, tmp_path / "owned.log",
+                            termination_grace=0.2) as owned):
             deadline = time.monotonic() + 5
             while not ready.exists():
                 assert exited(owned) is None and time.monotonic() < deadline
                 time.sleep(0.02)
             raise ValueError("injected qualification failure")
+        assert term_received.read_text() == "SIGTERM"
         assert owned.returncode == -signal.SIGKILL
         assert exited(foreign) is None
         os.kill(foreign.pid, 0)
