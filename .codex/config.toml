@@ -1,5 +1,9 @@
 approval_policy = "never"
-default_permissions = "switchstand-development"
+default_permissions = ":danger-full-access"
+
+[features]
+hooks = false
+multi_agent = false
 
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
