@@ -17,8 +17,10 @@ from .agent_messages import (
 )
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
+    ClosedModel,
     SourceTaskRequest,
     SourceTaskResult,
+    Status,
     WorkAttachmentsRequest,
     WorkAttachmentsResult,
     WorkEventRequest,
@@ -32,6 +34,7 @@ from .contracts import (
     WorkStructureResult,
 )
 from .grants import (
+    GrantedWorkResult,
     GuardOutcome,
     PrincipalContext,
     ProtectedAppend,
@@ -42,7 +45,7 @@ from .grants import (
     ScalarPatch,
     WorkGrant,
 )
-from .mcp import PublicWorkResult, closed_tool, project_work
+from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
     DispositionEvidence,
     MessageDispositionRequest,
@@ -59,6 +62,20 @@ from .messages import (
     send_received_result,
 )
 from .resolver import ResolverResult, resolve_alias
+
+
+class OrdinaryWorkResult(ClosedModel):
+    """Provider-neutral ordinary work result without legacy related/grouped inference."""
+    status: Status
+    item: PublicWorkItem | None = None
+    guard: PublicReadGuard | None = None
+
+
+def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
+    projected = project_work(result, False)
+    return OrdinaryWorkResult(
+        status=projected.status, item=projected.item, guard=projected.guard,
+    )
 
 
 def build_message_tools(
@@ -147,12 +164,12 @@ def build_ordinary_tools(
         )
 
     async def work_get(
-        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
-    ) -> PublicWorkResult:
-        """Read granted work; include_related adds bounded direct-child evidence or UH_OH."""
-        result = await service.get(work_id, include_related=include_related)
+        api_version: Literal["1"], work_id: UUID | None = None,
+    ) -> OrdinaryWorkResult:
+        """Read admitted work. Use work_structure for complete parent/child relationships."""
+        result = await service.get(work_id, include_related=False)
         audited("work_get", None if work_id is None else str(work_id), result.status)
-        return project_work(result, include_related)
+        return project_ordinary_work(result)
 
     async def work_search(
         api_version: Literal["1"], text: str | None = None,
@@ -169,13 +186,13 @@ def build_ordinary_tools(
     async def work_resolve_reference(
         api_version: Literal["1"],
         reference: Annotated[str, Field(min_length=1, max_length=2048)],
-    ) -> PublicWorkResult:
+    ) -> OrdinaryWorkResult:
         """Resolve one exact legacy task reference to current provider-neutral work."""
         result = await service.resolve_reference(WorkResolveReferenceRequest(
             api_version=api_version, reference=reference,
         ))
         audited("work_resolve_reference", None, result.status)
-        return project_work(result, False)
+        return project_ordinary_work(result)
 
     async def work_structure(
         api_version: Literal["1"], work_id: UUID,

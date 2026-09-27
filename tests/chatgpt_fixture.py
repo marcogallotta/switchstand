@@ -25,7 +25,7 @@ from switchstand.core import (
     ProviderWork,
     UnknownEffect,
 )
-from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
+from switchstand.discovery import ProviderSearchItem, ProviderSearchPage, ProviderStructure
 from switchstand.grant_state import EffectRecord
 from switchstand.grants import PrincipalContext, WorkGrant
 
@@ -112,6 +112,17 @@ class Provider:
                 context=CONTEXT,
             ),),
             next_cursor=None,
+        )
+
+    async def structure_work(self, task_gid, observed_revision):
+        if observed_revision != self.revision:
+            return ProviderStructure(status="stale", revision=self.revision)
+        child = ProviderSearchItem(
+            provider_work_id="789", title="Review", completed=False,
+            revision=self.revision, routing=Routing(priority="P0"), context=CONTEXT,
+        )
+        return ProviderStructure(
+            status="ok", revision=self.revision, children=(child,),
         )
 
     async def list_attachments(self, task_gid, cursor, limit):
@@ -223,12 +234,24 @@ def assert_public(value):
 
 async def read_chain(client, work_id):
     call = getattr(client, "call_tool_mcp", client.call_tool)
+    listed = await client.list_tools()
+    tools = listed.tools if hasattr(listed, "tools") else listed
+    names = {tool.name for tool in tools}
     args = {"api_version": "1", "work_id": str(work_id)}
-    got = await call("work_get", args | {"include_related": True})
+    got = await call(
+        "work_get",
+        args if "work_structure" in names else args | {"include_related": True},
+    )
     assert_public(got.model_dump(mode="json"))
     assert got.structured_content["item"]["id"] == str(work_id)
-    assert got.structured_content["related"]["candidates"][0]["title"] == "Review"
-    args["observed_revision"] = got.structured_content["item"]["revision"]
+    if "work_structure" in names:
+        args["observed_revision"] = got.structured_content["item"]["revision"]
+        structure = await call("work_structure", args)
+        assert_public(structure.model_dump(mode="json"))
+        assert structure.structured_content["children"][0]["title"] == "Review"
+    else:
+        assert got.structured_content["related"]["candidates"][0]["title"] == "Review"
+        args["observed_revision"] = got.structured_content["item"]["revision"]
     page = await call("work_history", args | {"limit": 1})
     assert_public(page.model_dump(mode="json"))
     event = page.structured_content["events"][0]
