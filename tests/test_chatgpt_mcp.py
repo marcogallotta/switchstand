@@ -301,15 +301,15 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "grant_get", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
-            "source_task", "source_stories",
+            "grant_get", "work_get", "work_search", "work_resolve_alias", "work_resolve_reference",
+            "work_structure", "source_task", "source_stories",
             "source_story", "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "message_send", "message_pending",
-            "message_receive", "message_recover", "message_result_send",
-            "message_disposition", "agent_register", "agent_message_send", "agent_message_pending",
-            "message_disposition", "agent_message_receive", "agent_message_recover",
-            "message_disposition", "agent_message_result_send", "agent_message_disposition",
-            "message_disposition", "required_result_save",
+            "message_receive", "message_recover", "message_result_send", "message_disposition",
+            "agent_register", "agent_message_send", "agent_message_pending",
+            "agent_message_receive", "agent_message_recover",
+            "agent_message_result_send", "agent_message_disposition",
+            "required_result_save",
         }
         for tool in tools:
             if tool.name in {"work_get", "work_resolve_reference", "work_structure", "work_history",
