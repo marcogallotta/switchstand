@@ -211,6 +211,14 @@ async def test_test_only_admission_rejects_foreign_membership_anywhere_in_lineag
     ]
 
 
+async def test_test_only_admission_rejects_direct_mixed_membership():
+    api = API((200, task(project=(TEST_PROJECT, "8888888888888888"))))
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        assert not (await AsanaProvider(client, TEST_PROJECT, test_only=True).get("mixed")).canonical
+
+
 async def test_test_only_create_injects_server_owned_cleanup_marker():
     created = task(project=TEST_PROJECT)
     created["data"] |= {"gid": "created", "name": "Canary", "notes": "body\n\nmarker"}
@@ -241,6 +249,10 @@ async def test_test_only_update_preserves_cleanup_marker_and_denies_project_remo
                 "created", ProviderRelation(
                     kind="placement", action="remove", project_gid=TEST_PROJECT,
                 ),
+            )
+        with pytest.raises(ProviderError, match="parent removal denied"):
+            await subject.update_relation(
+                "created", ProviderRelation(kind="parent", action="remove", target_gid=None),
             )
     assert json.loads(api.requests[0].content)["data"]["notes"] == "changed\n\nmarker"
 

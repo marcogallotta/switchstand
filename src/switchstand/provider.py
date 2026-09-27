@@ -929,6 +929,8 @@ class AsanaProvider:
             await self._move_placement(provider_work_id, patch)
             return
         if patch.kind == "parent":
+            if self._create_notes_suffix is not None and patch.target_gid is None:
+                raise ProviderError("test-only parent removal denied")
             if patch.target_gid is not None:
                 parent = await self._task(patch.target_gid)
                 if parent is None or not await self._canonical(parent):
