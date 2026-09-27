@@ -630,11 +630,14 @@ def build_ordinary_tools(
             ],
         ],
     ) -> MessageTransitionResult:
-        if failure[1] in {"agent_not_registered", "agent_binding_changed"}:
+        reason = failure[1]
+        if reason == "agent_not_registered" or reason == "agent_binding_changed":
             return MessageTransitionResult(
                 status=failure[0], reason="receiving_binding_changed"
             )
-        return MessageTransitionResult(status=failure[0], reason=failure[1])
+        if reason == "state_unavailable":
+            return MessageTransitionResult(status=failure[0], reason="state_unavailable")
+        return MessageTransitionResult(status=failure[0], reason="no_current_grant")
 
     async def agent_register(
         api_version: Literal["1"],
