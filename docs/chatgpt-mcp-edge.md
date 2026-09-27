@@ -53,3 +53,8 @@ Starting a host or changing the reverse proxy, OAuth app, tunnel, database, or
 provider is activation work. Before relying on it, separately verify the real
 GitHub identity and wrong-identity rejection, real ChatGPT discovery, one
 authorized disposable write plus replay, restart readback, and clean stop.
+
+An authenticated live `tools/list` proves the server-side inventory only.
+Clients may retain tool bindings from the session established before a schema
+change; start a fresh client session and verify its exposed inventory before
+claiming that newly added tools are available to that client.
