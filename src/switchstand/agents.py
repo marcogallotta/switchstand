@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 from pydantic import Field
-from sqlalchemy import Column, DateTime, Integer, Table, Text, UniqueConstraint, func, select, text, update
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, UniqueConstraint, func, select, text, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,7 +19,7 @@ agent_bindings = Table(
     metadata,
     Column("agent_id", PGUUID(as_uuid=True), primary_key=True),
     Column("name", Text, nullable=False, unique=True),
-    Column("mailbox_work_id", PGUUID(as_uuid=True), nullable=False, unique=True),
+    Column("mailbox_work_id", PGUUID(as_uuid=True), ForeignKey("work_handles.id", ondelete="RESTRICT"), nullable=False, unique=True),
     Column("principal_key", Text, nullable=False),
     Column("session_generation", Text, nullable=False),
     Column("binding_generation", Integer, nullable=False),
