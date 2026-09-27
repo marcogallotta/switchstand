@@ -60,6 +60,7 @@ from .messages import (
 from .relations import RelationGateway
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
+from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
@@ -78,12 +79,18 @@ class ChatGPTService:
         self, principal: PrincipalResolver, state: State,
         grants: GrantState, providers: dict[str, Provider], messages: MessageState | None = None,
         required_results: RequiredResultPersistence | None = None,
+        ordinary_workspace_admission: bool = False,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
-        self.gateway = AppendGateway(state, grants, providers)
-        self.create_gateway = CreateGateway(state, grants, providers)
-        self.update_gateway = UpdateGateway(state, grants, providers)
-        self.relation_gateway = RelationGateway(state, grants, providers)
+        self.admission_grants = (
+            WorkspaceAdmissionState(grants.engine, principal)
+            if ordinary_workspace_admission and type(grants) is GrantState
+            else grants
+        )
+        self.gateway = AppendGateway(state, self.admission_grants, providers)
+        self.create_gateway = CreateGateway(state, self.admission_grants, providers)
+        self.update_gateway = UpdateGateway(state, self.admission_grants, providers)
+        self.relation_gateway = RelationGateway(state, self.admission_grants, providers)
         self.messages = messages
         self.required_results = required_results
         # Only exact source methods use this controller; its dummy authority is
@@ -104,6 +111,22 @@ class ChatGPTService:
             if not self.gateway.admitted(principal, grant):
                 return GrantResult(status="denied", principal=principal,
                                    guard=self.denied("grant_get", "no_current_grant"))
+            return GrantResult(status="ok", principal=principal, grant=grant)
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return GrantResult(status="unknown", principal=principal)
+
+    async def admission_get(self) -> GrantResult:
+        """Read server-owned ordinary workspace admission without consulting work_grants."""
+        principal = await self.principal()
+        if principal is None:
+            return GrantResult(status="denied", guard=self.denied("workspace_admission"))
+        try:
+            grant = await self.admission_grants.current(principal.key)
+            if not self.gateway.admitted(principal, grant):
+                return GrantResult(
+                    status="denied", principal=principal,
+                    guard=self.denied("workspace_admission", "no_current_grant"),
+                )
             return GrantResult(status="ok", principal=principal, grant=grant)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantResult(status="unknown", principal=principal)
@@ -135,7 +158,7 @@ class ChatGPTService:
             return LaunchAuthority(active_work_id=work_id), None
         if grant.can_read(work_id, explicit_target=explicit_target):
             return grant.authority, None
-        if await self.grants.created_work_allowed(principal.key, work_id):
+        if await self.admission_grants.created_work_allowed(principal.key, work_id):
             return LaunchAuthority(active_work_id=work_id), None
         return None, "work_not_granted"
 
@@ -144,7 +167,7 @@ class ChatGPTService:
         if principal is None:
             return WorkSearchResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 authority, _ = await self._read_authority(
                     principal, grant, operations=frozenset({"work_search"}),
                     workspace_only=True,
@@ -165,7 +188,7 @@ class ChatGPTService:
         if principal is None:
             return WorkStructureResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 authority, _ = await self._read_authority(
                     principal, grant,
                     operations=frozenset({"work_get", "work_search"}),
@@ -205,7 +228,7 @@ class ChatGPTService:
         if principal is None:
             return GrantedWorkResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 base_authority, _ = await self._read_authority(
                     principal, grant, operations=frozenset({"work_get"})
                 )
@@ -248,7 +271,7 @@ class ChatGPTService:
         if principal is None:
             return GrantedWorkResult(status="denied", guard=self.denied("work_get"))
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 if grant is None:
                     return GrantedWorkResult(
                         status="denied", guard=self.denied("work_get", "no_current_grant")
@@ -277,7 +300,7 @@ class ChatGPTService:
         if principal is None:
             return WorkHistoryResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 authority, _ = await self._read_authority(
                     principal, grant, operations=frozenset({"work_get"}),
                     work_id=request.work_id, explicit_target=True,
@@ -293,7 +316,7 @@ class ChatGPTService:
         if principal is None:
             return WorkAttachmentsResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 authority, _ = await self._read_authority(
                     principal, grant, operations=frozenset({"work_get"}),
                     work_id=request.work_id, explicit_target=True,
@@ -309,7 +332,7 @@ class ChatGPTService:
         if principal is None:
             return WorkEventResult(status="denied")
         try:
-            async with self.grants.locked(principal.key) as grant:
+            async with self.admission_grants.locked(principal.key) as grant:
                 authority, _ = await self._read_authority(
                     principal, grant, operations=frozenset({"work_get"}),
                     work_id=request.work_id, explicit_target=True,
@@ -374,7 +397,7 @@ class ChatGPTService:
         operation_id: UUID | None = None
         possible_send = False
         try:
-            grant = await self.grants.current(principal.key)
+            grant = await self.admission_grants.current(principal.key)
             if not self.gateway.admitted(principal, grant) or grant is None:
                 return self._result_guard(request, "denied", "no_current_grant")
             if request.grant_version != grant.version:
@@ -415,7 +438,7 @@ class ChatGPTService:
                     request, "denied", "lifecycle_result_identity_conflict", operation_id
                 )
             if obligation.currentness_token != currentness:
-                async with self.grants.locked(principal.key, request.work_id) as locked_grant:
+                async with self.admission_grants.locked(principal.key, request.work_id) as locked_grant:
                     if (locked_grant is None or not self.gateway.admitted(principal, locked_grant)
                             or locked_grant.id != grant.id
                             or locked_grant.version != grant.version
@@ -424,7 +447,7 @@ class ChatGPTService:
                         return self._result_guard(
                             request, "stale", "lifecycle_currentness_changed", operation_id
                         )
-                    effect = await self.grants.exact(operation_id)
+                    effect = await self.admission_grants.exact(operation_id)
                     if effect is None:
                         obligation = await repository.adopt_currentness(obligation, currentness)
                     elif (
@@ -502,7 +525,7 @@ class ChatGPTService:
                     "task_gid": outcome.receipt.task_gid, "story_gid": outcome.receipt.story_gid,
                 }
                 try:
-                    async with self.grants.locked(principal.key, request.work_id) as current:
+                    async with self.admission_grants.locked(principal.key, request.work_id) as current:
                         if (current is None or not self.gateway.admitted(principal, current)
                                 or current.id != grant.id or current.version != grant.version
                                 or not current.can_write(request.work_id)

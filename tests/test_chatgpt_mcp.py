@@ -41,6 +41,7 @@ async def test_ordinary_facade_preserves_unknown_admission_without_sending(monke
     async def unavailable():
         return GrantResult(status="unknown", principal=PRINCIPAL)
 
+    monkeypatch.setattr(subject, "admission_get", unavailable)
     monkeypatch.setattr(subject, "grant_get", unavailable)
     operation_id = uuid4()
     append = await tools["work_append"]("1", operation_id, ACTIVE, "r1", "feedback")

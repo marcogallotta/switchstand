@@ -157,6 +157,7 @@ def create_app(
         service.providers,
         service.messages,
         service.required_results,
+        ordinary_workspace_admission=True,
     )
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
