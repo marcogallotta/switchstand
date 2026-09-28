@@ -56,9 +56,10 @@ state, but their authority and inventories are intentionally not interchangeable
 
 ### Development MCP
 
-`development.py` owns the development-only MCP and its exact linked-writer/run boundary. Its tools
-prepare and inspect the development environment, run focused or full workloads, commit the current
-owned worktree, and report run status. This surface is separate from product work authority.
+`development.py` owns development-environment preparation and cleanup invoked by `launch.py`, plus
+the development-only MCP and its exact linked-writer/run boundary. The MCP exposes four tools:
+`check`, `commit_all_current_worktree`, `quality`, and `run_status`. Preparation and cleanup are
+module functions used by launch, not MCP tools. This surface is separate from product work authority.
 
 ## Durable state, identity, and currentness
 
@@ -97,13 +98,19 @@ The protected gateways are the semantic owners of provider writes:
 - `relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
 - `provider.py::AsanaProvider` owns how each operation is expressed and verified in Asana.
 
-Each gateway validates authority and observed revision, records a durable prepared intent before a
-possible send, and reconciles the same operation ID after ambiguity. `UNKNOWN` means a send may have
+The checks and recovery path are operation-specific. Append validates the bound target's canonical,
+nonterminal state and observed revision; update and relation validate a bound canonical target and
+its observed revision. Create has no observed revision: its contract requires exactly one parent or
+project target, parent creation requires a granted, bound, canonical, nonterminal parent, and project
+creation requires workspace scope plus an admitted project. Every gateway persists the operation ID
+and durable prepared intent before a possible send. Create, update, and relation reconcile ambiguity
+only through their explicit provider recovery or readback paths; append has no equivalent recovery
+search and can retain an unresolved `UNKNOWN` as the durable barrier. `UNKNOWN` means a send may have
 happened or recovery state is unreadable; it is not permission to create a new operation and resend.
-An applied result requires provider readback to match the intended change. Changes to provider
-relation behavior therefore normally require coordinated edits to the provider implementation,
-the relation gateway contract only when its provider-neutral semantics change, and causal tests for
-both layers.
+An applied result requires the operation's authoritative provider readback to match the intended
+change. Changes to provider relation behavior therefore normally require coordinated edits to the
+provider implementation, the relation gateway contract only when its provider-neutral semantics
+change, and causal tests for both layers.
 
 ## Repository transport
 
