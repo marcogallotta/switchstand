@@ -43,7 +43,7 @@ TOOLS = {
     "work_history", "work_attachments", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "message_send", "message_pending",
     "message_receive", "message_recover", "message_result_send", "message_disposition",
-    "agent_register", "agent_message_send", "agent_message_pending",
+    "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
     "agent_message_receive", "agent_message_recover",
     "agent_message_result_send", "agent_message_disposition",
     "required_result_save",
@@ -263,6 +263,81 @@ async def _exercise(endpoint, selected, operation_id):
             "observed_revision": "r1", "text": "durable vertical append",
         })
         return result.structured_content
+
+
+async def _agent_call(endpoint, chat_session, tool, arguments):
+    transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+    async with Client(transport) as client:
+        result = await client.call_tool(
+            tool, arguments,
+            meta={} if chat_session is None else {"openai/session": chat_session},
+        )
+        return result.structured_content
+
+
+async def test_agent_identity_survives_http_transport_and_process_churn(
+    tmp_path: Path, database_prerequisite,
+):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
+    subject = str(uuid4().int)
+    await _provision(url, subject)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "ASANA_TOKEN": "test-only",
+        "EFFECT_FILE": str(tmp_path / "effects"),
+        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
+        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    register = lambda name: {"api_version": "1", "name": name}
+    with _server(env, port) as endpoint:
+        assert (await _agent_call(endpoint, "chat-a", "agent_register", register("Alpha")))[
+            "status"
+        ] == "ok"
+        assert (await _agent_call(endpoint, "chat-b", "agent_register", register("Beta")))[
+            "status"
+        ] == "ok"
+        missing = await _agent_call(endpoint, None, "agent_register", register("Missing"))
+        assert (missing["status"], missing["reason"]) == (
+            "recovery_required", "runtime_identity_unavailable",
+        )
+        sent = await _agent_call(endpoint, "chat-a", "agent_message_send", {
+            "api_version": "1", "recipient_name": "Beta",
+            "message_id": str(uuid4()), "payload": {"request": "review"},
+        })
+        delivery = sent["message"]["delivery_id"]
+
+    # Every operation below uses a fresh HTTP/MCP transport after a server restart.
+    with _server(env, port) as endpoint:
+        pending = await _agent_call(endpoint, "chat-b", "agent_message_pending", {
+            "api_version": "1",
+        })
+        assert pending["messages"][0]["delivery_id"] == delivery
+        received = await _agent_call(endpoint, "chat-b", "agent_message_receive", {
+            "api_version": "1", "delivery_id": delivery,
+        })
+        assert received["state"] == "RECEIVED"
+        result_id = str(uuid4())
+        replied = await _agent_call(endpoint, "chat-b", "agent_message_result_send", {
+            "api_version": "1", "delivery_id": delivery,
+            "message_id": result_id, "payload": {"result": "pass"},
+        })
+        assert replied["status"] == "ok"
+        disposed = await _agent_call(endpoint, "chat-b", "agent_message_disposition", {
+            "api_version": "1", "delivery_id": delivery, "result_message_id": result_id,
+        })
+        assert disposed["state"] == "DISPOSITIONED"
+        returned = await _agent_call(endpoint, "chat-a", "agent_message_pending", {
+            "api_version": "1",
+        })
+        assert returned["messages"][0]["message_id"] == result_id
 
 
 async def test_process_with_fixture_identity_replays_durable_append_after_restart(

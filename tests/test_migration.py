@@ -30,7 +30,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0006_agent_mailboxes; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0007_agent_chat_identity; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -55,7 +55,59 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
 
 
-def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch, database_prerequisite):
+def test_agent_identity_migration_preserves_endpoint_and_delivery(
+    monkeypatch, database_prerequisite,
+):
+    url = disposable_url()
+    monkeypatch.setenv("DATABASE_URL", url)
+    engine = create_engine(url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "lifecycle_obligations, message_projection, message_deliveries, messages, "
+            "effect_intents, work_grants, work_handles CASCADE"
+        ))
+    command.upgrade(config, "0006_agent_mailboxes")
+    endpoint_id, message_id, delivery_id = uuid4(), uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO work_handles (id, provider, provider_work_id) "
+            "VALUES (:id, 'agent-mailbox', 'legacy')"
+        ), {"id": endpoint_id})
+        connection.execute(text(
+            "INSERT INTO agent_mailboxes "
+            "(name_key, display_name, work_id, principal_key, generation) "
+            "VALUES ('legacy', 'Legacy', :id, 'owner', 1)"
+        ), {"id": endpoint_id})
+        connection.execute(text(
+            "INSERT INTO messages (sender_work_id, message_id, route_ref, kind, payload, digest) "
+            "VALUES (:id, :message, 'agent.legacy', 'request', '{}'::jsonb, 'digest')"
+        ), {"id": endpoint_id, "message": message_id})
+        connection.execute(text(
+            "INSERT INTO message_deliveries "
+            "(delivery_id, sender_work_id, message_id, recipient_work_id, "
+            "recipient_grant_version) VALUES (:delivery, :id, :message, :id, 1)"
+        ), {"delivery": delivery_id, "id": endpoint_id, "message": message_id})
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        endpoint = connection.execute(text(
+            "SELECT endpoint_id, session_key, generation FROM agent_mailboxes"
+        )).one()
+        delivery = connection.execute(text(
+            "SELECT delivery_id, recipient_work_id FROM message_deliveries"
+        )).one()
+    assert endpoint == (endpoint_id, "legacy:legacy", 1)
+    assert delivery == (delivery_id, endpoint_id)
+    foreign_keys = inspect(engine).get_foreign_keys("agent_mailboxes")
+    assert foreign_keys == []
+
+
+def test_message_downgrade_refuses_to_destroy_durable_truth(
+    monkeypatch, database_prerequisite,
+):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
@@ -78,7 +130,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch, databas
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0006_agent_mailboxes"
+            == "0007_agent_chat_identity"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite):

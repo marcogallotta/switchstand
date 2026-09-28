@@ -139,11 +139,15 @@ def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
     session_generation: Callable[[], str] | None = None,
+    agent_identity: Callable[[], str] | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
     generation = session_generation or (lambda: (_ for _ in ()).throw(
         RuntimeError("MCP session generation unavailable")
+    ))
+    chat_identity = agent_identity or (lambda: (_ for _ in ()).throw(
+        RuntimeError("ChatGPT runtime identity unavailable")
     ))
     current_generations: dict[tuple[str, UUID, UUID, int], str] = {}
     retired_generations: dict[tuple[str, UUID, UUID, int], set[str]] = {}
@@ -657,13 +661,12 @@ def build_ordinary_tools(
         audited("message_disposition", str(work_id), result.status)
         return result
 
-    agent_current_generations: dict[tuple[UUID, int], str] = {}
-    agent_retired_generations: dict[tuple[UUID, int], set[str]] = {}
-    agent_currentness_locks: dict[tuple[UUID, int], asyncio.Lock] = {}
-
     async def agent_context() -> AgentMessageContext | tuple[
         Literal["denied", "recovery_required"],
-        Literal["state_unavailable", "no_current_grant", "agent_not_registered"],
+        Literal[
+            "state_unavailable", "no_current_grant", "agent_not_registered",
+            "runtime_identity_unavailable",
+        ],
     ]:
         try:
             principal = await service.principal()
@@ -673,7 +676,13 @@ def build_ordinary_tools(
             return "denied", "no_current_grant"
         if mailboxes is None:
             return "recovery_required", "state_unavailable"
-        binding = await mailboxes.for_principal(principal.key)
+        try:
+            chat_session = chat_identity()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return "recovery_required", "runtime_identity_unavailable"
+        if not chat_session:
+            return "recovery_required", "runtime_identity_unavailable"
+        binding = await mailboxes.for_actor(principal.key, chat_session)
         if binding.status == "recovery_required":
             return "recovery_required", "state_unavailable"
         if binding.status != "ok" or binding.mailbox is None:
@@ -683,7 +692,10 @@ def build_ordinary_tools(
     def agent_transition_failure(
         failure: tuple[
             Literal["denied", "recovery_required"],
-            Literal["state_unavailable", "no_current_grant", "agent_not_registered"],
+            Literal[
+                "state_unavailable", "no_current_grant", "agent_not_registered",
+                "runtime_identity_unavailable",
+            ],
         ],
     ) -> MessageTransitionResult:
         if failure[1] == "agent_not_registered":
@@ -692,19 +704,10 @@ def build_ordinary_tools(
             )
         return MessageTransitionResult(status=failure[0], reason=failure[1])
 
-    def agent_runtime() -> RuntimeCurrentness | MessageTransitionResult:
-        try:
-            session_id = generation()
-        except (KeyError, RuntimeError, ValueError):
-            return MessageTransitionResult(
-                status="recovery_required", reason="runtime_currentness_unavailable"
-            )
-        if not session_id:
-            return MessageTransitionResult(
-                status="recovery_required", reason="runtime_currentness_unavailable"
-            )
+    def agent_runtime(mailbox_generation: int) -> RuntimeCurrentness:
+        durable_generation = str(mailbox_generation)
         return RuntimeCurrentness(
-            generation=session_id, current_generation=session_id,
+            generation=durable_generation, current_generation=durable_generation,
         )
 
     async def agent_register(
@@ -729,13 +732,52 @@ def build_ordinary_tools(
                     status="recovery_required", reason="state_unavailable"
                 )
             else:
-                stored = await mailboxes.register_agent(name, principal.key)
+                try:
+                    chat_session = chat_identity()
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    chat_session = ""
+                if not chat_session:
+                    result = AgentRegistrationResult(
+                        status="recovery_required", reason="runtime_identity_unavailable"
+                    )
+                    audited("agent_register", name, result.status)
+                    return result
+                stored = await mailboxes.register_agent(name, principal.key, chat_session)
                 result = (
                     AgentRegistrationResult(status="ok", name=stored.mailbox.name)
                     if stored.status == "ok" and stored.mailbox is not None
                     else AgentRegistrationResult(status=stored.status, reason=stored.reason)
                 )
         audited("agent_register", name, result.status)
+        return result
+
+    async def agent_takeover(
+        api_version: Literal["1"],
+        name: Annotated[str, Field(min_length=1, max_length=80)],
+    ) -> AgentRegistrationResult:
+        """Rebind a dead agent after Marco declares it dead; if unclear, ask Marco first."""
+        del api_version
+        try:
+            principal = await service.principal()
+            chat_session = chat_identity()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            principal, chat_session = None, ""
+        if principal is None:
+            result = AgentRegistrationResult(status="denied", reason="no_current_grant")
+        elif not chat_session:
+            result = AgentRegistrationResult(
+                status="recovery_required", reason="runtime_identity_unavailable"
+            )
+        elif mailboxes is None:
+            result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
+        else:
+            stored = await mailboxes.takeover(name, principal.key, chat_session)
+            result = (
+                AgentRegistrationResult(status="ok", name=stored.mailbox.name)
+                if stored.status == "ok" and stored.mailbox is not None
+                else AgentRegistrationResult(status=stored.status, reason=stored.reason)
+            )
+        audited("agent_takeover", name, result.status)
         return result
 
     async def agent_message_send(
@@ -758,7 +800,7 @@ def build_ordinary_tools(
                 status="denied", reason="recipient_not_registered"
             )
         route = MessageRoute(
-            recipient_work_id=recipient.mailbox.work_id,
+            recipient_work_id=recipient.mailbox.endpoint_id,
             recipient_grant_version=recipient.mailbox.generation,
         )
         submitted = MessageSubmitRequest(
@@ -770,7 +812,7 @@ def build_ordinary_tools(
             payload=payload,
         )
         result = await service.messages.submit_admitted(
-            sender.work_id, route, submitted,
+            sender.endpoint_id, route, submitted,
         )
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
@@ -792,7 +834,7 @@ def build_ordinary_tools(
         mailbox = context.mailbox
         assert mailboxes is not None and service.messages is not None
         result = await service.messages.pending_admitted(
-            mailbox.work_id,
+            mailbox.endpoint_id,
             MessagePendingRequest(
                 api_version=api_version,
                 grant_version=mailbox.generation,
@@ -822,32 +864,16 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        runtime = agent_runtime()
-        if isinstance(runtime, MessageTransitionResult):
-            return runtime
         mailbox = context.mailbox
+        runtime = agent_runtime(mailbox.generation)
         assert service.messages is not None
-        key = (mailbox.work_id, mailbox.generation)
-        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            retired = agent_retired_generations.setdefault(key, set())
-            current = agent_current_generations.get(key)
-            if (
-                runtime.generation in retired
-                or current is not None and current != runtime.generation
-            ):
-                return stale_runtime()
-            result = await service.messages.receive_admitted(
-                mailbox.work_id, mailbox.generation, runtime,
-                MessageReceiveRequest(
-                    api_version=api_version,
-                    delivery_id=delivery_id,
-                    grant_version=mailbox.generation,
-                ),
-            )
-            if result.status == "ok" and current is None:
-                agent_current_generations[key] = runtime.generation
-            return result
+        return await service.messages.receive_admitted(
+            mailbox.endpoint_id, mailbox.generation, runtime,
+            MessageReceiveRequest(
+                api_version=api_version, delivery_id=delivery_id,
+                grant_version=mailbox.generation,
+            ),
+        )
 
     async def agent_message_recover(
         api_version: Literal["1"], delivery_id: UUID,
@@ -856,31 +882,16 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        runtime = agent_runtime()
-        if isinstance(runtime, MessageTransitionResult):
-            return runtime
         mailbox = context.mailbox
+        runtime = agent_runtime(mailbox.generation)
         assert service.messages is not None
-        key = (mailbox.work_id, mailbox.generation)
-        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            retired = agent_retired_generations.setdefault(key, set())
-            previous = agent_current_generations.get(key)
-            if runtime.generation in retired:
-                return stale_runtime()
-            result = await service.messages.recover_admitted(
-                mailbox.work_id, mailbox.generation, runtime,
-                MessageReceiveRequest(
-                    api_version=api_version,
-                    delivery_id=delivery_id,
-                    grant_version=mailbox.generation,
-                ),
-            )
-            if result.status == "ok":
-                if previous is not None and previous != runtime.generation:
-                    retired.add(previous)
-                agent_current_generations[key] = runtime.generation
-            return result
+        return await service.messages.recover_admitted(
+            mailbox.endpoint_id, mailbox.generation, runtime,
+            MessageReceiveRequest(
+                api_version=api_version, delivery_id=delivery_id,
+                grant_version=mailbox.generation,
+            ),
+        )
 
     async def agent_message_result_send(
         api_version: Literal["1"], delivery_id: UUID,
@@ -890,47 +901,27 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessageSubmitResult(status=context[0], reason=context[1])
-        runtime = agent_runtime()
-        if isinstance(runtime, MessageTransitionResult):
-            return AgentMessageSubmitResult(status=runtime.status, reason=runtime.reason)
         mailbox = context.mailbox
+        runtime = agent_runtime(mailbox.generation)
         assert mailboxes is not None and service.messages is not None
-        key = (mailbox.work_id, mailbox.generation)
-        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            retired = agent_retired_generations.setdefault(key, set())
-            current = agent_current_generations.get(key)
-            if runtime.generation in retired or current != runtime.generation:
-                return AgentMessageSubmitResult(
-                    status="stale", reason="runtime_generation_changed"
-                )
-            reply = await service.messages.reply_context(delivery_id)
-            if reply is None:
-                return AgentMessageSubmitResult(
-                    status="conflict", reason="reply_delivery_not_found"
-                )
-            recipient = await mailboxes.by_work_id(reply.recipient_work_id)
-            if recipient.status != "ok" or recipient.mailbox is None:
-                return AgentMessageSubmitResult(
-                    status="recovery_required", reason="state_unavailable"
-                )
-            route = MessageRoute(
-                recipient_work_id=recipient.mailbox.work_id,
-                recipient_grant_version=recipient.mailbox.generation,
-            )
-            submitted = MessageSubmitRequest(
-                api_version=api_version,
-                message_id=message_id,
-                grant_version=mailbox.generation,
-                route_ref=reply.route_ref,
-                kind="result",
-                payload=payload,
-                in_reply_to_delivery_id=delivery_id,
-            )
-            result = await service.messages.submit_received_result(
-                mailbox.work_id, mailbox.generation, runtime.generation,
-                route, submitted,
-            )
+        reply = await service.messages.reply_context(delivery_id)
+        if reply is None:
+            return AgentMessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+        recipient = await mailboxes.by_endpoint_id(reply.recipient_work_id)
+        if recipient.status != "ok" or recipient.mailbox is None:
+            return AgentMessageSubmitResult(status="recovery_required", reason="state_unavailable")
+        route = MessageRoute(
+            recipient_work_id=recipient.mailbox.endpoint_id,
+            recipient_grant_version=recipient.mailbox.generation,
+        )
+        submitted = MessageSubmitRequest(
+            api_version=api_version, message_id=message_id,
+            grant_version=mailbox.generation, route_ref=reply.route_ref,
+            kind="result", payload=payload, in_reply_to_delivery_id=delivery_id,
+        )
+        result = await service.messages.submit_received_result(
+            mailbox.endpoint_id, mailbox.generation, runtime.generation, route, submitted,
+        )
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         view = await public_message(mailboxes, result.message)
@@ -947,38 +938,18 @@ def build_ordinary_tools(
         context = await agent_context()
         if isinstance(context, tuple):
             return agent_transition_failure(context)
-        runtime = agent_runtime()
-        if isinstance(runtime, MessageTransitionResult):
-            return runtime
         mailbox = context.mailbox
+        runtime = agent_runtime(mailbox.generation)
         assert service.messages is not None
-        key = (mailbox.work_id, mailbox.generation)
-        lock = agent_currentness_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            retired = agent_retired_generations.setdefault(key, set())
-            current = agent_current_generations.get(key)
-            if runtime.generation in retired or current != runtime.generation:
-                return stale_runtime()
-            evidence = DispositionEvidence(
-                kind="result", result_message_id=result_message_id,
-            )
-            result = await service.messages.disposition_admitted(
-                mailbox.work_id, mailbox.generation, runtime,
-                MessageDispositionRequest(
-                    api_version=api_version,
-                    delivery_id=delivery_id,
-                    grant_version=mailbox.generation,
-                    disposition_digest=disposition_digest(evidence),
-                    evidence=evidence,
-                ),
-            )
-            if result.status == "ok" and result.state == "DISPOSITIONED":
-                has_received = await service.messages.has_received(
-                    mailbox.work_id, mailbox.generation
-                )
-                if has_received is False:
-                    agent_current_generations.pop(key, None)
-            return result
+        evidence = DispositionEvidence(kind="result", result_message_id=result_message_id)
+        return await service.messages.disposition_admitted(
+            mailbox.endpoint_id, mailbox.generation, runtime,
+            MessageDispositionRequest(
+                api_version=api_version, delivery_id=delivery_id,
+                grant_version=mailbox.generation,
+                disposition_digest=disposition_digest(evidence), evidence=evidence,
+            ),
+        )
 
     return (
         ("repository_bundle_get", repository_bundle_get),
@@ -1002,6 +973,7 @@ def build_ordinary_tools(
         ("message_result_send", message_result_send),
         ("message_disposition", message_disposition),
         ("agent_register", agent_register),
+        ("agent_takeover", agent_takeover),
         ("agent_message_send", agent_message_send),
         ("agent_message_pending", agent_message_pending),
         ("agent_message_receive", agent_message_receive),

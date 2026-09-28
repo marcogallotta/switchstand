@@ -260,6 +260,7 @@ class MessageTransitionResult(ClosedModel):
     reason: Literal[
         "no_current_grant", "grant_version_changed", "delivery_not_found",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
+        "runtime_identity_unavailable",
         "runtime_generation_changed", "receiving_binding_changed", "delivery_not_received",
         "delivery_already_dispositioned", "disposition_identity_conflict",
         "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
