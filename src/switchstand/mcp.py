@@ -15,7 +15,6 @@ from .contracts import (
     AppendResult,
     ClosedModel,
     LaunchAuthority,
-    RelatedLookup,
     SourceStoriesRequest,
     SourceStoriesResult,
     SourceStoryRequest,
@@ -70,18 +69,6 @@ class PublicWorkItem(WorkSearchItem):
     notes: str
 
 
-class PublicCandidate(ClosedModel):
-    title: str
-    revision: str
-
-
-class PublicRelated(ClosedModel):
-    status: Literal["CANDIDATES", "UH_OH"]
-    observed_revision: str | None = None
-    candidates: tuple[PublicCandidate, ...] = ()
-    complete: Literal[False] = False
-
-
 class PublicReadGuard(ClosedModel):
     status: Literal["denied"] = "denied"
     operation: Literal["work_get"] = "work_get"
@@ -94,11 +81,10 @@ class PublicReadGuard(ClosedModel):
 class PublicWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
-    related: PublicRelated | None = None
     guard: PublicReadGuard | None = None
 
 
-def project_work(result: WorkResult | GrantedWorkResult, include_related: bool) -> PublicWorkResult:
+def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
     """Present already-authorized work; never retrieve, authorize, or invent identities."""
     public = PublicWorkResult(status=result.status)
     if isinstance(result, GrantedWorkResult) and result.guard is not None:
@@ -110,14 +96,6 @@ def project_work(result: WorkResult | GrantedWorkResult, include_related: bool) 
         public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
                                      completed=item.completed, revision=item.revision,
                                      routing=item.routing, context=item.context)
-    if include_related:
-        def related(value: RelatedLookup | None) -> PublicRelated | None:
-            if value is None:
-                return None
-            return PublicRelated(status=value.status, observed_revision=value.observed_revision,
-                                 candidates=tuple(PublicCandidate(title=c.title, revision=c.revision)
-                                                  for c in value.candidates))
-        public.related = related(result.related)
     return public
 
 
@@ -147,21 +125,12 @@ def closed_tool(
 def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
     server = MCPServer("Switchstand read-only context")
 
-    async def _work_get(
-        api_version: Literal["1"], include_related: bool = False,
-    ) -> PublicWorkResult:
+    async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
         return project_work(await service.get(  # type: ignore[attr-defined]
-            WorkGetRequest(
-                api_version=api_version,
-                work_id=active_work_id,
-                include_related=include_related,
-            )
-        ), include_related)
+            WorkGetRequest(api_version=api_version, work_id=active_work_id)
+        ))
 
-    _work_get.__doc__ = (
-        "Read the exact launch-bound work. Set include_related for bounded direct-child "
-        "candidates; completeness is always unknown."
-    )
+    _work_get.__doc__ = "Read the exact launch-bound work."
     closed_tool(server, "work_get", _work_get, ToolAnnotations(
         read_only_hint=True,
         destructive_hint=False,
@@ -206,17 +175,14 @@ def build_server(
     server = MCPServer("Switchstand")
 
     async def _work_get(
-        api_version: Literal["1"], work_id: UUID | None = None, include_related: bool = False,
+        api_version: Literal["1"], work_id: UUID | None = None,
     ) -> PublicWorkResult:
-        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id,
-                                 include_related=include_related)
-        return project_work(await service.get(request), include_related)  # type: ignore[attr-defined]
+        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
+        return project_work(await service.get(request))  # type: ignore[attr-defined]
 
     references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
-        "Read launch-bound work. Set include_related for bounded direct-child candidates; "
-        "completeness is always unknown. "
-        "Omit work_id for the active assignment. "
+        "Read launch-bound work. Omit work_id for the active assignment. "
         f"Bounded read-only reference WorkIds: {references}."
     )
 

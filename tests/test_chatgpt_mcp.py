@@ -95,17 +95,6 @@ async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     assert (await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))).status == "denied"
 
 
-async def test_related_get_keeps_grant_guard_and_exact_bound_source():
-    subject = service()
-    provider = subject.providers["asana"]
-    denied = await subject.get(uuid4(), include_related=True)
-    assert denied.status == "denied" and provider.related_calls == []
-    current = await subject.get(ACTIVE, include_related=True)
-    assert current.status == "ok" and current.related is not None
-    assert current.related.candidates[0].parent_gid == "123"
-    assert provider.related_calls == ["123"]
-
-
 async def test_workspace_search_requires_explicit_operation_and_returns_only_work_ids():
     subject = service()
     subject.grants.grant = grant(
@@ -376,7 +365,7 @@ async def test_workspace_read_chain_and_causal_denials(monkeypatch):
                              (grant(scope="launch"), uuid4())):
         subject.grants.grant = selected
         with monkeypatch.context() as patch:
-            for method in ("get", "source_task", "source_stories", "source_story", "find_related"):
+            for method in ("get", "source_task", "source_stories", "source_story"):
                 patch.setattr(provider, method, AsyncMock(side_effect=AssertionError("unauthorized access")))
             for tool, extra in (("work_get", {}), ("work_history", {"observed_revision": "r1"}),
                                 ("work_event", {"observed_revision": "r1", "event_id": str(uuid4())})):

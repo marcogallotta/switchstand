@@ -133,7 +133,6 @@ class WorkStructureResult(ClosedModel):
 class WorkGetRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
-    include_related: bool = False
 
 
 class WorkResolveReferenceRequest(ClosedModel):
@@ -188,34 +187,15 @@ class WorkAppendRequest(ClosedModel):
     text: str = Field(min_length=1)
 
 
-class RelatedCandidate(ClosedModel):
-    task_gid: AsanaGid
-    title: str
-    revision: str
-    parent_gid: AsanaGid
-    work_type_option_gid: AsanaGid | None = None
-
-
-class RelatedLookup(ClosedModel):
-    status: Literal["CANDIDATES", "UH_OH"]
-    work_task_gid: AsanaGid
-    observed_revision: str | None = None
-    candidates: tuple[RelatedCandidate, ...] = ()
-    reason: str | None = None
-
-
 class WorkResult(ClosedModel):
     status: Status
     item: WorkItem | None = None
-    related: RelatedLookup | None = None
 
     @model_validator(mode="after")
     def valid_result(self) -> Self:
         needs_item = self.status in {"ok", "stale"}
         if needs_item != (self.item is not None):
             raise ValueError("item presence does not match status")
-        if self.related is not None and self.status != "ok":
-            raise ValueError("related evidence requires current readable work")
         return self
 
 

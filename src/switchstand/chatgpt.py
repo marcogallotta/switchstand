@@ -266,7 +266,7 @@ class ChatGPTService:
         except (SQLAlchemyError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
 
-    async def get(self, work_id: UUID | None = None, *, include_related: bool = False) -> GrantedWorkResult:
+    async def get(self, work_id: UUID | None = None) -> GrantedWorkResult:
         principal = await self.principal()
         if principal is None:
             return GrantedWorkResult(status="denied", guard=self.denied("work_get"))
@@ -288,10 +288,9 @@ class ChatGPTService:
                         guard=self.denied("work_get", reason or "work_not_granted"),
                     )
                 result = await Controller(authority, self.state, self.providers).get(
-                    WorkGetRequest(api_version="1", work_id=target, include_related=include_related)
+                    WorkGetRequest(api_version="1", work_id=target)
                 )
-                return GrantedWorkResult(status=result.status, item=result.item,
-                                         related=result.related)
+                return GrantedWorkResult(status=result.status, item=result.item)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
 

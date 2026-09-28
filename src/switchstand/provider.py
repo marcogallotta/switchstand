@@ -4,8 +4,6 @@ from uuid import UUID
 import httpx
 
 from .contracts import (
-    RelatedCandidate,
-    RelatedLookup,
     Routing,
     WorkContext,
     WorkPatch,
@@ -307,28 +305,6 @@ class AsanaProvider:
             raise TypeError
         return gid
 
-    def _related_candidate(self, gid: str, task: JSON, parent_gid: str) -> RelatedCandidate:
-        title, revision = task.get("name"), task.get("modified_at")
-        if not isinstance(title, str) or not isinstance(revision, str):
-            raise TypeError
-        role_fields = [field for field in self._custom_fields(task)
-                       if field.get("gid") == WORK_TYPE]
-        option: str | None = None
-        if len(role_fields) == 1:
-            field = role_fields[0]
-            value = self._gid(field.get("enum_value"))
-            options = field.get("enum_options")
-            if (field.get("enabled") is True
-                    and field.get("resource_subtype") == "enum"
-                    and isinstance(options, list)):
-                valid_options = [cast(JSON, item) for item in cast(list[object], options)
-                                 if isinstance(item, dict)]
-                if any(self._gid(item) == value and item.get("enabled") is True
-                       for item in valid_options):
-                    option = value
-        return RelatedCandidate(task_gid=gid, title=title, revision=revision,
-                                parent_gid=parent_gid, work_type_option_gid=option)
-
     @staticmethod
     def _story_value(payload: JSON, fallback_task_gid: str | None = None) -> ProviderSourceStory:
         story_gid = payload.get("gid")
@@ -440,63 +416,6 @@ class AsanaProvider:
             return AttachmentPage(tuple(attachments), next_cursor)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider request failed") from None
-
-    async def find_related(self, work_task_gid: str) -> RelatedLookup:
-        """Read bounded direct-child evidence; this does not decide canonical roles."""
-        candidates: list[RelatedCandidate] = []
-        observed_revision: str | None = None
-
-        def uncertain(reason: str) -> RelatedLookup:
-            return RelatedLookup(
-                status="UH_OH", work_task_gid=work_task_gid,
-                observed_revision=observed_revision,
-                candidates=() if reason == "work_not_canonical" else tuple(candidates),
-                reason=reason,
-            )
-
-        try:
-            try:
-                work = await self._exact_task(work_task_gid)
-            except _TraversalFailure:
-                return uncertain("work_not_returned")
-            revision = work.get("modified_at")
-            if not isinstance(revision, str):
-                return uncertain("work_revision_unavailable")
-            observed_revision = revision
-            if not await self._canonical(work):
-                return uncertain("work_not_canonical")
-
-            try:
-                children = await self._direct_children(
-                    work_task_gid, require_canonical=False
-                )
-            except _TraversalFailure as failure:
-                for child_gid, child in failure.children:
-                    candidates.append(
-                        self._related_candidate(child_gid, child, work_task_gid)
-                    )
-                return uncertain(failure.reason)
-            for child_gid, child in children:
-                candidates.append(
-                    self._related_candidate(child_gid, child, work_task_gid)
-                )
-
-            try:
-                readback = await self._exact_task(work_task_gid)
-            except _TraversalFailure:
-                return uncertain("work_readback_unavailable")
-            if not await self._canonical(readback):
-                return uncertain("work_not_canonical")
-            if readback.get("modified_at") != observed_revision:
-                return uncertain("work_stale")
-            if not candidates:
-                return uncertain("no_direct_subtasks")
-            return RelatedLookup(
-                status="CANDIDATES", work_task_gid=work_task_gid,
-                observed_revision=observed_revision, candidates=tuple(candidates),
-            )
-        except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-            return uncertain("read_unavailable")
 
     async def structure_work(
         self, provider_work_id: str, observed_revision: str,

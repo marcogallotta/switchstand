@@ -8,8 +8,6 @@ from uuid import UUID, uuid4
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     LaunchAuthority,
-    RelatedCandidate,
-    RelatedLookup,
     Routing,
     WorkContext,
     WorkPlacement,
@@ -89,7 +87,6 @@ class Provider:
         self.revision, self.stories = "r1", []
         self.canonical_ids = {"123", "456"}
         self.sends = 0
-        self.related_calls = []
         self.search_calls = []
         self.unknown = self.mismatch = self.cancel = False
         self.before_send = None
@@ -127,13 +124,6 @@ class Provider:
 
     async def list_attachments(self, task_gid, cursor, limit):
         return AttachmentPage((ProviderAttachment("brief.txt"),), None)
-
-    async def find_related(self, task_gid):
-        self.related_calls.append(task_gid)
-        return RelatedLookup(status="CANDIDATES", work_task_gid=task_gid,
-                             observed_revision=self.revision,
-                             candidates=(RelatedCandidate(task_gid="789", title="Review",
-                                         revision=self.revision, parent_gid=task_gid),))
 
     async def source_task(self, task_gid):
         return ProviderSourceTask(self.title, self.notes, self.completed, self.revision,
@@ -238,10 +228,7 @@ async def read_chain(client, work_id):
     tools = listed.tools if hasattr(listed, "tools") else listed
     names = {tool.name for tool in tools}
     args = {"api_version": "1", "work_id": str(work_id)}
-    got = await call(
-        "work_get",
-        args if "work_structure" in names else args | {"include_related": True},
-    )
+    got = await call("work_get", args)
     assert_public(got.model_dump(mode="json"))
     assert got.structured_content["item"]["id"] == str(work_id)
     if "work_structure" in names:
@@ -250,7 +237,6 @@ async def read_chain(client, work_id):
         assert_public(structure.model_dump(mode="json"))
         assert structure.structured_content["children"][0]["title"] == "Review"
     else:
-        assert got.structured_content["related"]["candidates"][0]["title"] == "Review"
         args["observed_revision"] = got.structured_content["item"]["revision"]
     page = await call("work_history", args | {"limit": 1})
     assert_public(page.model_dump(mode="json"))
