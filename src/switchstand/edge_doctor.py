@@ -4,15 +4,14 @@ import argparse
 import subprocess
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 import httpx
 
 from .chatgpt_edge import _bind_port, _https_resource_url, _loopback_host
 
 REQUIRED_KEYS = frozenset(("SWITCHSTAND_MCP_GITHUB_CLIENT_ID",
-    "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET", "SWITCHSTAND_MCP_GITHUB_USER_ID",
-    "SWITCHSTAND_MCP_RESOURCE_URL", "SWITCHSTAND_MCP_BIND_HOST",
-    "SWITCHSTAND_MCP_BIND_PORT", "DATABASE_URL", "ASANA_TOKEN"))
+    "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET", "SWITCHSTAND_MCP_GITHUB_USER_ID"))
 def _result(name: str, status: str, detail: str) -> bool:
     print(f"{status} {name}: {detail}")
     return status != "FAIL"
@@ -32,6 +31,20 @@ def _read_env(path: Path) -> tuple[dict[str, str] | None, bool]:
     ok &= _result("env_keys", "FAIL" if missing else "PASS",
                   "missing " + ",".join(missing) if missing else "all required keys present")
     return values, ok
+
+def _local_probe_url(raw_value: str) -> str:
+    value = raw_value.strip()
+    parsed = urlparse(value)
+    try:
+        host = parsed.hostname or ""
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("local probe URL has an invalid port") from exc
+    if (parsed.scheme != "http" or not parsed.netloc or parsed.username or parsed.password
+            or parsed.path != "/mcp" or parsed.params or parsed.query or parsed.fragment):
+        raise ValueError("local probe URL must be credential-free HTTP ending at /mcp")
+    _loopback_host(host)
+    return value
 
 def _probe(name: str, target: str, resource: str) -> bool:
     metadata = resource.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
@@ -56,6 +69,8 @@ def _probe(name: str, target: str, resource: str) -> bool:
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", required=True, type=Path)
+    parser.add_argument("--resource-url")
+    parser.add_argument("--local-url")
     parser.add_argument("--public-url")
     parser.add_argument("--expected-sha", help="expected checkout HEAD; does not verify running code")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -66,12 +81,19 @@ def run(argv: list[str] | None = None) -> int:
         _result("public_http", "NOT_RUN", "environment unavailable")
     else:
         try:
-            resource = _https_resource_url(values.get("SWITCHSTAND_MCP_RESOURCE_URL", ""))
-            host = _loopback_host(values.get("SWITCHSTAND_MCP_BIND_HOST", ""))
-            port = _bind_port(values.get("SWITCHSTAND_MCP_BIND_PORT", ""))
-            local_host = f"[{host}]" if ":" in host else host
-            ok &= _probe("local_http", f"http://{local_host}:{port}/mcp", resource)
-            if args.public_url:
+            resource_value = (args.resource_url if args.resource_url is not None
+                              else values.get("SWITCHSTAND_MCP_RESOURCE_URL", ""))
+            resource = _https_resource_url(resource_value)
+            local_url = args.local_url
+            if local_url is None:
+                host = _loopback_host(values.get("SWITCHSTAND_MCP_BIND_HOST", ""))
+                port = _bind_port(values.get("SWITCHSTAND_MCP_BIND_PORT", ""))
+                local_host = f"[{host}]" if ":" in host else host
+                local_url = f"http://{local_host}:{port}/mcp"
+            else:
+                local_url = _local_probe_url(local_url)
+            ok &= _probe("local_http", local_url, resource)
+            if args.public_url is not None:
                 ok &= _probe("public_http", args.public_url, resource)
             else:
                 _result("public_http", "NOT_RUN", "no public URL supplied")
