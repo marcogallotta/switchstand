@@ -198,13 +198,29 @@ def _verify_serve_mapping(root: Path, resource: str, port: int) -> None:
     expected_proxy = f"http://127.0.0.1:{port}"
     try:
         https = status["TCP"][str(int(authority.rsplit(":", 1)[1]))]["HTTPS"]
-        proxy = status["Web"][authority]["Handlers"]["/"]["Proxy"]
+        handlers = status["Web"][authority]["Handlers"]
+        proxy = handlers["/"]["Proxy"]
     except (KeyError, TypeError, ValueError, IndexError) as exc:
         raise RuntimeError("certification Tailscale Serve mapping is missing") from exc
     if https is not True or proxy != expected_proxy:
         raise RuntimeError(
             f"certification Tailscale Serve mapping mismatch: expected {authority} -> "
             f"{expected_proxy}"
+        )
+    protected_paths = (
+        "/mcp",
+        "/auth/callback",
+        "/.well-known/oauth-protected-resource/mcp",
+        CERTIFICATION_RUNTIME_PATH,
+    )
+    conflicts = sorted(
+        path for path in handlers
+        if path != "/" and any(target.startswith(path) for target in protected_paths)
+    )
+    if conflicts:
+        raise RuntimeError(
+            "certification Tailscale Serve mapping has conflicting path handlers: "
+            + ",".join(conflicts)
         )
 
 
