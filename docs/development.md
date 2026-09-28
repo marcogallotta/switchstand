@@ -5,6 +5,69 @@ defined in [Code quality: governed implementation packages](code-quality.md#gove
 Keep its package base fixed across delivery branches and use its solution disposition
 before revising PR decomposition; routine implementation remains worker-owned.
 
+## Normal local workflow
+
+Prepare the shared tools once from the primary checkout, create a task-owned linked
+writer at the exact accepted base, and run focused checks from that writer:
+
+```bash
+scripts/bootstrap
+scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
+cd ~/.local/state/switchstand/worktrees/<writer-name>
+scripts/check tests/test_example.py -k relevant_case
+```
+
+`scripts/check <pytest args>` always runs Ruff and Pyright, then passes the supplied
+arguments to pytest. Use `scripts/check tests/test_example.py` for one test module or
+`scripts/check tests/test_example.py -k relevant_case` for one behavior. With no
+pytest arguments it runs the full pytest suite. The command prepares or verifies the
+locked environment automatically, but it does not make a dirty writer an immutable
+candidate or replace the clean CI subject required for review.
+
+For managed task-bound work, run the following command instead; it creates or resumes
+the private writer and supplies the pinned development tools:
+
+```bash
+scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>
+```
+
+The detailed lifecycle, recovery, and isolated-candidate routes remain below.
+
+## Match evidence to the claim
+
+Record the immutable subject that each result exercised. A green result establishes
+only that subject and boundary:
+
+- **Exact head:** a named commit checked out and tested directly. This proves the
+  checks that actually ran against that commit. It does not prove a pull request's
+  composed result, an uncommitted worktree, or live activation.
+- **Pull request composition:** the candidate combined with the current base. The
+  Quality workflow records the candidate, base, and synthetic composition SHAs and
+  verifies the composition's ordered parents. This proves the tested integration of
+  those exact revisions; it is separate from exact-head evidence and can become stale
+  when the base changes.
+- **Integration or hermetic boundary:** a test that exercises real cooperating
+  components inside a controlled boundary, such as real subprocesses, sockets, and a
+  disposable PostgreSQL cluster. State the synthetic substitutions and the boundary
+  left unproved. See [Disposable qualification](disposable-qualification.md) for the
+  current process-level database path.
+- **Activation, reliance, or live host:** evidence from the installed and configured
+  runtime on which operators or clients will rely. Repository landing, unit tests,
+  composition CI, and hermetic qualification do not establish this claim. Use the
+  applicable qualification contract, such as the
+  [ChatGPT MCP landing and activation split](chatgpt-mcp-edge.md#landing-and-activation-evidence)
+  or [standalone Asana test project](standalone-test-project.md), and record the exact
+  host/runtime, configuration, identity, and live action that were actually read back.
+- **`NOT_RUN`, `MISSING_CAPABILITY`, `SKIP`, or `UNKNOWN`:** the named claim remains
+  unproved. These states are not a candidate failure unless execution found an actual
+  failure, and they are never a PASS. Preserve the state and the missing prerequisite
+  instead of treating an aggregate green result as evidence that the boundary ran.
+
+The governing distinctions and review rules live in
+[Code quality: test quality and qualification](code-quality.md#test-quality-and-qualification).
+Link to the applicable qualification document rather than copying its procedure into
+a task or review handoff.
+
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
 - Stable host tools: run `scripts/bootstrap`. The script reuses a lockfile-fingerprinted `.venv` shared by linked
   worktrees and obtains the pinned uv binary through Docker only when needed.
