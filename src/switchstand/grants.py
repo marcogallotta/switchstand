@@ -30,7 +30,8 @@ class WorkGrant(ClosedModel):
     authority: LaunchAuthority
     scope: Literal["launch", "workspace"] = "launch"
     operations: frozenset[Literal[
-        "work_get", "work_search", "work_append", "work_create", "work_update", "message"
+        "work_get", "work_search", "work_append", "work_create", "work_update",
+        "work_relate", "message"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -39,6 +40,7 @@ class WorkGrant(ClosedModel):
     append_qualification: str | None = Field(default=None, min_length=1)
     create_qualification: str | None = Field(default=None, min_length=1)
     update_qualification: str | None = Field(default=None, min_length=1)
+    relation_qualification: str | None = Field(default=None, min_length=1)
 
     def current(self) -> bool:
         return self.state == "active" and self.expires_at > datetime.now(UTC)

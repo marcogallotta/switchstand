@@ -86,14 +86,15 @@ async def test_authenticated_certification_grant_admits_append_and_update(subjec
         assurance="authenticated", scope="workspace", profile="ordinary-certification",
         qualification="test:native-cert",
     )
-    operations, append_qualification, update_qualification = test_grant.grant_permissions(
-        arguments
-    )
+    (
+        operations, append_qualification, update_qualification, relation_qualification,
+    ) = test_grant.grant_permissions(arguments)
     certification = selected.model_copy(update={
         "principal": principal,
         "operations": frozenset(operations),
         "append_qualification": append_qualification,
         "update_qualification": update_qualification,
+        "relation_qualification": relation_qualification,
     })
     await service.grants.issue(certification, None)
     appended = await service.gateway.append(principal, request(certification))

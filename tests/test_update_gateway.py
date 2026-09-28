@@ -224,6 +224,8 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
     authority = LaunchAuthority(active_work_id=grant.authority.active_work_id)
     await rotate_managed_grant(grants, authority)
     current = await rotate_managed_grant(grants, authority)
+    assert "work_relate" in current.operations
+    assert current.relation_qualification == "managed:task-bound"
     server = build_server(
         Controller(authority, gateway.state, gateway.providers), authority.active_work_id,
         grants=grants, principal=managed_principal(authority.active_work_id), updates=gateway,

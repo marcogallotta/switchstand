@@ -2,8 +2,6 @@ import hashlib
 import json
 from uuid import UUID
 
-from sqlalchemy.exc import SQLAlchemyError
-
 from .contracts import WorkPatch
 from .core import Provider, ProviderError, ProviderWork, State, UnknownEffect, apply_scalar
 from .grant_state import EffectRecord, GrantState
@@ -14,6 +12,7 @@ from .grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from .mutation_effect import PreparedMutation, run_update_or_relation
 
 
 class UpdateGateway:
@@ -36,58 +35,41 @@ class UpdateGateway:
             if possible_send else "Refresh work/grant or ask the trusted issuer.",
         })
     async def update(self, principal: PrincipalContext, request: ProtectedUpdate) -> GuardOutcome:
-        possible_send = False
-        history_known = False
-        try:
-            async with self.grants.locked(principal.key, request.work_id) as grant:
-                fingerprint = self.fingerprint(principal, request)
-                record = await self.grants.exact(request.operation_id)
-                history_known = True
-                if record is not None:
-                    possible_send = record.outcome.effect != "not_sent"
-                    if record.principal_key != principal.key or record.fingerprint != fingerprint:
-                        return self.guard(request, "denied", "operation_identity_conflict")
-                    if record.outcome.effect != "unknown":
-                        return record.outcome
-                    return await self._reconcile(principal, request, record)
-                blocked = await self.grants.previous(request.operation_id, request.work_id)
-                if blocked is not None:
-                    return self.guard(request, "unknown", "target_has_unresolved_effect", possible_send=True)
-                if (grant is None or grant.principal != principal or not grant.current()):
-                    return self.guard(request, "denied", "no_current_grant")
-                if not grant.can_write(request.work_id) or "work_update" not in grant.operations:
-                    return self.guard(request, "denied", "operation_or_work_not_granted")
-                if request.grant_version != grant.version:
-                    return self.guard(request, "stale", "grant_version_changed")
-                qualification = grant.update_qualification
-                if (qualification is None
-                        or (principal.assurance == "test") != qualification.startswith("test:")):
-                    return self.guard(request, "denied", "update_not_qualified_for_this_surface")
-                handle = await self.state.get(request.work_id)
-                if handle is None:
-                    return self.guard(request, "denied", "work_not_bound")
-                provider = self.providers[handle.provider]
-                current = await provider.get(handle.provider_work_id)
-                if current is None or not current.canonical:
-                    return self.guard(request, "not_applied", "source_read_unavailable")
-                if current.revision != request.observed_revision:
-                    return self.guard(request, "stale", "source_revision_changed")
-                unknown = self.guard(request, "unknown", "prepared_or_unconfirmed_send", possible_send=True)
-                await self.grants.prepare({
-                    "request": request.model_dump(mode="json"), "provider": handle.provider,
-                    "task_gid": handle.provider_work_id, "qualification": qualification,
-                }, grant, fingerprint, unknown)
-                possible_send = True
-                if not grant.current():
-                    outcome = self.guard(request, "not_applied", "grant_expired_before_send")
-                else:
-                    outcome = await self._send(principal, request, grant, handle.provider,
-                                               handle.provider_work_id, qualification)
-                await self.grants.finish(outcome)
-                return outcome
-        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
-            return self.guard(request, "unknown", "state_or_effect_unavailable",
-                              possible_send=possible_send or not history_known)
+        return await run_update_or_relation(
+            self.grants, principal, request, self.fingerprint(principal, request),
+            "work_update", "update_qualification", "update_not_qualified_for_this_surface",
+            lambda status, reason, possible: self.guard(
+                request, status, reason, possible_send=possible
+            ),
+            lambda grant, qualification: self._prepare(
+                principal, request, grant, qualification
+            ),
+            lambda record: self._reconcile(principal, request, record),
+        )
+
+    async def _prepare(
+        self, principal: PrincipalContext, request: ProtectedUpdate,
+        grant: WorkGrant, qualification: str,
+    ) -> PreparedMutation | GuardOutcome:
+        handle = await self.state.get(request.work_id)
+        if handle is None:
+            return self.guard(request, "denied", "work_not_bound")
+        provider = self.providers[handle.provider]
+        current = await provider.get(handle.provider_work_id)
+        if current is None or not current.canonical:
+            return self.guard(request, "not_applied", "source_read_unavailable")
+        if current.revision != request.observed_revision:
+            return self.guard(request, "stale", "source_revision_changed")
+        return PreparedMutation(
+            intent={
+                "request": request.model_dump(mode="json"), "provider": handle.provider,
+                "task_gid": handle.provider_work_id, "qualification": qualification,
+            },
+            send=lambda: self._send(
+                principal, request, grant, handle.provider,
+                handle.provider_work_id, qualification,
+            ),
+        )
     async def _send(self, principal: PrincipalContext, request: ProtectedUpdate, grant: WorkGrant,
                     provider_name: str, task_gid: str, qualification: str) -> GuardOutcome:
         patch = WorkPatch.model_validate(request.patch.model_dump(exclude_unset=True))

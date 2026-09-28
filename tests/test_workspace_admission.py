@@ -44,6 +44,8 @@ async def test_workspace_admission_is_stable_without_work_grant_and_preserves_ef
         assert first.scope == "workspace" and first.version == 1
         assert first.can_write(handle.id)
         assert first.create_qualification == "real:ordinary-workspace"
+        assert "work_relate" in first.operations
+        assert first.relation_qualification == "real:ordinary-workspace"
 
         operation_id = uuid4()
         unknown = GuardOutcome(
