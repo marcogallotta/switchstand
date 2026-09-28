@@ -149,6 +149,18 @@ def _audit(tool: str, target: str | None, status: str) -> None:
     )
 
 
+def _openai_session() -> str:
+    """Read ChatGPT's stable chat identity from the current MCP call metadata."""
+    request_context = get_context().request_context
+    if request_context is None:
+        return ""
+    meta = request_context.meta
+    if meta is None:
+        return ""
+    value = meta.get("openai/session")
+    return value if isinstance(value, str) else ""
+
+
 def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
     certification_runtime: tuple[str, str] | None = None,
@@ -178,7 +190,7 @@ def create_app(
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for _, tool in build_ordinary_tools(
-        service, _audit, session_generation=lambda: get_context().session_id
+        service, _audit, session_generation=_openai_session,
     ):
         server.tool(tool)
     app = server.http_app(path="/mcp", json_response=True, stateless_http=False)

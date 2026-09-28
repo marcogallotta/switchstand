@@ -78,8 +78,8 @@ class AgentMessagePendingResult(ClosedModel):
 async def public_message(
     mailboxes: AgentMailboxState, message: PendingMessage,
 ) -> AgentPendingMessage | None:
-    sender = await mailboxes.by_work_id(message.sender_work_id)
-    recipient = await mailboxes.by_work_id(message.recipient_work_id)
+    sender = await mailboxes.by_endpoint_id(message.sender_work_id)
+    recipient = await mailboxes.by_endpoint_id(message.recipient_work_id)
     if (
         sender.status != "ok" or sender.mailbox is None
         or recipient.status != "ok" or recipient.mailbox is None

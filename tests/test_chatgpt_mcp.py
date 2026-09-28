@@ -306,7 +306,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "message_send", "message_pending",
             "message_receive", "message_recover", "message_result_send", "message_disposition",
-            "agent_register", "agent_message_send", "agent_message_pending",
+            "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
             "agent_message_result_send", "agent_message_disposition",
             "required_result_save",

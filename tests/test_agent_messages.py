@@ -4,7 +4,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
@@ -22,121 +21,86 @@ async def agent_messaging(database_prerequisite):
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
-    state, grants = PostgresState(engine), GrantState(engine)
-    principals = [
-        PrincipalContext(
-            issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test"
-        )
-        for _ in range(2)
-    ]
-    actor = [principals[0]]
+    owner = PrincipalContext(issuer="fixture", subject="owner", client_id="test", assurance="test")
+    other = PrincipalContext(issuer="fixture", subject="other", client_id="test", assurance="test")
+    actor, session = [owner], ["chat-a"]
 
     async def resolve():
         return actor[0]
 
-    service = ChatGPTService(resolve, state, grants, {}, MessageState(engine, grants))
-    generation = ["session-1"]
-    tools = dict(build_ordinary_tools(service, session_generation=lambda: generation[0]))
-    yield tools, actor, principals, service, AgentMailboxState(engine), generation
+    service = ChatGPTService(
+        resolve, PostgresState(engine), GrantState(engine), {},
+        MessageState(engine, GrantState(engine)),
+    )
+    tools = dict(build_ordinary_tools(service, session_generation=lambda: session[0]))
+    yield tools, actor, session, owner, other, service
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
 
-async def test_agent_name_vertical_hides_workids_and_preserves_message_state(agent_messaging):
-    tools, actor, principals, _service, _mailboxes, _generation = agent_messaging
-    assert await _service.grants.current(principals[0].key) is None
-    assert (await tools["agent_register"]("1", "Agent Alpha")).status == "ok"
-    actor[0] = principals[1]
-    assert (await tools["agent_register"]("1", "Agent Beta")).status == "ok"
+async def test_same_principal_two_chats_survive_transport_churn_and_restart(agent_messaging):
+    tools, actor, session, owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
 
-    actor[0] = principals[0]
-    sent = await tools["agent_message_send"](
-        "1", "Agent Beta", uuid4(), {"request": "review"}
-    )
-    assert sent.status == "ok"
-    assert sent.message.sender_name == "Agent Alpha"
-    assert sent.message.recipient_name == "Agent Beta"
-    assert "work_id" not in sent.message.model_dump()
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "review"})
+    assert sent.status == "ok" and sent.message is not None
+    delivery = sent.message.delivery_id
 
-    actor[0] = principals[1]
-    pending = await tools["agent_message_pending"]("1")
-    assert pending.status == "ok" and len(pending.messages) == 1
-    delivery = pending.messages[0].delivery_id
-    assert (await tools["agent_message_receive"]("1", delivery)).state == "RECEIVED"
-
+    # A fresh tool/server binding models a new MCP transport and process with the same chat metadata.
+    restarted = dict(build_ordinary_tools(service, session_generation=lambda: session[0]))
+    session[0] = "chat-b"
+    assert (await restarted["agent_message_receive"]("1", delivery)).state == "RECEIVED"
     result_id = uuid4()
-    reply = await tools["agent_message_result_send"](
+    reply = await restarted["agent_message_result_send"](
         "1", delivery, result_id, {"result": "pass"}
     )
     assert reply.status == "ok"
-    assert reply.message.sender_name == "Agent Beta"
-    assert reply.message.recipient_name == "Agent Alpha"
-    disposition = await tools["agent_message_disposition"]("1", delivery, result_id)
-    assert disposition.state == "DISPOSITIONED"
+    assert (await restarted["agent_message_disposition"]("1", delivery, result_id)).state \
+        == "DISPOSITIONED"
 
-    actor[0] = principals[0]
+    session[0] = "chat-a"
     returned = await tools["agent_message_pending"]("1")
-    assert returned.status == "ok"
     assert [item.message_id for item in returned.messages] == [result_id]
+    assert actor[0] == owner
 
 
-async def test_agent_name_collision_and_unregistered_sender_are_closed(agent_messaging):
-    tools, actor, principals, _service, _mailboxes, _generation = agent_messaging
-    assert (await tools["agent_register"]("1", "Lifecycle")).status == "ok"
-    actor[0] = principals[1]
-    collision = await tools["agent_register"]("1", "LIFECYCLE")
-    assert (collision.status, collision.reason) == ("conflict", "name_collision")
-    denied = await tools["agent_message_send"](
-        "1", "Lifecycle", uuid4(), {"request": "x"}
+async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    session[0] = ""
+    registration = await tools["agent_register"]("1", "Alpha")
+    assert (registration.status, registration.reason) == (
+        "recovery_required", "runtime_identity_unavailable",
     )
-    assert (denied.status, denied.reason) == ("denied", "agent_not_registered")
+    # Unrelated ordinary tools remain registered and callable through their own admission paths.
+    assert "work_get" in tools and "repository_bundle_get" in tools
 
 
-async def test_agent_recover_after_trusted_takeover_fences_old_actor(agent_messaging):
-    tools, actor, principals, _service, mailboxes, generation = agent_messaging
-    assert (await tools["agent_register"]("1", "Agent Alpha")).status == "ok"
-    actor[0] = principals[1]
-    assert (await tools["agent_register"]("1", "Agent Beta")).status == "ok"
+async def test_takeover_preserves_delivery_and_fences_old_session(agent_messaging):
+    tools, actor, session, _owner, other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "handoff"})
+    delivery = sent.message.delivery_id
+    session[0] = "chat-b"
+    assert (await tools["agent_message_receive"]("1", delivery)).state == "RECEIVED"
 
-    actor[0] = principals[0]
-    sent = await tools["agent_message_send"](
-        "1", "Agent Beta", uuid4(), {"request": "handoff"}
-    )
-    assert sent.status == "ok" and sent.message is not None
+    actor[0] = other
+    session[0] = "other-chat"
+    denied = await tools["agent_takeover"]("1", "Beta")
+    assert (denied.status, denied.reason) == ("denied", "principal_mismatch")
 
-    actor[0] = principals[1]
-    pending = await tools["agent_message_pending"]("1")
-    delivery = pending.messages[0].delivery_id
-    received = await tools["agent_message_receive"]("1", delivery)
-    assert received.status == "ok" and received.state == "RECEIVED"
-
-    replacement = PrincipalContext(
-        issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test"
-    )
-    beta_before = await mailboxes.by_name("Agent Beta")
-    assert beta_before.status == "ok" and beta_before.mailbox is not None
-    moved = await mailboxes.takeover("Agent Beta", 1, replacement.key)
-    assert moved.status == "ok" and moved.mailbox is not None
-    assert moved.mailbox.generation == 2
-    assert moved.mailbox.work_id == beta_before.mailbox.work_id
-
-    denied = await tools["agent_message_recover"]("1", delivery)
-    assert (denied.status, denied.reason) == ("denied", "receiving_binding_changed")
-
-    generation[0] = "session-2"
-    actor[0] = replacement
+    actor[0] = _owner
+    session[0] = "replacement"
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
     recovered = await tools["agent_message_recover"]("1", delivery)
     assert recovered.status == "ok" and recovered.state == "RECEIVED"
 
-    result_id = uuid4()
-    reply = await tools["agent_message_result_send"](
-        "1", delivery, result_id, {"result": "recovered"}
-    )
-    assert reply.status == "ok"
-    disposition = await tools["agent_message_disposition"]("1", delivery, result_id)
-    assert disposition.status == "ok" and disposition.state == "DISPOSITIONED"
-
-    actor[0] = principals[1]
-    stale_actor = await tools["agent_message_pending"]("1")
-    assert (stale_actor.status, stale_actor.reason) == ("denied", "agent_not_registered")
+    session[0] = "chat-b"
+    stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
+    assert (stale.status, stale.reason) == ("denied", "agent_not_registered")

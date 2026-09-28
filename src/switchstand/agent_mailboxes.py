@@ -1,14 +1,14 @@
-"""Temporary durable agent-name to MessageState mailbox binding."""
+"""Durable named endpoints for ordinary agent messaging."""
 
+import hashlib
 import re
 from typing import Literal, cast
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4
 
 from pydantic import Field, model_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
-    ForeignKey,
     Integer,
     Table,
     Text,
@@ -23,21 +23,18 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ClosedModel
-from .state import metadata, work_handles
-
-MAILBOX_NAMESPACE = UUID("bd780d58-20ff-4f74-8504-25743a297d9a")
-MAILBOX_PROVIDER = "agent-mailbox"
+from .state import metadata
 
 agent_mailboxes = Table(
-    "agent_mailboxes",
-    metadata,
+    "agent_mailboxes", metadata,
     Column("name_key", Text, primary_key=True),
     Column("display_name", Text, nullable=False),
-    Column("work_id", PGUUID(as_uuid=True), ForeignKey("work_handles.id", ondelete="RESTRICT"), nullable=False),
+    Column("endpoint_id", PGUUID(as_uuid=True), nullable=False),
     Column("principal_key", Text, nullable=False),
+    Column("session_key", Text, nullable=False),
     Column("generation", Integer, nullable=False),
-    UniqueConstraint("principal_key"),
-    UniqueConstraint("work_id"),
+    UniqueConstraint("endpoint_id"),
+    UniqueConstraint("principal_key", "session_key"),
     CheckConstraint("generation >= 1"),
 )
 
@@ -45,8 +42,9 @@ agent_mailboxes = Table(
 class AgentMailbox(ClosedModel):
     name: str = Field(min_length=1, max_length=80)
     name_key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9.-]*$")
-    work_id: UUID
+    endpoint_id: UUID
     principal_key: str = Field(min_length=1)
+    session_key: str = Field(min_length=1)
     generation: int = Field(ge=1)
 
 
@@ -54,9 +52,8 @@ class AgentMailboxResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "recovery_required"]
     mailbox: AgentMailbox | None = None
     reason: Literal[
-        "name_collision", "principal_already_registered", "work_already_registered", "work_not_bound",
-        "mailbox_not_found", "principal_not_registered", "state_unavailable",
-        "generation_changed",
+        "name_collision", "session_already_registered", "mailbox_not_found",
+        "agent_not_registered", "principal_mismatch", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -76,6 +73,12 @@ def agent_name_key(value: str) -> str:
     return key
 
 
+def chat_session_key(value: str) -> str:
+    if not value or len(value) > 4096:
+        raise ValueError("invalid chat session")
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 class AgentMailboxState:
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
@@ -83,107 +86,40 @@ class AgentMailboxState:
     @staticmethod
     def _view(row: RowMapping) -> AgentMailbox:
         return AgentMailbox(
-            name=cast(str, row["display_name"]),
-            name_key=cast(str, row["name_key"]),
-            work_id=cast(UUID, row["work_id"]),
+            name=cast(str, row["display_name"]), name_key=cast(str, row["name_key"]),
+            endpoint_id=cast(UUID, row["endpoint_id"]),
             principal_key=cast(str, row["principal_key"]),
-            generation=cast(int, row["generation"]),
+            session_key=cast(str, row["session_key"]), generation=cast(int, row["generation"]),
         )
 
-    async def register(self, name: str, work_id: UUID, principal_key: str) -> AgentMailboxResult:
+    async def register_agent(self, name: str, principal_key: str, chat_session: str) -> AgentMailboxResult:
         try:
-            key = agent_name_key(name)
-            display = " ".join(name.strip().split())
+            key, display = agent_name_key(name), " ".join(name.strip().split())
+            session_key = chat_session_key(chat_session)
             async with self.engine.begin() as connection:
-                bound = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key).with_for_update()
-                )).mappings().one_or_none()
+                bound = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key
+                ).with_for_update())).mappings().one_or_none()
                 if bound is not None:
                     mailbox = self._view(bound)
-                    if (
-                        mailbox.name == display
-                        and mailbox.work_id == work_id
-                        and mailbox.principal_key == principal_key
+                    if (mailbox.name, mailbox.principal_key, mailbox.session_key) == (
+                        display, principal_key, session_key,
                     ):
                         return AgentMailboxResult(status="ok", mailbox=mailbox)
                     return AgentMailboxResult(status="conflict", reason="name_collision")
-                prior = (await connection.execute(
-                    select(agent_mailboxes.c.name_key).where(
-                        agent_mailboxes.c.principal_key == principal_key
-                    ).with_for_update()
-                )).scalar_one_or_none()
+                prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
+                    agent_mailboxes.c.principal_key == principal_key,
+                    agent_mailboxes.c.session_key == session_key,
+                ).with_for_update())).scalar_one_or_none()
                 if prior is not None:
-                    return AgentMailboxResult(
-                        status="conflict", reason="principal_already_registered"
-                    )
-                prior_work = (await connection.execute(
-                    select(agent_mailboxes.c.name_key).where(
-                        agent_mailboxes.c.work_id == work_id
-                    ).with_for_update()
-                )).scalar_one_or_none()
-                if prior_work is not None:
-                    return AgentMailboxResult(
-                        status="conflict", reason="work_already_registered"
-                    )
-                handle = (await connection.execute(
-                    select(work_handles.c.id).where(
-                        work_handles.c.id == work_id
-                    ).with_for_update()
-                )).scalar_one_or_none()
-                if handle is None:
-                    return AgentMailboxResult(status="denied", reason="work_not_bound")
+                    return AgentMailboxResult(status="conflict", reason="session_already_registered")
                 await connection.execute(insert(agent_mailboxes).values(
-                    name_key=key, display_name=display, work_id=work_id,
-                    principal_key=principal_key, generation=1,
+                    name_key=key, display_name=display, endpoint_id=uuid4(),
+                    principal_key=principal_key, session_key=session_key, generation=1,
                 ))
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key)
-                )).mappings().one()
-                return AgentMailboxResult(status="ok", mailbox=self._view(row))
-        except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
-            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
-
-    async def register_agent(self, name: str, principal_key: str) -> AgentMailboxResult:
-        """Register an agent with a deterministic internal mailbox identity."""
-        try:
-            key = agent_name_key(name)
-            display = " ".join(name.strip().split())
-            work_id = uuid5(MAILBOX_NAMESPACE, key)
-            async with self.engine.begin() as connection:
-                bound = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key).with_for_update()
-                )).mappings().one_or_none()
-                if bound is not None:
-                    mailbox = self._view(bound)
-                    if mailbox.name == display and mailbox.principal_key == principal_key:
-                        return AgentMailboxResult(status="ok", mailbox=mailbox)
-                    return AgentMailboxResult(status="conflict", reason="name_collision")
-                prior = (await connection.execute(
-                    select(agent_mailboxes.c.name_key).where(
-                        agent_mailboxes.c.principal_key == principal_key
-                    ).with_for_update()
-                )).scalar_one_or_none()
-                if prior is not None:
-                    return AgentMailboxResult(
-                        status="conflict", reason="principal_already_registered"
-                    )
-                await connection.execute(insert(work_handles).values(
-                    id=work_id, provider=MAILBOX_PROVIDER, provider_work_id=key,
-                ).on_conflict_do_nothing())
-                handle = (await connection.execute(select(
-                    work_handles.c.provider, work_handles.c.provider_work_id,
-                ).where(work_handles.c.id == work_id).with_for_update())).one_or_none()
-                if handle != (MAILBOX_PROVIDER, key):
-                    return AgentMailboxResult(
-                        status="recovery_required", reason="state_unavailable"
-                    )
-                await connection.execute(insert(agent_mailboxes).values(
-                    name_key=key, display_name=display, work_id=work_id,
-                    principal_key=principal_key, generation=1,
-                ))
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key)
-                )).mappings().one()
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key
+                ))).mappings().one()
                 return AgentMailboxResult(status="ok", mailbox=self._view(row))
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
@@ -192,70 +128,67 @@ class AgentMailboxState:
         try:
             key = agent_name_key(name)
             async with self.engine.connect() as connection:
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key)
-                )).mappings().one_or_none()
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key
+                ))).mappings().one_or_none()
             if row is None:
                 return AgentMailboxResult(status="denied", reason="mailbox_not_found")
             return AgentMailboxResult(status="ok", mailbox=self._view(row))
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def by_work_id(self, work_id: UUID) -> AgentMailboxResult:
+    async def by_endpoint_id(self, endpoint_id: UUID) -> AgentMailboxResult:
         try:
             async with self.engine.connect() as connection:
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.work_id == work_id)
-                )).mappings().one_or_none()
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.endpoint_id == endpoint_id
+                ))).mappings().one_or_none()
             if row is None:
                 return AgentMailboxResult(status="denied", reason="mailbox_not_found")
             return AgentMailboxResult(status="ok", mailbox=self._view(row))
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def for_principal(self, principal_key: str) -> AgentMailboxResult:
+    async def for_actor(self, principal_key: str, chat_session: str) -> AgentMailboxResult:
         try:
+            session_key = chat_session_key(chat_session)
             async with self.engine.connect() as connection:
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(
-                        agent_mailboxes.c.principal_key == principal_key
-                    )
-                )).mappings().one_or_none()
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.principal_key == principal_key,
+                    agent_mailboxes.c.session_key == session_key,
+                ))).mappings().one_or_none()
             if row is None:
-                return AgentMailboxResult(status="denied", reason="principal_not_registered")
+                return AgentMailboxResult(status="denied", reason="agent_not_registered")
             return AgentMailboxResult(status="ok", mailbox=self._view(row))
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def takeover(
-        self, name: str, expected_generation: int, principal_key: str,
-    ) -> AgentMailboxResult:
-        """Trusted control path only: preserve mailbox WorkId and fence the old actor."""
+    async def takeover(self, name: str, principal_key: str, replacement_session: str) -> AgentMailboxResult:
         try:
-            key = agent_name_key(name)
+            key, session_key = agent_name_key(name), chat_session_key(replacement_session)
             async with self.engine.begin() as connection:
-                row = (await connection.execute(
-                    select(agent_mailboxes).where(agent_mailboxes.c.name_key == key).with_for_update()
-                )).mappings().one_or_none()
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key
+                ).with_for_update())).mappings().one_or_none()
                 if row is None:
                     return AgentMailboxResult(status="denied", reason="mailbox_not_found")
-                if row["generation"] != expected_generation:
-                    return AgentMailboxResult(status="conflict", reason="generation_changed")
-                prior = (await connection.execute(
-                    select(agent_mailboxes.c.name_key).where(
-                        agent_mailboxes.c.principal_key == principal_key,
-                        agent_mailboxes.c.name_key != key,
-                    )
-                )).scalar_one_or_none()
+                if row["principal_key"] != principal_key:
+                    return AgentMailboxResult(status="denied", reason="principal_mismatch")
+                prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
+                    agent_mailboxes.c.principal_key == principal_key,
+                    agent_mailboxes.c.session_key == session_key,
+                    agent_mailboxes.c.name_key != key,
+                ).with_for_update())).scalar_one_or_none()
                 if prior is not None:
-                    return AgentMailboxResult(
-                        status="conflict", reason="principal_already_registered"
-                    )
-                result = await connection.execute(
-                    update(agent_mailboxes).where(agent_mailboxes.c.name_key == key).values(
-                        principal_key=principal_key, generation=expected_generation + 1
-                    ).returning(*agent_mailboxes.c)
-                )
-                return AgentMailboxResult(status="ok", mailbox=self._view(result.mappings().one()))
+                    return AgentMailboxResult(status="conflict", reason="session_already_registered")
+                moved = (await connection.execute(update(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key,
+                    agent_mailboxes.c.generation == row["generation"],
+                ).values(
+                    session_key=session_key, generation=row["generation"] + 1,
+                ).returning(*agent_mailboxes.c))).mappings().one_or_none()
+                if moved is None:
+                    return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+                return AgentMailboxResult(status="ok", mailbox=self._view(moved))
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
