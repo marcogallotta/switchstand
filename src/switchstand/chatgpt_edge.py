@@ -190,7 +190,9 @@ def create_app(
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for _, tool in build_ordinary_tools(
-        service, _audit, session_generation=_openai_session,
+        service, _audit,
+        session_generation=lambda: get_context().session_id,
+        agent_identity=_openai_session,
     ):
         server.tool(tool)
     app = server.http_app(path="/mcp", json_response=True, stateless_http=False)

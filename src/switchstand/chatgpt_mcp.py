@@ -139,12 +139,14 @@ def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
     session_generation: Callable[[], str] | None = None,
+    agent_identity: Callable[[], str] | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
     generation = session_generation or (lambda: (_ for _ in ()).throw(
         RuntimeError("MCP session generation unavailable")
     ))
+    chat_identity = agent_identity or generation
     current_generations: dict[tuple[str, UUID, UUID, int], str] = {}
     retired_generations: dict[tuple[str, UUID, UUID, int], set[str]] = {}
     currentness_locks: dict[tuple[str, UUID, UUID, int], asyncio.Lock] = {}
@@ -673,7 +675,7 @@ def build_ordinary_tools(
         if mailboxes is None:
             return "recovery_required", "state_unavailable"
         try:
-            chat_session = generation()
+            chat_session = chat_identity()
         except (KeyError, RuntimeError, TypeError, ValueError):
             return "recovery_required", "runtime_identity_unavailable"
         if not chat_session:
@@ -729,7 +731,7 @@ def build_ordinary_tools(
                 )
             else:
                 try:
-                    chat_session = generation()
+                    chat_session = chat_identity()
                 except (KeyError, RuntimeError, TypeError, ValueError):
                     chat_session = ""
                 if not chat_session:
@@ -755,7 +757,7 @@ def build_ordinary_tools(
         del api_version
         try:
             principal = await service.principal()
-            chat_session = generation()
+            chat_session = chat_identity()
         except (KeyError, RuntimeError, TypeError, ValueError):
             principal, chat_session = None, ""
         if principal is None:
