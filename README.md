@@ -1,43 +1,46 @@
 # Switchstand
 
-Switchstand is a deliberately small, provider-neutral MCP controller for bounded engineering work.
-The source/history/feedback capability exposes `work_get`, `source_task`, `source_stories`,
-`source_story` and `work_append`. Provider credentials stay behind the controller; opaque WorkIds
-and explicit read-only Asana task/story identities remain separate. See the
-[source and feedback usage guide](docs/source-history-feedback.md).
+Switchstand is a provider-neutral controller for bounded engineering work. It keeps durable work, message, grant, and protected-effect identity behind stable application contracts while provider credentials and provider-specific behavior remain in trusted adapters. Readability and tool availability do not create authority.
 
-The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX, Pydantic 2, and
-the MCP Python SDK v2. The retired implementation is preserved in `marcogallotta/switchstandold` for
-reference only; this repository is a clean implementation of the current contract.
+The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX, Pydantic 2, and the MCP Python SDK v2. `marcogallotta/switchstandold` is retired read-only evidence, not an implementation base.
 
-## Current repository truth
+## Supported modes
 
-- Git landing reconciliation models the repository's reviewed two-parent GitHub merge-commit flow: the landing must
-  have the reviewed base and candidate as its ordered parents, the candidate must descend from that base, and the
-  landing tree must exactly match the reviewed candidate tree. Squash landings are rejected.
-- `launch.py` owns managed-launch orchestration and process supervision. `codex_runtime.py` owns Codex CLI/App
-  Server command construction, configuration/readback, and runtime profile validation. `development.py` owns the
-  development-resource/workload mechanics used by launch; `docker.py` supplies exact low-level Docker identity and
-  removal primitives. Remaining lifecycle-policy convergence is tracked separately rather than hidden in this summary.
-- `candidate.py` owns persistent candidate/worktree identity and exact remote Git-ref materialization for isolated
-  launch. `launch_source.py` owns the protected task-source parsing/bridge that supplies those exact identities.
-- The authenticated ordinary HTTP/OAuth MCP exposes provider-neutral search/read/structure/history/attachment/event
-  operations, protected append/create/update, message send/pending, and required-result saving. Raw `source_*` reads
-  remain transitional compatibility until their proof-gated retirement. Repository `.codex/config.toml` explicitly
-  allowlists the ordinary tool inventory.
-- Full Quality prints skipped/xfail reasons. Landing-reconciliation tests are mandatory CI evidence: absence of a Git
-  implementation capable of the production `--no-lazy-fetch` contract is a `MISSING_CAPABILITY` failure, not a
-  green skip.
+| Mode | Entry | Boundary |
+| --- | --- | --- |
+| Ordinary Codex Coordinator | `scripts/switchstand` or `scripts/switchstand --coordinator` in the canonical repository | Runs through `scripts/codex-dispatch` with normal host development capability and no launch-bound WorkId. Coordinator duty and tool access grant no work or provider effect. |
+| Managed Codex worker | `scripts/switchstand --active <Asana task ID or URL> -- <assignment>` | Trusted launch binds one active WorkId, bounded references, runtime currentness, and the available managed tools. It is a one-task worker, not workspace discovery. |
+| Ordinary ChatGPT | Authenticated repository-configured `switchstand` HTTP/OAuth MCP | Uses admitted WorkIds and durable messaging. One chat should have one stable named agent identity distinct from OAuth authentication; the current implementation does not yet fully provide that separation. |
+
+Exact-candidate managed qualification uses `scripts/switchstand --isolated --active <task> --commit <SHA>`. It remains fail-closed until the separately managed external selector has an ACTIVE CONTROL manifest; repository landing alone does not deploy or activate that path.
+
+See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; raw `source_*` reads are bounded managed compatibility, not the ordinary mental model.
+
+## Quick start
 
 ```bash
 scripts/bootstrap
 docker compose up --build
-uv run pytest
-scripts/switchstand-worktree <writer-name> <exact-green-SHA>
+sh scripts/check
+
+# Ordinary Coordinator
+scripts/switchstand
+
+# One managed task-bound worker
 scripts/switchstand --active <Asana task ID or URL> -- <exact initial assignment>
-scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-candidate-SHA>
-# This route is fail-closed until the separately managed external selector is installed
-# with an ACTIVE CONTROL manifest; repository landing alone does not activate it.
+
+# Create an owned writer at an accepted exact base
+scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
 ```
 
-See [architecture](docs/architecture.md), [development](docs/development.md), and [agent routing](AGENTS.md).
+Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in [AGENTS.md](AGENTS.md): accept only `current`, verify the advertised SHA-256, and materialize a normal repository. Existing Codex/Claude checkouts stay on normal Git.
+
+## Documentation map
+
+- [Agent bootstrap](AGENTS.md): load-bearing authority, safety, routing, and repository bootstrap.
+- [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md): current modes, identities, routing, and messaging model.
+- [Architecture](docs/architecture.md): runtime surfaces, semantic owners, durable state, and edit map.
+- [Development](docs/development.md): writers, checks, evidence subjects, launch, and recovery.
+- [Code quality and Code Review](docs/code-quality.md): implementation, review, qualification, and candidate/current-target rules.
+- [Work, messaging, and source compatibility](docs/source-history-feedback.md): WorkId reads, durable messages, feedback, and legacy source boundaries.
+- [Agent-project bootstrap MCP decision](docs/agent-project-bootstrap-mcp.md): why an ordinary write surface is not ready and what a future design would require; it is not a quick-start capability or effect authority.
