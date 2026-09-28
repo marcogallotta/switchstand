@@ -1,10 +1,15 @@
 import asyncio
 import subprocess
+from ipaddress import ip_network
+from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from switchstand import development
 from switchstand.docker import DockerObject
+
+ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 
 
 def completed(args=(), stdout="", returncode=0):
@@ -51,6 +56,172 @@ def test_development_surface_is_closed():
 
 def test_unbound_development_surface_has_no_tools():
     assert not development.build_server(bound=False)._tool_manager._tools
+
+
+def test_development_subnet_avoids_home_lan_space_and_is_identity_stable():
+    repo = Path("/candidate")
+    first = development.development_subnet(repo, UUID(int=1))
+    second = development.development_subnet(repo, UUID(int=2))
+
+    assert first == "10.248.248.0/24"
+    assert second == "10.243.192.0/24"
+    assert first == development.development_subnet(repo, UUID(int=1))
+    assert first != second
+    assert ip_network(first).subnet_of(ip_network("10.240.0.0/12"))
+    assert ip_network(first).prefixlen == 24
+
+
+def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
+    monkeypatch, tmp_path
+):
+    control, candidate = tmp_path / "control", tmp_path / "candidate"
+    control.mkdir()
+    candidate.mkdir()
+    (control / "Dockerfile.candidate-runner").write_text("trusted\n")
+    for name in ("pyproject.toml", "uv.lock", "README.md"):
+        (candidate / name).write_text(f"candidate {name}\n")
+    for name in ("Dockerfile", "compose.yaml", ".dockerignore", "alembic.ini"):
+        (candidate / name).write_text("HOSTILE\n")
+    (candidate / ".codex").mkdir()
+    (candidate / ".codex" / "config.toml").write_text("HOSTILE\n")
+    builds = []
+    networks = []
+    answers = iter(("sha256:image\n", "network-id\n", "database-id\n"))
+
+    def docker(arguments, cwd, env, **kwargs):
+        if arguments[0] == "build":
+            builds.append((arguments, set(cwd.iterdir()), kwargs))
+        elif arguments[:2] == ["network", "create"]:
+            networks.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
+
+    monkeypatch.setattr(development, "docker_run", docker)
+    monkeypatch.setattr(development, "require_absent", lambda *args: None)
+    monkeypatch.setattr(development, "require_owned", lambda *args: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    boundary = development.prepare_development(
+        control, candidate, ACTIVE, {"PATH": "/bin"}
+    )
+    build, context_files, options = builds[0]
+    assert build[0:3] == ["build", "--quiet", "--tag"]
+    assert build[-3:] == ["-f", str(control / "Dockerfile.candidate-runner"), "."]
+    assert "com.switchstand.run=" + str(ACTIVE) in build
+    assert {path.name for path in context_files} == {"pyproject.toml", "uv.lock", "README.md"}
+    assert options["timeout"] == 600
+    assert len(networks) == 1
+    network = networks[0]
+    assert network[:-1] == [
+        "network", "create", "--subnet",
+        development.development_subnet(candidate, ACTIVE),
+        "--label", f"com.switchstand.run={ACTIVE}",
+        "--label", "com.switchstand.role=qualification",
+    ]
+    assert network[-1].startswith("switchstand-dev-")
+    assert "--internal" not in network
+    assert boundary == development.DevelopmentBoundary(
+        "sha256:image", "network-id", "database-id", boundary.manifest
+    )
+
+
+def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        development,
+        "docker_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="could not find an available, non-overlapping IPv4 address pool"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="non-overlapping IPv4 address pool"):
+        development.docker_run(
+            ["network", "create", "--internal", "owned"], tmp_path, {}
+        )
+
+
+def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
+    removed = []
+    monkeypatch.setattr(development, "inspect", lambda *args: None)
+    monkeypatch.setattr(
+        development,
+        "remove_owned",
+        lambda *args: removed.append(args),
+    )
+    development.cleanup_development(
+        development.DevelopmentBoundary(
+            "image-id", "network-id", "database-id", "manifest"
+        ),
+        tmp_path,
+        ACTIVE,
+        {},
+    )
+    assert removed == [
+        ("container", "database-id", str(ACTIVE), "database", {}),
+        ("network", "network-id", str(ACTIVE), "qualification", {}),
+        ("image", "image-id", str(ACTIVE), "runner", {}),
+    ]
+
+
+def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatch, tmp_path):
+    removed = []
+
+    def inspect(kind, name, env):
+        role = name.split("-")[1] if name.startswith("switchstand-focused-") else None
+        if name.startswith("switchstand-quality-"):
+            role = "quality"
+        elif name.startswith("switchstand-test-"):
+            role = "database"
+        elif name.startswith("switchstand-dev-"):
+            role = "qualification"
+        elif name.startswith("switchstand-runner-"):
+            role = "runner"
+        assert role is not None
+        return DockerObject(kind, name, f"{role}-id", str(ACTIVE), role)
+
+    monkeypatch.setattr(development, "inspect", inspect)
+    monkeypatch.setattr(
+        development, "remove_owned", lambda *args: removed.append(args)
+    )
+    development.reclaim_development(tmp_path, ACTIVE, {})
+    assert [(args[0], args[2], args[3]) for args in removed] == [
+        ("container", str(ACTIVE), "database"),
+        ("container", str(ACTIVE), "focused"),
+        ("container", str(ACTIVE), "quality"),
+        ("network", str(ACTIVE), "qualification"),
+        ("image", str(ACTIVE), "runner"),
+    ]
+
+
+def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
+    calls = 0
+    cleaned = []
+
+    def docker(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise KeyboardInterrupt
+        return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
+
+    monkeypatch.setattr(development, "docker_run", docker)
+    monkeypatch.setattr(development, "require_absent", lambda *args: None)
+    monkeypatch.setattr(development, "require_owned", lambda *args: None)
+    monkeypatch.setattr(
+        development,
+        "_cleanup_development",
+        lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
+            (image, network, database, candidate, owner)
+        ),
+    )
+    for name in ("pyproject.toml", "uv.lock", "README.md"):
+        (tmp_path / name).write_text(name)
+    with pytest.raises(KeyboardInterrupt):
+        development.prepare_development(tmp_path, tmp_path, ACTIVE, {})
+    assert cleaned == [
+        ("sha256:image", "sha256:image", None, tmp_path, str(ACTIVE))
+    ]
 
 
 async def test_focused_check_uses_exact_owned_container_and_bound(monkeypatch, tmp_path):
