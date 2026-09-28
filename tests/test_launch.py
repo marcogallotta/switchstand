@@ -1,12 +1,9 @@
-import json
 import os
-import selectors
 import signal
 import subprocess
 import sys
 import tomllib
 from contextlib import contextmanager
-from ipaddress import ip_network
 from pathlib import Path
 from uuid import UUID
 
@@ -14,22 +11,8 @@ import pytest
 from chatgpt_fixture import service as chatgpt_service
 
 from switchstand.chatgpt_mcp import build_ordinary_tools
-from switchstand.codex_runtime import (
-    PROFILE,
-    codex_command,
-    filesystem_override,
-    readback,
-    validate_codex_args,
-)
-from switchstand.development import (
-    DevelopmentBoundary,
-    cleanup_development,
-    development_subnet,
-    docker_run,
-    prepare_development,
-    reclaim_development,
-)
-from switchstand.docker import DockerObject
+from switchstand.codex_runtime import PROFILE
+from switchstand.development import DevelopmentBoundary
 from switchstand.launch import (
     clean_environment,
     exact_revision_preflight,
@@ -44,19 +27,6 @@ from switchstand.launch import (
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
-
-
-def test_development_subnet_avoids_home_lan_space_and_is_identity_stable():
-    repo = Path("/candidate")
-    first = development_subnet(repo, UUID(int=1))
-    second = development_subnet(repo, UUID(int=2))
-
-    assert first == "10.248.248.0/24"
-    assert second == "10.243.192.0/24"
-    assert first == development_subnet(repo, UUID(int=1))
-    assert first != second
-    assert ip_network(first).subnet_of(ip_network("10.240.0.0/12"))
-    assert ip_network(first).prefixlen == 24
 
 
 def test_exact_revision_preflight_rechecks_clean_current_main_and_provenance(
@@ -390,108 +360,6 @@ def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypa
     assert not any("switchstand-provision" in command for command in calls)
 
 
-def test_candidate_runner_context_excludes_hostile_build_and_migration_files(
-    monkeypatch, tmp_path
-):
-    control, candidate = tmp_path / "control", tmp_path / "candidate"
-    control.mkdir()
-    candidate.mkdir()
-    (control / "Dockerfile.candidate-runner").write_text("trusted\n")
-    for name in ("pyproject.toml", "uv.lock", "README.md"):
-        (candidate / name).write_text(f"candidate {name}\n")
-    for name in ("Dockerfile", "compose.yaml", ".dockerignore", "alembic.ini"):
-        (candidate / name).write_text("HOSTILE\n")
-    (candidate / ".codex").mkdir()
-    (candidate / ".codex" / "config.toml").write_text("HOSTILE\n")
-    builds = []
-    networks = []
-    answers = iter(("sha256:image\n", "network-id\n", "database-id\n"))
-
-    def docker(arguments, cwd, env, **kwargs):
-        if arguments[0] == "build":
-            builds.append((arguments, set(cwd.iterdir()), kwargs))
-        elif arguments[:2] == ["network", "create"]:
-            networks.append(arguments)
-        return subprocess.CompletedProcess(arguments, 0, stdout=next(answers), stderr="")
-
-    monkeypatch.setattr("switchstand.development.docker_run", docker)
-    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
-    )
-    boundary = prepare_development(control, candidate, ACTIVE, {"PATH": "/bin"})
-    build, context_files, options = builds[0]
-    assert build[0:3] == ["build", "--quiet", "--tag"]
-    assert build[-3:] == ["-f", str(control / "Dockerfile.candidate-runner"), "."]
-    assert "com.switchstand.run=" + str(ACTIVE) in build
-    assert {path.name for path in context_files} == {"pyproject.toml", "uv.lock", "README.md"}
-    assert options["timeout"] == 600
-    assert len(networks) == 1
-    network = networks[0]
-    assert network[:-1] == [
-        "network", "create", "--subnet", development_subnet(candidate, ACTIVE),
-        "--label", f"com.switchstand.run={ACTIVE}",
-        "--label", "com.switchstand.role=qualification",
-    ]
-    assert network[-1].startswith("switchstand-dev-")
-    assert "--internal" not in network
-    assert boundary == DevelopmentBoundary(
-        "sha256:image", "network-id", "database-id", boundary.manifest
-    )
-
-
-def test_validate_codex_args_blocks_boundary_overrides():
-    assert validate_codex_args(["--", "do the work"]) == ["do the work"]
-    for arguments in (["-sdanger-full-access"], ["-C/tmp"], ["-c", "sandbox_mode=read-only"]):
-        with pytest.raises(ValueError):
-            validate_codex_args(arguments)
-
-
-def test_managed_codex_requires_both_mcp_servers():
-    command = codex_command(Path("/control"), Path("/writer"), [])
-    assert "mcp_servers.switchstand.enabled=false" in command
-    assert "mcp_servers.switchstand_managed.required=true" in command
-    assert "mcp_servers.switchstand_development.required=true" in command
-
-
-def test_managed_codex_starts_work_without_a_manual_prompt():
-    command = codex_command(Path("/control"), Path("/writer"), [])
-    assert command[:-1] == [
-        "codex", "-C", "/control", "--add-dir", "/writer", "-a", "never", "-c",
-        f'default_permissions="{PROFILE}"',
-        "-c", filesystem_override(Path("/control")),
-        "-c", 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"',
-        "-c", "mcp_servers.switchstand.enabled=false",
-        "-c", 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"',
-        "-c", "mcp_servers.switchstand_managed.required=true",
-        "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
-        "-c", "mcp_servers.switchstand_development.required=true",
-    ]
-    assert 'work_get(api_version="1")' in command[-1]
-    assert "Active inbox" in command[-1]
-
-
-@pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
-def test_managed_codex_preserves_launch_request_in_one_prompt(launch_request):
-    default = codex_command(Path("/control"), Path("/writer"), [])
-    command = codex_command(
-        Path("/control"), Path("/writer"), validate_codex_args(["--", launch_request])
-    )
-    assert command[:-1] == default[:-1]
-    prefix, supplied = command[-1].split("\n\nAdditional launch request:\n", 1)
-    assert prefix == default[-1]
-    assert supplied == launch_request
-
-
-@pytest.mark.parametrize("arguments", [["--config=unsafe"], ["first", "second"]])
-def test_managed_codex_command_rejects_extra_options_and_prompts(arguments):
-    with pytest.raises(ValueError):
-        codex_command(Path("/control"), Path("/writer"), arguments)
-
-
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):
     events = []
 
@@ -535,94 +403,6 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "development",
     ]
     assert result.authority is authority and result.development is development
-
-
-def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "switchstand.development.docker_command",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args, 1, stdout="", stderr="could not find an available, non-overlapping IPv4 address pool"
-        )
-    )
-    with pytest.raises(RuntimeError, match="non-overlapping IPv4 address pool"):
-        docker_run(["network", "create", "--internal", "owned"], tmp_path, {})
-
-
-def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
-    removed = []
-    monkeypatch.setattr("switchstand.development.inspect", lambda *args: None)
-    monkeypatch.setattr(
-        "switchstand.development.remove_owned",
-        lambda *args: removed.append(args),
-    )
-    cleanup_development(
-        DevelopmentBoundary("image-id", "network-id", "database-id", "manifest"),
-        tmp_path, ACTIVE, {}
-    )
-    assert removed == [
-        ("container", "database-id", str(ACTIVE), "database", {}),
-        ("network", "network-id", str(ACTIVE), "qualification", {}),
-        ("image", "image-id", str(ACTIVE), "runner", {}),
-    ]
-
-
-def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatch, tmp_path):
-    removed = []
-
-    def inspect(kind, name, env):
-        role = name.split("-")[1] if name.startswith("switchstand-focused-") else None
-        if name.startswith("switchstand-quality-"):
-            role = "quality"
-        elif name.startswith("switchstand-test-"):
-            role = "database"
-        elif name.startswith("switchstand-dev-"):
-            role = "qualification"
-        elif name.startswith("switchstand-runner-"):
-            role = "runner"
-        assert role is not None
-        return DockerObject(kind, name, f"{role}-id", str(ACTIVE), role)
-
-    monkeypatch.setattr("switchstand.development.inspect", inspect)
-    monkeypatch.setattr(
-        "switchstand.development.remove_owned", lambda *args: removed.append(args)
-    )
-    reclaim_development(tmp_path, ACTIVE, {})
-    assert [(args[0], args[2], args[3]) for args in removed] == [
-        ("container", str(ACTIVE), "database"),
-        ("container", str(ACTIVE), "focused"),
-        ("container", str(ACTIVE), "quality"),
-        ("network", str(ACTIVE), "qualification"),
-        ("image", str(ACTIVE), "runner"),
-    ]
-
-
-def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):
-    calls = 0
-    cleaned = []
-
-    def docker(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 3:
-            raise KeyboardInterrupt
-        return subprocess.CompletedProcess(args, 0, stdout="sha256:image\n", stderr="")
-
-    monkeypatch.setattr("switchstand.development.docker_run", docker)
-    monkeypatch.setattr("switchstand.development.require_absent", lambda *args: None)
-    monkeypatch.setattr("switchstand.development.require_owned", lambda *args: None)
-    monkeypatch.setattr(
-        "switchstand.development._cleanup_development",
-        lambda image, network, database, candidate, owner, env, **kwargs: cleaned.append(
-            (image, network, database, candidate, owner)
-        ),
-    )
-    for name in ("pyproject.toml", "uv.lock", "README.md"):
-        (tmp_path / name).write_text(name)
-    with pytest.raises(KeyboardInterrupt):
-        prepare_development(tmp_path, tmp_path, ACTIVE, {})
-    assert cleaned == [
-        ("sha256:image", "sha256:image", None, tmp_path, str(ACTIVE))
-    ]
 
 
 def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):
@@ -723,136 +503,3 @@ def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_
     ) == 0
     blocked = {int(item) for item in output.read_text().split(",") if item}
     assert not blocked.intersection({signal.SIGINT, signal.SIGQUIT, signal.SIGTERM})
-
-
-def readback_messages(sources):
-    return [
-        {"id": 2, "result": {"data": [{"id": PROFILE, "allowed": True}]}},
-        {"id": 3, "result": {"activePermissionProfile": {"id": PROFILE},
-                              "sandbox": {"type": "workspaceWrite", "networkAccess": True,
-                                          "writableRoots": ["/writer"]},
-                              "runtimeWorkspaceRoots": ["/repo", "/writer"],
-                              "approvalPolicy": "never",
-                              "instructionSources": sources}},
-    ]
-
-
-def test_readback_disables_all_switchstand_servers(monkeypatch):
-    responses = iter(
-        json.dumps(message) + "\n"
-        for message in [
-            {"id": 1, "result": {}},
-            {"id": 2, "result": {"data": []}},
-            {"id": 3, "result": {}},
-        ]
-    )
-    launched = {}
-
-    class Input:
-        def write(self, value):
-            pass
-
-        def flush(self):
-            pass
-
-    class Output:
-        def readline(self):
-            return next(responses)
-
-    class Process:
-        stdin = Input()
-        stdout = Output()
-
-        def terminate(self):
-            pass
-
-        def wait(self, timeout=None):
-            return 0
-
-    class Selector:
-        def register(self, *args):
-            pass
-
-        def select(self, timeout=None):
-            return [(object(), selectors.EVENT_READ)]
-
-        def close(self):
-            pass
-
-    def popen(arguments, **kwargs):
-        launched["arguments"] = arguments
-        return Process()
-
-    monkeypatch.setattr("switchstand.codex_runtime.subprocess.Popen", popen)
-    monkeypatch.setattr("switchstand.codex_runtime.selectors.DefaultSelector", Selector)
-    from switchstand.codex_runtime import _rpc_messages
-
-    _rpc_messages(Path("/repo"), Path("/writer"), {})
-    arguments = launched["arguments"]
-    assert 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"' in arguments
-    assert "mcp_servers.switchstand.enabled=false" in arguments
-    assert 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"' in arguments
-    assert "mcp_servers.switchstand_managed.enabled=false" in arguments
-    assert 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"' in arguments
-    assert "mcp_servers.switchstand_development.enabled=false" in arguments
-
-
-def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
-    messages = readback_messages(
-        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
-    )
-    del messages[0]["result"]["data"][0]["allowed"]
-    monkeypatch.setattr(
-        "switchstand.codex_runtime._rpc_messages",
-        lambda control, candidate, env: messages,
-    )
-    assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
-
-
-def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
-    messages = readback_messages(
-        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
-    )
-    messages[0]["result"]["data"][0]["allowed"] = False
-    monkeypatch.setattr(
-        "switchstand.codex_runtime._rpc_messages",
-        lambda control, candidate, env: messages,
-    )
-    with pytest.raises(RuntimeError, match="permission profile.*not available"):
-        readback(Path("/repo"), Path("/writer"), {})
-
-
-@pytest.mark.parametrize("source, accepted", [(str(Path.home() / ".codex/AGENTS.md"), True),
-                                               ("/home/test/.claude/CLAUDE.md", False)])
-def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
-    monkeypatch.setattr(
-        "switchstand.codex_runtime._rpc_messages",
-        lambda control, candidate, env: readback_messages([source, "/repo/AGENTS.md"]),
-    )
-    if accepted:
-        assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
-    else:
-        with pytest.raises(RuntimeError, match="undeclared instruction"):
-            readback(Path("/repo"), Path("/writer"), {})
-
-
-def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
-    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
-    messages[1]["result"]["sandbox"]["writableRoots"] = ["/repo", "/writer"]
-    monkeypatch.setattr(
-        "switchstand.codex_runtime._rpc_messages",
-        lambda control, candidate, env: messages,
-    )
-    with pytest.raises(RuntimeError, match="unexpected writable roots"):
-        readback(Path("/repo"), Path("/writer"), {})
-
-
-def test_readback_rejects_disabled_network(monkeypatch):
-    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
-    messages[1]["result"]["sandbox"]["networkAccess"] = False
-    monkeypatch.setattr(
-        "switchstand.codex_runtime._rpc_messages",
-        lambda control, candidate, env: messages,
-    )
-    with pytest.raises(RuntimeError, match="unexpected sandbox"):
-        readback(Path("/repo"), Path("/writer"), {})

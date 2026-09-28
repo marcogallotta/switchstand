@@ -1,9 +1,19 @@
 import json
 import os
+import selectors
 import sys
 from pathlib import Path
 
-from switchstand.codex_runtime import PROFILE, readback
+import pytest
+
+from switchstand.codex_runtime import (
+    PROFILE,
+    _rpc_messages,
+    codex_command,
+    filesystem_override,
+    readback,
+    validate_codex_args,
+)
 
 
 def test_real_stdio_app_server_boundary_returns_managed_profile(tmp_path: Path) -> None:
@@ -79,3 +89,184 @@ for line in sys.stdin:
     ):
         assert override in argv
     assert argv[-3:] == ["app-server", "--listen", "stdio://"]
+
+
+def test_validate_codex_args_blocks_boundary_overrides():
+    assert validate_codex_args(["--", "do the work"]) == ["do the work"]
+    for arguments in (["-sdanger-full-access"], ["-C/tmp"], ["-c", "sandbox_mode=read-only"]):
+        with pytest.raises(ValueError):
+            validate_codex_args(arguments)
+
+
+def test_managed_codex_requires_both_mcp_servers():
+    command = codex_command(Path("/control"), Path("/writer"), [])
+    assert "mcp_servers.switchstand.enabled=false" in command
+    assert "mcp_servers.switchstand_managed.required=true" in command
+    assert "mcp_servers.switchstand_development.required=true" in command
+
+
+def test_managed_codex_starts_work_without_a_manual_prompt():
+    command = codex_command(Path("/control"), Path("/writer"), [])
+    assert command[:-1] == [
+        "codex", "-C", "/control", "--add-dir", "/writer", "-a", "never", "-c",
+        f'default_permissions="{PROFILE}"',
+        "-c", filesystem_override(Path("/control")),
+        "-c", 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"',
+        "-c", "mcp_servers.switchstand.enabled=false",
+        "-c", 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"',
+        "-c", "mcp_servers.switchstand_managed.required=true",
+        "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
+        "-c", "mcp_servers.switchstand_development.required=true",
+    ]
+    assert 'work_get(api_version="1")' in command[-1]
+    assert "Active inbox" in command[-1]
+
+
+@pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
+def test_managed_codex_preserves_launch_request_in_one_prompt(launch_request):
+    default = codex_command(Path("/control"), Path("/writer"), [])
+    command = codex_command(
+        Path("/control"), Path("/writer"), validate_codex_args(["--", launch_request])
+    )
+    assert command[:-1] == default[:-1]
+    prefix, supplied = command[-1].split("\n\nAdditional launch request:\n", 1)
+    assert prefix == default[-1]
+    assert supplied == launch_request
+
+
+@pytest.mark.parametrize("arguments", [["--config=unsafe"], ["first", "second"]])
+def test_managed_codex_command_rejects_extra_options_and_prompts(arguments):
+    with pytest.raises(ValueError):
+        codex_command(Path("/control"), Path("/writer"), arguments)
+
+
+def readback_messages(sources):
+    return [
+        {"id": 2, "result": {"data": [{"id": PROFILE, "allowed": True}]}},
+        {"id": 3, "result": {"activePermissionProfile": {"id": PROFILE},
+                              "sandbox": {"type": "workspaceWrite", "networkAccess": True,
+                                          "writableRoots": ["/writer"]},
+                              "runtimeWorkspaceRoots": ["/repo", "/writer"],
+                              "approvalPolicy": "never",
+                              "instructionSources": sources}},
+    ]
+
+
+def test_readback_disables_all_switchstand_servers(monkeypatch):
+    responses = iter(
+        json.dumps(message) + "\n"
+        for message in [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"data": []}},
+            {"id": 3, "result": {}},
+        ]
+    )
+    launched = {}
+
+    class Input:
+        def write(self, value):
+            pass
+
+        def flush(self):
+            pass
+
+    class Output:
+        def readline(self):
+            return next(responses)
+
+    class Process:
+        stdin = Input()
+        stdout = Output()
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    class Selector:
+        def register(self, *args):
+            pass
+
+        def select(self, timeout=None):
+            return [(object(), selectors.EVENT_READ)]
+
+        def close(self):
+            pass
+
+    def popen(arguments, **kwargs):
+        launched["arguments"] = arguments
+        return Process()
+
+    monkeypatch.setattr("switchstand.codex_runtime.subprocess.Popen", popen)
+    monkeypatch.setattr("switchstand.codex_runtime.selectors.DefaultSelector", Selector)
+
+    _rpc_messages(Path("/repo"), Path("/writer"), {})
+    arguments = launched["arguments"]
+    assert 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"' in arguments
+    assert "mcp_servers.switchstand.enabled=false" in arguments
+    assert 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"' in arguments
+    assert "mcp_servers.switchstand_managed.enabled=false" in arguments
+    assert 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"' in arguments
+    assert "mcp_servers.switchstand_development.enabled=false" in arguments
+
+
+def test_readback_accepts_profile_when_codex_omits_allowed(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    del messages[0]["result"]["data"][0]["allowed"]
+    monkeypatch.setattr(
+        "switchstand.codex_runtime._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
+
+
+def test_readback_rejects_explicitly_disallowed_profile(monkeypatch):
+    messages = readback_messages(
+        [str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"]
+    )
+    messages[0]["result"]["data"][0]["allowed"] = False
+    monkeypatch.setattr(
+        "switchstand.codex_runtime._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="permission profile.*not available"):
+        readback(Path("/repo"), Path("/writer"), {})
+
+
+@pytest.mark.parametrize("source, accepted", [(str(Path.home() / ".codex/AGENTS.md"), True),
+                                               ("/home/test/.claude/CLAUDE.md", False)])
+def test_readback_allows_only_declared_instruction_sources(monkeypatch, source, accepted):
+    monkeypatch.setattr(
+        "switchstand.codex_runtime._rpc_messages",
+        lambda control, candidate, env: readback_messages([source, "/repo/AGENTS.md"]),
+    )
+    if accepted:
+        assert readback(Path("/repo"), Path("/writer"), {}).profile == PROFILE
+    else:
+        with pytest.raises(RuntimeError, match="undeclared instruction"):
+            readback(Path("/repo"), Path("/writer"), {})
+
+
+def test_readback_rejects_control_or_other_writable_roots(monkeypatch):
+    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
+    messages[1]["result"]["sandbox"]["writableRoots"] = ["/repo", "/writer"]
+    monkeypatch.setattr(
+        "switchstand.codex_runtime._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="unexpected writable roots"):
+        readback(Path("/repo"), Path("/writer"), {})
+
+
+def test_readback_rejects_disabled_network(monkeypatch):
+    messages = readback_messages([str(Path.home() / ".codex/AGENTS.md"), "/repo/AGENTS.md"])
+    messages[1]["result"]["sandbox"]["networkAccess"] = False
+    monkeypatch.setattr(
+        "switchstand.codex_runtime._rpc_messages",
+        lambda control, candidate, env: messages,
+    )
+    with pytest.raises(RuntimeError, match="unexpected sandbox"):
+        readback(Path("/repo"), Path("/writer"), {})
