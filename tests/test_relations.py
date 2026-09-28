@@ -1,3 +1,4 @@
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, Handles, MemoryGrants, Provider, grant
@@ -51,8 +52,8 @@ def request(selected, patch):
 
 async def test_relation_gateway_resolves_workid_and_replays_without_resend():
     selected = grant(
-        scope="workspace", operations=frozenset({"work_update"}),
-        update_qualification="test:relations",
+        scope="workspace", operations=frozenset({"work_relate"}),
+        relation_qualification="test:relations",
     )
     grants = MemoryGrants(selected)
     provider = RelationProvider()
@@ -73,8 +74,8 @@ async def test_relation_gateway_resolves_workid_and_replays_without_resend():
 
 async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effect():
     selected = grant(
-        scope="workspace", operations=frozenset({"work_update"}),
-        update_qualification="test:relations",
+        scope="workspace", operations=frozenset({"work_relate"}),
+        relation_qualification="test:relations",
     )
     grants = MemoryGrants(selected)
     provider = RelationProvider()
@@ -99,8 +100,8 @@ async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effe
 
 async def test_relation_gateway_resumes_partial_move_under_same_operation_id():
     selected = grant(
-        scope="workspace", operations=frozenset({"work_update"}),
-        update_qualification="test:relations",
+        scope="workspace", operations=frozenset({"work_relate"}),
+        relation_qualification="test:relations",
     )
     grants = MemoryGrants(selected)
     provider = RelationProvider()
@@ -126,3 +127,48 @@ async def test_relation_gateway_resumes_partial_move_under_same_operation_id():
     assert provider.relation_sends == 2
     assert await gateway.update(PRINCIPAL, change) == applied
     assert provider.relation_sends == 2
+
+
+async def test_update_only_authority_denies_before_state_or_provider_access(monkeypatch):
+    selected = grant(
+        scope="workspace", operations=frozenset({"work_update"}),
+        update_qualification="test:updates",
+    )
+    state = Handles()
+    provider = RelationProvider()
+    forbidden = [AsyncMock(side_effect=AssertionError("unauthorized access")) for _ in range(4)]
+    monkeypatch.setattr(state, "get", forbidden[0])
+    for method, replacement in zip(
+        ("get", "update_relation", "relation_matches"), forbidden[1:], strict=True,
+    ):
+        monkeypatch.setattr(provider, method, replacement)
+    gateway = RelationGateway(state, MemoryGrants(selected), {"asana": provider})
+
+    denied = await gateway.update(
+        PRINCIPAL,
+        request(selected, RelationPatch(kind="assignee", action="set", assignee_gid="42")),
+    )
+
+    assert denied.status == "denied"
+    assert denied.reason == "operation_or_work_not_granted"
+    assert denied.effect == "not_sent"
+    assert all(access.await_count == 0 for access in forbidden)
+
+
+async def test_relation_authority_requires_its_own_qualification():
+    selected = grant(
+        scope="workspace", operations=frozenset({"work_relate"}),
+        update_qualification="test:updates",
+    )
+    provider = RelationProvider()
+    gateway = RelationGateway(Handles(), MemoryGrants(selected), {"asana": provider})
+
+    denied = await gateway.update(
+        PRINCIPAL,
+        request(selected, RelationPatch(kind="assignee", action="clear")),
+    )
+
+    assert denied.status == "denied"
+    assert denied.reason == "relation_not_qualified_for_this_surface"
+    assert denied.effect == "not_sent"
+    assert provider.relation_sends == 0

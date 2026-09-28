@@ -5,8 +5,6 @@ import json
 from typing import Protocol, cast
 from uuid import UUID
 
-from sqlalchemy.exc import SQLAlchemyError
-
 from .core import Provider, ProviderError, ProviderRelation, State, UnknownEffect
 from .grant_state import EffectRecord, GrantState
 from .grants import (
@@ -16,6 +14,7 @@ from .grants import (
     RelationReceipt,
     WorkGrant,
 )
+from .mutation_effect import PreparedMutation, run_update_or_relation
 
 
 class RelationProvider(Protocol):
@@ -71,91 +70,61 @@ class RelationGateway:
     async def update(
         self, principal: PrincipalContext, request: ProtectedRelation,
     ) -> GuardOutcome:
-        possible_send = False
-        history_known = False
-        try:
-            async with self.grants.locked(principal.key, request.work_id) as grant:
-                fingerprint = self.fingerprint(principal, request)
-                record = await self.grants.exact(request.operation_id)
-                history_known = True
-                if record is not None:
-                    possible_send = record.outcome.effect != "not_sent"
-                    if record.principal_key != principal.key or record.fingerprint != fingerprint:
-                        return self.guard(request, "denied", "operation_identity_conflict")
-                    if record.outcome.effect != "unknown":
-                        return record.outcome
-                    return await self._reconcile(principal, request, record)
-                blocked = await self.grants.previous(request.operation_id, request.work_id)
-                if blocked is not None:
-                    return self.guard(
-                        request, "unknown", "target_has_unresolved_effect", possible_send=True
-                    )
-                if grant is None or grant.principal != principal or not grant.current():
-                    return self.guard(request, "denied", "no_current_grant")
-                if not grant.can_write(request.work_id) or "work_update" not in grant.operations:
-                    return self.guard(request, "denied", "operation_or_work_not_granted")
-                if request.grant_version != grant.version:
-                    return self.guard(request, "stale", "grant_version_changed")
-                qualification = grant.update_qualification
-                if (
-                    qualification is None
-                    or (principal.assurance == "test") != qualification.startswith("test:")
-                ):
-                    return self.guard(
-                        request, "denied", "update_not_qualified_for_this_surface"
-                    )
-                handle = await self.state.get(request.work_id)
-                if handle is None:
-                    return self.guard(request, "denied", "work_not_bound")
-                provider = self.providers.get(handle.provider)
-                if (
-                    provider is None
-                    or not hasattr(provider, "update_relation")
-                    or not hasattr(provider, "relation_matches")
-                ):
-                    return self.guard(request, "denied", "provider_relation_not_supported")
-                current = await provider.get(handle.provider_work_id)
-                if current is None or not current.canonical:
-                    return self.guard(request, "not_applied", "source_read_unavailable")
-                if current.revision != request.observed_revision:
-                    return self.guard(request, "stale", "source_revision_changed")
-                resolved = await self._resolved(grant, handle.provider, request)
-                if resolved is None:
-                    return self.guard(request, "denied", "relation_target_not_granted")
-                unknown = self.guard(
-                    request, "unknown", "prepared_or_unconfirmed_send", possible_send=True
-                )
-                await self.grants.prepare({
-                    "request": request.model_dump(mode="json"),
-                    "provider": handle.provider,
-                    "task_gid": handle.provider_work_id,
-                    "qualification": qualification,
-                    "resolved": {
-                        "kind": resolved.kind, "action": resolved.action,
-                        "target_gid": resolved.target_gid,
-                        "assignee_gid": resolved.assignee_gid,
-                        "project_gid": resolved.project_gid,
-                        "section_gid": resolved.section_gid,
-                    },
-                }, grant, fingerprint, unknown)
-                possible_send = True
-                if not grant.current():
-                    outcome = self.guard(
-                        request, "not_applied", "grant_expired_before_send"
-                    )
-                else:
-                    outcome = await self._send(
-                        principal, request, grant, handle.provider,
-                        handle.provider_work_id, qualification, resolved,
-                        cast(RelationProvider, provider),
-                    )
-                await self.grants.finish(outcome)
-                return outcome
-        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
-            return self.guard(
-                request, "unknown", "state_or_effect_unavailable",
-                possible_send=possible_send or not history_known,
-            )
+        return await run_update_or_relation(
+            self.grants, principal, request, self.fingerprint(principal, request),
+            "work_relate", "relation_qualification",
+            "relation_not_qualified_for_this_surface",
+            lambda status, reason, possible: self.guard(
+                request, status, reason, possible_send=possible
+            ),
+            lambda grant, qualification: self._prepare(
+                principal, request, grant, qualification
+            ),
+            lambda record: self._reconcile(principal, request, record),
+        )
+
+    async def _prepare(
+        self, principal: PrincipalContext, request: ProtectedRelation,
+        grant: WorkGrant, qualification: str,
+    ) -> PreparedMutation | GuardOutcome:
+        handle = await self.state.get(request.work_id)
+        if handle is None:
+            return self.guard(request, "denied", "work_not_bound")
+        provider = self.providers.get(handle.provider)
+        if (
+            provider is None
+            or not hasattr(provider, "update_relation")
+            or not hasattr(provider, "relation_matches")
+        ):
+            return self.guard(request, "denied", "provider_relation_not_supported")
+        current = await provider.get(handle.provider_work_id)
+        if current is None or not current.canonical:
+            return self.guard(request, "not_applied", "source_read_unavailable")
+        if current.revision != request.observed_revision:
+            return self.guard(request, "stale", "source_revision_changed")
+        resolved = await self._resolved(grant, handle.provider, request)
+        if resolved is None:
+            return self.guard(request, "denied", "relation_target_not_granted")
+        return PreparedMutation(
+            intent={
+                "request": request.model_dump(mode="json"),
+                "provider": handle.provider,
+                "task_gid": handle.provider_work_id,
+                "qualification": qualification,
+                "resolved": {
+                    "kind": resolved.kind, "action": resolved.action,
+                    "target_gid": resolved.target_gid,
+                    "assignee_gid": resolved.assignee_gid,
+                    "project_gid": resolved.project_gid,
+                    "section_gid": resolved.section_gid,
+                },
+            },
+            send=lambda: self._send(
+                principal, request, grant, handle.provider,
+                handle.provider_work_id, qualification, resolved,
+                cast(RelationProvider, provider),
+            ),
+        )
 
     async def _send(
         self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,

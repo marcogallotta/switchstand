@@ -51,11 +51,17 @@ def test_ordinary_certification_profile_is_explicit_and_complete():
         "--test-project", "200", "--expected-version", "0",
         "--ttl-seconds", "60", "--qualification", "test:native-cert",
     ])
-    operations, append_qualification, update_qualification = test_grant.grant_permissions(args)
+    (
+        operations, append_qualification, update_qualification, relation_qualification,
+    ) = test_grant.grant_permissions(args)
     assert operations == {
-        "work_get", "work_search", "work_create", "work_append", "work_update", "message",
+        "work_get", "work_search", "work_create", "work_append", "work_update",
+        "work_relate", "message",
     }
-    assert append_qualification == update_qualification == "certification:native-cert"
+    assert (
+        append_qualification == update_qualification == relation_qualification
+        == "certification:native-cert"
+    )
 
 
 @pytest.mark.parametrize("flags", [

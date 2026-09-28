@@ -22,7 +22,8 @@ from .task_ref import asana_task_id
 
 MAX_TTL_SECONDS = 3600
 Operation = Literal[
-    "work_get", "work_search", "work_append", "work_create", "work_update", "message"
+    "work_get", "work_search", "work_append", "work_create", "work_update",
+    "work_relate", "message"
 ]
 
 
@@ -56,7 +57,7 @@ def redacted(principal: PrincipalContext, grant: WorkGrant | None) -> dict[str, 
 
 def grant_permissions(
     arguments: argparse.Namespace,
-) -> tuple[set[Operation], str | None, str | None]:
+) -> tuple[set[Operation], str | None, str | None, str | None]:
     operations: set[Operation] = {"work_get", "work_create"}
     assurance = getattr(arguments, "assurance", "test")
     certification = getattr(arguments, "profile", "basic") == "ordinary-certification"
@@ -70,14 +71,15 @@ def grant_permissions(
     if assurance == "test" or certification:
         operations.add("work_append")
     if certification:
-        operations.update(("work_update", "message"))
+        operations.update(("work_update", "work_relate", "message"))
     effect_qualification = (
         f"certification:{arguments.qualification.removeprefix('test:')}"
         if certification else arguments.qualification
     )
     qualification = effect_qualification if "work_append" in operations else None
     update_qualification = effect_qualification if "work_update" in operations else None
-    return operations, qualification, update_qualification
+    relation_qualification = effect_qualification if "work_relate" in operations else None
+    return operations, qualification, update_qualification, relation_qualification
 
 
 async def execute(arguments: argparse.Namespace) -> dict[str, object]:
@@ -117,7 +119,10 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                     PostgresState(engine), "asana",
                     AsanaProvider(client, arguments.test_project, test_only=True), arguments.task, (),
                 )
-            operations, append_qualification, update_qualification = grant_permissions(arguments)
+            (
+                operations, append_qualification, update_qualification,
+                relation_qualification,
+            ) = grant_permissions(arguments)
             replacement = WorkGrant(
                 id=uuid4(), version=actual_version + 1, principal=principal,
                 authority=authority, scope=getattr(arguments, "scope", "launch"),
@@ -128,6 +133,7 @@ async def execute(arguments: argparse.Namespace) -> dict[str, object]:
                 append_qualification=append_qualification,
                 create_qualification=arguments.qualification,
                 update_qualification=update_qualification,
+                relation_qualification=relation_qualification,
             )
         await grants.issue(replacement, None if actual_version == 0 else actual_version)
         return redacted(principal, replacement)
