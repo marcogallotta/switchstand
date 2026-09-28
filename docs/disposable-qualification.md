@@ -9,7 +9,7 @@ Run from the private task writer with installed PostgreSQL tools and the bootstr
 Python environment:
 
 ```
-/home/marco/switchstand/.venv/bin/python tests/disposable_postgres.py scripts/check tests/test_chatgpt_edge_process.py
+/home/marco/switchstand/.venv/bin/python tests/disposable_postgres.py sh scripts/check tests/test_chatgpt_edge_process.py
 ```
 
 The runner generates its own authentication and explicit TEST_DATABASE_URL, initializes

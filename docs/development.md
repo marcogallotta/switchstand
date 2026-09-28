@@ -14,12 +14,12 @@ writer at the exact accepted base, and run focused checks from that writer:
 scripts/bootstrap
 scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
 cd ~/.local/state/switchstand/worktrees/<writer-name>
-scripts/check tests/test_example.py -k relevant_case
+sh scripts/check tests/test_example.py -k relevant_case
 ```
 
-`scripts/check <pytest args>` always runs Ruff and Pyright, then passes the supplied
-arguments to pytest. Use `scripts/check tests/test_example.py` for one test module or
-`scripts/check tests/test_example.py -k relevant_case` for one behavior. With no
+`sh scripts/check <pytest args>` always runs Ruff and Pyright, then passes the supplied
+arguments to pytest. Use `sh scripts/check tests/test_example.py` for one test module or
+`sh scripts/check tests/test_example.py -k relevant_case` for one behavior. With no
 pytest arguments it runs the full pytest suite. The command prepares or verifies the
 locked environment automatically, but it does not make a dirty writer an immutable
 candidate or replace the clean CI subject required for review.
