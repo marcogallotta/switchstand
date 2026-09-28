@@ -37,4 +37,5 @@ else
 fi
 
 CODEX_HOME="$coordinator_home" \
-    exec "$real_codex" --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
+    exec "$real_codex" -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
+        --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
