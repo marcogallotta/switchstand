@@ -125,6 +125,8 @@ A default-off/inert change may be landing-qualified without live activation when
 
 Named required gate + missing capability, NOT_RUN, SKIP, ambiguous readback or wrong subject identity means that exact claim is not established; it is not candidate failure unless the candidate actually failed, and it is not PASS. Preserve exact-head evidence separately from synthetic/base-composition evidence.
 
+When the target branch advances after an immutable candidate exists, that movement alone does not require rebasing or invalidate exact-candidate review. The Coordinator or integration owner assesses whether leaving the candidate unchanged is safe enough and whether rebasing would materially help delivery. Preserve the exact candidate and its review evidence when current-target composition can be established without rewriting it. Rebase only when needed or materially helpful to resolve conflicts, address semantic interaction with target changes, obtain required CI/composition evidence that cannot otherwise be established, or make delivery materially more practical. A rewritten head is a new exact candidate subject to the current review and evidence rules; keep exact-head and composition identities and evidence distinct either way.
+
 ## Code Review
 
 For a substantive candidate, review the exact governing behavior and exact immutable candidate/head. Review depth follows semantic risk, blast radius and practical rollback, not cosmetic size.
