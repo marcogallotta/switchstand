@@ -208,8 +208,13 @@ def _verify_serve_mapping(root: Path, resource: str, port: int) -> None:
             f"{expected_proxy}"
         )
     protected_paths = (
-        "/mcp",
+        "/.well-known/oauth-authorization-server",
+        "/authorize",
+        "/token",
+        "/register",
+        "/consent",
         "/auth/callback",
+        "/mcp",
         "/.well-known/oauth-protected-resource/mcp",
         CERTIFICATION_RUNTIME_PATH,
     )

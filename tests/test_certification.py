@@ -24,6 +24,28 @@ from switchstand.certification import (
 
 PROJECT = CERTIFICATION_PROJECT
 MARKER = "SWITCHSTAND_CERTIFICATION_OWNER_V1:" + "a" * 64
+PROTECTED_SERVE_PATHS = (
+    "/.well-known/oauth-authorization-server",
+    "/authorize",
+    "/token",
+    "/register",
+    "/consent",
+    "/auth/callback",
+    "/mcp",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/switchstand-certification-runtime",
+)
+
+
+def _serve_status():
+    return {
+        "TCP": {"8446": {"HTTPS": True}},
+        "Web": {
+            "laptop.tail46f0b9.ts.net:8446": {
+                "Handlers": {"/": {"Proxy": "http://127.0.0.1:8798"}}
+            }
+        },
+    }
 
 
 def test_certification_marker_is_exact():
@@ -269,39 +291,38 @@ async def test_readiness_rejects_stale_external_runtime(monkeypatch):
 
 
 def test_serve_mapping_requires_exact_external_route(monkeypatch, tmp_path):
-    status = {
-        "TCP": {"8446": {"HTTPS": True}},
-        "Web": {
-            "laptop.tail46f0b9.ts.net:8446": {
-                "Handlers": {"/": {"Proxy": "http://127.0.0.1:8798"}}
-            }
-        },
-    }
+    status = _serve_status()
     monkeypatch.setattr(
         "switchstand.certification._run", lambda *_args, **_kwargs: __import__("json").dumps(status)
     )
     _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
-    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp"] = {
-        "Proxy": "http://127.0.0.1:8799"
-    }
-    with pytest.raises(RuntimeError, match=r"conflicting path handlers: /mcp"):
-        _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
-    del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp"]
-    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/m"] = {
-        "Proxy": "http://127.0.0.1:8799"
-    }
-    _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
-    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp/"] = {
-        "Proxy": "http://127.0.0.1:8799"
-    }
-    with pytest.raises(RuntimeError, match=r"conflicting path handlers: /mcp/"):
-        _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
-    del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/m"]
-    del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp/"]
     status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/"]["Proxy"] = (
         "http://127.0.0.1:8799"
     )
     with pytest.raises(RuntimeError, match="mapping mismatch"):
+        _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
+
+
+@pytest.mark.parametrize(
+    ("handler", "conflicts"),
+    tuple((path, True) for path in PROTECTED_SERVE_PATHS)
+    + tuple((path + "/", True) for path in PROTECTED_SERVE_PATHS)
+    + (("/m", False),),
+)
+def test_serve_mapping_protects_complete_route_inventory(
+    monkeypatch, tmp_path, handler, conflicts,
+):
+    status = _serve_status()
+    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"][handler] = {
+        "Proxy": "http://127.0.0.1:8799"
+    }
+    monkeypatch.setattr(
+        "switchstand.certification._run", lambda *_args, **_kwargs: __import__("json").dumps(status)
+    )
+    if conflicts:
+        with pytest.raises(RuntimeError, match="conflicting path handlers"):
+            _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
+    else:
         _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
 
 
