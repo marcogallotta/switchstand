@@ -1,15 +1,15 @@
 # Disposable qualification
 
-Slice C keeps test support and its causal process test in one reviewable change: a
-runner without the replay/recovery proof would not establish the assigned outcome.
-The canonical owners remain PostgresState, GrantState, the existing edge entry point,
-and the existing synthetic Provider. No production issuer or bridge is added.
+This hermetic procedure qualifies the process boundary formed by the disposable
+runner and its causal replay/recovery test. The canonical owners remain PostgresState,
+GrantState, the existing edge entry point, and the existing synthetic Provider. No
+production issuer or bridge is added.
 
 Run from the private task writer with installed PostgreSQL tools and the bootstrapped
 Python environment:
 
 ```
-/home/marco/switchstand/.venv/bin/python tests/disposable_postgres.py scripts/check tests/test_chatgpt_edge_process.py
+/home/marco/switchstand/.venv/bin/python tests/disposable_postgres.py sh scripts/check tests/test_chatgpt_edge_process.py
 ```
 
 The runner generates its own authentication and explicit TEST_DATABASE_URL, initializes
@@ -30,6 +30,6 @@ fixtures required to exercise the existing edge contract, not evidence of real
 identity, real Asana, or an authority grant to a live caller. Real isolated-Asana
 qualification remains **NOT_RUN** until its existing external prerequisites exist.
 
-Cleanup and protocol evidence remain one slice: separating cleanup would leave the
-disposable qualification claim invalid. Cancellation tests include a TERM-resistant
-child, a nested timeout group and an unrelated sentinel process.
+Cleanup and protocol evidence are both required for the disposable qualification
+claim. Cancellation tests include a TERM-resistant child, a nested timeout group and
+an unrelated sentinel process.
