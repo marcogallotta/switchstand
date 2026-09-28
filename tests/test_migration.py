@@ -94,15 +94,110 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
     command.upgrade(config, "head")
     with engine.connect() as connection:
         endpoint = connection.execute(text(
-            "SELECT endpoint_id, session_key, generation FROM agent_mailboxes"
+            "SELECT name_key, display_name, endpoint_id, principal_key, session_key, "
+            "generation FROM agent_mailboxes"
+        )).one()
+        message = connection.execute(text(
+            "SELECT sender_work_id, message_id, route_ref, kind, payload, digest "
+            "FROM messages"
         )).one()
         delivery = connection.execute(text(
-            "SELECT delivery_id, recipient_work_id FROM message_deliveries"
+            "SELECT delivery_id, sender_work_id, message_id, recipient_work_id, "
+            "recipient_grant_version, state FROM message_deliveries"
         )).one()
-    assert endpoint == (endpoint_id, "legacy:legacy", 1)
-    assert delivery == (delivery_id, endpoint_id)
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0007_agent_chat_identity"
+    assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
+    assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
+    assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
     foreign_keys = inspect(engine).get_foreign_keys("agent_mailboxes")
     assert foreign_keys == []
+    unique_columns = {
+        tuple(constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints("agent_mailboxes")
+    }
+    assert ("endpoint_id",) in unique_columns
+    assert ("principal_key", "session_key") in unique_columns
+    assert ("principal_key",) not in unique_columns
+
+
+def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
+    monkeypatch, database_prerequisite,
+):
+    url = disposable_url()
+    monkeypatch.setenv("DATABASE_URL", url)
+    engine = create_engine(url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "lifecycle_obligations, message_projection, message_deliveries, messages, "
+            "effect_intents, work_grants, work_handles CASCADE"
+        ))
+    command.upgrade(config, "head")
+    endpoint_id, message_id, delivery_id = uuid4(), uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO agent_mailboxes "
+            "(name_key, display_name, endpoint_id, principal_key, session_key, generation) "
+            "VALUES ('agent', 'Agent', :endpoint, 'owner', 'session', 4)"
+        ), {"endpoint": endpoint_id})
+        connection.execute(text(
+            "INSERT INTO messages (sender_work_id, message_id, route_ref, kind, payload, digest) "
+            "VALUES (:endpoint, :message, 'agent.agent', 'request', '{}'::jsonb, 'digest')"
+        ), {"endpoint": endpoint_id, "message": message_id})
+        connection.execute(text(
+            "INSERT INTO message_deliveries "
+            "(delivery_id, sender_work_id, message_id, recipient_work_id, "
+            "recipient_grant_version, state, receiving_generation) "
+            "VALUES (:delivery, :endpoint, :message, :endpoint, 4, 'RECEIVED', '4')"
+        ), {"delivery": delivery_id, "endpoint": endpoint_id, "message": message_id})
+
+    with pytest.raises(RuntimeError, match="preserve durable agent endpoint bindings"):
+        command.downgrade(config, "0006_agent_mailboxes")
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0007_agent_chat_identity"
+        assert connection.execute(text(
+            "SELECT endpoint_id, principal_key, session_key, generation FROM agent_mailboxes"
+        )).one() == (endpoint_id, "owner", "session", 4)
+        assert connection.execute(text(
+            "SELECT sender_work_id, message_id FROM messages"
+        )).one() == (endpoint_id, message_id)
+        assert connection.execute(text(
+            "SELECT delivery_id, recipient_work_id, state, receiving_generation "
+            "FROM message_deliveries"
+        )).one() == (delivery_id, endpoint_id, "RECEIVED", "4")
+
+
+def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
+    monkeypatch, database_prerequisite,
+):
+    url = disposable_url()
+    monkeypatch.setenv("DATABASE_URL", url)
+    engine = create_engine(url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "lifecycle_obligations, message_projection, message_deliveries, messages, "
+            "effect_intents, work_grants, work_handles CASCADE"
+        ))
+    command.upgrade(config, "head")
+
+    command.downgrade(config, "0006_agent_mailboxes")
+    assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
+        >= {"work_id", "principal_key", "generation"}
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0007_agent_chat_identity"
+    assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
+        >= {"endpoint_id", "principal_key", "session_key", "generation"}
 
 
 def test_message_downgrade_refuses_to_destroy_durable_truth(
