@@ -48,10 +48,11 @@ operation identity or idempotent replay contract. On either surface,
 `unknown` means an effect may have happened: reconcile current evidence and
 never blindly retry. `denied`, `stale`, and provider failure are not success.
 
-Managed active-inbox behavior is instruction-led. Agents check the exact bound
-message/history surfaces during active work and on re-entry; there is no daemon,
-generic inbox scan, inactive-session wake, or authority inferred from message
-delivery. A sender's successful send is not recipient pickup.
+Managed active-inbox behavior is instruction-led. Agents check exact bound current
+work/message surfaces during active work and on re-entry; history is opened only for
+a bounded investigation/audit/recovery question that current durable state cannot
+answer. There is no daemon, generic inbox scan, inactive-session wake, or authority
+inferred from message delivery. A sender's successful send is not recipient pickup.
 
 ## Raw source compatibility
 
@@ -79,8 +80,8 @@ current guidance on WorkId-based APIs.
 - Managed task-bound Codex uses the launcher-controlled STDIO surface with
   injected active/reference WorkIds; raw source reads exist there only for the
   bounded compatibility cases above.
-- Context-only launches expose only the minimal current-work/history view needed
-  by that context contract.
+- Context-only launches expose only the minimal current-work view needed by that
+  context contract; history remains a separate bounded recovery/investigation capability.
 - The development MCP owns local check, commit, quality, and run-status mechanics;
   it grants no product work authority.
 
