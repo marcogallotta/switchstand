@@ -13,8 +13,6 @@ from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import (
     AppendResult,
-    RelatedCandidate,
-    RelatedLookup,
     Routing,
     SourceStoriesResult,
     SourceStory,
@@ -51,12 +49,7 @@ def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
 
 class FakeService:
     async def get(self, request):
-        related = (RelatedLookup(status="CANDIDATES", work_task_gid=TASK_GID,
-                                 observed_revision="r1",
-                                 candidates=(RelatedCandidate(task_gid="789", title="Review",
-                                             revision="r1", parent_gid=TASK_GID),))
-                   if request.include_related else None)
-        return WorkResult(status="ok", item=item(work_id=request.work_id), related=related)
+        return WorkResult(status="ok", item=item(work_id=request.work_id))
 
     async def attachments(self, request):
         return WorkAttachmentsResult(
@@ -98,8 +91,7 @@ class FakeService:
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
 @pytest.mark.parametrize("status", ["ok", "stale", "denied", "unknown", "provider_error"])
-@pytest.mark.parametrize("include_related", [False, True])
-def test_public_projection_allowlist(kind, status, include_related):
+def test_public_projection_allowlist(kind, status):
     import json
 
     from switchstand.contracts import WorkSource
@@ -110,12 +102,7 @@ def test_public_projection_allowlist(kind, status, include_related):
     if kind is GrantedWorkResult and status == "denied":
         from switchstand.chatgpt import ChatGPTService
         fields["guard"] = ChatGPTService.denied("work_get")
-    if status == "ok":
-        fields["related"] = RelatedLookup(status="CANDIDATES", work_task_gid="raw-work",
-            observed_revision="r1", reason="raw-reason", candidates=(RelatedCandidate(
-                task_gid="raw-child", title="Review", revision="r1", parent_gid="raw-parent",
-                work_type_option_gid="raw-option"),))
-    output = project_work(kind(**fields), include_related).model_dump(mode="json")
+    output = project_work(kind(**fields)).model_dump(mode="json")
     serialized = json.dumps(output) + json.dumps(PublicWorkResult.model_json_schema())
     for forbidden in ("raw-", "secret-provider", "asana", "task_gid", "parent_gid", "source", "receipt"):
         assert forbidden not in serialized
@@ -124,11 +111,8 @@ def test_public_projection_allowlist(kind, status, include_related):
         assert output["item"] == value.model_dump(mode="json", exclude={"source"})
     else:
         assert all(v is None for k, v in output.items() if k not in {"status", "guard"})
-    if include_related and status == "ok":
-        assert output["related"] == {"status": "CANDIDATES", "observed_revision": "r1",
-            "candidates": [{"title": "Review", "revision": "r1"}], "complete": False}
-    else:
-        assert output["related"] is None
+    assert "related" not in output
+    assert "related" not in kind.model_json_schema()["properties"]
 
 
 def test_provider_request_logs_are_suppressed(caplog):
@@ -220,7 +204,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
                    tool.output_schema.get("additionalProperties") is False for tool in tools)
         get_tool = next(tool for tool in tools if tool.name == "work_get")
         assert "work_id" not in get_tool.input_schema["required"]
-        assert "include_related" in get_tool.input_schema["properties"]
+        assert "include_related" not in get_tool.input_schema["properties"]
+        assert "related" not in get_tool.output_schema["properties"]
         assert "grouped" not in get_tool.output_schema["properties"]
         assert str(REFERENCE_ID) in (get_tool.description or "")
         source_tool = next(tool for tool in tools if tool.name == "source_task")
@@ -230,16 +215,16 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert not (await client.list_prompts()).prompts
 
         got = await client.call_tool("work_get", {"api_version": "1"})
-        assert got.structured_content == project_work(WorkResult(status="ok", item=item()), False).model_dump(mode="json")
+        assert got.structured_content == project_work(WorkResult(status="ok", item=item())).model_dump(mode="json")
         assert "grouped" not in got.structured_content
         related = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
-        assert related.structured_content["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
+        assert related.is_error
         reference = await client.call_tool(
             "work_get", {"api_version": "1", "work_id": str(REFERENCE_ID)}
         )
         assert reference.structured_content == project_work(WorkResult(
             status="ok", item=item(work_id=REFERENCE_ID)
-        ), False).model_dump(mode="json")
+        )).model_dump(mode="json")
 
         source = await client.call_tool(
             "source_task", {"api_version": "1", "task_gid": TASK_GID}
@@ -283,7 +268,10 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
     from switchstand.core import Controller
     from switchstand.provider import PROJECT, AsanaProvider
 
+    requests = []
+
     def respond(request):
+        requests.append(request)
         if request.url.path.endswith("/attachments"):
             return httpx.Response(200, json={
                 "data": [{"gid": "hidden", "name": "brief.txt",
@@ -316,6 +304,9 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
             work = (await client.call_tool(
                 "work_get", {"api_version": "1"}
             )).structured_content["item"]
+            assert [request.url.path for request in requests] == [
+                "/api/1.0/tasks/1218431511675555"
+            ]
             assert work["context"] == {
                 "assignee": "Ada",
                 "placements": [{"area": "Engineering", "stage": "Doing"}],

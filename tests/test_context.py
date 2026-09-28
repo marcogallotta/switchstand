@@ -65,7 +65,7 @@ def test_context_server_exposes_only_bound_read_context():
     server = build_context_server(FakeService(), ACTIVE)
     assert set(server._tool_manager._tools) == {"work_get", "work_history"}
     schema = server._tool_manager.get_tool("work_get").parameters
-    assert set(schema["properties"]) == {"api_version", "include_related"}
+    assert set(schema["properties"]) == {"api_version"}
     assert "work_id" not in schema["properties"]
     history = server._tool_manager.get_tool("work_history")
     assert set(history.parameters["properties"]) == {
@@ -89,9 +89,13 @@ async def test_context_server_real_stdio_exposes_only_bound_read_context():
         tools = (await client.list_tools()).tools
         assert [tool.name for tool in tools] == ["work_get", "work_history"]
         assert all("work_id" not in tool.input_schema["properties"] for tool in tools)
-        got = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
+        got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content["item"]["id"] == str(ACTIVE)
         assert "raw-task" not in str(got) and "asana" not in str(got)
+        rejected = await client.call_tool(
+            "work_get", {"api_version": "1", "include_related": True}
+        )
+        assert rejected.is_error
         history = await client.call_tool(
             "work_history", {"api_version": "1", "observed_revision": "r1"}
         )

@@ -81,7 +81,7 @@ class OrdinaryWorkResult(ClosedModel):
 
 
 def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
-    projected = project_work(result, False)
+    projected = project_work(result)
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
     )
@@ -259,7 +259,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
         """Read admitted work. Use work_structure for complete parent/child relationships."""
-        result = await service.get(work_id, include_related=False)
+        result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
 
