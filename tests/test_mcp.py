@@ -177,14 +177,25 @@ def test_managed_controller_script_without_authority_fails():
     assert "managed controller requires ACTIVE_WORK_ID" in result.stderr
 
 
-@pytest.mark.skipif(
-    Path("/.dockerenv").exists(),
-    reason="real-host Stage-0 environment is not mounted into the quality container",
-)
-async def test_unbound_launcher_completes_stdio_handshake():
+async def test_unbound_launcher_completes_stdio_handshake(tmp_path: Path):
     script = Path(__file__).parents[1] / "scripts" / "switchstand-controller-mcp"
+    fake_bin = tmp_path / "bin"
+    python = tmp_path / "primary" / ".venv" / "bin" / "python"
+    fake_bin.mkdir()
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\nexec "$REAL_PYTHON" "$@"\n')
+    python.chmod(0o755)
+    git = fake_bin / "git"
+    git.write_text("#!/bin/sh\nprintf '%s\\n' \"$FAKE_GIT_COMMON\"\n")
+    git.chmod(0o755)
     server = StdioServerParameters(
-        command=str(script), env={"HOME": str(Path.home()), "PATH": os.environ["PATH"]}
+        command=str(script),
+        env={
+            "FAKE_GIT_COMMON": str(tmp_path / "primary" / ".git"),
+            "HOME": str(Path.home()),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_PYTHON": sys.executable,
+        },
     )
     async with Client(server) as client:
         assert not (await client.list_tools()).tools
