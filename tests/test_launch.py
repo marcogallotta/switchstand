@@ -171,6 +171,8 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     assert set(switchstand["enabled_tools"]) == ordinary
     assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
+    certification = servers["switchstand_certification"]
+    assert set(certification["enabled_tools"]) == ordinary
 
     managed = {
         "work_get", "work_attachments", "source_task", "source_stories", "source_story",
