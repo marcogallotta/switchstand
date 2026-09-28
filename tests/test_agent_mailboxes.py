@@ -56,3 +56,6 @@ async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
         await endpoints.for_actor("owner", "replacement-a")
     ).status == "ok" else "replacement-b"
     assert (await endpoints.for_actor("owner", winner)).mailbox == current
+
+    replay = await endpoints.takeover("Lifecycle", "owner", winner)
+    assert replay.status == "ok" and replay.mailbox == current

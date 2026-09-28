@@ -174,6 +174,8 @@ class AgentMailboxState:
                     return AgentMailboxResult(status="denied", reason="mailbox_not_found")
                 if row["principal_key"] != principal_key:
                     return AgentMailboxResult(status="denied", reason="principal_mismatch")
+                if row["session_key"] == session_key:
+                    return AgentMailboxResult(status="ok", mailbox=self._view(row))
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,

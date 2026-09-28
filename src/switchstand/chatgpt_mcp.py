@@ -751,7 +751,7 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
     ) -> AgentRegistrationResult:
-        """Rebind a dead agent name to this replacement chat after Marco's declaration."""
+        """Rebind a dead agent after Marco declares it dead; if unclear, ask Marco first."""
         del api_version
         try:
             principal = await service.principal()

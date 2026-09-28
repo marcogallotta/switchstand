@@ -101,6 +101,14 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     recovered = await tools["agent_message_recover"]("1", delivery)
     assert recovered.status == "ok" and recovered.state == "RECEIVED"
 
+    # An ambiguous takeover response may be retried. It must preserve the durable
+    # generation so this already-recovered delivery remains replyable.
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
+    replied = await tools["agent_message_result_send"](
+        "1", delivery, uuid4(), {"result": "replacement"},
+    )
+    assert replied.status == "ok"
+
     session[0] = "chat-b"
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
