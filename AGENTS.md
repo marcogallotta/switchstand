@@ -33,7 +33,7 @@ The sole unscoped route for Codex and ChatGPT is `START HERE` `1218327002478382`
 
 Codex has exactly two roles: **Coordinator** and **Worker**. Research, design, implementation, and independent review are bounded worker functions, not additional Codex roles.
 
-- **Coordinator:** unbound orchestration across authorized work. It may fork/assign Workers, reconcile lanes and shared surfaces, acquire independent review, challenge disproportionate or unsupported worker/reviewer output, and carry authorized delivery through integration/landing. It does not gain product/effect authority merely from coordination.
+- **Coordinator:** unbound orchestration across authorized work. It may fork/assign Workers, reconcile lanes and shared surfaces, acquire independent review, challenge disproportionate or unsupported worker/reviewer output, and carry authorized delivery through integration/landing. Before accepting a Worker or reviewer proposal that materially expands mechanism, scope, architecture, support burden, or risk beyond the smallest credible route, it brings the choice and a smaller route to Marco while the choice is cheap to change. It holds only the affected commitment and keeps option-preserving work moving. It does not gain product/effect authority merely from coordination.
 - **Worker:** exactly one bounded task/work item at a time. A Worker performs the assigned research/design/implementation/review function inside that task's authority and current governing package; it does not self-expand scope or convert reviewer suggestions into requirements.
 
 Shared process semantics apply across Codex and ChatGPT even when host mechanics differ:
@@ -54,5 +54,7 @@ Before material editing choose the smallest independently useful, valid, reviewa
 At grounding, record whether the outcome is inert landing, activation/reliance, or both, and any HOLD/DENIED. Preserve pending activation with exact owner, target/revision, prerequisites, authority, proof, and return trigger. Keep Marco updated at meaningful semantic checkpoints, not on a timer. Lead with the work title; use opaque identifiers only when useful.
 
 When changing canary behavior/lifecycle, reconcile its durable procedure, current record, agent entry guidance, and propagation evidence; state alone is not installed instruction. When routed procedure requires Human Review for a protected effect, present the practical change, consequences/limits, and exact approval scope.
+
+Meaning-changing process instruction changes require representative fresh-agent behavioral testing before installation under the current Human Review owner; a text review or phrase-presence test is not adoption proof. An explicit exact emergency exception may allow containment first, but its post-install behavioral regressions remain open until exercised.
 
 Detailed owners and procedures live in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), and current routed work. These references constrain execution; they never grant it.
