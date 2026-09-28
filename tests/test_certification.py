@@ -17,8 +17,8 @@ from switchstand.certification import (
     _ready,
     _reset_database,
     _supervise_edge,
-    certification_lock,
     _verify_serve_mapping,
+    certification_lock,
     run,
 )
 
