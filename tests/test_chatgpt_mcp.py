@@ -302,7 +302,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
+            "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "message_send", "message_pending",
             "message_receive", "message_recover", "message_result_send", "message_disposition",
@@ -318,8 +318,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             if tool.name == "work_attachments":
                 assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
             assert tool.input_schema.get("additionalProperties") is False
-            assert not {"principal", "role", "grant_id", "issuer", "allowed_operations"}.intersection(
-                tool.input_schema.get("properties", {}))
+            forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
+            if tool.name != "agent_project_bootstrap":
+                forbidden.add("role")
+            assert not forbidden.intersection(tool.input_schema.get("properties", {}))
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
         ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save",

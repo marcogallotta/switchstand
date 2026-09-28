@@ -3,7 +3,10 @@ from argparse import Namespace
 
 import httpx
 import pytest
+from chatgpt_fixture import service
 
+from switchstand import chatgpt_mcp
+from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.durable_agent_project import MARKER, BootstrapError, apply, dry_run
 
 
@@ -131,6 +134,43 @@ def test_apply_creates_reads_back_and_is_idempotent() -> None:
     assert set(result["memberships"]) == {result["project_gid"], "3"}
     assert boundary.posts == writes
     assert again["project_gid"] == result["project_gid"]
+
+
+async def test_ordinary_mcp_tool_previews_and_applies_with_server_token(monkeypatch) -> None:
+    boundary = AsanaBoundary()
+    clients: list[dict[str, object]] = []
+    client_type = httpx.Client
+
+    def client_factory(**kwargs):
+        clients.append(kwargs)
+        return client_type(base_url="https://app.asana.com/api/1.0",
+                           transport=httpx.MockTransport(boundary))
+
+    monkeypatch.setenv("ASANA_TOKEN", "server-token")
+    monkeypatch.setattr(chatgpt_mcp.httpx, "Client", client_factory)
+    server = build_chatgpt_server(service())
+    tool = next(tool for tool in await server.list_tools()
+                if tool.name == "agent_project_bootstrap")
+    assert set(tool.input_schema["properties"]) == {
+        "api_version", "role", "project_name", "workspace_gid", "team_gid",
+        "main_project_gid", "priority_field_gid", "work_kind_field_gid",
+        "currentness_field_gid", "canonical_concern_field_gid", "apply",
+    }
+    inputs = {
+        "api_version": "1", "role": "Asana", "project_name": "SW — Asana Agent",
+        "workspace_gid": "1", "team_gid": "2", "main_project_gid": "3",
+        "priority_field_gid": "11", "work_kind_field_gid": "12",
+        "currentness_field_gid": "13", "canonical_concern_field_gid": "14",
+    }
+    preview = await server.call_tool("agent_project_bootstrap", inputs)
+    assert preview.structured_content["mode"] == "dry-run"
+    assert clients == [] and boundary.requests == []
+    applied = await server.call_tool("agent_project_bootstrap", inputs | {"apply": True})
+    assert applied.structured_content["mode"] == "apply"
+    assert clients == [{
+        "base_url": "https://app.asana.com/api/1.0", "trust_env": False,
+        "headers": {"Authorization": "Bearer server-token"},
+    }]
 
 
 @pytest.mark.parametrize("problem", ["project", "field", "master"])
