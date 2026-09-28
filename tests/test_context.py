@@ -159,18 +159,17 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert command[1:3] == ["-C", str(writer)]
     assert command[3:7] == ["-m", "gpt-5.6-sol", "-a", "never"]
     assert command[7] == "--dangerously-bypass-hook-trust"
-    assert 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]' in command
+    assert 'mcp_servers.switchstand.enabled_tools=["work_get"]' in command
     assert 'mcp_servers.switchstand.default_tools_approval_mode="auto"' in command
     assert 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"' in command
-    assert 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"' in command
+    assert not any("tools.work_history.approval_mode" in part for part in command)
     assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
     assert str(writer / "scripts" / "switchstand-context-mcp") not in command
     prompt = command[-1]
     assert prompt.startswith("Exact launch assignment:\nrepair the launcher\n\n")
-    assert prompt.index('work_get(api_version="1")') < prompt.index("work_history(")
-    assert "before material work" in prompt
-    assert "Follow next_cursor until null" in prompt
-    assert "if history is stale" in prompt
+    assert 'work_get(api_version="1")' in prompt
+    assert "Do not read work_history/comments during normal" in prompt
+    assert "separate bounded investigation/recovery path only" in prompt
     assert "Do not resume completed or superseded intent" in prompt
 
 
