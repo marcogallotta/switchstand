@@ -17,6 +17,7 @@ from switchstand.certification import (
     _ready,
     _reset_database,
     _supervise_edge,
+    certification_lock,
     run,
 )
 
@@ -28,6 +29,15 @@ def test_certification_marker_is_exact():
     assert _owned(f"notes\n{MARKER}", MARKER)
     assert not _owned(MARKER + "x", MARKER)
     assert not _owned(MARKER, MARKER + "x")
+
+
+def test_certification_lock_excludes_competing_project_runner(tmp_path: Path):
+    with (
+        certification_lock(tmp_path),
+        pytest.raises(RuntimeError, match="another native certification run is active"),
+        certification_lock(tmp_path),
+    ):
+        pytest.fail("competing certification lock was admitted")
 
 
 async def test_cleanup_is_paginated_owned_only_and_read_back():

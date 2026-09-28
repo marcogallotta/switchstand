@@ -56,9 +56,11 @@ PYTHONPATH=src python tests/asana_provider_contract_probe.py
 It also requires `ASANA_TOKEN`, `SWITCHSTAND_CERTIFICATION_REPO`, and the exact
 clean candidate in `SWITCHSTAND_CERTIFICATION_RUNTIME_SHA`. Missing or
 non-isolated prerequisites produce `NOT_RUN` without contacting Asana. With
-authorized prerequisites, the probe creates only marker-owned disposable tasks
-and exercises exact task/custom-field response parsing, forced pagination through
-project search, one scalar write/readback, and parent/dependency mutation/readback.
+authorized prerequisites, the probe takes the same exclusive supervisor lock,
+creates only marker-owned disposable tasks, and exercises exact task parsing,
+forced pagination through project search, one scalar write/readback, and
+parent/dependency mutation/readback. The isolated fixture has no declared known
+custom-field identity/value, so the probe makes no live custom-field claim.
 Cleanup refuses an unowned project inventory and runs before and after the probe.
 The probe does not inject an ambiguous live write; malformed-response,
 fail-closed, idempotency, and UNKNOWN recovery remain hermetic unit-test claims.

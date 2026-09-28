@@ -6,7 +6,6 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -15,13 +14,12 @@ from switchstand.certification import (
     CERTIFICATION_PROJECT,
     MARKER,
     FixtureCleaner,
-    _verify_runtime,
+    certification_lock,
+    verify_certification_runtime,
 )
 from switchstand.contracts import WorkPatch
 from switchstand.core import ProviderRelation
-from switchstand.provider import OPT_FIELDS, AsanaProvider
-
-JSON = dict[str, Any]
+from switchstand.provider import AsanaProvider
 
 
 class ProbeNotRun(RuntimeError):
@@ -73,16 +71,10 @@ async def _probe(client: httpx.AsyncClient, project: str, marker: str) -> None:
             f"provider-contract-child-{nonce}", "probe child", uuid4(),
             parent_task_gid=root,
         )
-        raw = await client.get(f"/tasks/{root}", params={"opt_fields": OPT_FIELDS})
-        raw.raise_for_status()
-        payload = cast(JSON, raw.json()).get("data")
-        _assert(isinstance(payload, dict), "exact task response data is not an object")
-        _assert(
-            isinstance(cast(JSON, payload).get("custom_fields"), list),
-            "exact task response omitted the requested custom-field collection",
-        )
         work = await provider.get(root)
-        _assert(work is not None and work.canonical, "created root is not canonical")
+        if work is None:
+            raise RuntimeError("created root disappeared")
+        _assert(work.canonical, "created root is not canonical")
         _assert(marker in work.notes.splitlines(), "created root lost its ownership marker")
 
         inventory = await _project_inventory(provider)
@@ -93,7 +85,8 @@ async def _probe(client: httpx.AsyncClient, project: str, marker: str) -> None:
             root, WorkPatch(title=changed_title, notes="updated probe", completed=True),
         )
         changed = await provider.get(root)
-        _assert(changed is not None, "updated root disappeared")
+        if changed is None:
+            raise RuntimeError("updated root disappeared")
         _assert(changed.title == changed_title, "title write did not read back")
         _assert(changed.completed is True, "completion write did not read back")
         _assert(changed.notes.splitlines() == ["updated probe", "", marker],
@@ -125,13 +118,14 @@ async def run() -> None:
         raise ProbeNotRun("certification ownership marker is invalid")
     root = Path(_required("SWITCHSTAND_CERTIFICATION_REPO")).resolve()
     expected = _required("SWITCHSTAND_CERTIFICATION_RUNTIME_SHA")
-    _verify_runtime(root, expected)
+    verify_certification_runtime(root, expected)
     token = _required("ASANA_TOKEN")
-    async with httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0", trust_env=False,
-        headers={"Authorization": f"Bearer {token}"}, timeout=20,
-    ) as client:
-        await _probe(client, project, marker)
+    with certification_lock():
+        async with httpx.AsyncClient(
+            base_url="https://app.asana.com/api/1.0", trust_env=False,
+            headers={"Authorization": f"Bearer {token}"}, timeout=20,
+        ) as client:
+            await _probe(client, project, marker)
     print(f"PASS isolated Asana provider contract probe candidate={expected}")
 
 
