@@ -19,7 +19,7 @@ def disposable_url() -> str:
     return url
 
 
-def test_stale_schema_check_does_not_upgrade(monkeypatch):
+def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
@@ -36,7 +36,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch):
     assert inspect(engine).get_table_names() == []
 
 
-def test_empty_database_migrates_to_lifecycle_head(monkeypatch):
+def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequisite):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
@@ -55,7 +55,7 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch):
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
 
 
-def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch):
+def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch, database_prerequisite):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
     engine = create_engine(url)
@@ -81,7 +81,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(monkeypatch):
             == "0006_agent_mailboxes"
 
 
-def test_lifecycle_downgrade_refuses_to_discard_obligation():
+def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite):
     url = disposable_url()
     engine = create_engine(url)
     with engine.begin() as connection:
@@ -118,7 +118,7 @@ def test_lifecycle_downgrade_refuses_to_discard_obligation():
         assert connection.scalar(text("SELECT count(*) FROM lifecycle_obligations")) == 1
 
 
-def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema():
+def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema(database_prerequisite):
     url = disposable_url()
     engine = create_engine(url)
     with engine.begin() as connection:
@@ -135,7 +135,7 @@ def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema():
     assert "lifecycle_obligations" in inspect(engine).get_table_names()
 
 
-def test_event_identity_downgrade_refuses_to_discard_mapping():
+def test_event_identity_downgrade_refuses_to_discard_mapping(database_prerequisite):
     url = disposable_url()
     engine = create_engine(url)
     with engine.begin() as connection:

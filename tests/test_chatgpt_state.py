@@ -36,7 +36,7 @@ from switchstand.state import PostgresState, metadata
 
 
 @pytest.fixture
-async def subject():
+async def subject(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for PostgreSQL grant/effect tests")
@@ -106,7 +106,9 @@ async def test_authenticated_certification_grant_admits_append_and_update(subjec
     assert updated.status == "ok" and updated.effect == "applied"
 
 
-async def test_disposable_grant_command_lifecycle_and_mcp_expiry(monkeypatch):
+async def test_disposable_grant_command_lifecycle_and_mcp_expiry(
+    monkeypatch, database_prerequisite,
+):
     with pytest.raises(ValueError, match="switchstand_test"):
         test_grant.test_database_url({"TEST_DATABASE_URL": "postgresql:///production"})
     if not os.getenv("TEST_DATABASE_URL"):

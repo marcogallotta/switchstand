@@ -12,7 +12,9 @@ from switchstand.workspace_admission import WorkspaceAdmissionState
 
 
 @pytest.mark.asyncio
-async def test_workspace_admission_is_stable_without_work_grant_and_preserves_effect_journal():
+async def test_workspace_admission_is_stable_without_work_grant_and_preserves_effect_journal(
+    database_prerequisite,
+):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")

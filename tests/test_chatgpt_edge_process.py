@@ -265,7 +265,9 @@ async def _exercise(endpoint, selected, operation_id):
         return result.structured_content
 
 
-async def test_process_with_fixture_identity_replays_durable_append_after_restart():
+async def test_process_with_fixture_identity_replays_durable_append_after_restart(
+    database_prerequisite,
+):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
@@ -312,7 +314,7 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
 
 
 async def test_chatgpt_and_managed_mcp_processes_replay_one_durable_workflow_after_restart(
-    tmp_path: Path,
+    tmp_path: Path, database_prerequisite,
 ):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:

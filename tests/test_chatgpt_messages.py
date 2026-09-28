@@ -32,7 +32,7 @@ from switchstand.state import PostgresState, metadata
 
 
 @pytest.fixture
-async def messaging():
+async def messaging(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for PostgreSQL message service tests")

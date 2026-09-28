@@ -46,7 +46,9 @@ def test_managed_message_facades_have_no_mode_flags():
         assert "require_received" not in signature.parameters
 
 
-async def test_managed_mcp_replacement_result_and_disposition_vertical(monkeypatch):
+async def test_managed_mcp_replacement_result_and_disposition_vertical(
+    monkeypatch, database_prerequisite,
+):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
