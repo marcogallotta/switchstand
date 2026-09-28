@@ -41,3 +41,22 @@ def test_relative_markdown_check_rejects_a_missing_destination(tmp_path):
     assert broken_relative_destinations(tmp_path, [document]) == [
         "guide.md -> missing.md#section"
     ]
+
+
+def test_codex_role_model_and_shared_process_contract_are_explicit():
+    agents = (ROOT / "AGENTS.md").read_text()
+    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text()
+
+    assert "Codex has exactly two roles: **Coordinator** and **Worker**." in agents
+    assert "- **Researcher:**" not in agents
+    assert "- **Implementer:**" not in agents
+    assert "- **Reviewer:**" not in agents
+    assert "Human Input before hardening" in agents
+    assert "the exact source work owner/requester owns the review outcome watch" in agents
+    assert "Reviewer remedies are advisory" in agents
+    assert "Durable continuity" in agents
+    assert "Supervisory proportionality" in agents
+
+    assert "Codex has two roles: Coordinator and Worker." in usage
+    assert "Shared process semantics across hosts" in usage
+    assert "Shared semantics do not imply identical host storage, tools, roles, or orchestration." in usage

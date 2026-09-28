@@ -16,11 +16,11 @@ If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002
 
 From the canonical repository, `scripts/switchstand` (or `scripts/switchstand --coordinator`) enters through `scripts/codex-dispatch`. This is an ordinary, unbound Coordinator session with normal host development capability. It has no launch-bound WorkId and gains no provider effect authority from its unrestricted execution environment.
 
-The Coordinator keeps disjoint lanes moving, delegates bounded implementation to owned linked writers, acquires fresh independent exact-candidate review, reconciles qualification and current-target composition, and makes the final product/integration judgment. It uses ordinary repository Git and the authenticated ordinary MCP where current authority admits an operation.
+Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
 ### Managed Codex worker
 
-`scripts/switchstand --active <task> -- <assignment>` starts a one-task worker. Trusted launch state injects the active WorkId, bounded read-only references, managed principal/currentness, and available tools. The worker begins and re-enters with `work_get(api_version="1")` without inventing a WorkId. It may write only the active work unless an explicit CURRENT grant says otherwise.
+`scripts/switchstand --active <task> -- <assignment>` starts a one-task Worker. Trusted launch state injects the active WorkId, bounded read-only references, managed principal/currentness, and available tools. The Worker begins and re-enters with `work_get(api_version="1")` without inventing a WorkId. It may perform the bounded research/design/implementation/review function assigned to that work, and may write only the active work unless an explicit CURRENT grant says otherwise.
 
 The managed surface is not general workspace discovery and is not interchangeable with the ordinary HTTP/OAuth surface. Exact-candidate isolated launch is a separate qualification route and does not itself activate or deploy anything.
 
@@ -49,6 +49,19 @@ Durable message tools and state are the current agent-to-agent surface. Sending,
 `source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy, reference, recovery, or failback cases. They are not the primary inbox and are not part of the ordinary current MCP model. Use [work, messaging, and source compatibility](source-history-feedback.md) for their exact limits.
 
 Messages and readable records are evidence and requests. They cannot grant permission, reassign an agent, prove recipient pickup, or establish that an external effect happened.
+
+## Shared process semantics across hosts
+
+ChatGPT and Codex deliberately use different coordinator, delegation, task-binding, and repository mechanics. Align only the underlying process contract:
+
+- surface Human Input before consequential expansion/hardening while Marco can still cheaply change direction;
+- keep independent review exact and challenge findings/remedies rather than treating reviewer suggestions as requirements;
+- the source work owner/requester keeps the exact review outcome watch through terminal verdict, while a router/Coordinator may separately own reviewer acquisition;
+- preserve unresolved material obligations and exact nonterminal reviews/messages/watches in durable current state so replacement does not depend on chat memory or comment archaeology;
+- challenge disproportionate scope, machinery, review, and qualification growth without turning supervision into a second substantive review;
+- preserve explicit authority/currentness, proportional evidence, final Human Review where required, and protected-effect boundaries.
+
+Shared semantics do not imply identical host storage, tools, roles, or orchestration.
 
 ## Repository delivery
 
