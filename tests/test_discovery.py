@@ -12,7 +12,7 @@ from switchstand.discovery import (
     ProviderStructure,
     WorkDiscovery,
 )
-from switchstand.provider import PROJECT, PROJECTS, AsanaProvider
+from switchstand.provider import FIELDS, PROJECT, PROJECTS, AsanaProvider
 
 
 def task(
@@ -83,6 +83,47 @@ async def test_text_search_is_bounded_non_continuable_and_exact_read_back():
     assert set(request.url.params["projects.any"].split(",")) == set(PROJECTS)
     assert "offset" not in request.url.params
     assert requests[1].url.path.endswith("/tasks/101")
+
+
+async def test_text_search_treats_disabled_optional_routing_as_absent_for_whole_page():
+    disabled_optional = task("101", title="First")
+    disabled_optional["custom_fields"].append({
+        "gid": FIELDS["horizon"],
+        "display_value": "Later",
+        "enabled": False,
+        "resource_subtype": "enum",
+        "enum_value": {"gid": "later-option"},
+        "enum_options": [{"gid": "later-option", "name": "Later", "enabled": True}],
+    })
+    subject, _ = asana_provider(
+        {"data": [{"gid": "101"}, {"gid": "102"}], "next_page": None},
+        {"data": disabled_optional},
+        {"data": task("102", title="Second")},
+    )
+
+    page = await subject.search_work("needle", None, None, 50)
+
+    assert [item.title for item in page.items] == ["First", "Second"]
+    assert page.items[0].routing.horizon is None
+
+
+async def test_text_search_rejects_enabled_malformed_optional_routing():
+    malformed_optional = task("101")
+    malformed_optional["custom_fields"].append({
+        "gid": FIELDS["horizon"],
+        "display_value": "Later",
+        "enabled": True,
+        "resource_subtype": "text",
+        "enum_value": {"gid": "later-option"},
+        "enum_options": [{"gid": "later-option", "name": "Later", "enabled": True}],
+    })
+    subject, _ = asana_provider(
+        {"data": [{"gid": "101"}], "next_page": None},
+        {"data": malformed_optional},
+    )
+
+    with pytest.raises(ProviderError):
+        await subject.search_work("needle", None, None, 50)
 
 
 async def test_text_search_rejects_uncontinuable_provider_page():
