@@ -74,16 +74,7 @@ class Boundary(httpx.AsyncBaseTransport):
                 row for row in task["memberships"]
                 if row["project"]["gid"] != data["project"]
             ]
-        elif path.endswith("/setParent"):
-            task["parent"] = (
-                None if data["parent"] is None
-                else {"gid": data["parent"]}
-            )
-        elif path.endswith("/addDependencies"):
-            self.dependencies.update(data["dependencies"])
-        elif path.endswith("/removeDependencies"):
-            self.dependencies.difference_update(data["dependencies"])
-        else:
+        elif request.method == "PUT":
             task["assignee"] = (
                 None if data["assignee"] is None
                 else {"gid": data["assignee"], "name": "User"}
@@ -114,23 +105,17 @@ def test_relation_patch_accepts_only_bounded_shapes(patch):
         RelationPatch(kind=patch.kind, action="move")
 
 
-async def test_provider_relations_send_once_and_exact_readback(subject):
+async def test_unprobed_provider_relations_send_once_and_exact_readback(subject):
     provider, boundary = subject
     cases = [
         ProviderRelation("assignee", "set", assignee_gid="42"),
         ProviderRelation("placement", "move", project_gid=PROJECT, section_gid=SECTION),
-        ProviderRelation("parent", "set", target_gid=TARGET),
-        ProviderRelation("dependency", "add", target_gid=TARGET),
     ]
     for relation in cases:
         before = len(boundary.calls)
         await provider.update_relation(TASK, relation)
         assert len(boundary.calls) == before + 1
         assert await provider.relation_matches(TASK, relation)
-
-    removal = ProviderRelation("dependency", "remove", target_gid=TARGET)
-    await provider.update_relation(TASK, removal)
-    assert await provider.relation_matches(TASK, removal)
 
 
 async def test_dependency_readback_exhausts_pages_before_proving_presence_or_absence(subject):
@@ -143,12 +128,6 @@ async def test_dependency_readback_exhausts_pages_before_proving_presence_or_abs
 
     absent = ProviderRelation("dependency", "remove", target_gid="999999")
     assert await provider.relation_matches(TASK, absent)
-
-    before = len(boundary.calls)
-    removal = ProviderRelation("dependency", "remove", target_gid=target)
-    await provider.update_relation(TASK, removal)
-    assert len(boundary.calls) == before + 1
-    assert await provider.relation_matches(TASK, removal)
 
 
 async def test_move_removes_old_admitted_membership_but_preserves_unrelated_membership():

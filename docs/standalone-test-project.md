@@ -46,6 +46,27 @@ not expose this lineage; the one-home check needs a separately authorized
 trusted-host exact-task qualification read. Until that route and current grant
 are available, live activation is **NOT_RUN / MISSING_CAPABILITY / UNKNOWN**.
 
+The opt-in provider contract probe reuses the pinned certification project,
+ownership marker, pre-clean, and post-clean boundary:
+
+```
+PYTHONPATH=src python tests/asana_provider_contract_probe.py
+```
+
+It also requires `ASANA_TOKEN`, `SWITCHSTAND_CERTIFICATION_REPO`, and the exact
+clean candidate in `SWITCHSTAND_CERTIFICATION_RUNTIME_SHA`. Missing or
+non-isolated prerequisites produce `NOT_RUN` without contacting Asana. With
+authorized prerequisites, the probe takes the same exclusive supervisor lock,
+creates only marker-owned disposable tasks, and exercises exact task parsing,
+forced pagination through project search, one scalar write/readback, and
+parent/dependency mutation/readback. The isolated fixture has no declared known
+custom-field identity/value, so the probe makes no live custom-field claim.
+Cleanup refuses an unowned project inventory and runs before and after the probe.
+The probe does not inject an ambiguous live write; malformed-response,
+fail-closed, idempotency, and UNKNOWN recovery remain hermetic unit-test claims.
+Passing this probe establishes only the provider contract for its exact candidate
+and isolated project, not production behavior, activation, or effect authority.
+
 This project separates Asana data only. It shares the existing token, database,
 controller, and authorization plane. The setting creates no project or task and
 does not change Asana memberships.

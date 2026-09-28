@@ -10,7 +10,8 @@ import signal
 import socket
 import subprocess
 import sys
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,6 +38,20 @@ def _required(name: str) -> str:
 
 def _owned(notes: object, marker: str) -> bool:
     return isinstance(notes, str) and marker in notes.splitlines()
+
+
+@contextmanager
+def certification_lock(state: Path | None = None) -> Generator[None]:
+    """Exclude every certification-project inventory and mutation runner."""
+    directory = state or Path.home() / ".local/state/switchstand/certification"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (directory / "supervisor.lock").open("a+") as lock:
+        os.chmod(lock.name, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another native certification run is active") from None
+        yield
 
 
 class FixtureCleaner:
@@ -167,6 +182,11 @@ def _verify_runtime(root: Path, expected: str) -> None:
         raise RuntimeError("certification module is not loaded from the pinned repository")
 
 
+def verify_certification_runtime(root: Path, expected: str) -> None:
+    """Verify that support code is executing from the clean exact candidate."""
+    _verify_runtime(root, expected)
+
+
 async def _ready(child: asyncio.subprocess.Process, port: int, resource: str) -> None:
     metadata = "/.well-known/oauth-protected-resource/mcp"
     endpoints = (f"http://127.0.0.1:{port}{metadata}", resource.removesuffix("/mcp") + metadata)
@@ -287,12 +307,7 @@ async def run() -> None:
         "SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER": marker,
     }
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with (state / "supervisor.lock").open("a+") as lock:
-        os.chmod(lock.name, 0o600)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("another native certification run is active") from None
+    with certification_lock(state):
         token = _required("ASANA_TOKEN")
         client = httpx.AsyncClient(
             base_url="https://app.asana.com/api/1.0", trust_env=False,
