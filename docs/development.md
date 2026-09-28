@@ -113,14 +113,15 @@ action.
 - Normal task-bound development: run
   `scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>`.
   It creates or resumes the task's private durable writer with ordinary development access. Its single initial request
-  requires the agent to read bound `work_get`, then page bound `work_history` at that returned revision before material
-  work. A stale history read restarts from a fresh `work_get`, so later completion or supersession evidence is
-  reconciled without exposing arbitrary source-task reads. Both context tools are read-only and approval-free; the
-  active WorkId is launcher-bound and is not a tool argument.
+  requires the agent to read bound `work_get` and only the bounded current references/message/watch state named by
+  that work before material work. Do not page `work_history` during normal grounding, takeover, re-entry, review,
+  polling, or implementation. Open history only for a bounded investigation/audit/recovery question that current durable
+  state cannot answer, then reconcile still-current meaning back into current state before normal reliance. These
+  context reads are read-only and approval-free; the active WorkId is launcher-bound and is not a tool argument.
   CONTROL supplies its existing pinned `uv` using `scripts/bootstrap --print-uv`.
   `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses its normal local cache and existing
   environment on re-entry. No primary `.venv` or separate freshness receipt is needed for checks. This development
-  convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
+  convenience is not immutable qualification evidence; exact-head CI and any exact required canary/real-host proof for the claimed boundary remain required.
   A launcher supervisor now retains ownership of a fresh child process group. On
   child exit or supervisor HUP/INT/QUIT/TERM, it sends TERM, waits one second,
   escalates to KILL if needed, and verifies no live group members remain before
