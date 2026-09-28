@@ -304,22 +304,21 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
     if not assignment:
         raise ValueError("initial assignment must not be empty")
     prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
-              'Ground this assignment with work_get(api_version="1") '
-              "without a WorkId, then reconcile its current history with "
-              "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
-              "before material work. Follow next_cursor until null; if history is stale, "
-              "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Work only in this private task clone. This is ordinary "
-              "development; the exact CONTROL hook remains active.")
+              'Ground this assignment with work_get(api_version="1") without a WorkId. '
+              'Use the current launch-bound work state and only the bounded current '
+              'references it names. Do not read work_history/comments during normal '
+              'grounding, re-entry, review, polling, or implementation; history is for '
+              'a separate bounded investigation/recovery path only. Do not resume '
+              'completed or superseded intent. Work only in this private task clone. '
+              'This is ordinary development; the exact CONTROL hook remains active.')
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
-        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
+        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get"]',
         "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
-        "-c", 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
         prompt,
     ]
