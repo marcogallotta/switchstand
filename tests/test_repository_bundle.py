@@ -26,7 +26,11 @@ REFS = {
 CHECKSUM = "c" * 64
 
 
-def client_for(refs=REFS, bundle_digest=f"sha256:{CHECKSUM}"):
+def client_for(
+    refs=REFS,
+    bundle_digest=f"sha256:{CHECKSUM}",
+    authoritative_pages=None,
+):
     manifest_url = "https://example.invalid/manifest"
     checksum_url = "https://example.invalid/checksum"
     bundle_url = "https://example.invalid/bundle"
@@ -43,6 +47,8 @@ def client_for(refs=REFS, bundle_digest=f"sha256:{CHECKSUM}"):
             {"name": CHECKSUM_NAME, "browser_download_url": checksum_url},
         ]
     }
+    pages = authoritative_pages or [REFS]
+    refs_urls = [REFS_API, *(f"{REFS_API}?page={page}" for page in range(2, len(pages) + 1))]
 
     def handle(request: httpx.Request) -> httpx.Response:
         if str(request.url) == RELEASE_API:
@@ -51,9 +57,17 @@ def client_for(refs=REFS, bundle_digest=f"sha256:{CHECKSUM}"):
             return httpx.Response(200, json=manifest)
         if str(request.url) == checksum_url:
             return httpx.Response(200, text=f"{CHECKSUM}  {BUNDLE_NAME}\n")
-        if str(request.url) == REFS_API:
-            payload = [{"ref": ref, "object": {"sha": sha}} for ref, sha in REFS.items()]
-            return httpx.Response(200, json=payload)
+        if str(request.url) in refs_urls:
+            page = refs_urls.index(str(request.url))
+            payload = [
+                {"ref": ref, "object": {"sha": sha}} for ref, sha in pages[page].items()
+            ]
+            headers = (
+                {"Link": f'<{refs_urls[page + 1]}>; rel="next"'}
+                if page + 1 < len(refs_urls)
+                else None
+            )
+            return httpx.Response(200, json=payload, headers=headers)
         raise AssertionError(str(request.url))
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handle))
@@ -93,6 +107,27 @@ async def test_resolver_rejects_stale_refs_and_asset_race():
     assert (result.status, result.reason) == ("refresh_pending", "bundle_transition")
 
 
+async def test_resolver_consumes_every_ref_page_before_accepting_current():
+    pages = [
+        {"refs/heads/main": REFS["refs/heads/main"]},
+        {"refs/heads/review": REFS["refs/heads/review"]},
+    ]
+    async with client_for(authoritative_pages=pages) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert result.status == "current"
+    assert result.refs == REFS
+
+
+async def test_resolver_rejects_drift_on_later_ref_page():
+    pages = [
+        {"refs/heads/main": REFS["refs/heads/main"]},
+        {"refs/heads/review": "d" * 40},
+    ]
+    async with client_for(authoritative_pages=pages) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("refresh_pending", "refs_advanced")
+
+
 def _git(*args: str, cwd: Path | None = None) -> str:
     return subprocess.run(
         ("git", *args), cwd=cwd, check=True, capture_output=True, text=True
@@ -130,10 +165,16 @@ def test_git_bundle_materializes_main_and_multiple_heads(tmp_path: Path):
     assert _git("-C", str(materialized), "rev-parse", "refs/remotes/origin/review") == review_sha
 
 
-def test_workflow_bundle_job_is_independent_and_branch_push_only():
-    workflow = Path(".github/workflows/quality.yml").read_text()
+def test_workflow_bundle_job_uses_reviewed_default_branch_boundary():
+    quality = Path(".github/workflows/quality.yml").read_text()
+    workflow = Path(".github/workflows/repository-bundle.yml").read_text()
+    assert "repository-bundle:" not in quality
+    assert "workflow_run:" in workflow
+    assert "workflows: [Quality]" in workflow
+    assert "branches: [main]" in workflow
     job = workflow.split("\n  repository-bundle:\n", 1)[1]
-    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')" in job
+    assert "github.event.workflow_run.event == 'push'" in job
+    assert "github.event.workflow_run.conclusion == 'success'" in job
     assert "\n    needs:" not in job
     assert "cancel-in-progress: false" in job
     assert "git -C repository.git fetch --prune origin '+refs/heads/*:refs/heads/*'" in job

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +46,31 @@ def _pending(required_sha: str | None, reason: str) -> RepositoryBundleResolutio
     )
 
 
+async def _authoritative_refs(http: httpx.AsyncClient) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    next_url: str | None = REFS_API
+    seen_urls: set[str] = set()
+    while next_url is not None:
+        if next_url in seen_urls:
+            raise ValueError("cyclic refs pagination")
+        seen_urls.add(next_url)
+        response = await http.get(next_url)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise TypeError("refs response must be a list")
+        for item in cast(list[dict[str, Any]], payload):
+            ref = str(item["ref"])
+            if not ref.startswith("refs/heads/"):
+                continue
+            if ref in refs:
+                raise ValueError("duplicate ref across pages")
+            refs[ref] = str(item["object"]["sha"])
+        next_link = response.links.get("next")
+        next_url = str(next_link["url"]) if next_link is not None else None
+    return refs
+
+
 async def resolve_repository_bundle(
     required_sha: str | None = None, client: httpx.AsyncClient | None = None,
 ) -> RepositoryBundleResolution:
@@ -78,13 +103,7 @@ async def resolve_repository_bundle(
         checksum_response.raise_for_status()
         checksum = checksum_response.text.strip().split()[0]
 
-        refs_response = await http.get(REFS_API)
-        refs_response.raise_for_status()
-        authoritative = {
-            str(item["ref"]): str(item["object"]["sha"])
-            for item in refs_response.json()
-            if str(item.get("ref", "")).startswith("refs/heads/")
-        }
+        authoritative = await _authoritative_refs(http)
         manifest_refs = {str(k): str(v) for k, v in manifest.get("refs", {}).items()}
         snapshot_digest = canonical_ref_map_digest(manifest_refs)
         expected_checksum = str(manifest.get("bundle_sha256", ""))
