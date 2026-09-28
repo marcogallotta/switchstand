@@ -18,6 +18,8 @@ from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools
@@ -30,6 +32,7 @@ from .state import PostgresState
 
 LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
+CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 
 
 def _https_resource_url(raw_value: str) -> str:
@@ -148,6 +151,7 @@ def _audit(tool: str, target: str | None, status: str) -> None:
 
 def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
+    certification_runtime: tuple[str, str] | None = None,
 ):
     """Build the inert-until-called authenticated HTTP application."""
     service = ChatGPTService(
@@ -177,7 +181,15 @@ def create_app(
         service, _audit, session_generation=lambda: get_context().session_id
     ):
         server.tool(tool)
-    return server.http_app(path="/mcp", json_response=True, stateless_http=False)
+    app = server.http_app(path="/mcp", json_response=True, stateless_http=False)
+    if certification_runtime is not None:
+        runtime_sha, run_id = certification_runtime
+
+        async def certification_readback(_request: Request) -> JSONResponse:
+            return JSONResponse({"runtime_sha": runtime_sha, "run_id": run_id})
+
+        app.add_route(CERTIFICATION_RUNTIME_PATH, certification_readback, methods=["GET"])
+    return app
 
 
 async def serve() -> None:
@@ -201,7 +213,13 @@ async def serve() -> None:
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
         }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)))
-        app = create_app(service, config)
+        runtime = None
+        if marker:
+            runtime = (
+                os.environ["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
+                os.environ["SWITCHSTAND_CERTIFICATION_RUN_ID"],
+            )
+        app = create_app(service, config, certification_runtime=runtime)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
             json_response=True, stateless_http=False, show_banner=False,

@@ -116,6 +116,21 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         assert authorization["code_challenge_methods_supported"] == ["S256"]
 
 
+def test_certification_runtime_readback_is_explicit_and_exact():
+    ordinary = create_app(service(), CONFIG, client_storage=MemoryStore())
+    certification = create_app(
+        service(), CONFIG, client_storage=MemoryStore(),
+        certification_runtime=("a" * 40, "run-1"),
+    )
+    with TestClient(ordinary) as client:
+        assert client.get("/.well-known/switchstand-certification-runtime").status_code == 404
+    with TestClient(certification) as client:
+        assert client.get("/.well-known/switchstand-certification-runtime").json() == {
+            "runtime_sha": "a" * 40,
+            "run_id": "run-1",
+        }
+
+
 async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
     async def verified(_self, token):
         subject, client_id = (
