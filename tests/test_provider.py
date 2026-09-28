@@ -4,9 +4,9 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from switchstand.contracts import WorkContext, WorkPatch, WorkPlacement
-from switchstand.core import Handle, ProviderError, ProviderRelation, UnknownEffect
-from switchstand.discovery import WorkDiscovery
+from switchstand.contracts import Routing, WorkContext, WorkPatch, WorkPlacement
+from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
+from switchstand.discovery import ProviderSearchItem
 from switchstand.provider import (
     ANCESTRY_GETS,
     ATTACHMENT_FIELDS,
@@ -48,67 +48,19 @@ def provider(*responses, test_project_gid=None):
 TEST_PROJECT = "9999999999999999"
 
 
-def identified_task(gid, **values):
-    payload = task(**values)
-    payload["data"]["gid"] = gid
-    return payload
-
-
-class BindingState:
-    def __init__(self):
-        self.handles = {}
-
-    async def bind(self, provider_name, provider_work_id):
-        key = provider_name, provider_work_id
-        self.handles.setdefault(key, Handle(uuid4(), *key))
-        return self.handles[key]
-
-    async def bind_many(self, provider_name, provider_work_ids):
-        return tuple([await self.bind(provider_name, provider_work_id)
-                      for provider_work_id in provider_work_ids])
-
-
-@pytest.mark.parametrize("fault", [None, "changed_parent", "repeated_offset"])
-async def test_structure_boundary_is_complete_or_binds_nothing(fault):
-    target = identified_task("target", parent="parent", project=PROJECT)
-    parent = identified_task("parent", project=PROJECT)
-    child_one = identified_task(
-        "child-1", parent="other" if fault == "changed_parent" else "target",
-        project=PROJECT,
+def search_task(
+    gid: str, *, title: str | None = None, completed: bool = False,
+    project: str = PROJECT, parent: str | None = None,
+) -> dict[str, object]:
+    payload = task(
+        project=project,
+        fields=[field(FIELDS["priority"], option="P1", display="P1")],
+    )["data"]
+    payload.update(
+        gid=gid, name=title or f"Task {gid}", completed=completed,
+        parent=None if parent is None else {"gid": parent},
     )
-    child_two = identified_task("child-2", parent="target", project=PROJECT)
-    responses = [
-        (200, target), (200, parent),
-        (200, {"data": [{"gid": "child-1"}],
-               "next_page": {"offset": "page-2"}}),
-        (200, child_one),
-    ]
-    if fault != "changed_parent":
-        responses.extend([
-            (200, {"data": [{"gid": "child-2"}], "next_page": (
-                {"offset": "page-2"} if fault == "repeated_offset" else None
-            )}),
-            (200, child_two),
-        ])
-    if fault is None:
-        responses.append((200, target))
-    subject, api = provider(*responses)
-    state = BindingState()
-
-    result = await WorkDiscovery("asana", subject, state).structure("target", "r1")
-
-    if fault is not None:
-        assert result is None
-        assert state.handles == {}
-        return
-    assert result is not None and result.status == "ok"
-    assert result.parent is not None and result.parent.title == "Title"
-    assert [child.title for child in result.children] == ["Title", "Title"]
-    assert set(state.handles) == {
-        ("asana", "parent"), ("asana", "child-1"), ("asana", "child-2"),
-    }
-    assert [request.url.params.get("offset") for request in api.requests
-            if request.url.path.endswith("/subtasks")] == [None, "page-2"]
+    return payload
 
 
 async def test_work_context_uses_exact_task_read_and_hides_provider_ids():
@@ -300,6 +252,215 @@ async def test_exact_get_and_effective_membership(responses, canonical, count):
     assert result and result.canonical is canonical and len(api.requests) == count
     assert api.requests[0].url.path == "/api/1.0/tasks/t"
     assert api.requests[0].url.params["opt_fields"] == OPT_FIELDS
+
+
+async def test_text_search_is_bounded_noncontinuable_and_rereads_exact_task():
+    subject, api = provider(
+        (200, {"data": [{"gid": "101"}], "next_page": None}),
+        (200, {"data": search_task("101", title="Needle")}),
+    )
+
+    page = await subject.search_work("needle", False, None, 25)
+
+    assert page.next_cursor is None
+    assert page.items == (
+        ProviderSearchItem(
+            provider_work_id="101", title="Needle", completed=False,
+            revision="r1", routing=Routing(priority="P1"),
+            context=WorkContext(placements=({"area": f"Area {PROJECT}"},)),
+        ),
+    )
+    assert len(api.requests) == 2
+    request = api.requests[0]
+    assert request.url.path.endswith("/workspaces/1200569426771227/tasks/search")
+    assert request.url.params["text"] == "needle"
+    assert request.url.params["completed"] == "false"
+    assert request.url.params["limit"] == "25"
+    assert set(request.url.params["projects.any"].split(",")) == set(PROJECTS)
+    assert "offset" not in request.url.params
+    assert api.requests[1].url.path.endswith("/tasks/101")
+
+
+async def test_search_routing_treats_disabled_optional_field_as_absent():
+    current = search_task("101")
+    current["custom_fields"].append({
+        "gid": FIELDS["horizon"],
+        "display_value": "Later",
+        "enabled": False,
+        "resource_subtype": "enum",
+        "enum_value": {"gid": "later-option"},
+        "enum_options": [{"gid": "later-option", "name": "Later", "enabled": True}],
+    })
+    subject, _ = provider(
+        (200, {"data": [{"gid": "101"}], "next_page": None}),
+        (200, {"data": current}),
+    )
+
+    page = await subject.search_work("needle", None, None, 50)
+
+    assert page.items[0].routing.horizon is None
+
+
+@pytest.mark.parametrize(
+    "problem", ["duplicate", "disabled", "wrong_subtype", "bad_option", "wrong_option"],
+)
+async def test_search_routing_rejects_malformed_required_truth(problem):
+    current = search_task("101")
+    priority = current["custom_fields"][0]
+    if problem == "duplicate":
+        current["custom_fields"].append(dict(priority))
+    elif problem == "disabled":
+        priority["enabled"] = False
+    elif problem == "wrong_subtype":
+        priority["resource_subtype"] = "text"
+    elif problem == "bad_option":
+        priority["enum_options"][0]["enabled"] = False
+    else:
+        priority["enum_value"] = {"gid": "missing-option"}
+    subject, _ = provider(
+        (200, {"data": [{"gid": "101"}], "next_page": None}),
+        (200, {"data": current}),
+    )
+
+    with pytest.raises(ProviderError):
+        await subject.search_work("needle", None, None, 50)
+
+
+async def test_text_search_rejects_provider_continuation():
+    subject, api = provider((
+        200, {"data": [{"gid": "101"}], "next_page": {"offset": "unsupported"}},
+    ))
+
+    with pytest.raises(ProviderError):
+        await subject.search_work("needle", None, None, 25)
+
+    assert len(api.requests) == 1
+
+
+async def test_list_uses_provider_offsets_then_advances_admitted_projects():
+    subject, api = provider(
+        (200, {"data": [{"gid": "101"}], "next_page": {"offset": "next"}}),
+        (200, {"data": search_task("101")}),
+        (200, {"data": [{"gid": "102"}], "next_page": None}),
+        (200, {"data": search_task("102", completed=True)}),
+        (200, {"data": [], "next_page": None}),
+    )
+
+    first = await subject.search_work(None, None, None, 1)
+    second = await subject.search_work(None, None, first.next_cursor, 1)
+    third = await subject.search_work(None, None, second.next_cursor, 1)
+
+    projects = sorted(PROJECTS)
+    assert first.next_cursor == "0:next"
+    assert second.next_cursor == "1:" and third.next_cursor == "2:"
+    assert [item.provider_work_id for item in first.items + second.items] == ["101", "102"]
+    assert api.requests[0].url.params["project"] == projects[0]
+    assert api.requests[0].url.params["completed_since"] == "1970-01-01T00:00:00Z"
+    assert "offset" not in api.requests[0].url.params
+    assert api.requests[2].url.params["offset"] == "next"
+    assert api.requests[4].url.params["project"] == projects[1]
+
+
+async def test_list_emits_multihomed_task_only_from_its_first_admitted_project():
+    projects = sorted(PROJECTS)
+    shared = search_task("101", project=projects[0])
+    shared["memberships"].append({
+        "project": {"gid": projects[1], "name": f"Area {projects[1]}"},
+        "section": None,
+    })
+    subject, _ = provider(
+        (200, {"data": [{"gid": "101"}], "next_page": None}),
+        (200, {"data": shared}),
+        (200, {"data": [{"gid": "101"}], "next_page": None}),
+        (200, {"data": shared}),
+    )
+
+    first = await subject.search_work(None, None, None, 1)
+    second = await subject.search_work(None, None, first.next_cursor, 1)
+
+    assert [item.provider_work_id for item in first.items] == ["101"]
+    assert second.items == () and second.next_cursor == "2:"
+
+
+@pytest.mark.parametrize(
+    "text,cursor,limit",
+    [
+        (None, "", 50),
+        (None, "x" * 1025, 50),
+        ("", None, 50),
+        (None, None, 101),
+        ("needle", "invented-offset", 25),
+    ],
+)
+async def test_search_rejects_unbounded_inputs_before_request(text, cursor, limit):
+    subject, api = provider()
+
+    with pytest.raises(ProviderError):
+        await subject.search_work(text, None, cursor, limit)
+
+    assert api.requests == []
+
+
+@pytest.mark.parametrize("problem", ["bad_cursor", "repeated_cursor", "too_many"])
+async def test_list_rejects_invalid_provider_page(problem):
+    cursor, rows, next_page = None, [], None
+    if problem == "bad_cursor":
+        next_page = {"offset": ""}
+    elif problem == "repeated_cursor":
+        cursor, next_page = "0:same", {"offset": "same"}
+    else:
+        rows = [{"gid": "101"}, {"gid": "102"}]
+    subject, _ = provider((200, {"data": rows, "next_page": next_page}))
+
+    with pytest.raises(ProviderError):
+        await subject.search_work(None, None, cursor, 1)
+
+
+async def test_search_provider_failure_is_closed():
+    subject, _ = provider((503, {}))
+
+    with pytest.raises(ProviderError):
+        await subject.search_work(None, None, None, 50)
+
+
+@pytest.mark.parametrize("fault", [None, "changed_child_parent", "repeated_offset"])
+async def test_structure_work_returns_only_a_complete_verified_snapshot(fault):
+    target = search_task("target", parent="parent")
+    parent = search_task("parent")
+    child_one = search_task(
+        "child-1", parent="other" if fault == "changed_child_parent" else "target",
+    )
+    child_two = search_task("child-2", parent="target")
+    responses = [
+        (200, {"data": target}),
+        (200, {"data": parent}),
+        (200, {"data": [{"gid": "child-1"}], "next_page": {"offset": "page-2"}}),
+        (200, {"data": child_one}),
+    ]
+    if fault != "changed_child_parent":
+        responses.extend([
+            (200, {"data": [{"gid": "child-2"}], "next_page": (
+                {"offset": "page-2"} if fault == "repeated_offset" else None
+            )}),
+            (200, {"data": child_two}),
+        ])
+    if fault is None:
+        responses.append((200, {"data": target}))
+    subject, api = provider(*responses)
+
+    if fault is not None:
+        with pytest.raises(ProviderError, match="provider structure unavailable"):
+            await subject.structure_work("target", "r1")
+        return
+
+    result = await subject.structure_work("target", "r1")
+
+    assert result.status == "ok" and result.revision == "r1"
+    assert result.parent is not None and result.parent.provider_work_id == "parent"
+    assert [child.provider_work_id for child in result.children] == ["child-1", "child-2"]
+    assert [request.url.params.get("offset") for request in api.requests
+            if request.url.path.endswith("/subtasks")] == [None, "page-2"]
+
 async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
     fields = [field(gid, option=name, display=name) for name, gid in FIELDS.items()]
