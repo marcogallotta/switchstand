@@ -287,6 +287,17 @@ def test_serve_mapping_requires_exact_external_route(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match=r"conflicting path handlers: /mcp"):
         _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
     del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp"]
+    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/m"] = {
+        "Proxy": "http://127.0.0.1:8799"
+    }
+    _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
+    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp/"] = {
+        "Proxy": "http://127.0.0.1:8799"
+    }
+    with pytest.raises(RuntimeError, match=r"conflicting path handlers: /mcp/"):
+        _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
+    del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/m"]
+    del status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/mcp/"]
     status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/"]["Proxy"] = (
         "http://127.0.0.1:8799"
     )

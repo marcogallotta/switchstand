@@ -215,7 +215,10 @@ def _verify_serve_mapping(root: Path, resource: str, port: int) -> None:
     )
     conflicts = sorted(
         path for path in handlers
-        if path != "/" and any(target.startswith(path) for target in protected_paths)
+        if path != "/" and any(
+            target == path.rstrip("/") or target.startswith(path.rstrip("/") + "/")
+            for target in protected_paths
+        )
     )
     if conflicts:
         raise RuntimeError(
