@@ -146,7 +146,9 @@ def build_ordinary_tools(
     generation = session_generation or (lambda: (_ for _ in ()).throw(
         RuntimeError("MCP session generation unavailable")
     ))
-    chat_identity = agent_identity or generation
+    chat_identity = agent_identity or (lambda: (_ for _ in ()).throw(
+        RuntimeError("ChatGPT runtime identity unavailable")
+    ))
     current_generations: dict[tuple[str, UUID, UUID, int], str] = {}
     retired_generations: dict[tuple[str, UUID, UUID, int], set[str]] = {}
     currentness_locks: dict[tuple[str, UUID, UUID, int], asyncio.Lock] = {}

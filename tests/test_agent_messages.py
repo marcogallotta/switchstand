@@ -34,7 +34,11 @@ async def agent_messaging(database_prerequisite):
         resolve, PostgresState(engine), GrantState(engine), {},
         MessageState(engine, GrantState(engine)),
     )
-    tools = dict(build_ordinary_tools(service, session_generation=lambda: session[0]))
+    tools = dict(build_ordinary_tools(
+        service,
+        session_generation=lambda: "legacy-session",
+        agent_identity=lambda: session[0],
+    ))
     yield tools, actor, session, owner, other, service
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
@@ -54,7 +58,11 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     delivery = sent.message.delivery_id
 
     # A fresh tool/server binding models a new MCP transport and process with the same chat metadata.
-    restarted = dict(build_ordinary_tools(service, session_generation=lambda: session[0]))
+    restarted = dict(build_ordinary_tools(
+        service,
+        session_generation=lambda: "new-legacy-session",
+        agent_identity=lambda: session[0],
+    ))
     session[0] = "chat-b"
     assert (await restarted["agent_message_receive"]("1", delivery)).state == "RECEIVED"
     result_id = uuid4()
@@ -72,7 +80,7 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
 
 
 async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messaging):
-    tools, _actor, session, _owner, _other, _service = agent_messaging
+    tools, _actor, session, _owner, _other, service = agent_messaging
     session[0] = ""
     registration = await tools["agent_register"]("1", "Alpha")
     assert (registration.status, registration.reason) == (
@@ -80,6 +88,14 @@ async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messag
     )
     # Unrelated ordinary tools remain registered and callable through their own admission paths.
     assert "work_get" in tools and "repository_bundle_get" in tools
+
+    legacy_only = dict(build_ordinary_tools(
+        service, session_generation=lambda: "transport-session"
+    ))
+    unavailable = await legacy_only["agent_register"]("1", "TransportFallback")
+    assert (unavailable.status, unavailable.reason) == (
+        "recovery_required", "runtime_identity_unavailable",
+    )
 
 
 async def test_takeover_preserves_delivery_and_fences_old_session(agent_messaging):
