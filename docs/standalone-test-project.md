@@ -24,10 +24,12 @@ cases limit the claim. This is landing evidence for the default-off code, not
 live Asana activation evidence.
 
 An authorized exact launcher task can be provisioned and read when its own
-membership or bounded ancestor lineage reaches this project. Ordinary
-`suggest_next` discovery still scans only the eight production projects. Project
-membership routes admission; it does not create a WorkId or grant a provider
-effect. The existing active-work and grant checks still govern writes.
+membership or bounded ancestor lineage reaches this project. On a configured
+test host, the provider runs in `test_only` mode: admission is restricted to the
+exact test-project lineage, foreign or mixed production membership fails closed,
+and `work_search` is therefore isolated to that test boundary. Project membership
+routes admission; it does not create a WorkId or grant a provider effect. The
+existing active-work and grant checks still govern writes.
 
 Landing this default-off code does not activate a live test. Activation needs
 separate authorization, an exact disposable test task, trusted configuration

@@ -28,8 +28,8 @@ There are multiple deliberately different MCP surfaces; there is no three-tool g
 provider-neutral work discovery/read/structure/history/attachment/event operations, protected append/create/update,
 durable message send/pending, and required-result saving. The repository Codex config explicitly allowlists this
 ordinary inventory; edge registration and that allowlist must remain synchronized. `source_task`, `source_stories` and
-`source_story` remain public transitional raw-Asana reads for legacy recovery/reference workflows; they are not
-the preferred provider-neutral product vocabulary.
+`source_story` are not part of this ordinary surface; they remain transitional managed compatibility reads for
+bounded legacy recovery/reference workflows.
 
 **Managed task-bound STDIO MCP** (`mcp.py::build_server`) binds one active WorkId plus bounded references from
 trusted launch state. It exposes launch-bound work/history/attachment/event reads, the transitional exact-source reads,

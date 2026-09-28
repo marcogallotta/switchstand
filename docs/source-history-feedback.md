@@ -1,128 +1,81 @@
-# Source, history and feedback
+# MCP work, history, messaging, and source compatibility
 
-This capability exposes `work_get`, `source_task`, `source_stories`,
-`source_story` and `work_append`. It uses the existing state and Asana adapter;
-the optional related-work read finds direct-child and Root Work GID field
-candidates without new relation authority, assignment, generic update or event store.
+Switchstand's current MCP model is provider-neutral and WorkId-based. Ordinary
+clients discover or resolve admitted work, then use work, structure, history,
+attachment, event, and protected-effect operations. Managed Codex receives its
+active and reference WorkIds from the trusted launcher; those bindings, not tool
+arguments or readable provider records, define its work boundary.
 
-## Read the assignment and its evidence
+## Current work and history
 
-Call `work_get(api_version="1")` for the launch-bound assignment. `item.id` is
-the opaque WorkId. `item.source.provider` and `item.source.task_gid` identify
-the underlying task. A source task GID is never a WorkId and never grants work
-or write authority. WorkId reads remain limited to the active work and the
-launch-bound references.
+Call `work_get(api_version="1")` for the launch-bound assignment, or pass an
+admitted WorkId where the ordinary tool schema permits it. `item.id` is the
+opaque WorkId. Use the returned revision when reading bounded history,
+attachments, or exact events. A stale result means reread current work and
+restart the affected paginated read; partial, malformed, unavailable, or stale
+pages never prove complete history.
 
-For a bound WorkId, `work_get(api_version="1", include_related=True)` also reads
-up to 100 direct Asana subtasks. `related.candidates` includes exact task GID,
-title, revision and verified parent GID; a Work Type option appears only when
-the current enum field and option validate. `CANDIDATES` means this bounded
-relation read completed against the observed work revision and configured area
-boundary. `UH_OH` means no direct child was returned, or the read was
-incomplete, stale or unavailable; any partial candidates are evidence to inspect,
-not a complete set. A work task that becomes noncanonical returns `denied`
-without candidates.
-Candidate roles do not establish the current spec, canonical review, gate
-requiredness or named proof. Those require their own authoritative sources.
+Ordinary workspace clients can use provider-neutral search and exact legacy
+reference resolution where their current admission permits it. Resolution maps
+an already identified provider reference to admitted work; it does not make a
+provider task ID a WorkId or grant authority. Structure and search results are
+discovery evidence, not reassignment, approval, or permission to write.
 
-The same opt-in read returns `grouped` separately from `related`. It searches
-one bounded Asana workspace page for the exact Root Work GID text field value
-equal to the bound work task GID, restricted to configured admission projects.
-Each returned task is reread by exact GID and admitted only when its enabled
-text field still matches and its source is canonical. Candidate evidence includes
-task GID, title, revision, observed root GID and search plus exact-GET provenance.
-`grouped.complete` is always `false`: search indexing and its 100-result cap
-cannot prove family completeness or absence. Zero results, unavailable search,
-malformed or changed rows return `UH_OH`. Field membership grants no work or
-write authority.
+Before relying on material mutable evidence, reread its exact current work or
+event representation. Readability does not imply authority, and status labels
+do not establish that an external effect occurred.
 
-For an exact Asana task already identified by the assignment or its evidence,
-call `source_task(api_version="1", task_gid=...)`. Source reads accept explicit
-Asana GIDs and require membership in the configured approved Switchstand area
-registry, directly or through the existing bounded ancestor walk. During a
-partial area cutover the configured registry may still include the legacy root
-for not-yet-cut-over concerns. Reading a source does not bind it as active work.
-Requests outside that configured boundary return `denied`.
+## Durable messaging and feedback
 
-Use the returned revision for `source_stories(api_version="1", task_gid=...,
-observed_revision=..., limit=50)`. Each call reads at most 100 stories. Pass
-only the returned `next_offset` into the next call for the same task/revision;
-`next_offset=null` ends pagination. A changed task revision returns `stale`
-with no stories: reread the task and restart the affected history read.
-Malformed pages, mismatched targets or unusable cursors never mean complete
-history. An expired provider cursor is an error; restart from a fresh read.
+Durable message tools are the current agent-to-agent messaging surface. The
+work-addressed family sends to an admitted recipient work route and provides
+pending, receive/recover, correlated result, and disposition operations. The
+registered-agent family provides the equivalent lifecycle for an immutable
+registered agent name when that route is appropriate. Delivery, receipt,
+disposition, effect, and completion are distinct states.
 
-Task revision guards bracket each history page, but they are not an atomic
-snapshot of all comment text. Before relying on material comments in a final
-finding or decision, call `source_story(api_version="1", task_gid=...,
-story_gid=..., observed_revision=...)` for each exact story used, and compare
-the current content. Edited comments may not advance the task revision.
-Changed, deleted, unavailable or retargeted evidence reopens the affected
-reasoning. Reread the owner/task too. Do not infer approval from readability.
+Use `work_append` only for bounded feedback on writable admitted work. The
+controller applies the current grant, revision, operation identity, provider
+effect, and exact readback rules. `unknown` means an effect may have happened:
+reconcile current evidence and never blindly retry. `denied`, `stale`, and
+provider failure are not success.
 
-## Append feedback
+Managed active-inbox behavior is instruction-led. Agents check the exact bound
+message/history surfaces during active work and on re-entry; there is no daemon,
+generic inbox scan, inactive-session wake, or authority inferred from message
+delivery. A sender's successful send is not recipient pickup.
 
-Call `work_append(api_version="1", work_id=<active item.id>, text=...)` only
-for the active assignment. Reference WorkIds and Asana GIDs cannot select a
-writable task. The controller serializes same-work effects, issues one POST,
-rereads the exact created story and target, and checks story ID, task ID and
-text before returning `ok` with `task_gid` and `story_gid`.
+## Raw source compatibility
 
-`unknown` means the effect may have happened. Never blindly retry the append.
-Reconcile exact evidence already available; if the story identity is unknown,
-preserve that uncertainty. `denied` and `provider_error` are not success.
-An error after the POST or failed readback remains `unknown`.
+`source_task`, `source_stories`, and `source_story` are bounded compatibility
+reads on the managed surface for exact provider records still needed by legacy,
+reference, recovery, or failback flows. They are not the ordinary current MCP
+mental model and should not be copied into new ordinary workflows.
 
-## Active Codex inbox
+Where supported, source reads accept an exact provider task identity already
+supplied by the assignment or its evidence and enforce the configured provider
+boundary. Page stories using only the returned cursor and observed revision;
+restart after `stale`. Before a consequential claim based on mutable comment
+content, reread the exact story. Source readability neither binds active work nor
+grants an effect, and a provider task ID never substitutes for a WorkId.
 
-`scripts/switchstand --isolated --active <task> --commit <exact-candidate-SHA>` supplies Codex with an initial
-request to read its bound work and follow the repository's Active inbox routine.
-An optional caller prompt is preserved inside that same initial request. No
-extra prompt from Marco is needed to begin inbox loading. The active source
-task's comments are the shared ChatGPT/Codex message surface; other source tasks
-remain read-only evidence. ChatGPT sends scoped messages there through its Asana
-connector and reads Codex's receipts/results from the same task.
+Compatibility retirement is proof-gated: remove raw source reads only after all
+required ordinary, recovery, and failback consumers have verified neutral
+replacement coverage. Until then, keep compatibility use narrow and keep new
+current guidance on WorkId-based APIs.
 
-The routine checks comments during active work and reconstructs handled/pending
-messages on re-entry, using the existing five tools. It critically checks incoming
-requests and never treats message delivery as authority. Polling is instruction-led:
-this change adds no daemon, enforced timer, inactive-session wake or remote launcher.
+## Surface boundaries
 
-The existing [message canary](https://app.asana.com/0/0/1218432166274128/f)
-must establish actual model follow-through separately from command-assembly tests:
+- The HTTP/OAuth edge is the ordinary workspace surface and uses authenticated
+  principal admission plus explicit WorkIds.
+- Managed task-bound Codex uses the launcher-controlled STDIO surface with
+  injected active/reference WorkIds; raw source reads exist there only for the
+  bounded compatibility cases above.
+- Context-only launches expose only the minimal current-work/history view needed
+  by that context contract.
+- The development MCP owns local check, commit, quality, and run-status mechanics;
+  it grants no product work authority.
 
-1. On an authorized real task, leave a relevant inbound comment, then start managed
-   Codex without a custom prompt. Observe automatic assignment/history loading and
-   a receipt/disposition naming that exact message, without a manual relay.
-2. During ordinary authorized work, send a second scoped message from ChatGPT to
-   that inbox. Observe pickup, authority checking and exact feedback readback.
-   Include an unrelated/unauthorized request and verify no unrelated effect occurs.
-3. Re-enter the same assignment. Verify completed messages do not repeat effects,
-   pending messages remain visible and an ambiguous result is reconciled rather
-   than retried. Record the actual run/head, input and result story IDs and outcome.
-
-Code presence and passing tests do not graduate this canary. An inactive run
-still needs an actual start; a completed assignment does not listen in the background.
-
-## First real use
-
-Automated checks and fresh independent review establish code confidence.
-They do not establish provider qualification or a live Codex run.
-
-After the exact candidate is landed and callable on the approved Codex
-execution surface, use the existing capability canary on real work:
-
-1. Read the bound assignment; verify its source task identity with an exact
-   task read. Read a needed source/history page and reread a material story.
-2. Append one authorized, bounded feedback result to that active work and
-   verify the exact returned story and task through the source tools.
-3. Have the owner ingest the result. Record the capability's observed behavior,
-   consequence, smallest correction and exact evidence on the existing canary.
-
-Keep useful lower capabilities in use. Make the smallest demonstrated fix
-before building on top; expand Codex's authoring/testing/delivery role only
-when the corresponding capability has been exercised successfully.
-
-Provider semantics: [task revisions](https://developers.asana.com/reference/tasks),
-[paginated stories](https://developers.asana.com/reference/getstoriesfortask),
-and [exact story reads](https://developers.asana.com/reference/getstory).
+The executable factories, schemas, allowlists, and tests are authoritative for
+the exact inventory on each surface. Documentation describes stable semantics;
+it must not replace those owners with a volatile hand-maintained tool count.
