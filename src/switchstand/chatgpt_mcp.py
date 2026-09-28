@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from argparse import Namespace
 from collections.abc import Callable
@@ -38,6 +39,7 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
+from .durable_agent_project import BootstrapError
 from .durable_agent_project import apply as apply_agent_project
 from .durable_agent_project import dry_run as dry_run_agent_project
 from .grants import (
@@ -221,9 +223,14 @@ def build_ordinary_tools(
         team_gid: str, main_project_gid: str, priority_field_gid: str,
         work_kind_field_gid: str, currentness_field_gid: str,
         canonical_concern_field_gid: str, apply: bool = False,
-    ) -> dict[str, Any]:
+    ) -> CallToolResult:
         """Preview or apply the existing durable-agent Asana project bootstrap."""
         del api_version
+        def result(value: dict[str, Any]) -> CallToolResult:
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(value))],
+                structured_content=value,
+            )
         args = Namespace(
             role=role, project_name=project_name, workspace_gid=workspace_gid,
             team_gid=team_gid, main_project_gid=main_project_gid,
@@ -232,12 +239,17 @@ def build_ordinary_tools(
                     "canonical_concern": canonical_concern_field_gid},
         )
         if not apply:
-            return dry_run_agent_project(args)
+            return result(dry_run_agent_project(args))
         def run() -> dict[str, Any]:
             with httpx.Client(base_url="https://app.asana.com/api/1.0", trust_env=False,
                               headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"}) as client:
                 return apply_agent_project(client, args)
-        return await asyncio.to_thread(run)
+        try:
+            return result(await asyncio.to_thread(run))
+        except BootstrapError as error:
+            return CallToolResult(
+                content=[TextContent(type="text", text=str(error))], is_error=True,
+            )
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
