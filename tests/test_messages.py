@@ -42,7 +42,7 @@ def digest(evidence: DispositionEvidence) -> str:
 
 
 @pytest.fixture
-async def subject():
+async def subject(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for PostgreSQL message tests")

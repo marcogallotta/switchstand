@@ -23,7 +23,7 @@ from switchstand.state import PostgresState, metadata
 
 
 @pytest.fixture
-async def result_engine() -> AsyncEngine:
+async def result_engine(database_prerequisite) -> AsyncEngine:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for required-result integration tests")
