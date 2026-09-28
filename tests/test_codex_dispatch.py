@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).parents[1]
 
 
@@ -27,7 +26,9 @@ def launcher(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     git(repo, "config", "user.email", "test@example.com")
     scripts = repo / "scripts"
     scripts.mkdir()
+    assert os.access(ROOT / "scripts" / "codex-dispatch", os.X_OK)
     shutil.copy2(ROOT / "scripts" / "codex-dispatch", scripts / "codex-dispatch")
+    shutil.copy2(ROOT / "scripts" / "switchstand", scripts / "switchstand")
     (scripts / "codex-coordinator-profile").write_text("#!/bin/sh\nexit 0\n")
     (scripts / "codex-coordinator-profile").chmod(0o755)
     git(repo, "add", "scripts")
@@ -45,7 +46,12 @@ def launcher(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
 
 def launch(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [repo / "scripts" / "codex-dispatch"], cwd=repo, env=env, text=True, capture_output=True
+        [repo / "scripts" / "switchstand", "--coordinator"],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
 
@@ -79,6 +85,25 @@ def test_control_failure_blocks_before_profile_or_codex(
     assert not (Path(env["HOME"]) / ".local/state/switchstand/codex/coordinator").exists()
 
 
+def test_canonical_checkout_behind_remote_blocks_coordinator(
+    launcher: tuple[Path, Path, dict[str, str]], tmp_path: Path
+) -> None:
+    repo, remote, env = launcher
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", remote, other], check=True, capture_output=True)
+    git(other, "config", "user.name", "Test")
+    git(other, "config", "user.email", "test@example.com")
+    git(other, "commit", "--allow-empty", "-m", "Advance remote main")
+    git(other, "push", "origin", "main")
+
+    result = launch(repo, env)
+
+    assert result.returncode != 0
+    assert "STALE Coordinator control:" in result.stderr
+    assert "launched" not in result.stdout
+    assert not (Path(env["HOME"]) / ".local/state/switchstand/codex/coordinator").exists()
+
+
 def test_old_linked_worktree_cannot_launch_coordinator(
     launcher: tuple[Path, Path, dict[str, str]], tmp_path: Path
 ) -> None:
@@ -103,7 +128,12 @@ def test_outside_canonical_repo_keeps_plain_codex_route(
     outside = tmp_path / "outside"
     outside.mkdir()
     result = subprocess.run(
-        [repo / "scripts" / "codex-dispatch"], cwd=outside, env=env, text=True, capture_output=True
+        [repo / "scripts" / "codex-dispatch"],
+        cwd=outside,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert result.returncode == 0
