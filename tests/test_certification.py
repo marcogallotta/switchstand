@@ -18,6 +18,7 @@ from switchstand.certification import (
     _reset_database,
     _supervise_edge,
     certification_lock,
+    _verify_serve_mapping,
     run,
 )
 
@@ -189,13 +190,17 @@ async def test_supervisor_restarts_child_then_reaps_on_stop(monkeypatch, tmp_pat
         children.append(child)
         return child
 
-    async def ready(_child, _port, _resource):
+    async def ready(_child, _port, _resource, _runtime_sha, _run_id):
         callback = callbacks[signal.SIGHUP if len(children) == 1 else signal.SIGTERM]
         callback()  # type: ignore[operator]
 
     monkeypatch.setattr("switchstand.certification.asyncio.create_subprocess_exec", spawn)
     monkeypatch.setattr("switchstand.certification._ready", ready)
-    await _supervise_edge(tmp_path, {}, 8797, CERTIFICATION_RESOURCE)
+    environment = {
+        "SWITCHSTAND_CERTIFICATION_RUNTIME_SHA": "a" * 40,
+        "SWITCHSTAND_CERTIFICATION_RUN_ID": "run-1",
+    }
+    await _supervise_edge(tmp_path, environment, 8797, CERTIFICATION_RESOURCE)
     assert len(children) == 2
     assert all(child.returncode == 0 for child in children)
 
@@ -204,12 +209,13 @@ async def test_supervisor_restarts_child_then_reaps_on_stop(monkeypatch, tmp_pat
 
     monkeypatch.setattr("switchstand.certification._ready", not_ready)
     with pytest.raises(RuntimeError, match="readiness failed"):
-        await _supervise_edge(tmp_path, {}, 8797, CERTIFICATION_RESOURCE)
+        await _supervise_edge(tmp_path, environment, 8797, CERTIFICATION_RESOURCE)
     assert children[-1].returncode == 0
 
 
 async def test_readiness_requires_local_and_external_exact_metadata(monkeypatch):
     seen: list[str] = []
+    runtime = {"runtime_sha": "a" * 40, "run_id": "run-1"}
 
     class Client:
         async def __aenter__(self):
@@ -220,14 +226,66 @@ async def test_readiness_requires_local_and_external_exact_metadata(monkeypatch)
 
         async def get(self, url):
             seen.append(url)
-            return SimpleNamespace(status_code=200, json=lambda: {"resource": CERTIFICATION_RESOURCE})
+            payload = runtime if url.endswith("switchstand-certification-runtime") else {
+                "resource": CERTIFICATION_RESOURCE
+            }
+            return SimpleNamespace(status_code=200, json=lambda: payload)
 
     monkeypatch.setattr("switchstand.certification.httpx.AsyncClient", lambda **_: Client())
-    await _ready(SimpleNamespace(returncode=None), 8798, CERTIFICATION_RESOURCE)  # type: ignore[arg-type]
+    await _ready(
+        SimpleNamespace(returncode=None), 8798, CERTIFICATION_RESOURCE, "a" * 40, "run-1"
+    )  # type: ignore[arg-type]
     assert seen == [
         "http://127.0.0.1:8798/.well-known/oauth-protected-resource/mcp",
+        "http://127.0.0.1:8798/.well-known/switchstand-certification-runtime",
         "https://laptop.tail46f0b9.ts.net:8446/.well-known/oauth-protected-resource/mcp",
+        "https://laptop.tail46f0b9.ts.net:8446/.well-known/switchstand-certification-runtime",
     ]
+
+
+async def test_readiness_rejects_stale_external_runtime(monkeypatch):
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def get(self, url):
+            if url.endswith("oauth-protected-resource/mcp"):
+                payload = {"resource": CERTIFICATION_RESOURCE}
+            else:
+                payload = {"runtime_sha": "a" * 40, "run_id": "run-1"}
+                if url.startswith("https://"):
+                    payload["run_id"] = "stale-run"
+            return SimpleNamespace(status_code=200, json=lambda: payload)
+
+    monkeypatch.setattr("switchstand.certification.httpx.AsyncClient", lambda **_: Client())
+    with pytest.raises(RuntimeError, match="different runtime binding"):
+        await _ready(
+            SimpleNamespace(returncode=None), 8798, CERTIFICATION_RESOURCE,
+            "a" * 40, "run-1",
+        )  # type: ignore[arg-type]
+
+
+def test_serve_mapping_requires_exact_external_route(monkeypatch, tmp_path):
+    status = {
+        "TCP": {"8446": {"HTTPS": True}},
+        "Web": {
+            "laptop.tail46f0b9.ts.net:8446": {
+                "Handlers": {"/": {"Proxy": "http://127.0.0.1:8798"}}
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "switchstand.certification._run", lambda *_args, **_kwargs: __import__("json").dumps(status)
+    )
+    _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
+    status["Web"]["laptop.tail46f0b9.ts.net:8446"]["Handlers"]["/"]["Proxy"] = (
+        "http://127.0.0.1:8799"
+    )
+    with pytest.raises(RuntimeError, match="mapping mismatch"):
+        _verify_serve_mapping(tmp_path, CERTIFICATION_RESOURCE, 8798)
 
 
 async def test_run_orders_preclean_before_database_and_final_cleanup(monkeypatch, tmp_path: Path):
@@ -248,6 +306,7 @@ async def test_run_orders_preclean_before_database_and_final_cleanup(monkeypatch
     }
     monkeypatch.setattr("switchstand.certification._required", values.__getitem__)
     monkeypatch.setattr("switchstand.certification._verify_runtime", lambda *_: None)
+    monkeypatch.setattr("switchstand.certification._verify_serve_mapping", lambda *_: None)
     monkeypatch.setattr("switchstand.certification._preflight_port", lambda *_: None)
     monkeypatch.setattr("switchstand.certification.validate_test_database_url", lambda url: url)
 

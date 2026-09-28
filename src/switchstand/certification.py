@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import json
 import os
+import secrets
 import signal
 import socket
 import subprocess
@@ -19,7 +21,7 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .chatgpt_edge import _https_resource_url
+from .chatgpt_edge import CERTIFICATION_RUNTIME_PATH, _https_resource_url
 from .database import validate_test_database_url
 
 MARKER = "SWITCHSTAND_CERTIFICATION_OWNER_V1"
@@ -187,9 +189,31 @@ def verify_certification_runtime(root: Path, expected: str) -> None:
     _verify_runtime(root, expected)
 
 
-async def _ready(child: asyncio.subprocess.Process, port: int, resource: str) -> None:
+def _verify_serve_mapping(root: Path, resource: str, port: int) -> None:
+    try:
+        status = json.loads(_run(["tailscale", "serve", "status", "--json"], root))
+    except (json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("cannot read certification Tailscale Serve mapping") from exc
+    authority = resource.removeprefix("https://").removesuffix("/mcp")
+    expected_proxy = f"http://127.0.0.1:{port}"
+    try:
+        https = status["TCP"][str(int(authority.rsplit(":", 1)[1]))]["HTTPS"]
+        proxy = status["Web"][authority]["Handlers"]["/"]["Proxy"]
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise RuntimeError("certification Tailscale Serve mapping is missing") from exc
+    if https is not True or proxy != expected_proxy:
+        raise RuntimeError(
+            f"certification Tailscale Serve mapping mismatch: expected {authority} -> "
+            f"{expected_proxy}"
+        )
+
+
+async def _ready(
+    child: asyncio.subprocess.Process, port: int, resource: str, runtime_sha: str, run_id: str,
+) -> None:
     metadata = "/.well-known/oauth-protected-resource/mcp"
-    endpoints = (f"http://127.0.0.1:{port}{metadata}", resource.removesuffix("/mcp") + metadata)
+    bases = (f"http://127.0.0.1:{port}", resource.removesuffix("/mcp"))
+    expected_runtime = {"runtime_sha": runtime_sha, "run_id": run_id}
     deadline = asyncio.get_running_loop().time() + 10
     async with httpx.AsyncClient(trust_env=False, timeout=0.2) as client:
         while asyncio.get_running_loop().time() < deadline:
@@ -198,14 +222,27 @@ async def _ready(child: asyncio.subprocess.Process, port: int, resource: str) ->
                     f"certification edge exited before readiness: {child.returncode}"
                 )
             try:
-                for endpoint in endpoints:
-                    response = await client.get(endpoint)
-                    payload = response.json()
-                    if (response.status_code != 200 or not isinstance(payload, dict)
-                            or cast(JSON, payload).get("resource") != resource):
+                for base in bases:
+                    metadata_response = await client.get(base + metadata)
+                    metadata_payload = metadata_response.json()
+                    if (metadata_response.status_code != 200
+                            or not isinstance(metadata_payload, dict)
+                            or cast(JSON, metadata_payload).get("resource") != resource):
+                        break
+                    runtime_response = await client.get(base + CERTIFICATION_RUNTIME_PATH)
+                    runtime_payload = runtime_response.json()
+                    if (runtime_response.status_code == 200
+                            and isinstance(runtime_payload, dict)
+                            and runtime_payload != expected_runtime):
+                        raise RuntimeError(
+                            "certification route reached a different runtime binding"
+                        )
+                    if runtime_response.status_code != 200 or runtime_payload != expected_runtime:
                         break
                 else:
                     return
+            except RuntimeError:
+                raise
             except (OSError, httpx.HTTPError, ValueError):
                 pass
             await asyncio.sleep(0.1)
@@ -238,7 +275,11 @@ async def _supervise_edge(
                 sys.executable, "-m", "switchstand.chatgpt_edge", cwd=root, env=environment,
             )
             try:
-                await _ready(child, port, resource)
+                await _ready(
+                    child, port, resource,
+                    environment["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
+                    environment["SWITCHSTAND_CERTIFICATION_RUN_ID"],
+                )
                 print(f"CERTIFICATION_EDGE_READY CHILD_PID={child.pid}", flush=True)
                 waits = (asyncio.create_task(child.wait()), asyncio.create_task(stop.wait()),
                          asyncio.create_task(restart.wait()))
@@ -305,6 +346,8 @@ async def run() -> None:
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
         "SWITCHSTAND_MCP_BIND_PORT": port,
         "SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER": marker,
+        "SWITCHSTAND_CERTIFICATION_RUNTIME_SHA": expected,
+        "SWITCHSTAND_CERTIFICATION_RUN_ID": secrets.token_hex(32),
     }
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     with certification_lock(state):
@@ -316,6 +359,7 @@ async def run() -> None:
         cleaner = FixtureCleaner(client, project, marker)
         failures: list[str] = []
         try:
+            _verify_serve_mapping(root, resource, int(port))
             await cleaner.clean()
         except Exception:
             await client.aclose()

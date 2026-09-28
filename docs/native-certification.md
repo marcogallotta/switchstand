@@ -17,7 +17,14 @@ tailnet-only Tailscale Serve HTTPS origin using
 `tailscale serve --yes --bg --https=8446 http://127.0.0.1:8798`, with
 exact `/mcp` resource and `/auth/callback`; register that exact callback in the
 certification OAuth app. Before launch, read back `tailscale serve status --json`
-and require the exact `8446` → `127.0.0.1:8798` mapping. The process rejects a
+and require the exact `8446` → `127.0.0.1:8798` mapping; the supervisor now
+performs this check and refuses to start if the executable mapping differs. Each run
+also gives the edge an ephemeral run ID. Readiness requires both the loopback and
+external origins to return that ID and the pinned runtime SHA from
+`/.well-known/switchstand-certification-runtime`; compatible metadata from a stale
+route cannot certify the run. The readback route exists only on the certification
+edge. A missing or mismatched mapping/readback leaves certification NOT_RUN/UNKNOWN;
+it is never PASS. The process rejects a
 dirty/wrong checkout, production database aliases, the production port, mixed
 project lineage and nonempty unowned test-project contents before serving.
 
