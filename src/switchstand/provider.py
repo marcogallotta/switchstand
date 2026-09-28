@@ -4,8 +4,6 @@ from uuid import UUID
 import httpx
 
 from .contracts import (
-    GroupedCandidate,
-    GroupedLookup,
     RelatedCandidate,
     RelatedLookup,
     Routing,
@@ -38,7 +36,6 @@ PROJECTS = (
 )
 PROJECT = PROJECTS[0]
 WORKSPACE = "1200569426771227"
-ROOT_WORK_GID = "1218524557926403"
 ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
@@ -557,107 +554,6 @@ class AsanaProvider:
             )
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("provider structure unavailable") from None
-
-    async def find_grouped(self, root_task_gid: str) -> GroupedLookup:
-        """Discover bounded field matches; verified candidates never prove family completeness."""
-        candidates: list[GroupedCandidate] = []
-        observed_revision: str | None = None
-
-        def uncertain(reason: str) -> GroupedLookup:
-            return GroupedLookup(status="UH_OH", root_task_gid=root_task_gid,
-                                 observed_revision=observed_revision,
-                                 candidates=() if reason in ("work_not_canonical", "root_identity_unverified",
-                                                            "work_readback_unavailable", "work_stale")
-                                 else tuple(candidates),
-                                 reason=reason)
-
-        def identifies_root(task: JSON) -> bool:
-            fields = [field for field in self._custom_fields(task)
-                      if field.get("gid") == ROOT_WORK_GID]
-            return (len(fields) == 1 and fields[0].get("enabled") is True
-                    and fields[0].get("resource_subtype") == "text"
-                    and fields[0].get("text_value") == root_task_gid)
-
-        try:
-            try:
-                root = await self._exact_task(root_task_gid)
-            except _TraversalFailure:
-                return uncertain("work_not_returned")
-            revision = root.get("modified_at")
-            if not isinstance(revision, str):
-                return uncertain("work_revision_unavailable")
-            observed_revision = revision
-            if not await self._canonical(root):
-                return uncertain("work_not_canonical")
-            if not identifies_root(root):
-                return uncertain("root_identity_unverified")
-
-            response = await self.client.get(
-                f"/workspaces/{WORKSPACE}/tasks/search",
-                params={f"custom_fields.{ROOT_WORK_GID}.value": root_task_gid,
-                        "projects.any": ",".join(sorted(self._admission_projects)),
-                        "limit": 100, "opt_fields": "gid"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            rows = payload["data"]
-            if not isinstance(rows, list) or payload.get("next_page") is not None:
-                return uncertain("invalid_search_page")
-            raw_rows = cast(list[object], rows)
-            if len(raw_rows) > 100:
-                return uncertain("invalid_search_page")
-
-            gids: list[str] = []
-            seen: set[str] = set()
-            for row in raw_rows:
-                gid = self._gid(row)
-                if gid is None or not gid or gid in seen:
-                    return uncertain("invalid_search_row")
-                seen.add(gid)
-                gids.append(gid)
-            for gid in gids:
-                try:
-                    task = await self._exact_task(gid)
-                except _TraversalFailure:
-                    return uncertain("candidate_not_returned")
-                fields = [field for field in self._custom_fields(task)
-                          if field.get("gid") == ROOT_WORK_GID]
-                if (len(fields) != 1 or fields[0].get("enabled") is not True
-                        or fields[0].get("resource_subtype") != "text"
-                        or fields[0].get("text_value") != root_task_gid):
-                    return uncertain("relationship_changed")
-                if not await self._canonical(task):
-                    return uncertain("candidate_not_canonical")
-                title, candidate_revision = task.get("name"), task.get("modified_at")
-                if not isinstance(title, str) or not isinstance(candidate_revision, str):
-                    return uncertain("candidate_invalid")
-                candidates.append(GroupedCandidate(
-                    task_gid=gid, title=title, revision=candidate_revision,
-                    root_work_gid=root_task_gid, source="asana_root_work_gid_search_exact_get",
-                ))
-
-            try:
-                readback = await self._task(root_task_gid)
-            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-                return uncertain("work_readback_unavailable")
-            if readback is None or self._gid(readback) != root_task_gid:
-                return uncertain("work_readback_unavailable")
-            if not identifies_root(readback):
-                return uncertain("root_identity_unverified")
-            try:
-                if not await self._canonical(readback):
-                    return uncertain("work_not_canonical")
-            except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-                return uncertain("work_readback_unavailable")
-            if readback.get("modified_at") != observed_revision:
-                return uncertain("work_stale")
-            if not candidates:
-                return uncertain("no_search_matches")
-            return GroupedLookup(status="CANDIDATES", root_task_gid=root_task_gid,
-                                 observed_revision=observed_revision,
-                                 candidates=tuple(candidates))
-        except (ProviderError, httpx.HTTPError, KeyError, TypeError, ValueError):
-            return uncertain("read_unavailable")
 
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None:
         task = await self._task(provider_task_id)

@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from .contracts import (
     AppendResult,
     ClosedModel,
-    GroupedLookup,
     LaunchAuthority,
     RelatedLookup,
     SourceStoriesRequest,
@@ -96,7 +95,6 @@ class PublicWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
     related: PublicRelated | None = None
-    grouped: PublicRelated | None = None
     guard: PublicReadGuard | None = None
 
 
@@ -113,14 +111,13 @@ def project_work(result: WorkResult | GrantedWorkResult, include_related: bool) 
                                      completed=item.completed, revision=item.revision,
                                      routing=item.routing, context=item.context)
     if include_related:
-        def related(value: RelatedLookup | GroupedLookup | None) -> PublicRelated | None:
+        def related(value: RelatedLookup | None) -> PublicRelated | None:
             if value is None:
                 return None
             return PublicRelated(status=value.status, observed_revision=value.observed_revision,
                                  candidates=tuple(PublicCandidate(title=c.title, revision=c.revision)
                                                   for c in value.candidates))
         public.related = related(result.related)
-        public.grouped = related(result.grouped) if isinstance(result, WorkResult) else None
     return public
 
 
@@ -163,7 +160,7 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
 
     _work_get.__doc__ = (
         "Read the exact launch-bound work. Set include_related for bounded direct-child "
-        "and grouped candidates; completeness is always unknown."
+        "candidates; completeness is always unknown."
     )
     closed_tool(server, "work_get", _work_get, ToolAnnotations(
         read_only_hint=True,
@@ -217,8 +214,8 @@ def build_server(
 
     references = ", ".join(map(str, reference_work_ids)) or "none"
     _work_get.__doc__ = (
-        "Read launch-bound work. Set include_related for bounded direct-child and "
-        "grouped candidates; completeness is always unknown. "
+        "Read launch-bound work. Set include_related for bounded direct-child candidates; "
+        "completeness is always unknown. "
         "Omit work_id for the active assignment. "
         f"Bounded read-only reference WorkIds: {references}."
     )

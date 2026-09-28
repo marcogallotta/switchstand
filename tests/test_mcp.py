@@ -102,7 +102,7 @@ class FakeService:
 def test_public_projection_allowlist(kind, status, include_related):
     import json
 
-    from switchstand.contracts import GroupedCandidate, GroupedLookup, WorkSource
+    from switchstand.contracts import WorkSource
     from switchstand.mcp import PublicWorkResult, project_work
 
     value = item().model_copy(update={"source": WorkSource(provider="secret-provider", task_gid="raw-task")})
@@ -115,10 +115,6 @@ def test_public_projection_allowlist(kind, status, include_related):
             observed_revision="r1", reason="raw-reason", candidates=(RelatedCandidate(
                 task_gid="raw-child", title="Review", revision="r1", parent_gid="raw-parent",
                 work_type_option_gid="raw-option"),))
-        if kind is WorkResult:
-            fields["grouped"] = GroupedLookup(status="CANDIDATES", root_task_gid="raw-root",
-                candidates=(GroupedCandidate(task_gid="raw-group", title="Group", revision="r1",
-                    root_work_gid="raw-root", source="asana_root_work_gid_search_exact_get"),))
     output = project_work(kind(**fields), include_related).model_dump(mode="json")
     serialized = json.dumps(output) + json.dumps(PublicWorkResult.model_json_schema())
     for forbidden in ("raw-", "secret-provider", "asana", "task_gid", "parent_gid", "source", "receipt"):
@@ -132,7 +128,7 @@ def test_public_projection_allowlist(kind, status, include_related):
         assert output["related"] == {"status": "CANDIDATES", "observed_revision": "r1",
             "candidates": [{"title": "Review", "revision": "r1"}], "complete": False}
     else:
-        assert output["related"] is None and output["grouped"] is None
+        assert output["related"] is None
 
 
 def test_provider_request_logs_are_suppressed(caplog):
@@ -225,6 +221,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         get_tool = next(tool for tool in tools if tool.name == "work_get")
         assert "work_id" not in get_tool.input_schema["required"]
         assert "include_related" in get_tool.input_schema["properties"]
+        assert "grouped" not in get_tool.output_schema["properties"]
         assert str(REFERENCE_ID) in (get_tool.description or "")
         source_tool = next(tool for tool in tools if tool.name == "source_task")
         assert "task_gid" in source_tool.input_schema["required"]
@@ -234,6 +231,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
 
         got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content == project_work(WorkResult(status="ok", item=item()), False).model_dump(mode="json")
+        assert "grouped" not in got.structured_content
         related = await client.call_tool("work_get", {"api_version": "1", "include_related": True})
         assert related.structured_content["related"]["candidates"] == [{"title": "Review", "revision": "r1"}]
         reference = await client.call_tool(
