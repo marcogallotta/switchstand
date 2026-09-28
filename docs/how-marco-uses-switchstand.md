@@ -16,6 +16,8 @@ If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002
 
 From the canonical repository, `scripts/switchstand` (or `scripts/switchstand --coordinator`) enters through `scripts/codex-dispatch`. This is an ordinary, unbound Coordinator session with normal host development capability. It has no launch-bound WorkId and gains no provider effect authority from its unrestricted execution environment.
 
+On startup and re-entry, the Coordinator registers the immutable visible agent name `Codex` through the repository-configured MCP before using agent-name messaging. Same-principal replay is idempotent. A collision, unavailable current grant or tool, or uncertain result leaves only agent-name messaging unavailable: the Coordinator reports that state, never substitutes another name or attempts takeover, and continues unrelated authorized work.
+
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
 ### Managed Codex worker

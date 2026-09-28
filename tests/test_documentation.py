@@ -60,3 +60,18 @@ def test_codex_role_model_and_shared_process_contract_are_explicit():
     assert "Codex has two roles: Coordinator and Worker." in usage
     assert "Shared process semantics across hosts" in usage
     assert "Shared semantics do not imply identical host storage, tools, roles, or orchestration." in usage
+
+
+def test_ordinary_coordinator_has_one_fail_closed_agent_name():
+    agents = (ROOT / "AGENTS.md").read_text()
+    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text()
+
+    registration = 'agent_register(api_version="1", name="Codex")'
+    assert registration in agents
+    assert "startup and re-entry" in agents
+    assert "do not try a different name" in agents
+    assert "Registration grants no work or effect authority." in agents
+
+    assert "immutable visible agent name `Codex`" in usage
+    assert "Same-principal replay is idempotent." in usage
+    assert "never substitutes another name or attempts takeover" in usage
