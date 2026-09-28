@@ -43,6 +43,7 @@ ANCESTRY_GETS = 9
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
     "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
+REQUIRED_ROUTING_TRUTH = frozenset(("priority", "review_next_action"))
 WORK_TYPE = "1218431623135287"
 FINDER_LIMIT = 20
 FINDER_MAX_CHILDREN = 100
@@ -359,7 +360,7 @@ class AsanaProvider:
             for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE),
                               ("review_next_action", FIELDS["review_next_action"])):
                 strict = [field for field in fields if field.get("gid") == gid]
-                required_truth = name in {"priority", "review_next_action"}
+                required_truth = name in REQUIRED_ROUTING_TRUTH
                 if len(strict) > 1 and required_truth: raise TypeError
                 if len(strict) != 1:
                     values[name] = None
@@ -1073,6 +1074,9 @@ class AsanaProvider:
                 values[name] = None
                 continue
             field = matches[0]
+            if field.get("enabled") is False and name not in REQUIRED_ROUTING_TRUTH:
+                values[name] = None
+                continue
             options = field.get("enum_options")
             value = field.get("display_value")
             current = field.get("enum_value")
