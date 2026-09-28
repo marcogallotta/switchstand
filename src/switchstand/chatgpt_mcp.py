@@ -710,6 +710,17 @@ def build_ordinary_tools(
             generation=durable_generation, current_generation=durable_generation,
         )
 
+    async def agent_submit_view(result: MessageSubmitResult) -> AgentMessageSubmitResult:
+        if result.status != "ok" or result.message is None:
+            return AgentMessageSubmitResult(status=result.status, reason=result.reason)
+        assert mailboxes is not None
+        view = await public_message(mailboxes, result.message)
+        if view is None:
+            return AgentMessageSubmitResult(
+                status="recovery_required", reason="state_unavailable"
+            )
+        return AgentMessageSubmitResult(status="ok", message=view)
+
     async def agent_register(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
@@ -799,6 +810,18 @@ def build_ordinary_tools(
             return AgentMessageSubmitResult(
                 status="denied", reason="recipient_not_registered"
             )
+        replay = await service.messages.committed_public_replay(
+            sender.endpoint_id,
+            MessageSendRequest(
+                api_version=api_version, work_id=sender.endpoint_id,
+                grant_version=sender.generation, message_id=message_id,
+                route_ref=f"agent.{recipient.mailbox.name_key}", payload=payload,
+                recipient_work_id=recipient.mailbox.endpoint_id,
+            ),
+            agent_binding=sender,
+        )
+        if replay is not None:
+            return await agent_submit_view(replay)
         route = MessageRoute(
             recipient_work_id=recipient.mailbox.endpoint_id,
             recipient_grant_version=recipient.mailbox.generation,
@@ -812,16 +835,9 @@ def build_ordinary_tools(
             payload=payload,
         )
         result = await service.messages.submit_admitted(
-            sender.endpoint_id, route, submitted,
+            sender.endpoint_id, route, submitted, agent_binding=sender,
         )
-        if result.status != "ok" or result.message is None:
-            return AgentMessageSubmitResult(status=result.status, reason=result.reason)
-        view = await public_message(mailboxes, result.message)
-        if view is None:
-            return AgentMessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-        return AgentMessageSubmitResult(status="ok", message=view)
+        return await agent_submit_view(result)
 
     async def agent_message_pending(
         api_version: Literal["1"], cursor: UUID | None = None,
@@ -841,6 +857,7 @@ def build_ordinary_tools(
                 cursor=cursor,
                 limit=limit,
             ),
+            agent_binding=mailbox,
         )
         if result.status != "ok":
             return AgentMessagePendingResult(status=result.status, reason=result.reason)
@@ -873,6 +890,7 @@ def build_ordinary_tools(
                 api_version=api_version, delivery_id=delivery_id,
                 grant_version=mailbox.generation,
             ),
+            agent_binding=mailbox,
         )
 
     async def agent_message_recover(
@@ -891,6 +909,7 @@ def build_ordinary_tools(
                 api_version=api_version, delivery_id=delivery_id,
                 grant_version=mailbox.generation,
             ),
+            agent_binding=mailbox,
         )
 
     async def agent_message_result_send(
@@ -904,6 +923,17 @@ def build_ordinary_tools(
         mailbox = context.mailbox
         runtime = agent_runtime(mailbox.generation)
         assert mailboxes is not None and service.messages is not None
+        replay = await service.messages.committed_public_replay(
+            mailbox.endpoint_id,
+            MessageSendRequest(
+                api_version=api_version, work_id=mailbox.endpoint_id,
+                grant_version=mailbox.generation, message_id=message_id,
+                payload=payload, in_reply_to_delivery_id=delivery_id,
+            ),
+            agent_binding=mailbox,
+        )
+        if replay is not None:
+            return await agent_submit_view(replay)
         reply = await service.messages.reply_context(delivery_id)
         if reply is None:
             return AgentMessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
@@ -921,15 +951,9 @@ def build_ordinary_tools(
         )
         result = await service.messages.submit_received_result(
             mailbox.endpoint_id, mailbox.generation, runtime.generation, route, submitted,
+            agent_binding=mailbox,
         )
-        if result.status != "ok" or result.message is None:
-            return AgentMessageSubmitResult(status=result.status, reason=result.reason)
-        view = await public_message(mailboxes, result.message)
-        if view is None:
-            return AgentMessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-        return AgentMessageSubmitResult(status="ok", message=view)
+        return await agent_submit_view(result)
 
     async def agent_message_disposition(
         api_version: Literal["1"], delivery_id: UUID, result_message_id: UUID,
@@ -949,6 +973,7 @@ def build_ordinary_tools(
                 grant_version=mailbox.generation,
                 disposition_digest=disposition_digest(evidence), evidence=evidence,
             ),
+            agent_binding=mailbox,
         )
 
     return (

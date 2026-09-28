@@ -97,9 +97,13 @@ class AgentMailboxState:
             key, display = agent_name_key(name), " ".join(name.strip().split())
             session_key = chat_session_key(chat_session)
             async with self.engine.begin() as connection:
+                await connection.execute(insert(agent_mailboxes).values(
+                    name_key=key, display_name=display, endpoint_id=uuid4(),
+                    principal_key=principal_key, session_key=session_key, generation=1,
+                ).on_conflict_do_nothing())
                 bound = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.name_key == key
-                ).with_for_update())).mappings().one_or_none()
+                ))).mappings().one_or_none()
                 if bound is not None:
                     mailbox = self._view(bound)
                     if (mailbox.name, mailbox.principal_key, mailbox.session_key) == (
@@ -110,17 +114,10 @@ class AgentMailboxState:
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,
-                ).with_for_update())).scalar_one_or_none()
+                ))).scalar_one_or_none()
                 if prior is not None:
                     return AgentMailboxResult(status="conflict", reason="session_already_registered")
-                await connection.execute(insert(agent_mailboxes).values(
-                    name_key=key, display_name=display, endpoint_id=uuid4(),
-                    principal_key=principal_key, session_key=session_key, generation=1,
-                ))
-                row = (await connection.execute(select(agent_mailboxes).where(
-                    agent_mailboxes.c.name_key == key
-                ))).mappings().one()
-                return AgentMailboxResult(status="ok", mailbox=self._view(row))
+                return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
