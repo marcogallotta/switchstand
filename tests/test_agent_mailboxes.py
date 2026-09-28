@@ -41,6 +41,23 @@ async def test_same_principal_distinct_chats_own_distinct_names(endpoints):
     assert (duplicate.status, duplicate.reason) == ("conflict", "session_already_registered")
 
 
+async def test_concurrent_registration_reconciles_unique_identity(endpoints):
+    first, replay = await asyncio.gather(
+        endpoints.register_agent("Concurrent", "owner", "same-chat"),
+        endpoints.register_agent("Concurrent", "owner", "same-chat"),
+    )
+    assert first.status == replay.status == "ok"
+    assert first.mailbox == replay.mailbox
+
+    alpha, beta = await asyncio.gather(
+        endpoints.register_agent("Alpha", "other", "contended-chat"),
+        endpoints.register_agent("Beta", "other", "contended-chat"),
+    )
+    assert sorted((alpha.status, beta.status)) == ["conflict", "ok"]
+    conflict = alpha if alpha.status == "conflict" else beta
+    assert conflict.reason == "session_already_registered"
+
+
 async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
     created = await endpoints.register_agent("Lifecycle", "owner", "old-chat")
     denied = await endpoints.takeover("Lifecycle", "other", "new-chat")

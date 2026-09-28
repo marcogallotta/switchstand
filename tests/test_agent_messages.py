@@ -1,3 +1,4 @@
+import asyncio
 import os
 from uuid import uuid4
 
@@ -131,3 +132,177 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     session[0] = "chat-b"
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
+
+
+async def test_takeover_atomically_fences_every_inflight_message_operation(
+    agent_messaging, monkeypatch,
+):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    messages = service.messages
+    assert messages is not None
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "beta-1"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    async def cross_takeover(method_name, operation, replacement):
+        original = getattr(messages, method_name)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def paused(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(messages, method_name, paused)
+        stale_call = asyncio.create_task(operation())
+        await entered.wait()
+        session[0] = replacement
+        name = "Beta" if replacement.startswith("beta") else "Alpha"
+        takeover = await tools["agent_takeover"]("1", name)
+        assert takeover.status == "ok"
+        release.set()
+        result = await stale_call
+        monkeypatch.setattr(messages, method_name, original)
+        return result
+
+    session[0] = "chat-a"
+    stale_send = await cross_takeover(
+        "submit_admitted",
+        lambda: tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "stale"}),
+        "alpha-2",
+    )
+    assert (stale_send.status, stale_send.reason) == ("stale", "sender_binding_changed")
+    session[0] = "beta-1"
+    assert not (await tools["agent_message_pending"]("1")).messages
+
+    session[0] = "alpha-2"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "current"})
+    assert sent.status == "ok" and sent.message is not None
+    delivery = sent.message.delivery_id
+
+    session[0] = "beta-1"
+    stale_pending = await cross_takeover(
+        "pending_admitted", lambda: tools["agent_message_pending"]("1"), "beta-2"
+    )
+    assert (stale_pending.status, stale_pending.reason) == (
+        "stale", "receiving_binding_changed",
+    )
+
+    stale_receive = await cross_takeover(
+        "receive_admitted",
+        lambda: tools["agent_message_receive"]("1", delivery),
+        "beta-3",
+    )
+    assert (stale_receive.status, stale_receive.reason) == (
+        "stale", "receiving_binding_changed",
+    )
+    current_receive = await tools["agent_message_receive"]("1", delivery)
+    assert (current_receive.status, current_receive.state) == ("ok", "RECEIVED")
+
+    stale_recover = await cross_takeover(
+        "recover_admitted",
+        lambda: tools["agent_message_recover"]("1", delivery),
+        "beta-4",
+    )
+    assert (stale_recover.status, stale_recover.reason) == (
+        "stale", "receiving_binding_changed",
+    )
+    assert (await tools["agent_message_recover"]("1", delivery)).status == "ok"
+
+    result_id = uuid4()
+    stale_reply = await cross_takeover(
+        "submit_received_result",
+        lambda: tools["agent_message_result_send"](
+            "1", delivery, result_id, {"result": "stale"}
+        ),
+        "beta-5",
+    )
+    assert (stale_reply.status, stale_reply.reason) == ("stale", "sender_binding_changed")
+    session[0] = "alpha-2"
+    assert not (await tools["agent_message_pending"]("1")).messages
+    session[0] = "beta-5"
+    assert (await tools["agent_message_recover"]("1", delivery)).status == "ok"
+    result_id = uuid4()
+    reply = await tools["agent_message_result_send"](
+        "1", delivery, result_id, {"result": "current"}
+    )
+    assert reply.status == "ok"
+
+    stale_disposition = await cross_takeover(
+        "disposition_admitted",
+        lambda: tools["agent_message_disposition"]("1", delivery, result_id),
+        "beta-6",
+    )
+    assert (stale_disposition.status, stale_disposition.reason) == (
+        "stale", "receiving_binding_changed",
+    )
+    assert (await tools["agent_message_recover"]("1", delivery)).status == "ok"
+    assert (await tools["agent_message_disposition"]("1", delivery, result_id)).state \
+        == "DISPOSITIONED"
+
+
+async def test_logical_replay_survives_recipient_and_sender_takeover(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "beta-1"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    session[0] = "chat-a"
+    request_id = uuid4()
+    first = await tools["agent_message_send"]("1", "Beta", request_id, {"request": "once"})
+    assert first.status == "ok" and first.message is not None
+    session[0] = "beta-2"
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    replay = await tools["agent_message_send"]("1", "Beta", request_id, {"request": "once"})
+    assert replay == first
+
+    session[0] = "beta-2"
+    delivery = first.message.delivery_id
+    assert (await tools["agent_message_receive"]("1", delivery)).status == "ok"
+    result_id = uuid4()
+    result = await tools["agent_message_result_send"](
+        "1", delivery, result_id, {"result": "once"}
+    )
+    assert result.status == "ok"
+    session[0] = "beta-3"
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
+    result_replay = await tools["agent_message_result_send"](
+        "1", delivery, result_id, {"result": "once"}
+    )
+    assert result_replay == result
+
+
+async def test_message_transaction_linearizes_before_takeover(agent_messaging, monkeypatch):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    messages = service.messages
+    assert messages is not None
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "beta-old"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "lock"})
+    assert sent.status == "ok" and sent.message is not None
+
+    original = messages._current_agent_binding
+    locked, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_with_row_locked(connection, binding):
+        current = await original(connection, binding)
+        locked.set()
+        await release.wait()
+        return current
+
+    monkeypatch.setattr(messages, "_current_agent_binding", pause_with_row_locked)
+    session[0] = "beta-old"
+    receiving = asyncio.create_task(
+        tools["agent_message_receive"]("1", sent.message.delivery_id)
+    )
+    await locked.wait()
+    session[0] = "beta-new"
+    takeover = asyncio.create_task(tools["agent_takeover"]("1", "Beta"))
+    done, _ = await asyncio.wait({takeover}, timeout=0.1)
+    assert not done
+    release.set()
+    assert (await receiving).status == "ok"
+    assert (await takeover).status == "ok"

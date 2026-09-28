@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from .agent_mailboxes import AgentMailbox, agent_mailboxes
 from .contracts import ApiVersion, ClosedModel
 from .core import ProviderError, State
 from .grant_state import GrantState
@@ -167,7 +168,7 @@ class MessageSubmitResult(ClosedModel):
         "reply_sender_not_recipient", "no_current_grant", "grant_version_changed",
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
-        "runtime_generation_changed", "state_unavailable",
+        "runtime_generation_changed", "sender_binding_changed", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -193,7 +194,7 @@ class MessagePendingResult(ClosedModel):
     has_more: bool = False
     reason: Literal[
         "no_current_grant", "grant_version_changed", "actor_not_admitted",
-        "message_not_granted", "state_unavailable",
+        "message_not_granted", "receiving_binding_changed", "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -374,14 +375,31 @@ class MessageState:
             return None
         return MessageReplyContext(recipient_work_id=row[0], route_ref=row[1])
 
+    @staticmethod
+    async def _current_agent_binding(connection: Any, binding: AgentMailbox) -> bool:
+        """Lock and validate the durable actor binding in the message transaction."""
+        row = (await connection.execute(select(agent_mailboxes.c.endpoint_id).where(
+            agent_mailboxes.c.endpoint_id == binding.endpoint_id,
+            agent_mailboxes.c.principal_key == binding.principal_key,
+            agent_mailboxes.c.session_key == binding.session_key,
+            agent_mailboxes.c.generation == binding.generation,
+        ).with_for_update(read=True))).scalar_one_or_none()
+        return row is not None
+
     async def committed_public_replay(
         self, sender_work_id: UUID, request: MessageSendRequest,
+        *, agent_binding: AgentMailbox | None = None,
     ) -> MessageSubmitResult | None:
         query = self._pending_query().add_columns(messages.c.in_reply_to_delivery_id).where(
             messages.c.sender_work_id == sender_work_id,
             messages.c.message_id == request.message_id,
         )
-        async with self.engine.connect() as connection:
+        async with self.engine.begin() as connection:
+            if (
+                agent_binding is not None
+                and not await self._current_agent_binding(connection, agent_binding)
+            ):
+                return MessageSubmitResult(status="stale", reason="sender_binding_changed")
             row = (await connection.execute(query)).mappings().one_or_none()
         if row is None:
             return None
@@ -440,12 +458,18 @@ class MessageState:
     async def _store(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
         received_binding: tuple[int, str] | None = None,
+        agent_binding: AgentMailbox | None = None,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
         delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
         projection_id = uuid5(PROJECTION_NAMESPACE, identity)
         async with self.engine.begin() as connection:
+            if (
+                agent_binding is not None
+                and not await self._current_agent_binding(connection, agent_binding)
+            ):
+                return MessageSubmitResult(status="stale", reason="sender_binding_changed")
             if request.in_reply_to_delivery_id is not None:
                 replied = (await connection.execute(select(message_deliveries).where(
                     message_deliveries.c.delivery_id == request.in_reply_to_delivery_id
@@ -504,25 +528,31 @@ class MessageState:
 
     async def submit_admitted(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
+        *, agent_binding: AgentMailbox | None = None,
     ) -> MessageSubmitResult:
         try:
-            return await self._store(sender_work_id, route, request)
+            return await self._store(
+                sender_work_id, route, request, agent_binding=agent_binding
+            )
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
     async def submit_received_result(
         self, sender_work_id: UUID, grant_version: int, generation: str,
         route: MessageRoute, request: MessageSubmitRequest,
+        *, agent_binding: AgentMailbox | None = None,
     ) -> MessageSubmitResult:
         try:
             return await self._store(
-                sender_work_id, route, request, (grant_version, generation)
+                sender_work_id, route, request, (grant_version, generation),
+                agent_binding=agent_binding,
             )
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
     async def _pending(
         self, work_id: UUID, request: MessagePendingRequest,
+        agent_binding: AgentMailbox | None = None,
     ) -> MessagePendingResult:
         query = self._pending_query().where(
             message_deliveries.c.recipient_work_id == work_id,
@@ -531,7 +561,14 @@ class MessageState:
         if request.cursor is not None:
             query = query.where(message_deliveries.c.delivery_id > request.cursor)
         query = query.order_by(message_deliveries.c.delivery_id).limit(request.limit + 1)
-        async with self.engine.connect() as connection:
+        async with self.engine.begin() as connection:
+            if (
+                agent_binding is not None
+                and not await self._current_agent_binding(connection, agent_binding)
+            ):
+                return MessagePendingResult(
+                    status="stale", reason="receiving_binding_changed"
+                )
             rows = list((await connection.execute(query)).mappings())
         has_more = len(rows) > request.limit
         selected = rows[:request.limit]
@@ -556,9 +593,10 @@ class MessageState:
 
     async def pending_admitted(
         self, work_id: UUID, request: MessagePendingRequest,
+        *, agent_binding: AgentMailbox | None = None,
     ) -> MessagePendingResult:
         try:
-            return await self._pending(work_id, request)
+            return await self._pending(work_id, request, agent_binding)
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 
@@ -587,13 +625,18 @@ class MessageState:
 
     async def receive_admitted(
         self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
-        request: MessageReceiveRequest,
+        request: MessageReceiveRequest, *, agent_binding: AgentMailbox | None = None,
     ) -> MessageTransitionResult:
         failure = self._runtime(runtime)
         if failure is not None:
             return _transition(failure[0], failure[1])
         try:
             async with self.engine.begin() as connection:
+                if (
+                    agent_binding is not None
+                    and not await self._current_agent_binding(connection, agent_binding)
+                ):
+                    return _transition("stale", "receiving_binding_changed")
                 raw = (await connection.execute(select(message_deliveries).where(
                     message_deliveries.c.delivery_id == request.delivery_id
                 ).with_for_update())).mappings().one_or_none()
@@ -625,13 +668,18 @@ class MessageState:
 
     async def recover_admitted(
         self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
-        request: MessageReceiveRequest,
+        request: MessageReceiveRequest, *, agent_binding: AgentMailbox | None = None,
     ) -> MessageTransitionResult:
         failure = self._runtime(runtime)
         if failure is not None:
             return _transition(failure[0], failure[1])
         try:
             async with self.engine.begin() as connection:
+                if (
+                    agent_binding is not None
+                    and not await self._current_agent_binding(connection, agent_binding)
+                ):
+                    return _transition("stale", "receiving_binding_changed")
                 raw = (await connection.execute(select(message_deliveries).where(
                     message_deliveries.c.delivery_id == request.delivery_id
                 ).with_for_update())).mappings().one_or_none()
@@ -656,13 +704,18 @@ class MessageState:
 
     async def disposition_admitted(
         self, work_id: UUID, binding_version: int, runtime: RuntimeCurrentness,
-        request: MessageDispositionRequest,
+        request: MessageDispositionRequest, *, agent_binding: AgentMailbox | None = None,
     ) -> MessageTransitionResult:
         failure = self._runtime(runtime)
         if failure is not None:
             return _transition(failure[0], failure[1])
         try:
             async with self.engine.begin() as connection:
+                if (
+                    agent_binding is not None
+                    and not await self._current_agent_binding(connection, agent_binding)
+                ):
+                    return _transition("stale", "receiving_binding_changed")
                 raw = (await connection.execute(select(message_deliveries).where(
                     message_deliveries.c.delivery_id == request.delivery_id
                 ).with_for_update())).mappings().one_or_none()
