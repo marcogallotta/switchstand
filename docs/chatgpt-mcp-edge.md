@@ -8,9 +8,10 @@ a client.
 
 ## Current surface
 
-The edge exposes provider-neutral capabilities in semantic groups:
+The edge exposes mostly provider-neutral capabilities in semantic groups:
 
 - repository bootstrap for an ordinary ChatGPT session that has no checkout;
+- the fixed agent-project bootstrap operator utility, with preview by default;
 - work discovery, exact legacy-reference resolution, reads, structure, history,
   attachments, and events;
 - grant-checked work creation, update, relation, and append operations;
@@ -24,10 +25,12 @@ it changes as capabilities are added or retired. `repository_bundle_get` is the
 bootstrap route for an ordinary ChatGPT session without a normal checkout; a
 Codex session that already has the repository uses Git normally.
 
-The edge does not create a second authority or provider-write path. It resolves
-the verified OAuth principal to the current workspace admission and applies the
+The edge does not create a second authority system. It resolves the verified
+OAuth principal to the current workspace admission. Work tools apply the
 existing WorkId, grant-version, revision, operation-identity, UNKNOWN, and
-effect-readback rules. Trusted grant issuance is not an MCP tool. Provider
+effect-readback rules. The agent-project bootstrap instead preserves the
+operator utility's narrower contract, including an operator-inspected UNKNOWN
+after a possible write. Trusted grant issuance is not an MCP tool. Provider
 credentials and grant state stay behind the service boundary.
 
 Raw `source_*` tools are not part of the ordinary current surface. They remain

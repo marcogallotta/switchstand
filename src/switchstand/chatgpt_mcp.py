@@ -1,8 +1,12 @@
 import asyncio
+import json
+import os
+from argparse import Namespace
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import httpx
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent
 from pydantic import Field, JsonValue
@@ -35,6 +39,9 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
+from .durable_agent_project import BootstrapError
+from .durable_agent_project import apply as apply_agent_project
+from .durable_agent_project import dry_run as dry_run_agent_project
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
@@ -210,6 +217,39 @@ def build_ordinary_tools(
             ],
             structured_content=structured,
         )
+
+    async def agent_project_bootstrap(
+        api_version: Literal["1"], role: str, project_name: str, workspace_gid: str,
+        team_gid: str, main_project_gid: str, priority_field_gid: str,
+        work_kind_field_gid: str, currentness_field_gid: str,
+        canonical_concern_field_gid: str, apply: bool = False,
+    ) -> CallToolResult:
+        """Preview or apply the existing durable-agent Asana project bootstrap."""
+        del api_version
+        def result(value: dict[str, Any]) -> CallToolResult:
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(value))],
+                structured_content=value,
+            )
+        args = Namespace(
+            role=role, project_name=project_name, workspace_gid=workspace_gid,
+            team_gid=team_gid, main_project_gid=main_project_gid,
+            fields={"priority": priority_field_gid, "work_kind": work_kind_field_gid,
+                    "currentness": currentness_field_gid,
+                    "canonical_concern": canonical_concern_field_gid},
+        )
+        if not apply:
+            return result(dry_run_agent_project(args))
+        def run() -> dict[str, Any]:
+            with httpx.Client(base_url="https://app.asana.com/api/1.0", trust_env=False,
+                              headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"}) as client:
+                return apply_agent_project(client, args)
+        try:
+            return result(await asyncio.to_thread(run))
+        except BootstrapError as error:
+            return CallToolResult(
+                content=[TextContent(type="text", text=str(error))], is_error=True,
+            )
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
@@ -942,6 +982,7 @@ def build_ordinary_tools(
 
     return (
         ("repository_bundle_get", repository_bundle_get),
+        ("agent_project_bootstrap", agent_project_bootstrap),
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),

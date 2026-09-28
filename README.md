@@ -43,4 +43,4 @@ Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in
 - [Development](docs/development.md): writers, checks, evidence subjects, launch, and recovery.
 - [Code quality and Code Review](docs/code-quality.md): implementation, review, qualification, and candidate/current-target rules.
 - [Work, messaging, and source compatibility](docs/source-history-feedback.md): WorkId reads, durable messages, feedback, and legacy source boundaries.
-- [Agent-project bootstrap MCP decision](docs/agent-project-bootstrap-mcp.md): why an ordinary write surface is not ready and what a future design would require; it is not a quick-start capability or effect authority.
+- [Agent-project bootstrap MCP](docs/agent-project-bootstrap-mcp.md): the thin ordinary MCP adapter, its dry-run default, and its retained operator/UNKNOWN boundaries.

@@ -153,8 +153,8 @@ the reviewed base, and the landing tree must equal the reviewed candidate tree.
 
 ## Operator provisioning surface
 
-`durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command. It is a retained,
-explicit operator utility for creating or reconciling one marked Asana role project, its ordered
+`durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command and the ordinary
+MCP `agent_project_bootstrap` adapter. It is a retained, explicit operator utility for creating or reconciling one marked Asana role project, its ordered
 CURRENT/WAITING/DEFERRED sections, the supplied custom fields, and a multihomed `AGENT MASTER` task.
 It performs exact preflight and post-write readback and reports ambiguous post-write state as
 UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project-management API.
