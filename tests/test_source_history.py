@@ -7,8 +7,6 @@ from pydantic import ValidationError
 
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
-    GroupedCandidate,
-    GroupedLookup,
     LaunchAuthority,
     RelatedCandidate,
     RelatedLookup,
@@ -87,8 +85,6 @@ class FakeProvider:
         self.related_revision = "r1"
         self.related_reason = None
         self.related_calls = []
-        self.grouped_calls = []
-        self.grouped_revision = "r1"
         self.canonical = True
         self.story_task_gid = None
         self.story_gid = STORY_GID
@@ -111,16 +107,6 @@ class FakeProvider:
                              observed_revision=self.related_revision,
                              candidates=(RelatedCandidate(task_gid="777", title="Review",
                                          revision="r1", parent_gid=work_task_gid),))
-
-    async def find_grouped(self, root_task_gid):
-        self.grouped_calls.append(root_task_gid)
-        return GroupedLookup(status="CANDIDATES", root_task_gid=root_task_gid,
-                             observed_revision=self.grouped_revision,
-                             candidates=(GroupedCandidate(
-                                 task_gid="888", title="Family member", revision="r1",
-                                 root_work_gid=root_task_gid,
-                                 source="asana_root_work_gid_search_exact_get",
-                             ),))
 
     async def source_task(self, provider_task_id):
         return ProviderSourceTask("Task", "Notes", False, self.revision, self.canonical)
@@ -208,7 +194,7 @@ async def test_related_read_uses_only_granted_work_id_and_rejects_mixed_revision
     foreign = UUID("00000000-0000-0000-0000-000000000003")
     denied = await controller.get(WorkGetRequest(api_version="1", work_id=foreign,
                                                  include_related=True))
-    assert denied.status == "denied" and provider.related_calls == [] and provider.grouped_calls == []
+    assert denied.status == "denied" and provider.related_calls == []
 
     current = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
                                                   include_related=True))
@@ -216,19 +202,6 @@ async def test_related_read_uses_only_granted_work_id_and_rejects_mixed_revision
     assert current.related.status == "CANDIDATES"
     assert current.related.candidates[0].parent_gid == TASK_GID
     assert provider.related_calls == [TASK_GID]
-    assert current.grouped is not None and current.grouped.complete is False
-    assert current.grouped.candidates[0].root_work_gid == TASK_GID
-    assert provider.grouped_calls == [TASK_GID]
-
-    provider.grouped_revision = None
-    unbound = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
-                                                 include_related=True))
-    assert unbound.status == "ok" and unbound.grouped is not None
-    assert (unbound.grouped.status, unbound.grouped.reason, unbound.grouped.candidates) == (
-        "UH_OH", "work_revision_mismatch", ()
-    )
-    provider.grouped_revision = "r1"
-
     provider.related_revision = "r2"
     stale = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID,
                                                 include_related=True))
