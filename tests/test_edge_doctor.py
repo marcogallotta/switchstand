@@ -53,6 +53,15 @@ def env_file(tmp_path, port, *, missing=()):
     path.chmod(0o600)
     return path
 
+
+def oauth_env_file(tmp_path, *, missing=()):
+    path = tmp_path / "oauth.env"
+    values = {key: "configured" for key in REQUIRED_KEYS}
+    path.write_text("\n".join(f"{key}={value}" for key, value in values.items()
+                              if key not in missing))
+    path.chmod(0o600)
+    return path
+
 def test_all_checks_pass_against_real_local_http_server(edge, tmp_path, capsys, monkeypatch):
     url, port = edge
     env = env_file(tmp_path, port)
@@ -68,9 +77,52 @@ def test_all_checks_pass_against_real_local_http_server(edge, tmp_path, capsys, 
     assert "PASS local_http" in output and "PASS public_http" in output
     assert f"PASS checkout_sha: {sha}" in output and "configured" not in output
 
+
+def test_split_config_passes_without_provider_or_database_secrets(edge, tmp_path, capsys):
+    url, _ = edge
+    assert run([
+        "--env-file", str(oauth_env_file(tmp_path)),
+        "--resource-url", RESOURCE,
+        "--local-url", url,
+        "--public-url", url,
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "PASS env_file" in output and "PASS env_keys" in output
+    assert "PASS local_http" in output and "PASS public_http" in output
+    assert "NOT_RUN checkout_sha" in output and "configured" not in output
+
+
+@pytest.mark.parametrize("local_url", [
+    "https://127.0.0.1:8790/mcp",
+    "http://example.com/mcp",
+    "http://127.0.0.1:8790/wrong",
+    "http://user:secret@127.0.0.1:8790/mcp",
+])
+def test_explicit_local_url_is_restricted_to_loopback_http_mcp(
+        local_url, tmp_path, capsys):
+    assert run([
+        "--env-file", str(oauth_env_file(tmp_path)),
+        "--resource-url", RESOURCE,
+        "--local-url", local_url,
+    ]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL local_http: invalid edge configuration" in output
+    assert "secret" not in output
+
+
+@pytest.mark.parametrize("option", ["--resource-url", "--local-url", "--public-url"])
+def test_explicit_empty_url_does_not_fall_back_or_become_omitted(
+        option, edge, tmp_path, capsys):
+    _, port = edge
+    assert run(["--env-file", str(env_file(tmp_path, port)), option, ""]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL" in output
+    if option == "--public-url":
+        assert "NOT_RUN public_http" not in output
+
 def test_failures_and_omitted_checks_are_truthful(edge, tmp_path, capsys):
     _, port = edge
-    env = env_file(tmp_path, port, missing={"ASANA_TOKEN"})
+    env = env_file(tmp_path, port, missing={"SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET"})
     env.chmod(0o644)
     EdgeHandler.resource = "https://wrong.example/mcp"
     try:
@@ -78,7 +130,8 @@ def test_failures_and_omitted_checks_are_truthful(edge, tmp_path, capsys):
     finally:
         EdgeHandler.resource = RESOURCE
     output = capsys.readouterr().out
-    assert "FAIL env_file: mode 0644" in output and "FAIL env_keys: missing ASANA_TOKEN" in output
+    assert "FAIL env_file: mode 0644" in output
+    assert "FAIL env_keys: missing SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET" in output
     assert "FAIL local_http: unexpected challenge or resource metadata" in output
     assert "NOT_RUN public_http: no public URL supplied" in output
     assert "FAIL checkout_sha:" in output
