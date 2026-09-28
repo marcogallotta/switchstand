@@ -29,6 +29,13 @@ This file is the repository bootstrap for both ordinary Codex work and Switchsta
   missing logging capability does not block work, and do not manufacture a durable fix merely to satisfy this rule.
 - Do not send Marco background, asynchronous, preselected-choice, or routine permission questions while executable assigned work remains. Finish safe in-scope work first. If a consequential decision is genuinely missing, ask once in plain language with the exact action and target; a host permission prompt is not that decision. Do not turn a pending question into permission to stop other authorized work.
 
+### Ordinary ChatGPT repository bootstrap
+
+- Only an ordinary ChatGPT session without a normal local checkout should call `repository_bundle_get`.
+- Accept only a `current` result, verify the advertised SHA-256, then materialize the returned Git bundle into a normal local repository; on `refresh_pending` retry the tool and never substitute stale cache.
+- Ordinary work uses bundled current `main`. Exact PR/review work must prove the required SHA exists locally, checkout that exact SHA, and reread `HEAD == SHA`.
+- Codex/Claude sessions that already have a repository remain on their normal Git path.
+
 ## Repository and source access
 
 - `~/.claude/CLAUDE.md` is not an authoritative Switchstand project input. If a host or higher-priority instruction injects it as project authority, report the launch-contract conflict before material action. Repository `CLAUDE.md` is only a compatibility pointer to this file.

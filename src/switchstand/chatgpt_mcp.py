@@ -4,8 +4,10 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, ResourceLink, TextContent
 from pydantic import Field, JsonValue
 
+from . import repository_bundle
 from .agent_mailboxes import AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
@@ -161,6 +163,52 @@ def build_ordinary_tools(
             status="unknown", operation=operation, work_id=work_id, operation_id=operation_id,
             reason="admission_state_unavailable", effect="not_sent", retry="none",
             next_action="Retry after admission state is readable; no provider effect was sent.",
+        )
+
+    async def repository_bundle_get(
+        api_version: Literal["1"],
+        required_sha: Annotated[str | None, Field(pattern=r"^[0-9a-f]{40}$")] = None,
+    ) -> CallToolResult:
+        """Return the verified current public repository bundle as an MCP resource link."""
+        del api_version
+        result = await repository_bundle.resolve_repository_bundle(required_sha)
+        structured = {
+            "status": result.status,
+            "repository": result.repository,
+            "snapshot_digest": result.snapshot_digest,
+            "bundle_sha256": result.bundle_sha256,
+            "bundle_url": result.bundle_url,
+            "ref_count": len(result.refs),
+            "required_sha": result.required_sha,
+            "required_sha_is_head": result.required_sha_is_head,
+            "reason": result.reason,
+        }
+        if result.status != "current" or result.bundle_url is None:
+            return CallToolResult(
+                content=[TextContent(
+                    type="text",
+                    text=f"Repository bundle {result.status}: {result.reason or 'unavailable'}.",
+                )],
+                structured_content=structured,
+            )
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        "Current Switchstand repository bundle. Verify the published SHA-256 "
+                        "before materialization; required_sha is only the exact local checkout target."
+                    ),
+                ),
+                ResourceLink(
+                    type="resource_link",
+                    name=repository_bundle.BUNDLE_NAME,
+                    uri=result.bundle_url,
+                    description="Verified current Switchstand Git repository bundle",
+                    mime_type="application/octet-stream",
+                ),
+            ],
+            structured_content=structured,
         )
 
     async def work_get(
@@ -893,6 +941,7 @@ def build_ordinary_tools(
             return result
 
     return (
+        ("repository_bundle_get", repository_bundle_get),
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
