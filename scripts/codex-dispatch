@@ -16,37 +16,6 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
     exec "$real_codex" "$@"
 fi
 
-stale() {
-    echo "STALE Coordinator control: $1; update the canonical main checkout before launching" >&2
-    exit 1
-}
-
-# A linked worktree shares the Git directory, but may be at an older commit.
-# Check the worktree that supplies this launcher as well as the launch directory.
-script_root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null) \
-    || stale "cannot verify launcher source"
-current_root=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) \
-    || stale "cannot verify launch worktree"
-[ "$script_root" = "$current_root" ] \
-    || stale "launcher and launch directory use different worktrees"
-[ "$(git -C "$canonical_repo" symbolic-ref --quiet --short HEAD 2>/dev/null)" = main ] \
-    || stale "canonical checkout is not on main"
-main_head=$(git -C "$canonical_repo" rev-parse --verify HEAD 2>/dev/null) \
-    || stale "cannot verify canonical HEAD"
-remote_main=$(GIT_TERMINAL_PROMPT=0 git -C "$canonical_repo" ls-remote --exit-code origin refs/heads/main 2>/dev/null) \
-    || stale "cannot verify remote main"
-[ "$remote_main" = "$main_head$(printf '\t')refs/heads/main" ] \
-    || stale "canonical HEAD differs from remote main"
-for worktree in "$canonical_repo" "$current_root"; do
-    head=$(git -C "$worktree" rev-parse --verify HEAD 2>/dev/null) \
-        || stale "cannot verify worktree HEAD"
-    [ "$head" = "$main_head" ] || stale "worktree HEAD differs from remote main"
-    changes=$(git -C "$worktree" --no-optional-locks -c core.fsmonitor=false \
-        status --porcelain --untracked-files=normal 2>/dev/null) \
-        || stale "cannot verify clean worktree"
-    [ -z "$changes" ] || stale "worktree has local changes"
-done
-
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
 coordinator_profile="switchstand-coordinator-preferences"
 auth_source="$HOME/.codex/auth.json"
