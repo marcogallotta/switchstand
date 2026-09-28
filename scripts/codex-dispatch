@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Codex launch}"
+real_codex="$HOME/.codex/packages/standalone/current/bin/codex"
+if [ ! -x "$real_codex" ]; then
+    echo "Codex executable is unavailable" >&2
+    exit 1
+fi
+
+canonical_repo="$HOME/switchstand"
+canonical_common=$(git -C "$canonical_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
+current_common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
+if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; then
+    exec "$real_codex" "$@"
+fi
+
+coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
+auth_source="$HOME/.codex/auth.json"
+auth_link="$coordinator_home/auth.json"
+if [ ! -f "$auth_source" ]; then
+    echo "Coordinator launch requires existing Codex authentication" >&2
+    exit 1
+fi
+mkdir -p "$coordinator_home"
+chmod 700 "$coordinator_home"
+if [ -L "$auth_link" ]; then
+    if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
+        echo "Coordinator Codex authentication binding is invalid" >&2
+        exit 1
+    fi
+elif [ -e "$auth_link" ]; then
+    echo "Coordinator Codex authentication binding is invalid" >&2
+    exit 1
+else
+    ln -s "$auth_source" "$auth_link"
+fi
+
+CODEX_HOME="$coordinator_home" \
+    exec "$real_codex" --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"

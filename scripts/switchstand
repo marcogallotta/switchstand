@@ -6,29 +6,8 @@ if [ "$#" -eq 0 ] || [ "${1:-}" = --coordinator ]; then
     if [ "${1:-}" = --coordinator ]; then
         shift
     fi
-    : "${HOME:?HOME is required for Coordinator launch}"
-    coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
-    auth_source="$HOME/.codex/auth.json"
-    auth_link="$coordinator_home/auth.json"
-    if [ ! -f "$auth_source" ]; then
-        echo "Coordinator launch requires existing Codex authentication" >&2
-        exit 1
-    fi
-    mkdir -p "$coordinator_home"
-    chmod 700 "$coordinator_home"
-    if [ -L "$auth_link" ]; then
-        if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
-            echo "Coordinator Codex authentication binding is invalid" >&2
-            exit 1
-        fi
-    elif [ -e "$auth_link" ]; then
-        echo "Coordinator Codex authentication binding is invalid" >&2
-        exit 1
-    else
-        ln -s "$auth_source" "$auth_link"
-    fi
-    CODEX_HOME="$coordinator_home" \
-        exec codex -C "$repo" --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
+    cd "$repo"
+    exec "$repo/scripts/codex-dispatch" "$@"
 fi
 
 if [ "${1:-}" = --isolated ]; then
