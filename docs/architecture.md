@@ -40,8 +40,8 @@ MCP session ID used for message-currentness fencing. Repository MCP configuratio
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`.
 
-`source_task`, `source_stories`, and `source_story` are transitional exact-Asana compatibility
-reads. New ordinary workflows should use provider-neutral WorkIds and work tools.
+`source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
+remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
 
 ### Managed task-bound STDIO MCP
 

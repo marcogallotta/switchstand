@@ -1,4 +1,8 @@
-# ChatGPT MCP first slice
+# Historical: ChatGPT MCP first slice
+
+> Historical implementation and qualification record. This describes the first
+> six-tool delivery candidate, not the current MCP surface or current operating
+> instructions. See [ChatGPT MCP edge](chatgpt-mcp-edge.md) for current guidance.
 
 Implementation task: `1218432551036197`. This candidate provides authenticated
 request-context admission, current grants and one durable active-work append.

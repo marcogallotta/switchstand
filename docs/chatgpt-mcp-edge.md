@@ -1,60 +1,69 @@
 # ChatGPT MCP edge
 
-This is the default-off authenticated ChatGPT edge for task
-`1218470091228623`. Landing it does not start a listener, create a grant, or
-connect ChatGPT. It adds only an ASGI application factory.
+This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
+Codex clients. It is distinct from the launcher-bound managed Codex STDIO
+surface and from the local development MCP. Landing edge code or documentation
+does not start a listener, configure OAuth, issue a workspace grant, or connect
+a client.
 
-The edge exposes the existing ChatGPT MCP product surface: `grant_get`,
-`work_get`, `source_task`, `source_stories`, `source_story`, and `work_append`.
-It does not create a second write path. `work_append` runs through the existing
-current `WorkGrant`, exact active `WorkId`, grant version, observed source
-revision, append qualification, durable operation identity, UNKNOWN handling,
-and exact provider-effect readback. Trusted grant issuance is not an MCP tool.
+## Current surface
+
+The edge exposes provider-neutral capabilities in semantic groups:
+
+- repository bootstrap for an ordinary ChatGPT session that has no checkout;
+- work discovery, exact legacy-reference resolution, reads, structure, history,
+  attachments, and events;
+- grant-checked work creation, update, relation, and append operations;
+- durable work-addressed and registered-agent messaging; and
+- required-result persistence.
+
+The executable inventory and client policy are owned by
+`build_ordinary_tools` in `src/switchstand/chatgpt_mcp.py`, its edge tests, and
+the repository's `.codex/config.toml`. Do not copy the full tool list into prose:
+it changes as capabilities are added or retired. `repository_bundle_get` is the
+bootstrap route for an ordinary ChatGPT session without a normal checkout; a
+Codex session that already has the repository uses Git normally.
+
+The edge does not create a second authority or provider-write path. It resolves
+the verified OAuth principal to the current workspace admission and applies the
+existing WorkId, grant-version, revision, operation-identity, UNKNOWN, and
+effect-readback rules. Trusted grant issuance is not an MCP tool. Provider
+credentials and grant state stay behind the service boundary.
+
+Raw `source_*` tools are not part of the ordinary current surface. They remain
+available only on bounded managed/recovery compatibility routes described in
+[MCP work, history, and compatibility](source-history-feedback.md). New ordinary
+flows use provider-neutral WorkIds and work/history/event tools.
 
 ## Private configuration
 
-The future authorized host must keep these values outside the repository and
-logs:
-
-```text
-SWITCHSTAND_MCP_GITHUB_CLIENT_ID=<dedicated GitHub OAuth app client ID>
-SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=<dedicated GitHub OAuth app secret>
-SWITCHSTAND_MCP_GITHUB_USER_ID=<allowed immutable numeric GitHub user ID>
-SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
-SWITCHSTAND_MCP_BIND_HOST=127.0.0.1
-SWITCHSTAND_MCP_BIND_PORT=8790
-DATABASE_URL=<existing current-schema Switchstand database>
-ASANA_TOKEN=<provider credential allowed by the issued grant>
-```
-
-The public resource URL must use HTTPS and end exactly in `/mcp`; the process
-refuses a non-loopback bind. Configure the GitHub OAuth callback at
-`<resource-base>/auth/callback`. A reverse proxy must route `/mcp`, OAuth
-authorize/token/register/callback/consent paths, and both OAuth well-known
-metadata paths to the loopback process. The OAuth request requires `read:user`
-only to establish GitHub identity; Switchstand's grant remains the authority
-for every work read or write.
+The authorized host keeps OAuth client credentials, allowed immutable identity,
+public resource URL, bind settings, database URL, and provider credentials
+outside the repository and logs. The public resource URL uses HTTPS and ends in
+`/mcp`; the process binds only to loopback behind its reverse proxy. OAuth
+metadata, authorization, callback, consent, registration, token, and MCP routes
+must reach that same process. OAuth establishes client identity; Switchstand's
+current workspace admission remains the authority for each read or effect.
 
 FastMCP owns encrypted OAuth client registrations and token mappings in its
-user-data directory (normally `~/.local/share/fastmcp`). This is transport
-session state, not Switchstand application authority or a second grant store.
-Losing it invalidates sessions and requires clients to reconnect.
+user-data directory. This is transport session state, not Switchstand authority
+or a second grant store. Losing it invalidates sessions and requires clients to
+reconnect.
 
-## Landing and activation evidence
+## Landing, activation, and client refresh
 
-For inert landing, prove the pinned FastMCP 4.0.3/MCP 2.1.1 pair imports on
-Python 3.14, unauthenticated requests receive the protected-resource challenge,
-metadata advertises the exact resource and S256 PKCE, the verified token maps
-to the existing principal, exact discovery includes the six tools above, and
-an authenticated write is admitted or denied by the existing grant/effect
-gateway with idempotent replay. Ordinary startup must remain unchanged.
+Inert landing evidence checks the pinned runtime imports, protected-resource and
+OAuth metadata behavior, verified-principal mapping, exact executable tool
+inventory, closed schemas, and grant/effect-gateway behavior. Ordinary startup
+must remain unchanged.
 
-Starting a host or changing the reverse proxy, OAuth app, tunnel, database, or
-provider is activation work. Before relying on it, separately verify the real
-GitHub identity and wrong-identity rejection, real ChatGPT discovery, one
-authorized disposable write plus replay, restart readback, and clean stop.
+Starting a host or changing the reverse proxy, OAuth application, tunnel,
+database, provider, or trusted admission is separate activation work. Reliance
+requires real identity and wrong-identity evidence, client discovery, an
+authorized disposable effect with replay/readback, restart behavior, and clean
+stop on the exact activated configuration.
 
 An authenticated live `tools/list` proves the server-side inventory only.
-Clients may retain tool bindings from the session established before a schema
-change; start a fresh client session and verify its exposed inventory before
-claiming that newly added tools are available to that client.
+Clients can retain bindings from a session created before a schema change. Start
+a fresh client session and verify the tools exposed to that client before
+claiming a newly added or changed capability is usable there.
