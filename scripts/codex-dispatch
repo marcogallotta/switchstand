@@ -9,6 +9,7 @@ if [ ! -x "$real_codex" ]; then
 fi
 
 canonical_repo="$HOME/switchstand"
+script_dir=$(dirname -- "$(readlink -f "$0")")
 canonical_common=$(git -C "$canonical_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
 current_common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
 if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; then
@@ -16,6 +17,7 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
 fi
 
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
+coordinator_profile="switchstand-coordinator-preferences"
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then
@@ -36,6 +38,10 @@ else
     ln -s "$auth_source" "$auth_link"
 fi
 
+"$script_dir/codex-coordinator-profile" \
+    "$HOME/.codex/config.toml" "$coordinator_home/$coordinator_profile.config.toml"
+
 CODEX_HOME="$coordinator_home" \
-    exec "$real_codex" -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
+    exec "$real_codex" --profile "$coordinator_profile" \
+        -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
         --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
