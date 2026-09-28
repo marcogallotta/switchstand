@@ -41,6 +41,7 @@ enabled_tools = ["work_get", "work_search", "work_resolve_reference",
 # but only the repository-owned canonical server carries this project's tool policy.
 [mcp_servers.switchstand_oauth_proof]
 enabled = false
+url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 
 [mcp_servers.switchstand_certification]
 enabled = false
