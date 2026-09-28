@@ -139,12 +139,12 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
                     "threadId": thread_id,
                     "server": SERVER_NAME,
                     "tool": "work_get",
-                    "arguments": {"api_version": "1"},
+                    "arguments": {"api_version": "1", "work_id": str(ACTIVE)},
                 },
             ))
             structured = called.get("structuredContent")
             assert isinstance(structured, dict), called
-            assert structured["status"] == "ok"
+            assert structured["status"] == "ok", structured
             item = structured["item"]
             assert isinstance(item, dict)
             assert item["id"] == str(ACTIVE)
@@ -158,7 +158,9 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
 ) -> None:
     raw_binary = os.getenv("CODEX_EXEC_PATH")
     if not raw_binary:
-        pytest.skip("real Codex binary is supplied only by the Stage-5 proof job")
+        pytest.skip(
+            "NOT_RUN: real Codex binary is supplied only by the activation proof workflow"
+        )
     binary = Path(raw_binary)
     assert binary.is_file() and os.access(binary, os.X_OK)
 

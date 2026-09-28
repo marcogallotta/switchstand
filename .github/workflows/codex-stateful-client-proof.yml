@@ -1,0 +1,67 @@
+name: Codex stateful client activation proof
+run-name: Codex stateful client / ${{ inputs.candidate_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character candidate commit SHA to qualify
+        required: true
+        type: string
+
+jobs:
+  codex-stateful-client:
+    name: Real Codex stateful MCP client
+    runs-on: ubuntu-latest
+    env:
+      CODEX_VERSION: 0.158.0
+      PROOF_SUBJECT_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Validate exact proof subject
+        run: test "$(printf '%s' "$PROOF_SUBJECT_SHA" | grep -E '^[0-9a-f]{40}$')" = "$PROOF_SUBJECT_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+      - name: Record immutable proof subject
+        run: |
+          test "$(git rev-parse HEAD)" = "$PROOF_SUBJECT_SHA"
+          printf 'CODEX_PROOF_SUBJECT_SHA=%s\n' "$PROOF_SUBJECT_SHA"
+      - name: Install pinned Codex CLI
+        run: |
+          npm install -g "@openai/codex@$CODEX_VERSION"
+          test "$(codex --version)" = "codex-cli $CODEX_VERSION"
+          native="$(find "$(npm root -g)" -type f -path '*/vendor/x86_64-unknown-linux-musl/bin/codex' -print -quit)"
+          test -n "$native"
+          native="$(realpath "$native")"
+          test -x "$native"
+          printf 'CODEX_NATIVE=%s\n' "$native" >> "$GITHUB_ENV"
+      - name: Build Switchstand proof image
+        run: docker build --target development --tag switchstand-codex-proof .
+      - name: Execute work_get through real Codex app-server
+        id: proof
+        run: >-
+          docker run --rm
+          -e CODEX_EXEC_PATH=/opt/codex
+          -v "$CODEX_NATIVE:/opt/codex:ro"
+          -v "$PWD:/workspace:ro" -w /workspace
+          switchstand-codex-proof sh -c
+          'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
+          tests/test_codex_stateful_client.py'
+      - name: Record activation proof result
+        if: ${{ always() }}
+        env:
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+        run: |
+          if test "$PROOF_OUTCOME" = success; then
+            result=PASS
+          elif test "$PROOF_OUTCOME" = failure; then
+            result=FAIL
+          else
+            result=NOT_RUN
+          fi
+          {
+            printf '## Codex stateful client activation proof\n\n'
+            printf -- '- Candidate: `%s`\n' "$PROOF_SUBJECT_SHA"
+            printf -- '- Codex: `codex-cli %s`\n' "$CODEX_VERSION"
+            printf -- '- Result: `%s`\n' "$result"
+          } >> "$GITHUB_STEP_SUMMARY"
