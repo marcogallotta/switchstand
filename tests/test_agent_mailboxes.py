@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxState, agent_name_key
@@ -16,10 +17,12 @@ async def endpoints(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
+        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await connection.run_sync(metadata.create_all)
     yield AgentMailboxState(engine)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
+        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
     await engine.dispose()
 
 

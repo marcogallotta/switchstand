@@ -2,6 +2,7 @@ import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt import ChatGPTService
@@ -20,6 +21,7 @@ async def agent_messaging(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
+        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await connection.run_sync(metadata.create_all)
     owner = PrincipalContext(issuer="fixture", subject="owner", client_id="test", assurance="test")
     other = PrincipalContext(issuer="fixture", subject="other", client_id="test", assurance="test")
@@ -36,6 +38,7 @@ async def agent_messaging(database_prerequisite):
     yield tools, actor, session, owner, other, service
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
+        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
     await engine.dispose()
 
 
