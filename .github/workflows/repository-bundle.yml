@@ -3,13 +3,12 @@ on:
   workflow_run:
     workflows: [Quality]
     types: [completed]
-    branches: [main]
 jobs:
   repository-bundle:
     name: Current repository bundle
     if: >-
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.conclusion == 'success'
+      vars.SWITCHSTAND_REPOSITORY_BUNDLE_PUBLISH_ENABLED == 'true' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write

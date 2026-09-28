@@ -171,10 +171,11 @@ def test_workflow_bundle_job_uses_reviewed_default_branch_boundary():
     assert "repository-bundle:" not in quality
     assert "workflow_run:" in workflow
     assert "workflows: [Quality]" in workflow
-    assert "branches: [main]" in workflow
+    assert "branches:" not in workflow
     job = workflow.split("\n  repository-bundle:\n", 1)[1]
+    assert "vars.SWITCHSTAND_REPOSITORY_BUNDLE_PUBLISH_ENABLED == 'true'" in job
     assert "github.event.workflow_run.event == 'push'" in job
-    assert "github.event.workflow_run.conclusion == 'success'" in job
+    assert "workflow_run.conclusion" not in job
     assert "\n    needs:" not in job
     assert "cancel-in-progress: false" in job
     assert "git -C repository.git fetch --prune origin '+refs/heads/*:refs/heads/*'" in job
