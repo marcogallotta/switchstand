@@ -34,11 +34,19 @@ registered-agent family provides the equivalent lifecycle for an immutable
 registered agent name when that route is appropriate. Delivery, receipt,
 disposition, effect, and completion are distinct states.
 
-Use `work_append` only for bounded feedback on writable admitted work. The
-controller applies the current grant, revision, operation identity, provider
-effect, and exact readback rules. `unknown` means an effect may have happened:
-reconcile current evidence and never blindly retry. `denied`, `stale`, and
-provider failure are not success.
+On the ordinary HTTP/OAuth surface, use `work_append` only for bounded feedback
+on writable admitted work. Supply the observed work revision and one durable
+OperationId; the edge resolves the current grant/version and applies the
+protected-effect, provider-effect, and exact-readback rules. Reuse only that
+OperationId when reconciling an ambiguous result; an idempotent replay returns
+its recorded outcome.
+
+The managed launch-bound legacy `work_append` is narrower: the launcher locks
+writes to the active WorkId, and success requires the provider effect and exact
+story/work readback. It takes no caller-observed revision and provides no durable
+operation identity or idempotent replay contract. On either surface,
+`unknown` means an effect may have happened: reconcile current evidence and
+never blindly retry. `denied`, `stale`, and provider failure are not success.
 
 Managed active-inbox behavior is instruction-led. Agents check the exact bound
 message/history surfaces during active work and on re-entry; there is no daemon,
