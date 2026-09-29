@@ -34,7 +34,7 @@ The managed surface is not general workspace discovery and is not interchangeabl
 
 ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works with admitted provider-neutral WorkIds, durable messages, and protected operations. A chat without a repository obtains the current repository bundle through `repository_bundle_get`; a chat with a normal checkout uses Git normally.
 
-The desired user model is one chat equals one stable named agent identity. That agent name, the authenticated OAuth principal, the chat/session, and any WorkId are distinct concepts. The current mailbox implementation still binds one immutable visible agent name and synthetic mailbox WorkId to one authenticated principal, with uniqueness on that principal. It therefore cannot truthfully provide multiple independent per-chat named identities behind the same OAuth principal. Treat that as a current product gap, not as identity supplied by a prompt or display label.
+The desired user model is one chat equals one stable named agent identity. The visible name, authenticated OAuth principal, hidden ChatGPT chat identity, MCP session generation, and any WorkId are distinct. The HTTP edge reads `openai/session` from MCP call metadata; the mailbox stores a hash of that value and binds one visible name to each principal-and-chat pair. Distinct chats under the same OAuth principal can register distinct names, while one chat cannot register multiple names. The agent does not supply or see the hidden chat value. An unavailable chat identity yields a recovery result; explicit same-principal takeover of a name fences the old chat. This describes the current code contract, not a claim that every live client journey has been accepted.
 
 ## Current observed use and continuity limit (Marco, 2026-09-29)
 
@@ -87,7 +87,7 @@ complete journey has passed live acceptance.
 ## Identities and routing
 
 - A **WorkId** is Switchstand's stable application identity for work. A provider task GID is an adapter identity and never substitutes for a WorkId or grant.
-- An **agent name** is the visible durable messaging address. Current mailbox generation fences trusted takeover, but the current name/principal coupling is transitional.
+- An **agent name** is the visible durable messaging address. Current mailboxes bind the name to a principal and hidden chat identity; mailbox generation fences explicit takeover. A name or chat identifier does not grant work authority.
 - An **OAuth principal** authenticates the ordinary caller. Authentication establishes who is calling, not which work or effect is authorized.
 - A **runtime session/run** supplies currentness fencing. A replacement session must recover explicitly rather than silently continuing received work.
 - **Project membership and fields** route discovery. They do not change task/WorkId identity, reassign ownership, or grant an effect.
