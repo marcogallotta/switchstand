@@ -147,10 +147,13 @@ For isolated launch, host-side `launch_source.py` reads and validates the protec
 `candidate.py::prepare_launch_source` verifies and materializes the exact Git repository/ref before
 preflight. This is a transitional trusted-host bridge, not a provider API for agent code.
 
-`scripts/codex-dispatch` is the ordinary Coordinator entry path when invoked inside the canonical
-repository. It launches Codex with a separate Coordinator home, shared authentication, and the
-repository's fixed Coordinator runtime policy. That policy retains promptless host development
-access while making the shared primary checkout read-only except for `friction.md` and the Git
+The materialized host launcher installed by `scripts/install-codex-shim` owns global `codex`
+routing. Outside the canonical Switchstand Git common directory it directly launches the real Codex
+binary, even when the checkout is missing or broken; inside that Git common directory it delegates
+to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
+mutable checkout. The repository dispatcher launches Codex with a separate Coordinator home,
+shared authentication, and the repository's fixed Coordinator runtime policy. That policy retains
+promptless host development access while making the shared primary checkout read-only except for `friction.md` and the Git
 metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
 mutations and first-class patches outside `friction.md`. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
@@ -189,6 +192,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
+| Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |
 
 ## Compatibility and retirement boundaries

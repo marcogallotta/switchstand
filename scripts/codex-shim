@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Codex launch}"
+canonical_repo="$HOME/switchstand"
+canonical_common=$(git -C "$canonical_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
+current_common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
+
+if [ -n "$canonical_common" ] && [ "$current_common" = "$canonical_common" ]; then
+    dispatcher="$canonical_repo/scripts/codex-dispatch"
+    if [ ! -x "$dispatcher" ]; then
+        echo "Switchstand Coordinator dispatcher is unavailable" >&2
+        exit 1
+    fi
+    exec "$dispatcher" "$@"
+fi
+
+real_codex="$HOME/.codex/packages/standalone/current/bin/codex"
+if [ ! -x "$real_codex" ]; then
+    echo "Codex executable is unavailable" >&2
+    exit 1
+fi
+exec "$real_codex" "$@"
