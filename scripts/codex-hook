@@ -19,11 +19,22 @@ MUTATIONS = {
     "unstage", "update-index", "update-ref",
 }
 SHELLS = {"bash", "dash", "sh", "zsh"}
+MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)")
 
 
 def deny(reason: str, event: str) -> dict[str, object]:
     return {"hookSpecificOutput": {"hookEventName": event,
             "permissionDecision": "deny", "permissionDecisionReason": reason}}
+
+
+def memory_reason(detail: str) -> str:
+    return (f"[memory-write] {detail} targets the Switchstand auto-memory directory, which is "
+            "denied; Switchstand tracks context and continuity through work_get/work_update "
+            "and durable agent messages, not per-session local memory. See AGENTS.md.")
+
+
+def targets_memory(*paths: str) -> bool:
+    return any(MEMORY_PATH.search(path) for path in paths)
 
 
 def segments(command: str) -> list[list[str]]:
@@ -174,8 +185,11 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
     # path (tight redirects, tee, sed -i, heredocs, python -c) to enumerate them all, and this
     # also denies reads of the directory, since read vs. write isn't reliably distinguishable
     # in arbitrary shell text either. Use the Read tool to inspect memory content instead.
-    if MEMORY_PATH.search(command):
-        return MEMORY_REASON
+    # A symlink built up piecemeal to avoid this literal substring is a known, accepted gap --
+    # closing that needs shell-aware path resolution, out of proportion for this guard.
+    match = MEMORY_PATH.search(command)
+    if match:
+        return memory_reason(f"this command (matches {match.group(0)!r})")
     current = cwd
     for tokens in segments(command):
         if tokens and Path(tokens[0]).name in SHELLS:
@@ -263,6 +277,8 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
         target = os.path.abspath(candidate)
+        if targets_memory(target, os.path.realpath(target)):
+            return memory_reason(f"apply_patch target {target}")
         if _inside(target, primary) and target != friction:
             return (f"[primary-checkout] apply_patch is denied for {target}; "
                     "use a linked writer worktree.")
@@ -270,11 +286,6 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
 
 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
-MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)")
-MEMORY_REASON = ("[memory-write] this targets the Switchstand auto-memory directory, which is "
-                 "denied; Switchstand tracks context and continuity through work_get/"
-                 "work_update and durable agent messages, not per-session local memory. See "
-                 "AGENTS.md.")
 
 
 def _tool_target_path(tool_input: dict, cwd: str, resolve) -> str | None:
@@ -295,13 +306,14 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
 
 
 def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
-    # abspath, not realpath: a symlinked ~/.claude (common in dotfiles setups) must not
-    # resolve away the literal .claude/projects/*/memory segment this matches on.
+    # Check both forms: abspath alone (literal path) catches a symlinked ~/.claude (common in
+    # dotfiles setups) that realpath would resolve away; realpath alone catches a symlink
+    # pointing INTO the real memory directory from an unrelated path abspath can't see through.
     target = _tool_target_path(tool_input, cwd, os.path.abspath)
     if target is None:
         return None
-    if MEMORY_PATH.search(target):
-        return MEMORY_REASON
+    if targets_memory(target, os.path.realpath(target)):
+        return memory_reason(f"writing to {target}")
     return None
 
 
