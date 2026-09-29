@@ -30,6 +30,54 @@ ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works wi
 
 The desired user model is one chat equals one stable named agent identity. That agent name, the authenticated OAuth principal, the chat/session, and any WorkId are distinct concepts. The current mailbox implementation still binds one immutable visible agent name and synthetic mailbox WorkId to one authenticated principal, with uniqueness on that principal. It therefore cannot truthfully provide multiple independent per-chat named identities behind the same OAuth principal. Treat that as a current product gap, not as identity supplied by a prompt or display label.
 
+## Current observed use and continuity limit (Marco, 2026-09-29)
+
+This is Marco's report of how he currently uses the system, not a prescription for the
+future or proof that the written process runs reliably:
+
+- He launches a ChatGPT Coordinator for reviews. He uses the Codex launcher for
+  implementation and local tooling fixes that arise during that work. He also uses
+  separate research agents. These are current use cases; the three technical modes
+  above describe available host/launch boundaries rather than this allocation of work.
+- Codex can fork bounded reviewers and keep working in a comparatively long-lived
+  session. Ordinary ChatGPT chats have a shorter active life. Marco repeatedly has
+  to tell stopped agents to **resume** and prompt agents to follow up on reviews they
+  dispatched. That manual scheduling and chasing is a current burden, not a desired
+  Coordinator responsibility.
+- Marco reports a roughly 45-minute ChatGPT stall/expiry as a host constraint.
+  Switchstand does not currently establish an external inactive ordinary-ChatGPT wake.
+  Durable state can support safe re-entry when a session is active again; it does not
+  by itself restart an inactive chat.
+
+The desired direction is that an active agent continues authorized work and exact
+nonterminal review/message/activation watches without repeated prompts, and returns
+to Marco for a substantive decision, an actual blocker, or a host limit it cannot
+cross. The written continuation rules in [AGENTS.md](../AGENTS.md) and current routed
+owners state that obligation. Their presence is not evidence that ordinary ChatGPT
+agents consistently follow it. Current UI installation, runtime adoption, and
+cold-replacement success require separate readback or behavioral evidence.
+
+### Example: one review obligation
+
+This illustrates the intended handoff of responsibility, not a claim that the
+complete journey has passed live acceptance.
+
+1. An owner requests one exact bounded review and records its identity, purpose,
+   owner, state, next check, and terminal condition on the current durable work item.
+   A successful send establishes **SENT**, not reviewer pickup or a verdict.
+2. While its session can run, the owner checks that exact review after bounded work
+   or a supported wait. It does not ask Marco to poll or search a generic inbox.
+3. Before a chat stops, the process requires the outstanding watch on the durable
+   item. On later active re-entry, a replacement reads that exact item and resumes
+   the watch. If it was never saved, recovery is UNKNOWN. Routine ChatGPT recovery
+   has not been proved here.
+4. On a verdict, the owner checks the finding and evidence, sends any bounded
+   correction for focused rereview, and continues authorized delivery until the
+   review and dependent work reach a truthful terminal state. A review PASS supplies
+   evidence, not new scope or effect authority.
+5. Marco is asked when a material choice or approval genuinely belongs to him.
+   An inactive host cannot be polled or awakened by these instructions.
+
 ## Identities and routing
 
 - A **WorkId** is Switchstand's stable application identity for work. A provider task GID is an adapter identity and never substitutes for a WorkId or grant.
