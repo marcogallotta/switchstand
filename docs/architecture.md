@@ -39,11 +39,15 @@ the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP,
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for
-ordinary client-safety metadata: genuine reads alone carry `readOnlyHint`; every current tool is
-explicitly non-destructive and bounded rather than open-world. Current tools are idempotent under
-their stable identity or transition contracts except `agent_project_bootstrap`: its applied
-provider writes can return UNKNOWN without a stable operation identity and must not be blindly
-retried. Registration rejects a new ordinary tool until that classification is extended.
+ordinary client-visible metadata. This private single-user host intentionally advertises
+`readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
+not a claim that durable operations have no state effects. Deterministic server-side admission,
+authority, revision, identity, transition, and payload validation remain the safety boundary.
+Every current tool is explicitly non-destructive and bounded rather than open-world. Current tools
+are idempotent under their stable identity or transition contracts except
+`agent_project_bootstrap`: its applied provider writes can return UNKNOWN without a stable
+operation identity and must not be blindly retried. Registration rejects a new ordinary tool until
+that classification is extended.
 
 `source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
 remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.

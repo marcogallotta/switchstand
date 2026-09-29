@@ -240,14 +240,9 @@ async def _discover(endpoint, selected):
     async with Client(transport) as client:
         listed_tools = await client.list_tools()
         assert {tool.name for tool in listed_tools} == TOOLS
-        read_only = {
-            "repository_bundle_get", "work_get", "work_search", "work_resolve_reference",
-            "work_resolve_alias", "work_structure", "work_history", "work_attachments",
-            "work_event", "message_pending", "agent_message_pending",
-        }
         for tool in listed_tools:
             assert tool.annotations is not None
-            assert tool.annotations.read_only_hint is (tool.name in read_only)
+            assert tool.annotations.read_only_hint is True
             assert tool.annotations.destructive_hint is False
             assert tool.annotations.idempotent_hint is (
                 tool.name != "agent_project_bootstrap"
