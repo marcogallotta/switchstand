@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -219,3 +220,18 @@ def test_repository_entrypoint_uses_linked_worktree_source(tmp_path: Path) -> No
     lines = result_file.read_text().splitlines()
     assert lines[0].split(os.pathsep)[0] == str(writer / "src")
     assert lines[1:] == ["-m", "switchstand.edge_doctor", "--help"]
+
+
+def test_module_entrypoint_executes_doctor() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "switchstand.edge_doctor", "--help"],
+        cwd=ROOT,
+        env=os.environ | {"PYTHONPATH": str(ROOT / "src")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert "--env-file" in result.stdout
