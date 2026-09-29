@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Claude shim installation}"
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+source_path="$script_dir/claude-shim"
+destination="$HOME/.local/bin/claude"
+destination_dir=$(dirname -- "$destination")
+
+if [ ! -f "$source_path" ]; then
+    echo "Claude shim source is unavailable" >&2
+    exit 1
+fi
+if [ -e "$destination" ] && [ ! -f "$destination" ] && [ ! -L "$destination" ]; then
+    echo "Claude shim destination is not a file or symlink" >&2
+    exit 1
+fi
+
+mkdir -p "$destination_dir"
+temporary=$(mktemp "$destination_dir/.claude.XXXXXX")
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+cp "$source_path" "$temporary"
+chmod 755 "$temporary"
+
+if [ -f "$destination" ] && [ ! -L "$destination" ] \
+        && [ -x "$destination" ] && cmp -s "$temporary" "$destination"; then
+    exit 0
+fi
+
+mv -fT "$temporary" "$destination"
+trap - EXIT HUP INT TERM
