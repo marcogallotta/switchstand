@@ -170,6 +170,12 @@ def severe(tokens: list[str], cwd: str) -> str | None:
 
 
 def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> str | None:
+    # Whole-string substring match, not token-aware: shell has too many ways to reference a
+    # path (tight redirects, tee, sed -i, heredocs, python -c) to enumerate them all, and this
+    # also denies reads of the directory, since read vs. write isn't reliably distinguishable
+    # in arbitrary shell text either. Use the Read tool to inspect memory content instead.
+    if MEMORY_PATH.search(command):
+        return MEMORY_REASON
     current = cwd
     for tokens in segments(command):
         if tokens and Path(tokens[0]).name in SHELLS:
@@ -264,14 +270,24 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
 
 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
-MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory(?:/|$)")
+MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)")
+MEMORY_REASON = ("[memory-write] this targets the Switchstand auto-memory directory, which is "
+                 "denied; Switchstand tracks context and continuity through work_get/"
+                 "work_update and durable agent messages, not per-session local memory. See "
+                 "AGENTS.md.")
 
 
-def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
+def _tool_target_path(tool_input: dict, cwd: str, resolve) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
-    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    return resolve(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+
+
+def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
+    target = _tool_target_path(tool_input, cwd, os.path.realpath)
+    if target is None:
+        return None
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
@@ -279,14 +295,13 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
 
 
 def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
-    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if not isinstance(raw, str):
+    # abspath, not realpath: a symlinked ~/.claude (common in dotfiles setups) must not
+    # resolve away the literal .claude/projects/*/memory segment this matches on.
+    target = _tool_target_path(tool_input, cwd, os.path.abspath)
+    if target is None:
         return None
-    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
     if MEMORY_PATH.search(target):
-        return (f"[memory-write] writing to auto-memory ({target}) is denied; Switchstand "
-                "tracks context and continuity through work_get/work_update and durable "
-                "agent messages, not per-session local memory. See AGENTS.md.")
+        return MEMORY_REASON
     return None
 
 
