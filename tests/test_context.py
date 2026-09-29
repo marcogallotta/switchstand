@@ -599,6 +599,28 @@ def test_coordinator_hook_denies_claude_edit_tools_in_primary_except_friction(tm
     assert "guard failed closed" in broken.stdout
 
 
+def test_hook_denies_edit_tools_writing_claude_auto_memory(tmp_path):
+    home = tmp_path / "home"
+    (tmp_path / "dotfiles/projects/p/memory").mkdir(parents=True)
+    home.mkdir()
+    (home / ".claude").symlink_to(tmp_path / "dotfiles", target_is_directory=True)
+    environment = {**os.environ, "HOME": str(home)}
+
+    def call(tool: str, path: Path) -> dict:
+        result = subprocess.run(
+            [str(Path(__file__).parents[1] / "scripts/codex-hook")],
+            input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
+                              "tool_input": {"file_path": str(path)}, "cwd": str(tmp_path)}),
+            text=True, capture_output=True, check=True, env=environment)
+        return json.loads(result.stdout) if result.stdout else {}
+
+    memory = home / ".claude/projects/p/memory/MEMORY.md"
+    for tool in ("Write", "Edit", "MultiEdit"):
+        assert "memory-write" in call(tool, memory)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert call("Read", memory) == {}
+    assert call("Write", home / ".claude/projects/p/other.json") == {}
+
+
 @pytest.mark.parametrize("origin", ["../repo", "relative", "/tmp/repo", "file:///tmp/repo"])
 def test_provider_origin_rejects_local_transports(monkeypatch, tmp_path, origin):
     monkeypatch.setattr(context, "_git", lambda *args, **kwargs: origin)

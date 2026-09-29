@@ -21,10 +21,6 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
     exec "$real_claude" "$@"
 fi
 
-memory_dir="$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's#/#-#g')/memory"
-mkdir -p "$memory_dir"
-chmod -R a-w "$memory_dir"
-
 SWITCHSTAND_PRIMARY="$canonical_repo" exec "$real_claude" --setting-sources project,local \
     --settings "$script_dir/../.claude/coordinator-settings.json" \
     --mcp-config "$script_dir/../.claude/coordinator-mcp.json" --strict-mcp-config \
