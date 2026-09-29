@@ -31,6 +31,12 @@ if [ ! -f "$auth_source" ]; then
 fi
 mkdir -p "$coordinator_home"
 chmod 700 "$coordinator_home"
+start_commit=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+    -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+    git -C "$canonical_repo" rev-parse --verify HEAD)
+start_record=$(mktemp "$coordinator_home/start-commit.XXXXXXXX")
+printf '%s\n' "$start_commit" >"$start_record"
+chmod 600 "$start_record"
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
         echo "Coordinator Codex authentication binding is invalid" >&2
@@ -71,7 +77,8 @@ fi
 
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_home/$coordinator_profile.config.toml" \
-    "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook"
+    "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
+    "$start_record"
 
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \

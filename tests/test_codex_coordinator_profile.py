@@ -15,7 +15,10 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> None
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\nexit 0\n")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
-    subprocess.run([SCRIPT, source, destination, primary, hooks, hook], check=True)
+    subprocess.run(
+        [SCRIPT, source, destination, primary, hooks, hook, primary / "start-commit"],
+        check=True,
+    )
 
 
 def test_profile_copies_only_benign_user_preferences(tmp_path: Path) -> None:
@@ -59,6 +62,10 @@ trusted_hash = "must-not-copy"
     profile = tomllib.loads(destination.read_text())
     assert profile["approval_policy"] == "never"
     assert profile["default_permissions"] == "switchstand-coordinator"
+    assert profile["developer_instructions"] == (
+        f"Coordinator start commit is recorded at {primary / 'start-commit'}. "
+        "Reread that file after context compaction and before handoff."
+    )
     assert profile["features"] == {"hooks": True}
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
@@ -77,7 +84,7 @@ trusted_hash = "must-not-copy"
     assert profile["tui"] == {"alternate_screen": "never"}
     assert profile["notice"] == {"hide_rate_limit_model_nudge": True}
     assert set(profile) == {
-        "approval_policy", "default_permissions", "features", "permissions",
+        "approval_policy", "default_permissions", "developer_instructions", "features", "permissions",
         "model_auto_compact_token_limit", "model_auto_compact_token_limit_scope",
         "tui", "notice",
     }
