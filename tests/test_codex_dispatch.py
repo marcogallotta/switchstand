@@ -17,6 +17,16 @@ def executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def poisoned_git_environment(primary: Path) -> dict[str, str]:
+    return {
+        "GIT_DIR": str(primary / ".git"),
+        "GIT_WORK_TREE": str(primary),
+        "GIT_COMMON_DIR": str(primary / ".git"),
+        "GIT_CEILING_DIRECTORIES": str(primary),
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM": "true",
+    }
+
+
 def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     tmp_path: Path,
 ) -> None:
@@ -82,3 +92,35 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     )
     assert repeated.returncode == 0, repeated.stderr
     assert friction_store.read_text() == "existing friction\n"
+
+
+def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    primary.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", primary, "init", "-b", "main"],
+        check=True, capture_output=True,
+    )
+    result_file = tmp_path / "result"
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        '#!/bin/sh\nprintf "real\\n%s\\n" "$*" > "$RESULT"\n',
+    )
+    outside = home / "outside"
+    outside.mkdir()
+
+    result = subprocess.run(
+        [DISPATCH, "exec", "outside"], cwd=outside,
+        env=os.environ | {
+            "HOME": str(home),
+            "RESULT": str(result_file),
+        } | poisoned_git_environment(primary),
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result_file.read_text().splitlines() == ["real", "exec outside"]
+    assert not (home / ".local/state/switchstand/codex/coordinator").exists()

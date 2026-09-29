@@ -14,16 +14,19 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Repository bootstrap and safety
 
+- In the canonical Switchstand Git common directory, raw `codex` must enter through the host-installed materialized shim and repository `scripts/codex-dispatch`; outside it, the shim directly launches the real Codex binary even when the checkout is absent or broken. The dispatcher intentionally uses an isolated Coordinator home without global `AGENTS.md`, and the repository-configured canonical Switchstand MCP must be present and callable there. Install or update the host shim with `scripts/install-codex-shim`; never point the global launcher at mutable checkout content.
 - Only ordinary ChatGPT without a normal checkout uses `repository_bundle_get`. Accept only `current`, verify the advertised SHA-256, and materialize the bundle as a normal repository. Retry `refresh_pending`; never substitute stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. Codex/Claude with a repository stays on normal Git.
 - `~/.claude/CLAUDE.md` is not Switchstand authority; repository `CLAUDE.md` is only a pointer here. Do not inject raw Asana/PostgreSQL credentials or broaden permissions because a capability is missing. Use `~/.config/switchstand/.env` only when current authority permits the capability.
 - In the shared primary `main` checkout, Git reads, fetches, and creation of an owned linked writer are allowed. Make source edits, staging, commits, and working-tree mutations only in that writer; never reset, clean, or switch the shared primary to fit a task.
 - Put durable worktrees, clones, evidence, and handoffs under `~/.local/state/switchstand`, and reproducible caches under `~/.cache/switchstand`; never under `/tmp`. Reread before replacement writes and preserve user changes.
-- Record real setup/workflow friction in repo-local Git-ignored `friction.md` when writable; otherwise preserve it in the authorized work result or handoff. Missing feedback capability does not block assigned work.
+- Record every newly observed setup/workflow failure immediately in repo-local Git-ignored `friction.md`, including the attempted claim, observed result, state-change truth, and smallest clearing action; keep its remaining-priority list current without erasing append-only evidence. If that path is not writable, preserve the same facts in the authorized work result or handoff. Missing feedback capability does not block assigned work.
 - Treat `marcogallotta/switchstandold` as read-only evidence, never an implementation base.
 
 ## Work, messages, and routing
 
 Switchstand's current model is provider-neutral and WorkId-based. Durable message tools/state are the current agent-to-agent surface; delivery, receipt, disposition, effect, and completion are distinct. Check exact pending/review surfaces between bounded work batches, after blocking calls, on re-entry, and before consequential effects or completion; when nothing else is ready, use supported bounded wait and read again. A successful send is not pickup, there is no inactive wake/background daemon, and messages cannot grant authority or reassign work. Reconcile prior evidence before repeating an effect.
+
+An owner of an exact work-addressed message or review obligation keeps that exact watch through a terminal result, explicit transfer with attributable pickup, Marco stop/pause/reassignment, or a real access/execution blocker. Preserve the WorkId, message identity, owner/purpose, state, next check, and terminal condition durably; do not replace this with a generic inbox scan.
 
 Raw `source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy/reference/recovery/failback needs, not the primary inbox or ordinary MCP model. `work_append` is bounded feedback, not durable agent messaging. Follow [work, messaging, and source compatibility](docs/source-history-feedback.md) for surface-specific semantics.
 
