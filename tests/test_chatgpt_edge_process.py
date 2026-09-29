@@ -227,7 +227,21 @@ def _ready_server(process, port):
 async def _discover(endpoint, selected):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
-        assert {tool.name for tool in await client.list_tools()} == TOOLS
+        listed_tools = await client.list_tools()
+        assert {tool.name for tool in listed_tools} == TOOLS
+        read_only = {
+            "repository_bundle_get", "work_get", "work_search", "work_resolve_reference",
+            "work_resolve_alias", "work_structure", "work_history", "work_attachments",
+            "work_event", "message_pending", "agent_message_pending",
+        }
+        for tool in listed_tools:
+            assert tool.annotations is not None
+            assert tool.annotations.read_only_hint is (tool.name in read_only)
+            assert tool.annotations.destructive_hint is False
+            assert tool.annotations.idempotent_hint is (
+                tool.name != "agent_project_bootstrap"
+            )
+            assert tool.annotations.open_world_hint is False
         observed = (await client.call_tool("work_get", {
             "api_version": "1", "work_id": str(selected.authority.active_work_id),
         })).structured_content
@@ -236,7 +250,7 @@ async def _discover(endpoint, selected):
             "api_version": "1", "text": "Task", "limit": 10,
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
-        for tool in await client.list_tools():
+        for tool in listed_tools:
             if tool.name in {"work_search", "work_get", "work_structure", "work_history", "work_attachments", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
                 assert tool.inputSchema.get("additionalProperties") is False

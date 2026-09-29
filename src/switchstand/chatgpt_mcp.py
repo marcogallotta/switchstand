@@ -8,7 +8,7 @@ from uuid import UUID
 
 import httpx
 from mcp.server import MCPServer
-from mcp.types import CallToolResult, ResourceLink, TextContent
+from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue
 
 from . import repository_bundle
@@ -78,6 +78,56 @@ class OrdinaryWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
+
+
+ORDINARY_READ_ONLY_TOOLS = frozenset({
+    "repository_bundle_get",
+    "work_get",
+    "work_search",
+    "work_resolve_reference",
+    "work_resolve_alias",
+    "work_structure",
+    "work_history",
+    "work_attachments",
+    "work_event",
+    "message_pending",
+    "agent_message_pending",
+})
+
+ORDINARY_EFFECT_TOOLS = frozenset({
+    "agent_project_bootstrap",
+    "work_append",
+    "work_create",
+    "work_update",
+    "work_relate",
+    "required_result_save",
+    "message_send",
+    "message_receive",
+    "message_recover",
+    "message_result_send",
+    "message_disposition",
+    "agent_register",
+    "agent_takeover",
+    "agent_message_send",
+    "agent_message_receive",
+    "agent_message_recover",
+    "agent_message_result_send",
+    "agent_message_disposition",
+})
+
+ORDINARY_NON_IDEMPOTENT_TOOLS = frozenset({"agent_project_bootstrap"})
+
+
+def ordinary_tool_annotations(name: str) -> ToolAnnotations:
+    """Classify every ordinary tool explicitly; reject unreviewed surface growth."""
+    if name not in ORDINARY_READ_ONLY_TOOLS | ORDINARY_EFFECT_TOOLS:
+        raise ValueError(f"ordinary tool lacks annotations: {name}")
+    return ToolAnnotations(
+        read_only_hint=name in ORDINARY_READ_ONLY_TOOLS,
+        destructive_hint=False,
+        idempotent_hint=name not in ORDINARY_NON_IDEMPOTENT_TOOLS,
+        open_world_hint=False,
+    )
 
 
 def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
@@ -1012,5 +1062,5 @@ def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = Non
     """A host may supply an OAuth-configured server; default stdio is test-adapter only."""
     server = server or MCPServer("Switchstand ChatGPT")
     for name, function in build_ordinary_tools(service):
-        closed_tool(server, name, function)
+        closed_tool(server, name, function, ordinary_tool_annotations(name))
     return server
