@@ -44,10 +44,6 @@ def memory_reason(detail: str) -> str:
             "and durable agent messages, not per-session local memory. See AGENTS.md.")
 
 
-def targets_memory(*paths: str) -> bool:
-    return any(MEMORY_PATH.search(path) for path in paths)
-
-
 def segments(command: str) -> list[list[str]]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
@@ -287,11 +283,8 @@ def classify_patch(command: str, cwd: str, primary: str | None) -> str | None:
         if raw is None:
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
-        target = os.path.abspath(candidate)
-        # realpath on the pre-abspath candidate, not on target: abspath already lexically
-        # collapsed any ".." against a plain string, so a "<symlink>/../file" that only
-        # resolves into the memory dir via the symlink would otherwise never be walked.
-        if targets_memory(target, os.path.realpath(candidate)):
+        target = os.path.realpath(candidate)
+        if MEMORY_PATH.search(target):
             return memory_reason(f"apply_patch target {target}")
         if primary is not None and _inside(target, primary) and target != friction:
             return (f"[primary-checkout] apply_patch is denied for {target}; "
@@ -324,12 +317,8 @@ def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
     joined = _tool_target_path(tool_input, cwd)
     if joined is None:
         return None
-    target = os.path.abspath(joined)
-    # Check both forms, both computed from the same un-collapsed joined path: abspath alone
-    # (literal path) catches a symlinked ~/.claude (common in dotfiles setups) that realpath
-    # would resolve away; realpath alone catches a symlink pointing INTO the real memory
-    # directory from an unrelated path, including "<symlink>/../file" (see classify_patch).
-    if targets_memory(target, os.path.realpath(joined)):
+    target = os.path.realpath(joined)
+    if MEMORY_PATH.search(target):
         return memory_reason(f"writing to {target}")
     return None
 
