@@ -1,6 +1,7 @@
 """Read-only checks for an activated ChatGPT MCP edge."""
 # pyright: reportPrivateUsage=false
 import argparse
+import asyncio
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -12,6 +13,10 @@ from .chatgpt_edge import _bind_port, _https_resource_url, _loopback_host
 
 REQUIRED_KEYS = frozenset(("SWITCHSTAND_MCP_GITHUB_CLIENT_ID",
     "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET", "SWITCHSTAND_MCP_GITHUB_USER_ID"))
+PROBE_ATTEMPTS = 10
+PROBE_DEADLINE_SECONDS = 3.0
+PROBE_REQUEST_TIMEOUT_SECONDS = 0.2
+PROBE_RETRY_DELAY_SECONDS = 0.2
 def _result(name: str, status: str, detail: str) -> bool:
     print(f"{status} {name}: {detail}")
     return status != "FAIL"
@@ -46,26 +51,46 @@ def _local_probe_url(raw_value: str) -> str:
     _loopback_host(host)
     return value
 
+async def _probe_http(
+    target: str, endpoint: str,
+) -> tuple[httpx.Response, httpx.Response, object]:
+    async with asyncio.timeout(PROBE_DEADLINE_SECONDS):
+        for attempt in range(PROBE_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=PROBE_REQUEST_TIMEOUT_SECONDS, trust_env=False,
+                                             follow_redirects=False) as client:
+                    challenge = await client.post(target)
+                    document = await client.get(endpoint)
+                    return challenge, document, document.json()
+            except (httpx.TransportError, ValueError):
+                if attempt + 1 == PROBE_ATTEMPTS:
+                    raise
+                await asyncio.sleep(PROBE_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def _probe(name: str, target: str, resource: str) -> bool:
     metadata_path = "/.well-known/oauth-protected-resource" + urlparse(resource).path
     metadata = str(httpx.URL(resource).copy_with(path=metadata_path))
     try:
         url = httpx.URL(target)
+        if url.scheme not in ("http", "https") or not url.host:
+            return _result(name, "FAIL", "probe URL must be HTTP(S) with a host")
         if url.username or url.password:
             return _result(name, "FAIL", "probe URL must not contain credentials")
         endpoint = str(url.copy_with(path=metadata_path))
-        with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
-            challenge = client.post(target)
-            document = client.get(endpoint)
-            actual = document.json()
-        valid = (challenge.status_code == 401
-                 and f'resource_metadata="{metadata}"' in challenge.headers.get("www-authenticate", "")
-                 and document.status_code == 200 and isinstance(actual, dict)
-                 and cast(dict[str, object], actual).get("resource") == resource)
-        return _result(name, "PASS" if valid else "FAIL", "challenge and resource metadata exact"
-                       if valid else "unexpected challenge or resource metadata")
-    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+    except (httpx.InvalidURL, ValueError) as exc:
         return _result(name, "FAIL", type(exc).__name__)
+    try:
+        challenge, document, actual = asyncio.run(_probe_http(target, endpoint))
+    except (httpx.TransportError, TimeoutError, ValueError) as exc:
+        return _result(name, "FAIL", type(exc).__name__)
+    valid = (challenge.status_code == 401
+             and f'resource_metadata="{metadata}"' in challenge.headers.get("www-authenticate", "")
+             and document.status_code == 200 and isinstance(actual, dict)
+             and cast(dict[str, object], actual).get("resource") == resource)
+    return _result(name, "PASS" if valid else "FAIL", "challenge and resource metadata exact"
+                   if valid else "unexpected challenge or resource metadata")
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
