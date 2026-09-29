@@ -8,14 +8,21 @@ individual posts; search inside a source for the current task.
 
 ## How to use it
 
-1. Find the area your task touches, pick the two or three closest sources, and search there. Do not
-   read the whole list.
-2. If you cannot find enough on something important, request a deeper search by Claude Code, seeded
+1. For each material question the task depends on, name the two or three closest sources before you
+   start searching. Do not read the whole list.
+2. On completion, disposition every named source as USED, REJECTED, or UNREACHABLE, each with a
+   reason. A consequential conclusion needs at least two independently-sourced dispositions unless the
+   question is purely about one authoritative specification; when a genuine opposing position exists,
+   include a source capable of contradicting the favored design. One confirming source is not a
+   completed search — do not stop at the first source that supports the hypothesis you already hold.
+3. If you cannot find enough on something important, request a deeper search by Claude Code, seeded
    from this list; a ChatGPT or Codex agent should not keep searching badly. A direct
    agent-to-Claude-Code route is not established yet (see the roadmap), so make the request to Marco.
-3. If a source matters and you cannot reach it, ask Marco to retrieve it.
+4. If a source matters and you cannot reach it, ask Marco to retrieve it.
 
-Whether something is important or you have "enough" is your judgment; when unsure, escalate.
+Whether something is important, "enough," or genuinely uncontested is your judgment; when unsure,
+escalate. The disposition in step 2 is the completion condition for research on a material question —
+record it with the conclusion it supports (task, chat, or PR description), not only in this file.
 
 ## Keeping it current
 
@@ -39,9 +46,10 @@ agent-reported and not independently verified.
 ## Tier 1
 
 - **Anthropic Engineering** — https://www.anthropic.com/engineering. Go for: harness design and
-  removable scaffolding, agent evals, long-running agents, permission and containment design,
-  postmortems. Skip: product and API announcements. Use: evidence and mechanics; vendor voice on
-  Claude itself. Fit: strong.
+  removable scaffolding, agent evals, long-running agents, permission and containment design
+  (including managed-agent sandboxing and Git-proxy credential isolation — see "How We Contain
+  Claude Across Products"), postmortems. Skip: product and API announcements. Use: evidence and
+  mechanics; vendor voice on Claude itself. Fit: strong.
 - **Claude Code docs** — https://code.claude.com/docs/en/overview. Go for: hooks, AGENTS.md and
   CLAUDE.md handling, subagents, sandboxing, and how much instruction to load and when (the memory
   and skills pages under https://code.claude.com/docs/en/). Use: mechanics. Fit: good.
@@ -65,6 +73,10 @@ agent-reported and not independently verified.
   mixed; nothing advances without human approval conflicts with anti-blocking.
 - **Google eng-practices** — https://google.github.io/eng-practices/. Go for: review standards, small
   changes. Use: mechanics. Fit: good; predates AI-era review load.
+- **GitHub Docs (rulesets and required status checks)** —
+  https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets.
+  Go for: branch protection and required status checks as an enforced merge gate rather than a written
+  policy. Use: mechanics. Fit: strong; the enforcement counterpart to the Tier 2 merge-queue entry.
 - **Thoughtworks Technology Radar** — https://www.thoughtworks.com/radar. Go for: spec-driven
   development and agent instruction bloat critique. Use: opinion. Fit: strong; supports anti-ceremony.
 - **Martin Fowler** — https://martinfowler.com. Go for: agentic engineering commentary, whether to
@@ -75,6 +87,10 @@ agent-reported and not independently verified.
 - **arXiv 2605.29442** — https://arxiv.org/abs/2605.29442. Go for: a study of about 20,000 real agent
   sessions on constraint violations, inaccurate self-reporting and false completion. Use: evidence.
   Fit: directly on point.
+- **arXiv 2606.15828** — https://arxiv.org/abs/2606.15828. Go for: measured smells in agent
+  instruction files (bloat, conflicting rules, rules a linter already enforces) — direct evidence for
+  replacing prose rules with enforcement. Use: evidence, read at abstract level. Fit: directly on
+  point.
 
 ## Tier 2
 
@@ -116,16 +132,15 @@ agent-reported and not independently verified.
   mechanics. Fit: mixed; its Smart Approval mode is an LLM judging its own gate.
 - **OpenHands** — https://docs.openhands.dev. Go for: agent SDK, sandbox server. Use: mechanics.
 - **DBOS** — https://www.dbos.dev/blog. Go for: Postgres-backed durable execution. Use: vendor voice.
+  Fit: use when a concrete checkpoint/resume consumer exists, not as generic inspiration.
 - **Temporal** — https://temporal.io/blog. Go for: durable agent workflows. Use: vendor voice. Fit:
-  only if a workflow engine is ever wanted; the North Star rejects a rewrite for its own sake.
+  use when a concrete checkpoint/resume consumer exists, not as generic inspiration; the North Star
+  rejects a rewrite for its own sake.
 - **Kubernetes KEPs and Rust RFCs** — https://github.com/kubernetes/enhancements/blob/master/keps/README.md
   and https://rust-lang.github.io/rfcs/. Go for: design docs kept in a repo with a tracking issue for
   status, and change control for those docs. Skip: their full ceremony, heavy for one person; see
   Nick Cameron's critique (https://ncameron.org/blog/the-problem-with-rfcs): slow, one template for
   every change size, no record of what was built. Use: mechanics and opinion. Fit: partial.
-- **arXiv 2606.15828** — https://arxiv.org/abs/2606.15828. Go for: measured smells in agent
-  instruction files (bloat, conflicting rules, rules a linter already enforces). Use: evidence, read
-  at abstract level. Fit: on point for instruction bloat.
 
 ## Tier 3 and use with caution
 
