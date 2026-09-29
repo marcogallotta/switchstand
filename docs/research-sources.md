@@ -24,6 +24,13 @@ Whether something is important, "enough," or genuinely uncontested is your judgm
 escalate. The disposition in step 2 is the completion condition for research on a material question —
 record it with the conclusion it supports (task, chat, or PR description), not only in this file.
 
+This is enforced the same way everything else non-mechanical in this repo is: at review, not by a
+linter. A reviewer of a PR or task whose conclusion depended on research checks that the disposition is
+actually present and reasoned before accepting the conclusion, and treats a missing, vague, or
+single-source disposition on a consequential question as a review finding, not a style nit. An
+implementer who cannot point to the disposition when asked has not completed the research step,
+regardless of what conclusion they reached.
+
 ## Keeping it current
 
 Any research that finds, verifies, downgrades or rejects a source, or fills a gap listed at the end,
