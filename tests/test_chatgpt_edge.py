@@ -448,7 +448,21 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
         f"{ISSUER}mcp", auth="fixed-bearer", httpx_client_factory=client_factory,
     )
     async with app.router.lifespan_context(app), Client(transport) as client:
-        names = {tool.name for tool in await client.list_tools()}
+        tools = await client.list_tools()
+        names = {tool.name for tool in tools}
+        read_only = {
+            "repository_bundle_get", "work_get", "work_search", "work_resolve_reference",
+            "work_resolve_alias", "work_structure", "work_history", "work_attachments",
+            "work_event", "message_pending", "agent_message_pending",
+        }
+        for tool in tools:
+            assert tool.annotations is not None
+            assert tool.annotations.read_only_hint is (tool.name in read_only)
+            assert tool.annotations.destructive_hint is False
+            assert tool.annotations.idempotent_hint is (
+                tool.name != "agent_project_bootstrap"
+            )
+            assert tool.annotations.open_world_hint is False
         search = await client.call_tool("work_search", {
             "api_version": "1", "text": "Task", "limit": 10,
         })

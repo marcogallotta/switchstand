@@ -22,7 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .chatgpt import ChatGPTService
-from .chatgpt_mcp import build_ordinary_tools
+from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
@@ -189,12 +189,12 @@ def create_app(
         **auth_options,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
-    for _, tool in build_ordinary_tools(
+    for name, tool in build_ordinary_tools(
         service, _audit,
         session_generation=lambda: get_context().session_id,
         agent_identity=_openai_session,
     ):
-        server.tool(tool)
+        server.tool(tool, annotations=ordinary_tool_annotations(name))
     app = server.http_app(path="/mcp", json_response=True, stateless_http=False)
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime

@@ -38,7 +38,12 @@ to the configured GitHub user, bridges the authenticated request into a `Request
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
-`build_ordinary_tools`.
+`build_ordinary_tools`. `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for
+ordinary client-safety metadata: genuine reads alone carry `readOnlyHint`; every current tool is
+explicitly non-destructive and bounded rather than open-world. Current tools are idempotent under
+their stable identity or transition contracts except `agent_project_bootstrap`: its applied
+provider writes can return UNKNOWN without a stable operation identity and must not be blindly
+retried. Registration rejects a new ordinary tool until that classification is extended.
 
 `source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
 remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
