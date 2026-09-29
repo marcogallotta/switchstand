@@ -152,23 +152,15 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     switchstand_managed = servers["switchstand_managed"]
     assert switchstand_managed["required"] is False
     assert set(switchstand_managed["enabled_tools"]) == managed
-    assert set(switchstand_managed["tools"]) == managed
     assert switchstand_managed["default_tools_approval_mode"] == "approve"
-    assert all(
-        tool["approval_mode"] == "approve"
-        for tool in switchstand_managed["tools"].values()
-    )
+    assert "tools" not in switchstand_managed
 
     development = {"check", "commit_all_current_worktree", "quality", "run_status"}
     switchstand_development = servers["switchstand_development"]
     assert switchstand_development["required"] is False
     assert set(switchstand_development["enabled_tools"]) == development
-    assert set(switchstand_development["tools"]) == development
     assert switchstand_development["default_tools_approval_mode"] == "approve"
-    assert all(
-        tool["approval_mode"] == "approve"
-        for tool in switchstand_development["tools"].values()
-    )
+    assert "tools" not in switchstand_development
     assert "SWITCHSTAND_RUN_ID" in switchstand_development["env_vars"]
 
 def test_clean_environment_removes_secret_and_stale_authority():
