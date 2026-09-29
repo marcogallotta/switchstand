@@ -300,6 +300,12 @@ def run() -> int:
     tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
+    target = os.path.realpath(os.path.join(cwd, raw)) if isinstance(raw, str) else ""
+    memory_root = os.path.realpath(os.path.expanduser("~/.claude/projects"))
+    if tool in EDIT_TOOLS and _inside(target, memory_root) and "memory" in Path(target).parts:
+        print(json.dumps(deny(f"[memory-write] {target} is auto-memory; use Switchstand work state.", event)))
+        return 0
     if tool in EDIT_TOOLS and coordinator_primary is not None:
         reason = classify_edit(tool_input, cwd, coordinator_primary)
     elif not isinstance(command, str):

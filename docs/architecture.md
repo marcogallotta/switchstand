@@ -164,7 +164,7 @@ shared authentication, a durable per-launch starting-commit file named in develo
 the repository's fixed Coordinator runtime policy. That policy retains
 promptless host development access while making the shared primary checkout read-only except for `friction.md` and the Git
 metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
-mutations and first-class patches outside `friction.md`. `scripts/codex-coordinator-profile` copies
+mutations and first-class patches outside `friction.md`, and Edit-family writes into Claude auto-memory. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. Because the Linux sandbox cannot carve out one writable file below a
 read-only directory, dispatch preserves the ignored `friction.md` content in Switchstand's local
