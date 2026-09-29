@@ -19,7 +19,18 @@ MUTATIONS = {
     "unstage", "update-index", "update-ref",
 }
 SHELLS = {"bash", "dash", "sh", "zsh"}
-MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)")
+
+
+def _memory_path_pattern() -> re.Pattern[str]:
+    patterns = [r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)"]
+    custom = os.environ.get("CLAUDE_CONFIG_DIR")
+    if custom:
+        patterns.append(re.escape(os.path.normpath(custom))
+                         + r"/projects/[^/]+/memor(?:y|ies)(?:/|$)")
+    return re.compile("|".join(patterns))
+
+
+MEMORY_PATH = _memory_path_pattern()
 
 
 def deny(reason: str, event: str) -> dict[str, object]:
@@ -267,8 +278,8 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
-def classify_patch(command: str, cwd: str, primary: str) -> str | None:
-    friction = os.path.join(primary, "friction.md")
+def classify_patch(command: str, cwd: str, primary: str | None) -> str | None:
+    friction = os.path.join(primary, "friction.md") if primary is not None else None
     prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
     for line in command.splitlines():
         raw = next((line.removeprefix(prefix) for prefix in prefixes
@@ -277,9 +288,12 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
         target = os.path.abspath(candidate)
-        if targets_memory(target, os.path.realpath(target)):
+        # realpath on the pre-abspath candidate, not on target: abspath already lexically
+        # collapsed any ".." against a plain string, so a "<symlink>/../file" that only
+        # resolves into the memory dir via the symlink would otherwise never be walked.
+        if targets_memory(target, os.path.realpath(candidate)):
             return memory_reason(f"apply_patch target {target}")
-        if _inside(target, primary) and target != friction:
+        if primary is not None and _inside(target, primary) and target != friction:
             return (f"[primary-checkout] apply_patch is denied for {target}; "
                     "use a linked writer worktree.")
     return None
@@ -288,17 +302,18 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 
 
-def _tool_target_path(tool_input: dict, cwd: str, resolve) -> str | None:
+def _tool_target_path(tool_input: dict, cwd: str) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
-    return resolve(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    return raw if os.path.isabs(raw) else os.path.join(cwd, raw)
 
 
 def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
-    target = _tool_target_path(tool_input, cwd, os.path.realpath)
-    if target is None:
+    joined = _tool_target_path(tool_input, cwd)
+    if joined is None:
         return None
+    target = os.path.realpath(joined)
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
@@ -306,13 +321,15 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
 
 
 def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
-    # Check both forms: abspath alone (literal path) catches a symlinked ~/.claude (common in
-    # dotfiles setups) that realpath would resolve away; realpath alone catches a symlink
-    # pointing INTO the real memory directory from an unrelated path abspath can't see through.
-    target = _tool_target_path(tool_input, cwd, os.path.abspath)
-    if target is None:
+    joined = _tool_target_path(tool_input, cwd)
+    if joined is None:
         return None
-    if targets_memory(target, os.path.realpath(target)):
+    target = os.path.abspath(joined)
+    # Check both forms, both computed from the same un-collapsed joined path: abspath alone
+    # (literal path) catches a symlinked ~/.claude (common in dotfiles setups) that realpath
+    # would resolve away; realpath alone catches a symlink pointing INTO the real memory
+    # directory from an unrelated path, including "<symlink>/../file" (see classify_patch).
+    if targets_memory(target, os.path.realpath(joined)):
         return memory_reason(f"writing to {target}")
     return None
 
@@ -350,7 +367,7 @@ def run() -> int:
         return 0
     elif tool == "Bash":
         reason = classify(command, cwd, coordinator_primary)
-    elif tool == "apply_patch" and coordinator_primary is not None:
+    elif tool == "apply_patch":
         reason = classify_patch(command, cwd, coordinator_primary)
     else:
         return 0
