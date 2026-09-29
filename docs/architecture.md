@@ -91,9 +91,11 @@ messaging, and required continuation:
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
 the final identity model: it reuses work-addressed message storage by creating `agent-mailbox`
-handles and keeps principal, visible agent name, mailbox generation, and WorkId as distinct fields.
-It should be retired or reshaped only after the canonical agent/work identity model and migration of
-outstanding mailbox state are implemented and verified.
+handles. The HTTP edge reads hidden `openai/session` call metadata; the mailbox stores its hash and
+binds one visible name per principal-and-chat pair. Principal, chat identity, visible name, mailbox
+generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
+only after the canonical agent/work identity model and migration of outstanding mailbox state are
+implemented and verified.
 
 Message receipt is fenced twice. The mailbox generation fences trusted principal takeover;
 `RuntimeCurrentness` fences replacement MCP sessions or managed runs. Recovery is an explicit
