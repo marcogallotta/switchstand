@@ -14,7 +14,7 @@ If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002
 
 ### Ordinary Codex Coordinator
 
-From the canonical repository, `scripts/switchstand` (or `scripts/switchstand --coordinator`) enters through `scripts/codex-dispatch`. This is an ordinary, unbound Coordinator session with normal host development capability. It has no launch-bound WorkId and gains no provider effect authority from its unrestricted execution environment.
+From the canonical repository, `scripts/switchstand` (or `scripts/switchstand --coordinator`) enters through `scripts/codex-dispatch`. This is an ordinary, unbound Coordinator session with normal host development capability. Its shared primary checkout is read-only except for direct `friction.md` maintenance and the Git metadata needed for fetch and linked writers; implementation happens in owned linked writers. It has no launch-bound WorkId and gains no provider effect authority from its execution environment.
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 

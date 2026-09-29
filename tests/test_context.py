@@ -51,10 +51,16 @@ def git(repo: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def hook(repo: Path, command: str, environment: dict[str, str]) -> dict:
+def hook(
+    repo: Path, command: str, environment: dict[str, str],
+    *, tool: str = "Bash", coordinator_primary: Path | None = None,
+) -> dict:
+    arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
+    if coordinator_primary is not None:
+        arguments += ["--coordinator-primary", str(coordinator_primary)]
     result = subprocess.run(
-        [str(Path(__file__).parents[1] / "scripts/codex-hook")],
-        input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+        arguments,
+        input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
                           "tool_input": {"command": command}, "cwd": str(repo)}),
         text=True, capture_output=True, check=True, env=environment,
     )
@@ -490,6 +496,64 @@ def test_exact_private_task_writer_allows_commit_while_primary_is_denied(tmp_pat
     denied = hook(primary, "git add README.md", environment)
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    (primary / "tracked.txt").write_text("base\n")
+    git(primary, "add", "tracked.txt")
+    git(primary, "commit", "-m", "base")
+    writer = tmp_path / "writer"
+    git(primary, "worktree", "add", "-b", "writer", str(writer))
+    environment = dict(os.environ)
+
+    for command in (
+        "git status --short", "git config --get user.name", "git remote -v", "git notes",
+        "git tag", "git tag --list", "git tag -l", "git fetch",
+        f"git worktree add --detach {tmp_path / 'next'}",
+        f"git -C {writer} reset --hard HEAD", "rm -rf build", "git push --force scratch",
+    ):
+        assert hook(primary, command, environment, coordinator_primary=primary) == {}
+
+    for command in (
+        "git add tracked.txt", "git reset --hard HEAD", "git clean -fd",
+        "git config user.name Changed", "git remote set-url origin nowhere",
+        "git config --unset user.name", "git maintenance run", "git notes add -m note HEAD",
+        "git tag release", "git tag -a release -m release",
+    ):
+        denied = hook(primary, command, environment, coordinator_primary=primary)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):
+    primary = tmp_path / "primary"
+    writer = tmp_path / "writer"
+    primary.mkdir()
+    writer.mkdir()
+    environment = dict(os.environ)
+
+    friction = "*** Begin Patch\n*** Update File: friction.md\n@@\n-old\n+new\n*** End Patch"
+    source = "*** Begin Patch\n*** Update File: src/main.py\n@@\n-old\n+new\n*** End Patch"
+    outside = "*** Begin Patch\n*** Add File: created.txt\n+new\n*** End Patch"
+
+    assert hook(primary, friction, environment, tool="apply_patch",
+                coordinator_primary=primary) == {}
+    denied = hook(primary, source, environment, tool="apply_patch",
+                  coordinator_primary=primary)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert str(primary / "src/main.py") in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    (primary / "linked.py").symlink_to(writer / "target.py")
+    linked = "*** Begin Patch\n*** Update File: linked.py\n@@\n-old\n+new\n*** End Patch"
+    denied = hook(primary, linked, environment, tool="apply_patch",
+                  coordinator_primary=primary)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert hook(writer, outside, environment, tool="apply_patch",
+                coordinator_primary=primary) == {}
 
 
 @pytest.mark.parametrize("origin", ["../repo", "relative", "/tmp/repo", "file:///tmp/repo"])

@@ -147,8 +147,14 @@ preflight. This is a transitional trusted-host bridge, not a provider API for ag
 
 `scripts/codex-dispatch` is the ordinary Coordinator entry path when invoked inside the canonical
 repository. It launches Codex with a separate Coordinator home, shared authentication, and the
-repository's fixed Coordinator runtime policy. `scripts/codex-coordinator-profile` copies only the
-allowlisted benign user preferences into that isolated profile. Outside the canonical repository,
+repository's fixed Coordinator runtime policy. That policy retains promptless host development
+access while making the shared primary checkout read-only except for `friction.md` and the Git
+metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
+mutations and first-class patches outside `friction.md`. `scripts/codex-coordinator-profile` copies
+only the allowlisted benign user preferences into that isolated profile and installs no conventional
+user-level instructions. Because the Linux sandbox cannot carve out one writable file below a
+read-only directory, dispatch preserves the ignored `friction.md` content in Switchstand's local
+state and binds the repository path to it with a validated symlink. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
 `development.py` owns high-level environment/workload behavior. `docker.py` owns shared low-level
