@@ -21,8 +21,11 @@ sh scripts/check tests/test_example.py -k relevant_case
 arguments to pytest. Use `sh scripts/check tests/test_example.py` for one test module or
 `sh scripts/check tests/test_example.py -k relevant_case` for one behavior. With no
 pytest arguments it runs the full pytest suite. The command prepares or verifies the
-locked environment automatically, but it does not make a dirty writer an immutable
-candidate or replace the clean CI subject required for review.
+locked environment automatically. When `TEST_DATABASE_URL` is absent, it also creates
+the repository's owned disposable PostgreSQL instance and runs migrations before the
+checks. An explicitly supplied URL bypasses automatic provisioning and must itself
+identify an isolated `switchstand_test` database. The command does not make a dirty
+writer an immutable candidate or replace the clean CI subject required for review.
 
 For managed task-bound work, run the following command instead; it creates or resumes
 the private writer and supplies the pinned development tools:

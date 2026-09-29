@@ -72,6 +72,9 @@ if [ "$bound" = false ]; then
         exit 1
     }
 fi
+if [ "${TEST_DATABASE_URL+x}" = "" ]; then
+    exec "$venv/bin/python" "$repo/tests/disposable_postgres.py" "$repo/scripts/check" "$@"
+fi
 quality_status=0
 gate() {
     gate_name=$1
