@@ -36,6 +36,11 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     (primary / "friction.md").write_text("existing friction\n")
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "--allow-empty", "-m", "base"],
+        check=True, capture_output=True,
+    )
     codex_home = home / ".codex"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text("{}\n")
@@ -76,6 +81,13 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
     assert profile["approval_policy"] == "never"
+    records = list(coordinator_home.glob("start-commit.*"))
+    assert len(records) == 1
+    assert records[0].read_text() == subprocess.check_output(
+        ["git", "-C", primary, "rev-parse", "HEAD"], text=True
+    )
+    assert str(records[0]) in profile["developer_instructions"]
+    assert "after context compaction" in profile["developer_instructions"]
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
     assert not (coordinator_home / "AGENTS.md").exists()

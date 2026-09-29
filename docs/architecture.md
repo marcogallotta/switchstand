@@ -152,7 +152,8 @@ routing. Outside the canonical Switchstand Git common directory it directly laun
 binary, even when the checkout is missing or broken; inside that Git common directory it delegates
 to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
 mutable checkout. The repository dispatcher launches Codex with a separate Coordinator home,
-shared authentication, and the repository's fixed Coordinator runtime policy. That policy retains
+shared authentication, a durable per-launch starting-commit file named in developer context, and
+the repository's fixed Coordinator runtime policy. That policy retains
 promptless host development access while making the shared primary checkout read-only except for `friction.md` and the Git
 metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
 mutations and first-class patches outside `friction.md`. `scripts/codex-coordinator-profile` copies
