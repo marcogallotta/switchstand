@@ -10,8 +10,9 @@ individual posts; search inside a source for the current task.
 
 1. Find the area your task touches, pick the two or three closest sources, and search there. Do not
    read the whole list.
-2. If you cannot find enough on something important, ask for a handoff to Claude Code to search
-   deeper, seeded from this list. A ChatGPT or Codex agent should not keep searching badly.
+2. If you cannot find enough on something important, request a deeper search by Claude Code, seeded
+   from this list; a ChatGPT or Codex agent should not keep searching badly. A direct
+   agent-to-Claude-Code route is not established yet (see the roadmap), so make the request to Marco.
 3. If a source matters and you cannot reach it, ask Marco to retrieve it.
 
 Whether something is important or you have "enough" is your judgment; when unsure, escalate.
