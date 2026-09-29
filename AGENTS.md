@@ -53,6 +53,8 @@ Before material editing choose the smallest independently useful, valid, reviewa
 
 At grounding, record whether the outcome is inert landing, activation/reliance, or both, and any HOLD/DENIED. Preserve pending activation with exact owner, target/revision, prerequisites, authority, proof, and return trigger. Keep Marco updated at meaningful semantic checkpoints, not on a timer. Lead with the work title; use opaque identifiers only when useful.
 
+Activating any client-visible ChatGPT MCP schema or metadata change requires Marco to reinstall the ChatGPT app/connection, then start a fresh chat and verify the exact exposed schema and affected behavior. A server restart, authenticated `tools/list`, connection refresh, or fresh chat without reinstall is insufficient. Follow [ChatGPT MCP edge](docs/chatgpt-mcp-edge.md) for the canonical procedure.
+
 When changing canary behavior/lifecycle, reconcile its durable procedure, current record, agent entry guidance, and propagation evidence; state alone is not installed instruction. When routed procedure requires Human Review for a protected effect, present the practical change, consequences/limits, and exact approval scope.
 
 Detailed owners and procedures live in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [north star](docs/north-star.md), [roadmap](docs/roadmap.md), and current routed work. These references constrain execution; they never grant it.
