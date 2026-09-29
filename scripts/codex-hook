@@ -13,8 +13,8 @@ from pathlib import Path
 MUTATIONS = {
     "add", "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge",
     "fast-import", "gc", "init", "maintenance", "mv", "pull", "rebase", "replace",
-    "reset", "restore", "revert", "rm", "stage", "submodule", "switch", "unstage",
-    "update-index", "update-ref",
+    "reset", "restore", "revert", "rm", "stage", "submodule", "switch", "tag",
+    "unstage", "update-index", "update-ref",
 }
 SHELLS = {"bash", "dash", "sh", "zsh"}
 

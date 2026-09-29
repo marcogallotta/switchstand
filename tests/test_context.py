@@ -513,7 +513,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
 
     for command in (
         "git status --short", "git config --get user.name", "git remote -v", "git notes",
-        "git fetch",
+        "git tag", "git tag --list", "git tag -l", "git fetch",
         f"git worktree add --detach {tmp_path / 'next'}",
         f"git -C {writer} reset --hard HEAD", "rm -rf build", "git push --force scratch",
     ):
@@ -523,6 +523,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         "git add tracked.txt", "git reset --hard HEAD", "git clean -fd",
         "git config user.name Changed", "git remote set-url origin nowhere",
         "git config --unset user.name", "git maintenance run", "git notes add -m note HEAD",
+        "git tag release", "git tag -a release -m release",
     ):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
