@@ -63,6 +63,8 @@ owners state that obligation. Their presence is not evidence that ordinary ChatG
 agents consistently follow it. Current UI installation, runtime adoption, and
 cold-replacement success require separate readback or behavioral evidence.
 
+**Interactive polling.** When Marco says “poll” or “keep polling” for a current inbox or exact review, the agent reads that exact surface, uses a supported bounded wait, and reads again while the current session can run. An empty read or an arbitrary count of checks is not a terminal result. A ChatGPT Scheduled task, including an hourly condition watch, is a different future-running product and must not replace this live obligation unless Marco explicitly requests scheduled future runs. At a real host limit, preserve the exact watch and state that active polling stopped; the inactive chat cannot promise further checks, and the obligation resumes on active re-entry.
+
 ### Example: one review obligation
 
 This illustrates the intended handoff of responsibility, not a claim that the
