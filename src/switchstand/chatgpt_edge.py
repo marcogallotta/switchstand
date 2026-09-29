@@ -36,6 +36,7 @@ LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
+FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60
 
 
 class _CompleteMCPStream:
@@ -225,6 +226,7 @@ def create_app(
         issuer_url=config.issuer_url,
         required_scopes=[REQUIRED_SCOPE],
         require_authorization_consent=True,
+        fastmcp_access_token_expiry_seconds=FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
         **auth_options,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
