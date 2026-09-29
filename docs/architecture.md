@@ -95,8 +95,10 @@ messaging, and required continuation:
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
 the final identity model: it reuses work-addressed message storage by creating `agent-mailbox`
-handles. The HTTP edge reads hidden `openai/session` call metadata; the mailbox stores its hash and
-binds one visible name per principal-and-chat pair. Principal, chat identity, visible name, mailbox
+handles. The HTTP edge reads exactly one hidden host identity—ChatGPT `openai/session` unchanged or
+Codex `threadId` namespaced as `codex:<id>`—and fails closed on missing, invalid, or ambiguous
+metadata; the mailbox stores its hash and binds one visible name per principal-and-chat pair.
+Principal, chat identity, visible name, mailbox
 generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
 implemented and verified.
