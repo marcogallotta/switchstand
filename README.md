@@ -16,6 +16,8 @@ Exact-candidate managed qualification uses `scripts/switchstand --isolated --act
 
 `scripts/install-codex-shim` atomically installs `~/.local/bin/codex` as an independent executable file; rerun it after an approved launcher-source update. The installed shim delegates to the repository Coordinator dispatcher only from the canonical Switchstand Git common directory (including its linked worktrees). Everywhere else it directly launches `$HOME/.codex/packages/standalone/current/bin/codex`, so ordinary Codex startup does not depend on the checkout being present or healthy.
 
+Each repository Coordinator launch records its starting commit in durable local state and names that exact file in its developer context. The handoff procedure is documented in [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md#coordinator-handoff).
+
 See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; raw `source_*` reads are bounded managed compatibility, not the ordinary mental model.
 
 ## Quick start

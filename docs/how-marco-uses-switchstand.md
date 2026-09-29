@@ -18,6 +18,12 @@ From the canonical repository, raw `codex` enters through a materialized host sh
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
+#### Coordinator handoff
+
+The launcher records the canonical repository commit at Coordinator start and injects the exact record path into developer context. Reread it after compaction and before handoff. The outgoing Coordinator must fetch and fast-forward a clean canonical `main`, then run the existing manual fresh-agent canary before transferring work; the successor must not be the first consumer of the changed launch path.
+
+Keep the handoff to four fields: **Git boundary** (starting record, final commit, and range), **trigger/change**, **outstanding work**, and **flag as broken** (the newly changed behavior whose failure the successor must report).
+
 ### Managed Codex worker
 
 `scripts/switchstand --active <task> -- <assignment>` starts a one-task Worker. Trusted launch state injects the active WorkId, bounded read-only references, managed principal/currentness, and available tools. The Worker begins and re-enters with `work_get(api_version="1")` without inventing a WorkId. It may perform the bounded research/design/implementation/review function assigned to that work, and may write only the active work unless an explicit CURRENT grant says otherwise.
