@@ -33,6 +33,7 @@ from .state import PostgresState
 LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
+GRACEFUL_SHUTDOWN_SECONDS = 30
 
 
 def _https_resource_url(raw_value: str) -> str:
@@ -237,6 +238,7 @@ async def serve() -> None:
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
             json_response=True, stateless_http=False, show_banner=False,
+            uvicorn_config={"timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_SECONDS},
         )
     finally:
         await client.aclose()

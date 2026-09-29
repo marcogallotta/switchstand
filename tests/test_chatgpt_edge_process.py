@@ -1,5 +1,6 @@
 """Real process/socket/PostgreSQL replay; token verification and provider are fixtures."""
 
+import asyncio
 import json
 import os
 import sys
@@ -132,6 +133,16 @@ def _child_server() -> None:
     edge.SwitchstandGitHubProvider.verify_token = verified
     edge.AsanaProvider = lambda _client, _project=None, **_kwargs: CountingProvider()
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
+    original_get = edge.ChatGPTService.get
+
+    async def delayed_get(service, work_id=None):
+        marker = os.getenv("SLOW_GET_STARTED_FILE")
+        if marker:
+            Path(marker).write_text("started\n")
+            await asyncio.sleep(float(os.environ["SLOW_GET_SECONDS"]))
+        return await original_get(service, work_id)
+
+    edge.ChatGPTService.get = delayed_get
     edge.main()
 
 
@@ -202,7 +213,7 @@ def _server(env, port):
     run = Path(env["EFFECT_FILE"]).parent
     with owned_process([sys.executable, __file__, "--serve"], env,
                        run / f"edge-{uuid4()}.log", new_session=False) as process:
-        yield from _ready_server(process, port)
+        yield _ready_server(process, port)
 
 
 def _ready_server(process, port):
@@ -221,7 +232,7 @@ def _ready_server(process, port):
             time.sleep(0.05)
         else:
             raise AssertionError("edge process did not start")
-    yield endpoint
+    return endpoint
 
 
 async def _discover(endpoint, selected):
@@ -287,6 +298,81 @@ async def _agent_call(endpoint, chat_session, tool, arguments):
             meta={} if chat_session is None else {"openai/session": chat_session},
         )
         return result.structured_content
+
+
+async def test_sigterm_drains_an_inflight_mcp_call(
+    tmp_path: Path, database_prerequisite,
+):
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    selected, _ = await _provision(url, subject)
+    port = free_port()
+    marker = tmp_path / "slow-get-started"
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "ASANA_TOKEN": "test-only",
+        "EFFECT_FILE": str(tmp_path / "effects"),
+        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
+        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+        "SLOW_GET_STARTED_FILE": str(marker),
+        "SLOW_GET_SECONDS": "3",
+    }
+    log = tmp_path / "edge.log"
+    with owned_process(
+        [sys.executable, __file__, "--serve"], env, log,
+        new_session=False, termination_grace=6,
+    ) as process:
+        endpoint = _ready_server(process, port)
+        base_headers = {
+            "accept": "application/json, text/event-stream",
+            "authorization": "Bearer fixed-bearer",
+            "content-type": "application/json",
+        }
+        async with httpx.AsyncClient(base_url=endpoint, trust_env=False, timeout=5) as raw:
+            initialized = await raw.post("/mcp", headers=base_headers, json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "clientInfo": {"name": "shutdown-proof", "version": "1"},
+                    "protocolVersion": "2025-03-26", "capabilities": {},
+                },
+            })
+            assert initialized.status_code == 200
+            session_headers = base_headers | {
+                "mcp-session-id": initialized.headers["mcp-session-id"],
+                "mcp-protocol-version": "2025-03-26",
+            }
+            ready = await raw.post("/mcp", headers=session_headers, json={
+                "jsonrpc": "2.0", "method": "notifications/initialized",
+            })
+            assert ready.status_code == 202
+            call = asyncio.create_task(raw.post("/mcp", headers=session_headers, json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "work_get", "arguments": {
+                        "api_version": "1",
+                        "work_id": str(selected.authority.active_work_id),
+                    },
+                },
+            }))
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            assert marker.exists(), "MCP call did not enter the delayed handler"
+
+            process.terminate()
+
+            response = await call
+            assert response.status_code == 200
+            assert response.json()["result"]["structuredContent"]["status"] == "ok"
+            exit_deadline = time.monotonic() + 2
+            while exited(process) is None and time.monotonic() < exit_deadline:
+                await asyncio.sleep(0.02)
+            assert exited(process) is not None, "edge did not exit after draining the request"
+    assert "ASGI callable returned without completing response" not in log.read_text()
 
 
 async def test_agent_identity_survives_http_transport_and_process_churn(
