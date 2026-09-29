@@ -1,12 +1,9 @@
 import asyncio
 import json
-import os
-from argparse import Namespace
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-import httpx
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue
@@ -39,9 +36,7 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
-from .durable_agent_project import BootstrapError
-from .durable_agent_project import apply as apply_agent_project
-from .durable_agent_project import dry_run as dry_run_agent_project
+from .durable_agent_project import BootstrapError, run_mcp_bootstrap
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
@@ -287,21 +282,14 @@ def build_ordinary_tools(
                 content=[TextContent(type="text", text=json.dumps(value))],
                 structured_content=value,
             )
-        args = Namespace(
-            role=role, project_name=project_name, workspace_gid=workspace_gid,
-            team_gid=team_gid, main_project_gid=main_project_gid,
-            fields={"priority": priority_field_gid, "work_kind": work_kind_field_gid,
-                    "currentness": currentness_field_gid,
-                    "canonical_concern": canonical_concern_field_gid},
-        )
-        if not apply:
-            return result(dry_run_agent_project(args))
-        def run() -> dict[str, Any]:
-            with httpx.Client(base_url="https://app.asana.com/api/1.0", trust_env=False,
-                              headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"}) as client:
-                return apply_agent_project(client, args)
         try:
-            return result(await asyncio.to_thread(run))
+            value = await asyncio.to_thread(
+                run_mcp_bootstrap,
+                role, project_name, workspace_gid, team_gid, main_project_gid,
+                priority_field_gid, work_kind_field_gid, currentness_field_gid,
+                canonical_concern_field_gid, apply,
+            )
+            return result(value)
         except BootstrapError as error:
             return CallToolResult(
                 content=[TextContent(type="text", text=str(error))], is_error=True,
