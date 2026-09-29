@@ -11,6 +11,14 @@ review instead of just editing this file.
 
 ## Current near-term priorities
 
+0. **MCP live activation** (Asana 1218572464592132) — immediate priority, ahead of the
+   Lifecycle sequence below. MCP product implementation was declared done by Marco on
+   2026-09-28, but live ChatGPT cutover/activation remains separately gated on Marco's
+   explicit decision and two active defects: notes/history precedence (1218893866328526)
+   and a pre-cutover UNKNOWN-effect recovery-compatibility dependency (1218896043910204,
+   PR187-F1). A 2026-09-29 live-client run also surfaced unresolved acceptance failures
+   (an `agent_message_result_send` crash and inconsistent ordinary-session runtime
+   identity) that must be reproduced/fixed before activation can be claimed ready.
 1. **Stateful foundation slice** (Lifecycle root: Asana 1218348601889574) — first
    priority. The inert durable-operations foundation spec is review-PASS/READY; it
    still needs a final live Human Review before dispatch, and no implementation has

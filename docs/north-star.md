@@ -4,8 +4,9 @@ This is a guiding reference, not an execution owner. It states durable direction
 assign, schedule, or enforce any current task, and nothing here grants implementation, review, or
 effect authority by itself.
 
-Durable owner: Asana task 1218288326009035. Status: strategic candidate, reviewed; Marco's formal
-approval is still pending as of the last record.
+This file is the authoritative copy. It was migrated from Asana task 1218288326009035, which is now
+a pointer/superseded reference, not a parallel source of truth. Status: strategic candidate,
+reviewed; Marco's formal approval is still pending as of the last record.
 
 ## North star
 
@@ -80,3 +81,17 @@ flat; failures become cheaper to detect, contain, and recover from; change units
 outcome movement remains causally connected to process/tool effort; context, coordination, and cost
 per accepted result improves; each stage leaves evidence that can justify or reject the next
 mechanism; obsolete scaffolding is removed.
+
+## Delivery and review
+
+Current delivery order and scope are owned separately from this document (Asana task
+1218212359420666); this North Star neither schedules nor authorizes delivery stages. Related
+routing: project operating doctrine (1218221031538597), autonomy research (1218242484664950),
+danger register (1218212398378299), operator/recovery/learning (1218212398285587). Detailed
+research and provenance remain on those narrow evidence owners, not duplicated here.
+
+Before Marco approves a material programme/design change to this North Star, an independent agent
+must surface the actual changed, cut, and deferred scope and consequences — the advocating author or
+coordinator cannot be the sole Human Review synthesizer. Agent PASS or readiness does not by itself
+supply human approval, and a later strategic approval changes direction only; it does not authorize
+stage implementation.
