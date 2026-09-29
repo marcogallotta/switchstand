@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from switchstand.edge_doctor import REQUIRED_KEYS, run
+from switchstand.edge_doctor import PROBE_ATTEMPTS, REQUIRED_KEYS, run
 
 ROOT = Path(__file__).parents[1]
 
@@ -19,6 +19,8 @@ METADATA_PATH = "/.well-known/oauth-protected-resource/switchstand/mcp"
 class EdgeHandler(BaseHTTPRequestHandler):
     resource = RESOURCE
     document = None
+    invalid_json_remaining = 0
+    metadata_requests = 0
 
     def do_POST(self):
         self.send_response(401)
@@ -31,6 +33,13 @@ class EdgeHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        type(self).metadata_requests += 1
+        if type(self).invalid_json_remaining:
+            type(self).invalid_json_remaining -= 1
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(b"starting")
+            return
         body = json.dumps(self.document if self.document is not None
                           else {"resource": self.resource}).encode()
         self.send_response(200)
@@ -39,6 +48,8 @@ class EdgeHandler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def edge():
+    EdgeHandler.invalid_json_remaining = 0
+    EdgeHandler.metadata_requests = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), EdgeHandler)
     serving = threading.Thread(
         target=server.serve_forever,
@@ -53,6 +64,32 @@ def edge():
         server.server_close()
         serving.join(timeout=1)
         assert not serving.is_alive(), "edge test server did not terminate"
+
+
+def test_probe_retries_transient_non_json_response(edge, tmp_path, capsys, monkeypatch):
+    _, port = edge
+    EdgeHandler.invalid_json_remaining = 2
+    delays = []
+    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
+
+    assert run(["--env-file", str(env_file(tmp_path, port))]) == 0
+
+    assert EdgeHandler.metadata_requests == 3
+    assert delays == [0.5, 0.5]
+    assert "PASS local_http" in capsys.readouterr().out
+
+
+def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys, monkeypatch):
+    _, port = edge
+    EdgeHandler.invalid_json_remaining = PROBE_ATTEMPTS
+    delays = []
+    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
+
+    assert run(["--env-file", str(env_file(tmp_path, port))]) == 1
+
+    assert EdgeHandler.metadata_requests == PROBE_ATTEMPTS
+    assert delays == [0.5] * (PROBE_ATTEMPTS - 1)
+    assert "FAIL local_http: JSONDecodeError" in capsys.readouterr().out
 
 def env_file(tmp_path, port, *, missing=()):
     path = tmp_path / "edge.env"

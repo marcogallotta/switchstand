@@ -2,6 +2,7 @@
 # pyright: reportPrivateUsage=false
 import argparse
 import subprocess
+import time
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
@@ -12,6 +13,8 @@ from .chatgpt_edge import _bind_port, _https_resource_url, _loopback_host
 
 REQUIRED_KEYS = frozenset(("SWITCHSTAND_MCP_GITHUB_CLIENT_ID",
     "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET", "SWITCHSTAND_MCP_GITHUB_USER_ID"))
+PROBE_ATTEMPTS = 5
+PROBE_RETRY_DELAY_SECONDS = 0.5
 def _result(name: str, status: str, detail: str) -> bool:
     print(f"{status} {name}: {detail}")
     return status != "FAIL"
@@ -54,18 +57,26 @@ def _probe(name: str, target: str, resource: str) -> bool:
         if url.username or url.password:
             return _result(name, "FAIL", "probe URL must not contain credentials")
         endpoint = str(url.copy_with(path=metadata_path))
-        with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
-            challenge = client.post(target)
-            document = client.get(endpoint)
-            actual = document.json()
+    except (httpx.InvalidURL, ValueError) as exc:
+        return _result(name, "FAIL", type(exc).__name__)
+    for attempt in range(PROBE_ATTEMPTS):
+        try:
+            with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
+                challenge = client.post(target)
+                document = client.get(endpoint)
+                actual = document.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            if attempt + 1 == PROBE_ATTEMPTS:
+                return _result(name, "FAIL", type(exc).__name__)
+            time.sleep(PROBE_RETRY_DELAY_SECONDS)
+            continue
         valid = (challenge.status_code == 401
                  and f'resource_metadata="{metadata}"' in challenge.headers.get("www-authenticate", "")
                  and document.status_code == 200 and isinstance(actual, dict)
                  and cast(dict[str, object], actual).get("resource") == resource)
         return _result(name, "PASS" if valid else "FAIL", "challenge and resource metadata exact"
                        if valid else "unexpected challenge or resource metadata")
-    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
-        return _result(name, "FAIL", type(exc).__name__)
+    raise AssertionError("unreachable")
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
