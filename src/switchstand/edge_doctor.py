@@ -13,8 +13,9 @@ from .chatgpt_edge import _bind_port, _https_resource_url, _loopback_host
 
 REQUIRED_KEYS = frozenset(("SWITCHSTAND_MCP_GITHUB_CLIENT_ID",
     "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET", "SWITCHSTAND_MCP_GITHUB_USER_ID"))
-PROBE_ATTEMPTS = 5
-PROBE_RETRY_DELAY_SECONDS = 0.5
+PROBE_ATTEMPTS = 10
+PROBE_REQUEST_TIMEOUT_SECONDS = 0.2
+PROBE_RETRY_DELAY_SECONDS = 0.2
 def _result(name: str, status: str, detail: str) -> bool:
     print(f"{status} {name}: {detail}")
     return status != "FAIL"
@@ -54,6 +55,8 @@ def _probe(name: str, target: str, resource: str) -> bool:
     metadata = str(httpx.URL(resource).copy_with(path=metadata_path))
     try:
         url = httpx.URL(target)
+        if url.scheme not in ("http", "https") or not url.host:
+            return _result(name, "FAIL", "probe URL must be HTTP(S) with a host")
         if url.username or url.password:
             return _result(name, "FAIL", "probe URL must not contain credentials")
         endpoint = str(url.copy_with(path=metadata_path))
@@ -61,11 +64,12 @@ def _probe(name: str, target: str, resource: str) -> bool:
         return _result(name, "FAIL", type(exc).__name__)
     for attempt in range(PROBE_ATTEMPTS):
         try:
-            with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
+            with httpx.Client(timeout=PROBE_REQUEST_TIMEOUT_SECONDS, trust_env=False,
+                              follow_redirects=False) as client:
                 challenge = client.post(target)
                 document = client.get(endpoint)
                 actual = document.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.TransportError, ValueError) as exc:
             if attempt + 1 == PROBE_ATTEMPTS:
                 return _result(name, "FAIL", type(exc).__name__)
             time.sleep(PROBE_RETRY_DELAY_SECONDS)

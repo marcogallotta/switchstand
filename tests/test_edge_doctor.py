@@ -7,9 +7,16 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 import pytest
 
-from switchstand.edge_doctor import PROBE_ATTEMPTS, REQUIRED_KEYS, run
+from switchstand.edge_doctor import (
+    PROBE_ATTEMPTS,
+    PROBE_REQUEST_TIMEOUT_SECONDS,
+    PROBE_RETRY_DELAY_SECONDS,
+    REQUIRED_KEYS,
+    run,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -70,12 +77,21 @@ def test_probe_retries_transient_non_json_response(edge, tmp_path, capsys, monke
     _, port = edge
     EdgeHandler.invalid_json_remaining = 2
     delays = []
+    timeouts = []
+    client = httpx.Client
+
+    def recording_client(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return client(*args, **kwargs)
+
     monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
+    monkeypatch.setattr("switchstand.edge_doctor.httpx.Client", recording_client)
 
     assert run(["--env-file", str(env_file(tmp_path, port))]) == 0
 
     assert EdgeHandler.metadata_requests == 3
-    assert delays == [0.5, 0.5]
+    assert delays == [PROBE_RETRY_DELAY_SECONDS] * 2
+    assert timeouts == [PROBE_REQUEST_TIMEOUT_SECONDS] * 3
     assert "PASS local_http" in capsys.readouterr().out
 
 
@@ -88,8 +104,22 @@ def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys, mo
     assert run(["--env-file", str(env_file(tmp_path, port))]) == 1
 
     assert EdgeHandler.metadata_requests == PROBE_ATTEMPTS
-    assert delays == [0.5] * (PROBE_ATTEMPTS - 1)
+    assert delays == [PROBE_RETRY_DELAY_SECONDS] * (PROBE_ATTEMPTS - 1)
+    assert (PROBE_ATTEMPTS * 2 * PROBE_REQUEST_TIMEOUT_SECONDS
+            + (PROBE_ATTEMPTS - 1) * PROBE_RETRY_DELAY_SECONDS) < 6
     assert "FAIL local_http: JSONDecodeError" in capsys.readouterr().out
+
+
+def test_probe_rejects_unsupported_scheme_without_retry(edge, tmp_path, capsys, monkeypatch):
+    _, port = edge
+    delays = []
+    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
+
+    assert run(["--env-file", str(env_file(tmp_path, port)),
+                "--public-url", "ftp://public.example/mcp"]) == 1
+
+    assert delays == []
+    assert "FAIL public_http: probe URL must be HTTP(S) with a host" in capsys.readouterr().out
 
 def env_file(tmp_path, port, *, missing=()):
     path = tmp_path / "edge.env"
