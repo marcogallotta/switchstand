@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -21,34 +20,14 @@ MUTATIONS = {
 SHELLS = {"bash", "dash", "sh", "zsh"}
 
 
-def _memory_path_pattern() -> re.Pattern[str]:
-    # (?<!\w) / (?!\w) rather than requiring a leading "/" or a trailing "/"-or-end: a resolved
-    # path is always absolute and complete, but the raw Bash whole-string check also needs to
-    # catch a bare cwd-relative reference (no leading "/" or "~/") and a bare reference to the
-    # directory itself followed by anything other than "/" (e.g. "memory && ls", "memory;", a
-    # recursive rm/mv/cp target) -- while still not matching as part of an unrelated longer word.
-    suffix = r"/projects/[^/]+/memor(?:y|ies)(?!\w)"
-    patterns = [r"(?<!\w)\.claude" + suffix]
-    custom = os.environ.get("CLAUDE_CONFIG_DIR")
-    if custom:
-        # realpath, not normpath: match targets are always realpath'd, so a relative or
-        # symlinked CLAUDE_CONFIG_DIR needs the same resolution to ever line up.
-        patterns.append(r"(?<!\w)" + re.escape(os.path.realpath(custom)) + suffix)
-    return re.compile("|".join(patterns))
-
-
-MEMORY_PATH = _memory_path_pattern()
-
-
 def deny(reason: str, event: str) -> dict[str, object]:
     return {"hookSpecificOutput": {"hookEventName": event,
             "permissionDecision": "deny", "permissionDecisionReason": reason}}
 
 
-def memory_reason(detail: str) -> str:
-    return (f"[memory-write] {detail} targets the Switchstand auto-memory directory, which is "
-            "denied; Switchstand tracks context and continuity through work_get/work_update "
-            "and durable agent messages, not per-session local memory. See AGENTS.md.")
+def is_memory_write(tool_input: dict) -> bool:
+    text = str(tool_input)
+    return "/.claude/projects/" in text and ("memory" in text or "memories" in text)
 
 
 def segments(command: str) -> list[list[str]]:
@@ -195,15 +174,6 @@ def severe(tokens: list[str], cwd: str) -> str | None:
 
 
 def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> str | None:
-    # Whole-string substring match, not token-aware: shell has too many ways to reference a
-    # path (tight redirects, tee, sed -i, heredocs, python -c) to enumerate them all, and this
-    # also denies reads of the directory, since read vs. write isn't reliably distinguishable
-    # in arbitrary shell text either. Use the Read tool to inspect memory content instead.
-    # A symlink built up piecemeal to avoid this literal substring is a known, accepted gap --
-    # closing that needs shell-aware path resolution, out of proportion for this guard.
-    match = MEMORY_PATH.search(command)
-    if match:
-        return memory_reason(f"this command (matches {match.group(0)!r})")
     current = cwd
     for tokens in segments(command):
         if tokens and Path(tokens[0]).name in SHELLS:
@@ -271,8 +241,6 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
                             "use a linked writer worktree.")
         if tokens[:1] == ["cd"] and len(tokens) == 2:
             current = os.path.realpath(os.path.join(current, tokens[1]))
-            if MEMORY_PATH.search(current):
-                return memory_reason(f"this command cds into {current}")
     return None
 
 
@@ -283,8 +251,8 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
-def classify_patch(command: str, cwd: str, primary: str | None) -> str | None:
-    friction = os.path.join(primary, "friction.md") if primary is not None else None
+def classify_patch(command: str, cwd: str, primary: str) -> str | None:
+    friction = os.path.join(primary, "friction.md")
     prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
     for line in command.splitlines():
         raw = next((line.removeprefix(prefix) for prefix in prefixes
@@ -292,14 +260,8 @@ def classify_patch(command: str, cwd: str, primary: str | None) -> str | None:
         if raw is None:
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
-        # abspath for the primary-checkout check, unchanged from before this guard existed:
-        # switching it to realpath here changed what counts as "inside primary" for a symlink
-        # inside the checkout pointing outside it, a pre-existing check this PR isn't touching.
-        # The memory check needs realpath regardless, so it's resolved separately.
         target = os.path.abspath(candidate)
-        if MEMORY_PATH.search(os.path.realpath(candidate)):
-            return memory_reason(f"apply_patch target {target}")
-        if primary is not None and _inside(target, primary) and target != friction:
+        if _inside(target, primary) and target != friction:
             return (f"[primary-checkout] apply_patch is denied for {target}; "
                     "use a linked writer worktree.")
     return None
@@ -308,29 +270,14 @@ def classify_patch(command: str, cwd: str, primary: str | None) -> str | None:
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 
 
-def _tool_target_path(tool_input: dict, cwd: str) -> str | None:
+def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
-    return os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
-
-
-def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
-    target = _tool_target_path(tool_input, cwd)
-    if target is None:
-        return None
+    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
-    return None
-
-
-def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
-    target = _tool_target_path(tool_input, cwd)
-    if target is None:
-        return None
-    if MEMORY_PATH.search(target):
-        return memory_reason(f"writing to {target}")
     return None
 
 
@@ -357,17 +304,19 @@ def run() -> int:
     if event not in {"PreToolUse", "PermissionRequest"}:
         return 0
     tool_input = payload.get("tool_input") or {}
+    if is_memory_write(tool_input):
+        print(json.dumps(deny("[memory-write] Switchstand auto-memory writes are denied.",
+                              event)))
+        return 0
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
-    if tool in EDIT_TOOLS:
-        reason = classify_memory_write(tool_input, cwd)
-        if reason is None and coordinator_primary is not None:
-            reason = classify_edit(tool_input, cwd, coordinator_primary)
+    if tool in EDIT_TOOLS and coordinator_primary is not None:
+        reason = classify_edit(tool_input, cwd, coordinator_primary)
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
         reason = classify(command, cwd, coordinator_primary)
-    elif tool == "apply_patch":
+    elif tool == "apply_patch" and coordinator_primary is not None:
         reason = classify_patch(command, cwd, coordinator_primary)
     else:
         return 0
