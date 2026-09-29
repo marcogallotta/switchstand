@@ -98,9 +98,23 @@ class ChatGPTService:
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
 
     @staticmethod
-    def denied(operation: str, reason: str = "authenticated_principal_required") -> GuardOutcome:
+    def denied(
+        operation: str,
+        reason: str = "authenticated_principal_required",
+        next_action: str = "Use the authenticated connection and trusted work issuer.",
+    ) -> GuardOutcome:
         return GuardOutcome(status="denied", operation=operation, reason=reason,
-                            next_action="Use the authenticated connection and trusted work issuer.")
+                            next_action=next_action)
+
+    @classmethod
+    def _reference_denied(cls, reason: str, next_action: str | None = None) -> GrantedWorkResult:
+        return GrantedWorkResult(
+            status="denied",
+            guard=cls.denied(
+                "work_resolve_reference", reason,
+                next_action or "Use the authenticated connection and trusted work issuer.",
+            ),
+        )
 
     async def grant_get(self) -> GrantResult:
         principal = await self.principal()
@@ -226,26 +240,29 @@ class ChatGPTService:
             return GrantedWorkResult(status="unknown")
         principal = await self.principal()
         if principal is None:
-            return GrantedWorkResult(status="denied")
+            return self._reference_denied("authenticated_principal_required")
         try:
             async with self.admission_grants.locked(principal.key) as grant:
-                base_authority, _ = await self._read_authority(
+                base_authority, reason = await self._read_authority(
                     principal, grant, operations=frozenset({"work_get"})
                 )
                 if base_authority is None or grant is None:
-                    return GrantedWorkResult(status="denied")
+                    return self._reference_denied(reason or "no_current_grant")
                 handle = await self.state.get_by_provider(
                     parsed.provider, parsed.provider_work_id
                 )
                 if grant.scope == "launch":
                     if handle is None:
-                        return GrantedWorkResult(status="denied")
-                    authority, _ = await self._read_authority(
+                        return self._reference_denied(
+                            "reference_not_granted",
+                            "Use a reference admitted by the current work grant.",
+                        )
+                    authority, reason = await self._read_authority(
                         principal, grant, operations=frozenset({"work_get"}),
                         work_id=handle.id, explicit_target=True,
                     )
                     if authority is None:
-                        return GrantedWorkResult(status="denied")
+                        return self._reference_denied(reason or "work_not_granted")
                 elif handle is None:
                     provider = self.providers.get(parsed.provider)
                     if provider is None:
@@ -254,12 +271,20 @@ class ChatGPTService:
                     if work is None:
                         return GrantedWorkResult(status="unknown")
                     if not work.canonical:
-                        return GrantedWorkResult(status="denied")
+                        return self._reference_denied(
+                            "reference_not_admitted",
+                            "Use a reference admitted by the authenticated workspace.",
+                        )
                     handle = await self.state.bind(parsed.provider, parsed.provider_work_id)
                 authority = LaunchAuthority(active_work_id=handle.id)
                 result = await Controller(authority, self.state, self.providers).get(
                     WorkGetRequest(api_version="1", work_id=handle.id)
                 )
+                if result.status == "denied":
+                    return self._reference_denied(
+                        "reference_not_admitted",
+                        "Use a reference admitted by the authenticated workspace.",
+                    )
                 return GrantedWorkResult(status=result.status, item=result.item)
         except ProviderError:
             return GrantedWorkResult(status="provider_error")
