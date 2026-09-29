@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Switchstand-owned Codex guard for visible destructive shell commands, primary-checkout
-edits, and local auto-memory writes."""
+"""Switchstand-owned Codex guard for visible destructive shell commands."""
 
 from __future__ import annotations
 
@@ -23,11 +22,6 @@ SHELLS = {"bash", "dash", "sh", "zsh"}
 def deny(reason: str, event: str) -> dict[str, object]:
     return {"hookSpecificOutput": {"hookEventName": event,
             "permissionDecision": "deny", "permissionDecisionReason": reason}}
-
-
-def is_memory_write(tool_input: dict) -> bool:
-    text = str(tool_input)
-    return "/.claude/projects/" in text and ("memory" in text or "memories" in text)
 
 
 def segments(command: str) -> list[list[str]]:
@@ -304,10 +298,8 @@ def run() -> int:
     if event not in {"PreToolUse", "PermissionRequest"}:
         return 0
     tool_input = payload.get("tool_input") or {}
-    if is_memory_write(tool_input):
-        print(json.dumps(deny("[memory-write] Switchstand auto-memory writes are denied.",
-                              event)))
-        return 0
+    if "/.claude/projects/" in os.path.realpath(tool_input.get("file_path") or ""):
+        print(json.dumps(deny("[memory-write] denied.", event))); return 0
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
     if tool in EDIT_TOOLS and coordinator_primary is not None:
