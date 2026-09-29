@@ -297,11 +297,13 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
         "SWITCHSTAND_MCP_BIND_PORT": str(port),
     }
     register = lambda name: {"api_version": "1", "name": name}
+    suffix = str(uuid4())
+    alpha, beta = f"Alpha {suffix}", f"Beta {suffix}"
     with _server(env, port) as endpoint:
-        assert (await _agent_call(endpoint, "chat-a", "agent_register", register("Alpha")))[
+        assert (await _agent_call(endpoint, "chat-a", "agent_register", register(alpha)))[
             "status"
         ] == "ok"
-        assert (await _agent_call(endpoint, "chat-b", "agent_register", register("Beta")))[
+        assert (await _agent_call(endpoint, "chat-b", "agent_register", register(beta)))[
             "status"
         ] == "ok"
         missing = await _agent_call(endpoint, None, "agent_register", register("Missing"))
@@ -309,7 +311,7 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
             "recovery_required", "runtime_identity_unavailable",
         )
         sent = await _agent_call(endpoint, "chat-a", "agent_message_send", {
-            "api_version": "1", "recipient_name": "Beta",
+            "api_version": "1", "recipient_name": beta,
             "message_id": str(uuid4()), "payload": {"request": "review"},
         })
         delivery = sent["message"]["delivery_id"]
@@ -338,6 +340,29 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
             "api_version": "1",
         })
         assert returned["messages"][0]["message_id"] == result_id
+
+        self_sent = await _agent_call(endpoint, "chat-a", "agent_message_send", {
+            "api_version": "1", "recipient_name": alpha,
+            "message_id": str(uuid4()), "payload": {"request": "self-review"},
+        })
+        self_delivery = self_sent["message"]["delivery_id"]
+        assert (await _agent_call(endpoint, "chat-a", "agent_message_receive", {
+            "api_version": "1", "delivery_id": self_delivery,
+        }))["state"] == "RECEIVED"
+        assert (await _agent_call(endpoint, "chat-a", "agent_message_recover", {
+            "api_version": "1", "delivery_id": self_delivery,
+        }))["state"] == "RECEIVED"
+        self_result_id = str(uuid4())
+        self_reply = await _agent_call(endpoint, "chat-a", "agent_message_result_send", {
+            "api_version": "1", "delivery_id": self_delivery,
+            "message_id": self_result_id, "payload": {"result": "self-pass"},
+        })
+        assert self_reply["status"] == "ok"
+        self_disposed = await _agent_call(endpoint, "chat-a", "agent_message_disposition", {
+            "api_version": "1", "delivery_id": self_delivery,
+            "result_message_id": self_result_id,
+        })
+        assert self_disposed["state"] == "DISPOSITIONED"
 
 
 async def test_process_with_fixture_identity_replays_durable_append_after_restart(
