@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import shlex
 import sys
 import tempfile
 import tomllib
+from pathlib import Path
 from typing import Any
-
 
 PREFERENCES = (
     ("model_auto_compact_token_limit",),
@@ -39,37 +39,90 @@ def _toml_value(value: Any) -> str:
     raise TypeError(f"unsupported preference type: {type(value).__name__}")
 
 
-def render(config: dict[str, Any]) -> str:
-    lines: list[str] = []
+def render(config: dict[str, Any], primary: Path) -> str:
+    lines = [
+        'approval_policy = "never"',
+        'default_permissions = "switchstand-coordinator"',
+    ]
     section: tuple[str, ...] = ()
     for path in PREFERENCES:
         value = _lookup(config, path)
-        if value is None:
+        if value is None or path[:-1]:
+            continue
+        lines.append(f"{path[-1]} = {_toml_value(value)}")
+    lines += [
+        "",
+        "[features]",
+        "hooks = true",
+        "",
+        "[permissions.switchstand-coordinator]",
+        'description = "Coordinator host access with the shared primary checkout read-only."',
+        "",
+        "[permissions.switchstand-coordinator.filesystem]",
+        '":root" = "read"',
+        f'{json.dumps(str(primary.parent))} = "write"',
+        '":tmpdir" = "write"',
+        '":slash_tmp" = "write"',
+        "",
+        f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
+        '"." = "read"',
+        '".git" = "write"',
+        "",
+        "[permissions.switchstand-coordinator.network]",
+        "enabled = true",
+        "dangerously_allow_all_unix_sockets = true",
+    ]
+    for path in PREFERENCES:
+        value = _lookup(config, path)
+        if value is None or not path[:-1]:
             continue
         parent = path[:-1]
         if parent != section:
-            if lines:
-                lines.append("")
+            lines.append("")
             lines.append(f"[{'.'.join(parent)}]")
             section = parent
         lines.append(f"{path[-1]} = {_toml_value(value)}")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: codex-coordinator-profile SOURCE DESTINATION")
-    source, destination = map(Path, sys.argv[1:])
-    with source.open("rb") as handle:
-        output = render(tomllib.load(handle))
-    destination.parent.mkdir(parents=True, exist_ok=True)
+def render_hooks(hook: Path, primary: Path) -> str:
+    command = shlex.join((str(hook), "--coordinator-primary", str(primary)))
+    hooks = {
+        "description": "Switchstand Coordinator shared-primary guard.",
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "^(Bash|apply_patch)$",
+                "hooks": [{"type": "command", "command": command, "timeout": 10}],
+            }],
+        },
+    }
+    return json.dumps(hooks, indent=2) + "\n"
+
+
+def _replace(path: Path, output: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        "w", dir=destination.parent, prefix=f".{destination.name}.", delete=False
+        "w", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as handle:
         temporary = Path(handle.name)
         handle.write(output)
     os.chmod(temporary, 0o600)
-    os.replace(temporary, destination)
+    os.replace(temporary, path)
+
+
+def main() -> None:
+    if len(sys.argv) != 6:
+        raise SystemExit(
+            "usage: codex-coordinator-profile SOURCE PROFILE PRIMARY HOOKS HOOK"
+        )
+    source, destination, primary, hooks_destination, hook = map(Path, sys.argv[1:])
+    with source.open("rb") as handle:
+        output = render(tomllib.load(handle), primary.resolve(strict=True))
+    resolved_hook = hook.resolve(strict=True)
+    if not resolved_hook.is_file() or not os.access(resolved_hook, os.X_OK):
+        raise SystemExit("Coordinator hook is unavailable")
+    _replace(destination, output)
+    _replace(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":

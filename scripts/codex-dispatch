@@ -38,10 +38,38 @@ else
     ln -s "$auth_source" "$auth_link"
 fi
 
+friction_path="$canonical_repo/friction.md"
+friction_store="$HOME/.local/state/switchstand/friction.md"
+if [ -L "$friction_path" ]; then
+    if [ "$(readlink -f "$friction_path")" != "$friction_store" ]; then
+        echo "Coordinator friction binding is invalid" >&2
+        exit 1
+    fi
+elif [ -f "$friction_path" ]; then
+    if [ -e "$friction_store" ]; then
+        echo "Coordinator friction migration would overwrite existing state" >&2
+        exit 1
+    fi
+    mv "$friction_path" "$friction_store"
+    chmod 600 "$friction_store"
+    ln -s "$friction_store" "$friction_path"
+elif [ -e "$friction_path" ]; then
+    echo "Coordinator friction binding is invalid" >&2
+    exit 1
+else
+    if [ ! -f "$friction_store" ]; then
+        touch "$friction_store"
+        chmod 600 "$friction_store"
+    fi
+    ln -s "$friction_store" "$friction_path"
+fi
+
 "$script_dir/codex-coordinator-profile" \
-    "$HOME/.codex/config.toml" "$coordinator_home/$coordinator_profile.config.toml"
+    "$HOME/.codex/config.toml" "$coordinator_home/$coordinator_profile.config.toml" \
+    "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook"
 
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
         -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
-        --dangerously-bypass-approvals-and-sandbox --disable hooks "$@"
+        -a never -c 'default_permissions="switchstand-coordinator"' \
+        --enable hooks --dangerously-bypass-hook-trust "$@"
