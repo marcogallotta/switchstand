@@ -84,9 +84,10 @@ messaging, and required continuation:
 - `messages.py` owns `messages`, `message_deliveries`, and `message_projection`, including the
   AVAILABLE/RECEIVED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Provider projection is optional and does not replace the durable message record.
-- `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding from a visible immutable agent
-  name and authenticated principal to a synthetic mailbox WorkId and generation. `agent_messages.py`
-  supplies public name-based views over the existing `MessageState` records.
+- `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
+  name to an authenticated principal and hidden chat-session hash, with a synthetic mailbox WorkId
+  and generation. `agent_messages.py` supplies public name-based views over the existing
+  `MessageState` records.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
