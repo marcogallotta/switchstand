@@ -268,7 +268,7 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
-    target = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
@@ -276,6 +276,17 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
 
 
 def main() -> int:
+    try:
+        return run()
+    except Exception as error:
+        if len(sys.argv) == 3 and sys.argv[1] == "--coordinator-primary":
+            print(json.dumps(deny(f"[primary-checkout] guard failed closed: {error}",
+                                  "PreToolUse")))
+            return 0
+        raise
+
+
+def run() -> int:
     coordinator_primary = None
     if len(sys.argv) == 3 and sys.argv[1] == "--coordinator-primary":
         coordinator_primary = os.path.realpath(sys.argv[2])
@@ -286,7 +297,7 @@ def main() -> int:
     tool = payload.get("tool_name")
     if event not in {"PreToolUse", "PermissionRequest"}:
         return 0
-    tool_input = payload.get("tool_input", {})
+    tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
     if tool in EDIT_TOOLS and coordinator_primary is not None:

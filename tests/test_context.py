@@ -579,6 +579,24 @@ def test_coordinator_hook_denies_claude_edit_tools_in_primary_except_friction(tm
         assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
     assert edit(primary, primary / "friction.md", "Write") == {}
     assert edit(writer, writer / "src/main.py", "Write") == {}
+    (primary / "src").mkdir()
+    (tmp_path / "link").symlink_to(primary / "src", target_is_directory=True)
+    denied = edit(writer, tmp_path / "link/x.py", "Write")
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert edit(primary, "src/rel.py", "Edit")["hookSpecificOutput"]["permissionDecision"] == "deny"
+    notebook = subprocess.run(
+        [str(Path(__file__).parents[1] / "scripts/codex-hook"),
+         "--coordinator-primary", str(primary)],
+        input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "NotebookEdit",
+                          "tool_input": {"notebook_path": str(primary / "n.ipynb")},
+                          "cwd": str(primary)}),
+        text=True, capture_output=True, check=True, env=environment)
+    assert "deny" in notebook.stdout
+    broken = subprocess.run(
+        [str(Path(__file__).parents[1] / "scripts/codex-hook"),
+         "--coordinator-primary", str(primary)],
+        input="not json", text=True, capture_output=True, check=True, env=environment)
+    assert "guard failed closed" in broken.stdout
 
 
 @pytest.mark.parametrize("origin", ["../repo", "relative", "/tmp/repo", "file:///tmp/repo"])
