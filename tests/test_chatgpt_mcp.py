@@ -18,8 +18,8 @@ from pydantic import ValidationError
 
 from switchstand.chatgpt_mcp import (
     ORDINARY_EFFECT_TOOLS,
+    ORDINARY_GENUINE_READ_TOOLS,
     ORDINARY_NON_IDEMPOTENT_TOOLS,
-    ORDINARY_READ_ONLY_TOOLS,
     build_chatgpt_server,
     build_ordinary_tools,
 )
@@ -31,8 +31,8 @@ from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, P
 
 def test_ordinary_annotation_policy_is_exhaustive():
     tool_names = {name for name, _ in build_ordinary_tools(service())}
-    assert ORDINARY_READ_ONLY_TOOLS.isdisjoint(ORDINARY_EFFECT_TOOLS)
-    assert ORDINARY_READ_ONLY_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
+    assert ORDINARY_GENUINE_READ_TOOLS.isdisjoint(ORDINARY_EFFECT_TOOLS)
+    assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
 
@@ -339,14 +339,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "agent_message_result_send", "agent_message_disposition",
             "required_result_save",
         }
-        read_only = {
-            "repository_bundle_get", "work_get", "work_search", "work_resolve_reference",
-            "work_resolve_alias", "work_structure", "work_history", "work_attachments",
-            "work_event", "message_pending", "agent_message_pending",
-        }
         for tool in tools:
             assert tool.annotations is not None
-            assert tool.annotations.read_only_hint is (tool.name in read_only)
+            assert tool.annotations.read_only_hint is True
             assert tool.annotations.destructive_hint is False
             assert tool.annotations.idempotent_hint is (
                 tool.name != "agent_project_bootstrap"
@@ -362,6 +357,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             if tool.name != "agent_project_bootstrap":
                 forbidden.add("role")
             assert not forbidden.intersection(tool.input_schema.get("properties", {}))
+        assert next(
+            tool for tool in tools if tool.name == "agent_message_send"
+        ).annotations.read_only_hint is True
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
         ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save",

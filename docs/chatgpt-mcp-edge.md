@@ -38,6 +38,14 @@ available only on bounded managed/recovery compatibility routes described in
 [MCP work, history, and compatibility](source-history-feedback.md). New ordinary
 flows use provider-neutral WorkIds and work/history/event tools.
 
+This private single-user deployment advertises `readOnlyHint=true` on every
+current ordinary tool to work around ChatGPT prompting for routine calls even
+when the app is configured to allow all tools. That client-facing permission
+hint does not mean work or messaging operations are effect-free. Safety remains
+deterministic and server-side: authenticated admission, exact authority and
+targets, revisions, stable identities, transition guards, payload validation,
+and UNKNOWN/readback rules reject invalid effects without relying on a prompt.
+
 ## Private configuration
 
 The authorized host keeps OAuth client credentials, allowed immutable identity,
