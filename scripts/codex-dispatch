@@ -10,8 +10,13 @@ fi
 
 canonical_repo="$HOME/switchstand"
 script_dir=$(dirname -- "$(readlink -f "$0")")
-canonical_common=$(git -C "$canonical_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
-current_common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :)
+git_common() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :
+}
+canonical_common=$(git_common "$canonical_repo")
+current_common=$(git_common "$PWD")
 if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; then
     exec "$real_codex" "$@"
 fi

@@ -26,6 +26,16 @@ def install(home: Path) -> Path:
     return home / ".local/bin/codex"
 
 
+def poisoned_git_environment(primary: Path) -> dict[str, str]:
+    return {
+        "GIT_DIR": str(primary / ".git"),
+        "GIT_WORK_TREE": str(primary),
+        "GIT_COMMON_DIR": str(primary / ".git"),
+        "GIT_CEILING_DIRECTORIES": str(primary),
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM": "true",
+    }
+
+
 @pytest.mark.parametrize("checkout_state", ["missing", "broken"])
 def test_outside_repo_launch_bypasses_missing_or_broken_checkout(
     tmp_path: Path, checkout_state: str,
@@ -86,7 +96,12 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
 
     result = subprocess.run(
         [launcher, "resume", "test-session"], cwd=nested,
-        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        env=os.environ | {
+            "HOME": str(home),
+            "RESULT": str(result_file),
+            "GIT_CEILING_DIRECTORIES": str(nested),
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM": "false",
+        },
         text=True, capture_output=True, check=False,
     )
 
@@ -108,6 +123,40 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert result_file.read_text().splitlines() == ["dispatcher", "exec linked"]
+
+
+def test_outside_repo_ignores_ambient_git_repository_selection(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    primary.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", primary, "init", "-b", "main"],
+        check=True, capture_output=True,
+    )
+    result_file = tmp_path / "result"
+    executable(
+        primary / "scripts/codex-dispatch",
+        '#!/bin/sh\nprintf "dispatcher\\n" > "$RESULT"\n',
+    )
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        '#!/bin/sh\nprintf "real\\n%s\\n" "$*" > "$RESULT"\n',
+    )
+    launcher = install(home)
+    outside = home / "outside"
+    outside.mkdir()
+
+    result = subprocess.run(
+        [launcher, "exec", "outside"], cwd=outside,
+        env=os.environ | {
+            "HOME": str(home),
+            "RESULT": str(result_file),
+        } | poisoned_git_environment(primary),
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result_file.read_text().splitlines() == ["real", "exec outside"]
 
 
 def test_installer_replaces_checkout_symlink_and_is_idempotent(tmp_path: Path) -> None:
