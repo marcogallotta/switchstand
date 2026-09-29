@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Claude launch}"
+real_claude=$(command -v claude || :)
+if [ -z "$real_claude" ]; then
+    echo "Claude Code executable is unavailable" >&2
+    exit 1
+fi
+
+repo=$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd -P)
+coordinator_home="$HOME/.local/state/switchstand/claude/coordinator"
+auth_source="$HOME/.claude/.credentials.json"
+auth_link="$coordinator_home/.credentials.json"
+if [ ! -f "$auth_source" ]; then
+    echo "Coordinator launch requires existing Claude authentication" >&2
+    exit 1
+fi
+mkdir -p "$coordinator_home"
+chmod 700 "$coordinator_home"
+if [ -L "$auth_link" ]; then
+    if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
+        echo "Coordinator Claude authentication binding is invalid" >&2
+        exit 1
+    fi
+elif [ -e "$auth_link" ]; then
+    echo "Coordinator Claude authentication binding is invalid" >&2
+    exit 1
+else
+    ln -s "$auth_source" "$auth_link"
+fi
+
+CLAUDE_CONFIG_DIR="$coordinator_home" \
+    exec "$real_claude" --setting-sources project,local \
+        --settings "$repo/.claude/coordinator-settings.json" \
+        --mcp-config "$repo/.claude/coordinator-mcp.json" --strict-mcp-config \
+        --permission-mode bypassPermissions "$@"

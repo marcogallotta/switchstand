@@ -9,6 +9,7 @@ The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX
 | Mode | Entry | Boundary |
 | --- | --- | --- |
 | Ordinary Codex Coordinator | `scripts/switchstand` or `scripts/switchstand --coordinator` in the canonical repository | Runs through `scripts/codex-dispatch` with normal host development capability and no launch-bound WorkId. Coordinator duty and tool access grant no work or provider effect. |
+| Ordinary Claude Code Coordinator | `scripts/switchstand --claude` | Runs through `scripts/claude-dispatch` with a clean `CLAUDE_CONFIG_DIR`, only repository-owned settings and MCP config, and read-only `switchstand` tools. Same authority boundary as the Codex Coordinator. |
 | Managed Codex worker | `scripts/switchstand --active <Asana task ID or URL> -- <assignment>` | Trusted launch binds one active WorkId, bounded references, runtime currentness, and the available managed tools. It is a one-task worker, not workspace discovery. |
 | Ordinary ChatGPT | Authenticated repository-configured `switchstand` HTTP/OAuth MCP | Uses admitted WorkIds and durable messaging. One chat should have one stable named agent identity distinct from OAuth authentication; the current implementation does not yet fully provide that separation. |
 

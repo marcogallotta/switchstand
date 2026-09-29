@@ -34,6 +34,11 @@ the private writer and supplies the pinned development tools:
 scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>
 ```
 
+For an ordinary Claude Code Coordinator, run `scripts/switchstand --claude`. It links the
+existing Claude credentials file into `~/.local/state/switchstand/claude/coordinator`, loads only
+`.claude/coordinator-settings.json` and `.claude/coordinator-mcp.json`, and exposes read-only
+`switchstand` MCP tools by deny rule (allow rules only skip prompts).
+
 The detailed lifecycle, recovery, and isolated-candidate routes remain below.
 
 ## Match evidence to the claim
