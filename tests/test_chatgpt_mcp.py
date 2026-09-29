@@ -250,6 +250,10 @@ async def test_launch_reference_denies_unbound_canonical_task_without_binding(mo
             WorkResolveReferenceRequest(api_version="1", reference="789")
         )
     assert result.status == "denied"
+    assert result.guard is not None
+    assert result.guard.operation == "work_resolve_reference"
+    assert result.guard.reason == "reference_not_granted"
+    assert result.guard.next_action == "Use a reference admitted by the current work grant."
     assert subject.state.handles == before
     get.assert_not_awaited()
 
@@ -260,8 +264,22 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
         scope="workspace", operations=frozenset({"work_get"}), append_qualification=None,
     )
     provider = subject.providers["asana"]
-    provider.canonical_ids.add("789")
     server = build_chatgpt_server(subject)
+
+    initially_denied = await server.call_tool(
+        "work_resolve_reference", {"api_version": "1", "reference": "789"}
+    )
+    assert initially_denied.structured_content["guard"] == {
+        "status": "denied",
+        "operation": "work_get",
+        "reason": "reference_not_admitted",
+        "next_action": "Use a reference admitted by the authenticated workspace.",
+        "effect": "not_sent",
+        "retry": "none",
+    }
+    assert len(subject.state.handles) == 2
+
+    provider.canonical_ids.add("789")
 
     first = await server.call_tool("work_resolve_reference", {
         "api_version": "1", "reference": "https://app.asana.com/0/42/789/f",
@@ -282,7 +300,14 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
         "work_resolve_reference", {"api_version": "1", "reference": "789"}
     )
     assert denied.structured_content == {
-        "status": "denied", "item": None, "guard": None,
+        "status": "denied", "item": None, "guard": {
+            "status": "denied",
+            "operation": "work_get",
+            "reason": "reference_not_admitted",
+            "effect": "not_sent",
+            "retry": "none",
+            "next_action": "Use a reference admitted by the authenticated workspace.",
+        },
     }
 
 
