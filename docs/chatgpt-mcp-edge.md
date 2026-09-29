@@ -86,7 +86,9 @@ Starting a host or changing the reverse proxy, OAuth application, tunnel,
 database, provider, or trusted admission is separate activation work. Reliance
 requires real identity and wrong-identity evidence, client discovery, an
 authorized disposable effect with replay/readback, restart behavior, and clean
-stop on the exact activated configuration.
+stop on the exact activated configuration. The edge gives admitted in-flight
+HTTP calls up to 30 seconds to finish after shutdown begins; the service manager
+must allow a longer stop window so resource cleanup can still complete.
 
 An authenticated live `tools/list` proves the server-side inventory only.
 Clients can retain bindings from before a client-visible schema or metadata
