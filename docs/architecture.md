@@ -45,6 +45,9 @@ metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
+Ordinary creation is parent-WorkId-only, and ordinary relation changes accept only parent or
+dependency WorkIds; raw project, section, and assignee identifiers stay behind trusted internal
+and provider boundaries.
 Every current tool is explicitly non-destructive and bounded rather than open-world. Current tools
 are idempotent under their stable identity or transition contracts except
 `agent_project_bootstrap`: its applied provider writes can return UNKNOWN without a stable
