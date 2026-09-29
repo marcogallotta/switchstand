@@ -7,7 +7,8 @@ import pytest
 
 from switchstand.edge_doctor import REQUIRED_KEYS, run
 
-RESOURCE = "https://public.example/mcp"
+RESOURCE = "https://public.example/switchstand/mcp"
+METADATA_PATH = "/.well-known/oauth-protected-resource/switchstand/mcp"
 
 class EdgeHandler(BaseHTTPRequestHandler):
     resource = RESOURCE
@@ -15,11 +16,15 @@ class EdgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.send_response(401)
-        metadata = self.resource.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
+        metadata = "https://public.example" + METADATA_PATH
         self.send_header("WWW-Authenticate", f'Bearer resource_metadata="{metadata}"')
         self.end_headers()
 
     def do_GET(self):
+        if self.path != METADATA_PATH:
+            self.send_response(404)
+            self.end_headers()
+            return
         body = json.dumps(self.document if self.document is not None
                           else {"resource": self.resource}).encode()
         self.send_response(200)

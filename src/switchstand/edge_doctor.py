@@ -47,12 +47,13 @@ def _local_probe_url(raw_value: str) -> str:
     return value
 
 def _probe(name: str, target: str, resource: str) -> bool:
-    metadata = resource.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
-    endpoint = target.removesuffix("/mcp") + "/.well-known/oauth-protected-resource/mcp"
+    metadata_path = "/.well-known/oauth-protected-resource" + urlparse(resource).path
+    metadata = str(httpx.URL(resource).copy_with(path=metadata_path))
     try:
         url = httpx.URL(target)
         if url.username or url.password:
             return _result(name, "FAIL", "probe URL must not contain credentials")
+        endpoint = str(url.copy_with(path=metadata_path))
         with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
             challenge = client.post(target)
             document = client.get(endpoint)
