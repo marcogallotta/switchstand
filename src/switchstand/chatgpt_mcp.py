@@ -1,15 +1,12 @@
 import asyncio
 import json
-import os
-from argparse import Namespace
 from collections.abc import Callable
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
-import httpx
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from . import repository_bundle
 from .agent_mailboxes import AgentMailboxState
@@ -24,8 +21,6 @@ from .agent_messages import (
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
     ClosedModel,
-    SourceTaskRequest,
-    SourceTaskResult,
     Status,
     WorkAttachmentsRequest,
     WorkAttachmentsResult,
@@ -39,9 +34,7 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
-from .durable_agent_project import BootstrapError
-from .durable_agent_project import apply as apply_agent_project
-from .durable_agent_project import dry_run as dry_run_agent_project
+from .durable_agent_project import BootstrapError, run_mcp_bootstrap
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
@@ -70,7 +63,6 @@ from .messages import (
     disposition_digest,
     send_received_result,
 )
-from .resolver import ResolverResult, resolve_alias
 
 
 class OrdinaryWorkResult(ClosedModel):
@@ -80,12 +72,34 @@ class OrdinaryWorkResult(ClosedModel):
     guard: PublicReadGuard | None = None
 
 
+class OrdinaryRelationPatch(ClosedModel):
+    """WorkId-only relation shape for the ordinary surface."""
+    kind: Literal["parent", "dependency"]
+    action: Literal["set", "clear", "add", "remove"]
+    target_work_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def valid_relation(self) -> Self:
+        if self.kind == "parent":
+            if self.action not in {"set", "clear"}:
+                raise ValueError("parent relation requires set or clear")
+            if (self.action == "set") != (self.target_work_id is not None):
+                raise ValueError("parent target does not match action")
+        elif self.action not in {"add", "remove"} or self.target_work_id is None:
+            raise ValueError("dependency relation requires target and add/remove")
+        return self
+
+    def internal(self) -> RelationPatch:
+        return RelationPatch(
+            kind=self.kind, action=self.action, target_work_id=self.target_work_id,
+        )
+
+
 ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "repository_bundle_get",
     "work_get",
     "work_search",
     "work_resolve_reference",
-    "work_resolve_alias",
     "work_structure",
     "work_history",
     "work_attachments",
@@ -287,21 +301,14 @@ def build_ordinary_tools(
                 content=[TextContent(type="text", text=json.dumps(value))],
                 structured_content=value,
             )
-        args = Namespace(
-            role=role, project_name=project_name, workspace_gid=workspace_gid,
-            team_gid=team_gid, main_project_gid=main_project_gid,
-            fields={"priority": priority_field_gid, "work_kind": work_kind_field_gid,
-                    "currentness": currentness_field_gid,
-                    "canonical_concern": canonical_concern_field_gid},
-        )
-        if not apply:
-            return result(dry_run_agent_project(args))
-        def run() -> dict[str, Any]:
-            with httpx.Client(base_url="https://app.asana.com/api/1.0", trust_env=False,
-                              headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"}) as client:
-                return apply_agent_project(client, args)
         try:
-            return result(await asyncio.to_thread(run))
+            value = await asyncio.to_thread(
+                run_mcp_bootstrap,
+                role, project_name, workspace_gid, team_gid, main_project_gid,
+                priority_field_gid, work_kind_field_gid, currentness_field_gid,
+                canonical_concern_field_gid, apply,
+            )
+            return result(value)
         except BootstrapError as error:
             return CallToolResult(
                 content=[TextContent(type="text", text=str(error))], is_error=True,
@@ -385,18 +392,6 @@ def build_ordinary_tools(
         audited("work_event", str(work_id), result.status)
         return result
 
-    async def work_resolve_alias(
-        api_version: Literal["1"],
-        alias: Annotated[str, Field(min_length=1, max_length=80)],
-    ) -> ResolverResult:
-        """Resolve one normalized alias through the temporary canonical registry index."""
-        async def read(task_gid: str) -> SourceTaskResult:
-            return await service.source_task(SourceTaskRequest(api_version=api_version, task_gid=task_gid))
-
-        result = await resolve_alias(alias, read)
-        audited("work_resolve_alias", result.alias, result.status)
-        return result
-
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, text: str,
@@ -416,10 +411,9 @@ def build_ordinary_tools(
 
     async def work_create(
         api_version: Literal["1"], operation_id: UUID,
-        title: str, notes: str = "", parent_work_id: UUID | None = None,
-        project_gid: Annotated[str | None, Field(pattern=r"^[0-9]+$")] = None,
+        parent_work_id: UUID, title: str, notes: str = "",
     ) -> GuardOutcome:
-        """Create parented or admitted-project work through current authenticated admission."""
+        """Create parented work through current authenticated admission."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_create", parent_work_id, operation_id)
@@ -427,9 +421,9 @@ def build_ordinary_tools(
             return service.denied("work_create", "no_current_grant")
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            project_gid=project_gid, grant_version=grant_version, title=title, notes=notes,
+            grant_version=grant_version, title=title, notes=notes,
         ))
-        audited("work_create", str(parent_work_id or project_gid), result.status)
+        audited("work_create", str(parent_work_id), result.status)
         return result
 
     async def work_update(
@@ -451,7 +445,7 @@ def build_ordinary_tools(
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: RelationPatch,
+        observed_revision: str, patch: OrdinaryRelationPatch,
     ) -> GuardOutcome:
         """Apply one bounded relation mutation through current authenticated admission."""
         grant_version, admission = await current_grant_version()
@@ -461,7 +455,8 @@ def build_ordinary_tools(
             return service.denied("work_relate", "no_current_grant")
         result = await service.relate(ProtectedRelation(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+            grant_version=grant_version, observed_revision=observed_revision,
+            patch=patch.internal(),
         ))
         audited("work_relate", str(work_id), result.status)
         return result
@@ -1034,7 +1029,6 @@ def build_ordinary_tools(
         ("work_get", work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
-        ("work_resolve_alias", work_resolve_alias),
         ("work_structure", work_structure),
         ("work_history", work_history),
         ("work_attachments", work_attachments),

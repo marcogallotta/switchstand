@@ -104,6 +104,7 @@ async def test_provider_bridges_proxy_claims_and_rejects_wrong_identity_or_scope
 
 def test_http_boundary_challenges_and_publishes_resource_and_pkce():
     app = create_app(service(), CONFIG, client_storage=MemoryStore())
+    assert app.state.fastmcp_server.auth._fastmcp_access_token_expiry_seconds == 31_536_000
     with TestClient(app) as client:
         challenge = client.post("/mcp")
         assert challenge.status_code == 401 and challenge.content == b""

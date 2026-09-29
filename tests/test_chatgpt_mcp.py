@@ -20,6 +20,7 @@ from switchstand.chatgpt_mcp import (
     ORDINARY_EFFECT_TOOLS,
     ORDINARY_GENUINE_READ_TOOLS,
     ORDINARY_NON_IDEMPOTENT_TOOLS,
+    OrdinaryRelationPatch,
     build_chatgpt_server,
     build_ordinary_tools,
 )
@@ -35,6 +36,19 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+def test_ordinary_relation_patch_converts_only_work_ids():
+    patch = OrdinaryRelationPatch(kind="dependency", action="add", target_work_id=ACTIVE)
+    converted = patch.internal()
+    assert (converted.kind, converted.action, converted.target_work_id) == (
+        "dependency", "add", ACTIVE,
+    )
+    with pytest.raises(ValidationError):
+        OrdinaryRelationPatch.model_validate({
+            "kind": "parent", "action": "set", "target_work_id": ACTIVE,
+            "project_gid": "123",
+        })
 
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
@@ -330,7 +344,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
+            "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "message_send", "message_pending",
             "message_receive", "message_recover", "message_result_send", "message_disposition",
@@ -371,6 +385,13 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         update = next(tool for tool in tools if tool.name == "work_update")
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
+        create = next(tool for tool in tools if tool.name == "work_create")
+        assert "parent_work_id" in create.input_schema["required"]
+        assert "project_gid" not in create.input_schema["properties"]
+        relate = next(tool for tool in tools if tool.name == "work_relate")
+        relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
+        assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
+        assert "gid" not in str(relation).lower()
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
         resolved = await client.call_tool(

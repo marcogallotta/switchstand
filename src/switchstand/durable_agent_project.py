@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -194,6 +195,29 @@ def apply(client: httpx.Client, args: argparse.Namespace) -> JSON:
                 f"UNKNOWN state after write: {error}; inspect Asana before rerunning"
             ) from None
         raise
+
+
+def run_mcp_bootstrap(
+    role: str, project_name: str, workspace_gid: str, team_gid: str,
+    main_project_gid: str, priority_field_gid: str, work_kind_field_gid: str,
+    currentness_field_gid: str, canonical_concern_field_gid: str,
+    apply_changes: bool = False,
+) -> JSON:
+    """Invoke the bootstrap for the ordinary MCP's fixed server-owned boundary."""
+    args = argparse.Namespace(
+        role=role, project_name=project_name, workspace_gid=workspace_gid,
+        team_gid=team_gid, main_project_gid=main_project_gid,
+        fields={"priority": priority_field_gid, "work_kind": work_kind_field_gid,
+                "currentness": currentness_field_gid,
+                "canonical_concern": canonical_concern_field_gid},
+    )
+    if not apply_changes:
+        return dry_run(args)
+    with httpx.Client(
+        base_url="https://app.asana.com/api/1.0", trust_env=False,
+        headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
+    ) as client:
+        return apply(client, args)
 
 
 def parser() -> argparse.ArgumentParser:

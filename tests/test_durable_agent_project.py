@@ -1,13 +1,33 @@
 import json
 from argparse import Namespace
+from contextlib import nullcontext
 
 import httpx
 import pytest
 from chatgpt_fixture import service
 
-from switchstand import chatgpt_mcp
-from switchstand.chatgpt_mcp import build_chatgpt_server
-from switchstand.durable_agent_project import MARKER, BootstrapError, apply, dry_run
+from switchstand import chatgpt_mcp, durable_agent_project
+from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.durable_agent_project import (
+    MARKER,
+    BootstrapError,
+    apply,
+    dry_run,
+    run_mcp_bootstrap,
+)
+
+MCP_INPUTS = {
+    "role": "Asana",
+    "project_name": "SW — Asana Agent",
+    "workspace_gid": "1",
+    "team_gid": "2",
+    "main_project_gid": "3",
+    "priority_field_gid": "11",
+    "work_kind_field_gid": "12",
+    "currentness_field_gid": "13",
+    "canonical_concern_field_gid": "14",
+}
+MCP_ARGUMENTS = tuple(MCP_INPUTS.values())
 
 
 def arguments() -> Namespace:
@@ -136,27 +156,69 @@ def test_apply_creates_reads_back_and_is_idempotent() -> None:
     assert again["project_gid"] == result["project_gid"]
 
 
-async def test_ordinary_mcp_tool_previews_and_preserves_unknown(monkeypatch) -> None:
-    boundary = AsanaBoundary()
-    client_type = httpx.Client
+async def test_ordinary_mcp_tool_maps_once_and_projects_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def invoke(*values: object) -> dict[str, object]:
+        calls.append(values)
+        return {"mode": "apply" if values[-1] else "dry-run"}
+
+    monkeypatch.setattr(chatgpt_mcp, "run_mcp_bootstrap", invoke)
+    tool = dict(build_ordinary_tools(service()))["agent_project_bootstrap"]
+    preview = await tool(api_version="1", **MCP_INPUTS)
+    applied = await tool(api_version="1", **MCP_INPUTS, apply=True)
+    assert calls == [(*MCP_ARGUMENTS, False), (*MCP_ARGUMENTS, True)]
+    assert preview.structured_content == {"mode": "dry-run"}
+    assert json.loads(applied.content[0].text) == {"mode": "apply"}
+
+    def fail(*_values: object) -> dict[str, object]:
+        raise BootstrapError("UNKNOWN write outcome; inspect Asana before rerunning")
+
+    monkeypatch.setattr(chatgpt_mcp, "run_mcp_bootstrap", fail)
+    result = await tool(api_version="1", **MCP_INPUTS, apply=True)
+    assert result.is_error
+    assert result.content[0].text == "UNKNOWN write outcome; inspect Asana before rerunning"
+
+
+def test_mcp_bootstrap_owns_provider_boundary_and_preserves_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_boundary = object()
+    clients: list[dict[str, object]] = []
+    applied: list[tuple[object, Namespace]] = []
+
+    def make_client(**kwargs: object):
+        clients.append(kwargs)
+        return nullcontext(client_boundary)
+
+    def apply_once(client: object, args: Namespace) -> dict[str, object]:
+        applied.append((client, args))
+        return {"mode": "apply"}
+
     monkeypatch.setenv("ASANA_TOKEN", "server-token")
-    monkeypatch.setattr(chatgpt_mcp.httpx, "Client", lambda **_kwargs: client_type(
-        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(boundary)))
-    server = build_chatgpt_server(service())
-    inputs = {
-        "api_version": "1", "role": "Asana", "project_name": "SW — Asana Agent",
-        "workspace_gid": "1", "team_gid": "2", "main_project_gid": "3",
-        "priority_field_gid": "11", "work_kind_field_gid": "12",
-        "currentness_field_gid": "13", "canonical_concern_field_gid": "14",
-    }
-    preview = await server.call_tool("agent_project_bootstrap", inputs)
-    assert preview.structured_content["mode"] == "dry-run"
-    assert boundary.requests == []
-    boundary.ambiguous_path = "/teams/2/projects"
-    failed = await server.call_tool("agent_project_bootstrap", inputs | {"apply": True})
-    assert failed.is_error
-    assert "UNKNOWN" in failed.content[0].text
-    assert "inspect Asana before rerunning" in failed.content[0].text
+    monkeypatch.setattr(durable_agent_project.httpx, "Client", make_client)
+    monkeypatch.setattr(durable_agent_project, "apply", apply_once)
+
+    assert run_mcp_bootstrap(*MCP_ARGUMENTS)["mode"] == "dry-run"
+    assert clients == []
+    assert run_mcp_bootstrap(*MCP_ARGUMENTS, apply_changes=True) == {"mode": "apply"}
+    assert clients == [{
+        "base_url": "https://app.asana.com/api/1.0",
+        "trust_env": False,
+        "headers": {"Authorization": "Bearer server-token"},
+    }]
+    assert len(applied) == 1
+    assert applied[0][0] is client_boundary
+    assert vars(applied[0][1]) == vars(arguments())
+
+    def fail(_client: object, _args: Namespace) -> dict[str, object]:
+        raise BootstrapError("UNKNOWN state; inspect Asana before rerunning")
+
+    monkeypatch.setattr(durable_agent_project, "apply", fail)
+    with pytest.raises(BootstrapError, match="UNKNOWN state; inspect Asana before rerunning"):
+        run_mcp_bootstrap(*MCP_ARGUMENTS, apply_changes=True)
 
 
 @pytest.mark.parametrize("problem", ["project", "field", "master"])
