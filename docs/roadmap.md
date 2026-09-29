@@ -34,6 +34,14 @@ review instead of just editing this file.
    cleared. Awaiting its first pilot at SW — Asana Agent once the bootstrap callable
    surface is available.
 
+5. **Shared friction-logging MCP call** (not yet an Asana task — captured here only) —
+   `friction.md` today is Codex-only and git-ignored; ChatGPT-side agents have no
+   equivalent record, so failures on that side go uncaptured. Idea: one simple MCP
+   tool, callable from both the Codex managed surface and the ChatGPT ordinary
+   surface, that logs a friction entry into the same durable PostgreSQL state
+   described in `docs/architecture.md` — replacing the local file with something
+   shared and queryable. Not scoped or prioritized yet.
+
 ## Notes
 
 - Ordering above (Stateful → Assurance → Wakeful) reflects Marco's explicit
