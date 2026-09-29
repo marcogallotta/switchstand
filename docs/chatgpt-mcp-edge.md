@@ -58,7 +58,7 @@ from non-secret probe configuration, so activation checks do not need a combined
 secret file containing database or provider credentials:
 
 ```console
-switchstand-edge-doctor --env-file /path/to/oauth.env \
+scripts/switchstand-edge-doctor --env-file /path/to/oauth.env \
   --resource-url https://public.example/switchstand/mcp \
   --local-url http://127.0.0.1:8790/mcp \
   --public-url https://public.example/switchstand/mcp \

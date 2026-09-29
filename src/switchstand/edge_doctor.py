@@ -113,3 +113,7 @@ def run(argv: list[str] | None = None) -> int:
     else:
         _result("checkout_sha", "NOT_RUN", "no expected SHA supplied")
     return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

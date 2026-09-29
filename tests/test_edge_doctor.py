@@ -1,11 +1,16 @@
 import json
+import os
+import shutil
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from switchstand.edge_doctor import REQUIRED_KEYS, run
+
+ROOT = Path(__file__).parents[1]
 
 RESOURCE = "https://public.example/switchstand/mcp"
 METADATA_PATH = "/.well-known/oauth-protected-resource/switchstand/mcp"
@@ -168,3 +173,49 @@ def test_public_url_credentials_are_rejected(edge, tmp_path, capsys):
     output = capsys.readouterr().out
     assert "FAIL public_http: probe URL must not contain credentials" in output
     assert "secret" not in output
+
+
+def test_repository_entrypoint_uses_linked_worktree_source(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=primary, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=primary, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=primary, check=True
+    )
+    (primary / "tracked").write_text("base\n")
+    subprocess.run(["git", "add", "tracked"], cwd=primary, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=primary, check=True, capture_output=True)
+    venv_bin = primary / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PYTHONPATH\" > \"$ENTRYPOINT_RESULT\"\n"
+        "printf '%s\\n' \"$@\" >> \"$ENTRYPOINT_RESULT\"\n"
+    )
+    python.chmod(0o755)
+    writer = tmp_path / "writer"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "candidate", str(writer)],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+    )
+    script = writer / "scripts" / "switchstand-edge-doctor"
+    script.parent.mkdir()
+    shutil.copy2(ROOT / "scripts" / "switchstand-edge-doctor", script)
+    result_file = tmp_path / "entrypoint-result"
+
+    result = subprocess.run(
+        [script, "--help"],
+        env=os.environ | {"ENTRYPOINT_RESULT": str(result_file)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = result_file.read_text().splitlines()
+    assert lines[0].split(os.pathsep)[0] == str(writer / "src")
+    assert lines[1:] == ["-m", "switchstand.edge_doctor", "--help"]

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+primary=$(dirname "$common")
+python="$primary/.venv/bin/python"
+[ -x "$python" ] || {
+    echo "edge doctor environment is missing; run scripts/bootstrap in the primary checkout, then retry" >&2
+    exit 1
+}
+
+exec env PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$python" -m switchstand.edge_doctor "$@"
