@@ -298,8 +298,6 @@ def run() -> int:
     if event not in {"PreToolUse", "PermissionRequest"}:
         return 0
     tool_input = payload.get("tool_input") or {}
-    if "/.claude/projects/" in os.path.realpath(tool_input.get("file_path") or ""):
-        print(json.dumps(deny("[memory-write] denied.", event))); return 0
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
     if tool in EDIT_TOOLS and coordinator_primary is not None:
