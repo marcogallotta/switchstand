@@ -43,7 +43,8 @@ agent-reported and not independently verified.
   postmortems. Skip: product and API announcements. Use: evidence and mechanics; vendor voice on
   Claude itself. Fit: strong.
 - **Claude Code docs** — https://code.claude.com/docs/en/overview. Go for: hooks, AGENTS.md and
-  CLAUDE.md handling, subagents, sandboxing. Use: mechanics. Fit: good.
+  CLAUDE.md handling, subagents, sandboxing, and how much instruction to load and when (the memory
+  and skills pages under https://code.claude.com/docs/en/). Use: mechanics. Fit: good.
 - **OpenAI Codex docs** — https://learn.chatgpt.com/docs. Go for: AGENTS.md, approvals and sandbox,
   hooks, code review, automations. Use: mechanics. Fit: good.
 - **OpenAI harness engineering** — https://openai.com/index/harness-engineering/. Go for: repository
@@ -51,7 +52,9 @@ agent-reported and not independently verified.
   framing as a target. Use: evidence, vendor voice. Fit: partial; its minimal human review conflicts
   with selective code review. Not fetchable automatically; read it in a browser.
 - **OpenAI Symphony** — https://github.com/openai/symphony. Go for: tracker-driven runs, restart
-  recovery from tracker state, proof-of-work, human review before merge. Use: mechanics, read
+  recovery from tracker state, proof-of-work, human review before merge, and the repo-versus-tracker
+  split (work items in the tracker; rules and prompt in a versioned WORKFLOW.md in the repo, per
+  https://github.com/openai/symphony/blob/main/SPEC.md). Use: mechanics, read
   critically (an experimental preview; its proof-of-work is agent-produced, so check it
   independently). Fit: good.
 - **Stripe Dev Blog** — https://stripe.dev/blog. Go for: end-to-end agent path with hard round limits,
@@ -115,6 +118,14 @@ agent-reported and not independently verified.
 - **DBOS** — https://www.dbos.dev/blog. Go for: Postgres-backed durable execution. Use: vendor voice.
 - **Temporal** — https://temporal.io/blog. Go for: durable agent workflows. Use: vendor voice. Fit:
   only if a workflow engine is ever wanted; the North Star rejects a rewrite for its own sake.
+- **Kubernetes KEPs and Rust RFCs** — https://github.com/kubernetes/enhancements/blob/master/keps/README.md
+  and https://rust-lang.github.io/rfcs/. Go for: design docs kept in a repo with a tracking issue for
+  status, and change control for those docs. Skip: their full ceremony, heavy for one person; see
+  Nick Cameron's critique (https://ncameron.org/blog/the-problem-with-rfcs): slow, one template for
+  every change size, no record of what was built. Use: mechanics and opinion. Fit: partial.
+- **arXiv 2606.15828** — https://arxiv.org/abs/2606.15828. Go for: measured smells in agent
+  instruction files (bloat, conflicting rules, rules a linter already enforces). Use: evidence, read
+  at abstract level. Fit: on point for instruction bloat.
 
 ## Tier 3 and use with caution
 
@@ -141,7 +152,8 @@ agent-reported and not independently verified.
 
 ## Gaps with no good source yet
 
-Intake and requirements (ask versus proceed), kill switch and rollback, stall and loop detection,
-first-party spend limits, audit cadence, agent aging and replacement, first-party guidance on
+Syncing a tracker with repo docs, and reviewing changes to agent policy docs (Symphony's split and
+KEPs are the nearest). Intake and requirements (ask versus proceed), kill switch and rollback,
+stall and loop detection, first-party spend limits, audit cadence, agent aging and replacement, first-party guidance on
 design and spec review, measuring the whole system, and false "done" claims beyond the arXiv study
 above. When research fills one, update this list.
