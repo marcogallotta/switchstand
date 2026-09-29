@@ -7,8 +7,10 @@ ROOT = Path(__file__).parents[1]
 
 
 def unbound_environment() -> dict[str, str]:
-    return {name: value for name, value in os.environ.items()
-            if name not in {"SWITCHSTAND_CHECK_UV", "SWITCHSTAND_CHECK_VENV", "SWITCHSTAND_CHECK_MANIFEST"}}
+    return ({name: value for name, value in os.environ.items()
+             if name not in {"SWITCHSTAND_CHECK_UV", "SWITCHSTAND_CHECK_VENV",
+                             "SWITCHSTAND_CHECK_MANIFEST"}}
+            | {"TEST_DATABASE_URL": "postgresql+psycopg:///switchstand_test"})
 
 
 def executable(path: Path, text: str) -> None:
@@ -169,6 +171,57 @@ def test_check_keeps_normal_focused_checks_valid(tmp_path: Path) -> None:
     assert calls[0] == "ruff check ."
     assert calls[1].startswith("pyright --pythonpath ")
     assert calls[2] == "pytest -ra tests/test_check.py"
+
+
+def test_check_provisions_disposable_database_when_url_is_absent(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    fake_bin = tmp_path / "bin"
+    check = copy_script("check", repo)
+    fake_bin.mkdir()
+    fake_git(fake_bin / "git")
+    executable(repo / "scripts" / "bootstrap", "#!/bin/sh\nexit 0\n")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "disposable_postgres.py").write_text("fixture supervisor placeholder\n")
+    venv = repo / ".venv" / "bin"
+    executable(
+        venv / "python",
+        """#!/bin/sh
+case "$1" in
+  */tests/disposable_postgres.py)
+    printf '%s\n' "$1" >> "$FAKE_DATABASE"
+    shift
+    TEST_DATABASE_URL=postgresql+psycopg:///switchstand_test exec "$@"
+    ;;
+  *) echo manifest ;;
+esac
+""",
+    )
+    for tool in ("ruff", "pyright", "pytest"):
+        executable(
+            venv / tool,
+            f"#!/bin/sh\nprintf '%s %s %s\\n' '{tool}' \"$TEST_DATABASE_URL\" \"$*\" >> \"$FAKE_QUALITY\"\n",
+        )
+    environment = unbound_environment() | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_REPO": str(repo),
+        "FAKE_DATABASE": str(tmp_path / "database.log"),
+        "FAKE_QUALITY": str(tmp_path / "quality.log"),
+    }
+    environment.pop("TEST_DATABASE_URL")
+
+    result = subprocess.run(
+        [check, "tests/test_check.py"], cwd=repo, env=environment,
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "database.log").read_text().splitlines() == [
+        str(repo / "tests" / "disposable_postgres.py")
+    ]
+    calls = (tmp_path / "quality.log").read_text().splitlines()
+    assert len(calls) == 3
+    assert all("postgresql+psycopg:///switchstand_test" in call for call in calls)
+    assert calls[2].split(maxsplit=2)[2] == "-ra tests/test_check.py"
 
 
 def test_check_runs_and_reports_every_gate_after_failures(tmp_path: Path) -> None:
