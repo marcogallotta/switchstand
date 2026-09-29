@@ -40,7 +40,7 @@ from switchstand.state import PostgresState
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
-    "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_resolve_alias", "work_structure",
+    "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
     "work_history", "work_attachments", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "message_send", "message_pending",
     "message_receive", "message_recover", "message_result_send", "message_disposition",
