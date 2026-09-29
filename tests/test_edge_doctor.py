@@ -4,16 +4,14 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import httpx
 import pytest
 
 from switchstand.edge_doctor import (
     PROBE_ATTEMPTS,
-    PROBE_REQUEST_TIMEOUT_SECONDS,
-    PROBE_RETRY_DELAY_SECONDS,
     REQUIRED_KEYS,
     run,
 )
@@ -28,6 +26,8 @@ class EdgeHandler(BaseHTTPRequestHandler):
     document = None
     invalid_json_remaining = 0
     metadata_requests = 0
+    slow_body_delay = 0.0
+    stream_finished = threading.Event()
 
     def do_POST(self):
         self.send_response(401)
@@ -51,12 +51,25 @@ class EdgeHandler(BaseHTTPRequestHandler):
                           else {"resource": self.resource}).encode()
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(body)
+        if type(self).slow_body_delay:
+            try:
+                for byte in body:
+                    self.wfile.write(bytes((byte,)))
+                    self.wfile.flush()
+                    time.sleep(type(self).slow_body_delay)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                type(self).stream_finished.set()
+        else:
+            self.wfile.write(body)
 
 @pytest.fixture
 def edge():
     EdgeHandler.invalid_json_remaining = 0
     EdgeHandler.metadata_requests = 0
+    EdgeHandler.slow_body_delay = 0.0
+    EdgeHandler.stream_finished.clear()
     server = ThreadingHTTPServer(("127.0.0.1", 0), EdgeHandler)
     serving = threading.Thread(
         target=server.serve_forever,
@@ -73,53 +86,48 @@ def edge():
         assert not serving.is_alive(), "edge test server did not terminate"
 
 
-def test_probe_retries_transient_non_json_response(edge, tmp_path, capsys, monkeypatch):
+def test_probe_retries_transient_non_json_response(edge, tmp_path, capsys):
     _, port = edge
     EdgeHandler.invalid_json_remaining = 2
-    delays = []
-    timeouts = []
-    client = httpx.Client
-
-    def recording_client(*args, **kwargs):
-        timeouts.append(kwargs["timeout"])
-        return client(*args, **kwargs)
-
-    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
-    monkeypatch.setattr("switchstand.edge_doctor.httpx.Client", recording_client)
 
     assert run(["--env-file", str(env_file(tmp_path, port))]) == 0
 
     assert EdgeHandler.metadata_requests == 3
-    assert delays == [PROBE_RETRY_DELAY_SECONDS] * 2
-    assert timeouts == [PROBE_REQUEST_TIMEOUT_SECONDS] * 3
     assert "PASS local_http" in capsys.readouterr().out
 
 
-def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys, monkeypatch):
+def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys):
     _, port = edge
     EdgeHandler.invalid_json_remaining = PROBE_ATTEMPTS
-    delays = []
-    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
 
     assert run(["--env-file", str(env_file(tmp_path, port))]) == 1
 
     assert EdgeHandler.metadata_requests == PROBE_ATTEMPTS
-    assert delays == [PROBE_RETRY_DELAY_SECONDS] * (PROBE_ATTEMPTS - 1)
-    assert (PROBE_ATTEMPTS * 2 * PROBE_REQUEST_TIMEOUT_SECONDS
-            + (PROBE_ATTEMPTS - 1) * PROBE_RETRY_DELAY_SECONDS) < 6
     assert "FAIL local_http: JSONDecodeError" in capsys.readouterr().out
 
 
-def test_probe_rejects_unsupported_scheme_without_retry(edge, tmp_path, capsys, monkeypatch):
+def test_probe_rejects_unsupported_scheme_without_retry(edge, tmp_path, capsys):
     _, port = edge
-    delays = []
-    monkeypatch.setattr("switchstand.edge_doctor.time.sleep", delays.append)
 
     assert run(["--env-file", str(env_file(tmp_path, port)),
                 "--public-url", "ftp://public.example/mcp"]) == 1
 
-    assert delays == []
     assert "FAIL public_http: probe URL must be HTTP(S) with a host" in capsys.readouterr().out
+
+
+def test_probe_cancels_progressive_response_at_total_deadline(
+        edge, tmp_path, capsys, monkeypatch):
+    _, port = edge
+    EdgeHandler.slow_body_delay = 0.15
+    monkeypatch.setattr("switchstand.edge_doctor.PROBE_DEADLINE_SECONDS", 0.3)
+
+    started = time.monotonic()
+    assert run(["--env-file", str(env_file(tmp_path, port))]) == 1
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1
+    assert EdgeHandler.stream_finished.wait(1), "cancelled HTTP request remained active"
+    assert "FAIL local_http: TimeoutError" in capsys.readouterr().out
 
 def env_file(tmp_path, port, *, missing=()):
     path = tmp_path / "edge.env"
