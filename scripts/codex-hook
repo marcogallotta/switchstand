@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Switchstand-owned Codex guard for visible destructive shell commands."""
+"""Switchstand-owned Codex guard for visible destructive shell commands, primary-checkout
+edits, and local auto-memory writes."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -262,6 +264,7 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
 
 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory(?:/|$)")
 
 
 def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
@@ -272,6 +275,18 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
+    return None
+
+
+def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not isinstance(raw, str):
+        return None
+    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    if MEMORY_PATH.search(target):
+        return (f"[memory-write] writing to auto-memory ({target}) is denied; Switchstand "
+                "tracks context and continuity through work_get/work_update and durable "
+                "agent messages, not per-session local memory. See AGENTS.md.")
     return None
 
 
@@ -300,8 +315,10 @@ def run() -> int:
     tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
-    if tool in EDIT_TOOLS and coordinator_primary is not None:
-        reason = classify_edit(tool_input, cwd, coordinator_primary)
+    if tool in EDIT_TOOLS:
+        reason = classify_memory_write(tool_input, cwd)
+        if reason is None and coordinator_primary is not None:
+            reason = classify_edit(tool_input, cwd, coordinator_primary)
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
