@@ -22,7 +22,11 @@ SHELLS = {"bash", "dash", "sh", "zsh"}
 
 
 def _memory_path_pattern() -> re.Pattern[str]:
-    patterns = [r"/\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)"]
+    # (?<!\w) rather than a bare leading "/": a resolved path is always absolute, but the raw
+    # Bash whole-string check also needs to catch a bare cwd-relative reference with no leading
+    # "/" or "~/" (e.g. cwd is $HOME and the command says plain ".claude/projects/..."), while
+    # still not matching ".claude" as the tail of an unrelated word.
+    patterns = [r"(?<!\w)\.claude/projects/[^/]+/memor(?:y|ies)(?:/|$)"]
     custom = os.environ.get("CLAUDE_CONFIG_DIR")
     if custom:
         patterns.append(re.escape(os.path.normpath(custom))
@@ -299,14 +303,13 @@ def _tool_target_path(tool_input: dict, cwd: str) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
-    return raw if os.path.isabs(raw) else os.path.join(cwd, raw)
+    return os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
 
 
 def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
-    joined = _tool_target_path(tool_input, cwd)
-    if joined is None:
+    target = _tool_target_path(tool_input, cwd)
+    if target is None:
         return None
-    target = os.path.realpath(joined)
     if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
         return (f"[primary-checkout] editing {target} is denied; "
                 "use a linked writer worktree.")
@@ -314,10 +317,9 @@ def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
 
 
 def classify_memory_write(tool_input: dict, cwd: str) -> str | None:
-    joined = _tool_target_path(tool_input, cwd)
-    if joined is None:
+    target = _tool_target_path(tool_input, cwd)
+    if target is None:
         return None
-    target = os.path.realpath(joined)
     if MEMORY_PATH.search(target):
         return memory_reason(f"writing to {target}")
     return None
