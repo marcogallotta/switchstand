@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Claude launch}"
+canonical_repo="$HOME/switchstand"
+git_common() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :
+}
+canonical_common=$(git_common "$canonical_repo")
+current_common=$(git_common "$PWD")
+
+if [ -n "$canonical_common" ] && [ "$current_common" = "$canonical_common" ]; then
+    dispatcher="$canonical_repo/scripts/claude-dispatch"
+    if [ ! -x "$dispatcher" ]; then
+        echo "Switchstand Coordinator dispatcher is unavailable" >&2
+        exit 1
+    fi
+    exec "$dispatcher" "$@"
+fi
+
+real_claude=$(ls -d "$HOME"/.local/share/claude/versions/* 2>/dev/null | sort -V | tail -1)
+if [ -z "$real_claude" ] || [ ! -x "$real_claude" ]; then
+    echo "Claude executable is unavailable" >&2
+    exit 1
+fi
+exec "$real_claude" "$@"

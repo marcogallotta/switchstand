@@ -34,6 +34,15 @@ the private writer and supplies the pinned development tools:
 scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>
 ```
 
+For an ordinary Claude Code Coordinator, install the host shim once with
+`scripts/install-claude-shim`, as for `codex`; raw `claude` then delegates to
+`scripts/claude-dispatch` inside the canonical repository and runs plain Claude Code elsewhere
+(`scripts/switchstand --claude` is the direct route). The Coordinator loads only
+`.claude/coordinator-settings.json` and `.claude/coordinator-mcp.json`, excludes the global
+`~/.claude/CLAUDE.md`, exposes the `switchstand` MCP, and fences the shared primary checkout with
+`scripts/codex-hook --coordinator-primary` on Bash, Edit, Write and NotebookEdit. It uses your
+normal Claude login. Tool access grants no authority.
+
 The detailed lifecycle, recovery, and isolated-candidate routes remain below.
 
 ## Match evidence to the claim

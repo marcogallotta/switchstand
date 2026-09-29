@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Claude launch}"
+real_claude=$(ls -d "$HOME"/.local/share/claude/versions/* 2>/dev/null | sort -V | tail -1)
+if [ -z "$real_claude" ] || [ ! -x "$real_claude" ]; then
+    echo "Claude Code executable is unavailable" >&2
+    exit 1
+fi
+
+canonical_repo="$HOME/switchstand"
+script_dir=$(dirname -- "$(readlink -f "$0")")
+git_common() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :
+}
+canonical_common=$(git_common "$canonical_repo")
+current_common=$(git_common "$PWD")
+if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; then
+    exec "$real_claude" "$@"
+fi
+
+SWITCHSTAND_PRIMARY="$canonical_repo" exec "$real_claude" --setting-sources project,local \
+    --settings "$script_dir/../.claude/coordinator-settings.json" \
+    --mcp-config "$script_dir/../.claude/coordinator-mcp.json" --strict-mcp-config \
+    --permission-mode bypassPermissions "$@"

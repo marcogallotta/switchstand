@@ -1,0 +1,15 @@
+{
+  "claudeMdExcludes": ["**/.claude/CLAUDE.md"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|MultiEdit|NotebookEdit|Write",
+        "hooks": [
+          {"type": "command",
+           "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/codex-hook --coordinator-primary \"$SWITCHSTAND_PRIMARY\"",
+           "timeout": 10}
+        ]
+      }
+    ]
+  }
+}

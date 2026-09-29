@@ -556,6 +556,31 @@ def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):
                 coordinator_primary=primary) == {}
 
 
+def test_coordinator_hook_denies_claude_edit_tools_in_primary_except_friction(tmp_path):
+    primary = tmp_path / "primary"
+    writer = tmp_path / "writer"
+    primary.mkdir()
+    writer.mkdir()
+    environment = dict(os.environ)
+
+    def edit(repo: Path, path: Path | str, tool: str) -> dict:
+        result = subprocess.run(
+            [str(Path(__file__).parents[1] / "scripts/codex-hook"),
+             "--coordinator-primary", str(primary)],
+            input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
+                              "tool_input": {"file_path": str(path)}, "cwd": str(repo)}),
+            text=True, capture_output=True, check=True, env=environment,
+        )
+        return json.loads(result.stdout) if result.stdout else {}
+
+    for tool in ("Write", "Edit", "MultiEdit"):
+        denied = edit(primary, primary / "src/main.py", tool)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert edit(primary, primary / "friction.md", "Write") == {}
+    assert edit(writer, writer / "src/main.py", "Write") == {}
+
+
 @pytest.mark.parametrize("origin", ["../repo", "relative", "/tmp/repo", "file:///tmp/repo"])
 def test_provider_origin_rejects_local_transports(monkeypatch, tmp_path, origin):
     monkeypatch.setattr(context, "_git", lambda *args, **kwargs: origin)
