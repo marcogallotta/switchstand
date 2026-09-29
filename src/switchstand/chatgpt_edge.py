@@ -18,8 +18,10 @@ from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
@@ -34,6 +36,42 @@ LOG = logging.getLogger(__name__)
 REQUIRED_SCOPE = "read:user"
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
+
+
+class _CompleteMCPStream:
+    """Finish a normally-returning MCP GET stream at the ASGI boundary.
+
+    sse-starlette's signal watcher cancels its body writer before the final
+    chunk. Keep this integration shim until that dependency completes the
+    response itself; exceptions still propagate without being disguised.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "GET" or scope["path"] != "/mcp":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+        response_complete = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started, response_complete
+            if message["type"] == "http.response.start":
+                response_started = True
+            elif message["type"] == "http.response.body" and not message.get("more_body", False):
+                response_complete = True
+            await send(message)
+
+        await self.app(scope, receive, tracked_send)
+        if response_started and not response_complete:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+def _http_middleware() -> list[Middleware]:
+    return [Middleware(_CompleteMCPStream)]
 
 
 def _https_resource_url(raw_value: str) -> str:
@@ -196,7 +234,10 @@ def create_app(
         agent_identity=_openai_session,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
-    app = server.http_app(path="/mcp", json_response=True, stateless_http=False)
+    app = server.http_app(
+        path="/mcp", json_response=True, stateless_http=False,
+        middleware=_http_middleware(),
+    )
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime
 
@@ -239,6 +280,7 @@ async def serve() -> None:
             host=config.bind_host, port=config.bind_port, path="/mcp",
             json_response=True, stateless_http=False, show_banner=False,
             uvicorn_config={"timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_SECONDS},
+            middleware=_http_middleware(),
         )
     finally:
         await client.aclose()

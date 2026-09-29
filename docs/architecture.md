@@ -38,8 +38,10 @@ to the configured GitHub user, bridges the authenticated request into a `Request
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
-`build_ordinary_tools`. `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for
-ordinary client-visible metadata. This private single-user host intentionally advertises
+`build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
+standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
+`chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
+metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.

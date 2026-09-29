@@ -370,6 +370,82 @@ async def test_sigterm_drains_an_inflight_mcp_call(
     assert "ASGI callable returned without completing response" not in log.read_text()
 
 
+async def test_sigterm_closes_a_persistent_mcp_stream(
+    tmp_path: Path, database_prerequisite,
+):
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    await _provision(url, subject)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "ASANA_TOKEN": "test-only",
+        "EFFECT_FILE": str(tmp_path / "effects"),
+        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
+        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    log = tmp_path / "edge.log"
+    with owned_process(
+        [sys.executable, __file__, "--serve"], env, log,
+        new_session=False, termination_grace=6,
+    ) as process:
+        endpoint = _ready_server(process, port)
+        base_headers = {
+            "accept": "application/json, text/event-stream",
+            "authorization": "Bearer fixed-bearer",
+            "content-type": "application/json",
+        }
+        async with httpx.AsyncClient(base_url=endpoint, trust_env=False, timeout=None) as raw:
+            initialized = await raw.post("/mcp", headers=base_headers, json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "clientInfo": {"name": "shutdown-proof", "version": "1"},
+                    "protocolVersion": "2025-03-26", "capabilities": {},
+                },
+            })
+            assert initialized.status_code == 200
+            session_headers = base_headers | {
+                "mcp-session-id": initialized.headers["mcp-session-id"],
+                "mcp-protocol-version": "2025-03-26",
+            }
+            ready = await raw.post("/mcp", headers=session_headers, json={
+                "jsonrpc": "2.0", "method": "notifications/initialized",
+            })
+            assert ready.status_code == 202
+            async with raw.stream("GET", "/mcp", headers=session_headers) as stream:
+                assert stream.status_code == 200
+                assert stream.headers["content-type"].startswith("text/event-stream")
+                process.terminate()
+                exit_deadline = time.monotonic() + 2
+                while exited(process) is None and time.monotonic() < exit_deadline:
+                    await asyncio.sleep(0.02)
+                assert exited(process) is not None, "edge did not close the persistent stream"
+                assert await stream.aread() == b""
+    assert "ASGI callable returned without completing response" not in log.read_text()
+
+    restart_log = tmp_path / "restarted-edge.log"
+    with owned_process(
+        [sys.executable, __file__, "--serve"], env, restart_log, new_session=False,
+    ) as restarted:
+        endpoint = _ready_server(restarted, port)
+        async with httpx.AsyncClient(base_url=endpoint, trust_env=False, timeout=5) as raw:
+            expired = await raw.get("/mcp", headers=session_headers)
+            assert expired.status_code == 404
+            reinitialized = await raw.post("/mcp", headers=base_headers, json={
+                "jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {
+                    "clientInfo": {"name": "shutdown-proof", "version": "1"},
+                    "protocolVersion": "2025-03-26", "capabilities": {},
+                },
+            })
+            assert reinitialized.status_code == 200
+            assert reinitialized.headers["mcp-session-id"] != session_headers["mcp-session-id"]
+
+
 async def test_agent_identity_survives_http_transport_and_process_churn(
     tmp_path: Path, database_prerequisite,
 ):
