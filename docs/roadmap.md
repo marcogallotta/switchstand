@@ -41,6 +41,16 @@ review instead of just editing this file.
    surface, that logs a friction entry into the same durable PostgreSQL state
    described in `docs/architecture.md` — replacing the local file with something
    shared and queryable. Not scoped or prioritized yet.
+6. **Research-sources seed doc and research escalation** (not yet an Asana task —
+   captured here only) — the current research-sources task (Asana 1218212325278817) is
+   too limited. Idea: a repo doc covering all of Switchstand that tells any agent
+   handed a task where to start researching. When an agent (especially a ChatGPT or
+   Codex one, which search poorly) cannot find enough on something important, it
+   hands off to Claude Code for a deeper search seeded from that doc, and asks Marco
+   to retrieve sources that are blocked to agents. Claude Code can reach the
+   Switchstand MCP (a local-scope entry was added 2026-09-29 with no tool
+   restrictions, and it works from a fresh session), so it is a candidate handoff
+   route, subject to item 0. Not scoped or prioritized yet.
 
 ## Notes
 
