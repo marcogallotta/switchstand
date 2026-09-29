@@ -2,6 +2,8 @@
   "disableAllHooks": true,
   "permissions": {
     "allow": [
+      "mcp__switchstand__repository_bundle_get",
+      "mcp__switchstand__agent_project_bootstrap",
       "mcp__switchstand__work_get",
       "mcp__switchstand__work_search",
       "mcp__switchstand__work_resolve_reference",
@@ -10,16 +12,12 @@
       "mcp__switchstand__work_history",
       "mcp__switchstand__work_attachments",
       "mcp__switchstand__work_event",
-      "mcp__switchstand__message_pending",
-      "mcp__switchstand__agent_message_pending",
-      "mcp__switchstand__repository_bundle_get"
-    ],
-    "deny": [
+      "mcp__switchstand__work_append",
       "mcp__switchstand__work_create",
       "mcp__switchstand__work_update",
-      "mcp__switchstand__work_append",
       "mcp__switchstand__work_relate",
       "mcp__switchstand__message_send",
+      "mcp__switchstand__message_pending",
       "mcp__switchstand__message_receive",
       "mcp__switchstand__message_recover",
       "mcp__switchstand__message_result_send",
@@ -27,8 +25,8 @@
       "mcp__switchstand__required_result_save",
       "mcp__switchstand__agent_register",
       "mcp__switchstand__agent_takeover",
-      "mcp__switchstand__agent_project_bootstrap",
       "mcp__switchstand__agent_message_send",
+      "mcp__switchstand__agent_message_pending",
       "mcp__switchstand__agent_message_receive",
       "mcp__switchstand__agent_message_recover",
       "mcp__switchstand__agent_message_result_send",
