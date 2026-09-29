@@ -53,23 +53,27 @@ user-data directory. This is transport session state, not Switchstand authority
 or a second grant store. Losing it invalidates sessions and requires clients to
 reconnect.
 
-The read-only edge doctor accepts the protected OAuth environment separately
-from non-secret probe configuration, so activation checks do not need a combined
-secret file containing database or provider credentials:
+The read-only edge doctor needs no database or provider credentials. Keep its
+three protected OAuth values and the non-secret probe configuration in one
+mode-`0600` environment file:
+
+```dotenv
+SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
+SWITCHSTAND_MCP_BIND_HOST=127.0.0.1
+SWITCHSTAND_MCP_BIND_PORT=8790
+SWITCHSTAND_MCP_PUBLIC_URL=https://public.example/switchstand/mcp
+```
+
+Then the canonical activation check is:
 
 ```console
-scripts/switchstand-edge-doctor --env-file /path/to/oauth.env \
-  --resource-url https://public.example/switchstand/mcp \
-  --local-url http://127.0.0.1:8790/mcp \
-  --public-url https://public.example/switchstand/mcp \
+scripts/switchstand-edge-doctor --env-file /path/to/edge-doctor.env \
   --expected-sha "$EXPECTED_SHA" --repo /path/to/switchstand
 ```
 
-The OAuth file must be mode `0600`; for doctor purposes it needs only the three
-required GitHub OAuth values. Resource and local URLs may instead remain in
-that file for compatibility when their command-line options are omitted. An
-explicit local probe URL must be credential-free loopback HTTP at exact path
-`/mcp`.
+Command-line resource, local, and public URL options remain available for
+one-off checks and override values in the file. An explicit local probe URL
+must be credential-free loopback HTTP at exact path `/mcp`.
 
 ## Landing, activation, and client refresh
 

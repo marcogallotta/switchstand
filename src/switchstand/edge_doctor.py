@@ -119,8 +119,10 @@ def run(argv: list[str] | None = None) -> int:
             else:
                 local_url = _local_probe_url(local_url)
             ok &= _probe("local_http", local_url, resource)
-            if args.public_url is not None:
-                ok &= _probe("public_http", args.public_url, resource)
+            public_url = (args.public_url if args.public_url is not None
+                          else values.get("SWITCHSTAND_MCP_PUBLIC_URL"))
+            if public_url is not None:
+                ok &= _probe("public_http", public_url, resource)
             else:
                 _result("public_http", "NOT_RUN", "no public URL supplied")
         except ValueError as exc:

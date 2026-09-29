@@ -178,6 +178,28 @@ def test_split_config_passes_without_provider_or_database_secrets(edge, tmp_path
     assert "NOT_RUN checkout_sha" in output and "configured" not in output
 
 
+def test_env_config_supplies_all_probe_targets(edge, tmp_path, capsys):
+    url, port = edge
+    env = env_file(tmp_path, port)
+    env.write_text(env.read_text() + f"\nSWITCHSTAND_MCP_PUBLIC_URL={url}\n")
+
+    assert run(["--env-file", str(env)]) == 0
+
+    output = capsys.readouterr().out
+    assert "PASS local_http" in output and "PASS public_http" in output
+
+
+def test_explicit_public_url_overrides_env_target(edge, tmp_path, capsys):
+    url, port = edge
+    env = env_file(tmp_path, port)
+    env.write_text(
+        env.read_text() + "\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:1/mcp\n"
+    )
+
+    assert run(["--env-file", str(env), "--public-url", url]) == 0
+    assert "PASS public_http" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("local_url", [
     "https://127.0.0.1:8790/mcp",
     "http://example.com/mcp",
