@@ -46,3 +46,4 @@ Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in
 - [Agent-project bootstrap MCP](docs/agent-project-bootstrap-mcp.md): the thin ordinary MCP adapter, its dry-run default, and its retained operator/UNKNOWN boundaries.
 - [North Star](docs/north-star.md): durable strategic direction; a guiding reference only, not an execution owner.
 - [Roadmap](docs/roadmap.md): short, volatile snapshot of current near-term priorities; not strategic direction.
+- [Research sources](docs/research-sources.md): where to research any task, with escalation when an agent cannot find enough; a lookup, not authority.
