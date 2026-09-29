@@ -189,16 +189,24 @@ def _audit(tool: str, target: str | None, status: str) -> None:
     )
 
 
-def _openai_session() -> str:
-    """Read ChatGPT's stable chat identity from the current MCP call metadata."""
+def runtime_identity_from_meta(meta: dict[str, Any]) -> str:
+    """Read one supported host identity without conflating host namespaces."""
+    present = [(key, meta[key]) for key in ("openai/session", "threadId") if key in meta]
+    if len(present) != 1 or not isinstance(present[0][1], str) or not present[0][1]:
+        return ""
+    key, value = present[0]
+    return value if key == "openai/session" else f"codex:{value}"
+
+
+def _runtime_identity() -> str:
+    """Read the stable host identity from the current MCP call metadata."""
     request_context = get_context().request_context
     if request_context is None:
         return ""
     meta = request_context.meta
     if meta is None:
         return ""
-    value = meta.get("openai/session")
-    return value if isinstance(value, str) else ""
+    return runtime_identity_from_meta(meta)
 
 
 def create_app(
@@ -233,7 +241,7 @@ def create_app(
     for name, tool in build_ordinary_tools(
         service, _audit,
         session_generation=lambda: get_context().session_id,
-        agent_identity=_openai_session,
+        agent_identity=_runtime_identity,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
     app = server.http_app(

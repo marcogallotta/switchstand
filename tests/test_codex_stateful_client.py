@@ -11,20 +11,40 @@ import uvicorn
 from chatgpt_fixture import ACTIVE, grant, service
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
     SwitchstandGitHubProvider,
     create_app,
+    runtime_identity_from_meta,
 )
+from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
+from switchstand.messages import MessageState
+from switchstand.state import metadata
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
 GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
 SERVER_NAME = "switchstand_proof"
+
+
+@pytest.mark.parametrize(("meta", "expected"), [
+    ({"openai/session": "chat"}, "chat"),
+    ({"threadId": "thread"}, "codex:thread"),
+    ({}, ""),
+    ({"threadId": ""}, ""),
+    ({"threadId": 1}, ""),
+    ({"openai/session": "chat", "threadId": "thread"}, ""),
+])
+def test_runtime_identity_accepts_exactly_one_supported_host_identity(
+    meta: dict[str, object], expected: str,
+) -> None:
+    assert runtime_identity_from_meta(meta) == expected
 
 
 class AppServerClient:
@@ -148,13 +168,34 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
             item = structured["item"]
             assert isinstance(item, dict)
             assert item["id"] == str(ACTIVE)
+
+        registered = response_result(client.request(
+            "mcpServer/tool/call",
+            {
+                "threadId": thread_id,
+                "server": SERVER_NAME,
+                "tool": "agent_register",
+                "arguments": {"api_version": "1", "name": "codex-proof"},
+            },
+        ))["structuredContent"]
+        assert isinstance(registered, dict) and registered["status"] == "ok", registered
+        pending = response_result(client.request(
+            "mcpServer/tool/call",
+            {
+                "threadId": thread_id,
+                "server": SERVER_NAME,
+                "tool": "agent_message_pending",
+                "arguments": {"api_version": "1"},
+            },
+        ))["structuredContent"]
+        assert isinstance(pending, dict) and pending["status"] == "ok", pending
     finally:
         client.close()
 
 
 @pytest.mark.asyncio
 async def test_current_codex_app_server_calls_work_get_over_stateful_http(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_prerequisite,
 ) -> None:
     raw_binary = os.getenv("CODEX_EXEC_PATH")
     if not raw_binary:
@@ -178,7 +219,16 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
         )
 
     monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("NOT_RUN: real Codex proof also requires disposable PostgreSQL")
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
+        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.run_sync(metadata.create_all)
     subject = service()
+    subject.messages = MessageState(engine, GrantState(engine))
     subject.grants.grant = grant(
         principal=PrincipalContext(
             issuer=ISSUER,
@@ -215,7 +265,7 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
             'bearer_token_env_var = "SWITCHSTAND_PROOF_TOKEN"\n'
             'required = true\n'
             'default_tools_approval_mode = "approve"\n'
-            'enabled_tools = ["work_get"]\n'
+            'enabled_tools = ["work_get", "agent_register", "agent_message_pending"]\n'
         )
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)
@@ -224,3 +274,7 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
     finally:
         server.should_exit = True
         await server_task
+        async with engine.begin() as connection:
+            await connection.run_sync(metadata.drop_all)
+            await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await engine.dispose()
