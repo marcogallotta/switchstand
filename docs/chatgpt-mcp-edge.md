@@ -85,6 +85,10 @@ authorized disposable effect with replay/readback, restart behavior, and clean
 stop on the exact activated configuration.
 
 An authenticated live `tools/list` proves the server-side inventory only.
-Clients can retain bindings from a session created before a schema change. Start
-a fresh client session and verify the tools exposed to that client before
-claiming a newly added or changed capability is usable there.
+Clients can retain bindings from before a client-visible schema or metadata
+change. For every activation of such a change, Marco must reinstall the
+ChatGPT app/connection; a server restart, authenticated `tools/list`, connection
+refresh, or fresh chat without reinstall is insufficient. After reinstalling,
+start a fresh chat and verify the exact schema exposed to that client and the
+affected behavior before claiming the change is active. This is a standing
+requirement for all future ChatGPT MCP work, not only initial launch.
