@@ -34,6 +34,7 @@ PROJECTS = (
 )
 PROJECT = PROJECTS[0]
 REVIEW_INTAKE_PROJECT = "1218915787182921"
+REVIEW_INTAKE_SECTION = "1218916346671509"
 WORKSPACE = "1200569426771227"
 ANCESTRY_GETS = 9
 FIELDS = {
@@ -727,6 +728,7 @@ class AsanaProvider:
             review_intake_add = (
                 patch.action == "add"
                 and patch.project_gid == REVIEW_INTAKE_PROJECT
+                and patch.section_gid == REVIEW_INTAKE_SECTION
             )
             if patch.project_gid not in self._admission_projects and not review_intake_add:
                 raise ProviderError("placement project denied")
