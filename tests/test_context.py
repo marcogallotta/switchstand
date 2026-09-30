@@ -607,16 +607,18 @@ def test_hook_denies_edit_tools_writing_claude_auto_memory(tmp_path):
     environment = {**os.environ, "HOME": str(home)}
 
     def call(tool: str, path: Path) -> dict:
+        field = "notebook_path" if tool == "NotebookEdit" else "file_path"
         result = subprocess.run(
             [str(Path(__file__).parents[1] / "scripts/codex-hook")],
             input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
-                              "tool_input": {"file_path": str(path)}, "cwd": str(tmp_path)}),
+                              "tool_input": {field: str(path)}, "cwd": str(tmp_path)}),
             text=True, capture_output=True, check=True, env=environment)
         return json.loads(result.stdout) if result.stdout else {}
 
     memory = home / ".claude/projects/p/memory/MEMORY.md"
-    for tool in ("Write", "Edit", "MultiEdit"):
+    for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         assert "memory-write" in call(tool, memory)["hookSpecificOutput"]["permissionDecisionReason"]
+        assert call(tool, home / ".claude/projects/p/notes/memory/file.md") == {}
     assert call("Read", memory) == {}
     assert call("Write", home / ".claude/projects/p/other.json") == {}
 
