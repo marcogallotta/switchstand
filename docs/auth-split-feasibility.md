@@ -4,55 +4,63 @@ Status: inert single-host feasibility spike. This is not an activation or deploy
 
 ## Question and boundaries
 
-The spike asks whether the current FastMCP GitHub OAuth proxy can remain at Switchstand's current
-public issuer while the replaceable MCP edge becomes a separate JWT-validating resource server.
-It uses disposable state and no external credentials or services.
+The spike asks whether the current FastMCP GitHub OAuth provider can remain at Switchstand's public
+issuer while the replaceable MCP edge delegates token verification to that stable service. It uses
+disposable state and no external credentials or services.
 
 Non-goals are multi-host operation, clustering, active-active authorization, distributed locking,
 a shared authorization database, live-client qualification, provider writes, and deployment.
 
-## PASS gates
+## Selected invariant and PASS gates
 
-The executable spike must establish all of these against the pinned FastMCP runtime:
+The stable authorization service remains the only owner of the FastMCP signing key, encrypted OAuth
+state, JTI mappings, upstream GitHub token, and GitHub verifier. Every MCP bearer-token check calls a
+private authenticated loopback/Unix-socket endpoint which invokes the existing
+`SwitchstandGitHubProvider.verify_token`. The edge accepts only the resulting bounded principal.
+
+The executable spike establishes these gates against the pinned FastMCP runtime:
 
 1. Authorization routes can be mounted without the MCP endpoint, retain the current issuer, and
    advertise authorization-code/S256 PKCE, DCR, and CIMD.
 2. A separate `RemoteAuthProvider` publishes RFC 9728 metadata for the exact external `/mcp`
    resource and names the stable authorization issuer.
-3. The proxy-issued access token has the exact RFC 8707 audience and a separate verifier rejects a
-   wrong audience or missing scope.
-4. The signed token carries the already-validated immutable GitHub numeric ID and upstream scope;
-   the edge rejects a different identity.
-5. With writers stopped, the default encrypted state and a new-format issued token remain usable
-   after creating a replacement provider with the same storage root and signing key. A different
-   key cannot read the registration or validate the token.
+3. The private verifier returns the exact issuer, resource, client, scope, and immutable GitHub
+   numeric subject established by the current provider path. The edge owns no signing key.
+4. A missing/invalid internal credential, malformed reply, invalid bearer token, internal error, or
+   unavailable auth service fails closed.
+5. After an upstream token becomes invalid, the next edge verification rejects the otherwise
+   unexpired FastMCP token. This preserves current per-request JTI/upstream GitHub validation.
+6. With writers stopped, default encrypted state, client registration, and an existing token remain
+   usable after creating a replacement auth provider with the same state root and GitHub secret. A
+   different secret selects different encrypted state and cannot recover the registration.
 
-`tests/test_auth_split_feasibility.py` is the disposable proof. It deliberately exercises FastMCP's
-real route builders, authorization-code exchange, token issuer, encrypted default storage, JWT
-verifier, and remote-resource metadata rather than reproducing those contracts in mocks. Only the
-GitHub network response is replaced with a local validated identity.
+`tests/test_auth_split_feasibility.py` exercises FastMCP's route builders, authorization-code
+exchange, encrypted default storage, current Switchstand provider validation, remote-resource
+metadata, and a hermetic HTTP boundary. Only the external GitHub response is replaced locally.
 
-## Result and limitation
+## Result and availability tradeoff
 
-The split is feasible on one host if all gates pass. The migration unit is the encrypted FastMCP
-state **plus the exact signing key and public issuer/resource configuration**. There must never be
-concurrent old and new writers to that state: stop, snapshot, start the stable authorization
-service, verify, then switch the resource route.
+The bounded introspection split is feasible on one host. The migration unit is the encrypted
+FastMCP state plus the exact GitHub secret and public issuer/resource configuration. There must be
+no concurrent writers: stop the old process, snapshot, start the stable authorization service,
+verify an existing token, and only then switch the MCP resource route.
 
-Client registrations and encrypted upstream state are restorable, but current production access
-tokens predate the signed `upstream_claims` identity used by the split verifier. Although their
-signature and audience remain valid, a JWT-only edge cannot establish their GitHub subject and must
-reject them. Production cutover therefore requires client reauthorization, or a separately designed
-temporary introspection bridge. This spike does not establish token-transparent migration.
+The production private protocol should use a filesystem-permissioned Unix socket plus a separately
+stored bearer secret, a small response limit, a short timeout, no proxy/environment inheritance,
+and no token logging. Caddy and Tailscale must never publish the private endpoint.
 
-FastMCP's OAuth proxy currently issues HS256 tokens. The resource edge therefore receives the same
-HMAC key used to sign tokens. The split creates an operationally stable authorization lifecycle,
-but not a cryptographic trust boundary: a compromised edge that has the HMAC key could forge a
-token. This is acceptable only if the authorization and edge processes remain within the same
-single-host trust boundary. A future stronger boundary requires an asymmetric issuer/JWKS feature
-or a different authorization server; it is not part of this spike.
+Unlike offline JWT verification, every MCP request now depends on the stable authorization service
+and GitHub verification. An auth-service failure therefore makes the edge fail closed even while a
+client token is unexpired. That is the price of preserving immediate upstream revocation with the
+current provider. On one host the auth service, edge, database, Caddy, and tunnel already share a
+machine failure domain; supervision, a readiness probe, and a stable process are proportionate.
 
-This proof does not establish ChatGPT or Claude behavior, live GitHub callbacks, refresh under a
-real upstream credential, Caddy path routing, service supervision, backup/restore operations, or
-client continuity during production cutover. Those remain activation qualification, not implied by
-an inert PASS.
+The rejected alternative is short-lived self-contained JWTs checked locally by the edge, with
+GitHub revalidation only at refresh. It permits revoked upstream access until expiry and relies on
+ChatGPT and Claude refreshing reliably. Their real refresh behavior cannot be established by this
+credential-free inert spike, so that route is not selected. It may be reconsidered only after
+exact-client qualification and an explicitly accepted revocation window.
+
+This proof does not establish ChatGPT or Claude behavior, live GitHub callbacks, Caddy/systemd/Unix
+socket wiring, backup/restore operations, or production cutover. Those remain activation
+qualification, not implied by an inert PASS.

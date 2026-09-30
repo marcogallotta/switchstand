@@ -1,15 +1,19 @@
+import hmac
 import time
 
 import fastmcp
-from fastmcp.server.auth import RemoteAuthProvider
+import httpx
+from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oauth_proxy.models import ClientCode
-from fastmcp.server.auth.providers.jwt import JWTVerifier
 from key_value.aio.stores.memory import MemoryStore
-from mcp.server.auth.provider import AuthorizationCode, TokenError
+from mcp.server.auth.provider import AuthorizationCode
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, AnyUrl
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from switchstand.oauth_continuity import SwitchstandGitHubProvider
@@ -18,96 +22,114 @@ ISSUER = "https://switchstand.example.com/"
 RESOURCE = "https://switchstand.example.com/mcp"
 USER_ID = "192548"
 SCOPE = "read:user"
-SIGNING_KEY = b"disposable-auth-split-signing-key"
+INTERNAL_SECRET = "disposable-loopback-auth-secret"
 
 
-class IdentityEmbeddingProvider(SwitchstandGitHubProvider):
-    """Make the already-validated upstream identity available to a remote edge."""
-
-    async def _extract_upstream_claims(self, idp_tokens):
-        validated = await self._token_validator.verify_token(idp_tokens["access_token"])
-        if (
-            validated is None
-            or validated.subject != self.allowed_user_id
-            or not self._required_upstream_scopes.issubset(validated.scopes)
-        ):
-            raise TokenError("invalid_grant", "GitHub identity is not admitted")
-        return {
-            "github_user_id": validated.subject,
-            "github_scopes": sorted(validated.scopes),
-        }
-
-
-class IdentityBoundJWTVerifier(JWTVerifier):
-    """Require the signed upstream identity as well as standard JWT claims."""
-
-    def __init__(self, *, allowed_user_id, **kwargs):
-        self.allowed_user_id = allowed_user_id
-        super().__init__(**kwargs)
-
-    async def verify_token(self, token):
-        access = await super().verify_token(token)
-        if access is None:
-            return None
-        identity = access.claims.get("upstream_claims")
-        if not isinstance(identity, dict):
-            return None
-        scopes = identity.get("github_scopes")
-        if (
-            identity.get("github_user_id") != self.allowed_user_id
-            or not isinstance(scopes, list)
-            or SCOPE not in scopes
-        ):
-            return None
-        return access.model_copy(
-            update={
-                "subject": self.allowed_user_id,
-                "resource": access.claims.get("aud"),
-            }
-        )
-
-
-def auth_provider(*, storage=None, signing_key=SIGNING_KEY):
+def auth_provider(*, storage=None, client_secret="github-secret"):
     storage = storage or MemoryStore()
-    subject = IdentityEmbeddingProvider(
+    subject = SwitchstandGitHubProvider(
         client_id="github-client",
-        client_secret="github-secret",
+        client_secret=client_secret,
         allowed_user_id=USER_ID,
         base_url=ISSUER,
         resource_base_url=ISSUER,
         issuer_url=ISSUER,
         required_scopes=[SCOPE],
         client_storage=storage,
-        jwt_signing_key=signing_key,
     )
     subject.get_routes(mcp_path="/mcp")
     return subject
 
 
-def default_storage_provider(*, signing_key=SIGNING_KEY):
-    subject = IdentityEmbeddingProvider(
+def default_storage_provider(*, client_secret="github-secret"):
+    subject = SwitchstandGitHubProvider(
         client_id="github-client",
-        client_secret="github-secret",
+        client_secret=client_secret,
         allowed_user_id=USER_ID,
         base_url=ISSUER,
         resource_base_url=ISSUER,
         issuer_url=ISSUER,
         required_scopes=[SCOPE],
-        jwt_signing_key=signing_key,
     )
     subject.get_routes(mcp_path="/mcp")
     return subject
 
 
-def edge_auth(signing_key=SIGNING_KEY, *, audience=RESOURCE):
-    verifier = IdentityBoundJWTVerifier(
-        allowed_user_id=USER_ID,
-        public_key=signing_key,
-        algorithm="HS256",
-        issuer=ISSUER,
-        audience=audience,
-        required_scopes=[SCOPE],
-    )
+def introspection_app(provider, *, internal_secret=INTERNAL_SECRET):
+    async def verify(request: Request):
+        expected = f"Bearer {internal_secret}"
+        supplied = request.headers.get("authorization", "")
+        if not hmac.compare_digest(supplied, expected):
+            return Response(status_code=401)
+        try:
+            payload = await request.json()
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if not isinstance(token, str) or not token:
+                return Response(status_code=400)
+            access = await provider.verify_token(token)
+        except Exception:  # noqa: BLE001 -- private boundary fails closed
+            return Response(status_code=503)
+        if access is None:
+            return Response(status_code=401)
+        return JSONResponse(
+            {
+                "client_id": access.client_id,
+                "scopes": access.scopes,
+                "subject": access.subject,
+                "expires_at": access.expires_at,
+                "resource": access.resource,
+                "issuer": (access.claims or {}).get("iss"),
+            }
+        )
+
+    return Starlette(routes=[Route("/internal/oauth/verify", verify, methods=["POST"])])
+
+
+class IntrospectionTokenVerifier(TokenVerifier):
+    """Delegate complete token/JTI/upstream validation to the stable auth service."""
+
+    def __init__(self, client, *, internal_secret=INTERNAL_SECRET):
+        super().__init__(required_scopes=[SCOPE])
+        self.client = client
+        self.internal_secret = internal_secret
+
+    async def verify_token(self, token):
+        try:
+            response = await self.client.post(
+                "/internal/oauth/verify",
+                headers={"Authorization": f"Bearer {self.internal_secret}"},
+                json={"token": token},
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if (
+            payload.get("subject") != USER_ID
+            or payload.get("issuer") != ISSUER
+            or payload.get("resource") != RESOURCE
+            or not isinstance(payload.get("client_id"), str)
+            or not isinstance(payload.get("expires_at"), int)
+            or not isinstance(payload.get("scopes"), list)
+            or SCOPE not in payload["scopes"]
+        ):
+            return None
+        return AccessToken(
+            token=token,
+            client_id=payload["client_id"],
+            scopes=payload["scopes"],
+            expires_at=payload["expires_at"],
+            subject=payload["subject"],
+            resource=payload["resource"],
+            claims={"iss": payload["issuer"]},
+        )
+
+
+def edge_auth(verifier):
     return RemoteAuthProvider(
         token_verifier=verifier,
         authorization_servers=[AnyHttpUrl(ISSUER)],
@@ -116,22 +138,22 @@ def edge_auth(signing_key=SIGNING_KEY, *, audience=RESOURCE):
     )
 
 
-def fake_github(subject, *, user_id=USER_ID, scopes=(SCOPE,)):
+def fake_github(subject, state):
     async def verify(token):
-        if token != "github-token":
+        if token != "github-token" or not state["valid"]:
             return None
         return AccessToken(
             token=token,
             client_id="github",
-            scopes=list(scopes),
-            subject=user_id,
+            scopes=[SCOPE],
+            subject=USER_ID,
         )
 
     subject._token_validator.verify_token = verify
 
 
-async def issue(subject, client_id="chatgpt"):
-    fake_github(subject)
+async def issue(subject, state, client_id="chatgpt"):
+    fake_github(subject, state)
     await subject._code_store.put(
         key="code",
         value=ClientCode(
@@ -167,7 +189,7 @@ async def issue(subject, client_id="chatgpt"):
 
 def test_split_routes_retain_one_public_issuer_and_resource_contract():
     authorization = auth_provider()
-    resource = edge_auth()
+    resource = edge_auth(TokenVerifier(required_scopes=[SCOPE]))
     auth_routes = {route.path for route in authorization.get_routes("/mcp")}
     assert {"/authorize", "/token", "/register", "/auth/callback", "/consent"} <= auth_routes
 
@@ -183,53 +205,67 @@ def test_split_routes_retain_one_public_issuer_and_resource_contract():
     assert protected["resource"] == RESOURCE
     assert protected["authorization_servers"] == [ISSUER]
     assert protected["scopes_supported"] == [SCOPE]
-    assert protected["bearer_methods_supported"] == ["header"]
 
 
-async def test_separate_edge_requires_resource_scope_and_signed_github_identity():
+async def test_edge_delegates_current_upstream_validation_and_revocation():
+    state = {"valid": True}
     authorization = auth_provider()
-    issued = await issue(authorization)
-    access = await edge_auth().verify_token(issued.access_token)
-    assert access is not None
-    assert (access.subject, access.client_id, access.resource) == (
-        USER_ID,
-        "chatgpt",
-        RESOURCE,
-    )
+    issued = await issue(authorization, state)
+    transport = httpx.ASGITransport(app=introspection_app(authorization))
+    async with httpx.AsyncClient(transport=transport, base_url="http://auth.internal") as client:
+        verifier = IntrospectionTokenVerifier(client)
+        access = await verifier.verify_token(issued.access_token)
+        assert access is not None
+        assert (access.subject, access.client_id, access.resource) == (
+            USER_ID,
+            "chatgpt",
+            RESOURCE,
+        )
+        assert await verifier.verify_token("not-a-token") is None
 
-    assert await edge_auth(audience="https://wrong.example/mcp").verify_token(
-        issued.access_token
-    ) is None
-    missing_scope = authorization.jwt_issuer.issue_access_token(
-        client_id="chatgpt",
-        scopes=[],
-        jti="missing-scope",
-        expires_in=60,
-        upstream_claims={"github_user_id": USER_ID, "github_scopes": [SCOPE]},
-    )
-    assert await edge_auth().verify_token(missing_scope) is None
-    wrong_identity = authorization.jwt_issuer.issue_access_token(
-        client_id="chatgpt",
-        scopes=[SCOPE],
-        jti="wrong-user",
-        expires_in=60,
-        upstream_claims={"github_user_id": "999999", "github_scopes": [SCOPE]},
-    )
-    assert await edge_auth().verify_token(wrong_identity) is None
-
-    legacy_token = authorization.jwt_issuer.issue_access_token(
-        client_id="existing-chat",
-        scopes=[SCOPE],
-        jti="legacy-with-server-side-identity-only",
-        expires_in=60,
-    )
-    assert await edge_auth().verify_token(legacy_token) is None
+        state["valid"] = False
+        assert await verifier.verify_token(issued.access_token) is None
 
 
-async def test_encrypted_state_and_tokens_restore_only_with_the_same_key(
+async def test_private_introspection_boundary_fails_closed():
+    state = {"valid": True}
+    authorization = auth_provider()
+    issued = await issue(authorization, state)
+    transport = httpx.ASGITransport(app=introspection_app(authorization))
+    async with httpx.AsyncClient(transport=transport, base_url="http://auth.internal") as client:
+        assert await IntrospectionTokenVerifier(
+            client, internal_secret="wrong-secret"
+        ).verify_token(issued.access_token) is None
+
+    malformed = Starlette(
+        routes=[
+            Route(
+                "/internal/oauth/verify",
+                lambda _request: JSONResponse({"subject": USER_ID}),
+                methods=["POST"],
+            )
+        ]
+    )
+    malformed_transport = httpx.ASGITransport(app=malformed)
+    async with httpx.AsyncClient(
+        transport=malformed_transport, base_url="http://auth.internal"
+    ) as client:
+        assert await IntrospectionTokenVerifier(client).verify_token(issued.access_token) is None
+
+    def unavailable(request):
+        raise httpx.ConnectError("auth service unavailable", request=request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(unavailable), base_url="http://auth.internal"
+    ) as client:
+        assert await IntrospectionTokenVerifier(client).verify_token(issued.access_token) is None
+
+
+async def test_existing_token_and_encrypted_state_restore_without_edge_signing_key(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(fastmcp.settings, "home", tmp_path)
+    state = {"valid": True}
     first = default_storage_provider()
     await first.register_client(
         OAuthClientInformationFull(
@@ -241,22 +277,18 @@ async def test_encrypted_state_and_tokens_restore_only_with_the_same_key(
             scope=SCOPE,
         )
     )
-    issued = await issue(first)
+    existing_token = await issue(first, state)
     del first
 
     restored = default_storage_provider()
-    fake_github(restored)
+    fake_github(restored, state)
     assert (await restored.get_client("chatgpt")).client_id == "chatgpt"
-    assert (await restored.verify_token(issued.access_token)).subject == USER_ID
-    assert (await edge_auth().verify_token(issued.access_token)).subject == USER_ID
+    transport = httpx.ASGITransport(app=introspection_app(restored))
+    async with httpx.AsyncClient(transport=transport, base_url="http://auth.internal") as client:
+        access = await IntrospectionTokenVerifier(client).verify_token(
+            existing_token.access_token
+        )
+        assert access is not None and access.subject == USER_ID
 
-    changed_key = default_storage_provider(signing_key=b"different-disposable-key-material")
+    changed_key = default_storage_provider(client_secret="different-github-secret")
     assert await changed_key.get_client("chatgpt") is None
-    assert await IdentityBoundJWTVerifier(
-        allowed_user_id=USER_ID,
-        public_key=b"different-disposable-key-material",
-        algorithm="HS256",
-        issuer=ISSUER,
-        audience=RESOURCE,
-        required_scopes=[SCOPE],
-    ).verify_token(issued.access_token) is None
