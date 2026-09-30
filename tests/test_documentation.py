@@ -140,3 +140,17 @@ def test_code_red_authenticated_boundary_proof_cannot_be_residualized():
     assert "entire stated watch window must complete without recurrence before\n`CLOSED`" in runbook
     assert "This gate may not be `NOT_RUN`, `MISSING_CAPABILITY`, `UNKNOWN`,\nHuman Input, or owned residual work." in record
     assert "relevant restart/refresh boundary and the entire stated monitoring/watch window" in record
+
+
+def test_known_maintenance_retry_contract_is_discoverable_and_bounded():
+    agents = (ROOT / "AGENTS.md").read_text()
+    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
+    edge = (ROOT / "docs/chatgpt-mcp-edge.md").read_text()
+
+    assert "known-edge-maintenance-window" in agents
+    assert "Never automatically retry writes, OAuth transitions, or `UNKNOWN` effects" in agents
+    assert "HTTP `503` with `Retry-After: 60`" in runbook
+    assert "2, 5, 10, then 20 seconds" in runbook
+    assert "bounded by 90 seconds" in runbook
+    assert "receipt becomes `UNKNOWN`" in runbook
+    assert "Zero-downtime overlap is\ndeferred" in edge
