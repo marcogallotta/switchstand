@@ -222,7 +222,7 @@ def assert_public(value):
         assert forbidden not in serialized
 
 
-async def read_chain(client, work_id):
+async def read_chain(client, work_id, *, exceptional_purpose: bool = False):
     call = getattr(client, "call_tool_mcp", client.call_tool)
     listed = await client.list_tools()
     tools = listed.tools if hasattr(listed, "tools") else listed
@@ -238,14 +238,19 @@ async def read_chain(client, work_id):
         assert structure.structured_content["children"][0]["title"] == "Review"
     else:
         args["observed_revision"] = got.structured_content["item"]["revision"]
-    page = await call("work_history", args | {"limit": 1})
+    purpose = {"purpose": "investigation"} if exceptional_purpose else {}
+    page = await call("work_history", args | {"limit": 1} | purpose)
     assert_public(page.model_dump(mode="json"))
     event = page.structured_content["events"][0]
     assert event["work_id"] == str(work_id) and event["text"]
-    reread = await call("work_event", args | {"event_id": event["id"]})
+    reread = await call(
+        "work_event", args | {"event_id": event["id"]} | purpose
+    )
     assert_public(reread.model_dump(mode="json"))
     assert reread.structured_content["item"] == event
-    stale = await call("work_history", args | {"observed_revision": "old"})
+    stale = await call(
+        "work_history", args | {"observed_revision": "old"} | purpose
+    )
     assert_public(stale.model_dump(mode="json"))
     assert stale.structured_content["status"] == "stale"
     return event["id"]

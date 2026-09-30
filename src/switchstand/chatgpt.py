@@ -37,7 +37,6 @@ from .effect_recovery import EffectRecovery
 from .effects import AppendGateway
 from .grant_state import GrantState
 from .grants import (
-    EffectReceipt,
     EffectRecoveryResult,
     GrantedWorkResult,
     GrantResult,
@@ -47,6 +46,8 @@ from .grants import (
     ProtectedCreate,
     ProtectedRelation,
     ProtectedUpdate,
+    ScalarPatch,
+    UpdateReceipt,
     WorkGrant,
 )
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
@@ -66,6 +67,16 @@ from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
+REQUIRED_RESULT_HEADING = "## Current required result"
+
+
+def _required_result_notes(current: str, result: str) -> str:
+    """Preserve current notes while promoting one controlling result."""
+    block = f"{REQUIRED_RESULT_HEADING}\n\n{result}"
+    promoted = f"{current.rstrip()}\n\n{block}" if current.strip() else block
+    if len(promoted) > 8000:
+        raise ValueError("required result does not fit without replacing current notes")
+    return promoted
 
 
 class RequiredResultSaveRequest(ClosedModel):
@@ -424,7 +435,7 @@ class ChatGPTService:
         )
 
     async def required_result_save(self, request: RequiredResultSaveRequest) -> GuardOutcome:
-        """Save one server-identified result through Lifecycle and the existing effect journal."""
+        """Promote one server-identified result into notes through the update effect journal."""
         principal = await self.principal()
         if principal is None:
             return self._result_guard(request, "denied", "authenticated_principal_required")
@@ -439,7 +450,7 @@ class ChatGPTService:
                 return self._result_guard(request, "denied", "no_current_grant")
             if request.grant_version != grant.version:
                 return self._result_guard(request, "stale", "grant_version_changed")
-            if not grant.can_write(request.work_id) or "work_append" not in grant.operations:
+            if not grant.can_write(request.work_id) or "work_update" not in grant.operations:
                 return self._result_guard(request, "denied", "operation_or_work_not_granted")
             handle = await self.state.get(request.work_id)
             if handle is None:
@@ -448,7 +459,7 @@ class ChatGPTService:
             currentness = hashlib.sha256(
                 f"{principal.key}:{grant.id}:{grant.version}".encode()
             ).hexdigest()
-            destination = f"{handle.provider}:task:{handle.provider_work_id}"
+            destination = f"{handle.provider}:task:{handle.provider_work_id}:notes"
             correlation = hashlib.sha256(request.text.encode()).hexdigest()
             operation_id = uuid5(
                 REQUIRED_RESULT_NAMESPACE, f"{principal.key}:{request.work_id}:{destination}"
@@ -480,46 +491,14 @@ class ChatGPTService:
                             or locked_grant.id != grant.id
                             or locked_grant.version != grant.version
                             or not locked_grant.can_write(request.work_id)
-                            or "work_append" not in locked_grant.operations):
+                            or "work_update" not in locked_grant.operations):
                         return self._result_guard(
                             request, "stale", "lifecycle_currentness_changed", operation_id
                         )
                     effect = await self.admission_grants.exact(operation_id)
                     if effect is None:
                         obligation = await repository.adopt_currentness(obligation, currentness)
-                    elif (
-                        effect.principal_key == principal.key
-                        and effect.outcome.effect == "applied"
-                        and isinstance(effect.outcome.receipt, EffectReceipt)
-                        and effect.outcome.receipt.operation_id == operation_id
-                        and effect.outcome.receipt.work_id == request.work_id
-                        and effect.outcome.receipt.text == request.text
-                        and effect.outcome.receipt.provider == handle.provider
-                        and effect.outcome.receipt.task_gid == handle.provider_work_id
-                    ):
-                        if obligation.state is ProfileState.TERMINAL:
-                            return GuardOutcome(
-                                status="ok", operation="required_result_save",
-                                work_id=request.work_id, operation_id=operation_id,
-                                reason="required_result_already_persisted",
-                                next_action="Use the durable Lifecycle terminal evidence.",
-                            )
-                        await self.required_results.transition(
-                            operation_id, obligation.currentness_token,
-                            LifecycleEvent.PERSIST_READBACK_MATCHED,
-                            evidence={
-                                "destination_ref": destination,
-                                "result_correlation": correlation,
-                                "operation_id": str(operation_id),
-                                "provider": effect.outcome.receipt.provider,
-                                "task_gid": effect.outcome.receipt.task_gid,
-                                "story_gid": effect.outcome.receipt.story_gid,
-                            },
-                        )
-                        return effect.outcome.model_copy(
-                            update={"operation": "required_result_save"}
-                        )
-                    else:
+                    elif effect.principal_key != principal.key:
                         return self._result_guard(
                             request, "stale", "lifecycle_currentness_changed", operation_id
                         )
@@ -549,30 +528,83 @@ class ChatGPTService:
                     request, "unknown", "lifecycle_currentness_unresolved", operation_id
                 )
 
-            outcome = await self.gateway.append(principal, ProtectedAppend(
-                api_version=request.api_version, operation_id=operation_id,
-                work_id=request.work_id, grant_version=request.grant_version,
-                observed_revision=request.observed_revision, text=request.text,
-            ))
+            effect = await self.admission_grants.exact(operation_id)
+            if effect is None:
+                provider = self.providers[handle.provider]
+                current_work = await provider.get(handle.provider_work_id)
+                if current_work is None or not current_work.canonical:
+                    return self._result_guard(
+                        request, "unknown", "source_read_unavailable", operation_id
+                    )
+                if current_work.completed:
+                    return self._result_guard(request, "denied", "work_is_terminal", operation_id)
+                if current_work.revision != request.observed_revision:
+                    return self._result_guard(
+                        request, "stale", "source_revision_changed", operation_id
+                    )
+                try:
+                    notes = _required_result_notes(current_work.notes, request.text)
+                except ValueError:
+                    return GuardOutcome(
+                        status="not_applied", operation="required_result_save",
+                        work_id=request.work_id, operation_id=operation_id,
+                        reason="required_result_exceeds_notes_capacity", effect="not_sent",
+                        retry="none",
+                        next_action="Shorten the result or current notes; nothing was written.",
+                    )
+                update_request = ProtectedUpdate(
+                    api_version=request.api_version, operation_id=operation_id,
+                    work_id=request.work_id, grant_version=request.grant_version,
+                    observed_revision=request.observed_revision, patch=ScalarPatch(notes=notes),
+                )
+            else:
+                raw_request_value = effect.intent.get("request")
+                if not isinstance(raw_request_value, dict):
+                    raise ValueError("durable required-result update request is invalid")
+                raw_request = cast(dict[str, object], raw_request_value)
+                raw_patch_value = raw_request.get("patch")
+                if not isinstance(raw_patch_value, dict):
+                    raise ValueError("durable required-result update patch is invalid")
+                raw_patch = cast(dict[str, object], raw_patch_value)
+                raw_request = raw_request | {
+                    "patch": {key: value for key, value in raw_patch.items() if value is not None}
+                }
+                update_request = ProtectedUpdate.model_validate(raw_request)
+                result_notes = update_request.patch.notes
+                expected_suffix = f"{REQUIRED_RESULT_HEADING}\n\n{request.text}"
+                if (
+                    effect.principal_key != principal.key
+                    or update_request.work_id != request.work_id
+                    or update_request.patch.model_fields_set != {"notes"}
+                    or result_notes is None
+                    or not result_notes.endswith(expected_suffix)
+                ):
+                    return self._result_guard(
+                        request, "denied", "lifecycle_effect_identity_conflict", operation_id
+                    )
+
+            outcome = await self.update_gateway.update(principal, update_request)
             possible_send = outcome.effect != "not_sent"
-            if outcome.effect == "applied" and isinstance(outcome.receipt, EffectReceipt):
+            if outcome.effect == "applied" and isinstance(outcome.receipt, UpdateReceipt):
                 evidence = {
                     "destination_ref": destination, "result_correlation": correlation,
                     "operation_id": str(operation_id), "provider": outcome.receipt.provider,
-                    "task_gid": outcome.receipt.task_gid, "story_gid": outcome.receipt.story_gid,
+                    "task_gid": outcome.receipt.task_gid,
+                    "resulting_revision": outcome.receipt.resulting_revision,
                 }
                 try:
                     async with self.admission_grants.locked(principal.key, request.work_id) as current:
                         if (current is None or not self.gateway.admitted(principal, current)
                                 or current.id != grant.id or current.version != grant.version
                                 or not current.can_write(request.work_id)
-                                or "work_append" not in current.operations):
+                                or "work_update" not in current.operations):
                             return self._result_guard(
                                 request, "stale", "lifecycle_currentness_changed_before_terminal",
                                 operation_id, True,
                             )
                         await self.required_results.transition(
-                            operation_id, currentness, LifecycleEvent.PERSIST_READBACK_MATCHED,
+                            operation_id, obligation.currentness_token,
+                            LifecycleEvent.PERSIST_READBACK_MATCHED,
                             evidence=evidence,
                         )
                 except (SQLAlchemyError, ValueError):
@@ -586,7 +618,8 @@ class ChatGPTService:
             if outcome.effect == "unknown" and obligation.state is ProfileState.PERSIST_REQUIRED:
                 try:
                     await self.required_results.transition(
-                        operation_id, currentness, LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS,
+                        operation_id, obligation.currentness_token,
+                        LifecycleEvent.PERSIST_OUTCOME_AMBIGUOUS,
                         evidence={"operation_id": str(operation_id), "reason": outcome.reason},
                     )
                 except (SQLAlchemyError, ValueError):
