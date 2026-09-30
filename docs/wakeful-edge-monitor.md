@@ -38,7 +38,10 @@ pretending the functional path passed.
 `python -m switchstand.edge_monitor_host` binds one monitor cycle to fixed-argument `systemctl` and
 `journalctl` reads, local/public OAuth challenge and metadata checks, and an optional fixed
 read-only `work_get` canary. The bearer token is accepted only through a mode-0600 file and is
-never persisted or printed. Missing or invalid canary material produces `missing_capability`.
+never persisted or printed. It is read only after the functional target is proven to be either the
+exact HTTPS resource/public endpoint or the configured loopback HTTP `/mcp` endpoint. A successful
+canary also requires the returned item ID to equal the fixed WorkId. Missing or invalid capability
+material produces `missing_capability`.
 
 The command remains inert: it installs no unit or timer, creates no credentials, performs no OAuth
 registration/authorization/refresh, and dispatches no event. `events` reads the sanitized pending

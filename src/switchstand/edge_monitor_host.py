@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import subprocess
@@ -153,12 +154,21 @@ class HostFunctional:
                 initialized.raise_for_status()
                 ready.raise_for_status()
                 response.raise_for_status()
-                result = response.json()["result"]["structuredContent"]
-                status = result.get("status")
+                result_value = cast(object, response.json()["result"]["structuredContent"])
         except (OSError, KeyError, TypeError, ValueError, httpx.HTTPError):
             return FunctionalObservation(FunctionalStatus.FAILED)
+        if not isinstance(result_value, dict):
+            return FunctionalObservation(FunctionalStatus.FAILED)
+        result = cast(dict[str, object], result_value)
+        status = result.get("status")
+        item_value = result.get("item")
+        item = cast(dict[str, object], item_value) if isinstance(item_value, dict) else {}
         if status == "ok":
-            return FunctionalObservation(FunctionalStatus.OK)
+            return FunctionalObservation(
+                FunctionalStatus.OK
+                if str(item.get("id", "")) == target.work_id
+                else FunctionalStatus.FAILED
+            )
         if status == "provider_error":
             return FunctionalObservation(FunctionalStatus.PROVIDER_ERROR)
         return FunctionalObservation(FunctionalStatus.FAILED)
@@ -204,11 +214,46 @@ def _canary(token_path: Path | None, work_id: str | None) -> tuple[CanaryTarget 
     try:
         if token_path.stat().st_mode & 0o7777 != 0o600:
             return None, ""
-        UUID(work_id)
+        normalized_work_id = str(UUID(work_id))
         token = token_path.read_text().strip()
     except (OSError, UnicodeError, ValueError):
         return None, ""
-    return (CanaryTarget("fixed-read-only-bearer", work_id), token) if token else (None, "")
+    return (
+        (CanaryTarget("fixed-read-only-bearer", normalized_work_id), token)
+        if token else (None, "")
+    )
+
+
+def _functional_target(
+    local_url: str | None, public_url: str | None, resource_url: str | None,
+) -> str | None:
+    try:
+        resource = httpx.URL(resource_url or "")
+        selected = httpx.URL(public_url or local_url or "")
+        if resource.scheme != "https" or not resource.host or resource.userinfo:
+            return None
+        if public_url:
+            return str(selected) if selected == resource else None
+        host = selected.host
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except (ValueError, UnicodeError):
+        return None
+    valid_local = (
+        selected.scheme == "http" and loopback and not selected.userinfo
+        and selected.path == "/mcp" and not selected.query and not selected.fragment
+    )
+    return str(selected) if valid_local else None
+
+
+def _configured_canary(
+    token_path: Path | None, work_id: str | None, local_url: str | None,
+    public_url: str | None, resource_url: str | None,
+) -> tuple[CanaryTarget | None, str, str]:
+    target_url = _functional_target(local_url, public_url, resource_url)
+    if target_url is None:
+        return None, "", ""
+    canary, token = _canary(token_path, work_id)
+    return canary, token, target_url
 
 
 def _fixture(
@@ -228,13 +273,16 @@ def _check(args: argparse.Namespace, state: Path) -> dict[str, object]:
     if args.fixture:
         systemd, journal, http, functional, canary = _fixture(args.fixture)
     else:
-        canary, token = _canary(args.bearer_token_file, args.work_id)
+        canary, token, functional_url = _configured_canary(
+            args.bearer_token_file, args.work_id, args.local_url,
+            args.public_url, args.resource_url,
+        )
         systemd: SystemdProbe = HostSystemd(args.service)
         journal: JournalProbe = HostJournal(args.service)
         http: HttpProbe = HostHttp(
             tuple(filter(None, (args.local_url, args.public_url))), args.resource_url
         )
-        functional: FunctionalProbe = HostFunctional(args.public_url or args.local_url, token)
+        functional: FunctionalProbe = HostFunctional(functional_url, token)
     store = WakefulStore(state / "wakeful.sqlite3")
     result = EdgeMonitor(
         monitor_id="chatgpt-edge", subject=args.service, store=store,

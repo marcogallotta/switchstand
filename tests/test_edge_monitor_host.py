@@ -1,7 +1,10 @@
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from switchstand import edge_monitor_host as host
 from switchstand.edge_monitor import CanaryTarget, FunctionalStatus
@@ -50,6 +53,10 @@ def test_canary_requires_mode_0600_token_and_uuid(tmp_path):
 
     assert canary == CanaryTarget("fixed-read-only-bearer", work_id)
     assert value == "secret-value"
+    assert host._functional_target("http://127.0.0.1:8790/mcp", None,
+                                   "https://real.example/mcp") == "http://127.0.0.1:8790/mcp"
+    assert host._functional_target("http://127.0.0.1:8790/mcp", "https://real.example/mcp",
+                                   "https://real.example/mcp") == "https://real.example/mcp"
     os.chmod(token, 0o640)
     assert host._canary(token, work_id) == (None, "")
     assert host._canary(token, "not-a-work-id") == (None, "")
@@ -107,7 +114,18 @@ def test_http_probe_checks_local_and_public_challenge_and_metadata(monkeypatch):
     assert len(seen) == 4
 
 
-def test_functional_probe_calls_only_exact_read(monkeypatch):
+@pytest.mark.parametrize(
+    ("structured", "expected"),
+    [
+        ({"status": "ok", "item": {"id": "a3b2421c-7a04-41f7-b868-9880e460a7a0"}},
+         FunctionalStatus.OK),
+        ({"status": "ok"}, FunctionalStatus.FAILED),
+        ({"status": "ok", "item": {"id": "00000000-0000-0000-0000-000000000002"}},
+         FunctionalStatus.FAILED),
+        ({"status": "provider_error"}, FunctionalStatus.PROVIDER_ERROR),
+    ],
+)
+def test_functional_probe_requires_exact_work_result(monkeypatch, structured, expected):
     requests = []
 
     def respond(request):
@@ -118,7 +136,7 @@ def test_functional_probe_calls_only_exact_read(monkeypatch):
         if body["method"] == "notifications/initialized":
             return httpx.Response(202)
         return httpx.Response(200, json={
-            "result": {"structuredContent": {"status": "ok"}}
+            "result": {"structuredContent": structured}
         })
 
     monkeypatch.setattr(host.httpx, "Client", client_with(respond))
@@ -126,8 +144,57 @@ def test_functional_probe_calls_only_exact_read(monkeypatch):
 
     result = host.HostFunctional("https://edge.example/mcp", "secret").observe(target)
 
-    assert result.status is FunctionalStatus.OK
+    assert result.status is expected
     assert requests[-1]["params"] == {
         "name": "work_get",
         "arguments": {"api_version": "1", "work_id": target.work_id},
     }
+
+
+@pytest.mark.parametrize(
+    ("local_url", "public_url"),
+    [
+        ("http://attacker.example/mcp", None),
+        ("http://127.0.0.1:8790/mcp", "https://attacker.example/mcp"),
+    ],
+)
+def test_spoofed_endpoint_cannot_read_or_send_bearer(
+    monkeypatch, tmp_path, local_url, public_url,
+):
+    token = tmp_path / "token"
+    token.write_text("must-not-be-read")
+    os.chmod(token, 0o600)
+    resource = "https://real.example/switchstand/mcp"
+    metadata = "https://real.example/.well-known/oauth-protected-resource/switchstand/mcp"
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(401, headers={
+                "www-authenticate": f'Bearer resource_metadata="{metadata}"'
+            })
+        return httpx.Response(200, json={"resource": resource})
+
+    monkeypatch.setattr(host.httpx, "Client", client_with(respond))
+    monkeypatch.setattr(host, "HostSystemd", lambda _service: host.FixedProbe(
+        host.SystemdObservation(True, 1234)
+    ))
+    monkeypatch.setattr(host, "HostJournal", lambda _service: host.FixedJournal(""))
+
+    def forbidden_read(_self):
+        raise AssertionError("untrusted endpoint must be rejected before token read")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    args = SimpleNamespace(
+        fixture=None, bearer_token_file=token,
+        work_id="a3b2421c-7a04-41f7-b868-9880e460a7a0",
+        local_url=local_url, public_url=public_url, resource_url=resource,
+        service="edge.service",
+    )
+
+    result = host._check(args, tmp_path / "state")
+
+    assert result["condition"] == "missing_capability"
+    assert requests
+    assert all("authorization" not in request.headers for request in requests)
