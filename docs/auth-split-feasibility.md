@@ -28,7 +28,10 @@ The executable spike establishes these gates against the pinned FastMCP runtime:
 3. The private verifier returns the exact issuer, resource, client, scope, and immutable GitHub
    numeric subject established by the current provider path. The edge owns no signing key.
 4. A missing/invalid internal credential, malformed reply, invalid bearer token, internal error, or
-   unavailable auth service fails closed.
+   unavailable auth service fails closed. In particular, authenticated 200 replies must contain a
+   nonempty client ID, the exact singleton `read:user` scope list, and a non-boolean integer expiry
+   strictly later than the verifier's clock plus five seconds; equality at that skew boundary is
+   rejected.
 5. After an upstream token becomes invalid, the next edge verification rejects the otherwise
    unexpired FastMCP token. This preserves current per-request JTI/upstream GitHub validation.
 6. With writers stopped, default encrypted state, client registration, and an existing token remain

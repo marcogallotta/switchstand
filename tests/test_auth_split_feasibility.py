@@ -23,6 +23,7 @@ RESOURCE = "https://switchstand.example.com/mcp"
 USER_ID = "192548"
 SCOPE = "read:user"
 INTERNAL_SECRET = "disposable-loopback-auth-secret"
+INTROSPECTION_CLOCK_SKEW_SECONDS = 5
 
 
 def auth_provider(*, storage=None, client_secret="github-secret"):
@@ -88,10 +89,17 @@ def introspection_app(provider, *, internal_secret=INTERNAL_SECRET):
 class IntrospectionTokenVerifier(TokenVerifier):
     """Delegate complete token/JTI/upstream validation to the stable auth service."""
 
-    def __init__(self, client, *, internal_secret=INTERNAL_SECRET):
+    def __init__(
+        self,
+        client,
+        *,
+        internal_secret=INTERNAL_SECRET,
+        clock=time.time,
+    ):
         super().__init__(required_scopes=[SCOPE])
         self.client = client
         self.internal_secret = internal_secret
+        self.clock = clock
 
     async def verify_token(self, token):
         try:
@@ -108,21 +116,29 @@ class IntrospectionTokenVerifier(TokenVerifier):
             payload = response.json()
         except ValueError:
             return None
+        if not isinstance(payload, dict):
+            return None
+        client_id = payload.get("client_id")
+        expires_at = payload.get("expires_at")
+        scopes = payload.get("scopes")
         if (
             payload.get("subject") != USER_ID
             or payload.get("issuer") != ISSUER
             or payload.get("resource") != RESOURCE
-            or not isinstance(payload.get("client_id"), str)
-            or not isinstance(payload.get("expires_at"), int)
-            or not isinstance(payload.get("scopes"), list)
-            or SCOPE not in payload["scopes"]
+            or not isinstance(client_id, str)
+            or not client_id.strip()
+            or type(expires_at) is not int
+            or expires_at <= int(self.clock()) + INTROSPECTION_CLOCK_SKEW_SECONDS
+            or not isinstance(scopes, list)
+            or len(scopes) != 1
+            or scopes != [SCOPE]
         ):
             return None
         return AccessToken(
             token=token,
-            client_id=payload["client_id"],
-            scopes=payload["scopes"],
-            expires_at=payload["expires_at"],
+            client_id=client_id,
+            scopes=scopes,
+            expires_at=expires_at,
             subject=payload["subject"],
             resource=payload["resource"],
             claims={"iss": payload["issuer"]},
@@ -237,20 +253,49 @@ async def test_private_introspection_boundary_fails_closed():
             client, internal_secret="wrong-secret"
         ).verify_token(issued.access_token) is None
 
-    malformed = Starlette(
-        routes=[
-            Route(
-                "/internal/oauth/verify",
-                lambda _request: JSONResponse({"subject": USER_ID}),
-                methods=["POST"],
-            )
-        ]
-    )
-    malformed_transport = httpx.ASGITransport(app=malformed)
-    async with httpx.AsyncClient(
-        transport=malformed_transport, base_url="http://auth.internal"
-    ) as client:
-        assert await IntrospectionTokenVerifier(client).verify_token(issued.access_token) is None
+    now = 1_000_000
+    valid_payload = {
+        "client_id": "chatgpt",
+        "scopes": [SCOPE],
+        "subject": USER_ID,
+        "expires_at": now + INTROSPECTION_CLOCK_SKEW_SECONDS + 1,
+        "resource": RESOURCE,
+        "issuer": ISSUER,
+    }
+
+    async def verify_reply(payload):
+        async def reply(request):
+            assert request.headers["authorization"] == f"Bearer {INTERNAL_SECRET}"
+            return JSONResponse(payload)
+
+        malformed = Starlette(
+            routes=[Route("/internal/oauth/verify", reply, methods=["POST"])]
+        )
+        malformed_transport = httpx.ASGITransport(app=malformed)
+        async with httpx.AsyncClient(
+            transport=malformed_transport, base_url="http://auth.internal"
+        ) as client:
+            return await IntrospectionTokenVerifier(
+                client, clock=lambda: now
+            ).verify_token(issued.access_token)
+
+    assert await verify_reply(valid_payload) is not None
+    invalid_payloads = [
+        {**valid_payload, "client_id": ""},
+        {**valid_payload, "client_id": "   "},
+        {**valid_payload, "expires_at": now - 1},
+        {**valid_payload, "expires_at": True},
+        {
+            **valid_payload,
+            "expires_at": now + INTROSPECTION_CLOCK_SKEW_SECONDS,
+        },
+        {**valid_payload, "scopes": SCOPE},
+        {**valid_payload, "scopes": [SCOPE, 7]},
+        {**valid_payload, "scopes": [""]},
+        {**valid_payload, "scopes": [SCOPE, "repo"]},
+    ]
+    for payload in invalid_payloads:
+        assert await verify_reply(payload) is None
 
     def unavailable(request):
         raise httpx.ConnectError("auth service unavailable", request=request)
