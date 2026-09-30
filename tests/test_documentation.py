@@ -60,3 +60,83 @@ def test_codex_role_model_and_shared_process_contract_are_explicit():
     assert "Codex has two roles: Coordinator and Worker." in usage
     assert "Shared process semantics across hosts" in usage
     assert "Shared semantics do not imply identical host storage, tools, roles, or orchestration." in usage
+
+
+def test_code_red_bootstrap_preserves_trigger_stop_and_recovery_contract():
+    agents = (ROOT / "AGENTS.md").read_text()
+
+    assert "A credible live-user failure enters incident mode" in agents
+    assert "an explicit `CODE RED` also enters it" in agents
+    assert "`STOP` means pause new action, listen, and re-ground" in agents
+    assert "`CANCEL` or `STOP WORK` means terminate" in agents
+    assert "test the shared ingress before resetting product-local OAuth" in agents
+    assert "continue cleanup, RCA,\nmonitoring, and owned follow-ups without waiting" in agents
+
+
+def test_code_red_runbook_keeps_one_record_and_checkable_closeout():
+    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
+    record = (ROOT / "docs/operations-incident-record.md").read_text()
+
+    assert "Open or reuse one private incident record" in runbook
+    assert "Do **not** terminate workers" in runbook
+    assert "## Shared-ingress recovery" in runbook
+    assert "A user report such as `it worked`" in runbook
+    assert "Do not wait for Marco to ask again" in runbook
+
+    for required_field in (
+        "Impact / understood scope",
+        "Difficulty / prognosis",
+        "Human / agent action",
+        "Service posture",
+        "Current action / next checkpoint",
+        "Coordination changes",
+        "Dependency boundary",
+        "Residual truth",
+    ):
+        assert required_field in record
+
+    assert "ROLL_FORWARD/REDEPLOY/RETIRE_EXPLICITLY" in record
+    assert "product-local state was not reset without\n  causal evidence" in record
+    assert "Recovery does not\ncreate a pause, a second incident, or a need for another prompt." in record
+
+
+def test_code_red_current_pointer_has_atomic_private_status_first():
+    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
+
+    status_publish = 'mv -f -- "$incident_status_tmp" "$incident_dir/status.md"'
+    pointer_publish = 'mv -Tf "$incident_pointer" "$incident_root/current"'
+    initialization = runbook[
+        runbook.index('incident_status_tmp="$(mktemp'):runbook.index(pointer_publish)
+    ]
+
+    assert 'chmod 0600 "$incident_status_tmp"' in runbook
+    assert 'test "$(stat -c \'%a\' "$incident_dir/status.md")" = 600' in runbook
+    assert runbook.index(status_publish) < runbook.index(pointer_publish)
+    for required_field in (
+        "State",
+        "Operator",
+        "Updated",
+        "Impact / understood scope",
+        "Difficulty / prognosis",
+        "Human / agent action",
+        "Service posture",
+        "Current action / next checkpoint",
+        "Coordination changes",
+        "Dependency boundary",
+        "Evidence",
+        "Residual truth",
+    ):
+        assert f"- {required_field}:" in initialization
+    assert "- Service posture: PENDING" in initialization
+    assert re.search(r"- Service posture: (?:RUN|GATE|SUSPEND)\b", initialization) is None
+    assert "`PENDING` is\n   temporary uncertainty, not a synonym for `GATE`" in runbook
+
+
+def test_code_red_authenticated_boundary_proof_cannot_be_residualized():
+    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
+    record = (ROOT / "docs/operations-incident-record.md").read_text()
+
+    assert "authenticated affected-path recovery proof is not deferrable" in runbook
+    assert "entire stated watch window must complete without recurrence before\n`CLOSED`" in runbook
+    assert "This gate may not be `NOT_RUN`, `MISSING_CAPABILITY`, `UNKNOWN`,\nHuman Input, or owned residual work." in record
+    assert "relevant restart/refresh boundary and the entire stated monitoring/watch window" in record
