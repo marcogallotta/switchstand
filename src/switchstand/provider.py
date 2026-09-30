@@ -726,7 +726,8 @@ class AsanaProvider:
         if patch.kind == "placement":
             assert patch.project_gid is not None
             review_intake_add = (
-                patch.action == "add"
+                self._test_project is None
+                and patch.action == "add"
                 and patch.project_gid == REVIEW_INTAKE_PROJECT
                 and patch.section_gid == REVIEW_INTAKE_SECTION
             )
