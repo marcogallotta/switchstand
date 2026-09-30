@@ -127,6 +127,9 @@ def test_code_red_current_pointer_has_atomic_private_status_first():
         "Residual truth",
     ):
         assert f"- {required_field}:" in initialization
+    assert "- Service posture: PENDING" in initialization
+    assert re.search(r"- Service posture: (?:RUN|GATE|SUSPEND)\b", initialization) is None
+    assert "`PENDING` is\n   temporary uncertainty, not a synonym for `GATE`" in runbook
 
 
 def test_code_red_authenticated_boundary_proof_cannot_be_residualized():

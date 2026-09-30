@@ -39,7 +39,7 @@ analysis and unrelated work follow mitigation.
    - Impact / understood scope: credible live-user failure; exact scope UNKNOWN
    - Difficulty / prognosis: unknown; diagnosis in progress
    - Human / agent action: none pending current evidence
-   - Service posture: GATE — gate new consequential effects pending current evidence
+   - Service posture: PENDING — not selected until current evidence is assessed
    - Current action / next checkpoint: inspect current service state and newest logs
    - Coordination changes: none
    - Dependency boundary: UNKNOWN pending boundary checks
@@ -109,6 +109,10 @@ analysis and unrelated work follow mitigation.
    read back the result, and never blindly retry an ambiguous effect. If no proved mitigation
    exists, say so plainly.
 
+   Before this evidence-backed decision, record service posture as `PENDING`. `PENDING` is
+   temporary uncertainty, not a synonym for `GATE`; replace it with `RUN`, `GATE`, or `SUSPEND`
+   as soon as step 8 is assessed.
+
 ## Communication and control
 
 The active chat is Marco's stable update channel; the incident's `status.md` is the canonical
@@ -120,7 +124,8 @@ private `status.md` path on re-entry. Every update is short and contains:
 - **Difficulty / prognosis** — trivial, contained, architectural, or unknown; confidence and
   expected repair horizon without invented precision.
 - **Human / agent action** — what Marco should do, what agents should be told, or `none`.
-- **Service posture** — `RUN`, `GATE`, or `SUSPEND`, with the reason.
+- **Service posture** — `PENDING` before step 8; afterward `RUN`, `GATE`, or `SUSPEND`, with
+  the reason.
 - **Current action / next checkpoint** — one action and the next observable result or time.
 - **Coordination changes** — temporary or permanent changes needed in Project Settings,
   `START HERE`, agent guidance, canary state, or HOLD; otherwise `none`.

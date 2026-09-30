@@ -18,7 +18,8 @@ Replace it thereafter from a mode-`0600` temporary file in the same directory.
 - Impact / understood scope: <users, paths, fail-open/fail-closed/unknown>
 - Difficulty / prognosis: <trivial|contained|architectural|unknown; confidence; horizon>
 - Human / agent action: <what Marco should do/tell agents, or none>
-- Service posture: <RUN|GATE|SUSPEND> — <why and reversal condition>
+- Service posture: <PENDING before evidence-backed assessment; then
+  RUN|GATE|SUSPEND> — <why and reversal condition>
 - Current action / next checkpoint: <one action; result or time>
 - Coordination changes: <none, or references to entries below>
 - Dependency boundary: <client -> ingress -> origin -> auth -> provider; evidence at each layer>
@@ -63,8 +64,8 @@ Human Input, or owned residual work. If it is not satisfied, keep the incident `
 - [ ] For shared-ingress involvement, installed routes were read back and every affected public
   path plus one unchanged sibling path was checked; product-local state was not reset without
   causal evidence.
-- [ ] Service posture is returned from `GATE`/`SUSPEND` to the intended steady state, or an owner
-  and removal trigger are recorded.
+- [ ] Service posture is no longer `PENDING`. Any `GATE`/`SUSPEND` posture is returned to the
+  intended steady state, or an owner and removal trigger are recorded.
 - [ ] Every rollback has an explicit roll-forward/redeploy/retirement decision; exact removed
   candidate and bundled good work are accounted for; forward-only state was not rewound.
 - [ ] Every temporary Project Settings, `START HERE`, agent-guidance, canary, or HOLD change is
