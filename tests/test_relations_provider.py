@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import PROJECTS, REVIEW_INTAKE_PROJECT, AsanaProvider
+from switchstand.provider import (PROJECTS, REVIEW_INTAKE_PROJECT, REVIEW_INTAKE_SECTION, AsanaProvider)
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
@@ -207,7 +207,7 @@ async def test_review_intake_project_is_add_only_not_general_admission():
 
         registration = ProviderRelation(
             "placement", "add",
-            project_gid=REVIEW_INTAKE_PROJECT, section_gid=SECTION,
+            project_gid=REVIEW_INTAKE_PROJECT, section_gid=REVIEW_INTAKE_SECTION,
         )
         await provider.update_relation(TASK, registration)
 
@@ -215,7 +215,7 @@ async def test_review_intake_project_is_add_only_not_general_admission():
         assert boundary.calls == [
             (
                 "POST", f"/api/1.0/tasks/{TASK}/addProject",
-                {"project": REVIEW_INTAKE_PROJECT, "section": SECTION},
+                {"project": REVIEW_INTAKE_PROJECT, "section": REVIEW_INTAKE_SECTION},
             ),
         ]
 
