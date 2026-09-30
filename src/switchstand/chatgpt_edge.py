@@ -11,10 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.auth.auth import AccessToken
-from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.dependencies import get_context
-from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -28,6 +25,7 @@ from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
+from .oauth_continuity import SwitchstandGitHubProvider
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
 from .state import PostgresState
@@ -137,43 +135,6 @@ class MCPAuthConfig:
             bind_host=_loopback_host(os.getenv("SWITCHSTAND_MCP_BIND_HOST", "127.0.0.1")),
             bind_port=_bind_port(os.getenv("SWITCHSTAND_MCP_BIND_PORT", "8790")),
         )
-
-
-class SwitchstandGitHubProvider(GitHubProvider):
-    """GitHub proxy restricted to one user and bridged to RequestPrincipal."""
-
-    def __init__(self, *, allowed_user_id: str, **kwargs: Any) -> None:
-        self.allowed_user_id = allowed_user_id
-        super().__init__(**kwargs)
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        access = await super().verify_token(token)
-        if access is None or access.subject != self.allowed_user_id:
-            if access is not None:
-                LOG.warning("mcp_github_user_rejected")
-            return None
-        try:
-            claims = self.jwt_issuer.verify_token(token)
-        except JoseError:
-            return None
-        scope = claims.get("scope")
-        client_id = claims.get("client_id")
-        issuer = claims.get("iss")
-        resource = claims.get("aud")
-        expires_at = claims.get("exp")
-        if (not isinstance(scope, str) or REQUIRED_SCOPE not in scope.split()
-                or not isinstance(client_id, str) or not client_id
-                or not isinstance(issuer, str) or not isinstance(resource, str)
-                or not isinstance(expires_at, int)):
-            return None
-        bridged_claims = dict(access.claims or {}) | {"iss": issuer}
-        return access.model_copy(update={
-            "client_id": client_id,
-            "scopes": scope.split(),
-            "expires_at": expires_at,
-            "resource": resource,
-            "claims": bridged_claims,
-        })
 
 
 def _audit(tool: str, target: str | None, status: str) -> None:

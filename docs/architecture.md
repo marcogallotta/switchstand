@@ -33,8 +33,12 @@ and behavior. It includes provider-neutral work discovery, structure, history, a
 events; protected append/create/update/relation operations; durable work-addressed and agent-name
 messaging; required-result persistence; and repository bundle transport.
 
-`chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. It restricts authentication
-to the configured GitHub user, bridges the authenticated request into a `RequestPrincipal`, builds
+`chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. Its
+`oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one
+validated upstream GitHub credential behind a stable storage identity; downstream client JWTs,
+JTIs, grants, and runtime identities remain distinct. Legacy JTI mappings converge lazily to that
+credential, and explicit and transparent refresh share one process-local serialization boundary.
+The edge bridges the authenticated request into a `RequestPrincipal`, builds
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
