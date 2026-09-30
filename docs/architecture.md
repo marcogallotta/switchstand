@@ -47,6 +47,18 @@ MCP session ID used for message-currentness fencing. Repository MCP configuratio
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
 standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
+
+`stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
+owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
+mappings, and a private authenticated per-request introspection route. Its edge verifier accepts
+only the exact configured issuer, resource, immutable numeric GitHub subject, scope set, nonempty
+client ID, and sufficiently future integer expiry. It owns a finite per-call deadline (two seconds
+by default and never more than five) and streams at most 4 KiB of response data, closing on the
+first excess byte; transport, authentication, status, size, and schema failures reject the bearer
+token. `chatgpt_edge.py::create_delegated_app` can wire that
+verifier into the unchanged ordinary tool surface without GitHub credentials, signing keys, or an
+OAuth store. The ordinary `serve` entry point still calls the combined `create_app`; no split
+process, route, credential, or deployment is activated by this layer.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is

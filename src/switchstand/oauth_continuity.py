@@ -26,6 +26,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 LOG = logging.getLogger(__name__)
 
 CANONICAL_UPSTREAM_TOKEN_ID = "switchstand-github-canonical-v1"
+FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60
 
 
 class SwitchstandGitHubProvider(GitHubProvider):
