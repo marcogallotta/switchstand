@@ -15,6 +15,8 @@ from switchstand.chatgpt_edge import create_delegated_app
 from switchstand.stable_auth import (
     INTROSPECTION_CLOCK_SKEW_SECONDS,
     INTROSPECTION_PATH,
+    MAX_INTROSPECTION_RESPONSE_BYTES,
+    MAX_INTROSPECTION_TIMEOUT_SECONDS,
     IntrospectionContract,
     IntrospectionTokenVerifier,
     StableAuthConfig,
@@ -49,6 +51,18 @@ def test_contract_and_service_configuration_are_closed_and_separate():
         IntrospectionContract("https://wrong.example/", RESOURCE, USER_ID)
     assert "github-secret" not in repr(CONFIG)
     assert INTERNAL_SECRET not in repr(CONFIG)
+    client = httpx.AsyncClient()
+    try:
+        for timeout in (0, float("inf"), MAX_INTROSPECTION_TIMEOUT_SECONDS + 1):
+            with pytest.raises(ValueError, match="finite and at most five seconds"):
+                IntrospectionTokenVerifier(
+                    client,
+                    internal_secret=INTERNAL_SECRET,
+                    contract=CONTRACT,
+                    timeout_seconds=timeout,
+                )
+    finally:
+        asyncio.run(client.aclose())
 
 
 def test_auth_service_owns_public_oauth_routes_and_not_the_resource_endpoint():
@@ -179,6 +193,54 @@ async def test_introspection_unavailability_fails_closed():
             client, internal_secret=INTERNAL_SECRET, contract=CONTRACT
         )
         assert await verifier.verify_token("token") is None
+
+
+async def test_introspection_stall_obeys_verifier_owned_deadline():
+    never = asyncio.Event()
+
+    async def stalled(_request):
+        await never.wait()
+        return JSONResponse({})
+
+    app = Starlette(routes=[Route(INTROSPECTION_PATH, stalled, methods=["POST"])])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://auth.internal",
+        timeout=None,
+    ) as client:
+        verifier = IntrospectionTokenVerifier(
+            client,
+            internal_secret=INTERNAL_SECRET,
+            contract=CONTRACT,
+            timeout_seconds=0.01,
+        )
+        async with asyncio.timeout(0.5):
+            assert await verifier.verify_token("token") is None
+
+
+async def test_chunked_oversized_response_stops_after_first_excess_byte():
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.consumed = 0
+
+        async def __aiter__(self):
+            for _ in range(MAX_INTROSPECTION_RESPONSE_BYTES * 2):
+                self.consumed += 1
+                yield b"x"
+
+    stream = CountingStream()
+
+    def oversized(_request):
+        return httpx.Response(200, stream=stream)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(oversized), base_url="http://auth.internal"
+    ) as client:
+        verifier = IntrospectionTokenVerifier(
+            client, internal_secret=INTERNAL_SECRET, contract=CONTRACT
+        )
+        assert await verifier.verify_token("token") is None
+    assert stream.consumed == MAX_INTROSPECTION_RESPONSE_BYTES + 1
 
 
 def test_delegated_edge_has_resource_metadata_without_provider_or_signing_state():

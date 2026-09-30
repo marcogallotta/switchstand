@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,6 +28,8 @@ from .oauth_continuity import (
 
 INTROSPECTION_PATH = "/internal/oauth/verify"
 INTROSPECTION_CLOCK_SKEW_SECONDS = 5
+INTROSPECTION_TIMEOUT_SECONDS = 2.0
+MAX_INTROSPECTION_TIMEOUT_SECONDS = 5.0
 MAX_INTROSPECTION_RESPONSE_BYTES = 4096
 REQUIRED_SCOPE = "read:user"
 
@@ -160,30 +165,60 @@ class IntrospectionTokenVerifier(TokenVerifier):
         internal_secret: str,
         contract: IntrospectionContract,
         clock: Callable[[], float] = time.time,
+        timeout_seconds: float = INTROSPECTION_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__(required_scopes=list(contract.scopes))
         if not internal_secret.strip():
             raise ValueError("private introspection secret must be nonempty")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= MAX_INTROSPECTION_TIMEOUT_SECONDS
+        ):
+            raise ValueError("introspection timeout must be finite and at most five seconds")
         self.client = client
         self.internal_secret = internal_secret
         self.contract = contract
         self.clock = clock
+        self.timeout_seconds = float(timeout_seconds)
+
+    @staticmethod
+    async def _bounded_body(response: httpx.Response) -> bytes | None:
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_INTROSPECTION_RESPONSE_BYTES:
+                    return None
+            except ValueError:
+                return None
+        body = bytearray()
+        async for chunk in response.aiter_raw():
+            remaining = MAX_INTROSPECTION_RESPONSE_BYTES - len(body)
+            if len(chunk) > remaining:
+                return None
+            body.extend(chunk)
+        return bytes(body)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if not token:
             return None
         try:
-            response = await self.client.post(
-                INTROSPECTION_PATH,
-                headers={"Authorization": f"Bearer {self.internal_secret}"},
-                json={"token": token},
-            )
-        except httpx.HTTPError:
+            async with asyncio.timeout(self.timeout_seconds):
+                async with self.client.stream(
+                    "POST",
+                    INTROSPECTION_PATH,
+                    headers={"Authorization": f"Bearer {self.internal_secret}"},
+                    json={"token": token},
+                ) as response:
+                    if response.status_code != 200:
+                        return None
+                    encoded = await self._bounded_body(response)
+        except (TimeoutError, httpx.HTTPError):
             return None
-        if response.status_code != 200 or len(response.content) > MAX_INTROSPECTION_RESPONSE_BYTES:
+        if encoded is None:
             return None
         try:
-            raw_payload = response.json()
+            raw_payload = json.loads(encoded)
         except ValueError:
             return None
         if not isinstance(raw_payload, dict):

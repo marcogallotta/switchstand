@@ -52,8 +52,10 @@ standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
 mappings, and a private authenticated per-request introspection route. Its edge verifier accepts
 only the exact configured issuer, resource, immutable numeric GitHub subject, scope set, nonempty
-client ID, and sufficiently future integer expiry; transport, authentication, status, size, and
-schema failures reject the bearer token. `chatgpt_edge.py::create_delegated_app` can wire that
+client ID, and sufficiently future integer expiry. It owns a finite per-call deadline (two seconds
+by default and never more than five) and streams at most 4 KiB of response data, closing on the
+first excess byte; transport, authentication, status, size, and schema failures reject the bearer
+token. `chatgpt_edge.py::create_delegated_app` can wire that
 verifier into the unchanged ordinary tool surface without GitHub credentials, signing keys, or an
 OAuth store. The ordinary `serve` entry point still calls the combined `create_app`; no split
 process, route, credential, or deployment is activated by this layer.

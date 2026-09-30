@@ -161,8 +161,10 @@ authorization, distributed locking, and shared authentication storage remain exp
 The repository contains a default-off production seam for the selected single-host split.
 `stable_auth.py` builds the stable FastMCP authorization application and its private authenticated
 introspection route. The same module supplies the strict edge verifier; every bearer check calls
-the stable service, and any unavailable, unauthorized, oversized, malformed, expired, wrong-scope,
-wrong-resource, wrong-issuer, or wrong-subject response fails closed. The delegated edge builder
+the stable service under a verifier-owned two-second deadline (configurable only up to five seconds)
+and retains no more than 4 KiB of streamed response data. The first excess byte closes the response.
+Any unavailable, unauthorized, oversized, malformed, expired, wrong-scope, wrong-resource,
+wrong-issuer, or wrong-subject response fails closed. The delegated edge builder
 receives only that verifier and the resulting resource contract; it has no GitHub client secret,
 FastMCP signing key, or authorization-state store.
 
