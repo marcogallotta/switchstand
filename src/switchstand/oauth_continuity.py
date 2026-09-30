@@ -118,6 +118,15 @@ class SwitchstandGitHubProvider(GitHubProvider):
             ttl=max(ttl, 1),
         )
 
+    async def _rebind_to_valid_canonical(self, jti: str, ttl: float) -> bool:
+        canonical = await self._upstream_token_store.get(
+            key=CANONICAL_UPSTREAM_TOKEN_ID
+        )
+        if canonical is None or await self._fresh_valid_upstream(canonical) is None:
+            return False
+        await self._rebind(jti, ttl)
+        return True
+
     def _jti_and_ttl(self, token: str, *, refresh: bool = False) -> tuple[str, float]:
         payload = self.jwt_issuer.verify_token(
             token, expected_token_use="refresh" if refresh else "access"
@@ -167,15 +176,20 @@ class SwitchstandGitHubProvider(GitHubProvider):
             mapping = await self._jti_mapping_store.get(key=jti)
         except JoseError, KeyError, ValueError:
             return None
-        if mapping is None or mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID:
+        if mapping is None:
+            lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
+            async with lock:
+                mapping = await self._jti_mapping_store.get(key=jti)
+                if mapping is None and not await self._rebind_to_valid_canonical(jti, ttl):
+                    return None
+            return await super().load_access_token(token)
+        if mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID:
             return await super().load_access_token(token)
 
         lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
         use_canonical = False
         async with lock:
-            canonical = await self._upstream_token_store.get(key=CANONICAL_UPSTREAM_TOKEN_ID)
-            if canonical and await self._fresh_valid_upstream(canonical):
-                await self._rebind(jti, ttl)
+            if await self._rebind_to_valid_canonical(jti, ttl):
                 use_canonical = True
             else:
                 validated = await super().load_access_token(token)
@@ -203,12 +217,10 @@ class SwitchstandGitHubProvider(GitHubProvider):
         canonical_lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
         async with canonical_lock:
             mapping = await self._jti_mapping_store.get(key=refresh_jti)
-            canonical = await self._upstream_token_store.get(key=CANONICAL_UPSTREAM_TOKEN_ID)
-            if (
-                mapping is not None
-                and mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID
-                and canonical is not None
-                and await self._fresh_valid_upstream(canonical)
-            ):
-                await self._rebind(refresh_jti, refresh_ttl)
+            if mapping is None:
+                current = await super().load_refresh_token(client, refresh_token.token)
+                if current is not None:
+                    await self._rebind_to_valid_canonical(refresh_jti, refresh_ttl)
+            elif mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID:
+                await self._rebind_to_valid_canonical(refresh_jti, refresh_ttl)
             return await super().exchange_refresh_token(client, refresh_token, scopes)

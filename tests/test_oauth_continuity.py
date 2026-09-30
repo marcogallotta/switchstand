@@ -119,6 +119,66 @@ async def test_legacy_clients_converge_without_merging_downstream_identity():
         assert mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID
 
 
+async def test_missing_access_mapping_recovers_from_valid_canonical_credential():
+    subject = provider(MemoryStore())
+    verifier(subject)
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    token, jti = await put_access(
+        subject, CANONICAL_UPSTREAM_TOKEN_ID, "returning-chat"
+    )
+    await subject._jti_mapping_store.delete(key=jti)
+
+    access = await subject.verify_token(token)
+
+    assert access is not None
+    assert (access.subject, access.client_id) == (USER_ID, "returning-chat")
+    assert access.scopes == [SCOPE]
+    assert access.resource == RESOURCE
+    assert access.claims == {"iss": ISSUER}
+    mapping = await subject._jti_mapping_store.get(key=jti)
+    assert mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID
+
+
+async def test_missing_access_mapping_does_not_bypass_downstream_scope():
+    subject = provider(MemoryStore())
+    verifier(subject)
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    jti = "jti-insufficient-scope"
+    token = subject.jwt_issuer.issue_access_token(
+        client_id="returning-chat",
+        scopes=[],
+        jti=jti,
+        expires_in=3600,
+    )
+
+    assert await subject.verify_token(token) is None
+
+
+async def test_missing_access_mapping_requires_allowed_canonical_identity():
+    subject = provider(MemoryStore())
+    verifier(subject, wrong=frozenset({"wrong"}))
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID, access="wrong"),
+        ttl=3600,
+    )
+    token, jti = await put_access(
+        subject, CANONICAL_UPSTREAM_TOKEN_ID, "returning-chat"
+    )
+    await subject._jti_mapping_store.delete(key=jti)
+
+    assert await subject.verify_token(token) is None
+    assert await subject._jti_mapping_store.get(key=jti) is None
+
+
 async def test_valid_legacy_promotes_across_restart_but_wrong_identity_does_not(
     tmp_path: Path,
 ):
@@ -216,7 +276,7 @@ async def test_new_authorizations_replace_canonical_not_multiply_local_credentia
     ).access_token == "good-11"
 
 
-async def put_refresh(subject, client_id):
+async def put_refresh(subject, client_id, *, mapping_ttl=3600):
     refresh_jti = f"refresh-jti-{client_id}"
     refresh_token = subject.jwt_issuer.issue_refresh_token(
         client_id=client_id,
@@ -231,7 +291,7 @@ async def put_refresh(subject, client_id):
             upstream_token_id=CANONICAL_UPSTREAM_TOKEN_ID,
             created_at=time.time(),
         ),
-        ttl=3600,
+        ttl=mapping_ttl,
     )
     await subject._refresh_token_store.put(
         key=_hash_token(refresh_token),
@@ -244,6 +304,91 @@ async def put_refresh(subject, client_id):
         ttl=3600,
     )
     return refresh_token
+
+
+async def test_expired_refresh_mapping_recovers_from_valid_canonical_credential(
+    tmp_path: Path,
+):
+    subject = provider(FileTreeStore(data_directory=tmp_path / "oauth"))
+    verifier(subject, valid=frozenset({"good", "refreshed"}))
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "returning-chat", mapping_ttl=0.01)
+    await anyio.sleep(0.02)
+    assert await subject._jti_mapping_store.get(key="refresh-jti-returning-chat") is None
+
+    class OAuthClient:
+        async def refresh_token(self, **_kwargs):
+            return {
+                "access_token": "refreshed",
+                "refresh_token": "rotated-upstream",
+                "expires_in": 1800,
+                "refresh_expires_in": 3600,
+                "scope": SCOPE,
+            }
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    downstream = client("returning-chat")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    assert loaded is not None
+
+    result = await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+
+    access_claims = subject.jwt_issuer.verify_token(result.access_token)
+    refresh_claims = subject.jwt_issuer.verify_token(
+        result.refresh_token, expected_token_use="refresh"
+    )
+    assert access_claims["client_id"] == "returning-chat"
+    assert access_claims["scope"] == SCOPE
+    assert refresh_claims["client_id"] == "returning-chat"
+    assert refresh_claims["scope"] == SCOPE
+
+
+async def test_rotated_refresh_mapping_is_not_recovered_for_a_late_request():
+    subject = provider(MemoryStore())
+    verifier(subject, valid=frozenset({"good", "refreshed"}))
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "returning-chat")
+
+    class OAuthClient:
+        async def refresh_token(self, **_kwargs):
+            return {
+                "access_token": "refreshed",
+                "refresh_token": "rotated-upstream",
+                "expires_in": 1800,
+                "refresh_expires_in": 3600,
+                "scope": SCOPE,
+            }
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    downstream = client("returning-chat")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    assert loaded is not None
+    await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+
+    try:
+        await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    except TokenError as error:
+        assert error.error == "invalid_grant"
+        assert error.error_description == "Refresh token mapping not found"
+    else:
+        raise AssertionError("rotated refresh token was accepted twice")
+    assert await subject._jti_mapping_store.get(key="refresh-jti-returning-chat") is None
 
 
 async def test_distinct_client_refreshes_serialize_one_canonical_rotation_at_a_time():

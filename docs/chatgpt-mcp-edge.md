@@ -66,10 +66,13 @@ reconnect.
 The single-user edge stores one canonical, identity-and-scope-validated GitHub
 credential behind those separate downstream mappings. A successful new browser
 authorization replaces that credential, while existing client access and refresh
-JTIs converge to it on use; client IDs, signed tokens, grants, and runtime
-identities are never merged. Refresh rotation is serialized within the one edge
-process. Running overlapping edge processes against this file-backed OAuth store
-is not a supported activation shape: its refresh locks are process-local.
+JTIs converge to it on use. Missing or expired JTI mappings are recovered only
+from a still-valid signed downstream token and the validated canonical credential;
+refresh metadata must also remain current, so rotation or revocation is not undone.
+Client IDs, signed tokens, grants, and runtime identities are never merged. Refresh
+rotation is serialized within the one edge process. Running overlapping edge
+processes against this file-backed OAuth store is not a supported activation shape:
+its refresh locks are process-local.
 
 The read-only edge doctor needs no database or provider credentials. Keep its
 three protected OAuth values and the non-secret probe configuration in one
