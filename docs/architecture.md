@@ -64,6 +64,11 @@ transport state only while the service is offline, swaps the launcher atomically
 before ungating, and preserves `UNKNOWN` behind the gate. It does not own tool semantics, OAuth
 state format, candidate preparation, host installation, or activation authority.
 
+`wakeful.py` is an inert, agent-system-neutral event persistence prototype. It owns the sanitized
+event envelope and local SQLite cursor, transition, bounded lease, and durable outbox state. It has
+no probes, dispatcher, service activation, or Codex/Claude launcher. See
+[Wakeful persistence prototype](wakeful.md).
+
 `source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
 remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
 
@@ -205,6 +210,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
 | Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
