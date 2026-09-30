@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -123,6 +124,61 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert result_file.read_text().splitlines() == ["dispatcher", "exec linked"]
+
+
+def test_linked_writer_launch_uses_current_canonical_memory_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    writer = home / "old-writer"
+    primary.mkdir(parents=True)
+    subprocess.run(["git", "-C", primary, "init", "-b", "main"],
+                   check=True, capture_output=True)
+    executable(primary / "scripts/codex-hook", "#!/bin/sh\nexit 0\n")
+    git_env = os.environ | {
+        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+    subprocess.run(["git", "-C", primary, "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", primary, "commit", "-m", "old hook"],
+                   env=git_env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", primary, "worktree", "add", "-b", "old", writer],
+                   env=git_env, check=True, capture_output=True)
+
+    executable(primary / "scripts/codex-hook", (ROOT / "scripts/codex-hook").read_text())
+    executable(primary / "scripts/claude-dispatch", (ROOT / "scripts/claude-dispatch").read_text())
+    settings = primary / ".claude/coordinator-settings.json"
+    settings.parent.mkdir()
+    settings.write_text((ROOT / ".claude/coordinator-settings.json").read_text())
+    executable(home / ".local/share/claude/versions/2.1.284", """#!/usr/bin/env python3
+import json, os, subprocess, sys
+settings = json.load(open(sys.argv[sys.argv.index('--settings') + 1]))
+command = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
+payload = {'hook_event_name': 'PreToolUse', 'tool_name': os.environ['HOOK_TOOL'],
+           'tool_input': {os.environ['HOOK_FIELD']: os.environ['HOOK_PATH']},
+           'cwd': os.getcwd()}
+result = subprocess.run(command, shell=True, input=json.dumps(payload),
+                        text=True, capture_output=True)
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+sys.exit(result.returncode)
+""")
+
+    def launch(tool: str, field: str, path: Path) -> dict:
+        result = subprocess.run(
+            [primary / "scripts/claude-dispatch"], cwd=writer,
+            env=os.environ | {"HOME": str(home), "CLAUDE_PROJECT_DIR": str(writer),
+                              "HOOK_TOOL": tool, "HOOK_FIELD": field,
+                              "HOOK_PATH": str(path)},
+            text=True, capture_output=True, check=True,
+        )
+        return json.loads(result.stdout) if result.stdout else {}
+
+    memory = home / ".claude/projects/p/memory"
+    for tool, field, name in (("Write", "file_path", "MEMORY.md"),
+                              ("NotebookEdit", "notebook_path", "notes.ipynb")):
+        denied = launch(tool, field, memory / name)
+        assert "memory-write" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert launch("Write", "file_path", home / ".claude/projects/p/settings.json") == {}
 
 
 def test_outside_repo_ignores_ambient_git_repository_selection(tmp_path: Path) -> None:
