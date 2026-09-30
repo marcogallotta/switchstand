@@ -37,7 +37,10 @@ messaging; required-result persistence; and repository bundle transport.
 `oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one
 validated upstream GitHub credential behind a stable storage identity; downstream client JWTs,
 JTIs, grants, and runtime identities remain distinct. Legacy JTI mappings converge lazily to that
-credential, and explicit and transparent refresh share one process-local serialization boundary.
+credential. A still-valid signed downstream token can rebuild a missing or expired JTI mapping only
+while its signed claims remain valid, its stored client metadata remains current for refresh, and
+that canonical upstream credential still passes the configured identity and scope checks. Explicit
+and transparent refresh share one process-local serialization boundary.
 The edge bridges the authenticated request into a `RequestPrincipal`, builds
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
