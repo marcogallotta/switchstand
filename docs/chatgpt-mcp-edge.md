@@ -4,7 +4,9 @@ This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
 Codex clients. It is distinct from the launcher-bound managed Codex STDIO
 surface and from the local development MCP. Landing edge code or documentation
 does not start a listener, configure OAuth, issue a workspace grant, or connect
-a client.
+a client. For a suspected live outage, use the
+[live-incident runbook](operations-live-incident.md); metadata or transport
+availability alone is not an authenticated health check.
 
 ## Current surface
 
