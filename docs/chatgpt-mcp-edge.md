@@ -156,6 +156,21 @@ This reopening does not change the running service, authorize activation, or mak
 prerequisite for ordinary maintenance deployments. Multi-host operation, clustering, active-active
 authorization, distributed locking, and shared authentication storage remain explicit non-goals.
 
+### Inert stable-auth Layer 1
+
+The repository contains a default-off production seam for the selected single-host split.
+`stable_auth.py` builds the stable FastMCP authorization application and its private authenticated
+introspection route. The same module supplies the strict edge verifier; every bearer check calls
+the stable service, and any unavailable, unauthorized, oversized, malformed, expired, wrong-scope,
+wrong-resource, wrong-issuer, or wrong-subject response fails closed. The delegated edge builder
+receives only that verifier and the resulting resource contract; it has no GitHub client secret,
+FastMCP signing key, or authorization-state store.
+
+This layer intentionally provides no service entry point, environment contract, systemd unit,
+Caddy route, Unix-socket wiring, state migration, or live activation. The existing combined edge
+remains the startup default. Those host and migration effects belong to Layer 2 after independent
+review and landing of this inert boundary.
+
 ## Landing, activation, and client refresh
 
 Inert landing evidence checks the pinned runtime imports, protected-resource and

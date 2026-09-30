@@ -7,7 +7,6 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from fastmcp import FastMCP
@@ -25,16 +24,24 @@ from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
-from .oauth_continuity import SwitchstandGitHubProvider
+from .oauth_continuity import (
+    FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
+    SwitchstandGitHubProvider,
+)
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
+from .stable_auth import (
+    REQUIRED_SCOPE,
+    IntrospectionTokenVerifier,
+    delegated_auth,
+    normalize_resource_url,
+)
 from .state import PostgresState
 
 LOG = logging.getLogger(__name__)
-REQUIRED_SCOPE = "read:user"
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
-FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60
+_https_resource_url = normalize_resource_url
 
 
 class _CompleteMCPStream:
@@ -71,16 +78,6 @@ class _CompleteMCPStream:
 
 def _http_middleware() -> list[Middleware]:
     return [Middleware(_CompleteMCPStream)]
-
-
-def _https_resource_url(raw_value: str) -> str:
-    value = raw_value.strip()
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("SWITCHSTAND_MCP_RESOURCE_URL must be an absolute HTTPS URL")
-    if not parsed.path.endswith("/mcp") or parsed.params or parsed.query or parsed.fragment:
-        raise ValueError("SWITCHSTAND_MCP_RESOURCE_URL must end exactly in /mcp")
-    return str(AnyHttpUrl(value))
 
 
 def _loopback_host(raw_value: str) -> str:
@@ -131,7 +128,7 @@ class MCPAuthConfig:
         if not values["github_user_id"].isdigit():
             raise ValueError("SWITCHSTAND_MCP_GITHUB_USER_ID must be a numeric GitHub user ID")
         return cls(
-            **(values | {"resource_url": _https_resource_url(values["resource_url"])}),
+            **(values | {"resource_url": normalize_resource_url(values["resource_url"])}),
             bind_host=_loopback_host(os.getenv("SWITCHSTAND_MCP_BIND_HOST", "127.0.0.1")),
             bind_port=_bind_port(os.getenv("SWITCHSTAND_MCP_BIND_PORT", "8790")),
         )
@@ -174,16 +171,7 @@ def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
     certification_runtime: tuple[str, str] | None = None,
 ):
-    """Build the inert-until-called authenticated HTTP application."""
-    service = ChatGPTService(
-        RequestPrincipal(config.issuer_url, config.resource_url, REQUIRED_SCOPE),
-        service.state,
-        service.grants,
-        service.providers,
-        service.messages,
-        service.required_results,
-        ordinary_workspace_admission=True,
-    )
+    """Build the current combined OAuth/resource application."""
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
         auth_options["client_storage"] = client_storage
@@ -197,6 +185,48 @@ def create_app(
         require_authorization_consent=True,
         fastmcp_access_token_expiry_seconds=FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
         **auth_options,
+    )
+    return _create_resource_app(
+        service,
+        issuer_url=config.issuer_url,
+        resource_url=config.resource_url,
+        auth=auth,
+        certification_runtime=certification_runtime,
+    )
+
+
+def create_delegated_app(
+    service: ChatGPTService,
+    verifier: IntrospectionTokenVerifier,
+    *,
+    certification_runtime: tuple[str, str] | None = None,
+):
+    """Build an inert resource edge with no GitHub or OAuth signing state."""
+    return _create_resource_app(
+        service,
+        issuer_url=verifier.contract.issuer_url,
+        resource_url=verifier.contract.resource_url,
+        auth=delegated_auth(verifier),
+        certification_runtime=certification_runtime,
+    )
+
+
+def _create_resource_app(
+    service: ChatGPTService,
+    *,
+    issuer_url: str,
+    resource_url: str,
+    auth: Any,
+    certification_runtime: tuple[str, str] | None,
+):
+    service = ChatGPTService(
+        RequestPrincipal(issuer_url, resource_url, REQUIRED_SCOPE),
+        service.state,
+        service.grants,
+        service.providers,
+        service.messages,
+        service.required_results,
+        ordinary_workspace_admission=True,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for name, tool in build_ordinary_tools(
