@@ -153,4 +153,7 @@ def test_known_maintenance_retry_contract_is_discoverable_and_bounded():
     assert "2, 5, 10, then 20 seconds" in runbook
     assert "bounded by 90 seconds" in runbook
     assert "receipt becomes `UNKNOWN`" in runbook
-    assert "Zero-downtime overlap is\ndeferred" in edge
+    assert "current deployed production model" in edge
+    assert "bounded inert single-host implementation" in edge
+    assert "Multi-host operation, clustering, active-active" in edge
+    assert "Production\nactivation additionally requires real ChatGPT and Claude" in edge
