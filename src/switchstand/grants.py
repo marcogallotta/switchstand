@@ -218,6 +218,52 @@ class UpdateReceipt(ClosedModel):
     qualification: str
 
 
+class EffectOutcomeView(ClosedModel):
+    """Sanitized effect truth without provider or principal internals."""
+    status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
+    reason: str
+    effect: Literal["not_sent", "applied", "unknown"]
+    retry: Literal["none", "refresh", "reconcile"]
+
+
+class EffectBlocker(ClosedModel):
+    """Identity of an older unresolved effect blocking a new, unsent request."""
+    operation: str
+    operation_id: UUID
+    work_id: UUID
+    outcome: EffectOutcomeView
+
+
+class EffectIntentView(ClosedModel):
+    """Provider-neutral durable intent safe to expose to its admitted owner."""
+    observed_revision: str
+    patch: ScalarPatch
+
+
+class EffectInspection(ClosedModel):
+    operation: Literal["work_update"]
+    operation_id: UUID
+    work_id: UUID
+    intent: EffectIntentView
+    original_outcome: EffectOutcomeView
+    current_outcome: EffectOutcomeView
+    readback: Literal["matched", "unconfirmed", "unavailable"]
+
+
+class EffectRecoveryResult(ClosedModel):
+    status: Literal["ok", "denied", "unknown"]
+    reason: str
+    inspection: EffectInspection | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "denied" and self.inspection is not None:
+            raise ValueError("denied recovery cannot expose effect intent")
+        if self.status == "ok" and self.inspection is None:
+            raise ValueError("recovery result requires sanitized inspection")
+        return self
+
+
 class GuardOutcome(ClosedModel):
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
     operation: str
@@ -228,6 +274,7 @@ class GuardOutcome(ClosedModel):
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
     receipt: EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt | None = None
+    blocked_by: EffectBlocker | None = None
 
     @model_validator(mode="after")
     def exact_receipt(self) -> Self:
@@ -235,6 +282,10 @@ class GuardOutcome(ClosedModel):
             raise ValueError("applied outcome requires an exact receipt")
         if self.receipt is not None and (self.effect != "applied" or self.status != "ok"):
             raise ValueError("only a successful applied outcome can claim a receipt")
+        if self.blocked_by is not None and (
+            self.status != "unknown" or self.effect != "not_sent" or self.retry != "none"
+        ):
+            raise ValueError("a blocked request must remain explicitly unsent")
         return self
 
 

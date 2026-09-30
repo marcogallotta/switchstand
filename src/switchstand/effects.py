@@ -7,7 +7,16 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .core import Provider, ProviderError, State, UnknownEffect
 from .grant_state import GrantState
-from .grants import EffectReceipt, GuardOutcome, PrincipalContext, ProtectedAppend, WorkGrant
+from .grants import (
+    EffectBlocker,
+    EffectOutcomeView,
+    EffectReceipt,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedAppend,
+    WorkGrant,
+)
+from .mutation_effect import blocked_effect_next_action
 
 
 class AppendGateway:
@@ -61,8 +70,21 @@ class AppendGateway:
                         return outcome
                     if outcome.operation_id == request.operation_id:
                         return self.guard(request, "denied", "operation_identity_conflict")
-                    return self.guard(request, "unknown", "target_has_unresolved_effect",
-                                      possible_send=True)
+                    assert outcome.operation_id is not None and outcome.work_id is not None
+                    return self.guard(
+                        request, "unknown", "target_has_unresolved_effect",
+                    ).model_copy(update={
+                        "next_action": blocked_effect_next_action(outcome.operation),
+                        "blocked_by": EffectBlocker(
+                            operation=outcome.operation,
+                            operation_id=outcome.operation_id,
+                            work_id=outcome.work_id,
+                            outcome=EffectOutcomeView(
+                                status=outcome.status, reason=outcome.reason,
+                                effect=outcome.effect, retry=outcome.retry,
+                            ),
+                        ),
+                    })
                 handle = await self.state.get(request.work_id)
                 if handle is None:
                     return self.guard(request, "denied", "work_not_bound")

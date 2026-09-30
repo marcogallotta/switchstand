@@ -346,7 +346,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert {t.name for t in tools} == {
             "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
-            "work_create", "work_update", "work_relate", "message_send", "message_pending",
+            "work_create", "work_update", "work_relate", "effect_reconcile",
+            "message_send", "message_pending",
             "message_receive", "message_recover", "message_result_send", "message_disposition",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
@@ -392,6 +393,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
         assert "gid" not in str(relation).lower()
+        recovery = next(tool for tool in tools if tool.name == "effect_reconcile")
+        assert set(recovery.input_schema["properties"]) == {"api_version", "operation_id"}
+        assert "patch" not in str(recovery.input_schema).lower()
+        assert "work_id" not in recovery.input_schema["properties"]
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
         resolved = await client.call_tool(

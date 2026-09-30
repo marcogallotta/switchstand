@@ -155,6 +155,19 @@ and durable prepared intent before a possible send. Create, update, and relation
 only through their explicit provider recovery or readback paths; append has no equivalent recovery
 search and can retain an unresolved `UNKNOWN` as the durable barrier. `UNKNOWN` means a send may have
 happened or recovery state is unreadable; it is not permission to create a new operation and resend.
+When that barrier blocks a later authorized request, the later request remains explicitly `not_sent`
+and names the older blocking operation. Update and relation gateways verify the caller's current
+grant, write access, operation, version, and qualification before disclosing that blocker; denied
+callers receive no blocking-operation detail. `effect_reconcile` accepts only that OperationId, loads the durable
+provider-neutral scalar-update intent internally, requires the same authenticated principal and
+a current grant for the exact work and operation, and uses the existing operation-specific readback
+path. Its inspection omits provider identifiers, principal keys, and qualification internals. It can
+confirm the existing update or preserve `UNKNOWN`; relation and append recovery remain unsupported.
+Blocker guidance therefore points to `effect_reconcile` only for scalar updates and directs relation
+or append blockers to trusted operator adjudication without resend. It cannot retire, release, or
+overwrite an unresolved effect, including an orphan whose stored intent does not match the provider.
+Such adjudication remains an
+unimplemented trusted-operator product decision.
 An applied result requires the operation's authoritative provider readback to match the intended
 change. Changes to provider relation behavior therefore normally require coordinated edits to the
 provider implementation, the relation gateway contract only when its provider-neutral semantics
