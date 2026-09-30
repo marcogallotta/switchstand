@@ -6,7 +6,12 @@ from pydantic import ValidationError
 
 from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import (PROJECTS, REVIEW_INTAKE_PROJECT, REVIEW_INTAKE_SECTION, AsanaProvider)
+from switchstand.provider import (
+    PROJECTS,
+    REVIEW_INTAKE_PROJECT,
+    REVIEW_INTAKE_SECTION,
+    AsanaProvider,
+)
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
@@ -218,6 +223,15 @@ async def test_review_intake_project_is_add_only_not_general_admission():
                 {"project": REVIEW_INTAKE_PROJECT, "section": REVIEW_INTAKE_SECTION},
             ),
         ]
+
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "add",
+                    project_gid=REVIEW_INTAKE_PROJECT, section_gid=SECTION,
+                ),
+            )
 
         with pytest.raises(ProviderError):
             await provider.update_relation(
