@@ -99,7 +99,29 @@ async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effe
     )
     assert blocked.blocked_by is not None
     assert blocked.blocked_by.operation_id == first.operation_id
+    assert "No ordinary exact recovery exists" in blocked.next_action
     assert provider.relation_sends == 1
+
+    grants.grant = selected.model_copy(update={
+        "operations": frozenset({"work_update"}),
+        "relation_qualification": None,
+    })
+    unauthorized = await gateway.update(
+        PRINCIPAL,
+        request(selected, RelationPatch(kind="assignee", action="clear")),
+    )
+    assert unauthorized.reason == "operation_or_work_not_granted"
+    assert unauthorized.blocked_by is None
+    assert str(first.operation_id) not in unauthorized.model_dump_json()
+
+    grants.grant = None
+    ungranted = await gateway.update(
+        PRINCIPAL,
+        request(selected, RelationPatch(kind="assignee", action="clear")),
+    )
+    assert ungranted.reason == "no_current_grant"
+    assert ungranted.blocked_by is None
+    assert str(first.operation_id) not in ungranted.model_dump_json()
 
 
 async def test_relation_gateway_resumes_partial_move_under_same_operation_id():

@@ -302,6 +302,7 @@ async def test_ambiguous_send_blocks_new_id_changed_payload_and_other_principal(
     assert blocked.blocked_by is not None
     assert blocked.blocked_by.operation_id == req.operation_id
     assert blocked.blocked_by.outcome.effect == "unknown"
+    assert "No ordinary exact recovery exists" in blocked.next_action
     another = selected.principal.model_copy(update={"subject": str(uuid4())})
     other_grant = selected.model_copy(update={"principal": another, "id": uuid4()})
     await restarted.issue(other_grant, None)

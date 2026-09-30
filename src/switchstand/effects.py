@@ -16,6 +16,7 @@ from .grants import (
     ProtectedAppend,
     WorkGrant,
 )
+from .mutation_effect import blocked_effect_next_action
 
 
 class AppendGateway:
@@ -73,9 +74,7 @@ class AppendGateway:
                     return self.guard(
                         request, "unknown", "target_has_unresolved_effect",
                     ).model_copy(update={
-                        "next_action": (
-                            "Use blocked_by's supported exact recovery; this request was not sent."
-                        ),
+                        "next_action": blocked_effect_next_action(outcome.operation),
                         "blocked_by": EffectBlocker(
                             operation=outcome.operation,
                             operation_id=outcome.operation_id,

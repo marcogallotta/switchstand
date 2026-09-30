@@ -37,6 +37,18 @@ class PreparedMutation:
 Prepare = Callable[[WorkGrant, str], Awaitable[PreparedMutation | GuardOutcome]]
 
 
+def blocked_effect_next_action(operation: str) -> str:
+    """Describe only recovery that the ordinary API actually supports."""
+    if operation == "work_update":
+        return (
+            "Use effect_reconcile with blocked_by.operation_id; this request was not sent."
+        )
+    return (
+        f"No ordinary exact recovery exists for the blocking {operation} effect; do not "
+        "resend or start a new effect. Escalate for trusted operator adjudication."
+    )
+
+
 async def run_update_or_relation(
     grants: GrantState,
     principal: PrincipalContext,
@@ -64,26 +76,6 @@ async def run_update_or_relation(
                     return record.outcome
                 return await reconcile(record)
 
-            blocked = await grants.previous(request.operation_id, request.work_id)
-            if blocked is not None:
-                outcome = blocked[2]
-                assert outcome.operation_id is not None and outcome.work_id is not None
-                return guard(
-                    "unknown", "target_has_unresolved_effect", False,
-                ).model_copy(update={
-                    "next_action": (
-                        "Use blocked_by's supported exact recovery; this request was not sent."
-                    ),
-                    "blocked_by": EffectBlocker(
-                        operation=outcome.operation,
-                        operation_id=outcome.operation_id,
-                        work_id=outcome.work_id,
-                        outcome=EffectOutcomeView(
-                            status=outcome.status, reason=outcome.reason,
-                            effect=outcome.effect, retry=outcome.retry,
-                        ),
-                    ),
-                })
             if grant is None or grant.principal != principal or not grant.current():
                 return guard("denied", "no_current_grant", False)
             if not grant.can_write(request.work_id) or operation not in grant.operations:
@@ -97,6 +89,25 @@ async def run_update_or_relation(
                 or (principal.assurance == "test") != qualification.startswith("test:")
             ):
                 return guard("denied", qualification_denial, False)
+
+            blocked = await grants.previous(request.operation_id, request.work_id)
+            if blocked is not None:
+                outcome = blocked[2]
+                assert outcome.operation_id is not None and outcome.work_id is not None
+                return guard(
+                    "unknown", "target_has_unresolved_effect", False,
+                ).model_copy(update={
+                    "next_action": blocked_effect_next_action(outcome.operation),
+                    "blocked_by": EffectBlocker(
+                        operation=outcome.operation,
+                        operation_id=outcome.operation_id,
+                        work_id=outcome.work_id,
+                        outcome=EffectOutcomeView(
+                            status=outcome.status, reason=outcome.reason,
+                            effect=outcome.effect, retry=outcome.retry,
+                        ),
+                    ),
+                })
 
             prepared = await prepare(grant, qualification)
             if isinstance(prepared, GuardOutcome):

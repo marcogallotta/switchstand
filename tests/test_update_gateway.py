@@ -169,6 +169,7 @@ async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resen
     assert blocked.operation_id == later.operation_id and blocked.blocked_by is not None
     assert blocked.blocked_by.operation_id == unresolved.operation_id
     assert blocked.blocked_by.outcome.effect == "unknown"
+    assert "effect_reconcile" in blocked.next_action
 
     restarted_grants = GrantState(grants.engine)
     restarted_update = UpdateGateway(gateway.state, restarted_grants, gateway.providers)
@@ -184,6 +185,12 @@ async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resen
         "id": uuid4(), "version": 2, "operations": frozenset({"work_get"}),
     })
     await grants.issue(denied_grant, 1)
+    unauthorized = await gateway.update(
+        principal, request(denied_grant, "r1", completed=True),
+    )
+    assert unauthorized.reason == "operation_or_work_not_granted"
+    assert unauthorized.blocked_by is None
+    assert str(unresolved.operation_id) not in unauthorized.model_dump_json()
     assert (await recovery.reconcile(principal, unresolved.operation_id)).reason == (
         "effect_recovery_not_granted"
     )
@@ -193,6 +200,13 @@ async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resen
         "operations": frozenset({"work_update"}),
     })
     await grants.issue(wrong_work, 2)
+    wrong_target = request(grant, "r1", completed=True).model_copy(update={
+        "grant_version": wrong_work.version,
+    })
+    ungranted_target = await gateway.update(principal, wrong_target)
+    assert ungranted_target.reason == "operation_or_work_not_granted"
+    assert ungranted_target.blocked_by is None
+    assert str(unresolved.operation_id) not in ungranted_target.model_dump_json()
     assert (await recovery.reconcile(principal, unresolved.operation_id)).reason == (
         "effect_recovery_not_granted"
     )
