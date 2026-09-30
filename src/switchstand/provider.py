@@ -731,7 +731,10 @@ class AsanaProvider:
                 and patch.project_gid == REVIEW_INTAKE_PROJECT
                 and patch.section_gid == REVIEW_INTAKE_SECTION
             )
-            if patch.project_gid not in self._admission_projects and not intake_add:
+            if patch.project_gid == REVIEW_INTAKE_PROJECT:
+                if not intake_add:
+                    raise ProviderError("placement project denied")
+            elif patch.project_gid not in self._admission_projects:
                 raise ProviderError("placement project denied")
             if self._test_project is not None and patch.action == "remove":
                 raise ProviderError("test-only placement removal denied")
