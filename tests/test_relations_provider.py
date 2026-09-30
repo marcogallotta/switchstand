@@ -4,9 +4,14 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switchstand.core import ProviderRelation, UnknownEffect
+from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import PROJECTS, AsanaProvider
+from switchstand.provider import (
+    PROJECTS,
+    REVIEW_INTAKE_PROJECT,
+    REVIEW_INTAKE_SECTION,
+    AsanaProvider,
+)
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
@@ -116,6 +121,55 @@ async def test_unprobed_provider_relations_send_once_and_exact_readback(subject)
         await provider.update_relation(TASK, relation)
         assert len(boundary.calls) == before + 1
         assert await provider.relation_matches(TASK, relation)
+
+
+async def test_exact_review_intake_registration_and_readback():
+    boundary = Boundary()
+    boundary.tasks[TASK]["memberships"][0]["project"]["gid"] = PROJECTS[0]
+    relation = ProviderRelation(
+        "placement", "add", project_gid=REVIEW_INTAKE_PROJECT,
+        section_gid=REVIEW_INTAKE_SECTION,
+    )
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client)
+        await provider.update_relation(TASK, relation)
+        assert boundary.calls == [(
+            "POST", f"/api/1.0/tasks/{TASK}/addProject",
+            {"project": REVIEW_INTAKE_PROJECT, "section": REVIEW_INTAKE_SECTION},
+        )]
+        assert await provider.relation_matches(TASK, relation)
+        assert REVIEW_INTAKE_PROJECT not in provider._admission_projects
+
+
+@pytest.mark.parametrize("action,section", [
+    ("add", None), ("add", SECTION),
+    ("move", REVIEW_INTAKE_SECTION), ("remove", None),
+])
+@pytest.mark.parametrize("test_only", [False, True])
+async def test_review_intake_other_writes_are_denied_before_send(action, section, test_only):
+    boundary = Boundary()
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, PROJECT, test_only=test_only)
+        relation = ProviderRelation(
+            "placement", action, project_gid=REVIEW_INTAKE_PROJECT,
+            section_gid=section,
+        )
+        with pytest.raises(ProviderError):
+            await provider.update_relation(TASK, relation)
+        assert boundary.calls == []
+
+
+@pytest.mark.parametrize("test_only", [False, True])
+async def test_review_intake_cannot_be_configured_as_a_test_project(test_only):
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=Boundary(),
+    ) as client:
+        with pytest.raises(ValueError, match="invalid test project GID"):
+            AsanaProvider(client, REVIEW_INTAKE_PROJECT, test_only=test_only)
 
 
 async def test_dependency_readback_exhausts_pages_before_proving_presence_or_absence(subject):
