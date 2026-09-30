@@ -164,8 +164,11 @@ delivery design.
 - One event cannot smuggle raw instructions around the current work and authority model.
 - Producer authentication establishes the source of an occurrence, not permission for the eventual
   agent effect.
-- STOP/CANCEL, incident suspension, and an operator disable must prevent new deliveries while
-  preserving pending truth for deliberate recovery.
+- A plain STOP pauses the affected new Wakeful action/delivery and causes the current owner to
+  listen and re-ground. It does not terminate workers or erase pending events. CANCEL or STOP WORK
+  explicitly targets work/delivery for best-effort termination. A global Wakeful disable is a
+  separate explicit operator control that suspends all new delivery while preserving pending truth
+  for deliberate recovery.
 - Secrets are supplied by the host/adapter and never stored in event payloads or status views.
 
 ## Routing and configuration
@@ -258,8 +261,9 @@ is not necessary for that round to ingest every source or provide a polished UI.
 
 1. **Feedback adapter slice:** synthetic producer, existing outbox, one disposable Codex adapter,
    one disposable Claude adapter, bounded status, no production source or authority.
-2. **Real-source pilot:** one reversible source chosen after feedback, with canonical readback and
-   observable delivery lifecycle. Do not bundle all six source classes.
+2. **Real-source pilot:** one reversible source selected by explicit post-feedback product choice,
+   with canonical readback and observable delivery lifecycle. The stage ordering does not preselect
+   that source. Do not bundle all six source classes.
 3. **Source expansion:** add message, review, agent, audit, and CI producers individually with
    source-specific replay/security tests.
 4. **Operational activation:** reviewed credentials, service/scheduler ownership, monitoring,
@@ -294,8 +298,8 @@ chooses them:
    short digest/window?
 2. **Ownership:** which events broadcast to multiple agents, and which require one durable
    claim/ack owner? What happens when the claimant dies?
-3. **Service levels:** target latency per class; retry/backoff horizon; when and how failure
-   escalates to Marco; and when an event may be retired.
+3. **Service levels:** target latency per class; retry/backoff horizon; and when and how failure
+   escalates to Marco.
 4. **Wake without authority:** should the agent only record `no_current_authority`, notify Marco,
    or be allowed to request authority through an existing bounded process?
 5. **Operator surface:** is a CLI/status document enough initially, or is a live UI/MCP status
@@ -303,6 +307,15 @@ chooses them:
 6. **Delivery and credentials:** which supported Codex and Claude resume/start mechanisms are
    acceptable, where their target/session bindings live, and how credentials are provisioned,
    rotated, and revoked?
+7. **Retention:** how long must events, attempts, dispositions, and source classes remain available;
+   which classes require different durations; and what evidence may be compacted while preserving
+   exact identity and outcome truth?
+8. **Dead-letter and retirement:** whether a permanently undeliverable event has a separate
+   dead-letter state; who may retire pending events; after what attempts, age, or explicit decision;
+   and what status/evidence must remain after retirement. Pending events are not silently aged out.
+9. **First real-source pilot:** after the feedback round, which one reversible source should be the
+   first production-facing pilot? The specification does not default to messages, reviews, agent
+   completion, audits, or CI.
 
 ## Non-goals
 
