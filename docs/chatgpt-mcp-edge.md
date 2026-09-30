@@ -83,6 +83,43 @@ Command-line resource, local, and public URL options remain available for
 one-off checks and override values in the file. An explicit local probe URL
 must be credential-free loopback HTTP at exact path `/mcp`.
 
+## Maintenance-window replacement
+
+`scripts/switchstand-edge-maintenance` is the sole repository-owned production
+replacement transaction. It is inert until an operator invokes it with an exact
+clean candidate checkout, staged launcher and their expected digests, the current
+runtime and launcher identities, the exact FastMCP OAuth state directory, a new mode-`0700`
+attempt directory, and the edge environment file. Its host defaults are the
+existing `switchstand-chatgpt-mcp.service`, loopback Caddy admin API and public
+Switchstand origin; changing that topology is separate work.
+
+The transaction takes one fixed service-wide exclusive lock, independent of the attempt
+directory, and writes a mode-`0600` atomic receipt. It accepts only the production edge's
+canonical FastMCP state path and a candidate launcher that is byte-for-byte the current
+launcher with its single exact runtime path retargeted to the candidate. Before replacement
+and after each start, it binds the systemd `MainPID` command line to that launcher and derives
+the process's effective FastMCP path from its initial environment; a mismatch cannot pass.
+It proves the current four Caddy proxy handlers, inserts and publicly verifies a
+first-priority `503 Retry-After` route covering every Switchstand MCP, OAuth and
+metadata path, and only then stops the edge. While offline it snapshots the exact
+FastMCP state directory without parsing or logging its secret contents, atomically
+swaps the launcher, starts the edge, runs the edge doctor locally, removes the
+gate, and runs the public doctor. A definite failure rolls back according to the
+last completed phase: after a launcher swap this includes stopping the candidate,
+restoring the launcher and verifying the old edge against the current OAuth state
+before ungating. It never restores the OAuth snapshot automatically because doing
+so could discard registrations or token rotations accepted after the snapshot.
+Snapshot restoration is a separate offline corruption-recovery action with explicit
+session-loss consequences. Ambiguous mutation/readback or ambiguous rollback returns `UNKNOWN`
+and retains or reinstalls the maintenance route. An interrupt after gate insertion follows the
+same fail-closed path. Never blindly rerun an UNKNOWN;
+inspect its receipt and live gate/service/launcher state first.
+
+The retained snapshot, failed candidate state (when applicable), launcher backup,
+and receipt stay in the attempt directory as recovery evidence. The tool does not
+prepare candidates, launchers, authorization, client reinstall, or activation
+approval. Landing it does not change the running service or Caddy configuration.
+
 ## Landing, activation, and client refresh
 
 Inert landing evidence checks the pinned runtime imports, protected-resource and
