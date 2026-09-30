@@ -27,6 +27,7 @@ from switchstand.edge_maintenance import (
     _validate_launch_mapping,
     deploy,
 )
+from switchstand.edge_monitor import HttpObservation
 
 
 def config(
@@ -405,3 +406,53 @@ def test_real_caddy_gate_covers_mcp_oauth_and_metadata_paths(tmp_path: Path):
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
+    subject = config(tmp_path, public_origin="https://edge.example")
+    operations = HostOperations(subject)
+    requests = []
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp,
+        "public_addresses",
+        lambda _self, host: ("8.8.8.8",) if host == "edge.example" else (),
+    )
+
+    def request(host, address, method, path):
+        requests.append((host, address, method, path))
+        return 503, {"retry-after": "60"}, b""
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp, "request", staticmethod(request)
+    )
+    monkeypatch.setattr(
+        maintenance.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("normal host DNS must not prove Funnel"),
+    )
+
+    assert operations.public_gated()
+    assert len(requests) == len(maintenance.EDGE_PATHS)
+    assert all(call[:3] == ("edge.example", "8.8.8.8", "GET") for call in requests)
+
+
+def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path: Path):
+    subject = config(tmp_path, public_origin="https://edge.example")
+    operations = HostOperations(subject)
+    monkeypatch.setattr(maintenance, "_sha", lambda _path: subject.candidate_launcher_sha)
+    monkeypatch.setattr(operations, "_doctor", lambda *_args: True)
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp,
+        "observe",
+        lambda _self: HttpObservation(False, None),
+    )
+    assert not operations.public_ready()
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp,
+        "observe",
+        lambda _self: HttpObservation(True, 401, valid_auth_challenge=True),
+    )
+    assert operations.public_ready()
