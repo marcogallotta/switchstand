@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Any, cast
 from uuid import UUID
 
@@ -53,6 +55,9 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
 ATTACHMENT_FIELDS = "name,parent.gid"
 JSON = dict[str, Any]
+LOG = logging.getLogger(__name__)
+READ_RETRY_DELAYS = (0.1, 0.25)
+READ_RETRY_STATUSES = frozenset((408, 425, 429, *range(500, 600)))
 
 
 class _TraversalFailure(Exception):
@@ -83,15 +88,74 @@ class AsanaProvider:
             frozenset((*PROJECTS, test_project_gid)) if test_project_gid else frozenset(PROJECTS)
         )
 
+    async def _read(
+        self, operation: str, path: str, *, params: dict[str, str | int],
+    ) -> httpx.Response:
+        """Perform one idempotent read with bounded, sanitized transient recovery."""
+        for attempt in range(len(READ_RETRY_DELAYS) + 1):
+            try:
+                response = await self.client.get(path, params=params)
+            except httpx.RequestError as error:
+                if attempt < len(READ_RETRY_DELAYS):
+                    LOG.warning(
+                        "asana_provider_read_retry operation=%s failure=transport "
+                        "error_type=%s attempt=%d",
+                        operation, type(error).__name__, attempt + 1,
+                    )
+                    await asyncio.sleep(READ_RETRY_DELAYS[attempt])
+                    continue
+                LOG.error(
+                    "asana_provider_read_failed operation=%s failure=transport "
+                    "error_type=%s attempts=%d",
+                    operation, type(error).__name__, attempt + 1,
+                )
+                raise
+            if response.status_code not in READ_RETRY_STATUSES:
+                if response.status_code >= 400 and response.status_code != 404:
+                    LOG.error(
+                        "asana_provider_read_failed operation=%s failure=http_status "
+                        "status=%d attempts=%d",
+                        operation, response.status_code, attempt + 1,
+                    )
+                return response
+            if attempt < len(READ_RETRY_DELAYS):
+                LOG.warning(
+                    "asana_provider_read_retry operation=%s failure=http_status "
+                    "status=%d attempt=%d",
+                    operation, response.status_code, attempt + 1,
+                )
+                await asyncio.sleep(READ_RETRY_DELAYS[attempt])
+                continue
+            LOG.error(
+                "asana_provider_read_failed operation=%s failure=http_status "
+                "status=%d attempts=%d",
+                operation, response.status_code, attempt + 1,
+            )
+            return response
+        raise AssertionError("bounded provider read loop exhausted")
+
+    @staticmethod
+    def _invalid_read(operation: str, error: Exception) -> None:
+        LOG.error(
+            "asana_provider_read_failed operation=%s failure=response_invalid "
+            "error_type=%s",
+            operation, type(error).__name__,
+        )
+
     async def _task(self, gid: str) -> JSON | None:
         try:
-            response = await self.client.get(f"/tasks/{gid}", params={"opt_fields": OPT_FIELDS})
+            response = await self._read(
+                "task", f"/tasks/{gid}", params={"opt_fields": OPT_FIELDS},
+            )
             if response.status_code == 404: return None
             response.raise_for_status()
             data = response.json()["data"]
             if not isinstance(data, dict): raise TypeError
             return cast(JSON, data)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("task", error)
+            raise ProviderError("provider request failed") from None
+        except httpx.HTTPError:
             raise ProviderError("provider request failed") from None
 
     async def _exact_task(self, gid: str) -> JSON:
@@ -116,8 +180,8 @@ class AsanaProvider:
                 params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get(
-                    f"/tasks/{parent_gid}/subtasks", params=params
+                response = await self._read(
+                    "subtasks", f"/tasks/{parent_gid}/subtasks", params=params,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -168,15 +232,18 @@ class AsanaProvider:
 
     async def _story(self, gid: str) -> JSON | None:
         try:
-            response = await self.client.get(
-                f"/stories/{gid}", params={"opt_fields": STORY_FIELDS}
+            response = await self._read(
+                "story", f"/stories/{gid}", params={"opt_fields": STORY_FIELDS},
             )
             if response.status_code == 404: return None
             response.raise_for_status()
             data = response.json()["data"]
             if not isinstance(data, dict): raise TypeError
             return cast(JSON, data)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("story", error)
+            raise ProviderError("provider request failed") from None
+        except httpx.HTTPError:
             raise ProviderError("provider request failed") from None
 
     @staticmethod
@@ -374,7 +441,8 @@ class AsanaProvider:
                 title, notes, completed, revision, routing, self._work_context(task),
                 await self._canonical(task),
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("work", error)
             raise ProviderError("provider response invalid") from None
 
     async def list_attachments(
@@ -386,7 +454,7 @@ class AsanaProvider:
             }
             if cursor is not None:
                 params["offset"] = cursor
-            response = await self.client.get("/attachments", params=params)
+            response = await self._read("attachments", "/attachments", params=params)
             response.raise_for_status()
             payload = response.json()
             data, next_page = payload["data"], payload["next_page"]
@@ -508,7 +576,9 @@ class AsanaProvider:
         try:
             params: dict[str, str | int] = {"opt_fields": STORY_FIELDS, "limit": limit}
             if offset is not None: params["offset"] = offset
-            response = await self.client.get(f"/tasks/{provider_task_id}/stories", params=params)
+            response = await self._read(
+                "stories", f"/tasks/{provider_task_id}/stories", params=params,
+            )
             response.raise_for_status()
             payload = response.json()
             data = payload["data"]
@@ -634,8 +704,8 @@ class AsanaProvider:
                 params: dict[str, str | int] = {"limit": 100, "opt_fields": "gid"}
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get(
-                    f"/tasks/{provider_work_id}/dependencies", params=params
+                response = await self._read(
+                    "dependencies", f"/tasks/{provider_work_id}/dependencies", params=params,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -990,8 +1060,8 @@ class AsanaProvider:
                 }
                 if completed is not None:
                     params["completed"] = "true" if completed else "false"
-                response = await self.client.get(
-                    f"/workspaces/{WORKSPACE}/tasks/search", params=params
+                response = await self._read(
+                    "task_search", f"/workspaces/{WORKSPACE}/tasks/search", params=params,
                 )
             else:
                 projects = tuple(sorted(self._admission_projects))
@@ -1005,7 +1075,7 @@ class AsanaProvider:
                 }
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get("/tasks", params=params)
+                response = await self._read("tasks", "/tasks", params=params)
 
             response.raise_for_status()
             payload = response.json()
