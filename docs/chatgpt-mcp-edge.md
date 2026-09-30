@@ -237,6 +237,7 @@ Generate candidates into a new empty directory; this does not install or apply t
 ```console
 switchstand-stable-auth-host render \
   --runtime-python /absolute/runtime/bin/python \
+  --runtime-root /absolute/exact/candidate-checkout \
   --auth-environment-file /absolute/private/stable-auth.env \
   --edge-environment-file /absolute/private/delegated-edge.env \
   --internal-secret-file /absolute/private/internal.secret \
@@ -279,6 +280,34 @@ Disposable qualification proves a registered client and issued legacy
 bearer survive a relocated encrypted-state copy under the same key. Until real-client activation
 gates pass, the combined maintenance-window deployment above remains the production path.
 
+Layer 3A adds an inert `switchstand-stable-auth-deploy activate` transaction for the first
+combined-to-split cutover. It is not invoked by install, startup, or ordinary deployment. Its
+preflight binds clean current and candidate Git SHAs, exact generated assets, a candidate-source
+`PYTHONPATH`, separated secret-bearing environments, the running combined service and its OAuth
+state/database identities, and the exact combined Caddy proxy set. It then:
+
+1. installs and publicly proves a maintenance gate before stopping the combined process;
+2. proves there are no durable effects with an `unknown` outcome, makes immutable backup and
+   relocated OAuth-state copies while both possible state writers are stopped, and installs the
+   generated split units;
+3. starts stable auth first, proves the exact candidate process identity and a legacy bearer's
+   full introspection identity, then starts and locally verifies the delegated edge;
+4. atomically replaces the complete Caddy route list under the retained gate, ungates only after
+   exact readback, and runs public candidate and private-route non-exposure checks.
+
+A definite failure before public exposure stops/removes the split units, restores the exact prior
+route list, restarts and verifies the combined service, and only then removes the gate. An
+ambiguous mutation, rollback, interrupt, or post-exposure verification result returns `UNKNOWN`
+and retains or reinstalls the gate for operator reconciliation. It never automatically restores
+OAuth state; the old source remains untouched during this first cutover, and any possible
+post-exposure writes require forward repair rather than a stale-state rewind. Receipts record the
+last durable phase without secrets or exception text.
+
+This layer does not yet supply the future edge-only split deployment transaction. Production
+activation remains blocked until that Layer 3B path is independently reviewed and landed, the
+exact generated/installed assets and copied-real-state rehearsal pass, and all live reliance gates
+below are explicitly executed. Landing Layer 3A alone is inert and is not activation authority.
+
 This topology targets one host and Switchstand may remain single-host indefinitely. Multi-host
 readiness, clustering, active-active authorization, distributed locks, and a shared authorization
 database are explicit non-goals, not deferred acceptance requirements for either Layer 2 or
@@ -308,8 +337,8 @@ rewind the OAuth store after any successful token rotation.
 
 The stable-auth implementation may land only as an inert, independently reviewed change. Production
 activation additionally requires real ChatGPT and Claude authorization and refresh evidence, live
-GitHub correct-identity/wrong-identity/scope/revocation evidence, exact Caddy/private-socket routing
-and non-exposure evidence, copied-state migration and rollback rehearsal, and the ordinary
+GitHub correct-identity/wrong-identity/scope/revocation evidence, exact Caddy/private-introspection
+routing and non-exposure evidence, copied-state migration and rollback rehearsal, and the ordinary
 authenticated disposable effect/readback qualification. Until those gates pass, the maintenance
 window above remains the only production replacement path.
 

@@ -166,6 +166,7 @@ def internal_secret_receipt(path: Path) -> dict[str, str]:
 @dataclass(frozen=True, slots=True)
 class HostAssets:
     runtime_python: Path
+    runtime_root: Path
     auth_environment_file: Path
     edge_environment_file: Path
     internal_secret_file: Path
@@ -175,6 +176,7 @@ class HostAssets:
     def __post_init__(self) -> None:
         for value in (
             self.runtime_python,
+            self.runtime_root,
             self.auth_environment_file,
             self.edge_environment_file,
             self.internal_secret_file,
@@ -193,6 +195,7 @@ class HostAssets:
 
 def caddy_routes(assets: HostAssets) -> list[dict[str, Any]]:
     """Return the exact inert route candidate; private introspection is intentionally absent."""
+
     def proxy(identifier: str, port: int) -> dict[str, Any]:
         return {
             "@id": identifier,
@@ -238,6 +241,7 @@ def systemd_units(assets: HostAssets) -> dict[str, str]:
         "[Unit]\nAfter=network-online.target\nWants=network-online.target\n\n"
         "[Service]\nType=simple\n"
         f"EnvironmentFile={assets.auth_environment_file}\n"
+        + f"Environment=PYTHONPATH={assets.runtime_root}/src\n"
         + f"Environment=SWITCHSTAND_INTERNAL_CREDENTIAL_FILE={assets.internal_secret_file}\n"
         + f"Environment=SWITCHSTAND_AUTH_BIND_PORT={assets.auth_port}\n"
         + f"ExecStart={assets.runtime_python} -m switchstand.stable_auth_runtime auth\n"
@@ -248,6 +252,7 @@ def systemd_units(assets: HostAssets) -> dict[str, str]:
         "Wants=network-online.target\nRequires=switchstand-stable-auth.service\n\n"
         "[Service]\nType=simple\n"
         f"EnvironmentFile={assets.edge_environment_file}\n"
+        f"Environment=PYTHONPATH={assets.runtime_root}/src\n"
         f"Environment=SWITCHSTAND_INTERNAL_CREDENTIAL_FILE={assets.internal_secret_file}\n"
         f"Environment=SWITCHSTAND_AUTH_INTERNAL_URL=http://127.0.0.1:{assets.auth_port}\n"
         f"Environment=SWITCHSTAND_MCP_BIND_PORT={assets.edge_port}\n"
@@ -264,6 +269,12 @@ def systemd_units(assets: HostAssets) -> dict[str, str]:
 def render_assets(assets: HostAssets, output: Path) -> dict[str, str]:
     if not output.is_absolute() or not output.is_dir() or output.is_symlink():
         raise ValueError("output must be an existing absolute real directory")
+    if (
+        not assets.runtime_root.is_dir()
+        or assets.runtime_root.is_symlink()
+        or not (assets.runtime_root / "src/switchstand").is_dir()
+    ):
+        raise ValueError("runtime root must contain the Switchstand source tree")
     for environment in (assets.auth_environment_file, assets.edge_environment_file):
         try:
             metadata = environment.lstat()
@@ -278,9 +289,9 @@ def render_assets(assets: HostAssets, output: Path) -> dict[str, str]:
             raise ValueError("environment files must be owned mode-0600 regular files")
     read_internal_secret(assets.internal_secret_file)
     rendered = systemd_units(assets)
-    rendered["switchstand-split-caddy-routes.json"] = json.dumps(
-        caddy_routes(assets), indent=2, sort_keys=True
-    ) + "\n"
+    rendered["switchstand-split-caddy-routes.json"] = (
+        json.dumps(caddy_routes(assets), indent=2, sort_keys=True) + "\n"
+    )
     for name in rendered:
         target = output / name
         if target.exists() or target.is_symlink():
@@ -304,6 +315,7 @@ def run() -> None:
     rotate.add_argument("--expected-sha256", required=True)
     render = subcommands.add_parser("render")
     render.add_argument("--runtime-python", required=True, type=Path)
+    render.add_argument("--runtime-root", required=True, type=Path)
     render.add_argument("--auth-environment-file", required=True, type=Path)
     render.add_argument("--edge-environment-file", required=True, type=Path)
     render.add_argument("--internal-secret-file", required=True, type=Path)
@@ -320,6 +332,7 @@ def run() -> None:
     else:
         assets = HostAssets(
             arguments.runtime_python,
+            arguments.runtime_root,
             arguments.auth_environment_file,
             arguments.edge_environment_file,
             arguments.internal_secret_file,

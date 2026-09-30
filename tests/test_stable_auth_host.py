@@ -48,7 +48,9 @@ def _assets(tmp_path: Path, credential: Path) -> HostAssets:
     edge_env = tmp_path / "edge.env"
     auth_env.touch(mode=0o600)
     edge_env.touch(mode=0o600)
-    return HostAssets(Path("/opt/switchstand/bin/python"), auth_env, edge_env, credential)
+    runtime = tmp_path / "runtime"
+    (runtime / "src/switchstand").mkdir(parents=True)
+    return HostAssets(Path("/opt/switchstand/bin/python"), runtime, auth_env, edge_env, credential)
 
 
 def test_internal_credential_provision_rotation_and_readback_are_bounded(tmp_path: Path):
@@ -146,6 +148,8 @@ def test_rendered_units_separate_secret_bearing_auth_and_resource_edge(tmp_path:
     assert str(assets.auth_environment_file) not in edge
     assert "stable_auth_runtime auth" in auth
     assert "stable_auth_runtime edge" in edge
+    assert f"Environment=PYTHONPATH={assets.runtime_root}/src" in auth
+    assert f"Environment=PYTHONPATH={assets.runtime_root}/src" in edge
     assert "Requires=switchstand-stable-auth.service" in edge
 
     output = tmp_path / "rendered"
@@ -272,4 +276,4 @@ def test_host_assets_reject_shared_environment_file(tmp_path: Path):
     shared = tmp_path / "shared.env"
     shared.touch()
     with pytest.raises(ValueError, match="separate environment"):
-        HostAssets(Path("/bin/python"), shared, shared, tmp_path / "secret")
+        HostAssets(Path("/bin/python"), tmp_path / "runtime", shared, shared, tmp_path / "secret")
