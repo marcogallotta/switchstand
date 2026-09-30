@@ -3,7 +3,15 @@ import json
 from uuid import UUID
 
 from .contracts import WorkPatch
-from .core import Provider, ProviderError, ProviderWork, State, UnknownEffect, apply_scalar
+from .core import (
+    Provider,
+    ProviderError,
+    ProviderWork,
+    State,
+    UnknownEffect,
+    apply_scalar,
+    provider_rejection_reason,
+)
 from .grant_state import EffectRecord, GrantState
 from .grants import (
     GuardOutcome,
@@ -77,8 +85,8 @@ class UpdateGateway:
             work = await apply_scalar(self.providers[provider_name], task_gid, patch)
         except UnknownEffect:
             work = await apply_scalar(self.providers[provider_name], task_gid, patch, send=False)
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         return self._applied(principal, request, grant.id, grant.version, provider_name,
                              task_gid, qualification, work)
     async def _reconcile(self, principal: PrincipalContext, request: ProtectedUpdate,

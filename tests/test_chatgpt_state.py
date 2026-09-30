@@ -228,15 +228,27 @@ async def test_exact_operation_replay_and_distinct_later_same_text(subject):
     assert provider.sends == 2
 
 
-async def test_definite_nonapplication_does_not_suppress_authorized_recovery(subject, monkeypatch):
+@pytest.mark.parametrize(("failure", "reason"), [
+    ("invalid_request", "provider_rejected_input"),
+    ("admission_denied", "provider_admission_denied"),
+    ("authority_denied", "provider_authority_denied"),
+    ("transient", "provider_temporarily_unavailable"),
+    ("permanent", "provider_permanent_rejection"),
+    ("unspecified", "provider_rejected_send"),
+])
+async def test_definite_nonapplication_does_not_suppress_authorized_recovery(
+    subject, monkeypatch, failure, reason,
+):
     service, selected, provider = subject
     req = request(selected)
     async def reject(*args):
-        raise ProviderError("definite rejection before effect")
+        raise ProviderError("private provider detail", failure=failure)
     with monkeypatch.context() as patch:
         patch.setattr(provider, "append", reject)
         rejected = await service.append(req)
     assert rejected.status == "not_applied" and rejected.effect == "not_sent"
+    assert rejected.reason == reason
+    assert "private provider detail" not in str(rejected.model_dump())
     assert await service.append(req) == rejected
     recovered = await service.append(req.model_copy(update={"operation_id": uuid4()}))
     assert recovered.status == "ok" and recovered.receipt.text == req.text

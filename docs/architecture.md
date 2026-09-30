@@ -145,6 +145,13 @@ Asana provider reads retry only bounded transient transport, throttling, and ser
 emit sanitized internal failure classification (operation class, HTTP status or exception type, and
 attempt count) without provider identifiers, response bodies, credentials, or changing the bounded
 public `provider_error` contract. Provider writes are never retried by this read policy.
+Definite write nonapplication retains the existing provider-neutral status/effect contract and a
+closed sanitized reason: caller-invalid input, local admission denial, provider authority denial,
+provider transient rejection, provider permanent rejection, or the legacy unclassified rejection.
+The provider assigns a narrower reason only from trusted local validation or an unambiguous HTTP
+status class; it never exposes response bodies or infers precision from provider prose. An ambiguous
+transport or server outcome remains `UNKNOWN`, so diagnostics cannot weaken the effect journal or
+authorize a blind resend.
 
 The checks and recovery path are operation-specific. Append validates the bound target's canonical,
 nonterminal state and observed revision; update and relation validate a bound canonical target and

@@ -7,7 +7,7 @@ from uuid import UUID, uuid5
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .core import Provider, ProviderError, State, UnknownEffect
+from .core import Provider, ProviderError, State, UnknownEffect, provider_rejection_reason
 from .grant_state import EffectRecord, GrantState
 from .grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate
 
@@ -183,8 +183,8 @@ class CreateGateway:
                 principal, request, grant_id, grant_version, qualification, recovery_identity,
                 provider_name, parent_task_gid, project_gid,
             )
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         return await self._applied(
             principal, request, grant_id, grant_version, qualification,
             provider_name, parent_task_gid, project_gid, task_gid,
