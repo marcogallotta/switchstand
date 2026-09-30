@@ -14,6 +14,7 @@ from .wakeful import EventSeverity, WakeEvent, WakefulStore
 class EdgeCondition(StrEnum):
     HEALTHY = "healthy"
     TRANSPORT = "transport_failure"
+    SHARED_INGRESS = "shared_ingress_failure"
     OAUTH = "oauth_failure"
     PROVIDER = "provider_failure"
     FUNCTIONAL = "functional_failure"
@@ -94,6 +95,7 @@ class EdgeMonitor:
     _SUMMARIES: ClassVar[dict[EdgeCondition, str]] = {
         EdgeCondition.HEALTHY: "Authenticated edge checks recovered",
         EdgeCondition.TRANSPORT: "Edge transport is unavailable",
+        EdgeCondition.SHARED_INGRESS: "Public shared ingress is unavailable",
         EdgeCondition.OAUTH: "OAuth token exchange or refresh is failing",
         EdgeCondition.PROVIDER: "Authenticated provider read failed",
         EdgeCondition.FUNCTIONAL: "Authenticated edge read failed",
@@ -111,6 +113,7 @@ class EdgeMonitor:
         http: HttpProbe,
         functional: FunctionalProbe,
         canary: CanaryTarget | None,
+        ingress: HttpProbe | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ):
         self.monitor_id = monitor_id
@@ -119,6 +122,7 @@ class EdgeMonitor:
         self.systemd = systemd
         self.journal = journal
         self.http = http
+        self.ingress = ingress
         self.functional = functional
         self.canary = canary
         self.clock = clock
@@ -167,6 +171,15 @@ class EdgeMonitor:
         http = self.http.observe()
         if not service.active or service.main_pid <= 0 or not http.transport_ok:
             return EdgeCondition.TRANSPORT
+
+        if self.ingress is not None:
+            ingress = self.ingress.observe()
+            if (
+                not ingress.transport_ok
+                or ingress.status_code != 401
+                or not ingress.valid_auth_challenge
+            ):
+                return EdgeCondition.SHARED_INGRESS
 
         messages = "\n".join(batch.messages).casefold()
         if any(marker in messages for marker in self._OAUTH_MARKERS):

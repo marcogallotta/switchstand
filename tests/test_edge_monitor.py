@@ -64,6 +64,7 @@ def monitor(
     *,
     systemd=LIVE_SYSTEMD,
     http=HTTP_OK,
+    ingress=None,
     journal=EMPTY_JOURNAL,
     functional=FunctionalStatus.OK,
     canary=FIXED_CANARY,
@@ -77,6 +78,7 @@ def monitor(
         systemd=FixedSystemd(systemd),
         journal=journal_probe,
         http=FixedHttp(http),
+        ingress=None if ingress is None else FixedHttp(ingress),
         functional=functional_probe,
         canary=canary,
         clock=lambda: NOW,
@@ -181,6 +183,22 @@ def test_failure_classes_remain_distinct(tmp_path, systemd, http, functional, ex
     assert result.emitted
 
 
+def test_external_ingress_failure_is_distinct_from_healthy_local_edge(tmp_path):
+    instance, _, functional = monitor(
+        tmp_path,
+        ingress=HttpObservation(False, None),
+    )
+
+    result = instance.run_once(now=NOW)
+
+    assert result.condition is EdgeCondition.SHARED_INGRESS
+    assert result.emitted
+    assert functional.targets == []
+    event = instance.store.pending()[0]
+    assert event.kind == "edge.shared_ingress_failure"
+    assert event.summary == "Public shared ingress is unavailable"
+
+
 def test_missing_fixed_canary_is_missing_capability_without_probe(tmp_path):
     instance, _, functional = monitor(tmp_path, canary=None)
 
@@ -220,6 +238,7 @@ def test_concurrent_cycles_have_one_writer_and_cannot_regress_cursor(tmp_path):
         systemd=FixedSystemd(LIVE_SYSTEMD),
         journal=journal,
         http=FixedHttp(HTTP_OK),
+        ingress=None,
         functional=FixedFunctional(FunctionalStatus.OK),
         canary=FIXED_CANARY,
         clock=lambda: NOW,

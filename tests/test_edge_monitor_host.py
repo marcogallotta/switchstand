@@ -114,6 +114,56 @@ def test_http_probe_checks_local_and_public_challenge_and_metadata(monkeypatch):
     assert len(seen) == 4
 
 
+def test_external_ingress_probe_forces_public_dns_addresses(monkeypatch):
+    resource = "https://edge.example/mcp"
+    metadata = "https://edge.example/.well-known/oauth-protected-resource/mcp"
+    requests = []
+
+    def resolve(request):
+        assert request.url.host == "resolver.example"
+        return httpx.Response(200, json={"Answer": [
+            {"type": 1, "data": "203.0.113.1"},
+            {"type": 1, "data": "8.8.8.8"},
+            {"type": 5, "data": "ignored.example"},
+        ]})
+
+    def request(hostname, address, method, path):
+        requests.append((hostname, address, method, path))
+        if method == "POST":
+            return 401, f'Bearer resource_metadata="{metadata}"', b""
+        return 200, "", json.dumps({"resource": resource}).encode()
+
+    monkeypatch.setattr(host.httpx, "Client", client_with(resolve))
+    monkeypatch.setattr(host.ExternalIngressHttp, "_request", staticmethod(request))
+
+    result = host.ExternalIngressHttp(
+        resource, resource, "https://resolver.example/dns-query"
+    ).observe()
+
+    assert result == host.HttpObservation(True, 401, valid_auth_challenge=True)
+    assert requests == [
+        ("edge.example", "8.8.8.8", "POST", "/mcp"),
+        ("edge.example", "8.8.8.8", "GET", "/.well-known/oauth-protected-resource/mcp"),
+    ]
+
+
+def test_external_ingress_probe_rejects_split_dns_only_result(monkeypatch):
+    def resolve(_request):
+        return httpx.Response(200, json={"Answer": [
+            {"type": 1, "data": "100.100.100.100"},
+        ]})
+
+    monkeypatch.setattr(host.httpx, "Client", client_with(resolve))
+
+    result = host.ExternalIngressHttp(
+        "https://edge.example/mcp",
+        "https://edge.example/mcp",
+        "https://resolver.example/dns-query",
+    ).observe()
+
+    assert result == host.HttpObservation(False, None)
+
+
 @pytest.mark.parametrize(
     ("structured", "expected"),
     [
@@ -190,7 +240,7 @@ def test_spoofed_endpoint_cannot_read_or_send_bearer(
         fixture=None, bearer_token_file=token,
         work_id="a3b2421c-7a04-41f7-b868-9880e460a7a0",
         local_url=local_url, public_url=public_url, resource_url=resource,
-        service="edge.service",
+        service="edge.service", public_dns_url=host.PUBLIC_DNS_URL,
     )
 
     result = host._check(args, tmp_path / "state")
