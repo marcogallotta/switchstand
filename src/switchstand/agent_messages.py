@@ -47,13 +47,14 @@ class AgentMessageSubmitResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
     message: AgentPendingMessage | None = None
     reason: str | None = None
+    next_action: str | None = None
 
     @model_validator(mode="after")
     def exact_shape(self):
         if self.status == "ok":
             if self.message is None or self.reason is not None:
                 raise ValueError("successful submit requires only message")
-        elif self.message is not None or self.reason is None:
+        elif self.message is not None or self.reason is None or self.next_action is not None:
             raise ValueError("failed submit requires only reason")
         return self
 

@@ -56,6 +56,9 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     session[0] = "chat-a"
     sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "review"})
     assert sent.status == "ok" and sent.message is not None
+    assert sent.next_action is not None
+    assert "bounded wait" in sent.next_action
+    assert "hourly Scheduled watch" in sent.next_action
     delivery = sent.message.delivery_id
 
     # A fresh tool/server binding models a new MCP transport and process with the same chat metadata.
@@ -71,6 +74,7 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
         "1", delivery, result_id, {"result": "pass"}
     )
     assert reply.status == "ok"
+    assert reply.next_action is None
     assert (await restarted["agent_message_disposition"]("1", delivery, result_id)).state \
         == "DISPOSITIONED"
 
@@ -132,6 +136,7 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     session[0] = "chat-b"
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
+    assert stale.next_action is None
 
 
 async def test_takeover_atomically_fences_every_inflight_message_operation(
