@@ -184,6 +184,28 @@ async def test_test_only_provider_cannot_escape_to_review_intake(subject):
         )
 
 
+async def test_review_intake_stays_add_only_even_if_pre_admitted():
+    boundary = Boundary()
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, REVIEW_INTAKE_PROJECT)
+        assert REVIEW_INTAKE_PROJECT in provider._admission_projects
+
+        for action in ("move", "remove"):
+            with pytest.raises(ProviderError):
+                await provider.update_relation(
+                    TASK,
+                    ProviderRelation(
+                        "placement", action,
+                        project_gid=REVIEW_INTAKE_PROJECT,
+                        section_gid=(
+                            REVIEW_INTAKE_SECTION if action == "move" else None
+                        ),
+                    ),
+                )
+
+
 async def test_dependency_readback_exhausts_pages_before_proving_presence_or_absence(subject):
     provider, boundary = subject
     boundary.dependencies = {str(1000 + value) for value in range(150)}
