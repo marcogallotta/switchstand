@@ -33,10 +33,12 @@ from .contracts import (
 from .core import Controller, Provider, ProviderError, State
 from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
+from .effect_recovery import EffectRecovery
 from .effects import AppendGateway
 from .grant_state import GrantState
 from .grants import (
     EffectReceipt,
+    EffectRecoveryResult,
     GrantedWorkResult,
     GrantResult,
     GuardOutcome,
@@ -91,6 +93,9 @@ class ChatGPTService:
         self.create_gateway = CreateGateway(state, self.admission_grants, providers)
         self.update_gateway = UpdateGateway(state, self.admission_grants, providers)
         self.relation_gateway = RelationGateway(state, self.admission_grants, providers)
+        self.effect_recovery = EffectRecovery(
+            self.admission_grants, self.update_gateway,
+        )
         self.messages = messages
         self.required_results = required_results
         # Only exact source methods use this controller; its dummy authority is
@@ -392,6 +397,14 @@ class ChatGPTService:
                 request, "denied", "authenticated_principal_required"
             )
         return await self.relation_gateway.update(principal, request)
+
+    async def reconcile_effect(self, operation_id: UUID) -> EffectRecoveryResult:
+        principal = await self.principal()
+        if principal is None:
+            return EffectRecoveryResult(
+                status="denied", reason="authenticated_principal_required",
+            )
+        return await self.effect_recovery.reconcile(principal, operation_id)
 
     @staticmethod
     def _result_guard(

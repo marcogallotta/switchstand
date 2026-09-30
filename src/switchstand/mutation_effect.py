@@ -9,7 +9,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .core import ProviderError
 from .grant_state import EffectRecord, GrantState
-from .grants import GuardOutcome, PrincipalContext, WorkGrant
+from .grants import (
+    EffectBlocker,
+    EffectOutcomeView,
+    GuardOutcome,
+    PrincipalContext,
+    WorkGrant,
+)
 
 
 class MutationRequest(Protocol):
@@ -60,7 +66,24 @@ async def run_update_or_relation(
 
             blocked = await grants.previous(request.operation_id, request.work_id)
             if blocked is not None:
-                return guard("unknown", "target_has_unresolved_effect", True)
+                outcome = blocked[2]
+                assert outcome.operation_id is not None and outcome.work_id is not None
+                return guard(
+                    "unknown", "target_has_unresolved_effect", False,
+                ).model_copy(update={
+                    "next_action": (
+                        "Use blocked_by's supported exact recovery; this request was not sent."
+                    ),
+                    "blocked_by": EffectBlocker(
+                        operation=outcome.operation,
+                        operation_id=outcome.operation_id,
+                        work_id=outcome.work_id,
+                        outcome=EffectOutcomeView(
+                            status=outcome.status, reason=outcome.reason,
+                            effect=outcome.effect, retry=outcome.retry,
+                        ),
+                    ),
+                })
             if grant is None or grant.principal != principal or not grant.current():
                 return guard("denied", "no_current_grant", False)
             if not grant.can_write(request.work_id) or operation not in grant.operations:

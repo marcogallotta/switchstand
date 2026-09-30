@@ -94,7 +94,11 @@ async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effe
         PRINCIPAL,
         request(selected, RelationPatch(kind="assignee", action="set", assignee_gid="42")),
     )
-    assert blocked.reason == "target_has_unresolved_effect"
+    assert (blocked.reason, blocked.effect, blocked.retry) == (
+        "target_has_unresolved_effect", "not_sent", "none",
+    )
+    assert blocked.blocked_by is not None
+    assert blocked.blocked_by.operation_id == first.operation_id
     assert provider.relation_sends == 1
 
 

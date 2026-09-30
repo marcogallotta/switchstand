@@ -100,6 +100,12 @@ class UpdateGateway:
             await self.grants.finish(outcome)
         return outcome
 
+    async def reconcile_record(
+        self, principal: PrincipalContext, request: ProtectedUpdate, record: EffectRecord,
+    ) -> GuardOutcome:
+        """Read back one already-prepared exact intent; never send the scalar update."""
+        return await self._reconcile(principal, request, record)
+
     def _applied(self, principal: PrincipalContext, request: ProtectedUpdate, grant_id: UUID,
                  grant_version: int, provider_name: str, task_gid: str, qualification: str,
                  work: ProviderWork | None) -> GuardOutcome:

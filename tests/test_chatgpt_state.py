@@ -293,15 +293,22 @@ async def test_ambiguous_send_blocks_new_id_changed_payload_and_other_principal(
         assert first.status == "unknown" and first.effect == "unknown" and first.receipt is None
     restarted = GrantState(service.grants.engine)
     gateway = AppendGateway(service.state, restarted, service.providers)
-    for retry in (req, request(selected, text="changed payload", observed_revision=provider.revision)):
-        result = await gateway.append(selected.principal, retry)
-        assert result.status == "unknown" and result.retry == "reconcile"
+    replay = await gateway.append(selected.principal, req)
+    assert replay.status == "unknown" and replay.retry == "reconcile"
+    later = request(selected, text="changed payload", observed_revision=provider.revision)
+    blocked = await gateway.append(selected.principal, later)
+    assert (blocked.status, blocked.effect, blocked.retry) == ("unknown", "not_sent", "none")
+    assert blocked.operation_id == later.operation_id
+    assert blocked.blocked_by is not None
+    assert blocked.blocked_by.operation_id == req.operation_id
+    assert blocked.blocked_by.outcome.effect == "unknown"
     another = selected.principal.model_copy(update={"subject": str(uuid4())})
     other_grant = selected.model_copy(update={"principal": another, "id": uuid4()})
     await restarted.issue(other_grant, None)
     result = await gateway.append(another, request(other_grant, text="another caller",
                                                    observed_revision=provider.revision))
-    assert result.status == "unknown" and provider.sends == 1
+    assert result.effect == "not_sent" and result.blocked_by is not None
+    assert result.blocked_by.operation_id == req.operation_id and provider.sends == 1
 
 
 async def test_intent_is_committed_before_send_and_two_callers_send_once(subject):

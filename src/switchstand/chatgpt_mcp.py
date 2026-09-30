@@ -36,6 +36,7 @@ from .contracts import (
 )
 from .durable_agent_project import BootstrapError, run_mcp_bootstrap
 from .grants import (
+    EffectRecoveryResult,
     GrantedWorkResult,
     GuardOutcome,
     PrincipalContext,
@@ -114,6 +115,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "work_create",
     "work_update",
     "work_relate",
+    "effect_reconcile",
     "required_result_save",
     "message_send",
     "message_receive",
@@ -459,6 +461,15 @@ def build_ordinary_tools(
             patch=patch.internal(),
         ))
         audited("work_relate", str(work_id), result.status)
+        return result
+
+    async def effect_reconcile(
+        api_version: Literal["1"], operation_id: UUID,
+    ) -> EffectRecoveryResult:
+        """Reconcile stored UNKNOWN scalar update by identity without a replacement payload."""
+        del api_version
+        result = await service.reconcile_effect(operation_id)
+        audited("effect_reconcile", str(operation_id), result.status)
         return result
 
     async def required_result_save(
@@ -1037,6 +1048,7 @@ def build_ordinary_tools(
         ("work_create", work_create),
         ("work_update", work_update),
         ("work_relate", work_relate),
+        ("effect_reconcile", effect_reconcile),
         ("required_result_save", required_result_save),
         *build_message_tools(service, audit),
         ("message_receive", message_receive),

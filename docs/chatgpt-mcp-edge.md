@@ -35,6 +35,11 @@ operator utility's narrower contract, including an operator-inspected UNKNOWN
 after a possible write. Trusted grant issuance is not an MCP tool. Provider
 credentials and grant state stay behind the service boundary.
 
+`effect_reconcile` is the provider-neutral recovery route for an already-prepared UNKNOWN scalar
+update. It accepts only the durable OperationId, reconstructs no caller-supplied mutation,
+and returns a sanitized intent/readback projection. A mismatch remains UNKNOWN and continues to
+block the work; the ordinary edge exposes no retirement or release operation.
+
 Raw `source_*` tools are not part of the ordinary current surface. They remain
 available only on bounded managed/recovery compatibility routes described in
 [MCP work, history, and compatibility](source-history-feedback.md). New ordinary
