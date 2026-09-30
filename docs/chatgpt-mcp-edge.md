@@ -272,9 +272,10 @@ validated absolute collection-directory field, and records raw source/target plu
 logical checksums in a new mode-0600 receipt. A failed copy leaves its target as evidence and emits
 no success receipt. The proof covers the repository-managed units, not unmanaged processes.
 
-Rollback never silently rewinds OAuth state. `rollback-receipt` checks the supplied current raw
-tree digest and records `preserve-current-oauth-state`; restoring a backup is a separate explicit
-absent-target operation. Disposable qualification proves a registered client and issued legacy
+Rollback never silently rewinds OAuth state. `rollback-receipt` proves both writers remain inactive
+and the supplied current raw tree digest remains stable across two reads before it records
+`preserve-current-oauth-state`; restoring a backup is a separate explicit absent-target operation.
+Disposable qualification proves a registered client and issued legacy
 bearer survive a relocated encrypted-state copy under the same key. Until real-client activation
 gates pass, the combined maintenance-window deployment above remains the production path.
 

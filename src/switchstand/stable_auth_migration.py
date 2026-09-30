@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
@@ -246,6 +247,33 @@ def _assert_distinct(source: Path, target: Path) -> None:
         raise MigrationFailure("copy source must not be inside the target")
 
 
+def _resolved_candidate(path: Path, label: str) -> Path:
+    if not path.is_absolute() or path.is_symlink():
+        raise MigrationFailure(f"{label} must be absolute and symlink-free")
+    try:
+        return path.resolve(strict=False)
+    except OSError as exc:
+        raise MigrationFailure(f"{label} cannot be resolved") from exc
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
+
+
+def _preflight_control_paths(
+    *, roots: tuple[Path, ...], receipt_path: Path, lock_path: Path
+) -> None:
+    resolved_roots = tuple(_resolved_candidate(root, "state path") for root in roots)
+    receipt = _resolved_candidate(receipt_path, "receipt path")
+    lock = _resolved_candidate(lock_path, "migration lock path")
+    if _paths_overlap(receipt, lock) or any(
+        _paths_overlap(control, root)
+        for control in (receipt, lock)
+        for root in resolved_roots
+    ):
+        raise MigrationFailure("state and control paths must not overlap")
+
+
 def _receipt_preflight(path: Path) -> None:
     if not path.is_absolute() or path.is_symlink():
         raise MigrationFailure("receipt path must be absolute and symlink-free")
@@ -325,24 +353,46 @@ def _key_fingerprint(secret: str) -> str:
 def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
     _receipt_preflight(path)
     encoded = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
+    temporary: Path | None = None
+    published = False
     try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-            0o600,
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
         )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(descriptor, encoded[offset:])
+                if written == 0:
+                    raise OSError("short receipt write")
+                offset += written
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.link(temporary, path, follow_symlinks=False)
+        published = True
+        temporary.unlink()
+        temporary = None
+        parent_descriptor = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
     except OSError as exc:
-        raise MigrationFailure("receipt target must not already exist") from exc
-    try:
-        offset = 0
-        while offset < len(encoded):
-            written = os.write(descriptor, encoded[offset:])
-            if written == 0:
-                raise OSError("short receipt write")
-            offset += written
-        os.fsync(descriptor)
+        if published:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise MigrationFailure("receipt publication failed") from exc
     finally:
-        os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def copy_with_receipt(
@@ -359,6 +409,9 @@ def copy_with_receipt(
     """Copy an offline state tree to an absent target and bind an immutable receipt."""
     if kind not in {"backup", "migration", "restore"}:
         raise MigrationFailure("unsupported state-copy kind")
+    _preflight_control_paths(
+        roots=(source, target), receipt_path=receipt_path, lock_path=lock_path
+    )
     _assert_distinct(source, target)
     with _migration_lock(lock_path):
         _receipt_preflight(receipt_path)
@@ -403,20 +456,28 @@ def rollback_receipt(
     clock: Callable[[], float] = time.time,
 ) -> dict[str, object]:
     """Prove rollback preserves current OAuth state; never restore a snapshot."""
+    _preflight_control_paths(
+        roots=(state,), receipt_path=receipt_path, lock_path=lock_path
+    )
     with _migration_lock(lock_path):
         _receipt_preflight(receipt_path)
         signing_material_sha256 = _key_fingerprint(signing_material)
-        writer_state = _writers_stopped(probe)
-        manifest = state_manifest(state)
-        if manifest.tree_sha256 != expected_tree_sha256:
+        writer_state_before = _writers_stopped(probe)
+        before = state_manifest(state)
+        if before.tree_sha256 != expected_tree_sha256:
             raise MigrationFailure("current OAuth state does not match the rollback expectation")
+        after = state_manifest(state)
+        writer_state_after = _writers_stopped(probe)
+        if before != after:
+            raise MigrationFailure("current OAuth state changed during rollback verification")
         receipt: dict[str, object] = {
             "schema": "switchstand.stable-auth-rollback.v1",
             "created_at": int(clock()),
             "state": str(state),
-            "manifest": asdict(manifest),
+            "manifest": asdict(after),
             "signing_material_sha256": signing_material_sha256,
-            "writers": writer_state,
+            "writers_before": writer_state_before,
+            "writers_after": writer_state_after,
             "action": "preserve-current-oauth-state",
             "automatic_oauth_restore": False,
         }

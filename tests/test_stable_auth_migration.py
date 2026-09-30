@@ -258,3 +258,104 @@ def test_migration_lock_rejects_a_concurrent_transaction(tmp_path: Path):
             )
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize("conflict", ["receipt-in-source", "lock-in-target", "same-control"])
+def test_control_path_conflicts_fail_without_mutation_or_artifacts(
+    tmp_path: Path, conflict: str
+):
+    source = state_tree(tmp_path)
+    before = state_manifest(source)
+    target = tmp_path / "target"
+    receipt = source / "receipt.json" if conflict == "receipt-in-source" else tmp_path / "r.json"
+    lock = target / "lock" if conflict == "lock-in-target" else tmp_path / "lock"
+    if conflict == "same-control":
+        lock = receipt
+    with pytest.raises(MigrationFailure, match="must not overlap"):
+        copy_with_receipt(
+            kind="migration",
+            source=source,
+            target=target,
+            receipt_path=receipt,
+            lock_path=lock,
+            signing_material=SIGNING_MATERIAL,
+            probe=FixedProbe(),
+        )
+    assert state_manifest(source) == before
+    assert not target.exists()
+    assert not receipt.exists()
+    assert not lock.exists()
+
+
+def test_receipt_partial_write_failure_cleans_temporary_and_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    receipt = tmp_path / "receipt.json"
+    original = migration.os.write
+    calls = 0
+
+    def fail_after_partial(descriptor: int, value: bytes) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original(descriptor, value[:1])
+        raise OSError("injected partial-write failure")
+
+    monkeypatch.setattr(migration.os, "write", fail_after_partial)
+    with pytest.raises(MigrationFailure, match="publication failed"):
+        migration._write_receipt(receipt, {"result": "PASS"})  # pyright: ignore[reportPrivateUsage]
+    assert not receipt.exists()
+    assert not list(tmp_path.glob(".receipt.json.*.tmp"))
+
+
+@pytest.mark.parametrize("fail_call", [1, 2])
+def test_receipt_file_or_parent_fsync_failure_leaves_no_published_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_call: int
+):
+    receipt = tmp_path / "receipt.json"
+    original = migration.os.fsync
+    calls = 0
+
+    def fail_selected(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == fail_call:
+            raise OSError("injected fsync failure")
+        original(descriptor)
+
+    monkeypatch.setattr(migration.os, "fsync", fail_selected)
+    with pytest.raises(MigrationFailure, match="publication failed"):
+        migration._write_receipt(receipt, {"result": "PASS"})  # pyright: ignore[reportPrivateUsage]
+    assert not receipt.exists()
+    assert not list(tmp_path.glob(".receipt.json.*.tmp"))
+
+
+def test_rollback_rechecks_stable_state_before_publishing_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    state = state_tree(tmp_path)
+    expected = state_manifest(state)
+    original = migration.state_manifest
+    calls = 0
+
+    def mutate_between_checks(root: Path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            next(root.rglob("*.json")).write_bytes(b"changed-during-rollback")
+        return original(root)
+
+    monkeypatch.setattr(migration, "state_manifest", mutate_between_checks)
+    receipt = tmp_path / "rollback.json"
+    probe = FixedProbe()
+    with pytest.raises(MigrationFailure, match="changed during rollback"):
+        rollback_receipt(
+            state=state,
+            expected_tree_sha256=expected.tree_sha256,
+            receipt_path=receipt,
+            lock_path=tmp_path / "lock",
+            signing_material=SIGNING_MATERIAL,
+            probe=probe,
+        )
+    assert probe.calls == 2
+    assert not receipt.exists()
