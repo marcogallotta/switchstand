@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -17,6 +18,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO, cast
+from urllib.parse import urlparse
+
+from .edge_monitor_host import ExternalIngressHttp
 
 SERVICE = "switchstand-chatgpt-mcp.service"
 CADDY = "http://127.0.0.1:2019"
@@ -288,6 +292,33 @@ class HostOperations:
         )
 
     def public_gated(self) -> bool:
+        try:
+            parsed = urlparse(self.c.public_origin)
+            port = parsed.port
+        except ValueError:
+            return False
+        if parsed.scheme == "https" and parsed.hostname and port in (None, 443):
+            probe = ExternalIngressHttp(
+                self.c.public_origin + "/switchstand/mcp",
+                self.c.public_origin + "/switchstand/mcp",
+            )
+            try:
+                addresses = probe.public_addresses(parsed.hostname)
+                for address in addresses:
+                    for path in EDGE_PATHS:
+                        probe_path = (
+                            path[:-1] + "maintenance-probe" if path.endswith("/*") else path
+                        )
+                        status, headers, _ = probe.request(
+                            parsed.hostname, address, "GET", probe_path
+                        )
+                        if status != 503 or headers.get("retry-after") != str(
+                            self.c.retry_after
+                        ):
+                            return False
+                return True
+            except (OSError, ValueError, UnicodeError, http.client.HTTPException):
+                return False
         for path in EDGE_PATHS:
             probe_path = path[:-1] + "maintenance-probe" if path.endswith("/*") else path
             target = self.c.public_origin + probe_path
@@ -444,7 +475,13 @@ class HostOperations:
         candidate = _sha(self.c.launcher) == self.c.candidate_launcher_sha
         runtime = self.c.candidate_runtime if candidate else self.c.current_runtime
         expected = self.c.candidate_sha if candidate else self.c.current_sha
-        return self._doctor(runtime, expected, True)
+        public_url = self.c.public_origin + "/switchstand/mcp"
+        ingress = ExternalIngressHttp(public_url, public_url).observe()
+        return (
+            ingress.transport_ok
+            and ingress.valid_auth_challenge
+            and self._doctor(runtime, expected, True)
+        )
 
     def restore_launcher(self) -> None:
         if _sha(self.c.launcher) != self.c.current_launcher_sha:

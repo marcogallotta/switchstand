@@ -174,15 +174,27 @@ class ExternalIngressHttp:
             raise ValueError("public DNS returned no global IPv4 address")
         return tuple(dict.fromkeys(addresses))
 
+    def public_addresses(self, host: str) -> tuple[str, ...]:
+        """Resolve the origin through public DNS, excluding tailnet shortcuts."""
+        return self._addresses(host)
+
     @staticmethod
-    def _request(host: str, address: str, method: str, path: str) -> tuple[int, str, bytes]:
+    def request(
+        host: str, address: str, method: str, path: str,
+    ) -> tuple[int, dict[str, str], bytes]:
         connection = _PinnedHTTPSConnection(host, address)
         try:
             connection.request(method, path, headers={"accept": "application/json"})
             response = connection.getresponse()
-            return response.status, response.getheader("www-authenticate", ""), response.read()
+            headers = {name.lower(): value for name, value in response.getheaders()}
+            return response.status, headers, response.read()
         finally:
             connection.close()
+
+    @staticmethod
+    def _request(host: str, address: str, method: str, path: str) -> tuple[int, str, bytes]:
+        status, headers, body = ExternalIngressHttp.request(host, address, method, path)
+        return status, headers.get("www-authenticate", ""), body
 
     def observe(self) -> HttpObservation:
         try:

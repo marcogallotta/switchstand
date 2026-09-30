@@ -41,6 +41,10 @@ the canonical record/status templates are in
 [live-incident operations](docs/operations-live-incident.md). If local `main` cannot be
 proved current during an incident, this paragraph remains the minimum procedure; do not
 delay mitigation for repository synchronization or trust a possibly stale detailed copy.
+During an explicitly announced edge-maintenance attempt, generic MCP connection failure may be
+the verified `503 Retry-After` gate. Follow the bounded read-only retry and 90-second escalation
+contract in [live-incident operations](docs/operations-live-incident.md#known-edge-maintenance-window).
+Never automatically retry writes, OAuth transitions, or `UNKNOWN` effects during that window.
 
 - In the canonical Switchstand Git common directory, raw `codex` must enter through the host-installed materialized shim and repository `scripts/codex-dispatch`; outside it, the shim directly launches the real Codex binary even when the checkout is absent or broken. The dispatcher intentionally uses an isolated Coordinator home without global `AGENTS.md`, and the repository-configured canonical Switchstand MCP must be present and callable there. Install or update the host shim with `scripts/install-codex-shim`; never point the global launcher at mutable checkout content. Raw `claude` works the same way through `scripts/install-claude-shim` and `scripts/claude-dispatch`, which loads only repository Coordinator settings and MCP, excludes global `~/.claude/CLAUDE.md`, and fences the primary checkout.
 - Only ordinary ChatGPT without a normal checkout uses `repository_bundle_get`. Accept only `current`, verify the advertised SHA-256, and materialize the bundle as a normal repository. Retry `refresh_pending`; never substitute stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. Codex/Claude with a repository stays on normal Git.

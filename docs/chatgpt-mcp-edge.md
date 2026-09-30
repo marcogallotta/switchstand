@@ -140,6 +140,13 @@ and receipt stay in the attempt directory as recovery evidence. The tool does no
 prepare candidates, launchers, authorization, client reinstall, or activation
 approval. Landing it does not change the running service or Caddy configuration.
 
+This single-runtime maintenance path is the selected deployment model. Zero-downtime overlap is
+deferred: a future design may evaluate a conventional identity-aware proxy or a dedicated
+FastMCP-auth boundary, but neither is an active prerequisite and deployment work must not grow an
+in-repository OAuth sidecar or cross-process token protocol speculatively. Agent-visible behavior
+during the gate is owned by
+[live-incident operations](operations-live-incident.md#known-edge-maintenance-window).
+
 ## Landing, activation, and client refresh
 
 Inert landing evidence checks the pinned runtime imports, protected-resource and
