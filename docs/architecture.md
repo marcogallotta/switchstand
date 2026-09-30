@@ -138,6 +138,11 @@ The protected gateways are the semantic owners of provider writes:
 - `relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
 - `provider.py::AsanaProvider` owns how each operation is expressed and verified in Asana.
 
+Asana provider reads retry only bounded transient transport, throttling, and server failures. They
+emit sanitized internal failure classification (operation class, HTTP status or exception type, and
+attempt count) without provider identifiers, response bodies, credentials, or changing the bounded
+public `provider_error` contract. Provider writes are never retried by this read policy.
+
 The checks and recovery path are operation-specific. Append validates the bound target's canonical,
 nonterminal state and observed revision; update and relation validate a bound canonical target and
 its observed revision. Create has no observed revision: its contract requires exactly one parent or

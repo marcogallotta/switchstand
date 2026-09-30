@@ -4,6 +4,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+import switchstand.provider as provider_module
 from switchstand.contracts import Routing, WorkContext, WorkPatch, WorkPlacement
 from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.discovery import ProviderSearchItem
@@ -87,6 +88,46 @@ async def test_work_context_uses_exact_task_read_and_hides_provider_ids():
     assert all(secret not in serialized for secret in (
         "user-secret", "task-secret", "section-secret", "outside-secret", "outside-section",
     ))
+
+
+async def test_task_read_retries_transient_provider_failure(monkeypatch, caplog):
+    payload = task(project=PROJECT)
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0,))
+    subject, api = provider((503, {"errors": [{"message": "secret"}]}), (200, payload))
+
+    with caplog.at_level("WARNING"):
+        result = await subject.get("sensitive-task-id")
+
+    assert result is not None and len(api.requests) == 2
+    assert "failure=http_status status=503 attempt=1" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
+
+
+async def test_task_read_retries_transport_failure(monkeypatch, caplog):
+    payload = task(project=PROJECT)
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0,))
+    timeout = httpx.ReadTimeout("secret", request=httpx.Request("GET", "https://secret"))
+    subject, api = provider(timeout, (200, payload))
+
+    with caplog.at_level("WARNING"):
+        result = await subject.get("sensitive-task-id")
+
+    assert result is not None and len(api.requests) == 2
+    assert "failure=transport error_type=ReadTimeout attempt=1" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
+
+
+async def test_task_read_reports_sanitized_exhausted_failure(monkeypatch, caplog):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    failure = (503, {"errors": [{"message": "secret"}]})
+    subject, api = provider(failure, failure, failure)
+
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError):
+        await subject.get("sensitive-task-id")
+
+    assert len(api.requests) == 3
+    assert "failure=http_status status=503 attempts=3" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
 
 
 @pytest.mark.parametrize("change", [
@@ -416,8 +457,9 @@ async def test_list_rejects_invalid_provider_page(problem):
         await subject.search_work(None, None, cursor, 1)
 
 
-async def test_search_provider_failure_is_closed():
-    subject, _ = provider((503, {}))
+async def test_search_provider_failure_is_closed(monkeypatch):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    subject, _ = provider((503, {}), (503, {}), (503, {}))
 
     with pytest.raises(ProviderError):
         await subject.search_work(None, None, None, 50)
@@ -625,14 +667,18 @@ async def test_append_once_and_ambiguous_response_is_not_retried():
     with pytest.raises(UnknownEffect): await subject.append("t", "x")
     subject, _ = provider((400, {}))
     with pytest.raises(ProviderError): await subject.append("t", "x")
-async def test_failures_are_sanitized():
-    subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
+async def test_failures_are_sanitized(monkeypatch, caplog):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    read_failure = (500, {"errors": [{"message": "secret"}]})
+    subject, _ = provider(read_failure, read_failure, read_failure)
     with pytest.raises(ProviderError) as read_error: await subject.get("t")
     subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
     with pytest.raises(ProviderError) as write_error: await subject.update("t", WorkPatch(notes="x"))
     malformed = task(project=PROJECT); malformed["data"]["notes"] = {"secret": True}
     with pytest.raises(ProviderError) as malformed_error: await provider((200, malformed))[0].get("t")
-    assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
+    assert "secret" not in (
+        str(read_error.value) + str(write_error.value) + str(malformed_error.value) + caplog.text
+    )
 
 def source_task_payload(*, gid="123", revision="r1", canonical=True):
     payload = task(project=PROJECT if canonical else None)
