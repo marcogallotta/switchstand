@@ -4,9 +4,14 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switchstand.core import ProviderRelation, UnknownEffect
+from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import PROJECTS, AsanaProvider
+from switchstand.provider import (
+    PROJECTS,
+    REVIEW_INTAKE_PROJECT,
+    REVIEW_INTAKE_SECTION,
+    AsanaProvider,
+)
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
@@ -116,6 +121,67 @@ async def test_unprobed_provider_relations_send_once_and_exact_readback(subject)
         await provider.update_relation(TASK, relation)
         assert len(boundary.calls) == before + 1
         assert await provider.relation_matches(TASK, relation)
+
+
+async def test_review_intake_is_exact_add_only_nonadmitted_target():
+    boundary = Boundary()
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, PROJECT)
+        assert REVIEW_INTAKE_PROJECT not in provider._admission_projects
+
+        add = ProviderRelation(
+            "placement", "add",
+            project_gid=REVIEW_INTAKE_PROJECT,
+            section_gid=REVIEW_INTAKE_SECTION,
+        )
+        await provider.update_relation(TASK, add)
+
+        assert boundary.calls == [
+            (
+                "POST", f"/api/1.0/tasks/{TASK}/addProject",
+                {"project": REVIEW_INTAKE_PROJECT, "section": REVIEW_INTAKE_SECTION},
+            ),
+        ]
+        assert await provider.relation_matches(TASK, add)
+
+        for rejected in (
+            ProviderRelation(
+                "placement", "add",
+                project_gid=REVIEW_INTAKE_PROJECT,
+                section_gid="1111111111111111",
+            ),
+            ProviderRelation(
+                "placement", "move",
+                project_gid=REVIEW_INTAKE_PROJECT,
+                section_gid=REVIEW_INTAKE_SECTION,
+            ),
+            ProviderRelation(
+                "placement", "remove",
+                project_gid=REVIEW_INTAKE_PROJECT,
+            ),
+            ProviderRelation(
+                "placement", "add",
+                project_gid=UNRELATED_PROJECT,
+                section_gid=SECTION,
+            ),
+        ):
+            with pytest.raises(ProviderError):
+                await provider.update_relation(TASK, rejected)
+
+
+async def test_test_only_provider_cannot_escape_to_review_intake(subject):
+    provider, _ = subject
+    with pytest.raises(ProviderError):
+        await provider.update_relation(
+            TASK,
+            ProviderRelation(
+                "placement", "add",
+                project_gid=REVIEW_INTAKE_PROJECT,
+                section_gid=REVIEW_INTAKE_SECTION,
+            ),
+        )
 
 
 async def test_dependency_readback_exhausts_pages_before_proving_presence_or_absence(subject):
