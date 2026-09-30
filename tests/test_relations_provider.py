@@ -4,9 +4,9 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switchstand.core import ProviderRelation, UnknownEffect
+from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.grants import RelationPatch
-from switchstand.provider import PROJECTS, AsanaProvider
+from switchstand.provider import PROJECTS, REVIEW_INTAKE_PROJECT, AsanaProvider
 
 PROJECT = "9999999999999999"
 SECTION = "8888888888888888"
@@ -191,3 +191,53 @@ async def test_partial_move_is_unknown_and_resume_sends_only_missing_removal():
             "addProject", "removeProject", "removeProject",
         ]
         assert await provider.relation_matches(TASK, move)
+
+
+async def test_review_intake_project_is_add_only_not_general_admission():
+    boundary = Boundary()
+    admitted_project = PROJECTS[0]
+    boundary.tasks[TASK]["memberships"] = [
+        {"project": {"gid": admitted_project, "name": "Area"}, "section": None},
+    ]
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client)
+        assert REVIEW_INTAKE_PROJECT not in provider._admission_projects
+
+        registration = ProviderRelation(
+            "placement", "add",
+            project_gid=REVIEW_INTAKE_PROJECT, section_gid=SECTION,
+        )
+        await provider.update_relation(TASK, registration)
+
+        assert await provider.relation_matches(TASK, registration)
+        assert boundary.calls == [
+            (
+                "POST", f"/api/1.0/tasks/{TASK}/addProject",
+                {"project": REVIEW_INTAKE_PROJECT, "section": SECTION},
+            ),
+        ]
+
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "move",
+                    project_gid=REVIEW_INTAKE_PROJECT, section_gid=SECTION,
+                ),
+            )
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "remove", project_gid=REVIEW_INTAKE_PROJECT,
+                ),
+            )
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "add", project_gid=UNRELATED_PROJECT,
+                ),
+            )
