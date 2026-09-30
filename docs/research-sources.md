@@ -1,6 +1,6 @@
 # Research sources
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 A seed list of where to research, for any Switchstand task. It is a lookup, not a report and not
 authority: it grants nothing and settles no design question. Entries are sites, orgs and tools, not
@@ -105,8 +105,16 @@ agent-reported and not independently verified.
   scale. Skip: product launches. Use: evidence. Fit: good, but its review blocks merges.
 - **Scott Logic** — https://blog.scottlogic.com. Go for: agent safety by design, measured spec-driven
   trials. Use: opinion. Fit: partial.
-- **Google SRE** — https://sre.google. Go for: postmortem culture, canarying, blameless learning.
-  Skip: Google-scale capacity material. Use: mechanics. Fit: good.
+- **Google SRE** — https://sre.google. Go for: incident command and live-state documents,
+  postmortem culture, canarying, blameless learning, and owned follow-up actions. Skip:
+  Google-scale capacity and role machinery. Use: mechanics. Fit: good. Incident-management and
+  postmortem chapters verified reachable and used for the Code Red runbook on 2026-09-30.
+- **PagerDuty Incident Response** — https://response.pagerduty.com. Go for: an independent
+  operational playbook capable of challenging Google-derived incident roles, status, and
+  lifecycle. Use: mechanics and vendor voice. Fit: good after removing its larger-team ceremony.
+  The legacy page was not fetchable by the automated research client on 2026-09-30, but the
+  first-party GitHub source and current PagerDuty Ops Guide were reachable and used for the Code
+  Red update/verification/follow-up lifecycle.
 - **Cursor Blog** — https://cursor.com/blog. Go for: running many agents, long-run efficiency. Use:
   vendor voice. Fit: mixed; autonomy-forward.
 - **Cognition Blog** — https://cognition.com/blog. Go for: multi-agent arguments (writes stay

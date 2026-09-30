@@ -17,16 +17,30 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 ### Live incidents
 
 A credible live-user failure enters incident mode; the reporter does not need to say
-`CODE RED`. Immediately acknowledge, name one operator, and inspect current service
-state and newest logs before broad delegation. When Marco explicitly says the incident
-is urgent, send a concise factual update at least every 10 seconds while interactive
-diagnosis is active, even when the update is only what is being checked and whether a
-change occurred. Label evidence `CURRENT`, `HISTORICAL`, or `UNKNOWN`; transport-up is
-not functional health. Prefer the smallest reversible mitigation before RCA or broad
-parallel work, without bypassing authority or ambiguous-effect safeguards. `STOP`
-means acknowledge immediately, stop issuing new commands/effects, cancel active work
-best-effort, and report anything that could not be stopped. Follow
-[live-incident operations](docs/operations-live-incident.md).
+`CODE RED`; an explicit `CODE RED` also enters it. Immediately acknowledge, name one
+operator, open the canonical private incident record, and inspect current service state
+and newest logs before broad delegation. During interactive urgency, keep updates short
+and frequent; include impact, prognosis, Human/agent action, service decision, current
+action, next checkpoint, and any temporary coordination change. Label evidence
+`CURRENT`, `HISTORICAL`, or `UNKNOWN`; transport-up is not functional health. Prefer the
+smallest reversible mitigation before RCA or broad parallel work, without bypassing
+authority or ambiguous-effect safeguards.
+
+`STOP` means pause new action, listen, and re-ground on Marco's newest direction; it does
+not terminate workers or abandon the incident. `CANCEL` or `STOP WORK` means terminate
+active work best-effort and report residual effects. A rollback is temporary mitigation:
+track its exact removed candidate and bundled good work through roll-forward/redeploy or
+explicit retirement, and never rewind forward-only state. If multiple products fail at
+the same public boundary, test the shared ingress before resetting product-local OAuth,
+data, or service state. A user saying the path works establishes a recovery checkpoint,
+not completion: immediately verify it, update the record, and continue cleanup, RCA,
+monitoring, and owned follow-ups without waiting for another prompt. Close the incident
+only after authenticated recovery proof, temporary-setting disposition, RCA, regression
+and monitoring follow-up, and owned residual work. The complete operator procedure and
+the canonical record/status templates are in
+[live-incident operations](docs/operations-live-incident.md). If local `main` cannot be
+proved current during an incident, this paragraph remains the minimum procedure; do not
+delay mitigation for repository synchronization or trust a possibly stale detailed copy.
 
 - In the canonical Switchstand Git common directory, raw `codex` must enter through the host-installed materialized shim and repository `scripts/codex-dispatch`; outside it, the shim directly launches the real Codex binary even when the checkout is absent or broken. The dispatcher intentionally uses an isolated Coordinator home without global `AGENTS.md`, and the repository-configured canonical Switchstand MCP must be present and callable there. Install or update the host shim with `scripts/install-codex-shim`; never point the global launcher at mutable checkout content. Raw `claude` works the same way through `scripts/install-claude-shim` and `scripts/claude-dispatch`, which loads only repository Coordinator settings and MCP, excludes global `~/.claude/CLAUDE.md`, and fences the primary checkout.
 - Only ordinary ChatGPT without a normal checkout uses `repository_bundle_get`. Accept only `current`, verify the advertised SHA-256, and materialize the bundle as a normal repository. Retry `refresh_pending`; never substitute stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. Codex/Claude with a repository stays on normal Git.
