@@ -26,6 +26,28 @@ analysis and unrelated work follow mitigation.
    chmod 0700 "$incident_dir"
    incident_id="${incident_dir##*/}"
    install -m 0600 /dev/null "$incident_dir/timeline.jsonl"
+   : "${incident_operator:?set incident_operator to the one named operator}"
+   incident_updated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   incident_status_tmp="$(mktemp "$incident_dir/.status-XXXXXX")"
+   chmod 0600 "$incident_status_tmp"
+   cat > "$incident_status_tmp" <<EOF
+   # $incident_id — live-user failure
+
+   - State: DETECTED
+   - Operator: $incident_operator
+   - Updated: $incident_updated
+   - Impact / understood scope: credible live-user failure; exact scope UNKNOWN
+   - Difficulty / prognosis: unknown; diagnosis in progress
+   - Human / agent action: none pending current evidence
+   - Service posture: GATE — gate new consequential effects pending current evidence
+   - Current action / next checkpoint: inspect current service state and newest logs
+   - Coordination changes: none
+   - Dependency boundary: UNKNOWN pending boundary checks
+   - Evidence: UNKNOWN; no current evidence captured yet
+   - Residual truth: authenticated recovery proof NOT_RUN
+   EOF
+   mv -f -- "$incident_status_tmp" "$incident_dir/status.md"
+   test "$(stat -c '%a' "$incident_dir/status.md")" = 600
    incident_pointer="$incident_root/.current.$$"
    ln -s "$incident_dir" "$incident_pointer"
    mv -Tf "$incident_pointer" "$incident_root/current"
@@ -35,8 +57,10 @@ analysis and unrelated work follow mitigation.
    `timeline.jsonl` is append-only: append one timestamped JSON object for each material
    observation, decision, command/effect, result, handoff, and status transition; never
    rewrite or truncate it. Keep secrets, authorization URLs, tokens, credentials, and raw
-   personal data out. `status.md` is the current summary. Write a mode-`0600` same-directory
-   temporary file, then `mv -f` it over `status.md`; readers must never see a partial update.
+   personal data out. `status.md` is the current summary. Initialize it atomically with valid
+   mode `0600` before publishing `current`. For every later update, write a mode-`0600`
+   same-directory temporary file, then `mv -f` it over `status.md`; readers must never see a
+   missing or partial current status.
    Use the exact templates in [Incident record and closeout](operations-incident-record.md).
 4. **Read current evidence first.** For the ChatGPT edge:
 
@@ -157,7 +181,10 @@ not a stop signal and not full functional proof. Acknowledge it, timestamp it in
 record, run the bounded verification above, and proceed directly through cleanup and closeout work.
 Do not wait for Marco to ask again, open a second incident, or leave the remaining incident backlog
 implicit. If verification would be disruptive or needs unavailable authority, preserve that exact
-item as `NOT_RUN` with an owner and return trigger while continuing every other safe item.
+item as `NOT_RUN` with an owner and return trigger while continuing every other safe item. The
+authenticated affected-path recovery proof is not deferrable: it must succeed across the relevant
+restart/refresh boundary and the entire stated watch window must complete without recurrence before
+`CLOSED`. If that proof cannot run or fails, remain `MONITORING` or `MITIGATED`; never residualize it.
 
 Before `CLOSED`, complete the checklist in
 [Incident record and closeout](operations-incident-record.md): authenticated recovery proof;

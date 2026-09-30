@@ -6,7 +6,8 @@ This is the canonical record shape for
 
 ## Current status (`status.md`)
 
-Replace this file atomically from a mode-`0600` temporary file in the same directory.
+Initialize this file atomically at mode `0600` before publishing the incident's `current` pointer.
+Replace it thereafter from a mode-`0600` temporary file in the same directory.
 
 ```markdown
 # <IncidentId> — <short title>
@@ -50,12 +51,15 @@ their readback separately; a command starting is not proof that its effect compl
 
 ## Mandatory closeout
 
-The operator may set `State: CLOSED` only when each item is evidenced or explicitly remains as
-owned residual work:
+The operator may set `State: CLOSED` only when authenticated affected-path recovery is evidenced
+across the relevant restart/refresh boundary and the entire stated monitoring/watch window has
+completed without recurrence. This gate may not be `NOT_RUN`, `MISSING_CAPABILITY`, `UNKNOWN`,
+Human Input, or owned residual work. If it is not satisfied, keep the incident `MONITORING` or
+`MITIGATED`. Every remaining item must be evidenced or explicitly remain as owned residual work:
 
-- [ ] Authenticated affected-path recovery is proven across the relevant restart/refresh boundary
-  and stated monitoring window; process/HTTP-only evidence and an unverified user report are not
-  substituted.
+- [ ] **Non-deferrable close gate:** authenticated affected-path recovery is proven across the
+  relevant restart/refresh boundary and the entire stated monitoring/watch window completes
+  without recurrence; process/HTTP-only evidence and an unverified user report are not substituted.
 - [ ] For shared-ingress involvement, installed routes were read back and every affected public
   path plus one unchanged sibling path was checked; product-local state was not reset without
   causal evidence.
