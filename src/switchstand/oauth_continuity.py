@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from typing import Any
@@ -14,7 +13,6 @@ from fastmcp.server.auth.oauth_proxy.models import (
 )
 from fastmcp.server.auth.providers.github import GitHubProvider
 from joserfc.errors import JoseError
-from key_value.aio.adapters.pydantic import PydanticAdapter
 from mcp.server.auth.provider import (
     AccessToken as MCPAccessToken,
 )
@@ -24,25 +22,10 @@ from mcp.server.auth.provider import (
     TokenError,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import BaseModel
 
 LOG = logging.getLogger(__name__)
 
 CANONICAL_UPSTREAM_TOKEN_ID = "switchstand-github-canonical-v1"
-REFRESH_REPLAY_SECONDS = 5
-
-
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-class _RefreshReplay(BaseModel):
-    client_id: str
-    request_scopes: list[str]
-    refresh_scopes: list[str]
-    refresh_expires_at: int | None
-    response: OAuthToken
-    successor_hash: str
 
 
 class SwitchstandGitHubProvider(GitHubProvider):
@@ -52,12 +35,6 @@ class SwitchstandGitHubProvider(GitHubProvider):
         self.allowed_user_id = allowed_user_id
         self._required_upstream_scopes = frozenset(kwargs.get("required_scopes") or [])
         super().__init__(**kwargs)
-        self._refresh_replays = PydanticAdapter[_RefreshReplay](
-            key_value=self._client_storage,
-            pydantic_model=_RefreshReplay,
-            default_collection="switchstand-refresh-replays",
-            raise_on_validation_error=True,
-        )
 
     async def _valid_upstream(self, token_set: UpstreamTokenSet) -> MCPAccessToken | None:
         validated = await self._token_validator.verify_token(token_set.access_token)
@@ -216,74 +193,22 @@ class SwitchstandGitHubProvider(GitHubProvider):
             return await super().load_access_token(token)
         return None
 
-    async def _replay(
-        self,
-        token_hash: str,
-        client_id: str | None,
-        scopes: list[str] | None = None,
-    ) -> _RefreshReplay | None:
-        replay = await self._refresh_replays.get(key=token_hash)
-        if replay is None or replay.client_id != client_id:
-            return None
-        if scopes is not None and sorted(replay.request_scopes) != sorted(scopes):
-            return None
-        successor = await self._refresh_token_store.get(key=replay.successor_hash)
-        return replay if successor and successor.client_id == client_id else None
-
-    async def load_refresh_token(
-        self, client: OAuthClientInformationFull, refresh_token: str
-    ) -> RefreshToken | None:
-        loaded = await super().load_refresh_token(client, refresh_token)
-        if loaded is not None:
-            return loaded
-        replay = await self._replay(_token_hash(refresh_token), client.client_id)
-        if replay is None:
-            return None
-        return RefreshToken(
-            token=refresh_token,
-            client_id=replay.client_id,
-            scopes=replay.refresh_scopes,
-            expires_at=replay.refresh_expires_at,
-        )
-
     async def exchange_refresh_token(
         self,
         client: OAuthClientInformationFull,
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        token_hash = _token_hash(refresh_token.token)
-        request_lock = self._get_refresh_lock(f"client-refresh:{token_hash}")
-        async with request_lock:
-            replay = await self._replay(token_hash, client.client_id, scopes)
-            if replay is not None:
-                return replay.response
-
-            refresh_jti, refresh_ttl = self._jti_and_ttl(refresh_token.token, refresh=True)
-            canonical_lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
-            async with canonical_lock:
-                mapping = await self._jti_mapping_store.get(key=refresh_jti)
-                canonical = await self._upstream_token_store.get(key=CANONICAL_UPSTREAM_TOKEN_ID)
-                if (
-                    mapping is not None
-                    and mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID
-                    and canonical is not None
-                    and await self._fresh_valid_upstream(canonical)
-                ):
-                    await self._rebind(refresh_jti, refresh_ttl)
-                response = await super().exchange_refresh_token(client, refresh_token, scopes)
-            if response.refresh_token is None:
-                return response
-            await self._refresh_replays.put(
-                key=token_hash,
-                value=_RefreshReplay(
-                    client_id=client.client_id or "",
-                    request_scopes=scopes,
-                    refresh_scopes=refresh_token.scopes,
-                    refresh_expires_at=refresh_token.expires_at,
-                    response=response,
-                    successor_hash=_token_hash(response.refresh_token),
-                ),
-                ttl=REFRESH_REPLAY_SECONDS,
-            )
-            return response
+        refresh_jti, refresh_ttl = self._jti_and_ttl(refresh_token.token, refresh=True)
+        canonical_lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
+        async with canonical_lock:
+            mapping = await self._jti_mapping_store.get(key=refresh_jti)
+            canonical = await self._upstream_token_store.get(key=CANONICAL_UPSTREAM_TOKEN_ID)
+            if (
+                mapping is not None
+                and mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID
+                and canonical is not None
+                and await self._fresh_valid_upstream(canonical)
+            ):
+                await self._rebind(refresh_jti, refresh_ttl)
+            return await super().exchange_refresh_token(client, refresh_token, scopes)

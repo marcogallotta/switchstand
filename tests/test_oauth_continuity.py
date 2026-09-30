@@ -216,15 +216,10 @@ async def test_new_authorizations_replace_canonical_not_multiply_local_credentia
     ).access_token == "good-11"
 
 
-async def put_refresh(subject):
-    await subject._upstream_token_store.put(
-        key=CANONICAL_UPSTREAM_TOKEN_ID,
-        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
-        ttl=3600,
-    )
-    refresh_jti = "old-refresh-jti"
+async def put_refresh(subject, client_id):
+    refresh_jti = f"refresh-jti-{client_id}"
     refresh_token = subject.jwt_issuer.issue_refresh_token(
-        client_id="chatgpt",
+        client_id=client_id,
         scopes=[SCOPE],
         jti=refresh_jti,
         expires_in=3600,
@@ -241,7 +236,7 @@ async def put_refresh(subject):
     await subject._refresh_token_store.put(
         key=_hash_token(refresh_token),
         value=RefreshTokenMetadata(
-            client_id="chatgpt",
+            client_id=client_id,
             scopes=[SCOPE],
             expires_at=int(time.time()) + 3600,
             created_at=time.time(),
@@ -251,21 +246,33 @@ async def put_refresh(subject):
     return refresh_token
 
 
-async def test_concurrent_refresh_is_single_upstream_rotation_and_replays_after_restart():
-    storage = MemoryStore()
-    subject = provider(storage)
-    verifier(subject, valid=frozenset({"good", "refreshed"}))
-    refresh_token = await put_refresh(subject)
-    calls = 0
+async def test_distinct_client_refreshes_serialize_one_canonical_rotation_at_a_time():
+    subject = provider(MemoryStore())
+    verifier(subject, valid=frozenset({"good"}))
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    tokens = {
+        client_id: await put_refresh(subject, client_id) for client_id in ("chatgpt-a", "chatgpt-b")
+    }
+    active = 0
+    max_active = 0
+    upstream_inputs = []
 
     class OAuthClient:
-        async def refresh_token(self, **_kwargs):
-            nonlocal calls
-            calls += 1
+        async def refresh_token(self, **kwargs):
+            nonlocal active, max_active
+            upstream_inputs.append(kwargs["refresh_token"])
+            active += 1
+            max_active = max(max_active, active)
             await anyio.sleep(0.01)
+            active -= 1
+            sequence = len(upstream_inputs)
             return {
-                "access_token": "refreshed",
-                "refresh_token": "rotated-upstream",
+                "access_token": f"refreshed-{sequence}",
+                "refresh_token": f"rotated-upstream-{sequence}",
                 "expires_in": 1800,
                 "refresh_expires_in": 3600,
                 "scope": SCOPE,
@@ -276,24 +283,20 @@ async def test_concurrent_refresh_is_single_upstream_rotation_and_replays_after_
         yield OAuthClient()
 
     subject._upstream_oauth_client = oauth_client
-    loaded = RefreshToken(
-        token=refresh_token,
-        client_id="chatgpt",
-        scopes=[SCOPE],
-        expires_at=int(time.time()) + 3600,
-    )
     results = []
 
-    async def exchange():
-        results.append(await subject.exchange_refresh_token(client(), loaded, [SCOPE]))
+    async def exchange(client_id):
+        loaded = RefreshToken(
+            token=tokens[client_id],
+            client_id=client_id,
+            scopes=[SCOPE],
+            expires_at=int(time.time()) + 3600,
+        )
+        results.append(await subject.exchange_refresh_token(client(client_id), loaded, [SCOPE]))
 
     async with anyio.create_task_group() as group:
-        group.start_soon(exchange)
-        group.start_soon(exchange)
+        group.start_soon(exchange, "chatgpt-a")
+        group.start_soon(exchange, "chatgpt-b")
 
-    assert calls == 1 and results[0] == results[1]
-    restarted = provider(storage)
-    verifier(restarted, valid=frozenset({"refreshed"}))
-    replayable = await restarted.load_refresh_token(client(), refresh_token)
-    assert replayable is not None
-    assert await restarted.exchange_refresh_token(client(), replayable, [SCOPE]) == results[0]
+    assert len(results) == 2 and max_active == 1
+    assert upstream_inputs == ["upstream-refresh", "rotated-upstream-1"]

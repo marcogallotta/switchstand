@@ -66,10 +66,8 @@ credential behind those separate downstream mappings. A successful new browser
 authorization replaces that credential, while existing client access and refresh
 JTIs converge to it on use; client IDs, signed tokens, grants, and runtime
 identities are never merged. Refresh rotation is serialized within the one edge
-process. An identical client refresh retry may receive the same successor for five
-seconds when its client, requested scopes, and still-live successor all match.
-Running overlapping edge processes against this file-backed OAuth store is not a
-supported activation shape: its refresh locks are process-local.
+process. Running overlapping edge processes against this file-backed OAuth store
+is not a supported activation shape: its refresh locks are process-local.
 
 The read-only edge doctor needs no database or provider credentials. Keep its
 three protected OAuth values and the non-secret probe configuration in one
