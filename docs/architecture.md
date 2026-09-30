@@ -58,7 +58,14 @@ first excess byte; transport, authentication, status, size, and schema failures 
 token. `chatgpt_edge.py::create_delegated_app` can wire that
 verifier into the unchanged ordinary tool surface without GitHub credentials, signing keys, or an
 OAuth store. The ordinary `serve` entry point still calls the combined `create_app`; no split
-process, route, credential, or deployment is activated by this layer.
+process is activated by default. `stable_auth_runtime.py` adds explicit default-off stable-auth and
+delegated-edge launch modes. The two processes share only a mode-0600 internal credential and an
+authenticated loopback introspection call; separate environment files keep the GitHub secret and
+FastMCP state configuration out of the delegated edge. `stable_auth_host.py` owns offline
+credential provisioning/rotation/readback plus inert systemd and Caddy asset generation. Its Caddy
+contract routes only public OAuth paths to the stable service and MCP/resource metadata to the
+delegated edge; it has no public match for private introspection. The host layer does not install,
+apply, start, migrate, or activate those assets.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
