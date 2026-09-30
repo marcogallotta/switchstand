@@ -54,6 +54,12 @@ are idempotent under their stable identity or transition contracts except
 operation identity and must not be blindly retried. Registration rejects a new ordinary tool until
 that classification is extended.
 
+`edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
+edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
+transport state only while the service is offline, swaps the launcher atomically, verifies locally
+before ungating, and preserves `UNKNOWN` behind the gate. It does not own tool semantics, OAuth
+state format, candidate preparation, host installation, or activation authority.
+
 `source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
 remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
 
@@ -194,6 +200,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | --- | --- | --- |
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
+| Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
