@@ -255,10 +255,28 @@ useful activation fence: a reviewed split-aware replacement/rollback transaction
 proof must land before production can adopt these generated assets.
 
 Layer 2A still performs no state migration, service/Caddy installation, activation, or live
-qualification. Layer 2B owns the exclusive-writer state migration doctor, copied-state checksums,
-legacy-token continuity, backup/restore, and rollback receipts. Until that separately reviewed
-layer and the real-client activation gates pass, the combined maintenance-window deployment above
-remains the production path.
+qualification. Layer 2B adds an inert offline state-copy tool; it does not control services,
+install assets, mutate Caddy, or activate the split:
+
+```console
+switchstand-stable-auth-migrate copy --kind backup --source /absolute/state \
+  --target /absolute/absent-backup --receipt /absolute/absent-backup.json \
+  --lock-file /absolute/migration.lock
+```
+
+`migration` and explicit `restore` use the same absent-target transaction. The GitHub client secret
+comes only from `SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET`; a receipt stores its fingerprint, never its
+value. The tool holds a persistent no-follow lock, proves both supported writer units inactive
+before and after copying, rejects links and unsupported FileTree metadata, relocates only FastMCP's
+validated absolute collection-directory field, and records raw source/target plus root-normalized
+logical checksums in a new mode-0600 receipt. A failed copy leaves its target as evidence and emits
+no success receipt. The proof covers the repository-managed units, not unmanaged processes.
+
+Rollback never silently rewinds OAuth state. `rollback-receipt` checks the supplied current raw
+tree digest and records `preserve-current-oauth-state`; restoring a backup is a separate explicit
+absent-target operation. Disposable qualification proves a registered client and issued legacy
+bearer survive a relocated encrypted-state copy under the same key. Until real-client activation
+gates pass, the combined maintenance-window deployment above remains the production path.
 
 This topology targets one host and Switchstand may remain single-host indefinitely. Multi-host
 readiness, clustering, active-active authorization, distributed locks, and a shared authorization

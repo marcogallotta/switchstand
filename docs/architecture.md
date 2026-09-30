@@ -66,6 +66,9 @@ credential provisioning/rotation/readback plus inert systemd and Caddy asset gen
 contract routes only public OAuth paths to the stable service and MCP/resource metadata to the
 delegated edge; it has no public match for private introspection. The host layer does not install,
 apply, start, migrate, or activate those assets.
+`stable_auth_migration.py` owns offline exclusive-writer copy/checksum and immutable receipts for
+backup, relocation, explicit restore, and preserve-current-state rollback evidence. It never
+controls services or automatically restores OAuth state.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
