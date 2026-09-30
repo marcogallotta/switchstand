@@ -18,6 +18,9 @@ dependencies = [
 [project.scripts]
 switchstand = "switchstand.mcp:main"
 switchstand-chatgpt-edge = "switchstand.chatgpt_edge:main"
+switchstand-stable-auth = "switchstand.stable_auth_runtime:auth_main"
+switchstand-delegated-edge = "switchstand.stable_auth_runtime:edge_main"
+switchstand-stable-auth-host = "switchstand.stable_auth_host:run"
 switchstand-bootstrap-agent-project = "switchstand.durable_agent_project:main"
 switchstand-edge-doctor = "switchstand.edge_doctor:run"
 switchstand-provision = "switchstand.provision:main"

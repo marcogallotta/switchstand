@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,7 +78,7 @@ class _CompleteMCPStream:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
-def _http_middleware() -> list[Middleware]:
+def http_middleware() -> list[Middleware]:
     return [Middleware(_CompleteMCPStream)]
 
 
@@ -237,7 +239,7 @@ def _create_resource_app(
         server.tool(tool, annotations=ordinary_tool_annotations(name))
     app = server.http_app(
         path="/mcp", json_response=True, stateless_http=False,
-        middleware=_http_middleware(),
+        middleware=http_middleware(),
     )
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime
@@ -249,8 +251,9 @@ def _create_resource_app(
     return app
 
 
-async def serve() -> None:
-    config = MCPAuthConfig.from_environment()
+@asynccontextmanager
+async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
+    """Own the resource edge's provider/database dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
     client = httpx.AsyncClient(
         base_url="https://app.asana.com/api/1.0", trust_env=False,
@@ -276,16 +279,22 @@ async def serve() -> None:
                 os.environ["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
                 os.environ["SWITCHSTAND_CERTIFICATION_RUN_ID"],
             )
+        yield service, runtime
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def serve() -> None:
+    config = MCPAuthConfig.from_environment()
+    async with resource_service() as (service, runtime):
         app = create_app(service, config, certification_runtime=runtime)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
             json_response=True, stateless_http=False, show_banner=False,
             uvicorn_config={"timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_SECONDS},
-            middleware=_http_middleware(),
+            middleware=http_middleware(),
         )
-    finally:
-        await client.aclose()
-        await engine.dispose()
 
 
 def main() -> None:

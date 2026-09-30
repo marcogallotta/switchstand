@@ -156,7 +156,7 @@ This reopening does not change the running service, authorize activation, or mak
 prerequisite for ordinary maintenance deployments. Multi-host operation, clustering, active-active
 authorization, distributed locking, and shared authentication storage remain explicit non-goals.
 
-### Inert stable-auth Layer 1
+### Inert stable-auth layers
 
 The repository contains a default-off production seam for the selected single-host split.
 `stable_auth.py` builds the stable FastMCP authorization application and its private authenticated
@@ -168,10 +168,102 @@ wrong-issuer, or wrong-subject response fails closed. The delegated edge builder
 receives only that verifier and the resulting resource contract; it has no GitHub client secret,
 FastMCP signing key, or authorization-state store.
 
-This layer intentionally provides no service entry point, environment contract, systemd unit,
-Caddy route, Unix-socket wiring, state migration, or live activation. The existing combined edge
-remains the startup default. Those host and migration effects belong to Layer 2 after independent
-review and landing of this inert boundary.
+Layer 2A adds three explicit, default-off commands:
+
+```console
+switchstand-stable-auth
+switchstand-delegated-edge
+switchstand-stable-auth-host --help
+```
+
+The first process owns GitHub OAuth and FastMCP state and binds only to
+`127.0.0.1:8791`. The second owns the ordinary MCP/provider surface, binds only to
+`127.0.0.1:8790`, and calls the first process for every bearer check. The current
+`switchstand-chatgpt-edge` command remains the combined default and its environment contract is
+unchanged.
+
+The split intentionally uses authenticated loopback HTTP rather than a Unix socket. Both current
+services and Caddy already use fixed loopback listeners; adding socket creation, stale-socket
+recovery, and Caddy/service filesystem permissions would create another lifecycle boundary without
+improving the single-user, single-host trust boundary. The stable process accepts private
+introspection only with a shared high-entropy credential. Caddy's generated route set has no match
+for that path.
+
+Use distinct mode-0600 environment files. The stable-auth file contains only its required values:
+
+```dotenv
+SWITCHSTAND_MCP_GITHUB_CLIENT_ID=...
+SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=...
+SWITCHSTAND_MCP_GITHUB_USER_ID=192548
+SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
+FASTMCP_HOME=/absolute/stable/auth/state
+```
+
+The delegated-edge file contains the resource URL, numeric GitHub user ID, database and provider
+configuration, but **not** the GitHub client secret, signing material, or `FASTMCP_HOME`:
+
+```dotenv
+SWITCHSTAND_MCP_GITHUB_USER_ID=192548
+SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
+DATABASE_URL=...
+ASANA_TOKEN=...
+```
+
+Delegated-edge startup fails closed if GitHub client ID/secret or `FASTMCP_HOME` is present, catching
+an accidentally shared environment rather than merely relying on operator convention.
+
+Provision the shared internal credential into an existing owned directory. Commands output only
+the path and SHA-256 readback, never the credential:
+
+```console
+switchstand-stable-auth-host credential-init /absolute/private/internal.secret
+switchstand-stable-auth-host credential-readback /absolute/private/internal.secret
+switchstand-stable-auth-host credential-rotate /absolute/private/internal.secret \
+  --expected-sha256 EXPECTED_CURRENT_DIGEST
+```
+
+The file must be owned by the service user, regular, symlink-free, exactly mode `0600`, and contain
+the generated 64-character URL-safe token format (including its minimum diversity check). Init and
+rotation serialize through a persistent owned mode-`0600` no-follow sibling lock. Rotation compares
+the expected digest and replaces the credential inside that same transaction; its receipt is bound
+to the bytes written, so two concurrent callers cannot both win with the same prior digest.
+Rotation is deliberately offline: stop both split processes, rotate with the last readback digest,
+read back the new digest, then start stable auth before the delegated edge. The processes read the
+credential once at startup; rotating under running processes would temporarily split their trust
+state.
+
+Generate candidates into a new empty directory; this does not install or apply them:
+
+```console
+switchstand-stable-auth-host render \
+  --runtime-python /absolute/runtime/bin/python \
+  --auth-environment-file /absolute/private/stable-auth.env \
+  --edge-environment-file /absolute/private/delegated-edge.env \
+  --internal-secret-file /absolute/private/internal.secret \
+  --output /absolute/new/empty-output-directory
+```
+
+The result contains two user-systemd units and a Caddy JSON route fragment plus a digest receipt.
+The fragment preserves the current public URL rewrites, sends OAuth/issuer metadata to port 8791,
+sends MCP/protected-resource metadata to port 8790, and does not expose
+`/internal/oauth/verify`. Operators must independently compare and qualify the exact generated
+assets before any install or Caddy mutation.
+
+The current `switchstand-edge-maintenance` preflight deliberately recognizes only the deployed
+combined proxy set, with every upstream on port 8790. It will reject this split route set. That is a
+useful activation fence: a reviewed split-aware replacement/rollback transaction and its readback
+proof must land before production can adopt these generated assets.
+
+Layer 2A still performs no state migration, service/Caddy installation, activation, or live
+qualification. Layer 2B owns the exclusive-writer state migration doctor, copied-state checksums,
+legacy-token continuity, backup/restore, and rollback receipts. Until that separately reviewed
+layer and the real-client activation gates pass, the combined maintenance-window deployment above
+remains the production path.
+
+This topology targets one host and Switchstand may remain single-host indefinitely. Multi-host
+readiness, clustering, active-active authorization, distributed locks, and a shared authorization
+database are explicit non-goals, not deferred acceptance requirements for either Layer 2 or
+production activation.
 
 ## Landing, activation, and client refresh
 
