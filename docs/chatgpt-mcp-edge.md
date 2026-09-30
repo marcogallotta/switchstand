@@ -139,6 +139,9 @@ The retained snapshot, failed candidate state (when applicable), launcher backup
 and receipt stay in the attempt directory as recovery evidence. The tool does not
 prepare candidates, launchers, authorization, client reinstall, or activation
 approval. Landing it does not change the running service or Caddy configuration.
+Zero-downtime replacement and stable external-auth alternatives are deliberately
+deferred; their research record and revisit threshold live in
+[deferred zero-downtime authentication options](deferred-zero-downtime-auth.md).
 
 This single-runtime maintenance path is the selected deployment model. Zero-downtime overlap is
 deferred: a future design may evaluate a conventional identity-aware proxy or a dedicated
