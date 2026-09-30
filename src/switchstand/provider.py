@@ -35,6 +35,8 @@ PROJECTS = (
     "1218431586138793",
 )
 PROJECT = PROJECTS[0]
+REVIEW_INTAKE_PROJECT = "1218915787182921"
+REVIEW_INTAKE_SECTION = "1218916346671509"
 WORKSPACE = "1200569426771227"
 ANCESTRY_GETS = 9
 FIELDS = {
@@ -77,7 +79,8 @@ class AsanaProvider:
         if test_only and not test_project_gid:
             raise ValueError("test-only admission requires a test project GID")
         if test_project_gid and (not all(digit in "0123456789" for digit in test_project_gid)
-                                 or test_project_gid in PROJECTS):
+                                 or test_project_gid in PROJECTS
+                                 or test_project_gid == REVIEW_INTAKE_PROJECT):
             raise ValueError("invalid test project GID")
         if create_notes_suffix is not None and (not test_only or not create_notes_suffix.strip()):
             raise ValueError("create notes suffix requires test-only admission")
@@ -800,6 +803,16 @@ class AsanaProvider:
             return
         if patch.kind == "placement":
             assert patch.project_gid is not None
+            if patch.project_gid == REVIEW_INTAKE_PROJECT:
+                if (self._test_project is not None or patch.action != "add"
+                        or patch.section_gid != REVIEW_INTAKE_SECTION):
+                    raise ProviderError("placement project denied", failure="admission_denied")
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/addProject",
+                    {"project": patch.project_gid, "section": patch.section_gid},
+                    unknown_on_server_error=True,
+                )
+                return
             if patch.project_gid not in self._admission_projects:
                 raise ProviderError("placement project denied", failure="admission_denied")
             if self._test_project is not None and patch.action == "remove":
