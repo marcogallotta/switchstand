@@ -33,6 +33,7 @@ PROJECTS = (
     "1218431586138793",
 )
 PROJECT = PROJECTS[0]
+REVIEW_INTAKE_PROJECT = "1218915787182921"
 WORKSPACE = "1200569426771227"
 ANCESTRY_GETS = 9
 FIELDS = {
@@ -723,7 +724,11 @@ class AsanaProvider:
             return
         if patch.kind == "placement":
             assert patch.project_gid is not None
-            if patch.project_gid not in self._admission_projects:
+            review_intake_add = (
+                patch.action == "add"
+                and patch.project_gid == REVIEW_INTAKE_PROJECT
+            )
+            if patch.project_gid not in self._admission_projects and not review_intake_add:
                 raise ProviderError("placement project denied")
             if self._test_project is not None and patch.action == "remove":
                 raise ProviderError("test-only placement removal denied")
