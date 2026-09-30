@@ -36,9 +36,15 @@ All times are local CEST on 2026-09-30.
   Therefore a conventional same-host `curl https://…` bypasses Funnel and cannot prove public
   ingress health.
 
-The reset also removed the other pre-existing Serve listeners. Current `tailscale funnel status
---json` shows only public 443 to `127.0.0.1:8786`; any prior 8443–8446 Serve uses require separate
-owner verification before being called restored.
+The reset also removed every other pre-existing Serve listener, so restoring 443 alone recovered
+the shared user path but left those independent routes down. A subsequent bounded reconstruction
+and exact status readback restored this complete route set:
+
+- 443 to `127.0.0.1:8786`, public Funnel;
+- 8443 to `127.0.0.1:8001`, public Funnel;
+- 8444 to `127.0.0.1:8765`, tailnet-only Serve;
+- 8445 to `127.0.0.1:8775`, tailnet-only Serve; and
+- 8446 to `127.0.0.1:8798`, tailnet-only Serve.
 
 ## Causal conclusion
 

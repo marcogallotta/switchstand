@@ -199,6 +199,53 @@ def test_external_ingress_failure_is_distinct_from_healthy_local_edge(tmp_path):
     assert event.summary == "Public shared ingress is unavailable"
 
 
+def test_local_semantic_failure_precedes_and_skips_failed_external_ingress(tmp_path):
+    class FailedIngress:
+        calls = 0
+
+        def observe(self):
+            self.calls += 1
+            return HttpObservation(False, None)
+
+    ingress = FailedIngress()
+    instance, _, functional = monitor(
+        tmp_path,
+        http=HttpObservation(True, 503),
+    )
+    instance.ingress = ingress
+
+    result = instance.run_once(now=NOW)
+
+    assert result.condition is EdgeCondition.FUNCTIONAL
+    assert result.emitted
+    assert ingress.calls == 0
+    assert functional.targets == []
+
+
+def test_oauth_failure_precedes_local_semantics_and_external_ingress(tmp_path):
+    class FailedIngress:
+        calls = 0
+
+        def observe(self):
+            self.calls += 1
+            return HttpObservation(False, None)
+
+    ingress = FailedIngress()
+    instance, _, functional = monitor(
+        tmp_path,
+        http=HttpObservation(True, 503),
+        journal=JournalBatch("cursor-current", ("bad_refresh_token",)),
+    )
+    instance.ingress = ingress
+
+    result = instance.run_once(now=NOW)
+
+    assert result.condition is EdgeCondition.OAUTH
+    assert result.emitted
+    assert ingress.calls == 0
+    assert functional.targets == []
+
+
 def test_missing_fixed_canary_is_missing_capability_without_probe(tmp_path):
     instance, _, functional = monitor(tmp_path, canary=None)
 

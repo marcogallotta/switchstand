@@ -172,15 +172,6 @@ class EdgeMonitor:
         if not service.active or service.main_pid <= 0 or not http.transport_ok:
             return EdgeCondition.TRANSPORT
 
-        if self.ingress is not None:
-            ingress = self.ingress.observe()
-            if (
-                not ingress.transport_ok
-                or ingress.status_code != 401
-                or not ingress.valid_auth_challenge
-            ):
-                return EdgeCondition.SHARED_INGRESS
-
         messages = "\n".join(batch.messages).casefold()
         if any(marker in messages for marker in self._OAUTH_MARKERS):
             return EdgeCondition.OAUTH
@@ -189,6 +180,15 @@ class EdgeMonitor:
             pass
         elif http.status_code != 200:
             return EdgeCondition.FUNCTIONAL
+
+        if self.ingress is not None:
+            ingress = self.ingress.observe()
+            if (
+                not ingress.transport_ok
+                or ingress.status_code != 401
+                or not ingress.valid_auth_challenge
+            ):
+                return EdgeCondition.SHARED_INGRESS
 
         if self.canary is None:
             return EdgeCondition.MISSING_CAPABILITY
