@@ -61,9 +61,11 @@ selected upstream credential, and prove authenticated reads from both an old aff
 client and a new client across forced refresh and restart. HTTP 200 or metadata alone
 cannot establish recovery.
 
-Monitoring follow-up must add an authenticated canary and bounded signals for upstream
-lineage count, token issuance, refresh outcome, dangling mappings, provider reads, and
-crash loops. Wakeful should consume state transitions such as first authenticated
-failure and recovery, deduplicate them, wake the designated Coordinator, and retain
-delivery/acknowledgement evidence. That integration remains unimplemented and must not
-be treated as current coverage.
+Monitoring follow-up must add a fixed, pre-registered canary with a read-only grant and
+fixed harmless target, plus bounded signals for upstream lineage count, token issuance,
+refresh outcome, dangling mappings, provider reads, and crash loops. Health checks must
+not dynamically register or reauthorize it; an unavailable canary is
+`MISSING_CAPABILITY`, not healthy. Wakeful should consume state transitions such as
+first authenticated failure and recovery, deduplicate them, wake the designated
+Coordinator, and retain delivery/acknowledgement evidence. That integration remains
+unimplemented and must not be treated as current coverage.
