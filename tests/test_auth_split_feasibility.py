@@ -217,6 +217,14 @@ async def test_separate_edge_requires_resource_scope_and_signed_github_identity(
     )
     assert await edge_auth().verify_token(wrong_identity) is None
 
+    legacy_token = authorization.jwt_issuer.issue_access_token(
+        client_id="existing-chat",
+        scopes=[SCOPE],
+        jti="legacy-with-server-side-identity-only",
+        expires_in=60,
+    )
+    assert await edge_auth().verify_token(legacy_token) is None
+
 
 async def test_encrypted_state_and_tokens_restore_only_with_the_same_key(
     tmp_path, monkeypatch

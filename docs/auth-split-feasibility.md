@@ -23,9 +23,9 @@ The executable spike must establish all of these against the pinned FastMCP runt
    wrong audience or missing scope.
 4. The signed token carries the already-validated immutable GitHub numeric ID and upstream scope;
    the edge rejects a different identity.
-5. With writers stopped, the default encrypted state and issued token remain usable after creating
-   a replacement provider with the same storage root and signing key. A different key cannot read
-   the registration or validate the token.
+5. With writers stopped, the default encrypted state and a new-format issued token remain usable
+   after creating a replacement provider with the same storage root and signing key. A different
+   key cannot read the registration or validate the token.
 
 `tests/test_auth_split_feasibility.py` is the disposable proof. It deliberately exercises FastMCP's
 real route builders, authorization-code exchange, token issuer, encrypted default storage, JWT
@@ -38,6 +38,12 @@ The split is feasible on one host if all gates pass. The migration unit is the e
 state **plus the exact signing key and public issuer/resource configuration**. There must never be
 concurrent old and new writers to that state: stop, snapshot, start the stable authorization
 service, verify, then switch the resource route.
+
+Client registrations and encrypted upstream state are restorable, but current production access
+tokens predate the signed `upstream_claims` identity used by the split verifier. Although their
+signature and audience remain valid, a JWT-only edge cannot establish their GitHub subject and must
+reject them. Production cutover therefore requires client reauthorization, or a separately designed
+temporary introspection bridge. This spike does not establish token-transparent migration.
 
 FastMCP's OAuth proxy currently issues HS256 tokens. The resource edge therefore receives the same
 HMAC key used to sign tokens. The split creates an operationally stable authorization lifecycle,
