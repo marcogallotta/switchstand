@@ -61,6 +61,16 @@ user-data directory. This is transport session state, not Switchstand authority
 or a second grant store. Losing it invalidates sessions and requires clients to
 reconnect.
 
+The single-user edge stores one canonical, identity-and-scope-validated GitHub
+credential behind those separate downstream mappings. A successful new browser
+authorization replaces that credential, while existing client access and refresh
+JTIs converge to it on use; client IDs, signed tokens, grants, and runtime
+identities are never merged. Refresh rotation is serialized within the one edge
+process. An identical client refresh retry may receive the same successor for five
+seconds when its client, requested scopes, and still-live successor all match.
+Running overlapping edge processes against this file-backed OAuth store is not a
+supported activation shape: its refresh locks are process-local.
+
 The read-only edge doctor needs no database or provider credentials. Keep its
 three protected OAuth values and the non-secret probe configuration in one
 mode-`0600` environment file:
@@ -137,6 +147,10 @@ must allow a longer stop window so resource cleanup can still complete. A
 standalone Streamable HTTP GET is closed as a complete HTTP response during
 shutdown. The client may reconnect that stream; after process replacement, an
 expired in-memory session returns 404 and the client must initialize a new one.
+An OAuth-continuity activation additionally uses a copied production OAuth store
+to prove legacy access/refresh rebinding and restart persistence before the
+single-process maintenance replacement. Rollback restores code but must not
+rewind the OAuth store after any successful token rotation.
 
 An authenticated live `tools/list` proves the server-side inventory only.
 Clients can retain bindings from before a client-visible schema or metadata
