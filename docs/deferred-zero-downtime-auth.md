@@ -165,3 +165,7 @@ qualification gates before reliance.
   service.
 - Live GitHub callback, correct/wrong identity, scope, and revocation behavior; exact Caddy/private
   socket non-exposure; production copied-state migration, rollback, and recovery behavior.
+
+Layer 2B supplies inert single-host offline copy/checksum and rollback-receipt tooling plus a
+disposable legacy-token continuity proof. It does not change the deployed maintenance-window path;
+production rehearsal and every real-client gate above remain activation requirements.

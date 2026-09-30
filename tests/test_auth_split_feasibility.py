@@ -17,6 +17,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from switchstand.oauth_continuity import SwitchstandGitHubProvider
+from switchstand.stable_auth_migration import WRITER_SERVICES, copy_with_receipt
 
 ISSUER = "https://switchstand.example.com/"
 RESOURCE = "https://switchstand.example.com/mcp"
@@ -24,6 +25,12 @@ USER_ID = "192548"
 SCOPE = "read:user"
 INTERNAL_SECRET = "disposable-loopback-auth-secret"
 INTROSPECTION_CLOCK_SKEW_SECONDS = 5
+MIGRATION_SECRET = "github-secret-material-with-more-than-32-bytes"
+
+
+class StoppedWriters:
+    def inactive(self):
+        return {service: True for service in WRITER_SERVICES}
 
 
 def auth_provider(*, storage=None, client_secret="github-secret"):
@@ -309,9 +316,11 @@ async def test_private_introspection_boundary_fails_closed():
 async def test_existing_token_and_encrypted_state_restore_without_edge_signing_key(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(fastmcp.settings, "home", tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "copied"
+    monkeypatch.setattr(fastmcp.settings, "home", source)
     state = {"valid": True}
-    first = default_storage_provider()
+    first = default_storage_provider(client_secret=MIGRATION_SECRET)
     await first.register_client(
         OAuthClientInformationFull(
             client_id="chatgpt",
@@ -325,7 +334,26 @@ async def test_existing_token_and_encrypted_state_restore_without_edge_signing_k
     existing_token = await issue(first, state)
     del first
 
-    restored = default_storage_provider()
+    receipt = copy_with_receipt(
+        kind="migration",
+        source=source,
+        target=target,
+        receipt_path=tmp_path / "migration.receipt.json",
+        lock_path=tmp_path / "migration.lock",
+        signing_material=MIGRATION_SECRET,
+        probe=StoppedWriters(),
+    )
+    assert receipt["source"] == str(source)
+    assert receipt["target"] == str(target)
+    assert receipt["source_manifest"]["tree_sha256"] != receipt["manifest"][
+        "tree_sha256"
+    ]
+    assert receipt["source_manifest"]["logical_tree_sha256"] == receipt["manifest"][
+        "logical_tree_sha256"
+    ]
+
+    monkeypatch.setattr(fastmcp.settings, "home", target)
+    restored = default_storage_provider(client_secret=MIGRATION_SECRET)
     fake_github(restored, state)
     assert (await restored.get_client("chatgpt")).client_id == "chatgpt"
     transport = httpx.ASGITransport(app=introspection_app(restored))
@@ -335,5 +363,7 @@ async def test_existing_token_and_encrypted_state_restore_without_edge_signing_k
         )
         assert access is not None and access.subject == USER_ID
 
-    changed_key = default_storage_provider(client_secret="different-github-secret")
+    changed_key = default_storage_provider(
+        client_secret="different-github-secret-material-over-32-bytes"
+    )
     assert await changed_key.get_client("chatgpt") is None
