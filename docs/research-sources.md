@@ -146,6 +146,21 @@ agent-reported and not independently verified.
 - **Goose (Block)** — https://github.com/aaif-goose/goose. Go for: MCP extension model. Use:
   mechanics. Fit: mixed; its Smart Approval mode is an LLM judging its own gate.
 - **OpenHands** — https://docs.openhands.dev. Go for: agent SDK, sandbox server. Use: mechanics.
+- **CNCF CloudEvents** — https://github.com/cloudevents/spec. Go for: a small vendor-neutral event
+  envelope, stable source/event identity, and transport-independent producer/consumer boundaries.
+  Skip: claiming CloudEvents conformance when only its concepts are needed. Use: specification
+  mechanics. Fit: strong for Wakeful's agent-neutral event seam; verified and used for the Wakeful
+  product draft on 2026-09-30.
+- **GitHub Docs (webhooks)** — https://docs.github.com/en/webhooks. Go for: signed event intake,
+  stable delivery identity, quick acceptance with asynchronous work, and explicit redelivery. Use:
+  provider mechanics. Fit: strong for CI and repository event producers; verified and used for the
+  Wakeful product draft on 2026-09-30.
+- **OpenAI Agents API sessions/webhooks** —
+  https://developers.openai.com/api/docs/guides/agents-api/sessions. Go for: persistent session
+  continuation, terminal lifecycle states, and webhook-driven agent lifecycle integration. Use:
+  first-party mechanics, not as proof that the local Codex host exposes the same delivery surface.
+  Fit: useful candidate adapter evidence; verified and used for the Wakeful product draft on
+  2026-09-30.
 - **DBOS** — https://www.dbos.dev/blog. Go for: Postgres-backed durable execution. Use: vendor voice.
   Fit: use when a concrete checkpoint/resume consumer exists, not as generic inspiration.
 - **Temporal** — https://temporal.io/blog. Go for: durable agent workflows. Use: vendor voice. Fit:

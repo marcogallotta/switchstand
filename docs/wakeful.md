@@ -1,5 +1,10 @@
 # Wakeful persistence prototype
 
+The intended product boundary, required wake journeys, deliberately unresolved product choices,
+and prototype feedback round are specified separately in
+[Wakeful product specification](wakeful-product-spec.md). This file remains the contract for the
+landed inert persistence prototype; the product specification does not activate or expand it.
+
 This inert prototype supplies an agent-system-neutral, sanitized event envelope and a local SQLite
 store for journal cursors, monitor transition state, bounded single-cycle leases, and a durable
 delivery outbox. Landing it does not start monitoring, read a journal, call a service, or wake an
