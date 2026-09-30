@@ -33,10 +33,37 @@ The monitor never registers a client, authorizes OAuth, refreshes a token, searc
 or changes work. If that exact capability is absent, it records missing-capability rather than
 pretending the functional path passed.
 
+## Inert host qualification
+
+`python -m switchstand.edge_monitor_host` binds one monitor cycle to fixed-argument `systemctl` and
+`journalctl` reads, local/public OAuth challenge and metadata checks, and an optional fixed
+read-only `work_get` canary. The bearer token is accepted only through a mode-0600 file and is
+never persisted or printed. It is read only after the functional target is proven to be either the
+exact HTTPS resource/public endpoint or the configured loopback HTTP `/mcp` endpoint. A successful
+canary also requires the returned item ID to equal the fixed WorkId. Missing or invalid capability
+material produces `missing_capability`.
+
+The command remains inert: it installs no unit or timer, creates no credentials, performs no OAuth
+registration/authorization/refresh, and dispatches no event. `events` reads the sanitized pending
+outbox; `demo` exercises failure deduplication and two-pass recovery in a newly created private
+state directory by default:
+
+```sh
+PYTHONPATH=src python -m switchstand.edge_monitor_host demo
+PYTHONPATH=src python -m switchstand.edge_monitor_host --state-dir /path/from/output events
+PYTHONPATH=src python -m switchstand.edge_monitor_host --state-dir /private/state check --fixture healthy
+PYTHONPATH=src python -m switchstand.edge_monitor_host --state-dir /private/state check --fixture bad_refresh_token
+```
+
+For a real one-shot check, add the required `--local-url` and `--resource-url`, optionally
+`--public-url`,
+`--bearer-token-file`, and the exact harmless `--work-id`. Omit the last two to safely demonstrate
+`missing_capability` without creating credentials.
+
 ## Deferred activation and adapters
 
-There is intentionally no systemd unit, timer, journal command, HTTP credential loader, event
-delivery adapter, or Codex/Claude launcher in this slice. A later reviewed activation package must
-provide those host bindings, retain cursor semantics, protect the fixed canary material, and prove
-that a durable pending event is delivered once without an alert storm. Codex and Claude adapters
-must consume the same neutral outbox contract; neither agent system belongs in the monitor.
+There is intentionally no systemd unit, timer, event delivery adapter, or Codex/Claude launcher.
+A later reviewed activation package must schedule the one-shot runner, protect/provision the fixed
+canary material, and prove that a durable pending event is delivered once without an alert storm.
+Codex and Claude adapters must consume the same neutral outbox contract; neither belongs in the
+monitor.
