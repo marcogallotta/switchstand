@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -77,7 +77,7 @@ class AuthRuntimeConfig:
 @dataclass(frozen=True, slots=True)
 class EdgeRuntimeConfig:
     contract: IntrospectionContract
-    internal_secret: str
+    internal_secret: str = field(repr=False)
     auth_url: str
     bind_port: int
 

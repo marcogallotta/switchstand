@@ -1,6 +1,8 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import httpx
 import pytest
@@ -80,6 +82,58 @@ def test_internal_credential_rejects_symlinks_modes_and_oversize(tmp_path: Path)
         read_internal_secret(target)
 
 
+@pytest.mark.parametrize("value", ("x", "x" * 63, "x" * 64, "x" * 64 + "\n"))
+def test_internal_credential_rejects_weak_or_truncated_values(tmp_path: Path, value: str):
+    target = tmp_path / "internal.secret"
+    target.write_text(value)
+    target.chmod(0o600)
+    with pytest.raises(ValueError, match="generated-token format"):
+        read_internal_secret(target)
+
+
+def test_concurrent_credential_init_has_one_winner(tmp_path: Path):
+    target = tmp_path / "internal.secret"
+    barrier = Barrier(2)
+
+    def initialize():
+        barrier.wait()
+        try:
+            return ("ok", provision_internal_secret(target))
+        except ValueError as exc:
+            return ("error", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: initialize(), range(2)))
+    assert [status for status, _value in results].count("ok") == 1
+    assert [status for status, _value in results].count("error") == 1
+    assert any("already exists" in value for status, value in results if status == "error")
+    assert internal_secret_receipt(target)["sha256"] == next(
+        value for status, value in results if status == "ok"
+    )
+
+
+def test_concurrent_same_digest_rotation_has_one_winner(tmp_path: Path):
+    target = tmp_path / "internal.secret"
+    current_digest = provision_internal_secret(target)
+    barrier = Barrier(2)
+
+    def rotate():
+        barrier.wait()
+        try:
+            return ("ok", rotate_internal_secret(target, current_digest))
+        except ValueError as exc:
+            return ("error", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: rotate(), range(2)))
+    assert [status for status, _value in results].count("ok") == 1
+    assert [status for status, _value in results].count("error") == 1
+    assert any("stale" in value for status, value in results if status == "error")
+    assert internal_secret_receipt(target)["sha256"] == next(
+        value for status, value in results if status == "ok"
+    )
+
+
 def test_rendered_units_separate_secret_bearing_auth_and_resource_edge(tmp_path: Path):
     credential = _credential(tmp_path)
     assets = _assets(tmp_path, credential)
@@ -146,6 +200,7 @@ def test_split_runtime_configuration_is_loopback_only_and_edge_needs_no_oauth_se
     edge = EdgeRuntimeConfig.from_environment()
     assert edge.auth_url == "http://127.0.0.1:8791"
     assert edge.contract.issuer_url == ISSUER
+    assert read_internal_secret(credential) not in repr(edge)
 
     for invalid in (
         "https://127.0.0.1:8791",
@@ -164,6 +219,7 @@ def test_split_runtime_configuration_is_loopback_only_and_edge_needs_no_oauth_se
     auth = AuthRuntimeConfig.from_environment()
     assert auth.auth.github_client_id == "client"
     assert "secret" not in repr(auth)
+    assert read_internal_secret(credential) not in repr(auth)
 
 
 async def test_disposable_split_apps_preserve_metadata_and_per_request_revocation():

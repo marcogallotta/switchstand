@@ -222,7 +222,11 @@ switchstand-stable-auth-host credential-rotate /absolute/private/internal.secret
   --expected-sha256 EXPECTED_CURRENT_DIGEST
 ```
 
-The file must be owned by the service user, regular, symlink-free, and exactly mode `0600`.
+The file must be owned by the service user, regular, symlink-free, exactly mode `0600`, and contain
+the generated 64-character URL-safe token format (including its minimum diversity check). Init and
+rotation serialize through a persistent owned mode-`0600` no-follow sibling lock. Rotation compares
+the expected digest and replaces the credential inside that same transaction; its receipt is bound
+to the bytes written, so two concurrent callers cannot both win with the same prior digest.
 Rotation is deliberately offline: stop both split processes, rotate with the last readback digest,
 read back the new digest, then start stable auth before the delegated edge. The processes read the
 credential once at startup; rotating under running processes would temporarily split their trust

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +19,8 @@ from typing import Any
 AUTH_PORT = 8791
 EDGE_PORT = 8790
 MAX_INTERNAL_SECRET_BYTES = 256
+INTERNAL_SECRET_PATTERN = re.compile(r"[A-Za-z0-9_-]{64}")
+MIN_INTERNAL_SECRET_DISTINCT_CHARACTERS = 16
 PUBLIC_MCP_PATHS = ("/switchstand/mcp", "/switchstand/mcp/*")
 PUBLIC_RESOURCE_METADATA_PATHS = ("/.well-known/oauth-protected-resource/switchstand/mcp",)
 PUBLIC_OAUTH_PATHS = (
@@ -53,11 +59,14 @@ def read_internal_secret(path: Path) -> str:
         if os.read(descriptor, 1):
             raise ValueError("internal credential has an invalid size")
         try:
-            secret = value.decode("ascii").strip()
+            secret = value.decode("ascii")
         except UnicodeDecodeError as exc:
             raise ValueError("internal credential must be ASCII") from exc
-        if not secret or any(character.isspace() for character in secret):
-            raise ValueError("internal credential must be one nonempty token")
+        if (
+            INTERNAL_SECRET_PATTERN.fullmatch(secret) is None
+            or len(set(secret)) < MIN_INTERNAL_SECRET_DISTINCT_CHARACTERS
+        ):
+            raise ValueError("internal credential has an invalid generated-token format")
         return secret
     finally:
         os.close(descriptor)
@@ -103,15 +112,51 @@ def _atomic_secret_write(path: Path, value: str, *, require_absent: bool) -> str
     return _digest(encoded)
 
 
+@contextmanager
+def _credential_lock(path: Path) -> Generator[None]:
+    parent = path.parent
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or not parent.is_dir()
+        or parent.is_symlink()
+        or parent.stat().st_uid != os.getuid()
+    ):
+        raise ValueError("internal credential target must be absolute in an owned real directory")
+    lock = path.with_name(f".{path.name}.lock")
+    try:
+        descriptor = os.open(
+            lock,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        raise ValueError("internal credential lock is unavailable") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise ValueError("internal credential lock must be an owned mode-0600 regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def provision_internal_secret(path: Path) -> str:
-    return _atomic_secret_write(path, secrets.token_urlsafe(48), require_absent=True)
+    with _credential_lock(path):
+        return _atomic_secret_write(path, secrets.token_urlsafe(48), require_absent=True)
 
 
 def rotate_internal_secret(path: Path, expected_sha256: str) -> str:
-    current = read_internal_secret(path).encode("ascii")
-    if not secrets.compare_digest(_digest(current), expected_sha256):
-        raise ValueError("internal credential digest is stale")
-    return _atomic_secret_write(path, secrets.token_urlsafe(48), require_absent=False)
+    with _credential_lock(path):
+        current = read_internal_secret(path).encode("ascii")
+        if not secrets.compare_digest(_digest(current), expected_sha256):
+            raise ValueError("internal credential digest is stale")
+        return _atomic_secret_write(path, secrets.token_urlsafe(48), require_absent=False)
 
 
 def internal_secret_receipt(path: Path) -> dict[str, str]:
@@ -265,11 +310,11 @@ def run() -> None:
     render.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
     if arguments.command == "credential-init":
-        provision_internal_secret(arguments.path)
-        result = internal_secret_receipt(arguments.path)
+        digest = provision_internal_secret(arguments.path)
+        result = {"path": str(arguments.path), "sha256": digest}
     elif arguments.command == "credential-rotate":
-        rotate_internal_secret(arguments.path, arguments.expected_sha256)
-        result = internal_secret_receipt(arguments.path)
+        digest = rotate_internal_secret(arguments.path, arguments.expected_sha256)
+        result = {"path": str(arguments.path), "sha256": digest}
     elif arguments.command == "credential-readback":
         result = internal_secret_receipt(arguments.path)
     else:
