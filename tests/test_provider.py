@@ -235,16 +235,18 @@ async def test_test_only_update_preserves_cleanup_marker_and_denies_project_remo
             client, TEST_PROJECT, test_only=True, create_notes_suffix="marker",
         )
         await subject.update("created", WorkPatch(notes="changed"))
-        with pytest.raises(ProviderError, match="placement removal denied"):
+        with pytest.raises(ProviderError, match="placement removal denied") as placement:
             await subject.update_relation(
                 "created", ProviderRelation(
                     kind="placement", action="remove", project_gid=TEST_PROJECT,
                 ),
             )
-        with pytest.raises(ProviderError, match="parent removal denied"):
+        assert placement.value.failure == "admission_denied"
+        with pytest.raises(ProviderError, match="parent removal denied") as parent:
             await subject.update_relation(
                 "created", ProviderRelation(kind="parent", action="remove", target_gid=None),
             )
+        assert parent.value.failure == "admission_denied"
     assert json.loads(api.requests[0].content)["data"]["notes"] == "changed\n\nmarker"
 
 
@@ -644,8 +646,38 @@ async def test_update_ambiguous_response_is_unknown_and_not_retried():
         await subject.update("t", WorkPatch(notes="x"))
     assert len(api.requests) == 1
     subject, api = provider((400, {}))
-    with pytest.raises(ProviderError, match="provider write failed"):
+    with pytest.raises(ProviderError, match="provider write failed") as rejected:
         await subject.update("t", WorkPatch(notes="x"))
+    assert rejected.value.failure == "permanent"
+    assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize(("status", "failure"), [
+    (400, "permanent"),
+    (403, "authority_denied"),
+    (429, "transient"),
+])
+async def test_write_http_status_has_bounded_sanitized_classification(status, failure):
+    subject, api = provider((status, {"errors": [{"message": "private detail"}]}))
+
+    with pytest.raises(ProviderError) as rejected:
+        await subject.update("t", WorkPatch(notes="x"))
+
+    assert rejected.value.failure == failure
+    assert "private detail" not in str(rejected.value)
+    assert len(api.requests) == 1
+
+
+async def test_unknown_routing_enum_value_is_classified_as_invalid_before_send():
+    catalogue = field(FIELDS["review_next_action"], option="Code Review")
+    subject, api = provider((200, task(fields=[catalogue])))
+
+    with pytest.raises(ProviderError) as rejected:
+        await subject.update(
+            "t", WorkPatch(notes="review evidence", review_next_action="free text")
+        )
+
+    assert rejected.value.failure == "invalid_request"
     assert len(api.requests) == 1
 @pytest.mark.parametrize("fields", [[], [field(enabled=False)], [field(), field()],
                                      [field(option="Other")]])

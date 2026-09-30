@@ -5,7 +5,14 @@ import json
 from typing import Protocol, cast
 from uuid import UUID
 
-from .core import Provider, ProviderError, ProviderRelation, State, UnknownEffect
+from .core import (
+    Provider,
+    ProviderError,
+    ProviderRelation,
+    State,
+    UnknownEffect,
+    provider_rejection_reason,
+)
 from .grant_state import EffectRecord, GrantState
 from .grants import (
     GuardOutcome,
@@ -135,8 +142,8 @@ class RelationGateway:
             await provider.update_relation(task_gid, resolved)
         except UnknownEffect:
             pass
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         if not await provider.relation_matches(task_gid, resolved):
             return self.guard(
                 request, "unknown", "effect_readback_unconfirmed", possible_send=True

@@ -58,6 +58,7 @@ JSON = dict[str, Any]
 LOG = logging.getLogger(__name__)
 READ_RETRY_DELAYS = (0.1, 0.25)
 READ_RETRY_STATUSES = frozenset((408, 425, 429, *range(500, 600)))
+WRITE_TRANSIENT_STATUSES = frozenset((408, 425, 429))
 
 
 class _TraversalFailure(Exception):
@@ -635,7 +636,13 @@ class AsanaProvider:
         except httpx.HTTPStatusError:
             if unknown_on_server_error and response.status_code >= 500:
                 raise UnknownEffect("provider effect unknown") from None
-            raise ProviderError("provider write failed") from None
+            if response.status_code in WRITE_TRANSIENT_STATUSES:
+                failure = "transient"
+            elif response.status_code in {401, 403}:
+                failure = "authority_denied"
+            else:
+                failure = "permanent"
+            raise ProviderError("provider write failed", failure=failure) from None
         return response
 
     def recovery_identity(self) -> str:
@@ -648,19 +655,19 @@ class AsanaProvider:
     ) -> str:
         del operation_id
         if (parent_task_gid is None) == (project_gid is None):
-            raise ProviderError("create target invalid")
+            raise ProviderError("create target invalid", failure="invalid_request")
         if self._create_notes_suffix is not None:
             notes = f"{notes.rstrip()}\n\n{self._create_notes_suffix}"
         data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
         if parent_task_gid is not None:
             parent = await self._task(parent_task_gid)
             if parent is None or not await self._canonical(parent):
-                raise ProviderError("create parent denied")
+                raise ProviderError("create parent denied", failure="admission_denied")
             data["parent"] = parent_task_gid
         else:
             assert project_gid is not None
             if project_gid not in self._admission_projects:
-                raise ProviderError("create project denied")
+                raise ProviderError("create project denied", failure="admission_denied")
             data["projects"] = [project_gid]
         response = await self._write("POST", "/tasks", data, unknown_on_server_error=True)
         try:
@@ -794,9 +801,11 @@ class AsanaProvider:
         if patch.kind == "placement":
             assert patch.project_gid is not None
             if patch.project_gid not in self._admission_projects:
-                raise ProviderError("placement project denied")
+                raise ProviderError("placement project denied", failure="admission_denied")
             if self._test_project is not None and patch.action == "remove":
-                raise ProviderError("test-only placement removal denied")
+                raise ProviderError(
+                    "test-only placement removal denied", failure="admission_denied"
+                )
             if patch.action == "remove":
                 await self._write(
                     "POST", f"/tasks/{provider_work_id}/removeProject",
@@ -816,11 +825,13 @@ class AsanaProvider:
             return
         if patch.kind == "parent":
             if self._create_notes_suffix is not None and patch.target_gid is None:
-                raise ProviderError("test-only parent removal denied")
+                raise ProviderError(
+                    "test-only parent removal denied", failure="admission_denied"
+                )
             if patch.target_gid is not None:
                 parent = await self._task(patch.target_gid)
                 if parent is None or not await self._canonical(parent):
-                    raise ProviderError("parent target denied")
+                    raise ProviderError("parent target denied", failure="admission_denied")
             await self._write(
                 "POST", f"/tasks/{provider_work_id}/setParent", {"parent": patch.target_gid},
                 unknown_on_server_error=True,
@@ -829,7 +840,7 @@ class AsanaProvider:
         assert patch.target_gid is not None
         target = await self._task(patch.target_gid)
         if target is None or not await self._canonical(target):
-            raise ProviderError("dependency target denied")
+            raise ProviderError("dependency target denied", failure="admission_denied")
         path = "addDependencies" if patch.action == "add" else "removeDependencies"
         await self._write(
             "POST", f"/tasks/{provider_work_id}/{path}",
@@ -897,12 +908,14 @@ class AsanaProvider:
         if routing:
             task = await self._task(provider_work_id)
             raw_fields = None if task is None else task.get("custom_fields")
-            if task is None or not isinstance(raw_fields, list):
-                raise ProviderError("routing write denied")
+            if task is None:
+                raise ProviderError("routing write denied", failure="admission_denied")
+            if not isinstance(raw_fields, list):
+                raise ProviderError("routing write denied", failure="permanent")
             fields = self._custom_fields(task)
             if (routing & {"priority", "work_type", "review_next_action"}
                     and len(fields) != len(cast(list[object], raw_fields))):
-                raise ProviderError("routing write denied")
+                raise ProviderError("routing write denied", failure="permanent")
             custom: dict[str, str] = {}
             for name in routing:
                 gid = WORK_TYPE if name == "work_type" else FIELDS[name]
@@ -923,7 +936,8 @@ class AsanaProvider:
                             and option.get("enabled") is True] if valid else [])
                 if (len(choices) != 1 or not isinstance(choices[0].get("gid"), str)
                         or name in {"priority", "work_type", "review_next_action"} and not choices[0]["gid"]):
-                    raise ProviderError("routing write denied")
+                    failure = "invalid_request" if valid and not choices else "permanent"
+                    raise ProviderError("routing write denied", failure=failure)
                 custom[gid] = choices[0]["gid"]
             data["custom_fields"] = custom
         await self._write(

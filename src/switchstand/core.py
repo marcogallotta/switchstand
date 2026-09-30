@@ -1,6 +1,6 @@
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from .contracts import (
@@ -33,9 +33,34 @@ from .contracts import (
     WorkUpdateRequest,
 )
 
+ProviderFailure = Literal[
+    "invalid_request",
+    "admission_denied",
+    "authority_denied",
+    "transient",
+    "permanent",
+    "unspecified",
+]
+
 
 class ProviderError(Exception):
-    """A provider failure whose details must not cross the controller boundary."""
+    """A provider failure whose raw details must not cross the controller boundary."""
+
+    def __init__(self, message: str, *, failure: ProviderFailure = "unspecified"):
+        super().__init__(message)
+        self.failure = failure
+
+
+def provider_rejection_reason(error: ProviderError) -> str:
+    """Return a closed, provider-neutral reason without exposing raw provider detail."""
+    return {
+        "invalid_request": "provider_rejected_input",
+        "admission_denied": "provider_admission_denied",
+        "authority_denied": "provider_authority_denied",
+        "transient": "provider_temporarily_unavailable",
+        "permanent": "provider_permanent_rejection",
+        "unspecified": "provider_rejected_send",
+    }[error.failure]
 
 
 class UnknownEffect(ProviderError):

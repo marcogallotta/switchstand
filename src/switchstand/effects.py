@@ -5,7 +5,7 @@ import json
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .core import Provider, ProviderError, State, UnknownEffect
+from .core import Provider, ProviderError, State, UnknownEffect, provider_rejection_reason
 from .grant_state import GrantState
 from .grants import (
     EffectBlocker,
@@ -127,8 +127,8 @@ class AppendGateway:
             story_gid = await provider.append(task_gid, request.text)
         except UnknownEffect:
             return self.guard(request, "unknown", "ambiguous_provider_send", possible_send=True)
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         if story_gid is not None:
             story = await provider.source_story(task_gid, story_gid)
             task = await provider.source_task(task_gid)
