@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
+import socket
+import ssl
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
@@ -32,6 +35,8 @@ from .edge_monitor import (
 from .wakeful import WakefulStore
 
 PROTOCOL = "2025-03-26"
+PUBLIC_DNS_URL = "https://cloudflare-dns.com/dns-query"
+TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _run(argv: list[str]) -> str:
@@ -115,6 +120,106 @@ class HostHttp:
                     if not valid:
                         return HttpObservation(True, 500)
         except (OSError, ValueError, httpx.HTTPError, json.JSONDecodeError):
+            return HttpObservation(False, None)
+        return HttpObservation(True, 401, valid_auth_challenge=True)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Use a public-DNS address while preserving the origin Host and TLS SNI."""
+
+    def __init__(self, host: str, address: str):
+        self.ssl_context = ssl.create_default_context()
+        super().__init__(host, port=443, timeout=3, context=self.ssl_context)
+        self.address = address
+
+    def connect(self) -> None:
+        raw = socket.create_connection((self.address, self.port), self.timeout)
+        self.sock = self.ssl_context.wrap_socket(raw, server_hostname=self.host)
+
+
+@dataclass(frozen=True)
+class ExternalIngressHttp:
+    """Probe the public Funnel path without split-DNS tailnet short-circuiting."""
+
+    url: str
+    resource: str
+    resolver_url: str = PUBLIC_DNS_URL
+
+    def _addresses(self, host: str) -> tuple[str, ...]:
+        with httpx.Client(timeout=3, trust_env=False, follow_redirects=False) as client:
+            response = client.get(
+                self.resolver_url,
+                params={"name": host, "type": "A"},
+                headers={"accept": "application/dns-json"},
+            )
+            response.raise_for_status()
+            payload_value = cast(object, response.json())
+        payload = cast(dict[str, object], payload_value) if isinstance(payload_value, dict) else {}
+        answers_value = payload.get("Answer", [])
+        answers = cast(list[object], answers_value) if isinstance(answers_value, list) else []
+        addresses: list[str] = []
+        for answer_value in answers:
+            if not isinstance(answer_value, dict):
+                continue
+            answer = cast(dict[str, object], answer_value)
+            if answer.get("type") != 1:
+                continue
+            try:
+                address = ipaddress.ip_address(str(answer.get("data", "")))
+            except ValueError:
+                continue
+            if address.is_global and address not in TAILSCALE_CGNAT:
+                addresses.append(str(address))
+        if not addresses:
+            raise ValueError("public DNS returned no global IPv4 address")
+        return tuple(dict.fromkeys(addresses))
+
+    @staticmethod
+    def _request(host: str, address: str, method: str, path: str) -> tuple[int, str, bytes]:
+        connection = _PinnedHTTPSConnection(host, address)
+        try:
+            connection.request(method, path, headers={"accept": "application/json"})
+            response = connection.getresponse()
+            return response.status, response.getheader("www-authenticate", ""), response.read()
+        finally:
+            connection.close()
+
+    def observe(self) -> HttpObservation:
+        try:
+            target = httpx.URL(self.url)
+            resource = httpx.URL(self.resource)
+            if (
+                target != resource
+                or target.scheme != "https"
+                or not target.host
+                or target.port not in (None, 443)
+                or target.userinfo
+                or target.query
+                or target.fragment
+            ):
+                return HttpObservation(True, 500)
+            metadata_path = "/.well-known/oauth-protected-resource" + target.path
+            expected_metadata = str(target.copy_with(path=metadata_path))
+            for address in self._addresses(target.host):
+                challenge, authenticate, _ = self._request(
+                    target.host, address, "POST", target.raw_path.decode()
+                )
+                metadata, _, body_raw = self._request(
+                    target.host, address, "GET", metadata_path
+                )
+                body_value = cast(object, json.loads(body_raw))
+                body = cast(dict[str, object], body_value) if isinstance(body_value, dict) else {}
+                if not (
+                    challenge == 401
+                    and f'resource_metadata="{expected_metadata}"' in authenticate
+                    and metadata == 200
+                    and body.get("resource") == self.resource
+                ):
+                    return HttpObservation(True, 500)
+        except (
+            OSError, ValueError, UnicodeError, http.client.HTTPException,
+            httpx.HTTPError, json.JSONDecodeError,
+        ):
             return HttpObservation(False, None)
         return HttpObservation(True, 401, valid_auth_challenge=True)
 
@@ -256,14 +361,26 @@ def _configured_canary(
     return canary, token, target_url
 
 
+def _external_ingress(
+    public_url: str | None, resource_url: str | None, resolver_url: str,
+) -> HttpProbe | None:
+    try:
+        if not public_url or httpx.URL(public_url) != httpx.URL(resource_url or ""):
+            return None
+    except (ValueError, UnicodeError):
+        return None
+    return ExternalIngressHttp(public_url, resource_url or "", resolver_url)
+
+
 def _fixture(
     name: str,
-) -> tuple[SystemdProbe, JournalProbe, HttpProbe, FunctionalProbe, CanaryTarget]:
+) -> tuple[SystemdProbe, JournalProbe, HttpProbe, HttpProbe | None, FunctionalProbe, CanaryTarget]:
     message = "bad_refresh_token" if name == "bad_refresh_token" else ""
     return (
         FixedProbe(SystemdObservation(True, 1234)),
         FixedJournal(message),
         FixedProbe(HttpObservation(True, 200)),
+        None,
         FixedFunctional(FunctionalObservation(FunctionalStatus.OK)),
         CanaryTarget("fixture", "00000000-0000-0000-0000-000000000001"),
     )
@@ -271,7 +388,7 @@ def _fixture(
 
 def _check(args: argparse.Namespace, state: Path) -> dict[str, object]:
     if args.fixture:
-        systemd, journal, http, functional, canary = _fixture(args.fixture)
+        systemd, journal, http, ingress, functional, canary = _fixture(args.fixture)
     else:
         canary, token, functional_url = _configured_canary(
             args.bearer_token_file, args.work_id, args.local_url,
@@ -280,13 +397,17 @@ def _check(args: argparse.Namespace, state: Path) -> dict[str, object]:
         systemd: SystemdProbe = HostSystemd(args.service)
         journal: JournalProbe = HostJournal(args.service)
         http: HttpProbe = HostHttp(
-            tuple(filter(None, (args.local_url, args.public_url))), args.resource_url
+            (args.local_url,), args.resource_url
+        )
+        ingress = _external_ingress(
+            args.public_url, args.resource_url, args.public_dns_url
         )
         functional: FunctionalProbe = HostFunctional(functional_url, token)
     store = WakefulStore(state / "wakeful.sqlite3")
     result = EdgeMonitor(
         monitor_id="chatgpt-edge", subject=args.service, store=store,
         systemd=systemd, journal=journal, http=http, functional=functional, canary=canary,
+        ingress=ingress,
     ).run_once()
     return {
         "condition": result.condition.value if result.condition else None,
@@ -306,6 +427,7 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--service", default="switchstand-chatgpt-mcp.service")
     check.add_argument("--local-url")
     check.add_argument("--public-url")
+    check.add_argument("--public-dns-url", default=PUBLIC_DNS_URL)
     check.add_argument("--resource-url")
     check.add_argument("--bearer-token-file", type=Path)
     check.add_argument("--work-id")

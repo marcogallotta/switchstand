@@ -43,6 +43,14 @@ exact HTTPS resource/public endpoint or the configured loopback HTTP `/mcp` endp
 canary also requires the returned item ID to equal the fixed WorkId. Missing or invalid capability
 material produces `missing_capability`.
 
+When `--public-url` is present, the runner resolves that exact HTTPS origin through a configurable
+public DNS-over-HTTPS resolver and pins each returned global IPv4 address while preserving the
+origin Host header and TLS SNI. This avoids local Tailscale split DNS, which can route the public
+hostname directly over the tailnet and falsely pass while Funnel is unavailable. A failed external
+challenge or protected-resource metadata check emits `edge.shared_ingress_failure` into the same
+durable Wakeful outbox. The authenticated provider read remains a separate fixed-identity check;
+this is a composite layer diagnosis, not proof that one authenticated request traversed Funnel.
+
 The command remains inert: it installs no unit or timer, creates no credentials, performs no OAuth
 registration/authorization/refresh, and dispatches no event. `events` reads the sanitized pending
 outbox; `demo` exercises failure deduplication and two-pass recovery in a newly created private
