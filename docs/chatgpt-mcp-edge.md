@@ -139,16 +139,22 @@ The retained snapshot, failed candidate state (when applicable), launcher backup
 and receipt stay in the attempt directory as recovery evidence. The tool does not
 prepare candidates, launchers, authorization, client reinstall, or activation
 approval. Landing it does not change the running service or Caddy configuration.
-Zero-downtime replacement and stable external-auth alternatives are deliberately
-deferred; their research record and revisit threshold live in
-[deferred zero-downtime authentication options](deferred-zero-downtime-auth.md).
-
-This single-runtime maintenance path is the selected deployment model. Zero-downtime overlap is
-deferred: a future design may evaluate a conventional identity-aware proxy or a dedicated
-FastMCP-auth boundary, but neither is an active prerequisite and deployment work must not grow an
-in-repository OAuth sidecar or cross-process token protocol speculatively. Agent-visible behavior
-during the gate is owned by
+This single-runtime maintenance path remains the **current deployed production model**.
+Agent-visible behavior during the gate is owned by
 [live-incident operations](operations-live-incident.md#known-edge-maintenance-window).
+
+The earlier deferral of zero-downtime authentication remains part of the decision history, but a
+later explicit decision reopened Option C for **bounded inert single-host implementation** after the
+corrected feasibility spike passed. The selected direction is a stable FastMCP authorization
+service which retains the current signing key, encrypted OAuth/JTI state, canonical GitHub
+credential, and per-request GitHub validation. Replaceable MCP edges delegate bearer verification
+over an authenticated private loopback or Unix-socket protocol; they do not receive the signing key.
+See the [decision record](deferred-zero-downtime-auth.md) and
+[feasibility evidence](auth-split-feasibility.md).
+
+This reopening does not change the running service, authorize activation, or make zero downtime a
+prerequisite for ordinary maintenance deployments. Multi-host operation, clustering, active-active
+authorization, distributed locking, and shared authentication storage remain explicit non-goals.
 
 ## Landing, activation, and client refresh
 
@@ -171,6 +177,13 @@ An OAuth-continuity activation additionally uses a copied production OAuth store
 to prove legacy access/refresh rebinding and restart persistence before the
 single-process maintenance replacement. Rollback restores code but must not
 rewind the OAuth store after any successful token rotation.
+
+The stable-auth implementation may land only as an inert, independently reviewed change. Production
+activation additionally requires real ChatGPT and Claude authorization and refresh evidence, live
+GitHub correct-identity/wrong-identity/scope/revocation evidence, exact Caddy/private-socket routing
+and non-exposure evidence, copied-state migration and rollback rehearsal, and the ordinary
+authenticated disposable effect/readback qualification. Until those gates pass, the maintenance
+window above remains the only production replacement path.
 
 An authenticated live `tools/list` proves the server-side inventory only.
 Clients can retain bindings from before a client-visible schema or metadata

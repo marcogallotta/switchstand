@@ -1,6 +1,7 @@
 # Stable authorization split feasibility
 
-Status: inert single-host feasibility spike. This is not an activation or deployment procedure.
+Status: corrected inert single-host feasibility spike **PASS**. The selected direction is reopened
+for bounded inert implementation, not activation or deployment.
 
 ## Question and boundaries
 
@@ -64,3 +65,9 @@ exact-client qualification and an explicitly accepted revocation window.
 This proof does not establish ChatGPT or Claude behavior, live GitHub callbacks, Caddy/systemd/Unix
 socket wiring, backup/restore operations, or production cutover. Those remain activation
 qualification, not implied by an inert PASS.
+
+The next implementation must remain inert and receive independent exact-candidate review. Production
+activation additionally requires real ChatGPT and Claude flows, live GitHub identity/scope/revocation
+evidence, exact Caddy/private-socket non-exposure, copied-state migration and rollback rehearsal, and
+the ordinary authenticated disposable effect/readback qualification. Until then, the current
+maintenance-window deployment remains authoritative.
