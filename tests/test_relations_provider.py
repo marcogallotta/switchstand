@@ -255,3 +255,39 @@ async def test_review_intake_project_is_add_only_not_general_admission():
                     "placement", "add", project_gid=UNRELATED_PROJECT,
                 ),
             )
+
+
+@pytest.mark.parametrize("section_gid", [None, SECTION])
+async def test_review_intake_requires_exact_section_before_provider_write(section_gid):
+    boundary = Boundary()
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client)
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "add",
+                    project_gid=REVIEW_INTAKE_PROJECT, section_gid=section_gid,
+                ),
+            )
+        assert boundary.calls == []
+
+
+async def test_review_intake_denied_in_test_only_provider_before_provider_write():
+    boundary = Boundary()
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=boundary,
+    ) as client:
+        provider = AsanaProvider(client, test_project_gid=PROJECT, test_only=True)
+        with pytest.raises(ProviderError):
+            await provider.update_relation(
+                TASK,
+                ProviderRelation(
+                    "placement", "add",
+                    project_gid=REVIEW_INTAKE_PROJECT,
+                    section_gid=REVIEW_INTAKE_SECTION,
+                ),
+            )
+        assert boundary.calls == []
