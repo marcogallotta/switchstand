@@ -400,3 +400,9 @@ are removal predicates, not removal decisions:
   normal agent-facing authority.
 - `marcogallotta/switchstandold` is read-only evidence, never an implementation base or architectural
   ancestor.
+
+`codex_wakeful.py` owns the opt-in Codex technical precursor: exact start-record/generation
+binding, delivery/child source references, client-ID admission and private `codex-wakeful.json`
+projection. Its explicit probe excludes simultaneous probes with a nonblocking generation-token
+lock and connects only through an existing Codex shared-endpoint proxy. `wakeful.py` remains the
+neutral SQLite/outbox owner; ordinary launcher behavior does not invoke the precursor.

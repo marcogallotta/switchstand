@@ -268,3 +268,14 @@ The current development path is operational but still has explicit ownership/tra
 
 Canonical cumulative handwritten Python LOC is counted with
 `git ls-files src tests | rg '\.py$' | xargs wc -l`; generated files and dependencies are excluded.
+
+The default-off Wakeful precursor is invoked explicitly with `python -m switchstand.codex_wakeful
+--opt-in --home <isolated-Coordinator-CODEX_HOME> --codex <exact-binary> --start-record <exact-path>`.
+Use only a disposable committed MessageState delivery readback in a mode-0600 JSON file via
+`--synthetic-delivery-file`, or `--recover-child` for the exact bound parent. Never use live provider
+messages for this probe. The probe owns only its proxy; it never starts or restarts the server.
+A lost response remains PENDING/UNKNOWN until exact persisted client-ID evidence consumes it;
+absence after an attempted send is insufficient to retry. Unsupported binding/history fails closed.
+Focused fake/private-file tests qualify local semantics only. TUI/backend identity, real runtime
+admission/steering, reconnect and natural-restart qualification are NOT_RUN until separately
+approved exact-host proof; Claude resume/concurrency/settings/MCP behavior remains UNKNOWN.
