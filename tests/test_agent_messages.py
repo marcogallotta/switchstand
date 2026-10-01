@@ -117,7 +117,10 @@ async def test_request_replay_watch_follows_current_delivery_state(agent_messagi
     completed_replay = await tools["agent_message_send"]("1", "Beta", request_id, payload)
     assert completed_replay.status == "ok"
     assert completed_replay.message.state == "DISPOSITIONED"
-    assert completed_replay.next_action is None
+    assert "pending result" in completed_replay.next_action
+    assert "bounded wait" not in completed_replay.next_action
+    pending = await tools["agent_message_pending"]("1")
+    assert [item.message_id for item in pending.messages] == [result_id]
 
 
 async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messaging):
