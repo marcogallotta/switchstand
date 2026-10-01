@@ -207,6 +207,7 @@ class Stage12Cutover:
         self._stage1 = attempt_dir / "stage1-activation.json"
         self._stage2 = attempt_dir / "stage2-activation.json"
         self._final = attempt_dir / "corpus-final.json"
+        self.candidate_sha = evidence.candidate_sha
         self.database_backup = "PENDING"
         self.corpus_manifests = (evidence.expected_corpus_digest,) * 2
         self.worksheet = evidence.worksheet_digest
@@ -289,6 +290,15 @@ class Stage12Cutover:
         finally:
             os.close(directory)
         return payload
+
+    def reconcile_boundary(self) -> str:
+        """Restore the exact durable receipt binding before host-level resume."""
+        frozen = freeze_evidence(self._evidence, self._attempt_dir)
+        receipt = self._load(frozen)
+        if receipt is None or not _digest(receipt.get("database_backup")):
+            raise Unknown("cutover receipt is not exactly reconcilable")
+        self.database_backup = cast(str, receipt["database_backup"])
+        return cast(str, receipt["terminal_boundary"])
 
     @staticmethod
     def _applied(result: Reconciled, label: str) -> Reconciled:

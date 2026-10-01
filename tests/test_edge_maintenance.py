@@ -105,6 +105,13 @@ class FakeOperations:
     def snapshot(self):
         self._event("snapshot")
 
+    def snapshot_digest(self):
+        return "a" * 64
+
+    def reconcile_phase(self, phase, proof, *, offline):
+        self._event("reconcile_" + phase.lower())
+        return phase, {}
+
     def swap(self):
         self._event("swap")
 
@@ -166,6 +173,17 @@ class FakeOffline:
         )
         self.receipt_path.chmod(0o600)
 
+    def reconcile_boundary(self) -> str:
+        value = json.loads(self.receipt_path.read_text())
+        if (
+            value.get("candidate_sha") != self.candidate_sha
+            or value.get("corpus_manifests") != list(self.corpus_manifests)
+            or value.get("worksheet") != self.worksheet
+        ):
+            raise Unknown("offline receipt does not bind exact evidence")
+        self.database_backup = value["database_backup"]
+        return value["terminal_boundary"]
+
     def run(self, advance) -> None:
         if self.fail_after == "PENDING":
             raise Failed("offline failed before its first receipt")
@@ -185,6 +203,16 @@ class FakeOffline:
 
 def receipt(subject: Config) -> dict[str, object]:
     return json.loads((subject.attempt_dir / "receipt.json").read_text())
+
+
+def seed_receipt(
+    subject: Config, phase: str, offline: FakeOffline | None = None, *, authority: bool = False,
+) -> None:
+    durable = maintenance.Receipt(subject, offline)
+    durable.value["authority_crossed"] = authority
+    if phase not in {"PREFLIGHT", "GATED", "STOPPED"}:
+        durable.value["fastmcp_snapshot"] = "a" * 64
+    durable.write(phase, "UNKNOWN")
 
 
 def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -412,6 +440,66 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     assert receipt(subject)["status"] == "PASS"
 
 
+@pytest.mark.parametrize(
+    ("phase", "observed", "completed"),
+    [
+        ("PREFLIGHT", "GATED", "gate"),
+        ("GATED", "STOPPED", "stop"),
+        ("STOPPED", "SNAPSHOTTED", "snapshot"),
+        ("SNAPSHOTTED", "SWAPPED", "swap"),
+        ("SWAPPED", "STARTED", "start"),
+        ("STARTED", "UNGATED", "ungate"),
+    ],
+)
+def test_resume_never_replays_a_proven_completed_host_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    phase: str, observed: str, completed: str,
+):
+    subject = config(tmp_path)
+    seed_receipt(subject, phase)
+    operations = FakeOperations()
+    proof = {"fastmcp_snapshot": "a" * 64} if phase == "STOPPED" else {}
+    monkeypatch.setattr(
+        operations, "reconcile_phase", lambda *_args, **_kwargs: (observed, proof)
+    )
+
+    assert deploy(subject, operations) == "PASS"
+    assert completed not in operations.events
+
+
+def test_malformed_receipt_installs_and_proves_gate_before_unknown(tmp_path: Path):
+    subject = config(tmp_path)
+    path = subject.attempt_dir / "receipt.json"
+    path.write_text("{")
+    path.chmod(0o600)
+    operations = FakeOperations()
+
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert operations.gated
+    assert operations.events == ["gate_exact", "gate", "gate_exact", "public_gated"]
+
+
+def test_receipt_cannot_inject_retained_gate_proof(tmp_path: Path):
+    subject = config(tmp_path)
+    seed_receipt(subject, "STARTED")
+    path = subject.attempt_dir / "receipt.json"
+    value = json.loads(path.read_text())
+    value["gate_retained"] = "true"
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    operations = FakeOperations()
+
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert "ungate" not in operations.events
+    assert operations.gated
+
+
+def test_gate_retention_reports_its_own_unknown_class():
+    operations = FakeOperations(unknown_at="gate")
+    with pytest.raises(maintenance.GateRetentionUnknown):
+        maintenance._retain_gate(operations)
+
+
 def test_offline_step_persists_ordered_boundaries_before_launcher_swap(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations()
@@ -470,6 +558,67 @@ def test_post_marker_failure_stays_gated_for_forward_fix(tmp_path: Path):
     assert receipt(subject)["error"] == "ForwardFixRequired"
 
 
+def test_late_candidate_failure_after_authority_never_restores_asana_runtime(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(local=False)
+    offline = FakeOffline(subject, operations.events)
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+    assert receipt(subject)["authority_crossed"] is True
+    assert receipt(subject)["error"] == "ForwardFixRequired"
+    assert "restore_launcher" not in operations.events
+    assert "offline_abort" not in operations.events
+    assert operations.gated
+
+
+def test_post_authority_resume_keeps_forward_fix_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject = config(tmp_path)
+    offline = FakeOffline(subject, [])
+    offline._write("COMPLETE")
+    seed_receipt(subject, "STARTED", offline, authority=True)
+    operations = FakeOperations(local=False)
+    monkeypatch.setattr(
+        operations, "reconcile_phase", lambda *_args, **_kwargs: ("STARTED", {})
+    )
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+    assert "restore_launcher" not in operations.events
+    assert "offline_abort" not in operations.events
+    assert receipt(subject)["error"] == "ForwardFixRequired"
+
+
+def test_later_host_phase_refuses_trailing_offline_receipt(tmp_path: Path):
+    subject = config(tmp_path)
+    offline = FakeOffline(subject, [])
+    offline._write("POSTGRES_AUTHORITY")
+    seed_receipt(subject, "STARTED", offline, authority=True)
+    operations = FakeOperations()
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+    assert not any(event in operations.events for event in ("start", "ungate", "restore_launcher"))
+    assert operations.gated
+
+
+def test_resume_derives_authority_from_subordinate_receipt_before_late_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject = config(tmp_path)
+    offline = FakeOffline(subject, [], resumed=True)
+    offline._write("COMPLETE")
+    seed_receipt(subject, "OFFLINE_PRE_MARKER", offline)
+    operations = FakeOperations(local=False)
+    monkeypatch.setattr(
+        operations, "reconcile_phase", lambda phase, *_args, **_kwargs: (phase, {})
+    )
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+    assert receipt(subject)["authority_crossed"] is True
+    assert receipt(subject)["error"] == "ForwardFixRequired"
+    assert "restore_launcher" not in operations.events
+
+
 @pytest.mark.parametrize("boundary", ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"])
 def test_ambiguous_offline_boundary_stays_gated(tmp_path: Path, boundary: str):
     subject = config(tmp_path)
@@ -506,7 +655,7 @@ def test_unproved_public_gate_is_unknown_and_service_is_not_stopped(tmp_path: Pa
     assert {key: receipt(subject)[key] for key in ("phase", "status", "error")} == {
         "phase": "GATED",
         "status": "UNKNOWN",
-        "error": "Unknown",
+        "error": "GateRetentionUnknown",
     }
 
 
@@ -544,7 +693,7 @@ def test_interrupted_rollback_public_check_reinstalls_gate(tmp_path: Path):
 
     assert deploy(subject, operations) == "UNKNOWN"
 
-    assert operations.events[-3:] == ["public_ready", "gate_exact", "gate"]
+    assert operations.events[-4:] == ["gate_exact", "gate", "gate_exact", "public_gated"]
     assert operations.gated
     assert receipt(subject)["error"] == "RollbackUnknown"
 
@@ -555,7 +704,7 @@ def test_ambiguous_public_readback_reinstalls_gate(tmp_path: Path):
 
     assert deploy(subject, operations) == "UNKNOWN"
 
-    assert operations.events[-3:] == ["public_ready", "gate_exact", "gate"]
+    assert operations.events[-4:] == ["gate_exact", "gate", "gate_exact", "public_gated"]
     assert operations.gated
 
 

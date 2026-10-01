@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from switchstand.edge_maintenance import Config, Failed
+from switchstand.edge_maintenance import Config, Failed, _offline_boundary
 from switchstand.stage12_cutover import (
     ConcreteCommands,
     Evidence,
+    Stage12Cutover,
     _binding_digest,
     freeze_evidence,
 )
@@ -76,6 +77,31 @@ def test_same_attempt_accepts_only_byte_identical_evidence(tmp_path: Path):
     _private(evidence.manifests[0], evidence.manifests[0].read_bytes() + b" ")
     with pytest.raises(Failed, match="does not match this attempt"):
         freeze_evidence(evidence, attempt)
+
+
+@pytest.mark.parametrize("boundary", ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"])
+def test_reconstructed_cutover_restores_durable_backup_for_host_resume(
+    tmp_path: Path, boundary: str,
+):
+    evidence, attempt = _inputs(tmp_path)
+    original = Stage12Cutover(attempt, evidence, None)  # type: ignore[arg-type]
+    frozen = freeze_evidence(evidence, attempt)
+    original.database_backup = "b" * 64
+    _private(attempt / "corpus-final.json", evidence.manifests[0].read_bytes())
+    proof = {
+        "schema_receipt": "c" * 64,
+        "stage1_receipt": "d" * 64,
+        "stage2_validation": "e" * 64,
+        "prepared_import": "f" * 64,
+        "final_manifest": evidence.expected_corpus_digest,
+        "stage2_receipt": "1" * 64,
+    }
+    original._write(frozen, boundary, **proof)  # pyright: ignore[reportPrivateUsage]
+
+    resumed = Stage12Cutover(attempt, evidence, None)  # type: ignore[arg-type]
+    assert resumed.database_backup == "PENDING"
+    assert _offline_boundary(resumed, _config(tmp_path, attempt)) == boundary
+    assert resumed.database_backup == "b" * 64
 
 
 @pytest.mark.parametrize("field", ["candidate", "corpus", "exception", "worksheet"])
