@@ -99,14 +99,22 @@ Shared state upgrades use `scripts/switchstand-upgrade-state` from clean, curren
 execution, other database clients, or an unexpected service, volume, or schema revision;
 creates a private custom-format dump under
 `~/.local/state/switchstand/backups`; restores and upgrades that dump in a
-disposable PostgreSQL instance; and only then upgrades shared state. It reads
-back the exact new revision and preserved pre-existing table counts. Keep the
-reported dump until the upgraded service has been exercised successfully.
+disposable PostgreSQL instance; and only then upgrades shared state. `rehearse`
+proves an upgrade/downgrade/re-upgrade cycle without touching shared state;
+`apply` (also the no-argument compatibility default) upgrades shared state but
+never activates database authority. Both create a private, fsynced JSON-lines
+receipt bound to exact source revision `0007`, runtime SHA, Alembic head, dump,
+counts, and deterministic schema/data digests. An `apply` attempt is durable
+before mutation and the same receipt reconciles to `APPLIED`, `ABORTED`, or
+`UNKNOWN`. Keep the reported dump and receipt until the upgraded
+service has been exercised successfully.
 
-The command deliberately does not downgrade or auto-restore after an ambiguous
-failure. Stop Switchstand writers, preserve the dump and command output, and
-diagnose before any recovery attempt. A restore is a separate reviewed operator
-action.
+Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
+`abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
+downgrade and verify the original revision and digests. Either marker, unreadable
+marker state, an ambiguous migration outcome, or any digest mismatch forbids
+rollback and retains the maintenance gate for forward repair. The command never
+automatically restores a backup.
 - Writer worktree: from the ordinary checkout, run
   `scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>`, then work from the printed path. The
   helper creates a new linked worktree when the target is absent. If the target and branch already exist, reuse succeeds
