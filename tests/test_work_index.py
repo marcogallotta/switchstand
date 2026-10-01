@@ -1,5 +1,6 @@
 import asyncio
 import os
+import stat
 import sys
 from uuid import UUID
 
@@ -39,6 +40,7 @@ from switchstand.work_index import (
     activate,
     normalize_title,
     prepare_manifest,
+    prepare_manifest_exact,
     reconcile_activation,
 )
 from switchstand.work_index_migration import load_receipt
@@ -48,9 +50,12 @@ from switchstand.work_metadata import (
     WorksheetRow,
     activate_metadata,
     authority_generation,
+    generate_prepared_worksheet,
     generate_worksheet,
     reconcile_metadata_activation,
+    validate_prepared_worksheet,
 )
+from switchstand.work_metadata_migration import write_worksheet
 
 
 def item(gid: str, title: str, *, completed: bool = False) -> ProviderSearchItem:
@@ -286,6 +291,95 @@ def test_stage2_waiting_requires_operator_supplied_reopen_truth():
             lifecycle_state="WAITING", canonical_root=UNKNOWN, owner_key=UNKNOWN,
             wait_kind=UNKNOWN, unblock_condition=UNKNOWN, next_due=UNKNOWN,
             next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
+        )
+
+
+async def test_prepared_stage2_worksheet_is_exact_and_cannot_flip_authority(index, tmp_path):
+    first, second = item("1", "Alpha"), item("2", "Done", completed=True)
+    corpus_digest = "a" * 64
+    dependencies = {"1": frozenset(), "2": frozenset()}
+    receipts = []
+    receipt = await prepare_manifest_exact(
+        index.engine, (first, second), corpus_digest=corpus_digest,
+        before_commit=receipts.append,
+    )
+    assert receipt == receipts[0]
+    worksheet = generate_prepared_worksheet(
+        (first, second), receipt, (), corpus_digest,
+    )
+    worksheet_path = tmp_path / "stage2.json"
+    write_worksheet(worksheet_path, worksheet)
+    assert stat.S_IMODE(worksheet_path.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError):
+        write_worksheet(worksheet_path, worksheet)
+    snapshots = (
+        ProviderMetadataSnapshot(
+            "1", first.revision, first.routing, "notes", first.context, frozenset()
+        ),
+        ProviderMetadataSnapshot(
+            "2", second.revision, second.routing, "notes", second.context, frozenset()
+        ),
+    )
+    validate_prepared_worksheet(
+        worksheet, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+    )
+    async with index.engine.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 0
+        assert await connection.scalar(text("SELECT count(*) FROM work_authority")) == 0
+
+    changed = worksheet.model_copy(update={"rows": (
+        worksheet.rows[0].model_copy(update={"provider_revision": "changed"}),
+        worksheet.rows[1],
+    )})
+    with pytest.raises(ValueError, match="revision"):
+        validate_prepared_worksheet(
+            changed, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+        )
+    changed = worksheet.model_copy(update={"rows": tuple(
+        row.model_copy(update={"lifecycle_state": "UNKNOWN"})
+        if row.provider_work_id == "2" else row for row in worksheet.rows
+    )})
+    with pytest.raises(ValueError, match="terminal"):
+        validate_prepared_worksheet(
+            changed, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+        )
+    changed = worksheet.model_copy(update={"prepare_receipt_digest": "0" * 64})
+    with pytest.raises(ValueError, match="preparation receipt"):
+        validate_prepared_worksheet(
+            changed, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+        )
+    changed = worksheet.model_copy(update={"rows": (
+        worksheet.rows[0].model_copy(update={"work_id": UUID(int=999)}), worksheet.rows[1],
+    )})
+    with pytest.raises(ValueError, match="identities"):
+        validate_prepared_worksheet(
+            changed, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+        )
+    changed = worksheet.model_copy(update={"rows": (
+        worksheet.rows[0].model_copy(update={"depends_on": (worksheet.rows[1].work_id,)}),
+        worksheet.rows[1],
+    )})
+    with pytest.raises(ValueError, match="dependencies"):
+        validate_prepared_worksheet(
+            changed, snapshots, (first, second), receipt, (), corpus_digest, dependencies,
+        )
+    with pytest.raises(ValueError, match="reviewed corpus"):
+        validate_prepared_worksheet(
+            worksheet, snapshots, (first, second), receipt, (), "b" * 64, dependencies,
+        )
+    drifted_snapshots = (
+        ProviderMetadataSnapshot(
+            "1", first.revision, first.routing, "notes", first.context, frozenset({"2"})
+        ),
+        snapshots[1],
+    )
+    drifted = worksheet.model_copy(update={"rows": (
+        worksheet.rows[0].model_copy(update={"depends_on": (worksheet.rows[1].work_id,)}),
+        worksheet.rows[1],
+    )})
+    with pytest.raises(ValueError, match="reviewed Stage 1 corpus"):
+        validate_prepared_worksheet(
+            drifted, drifted_snapshots, (first, second), receipt, (), corpus_digest, dependencies,
         )
 
 

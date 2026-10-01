@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import stat
 from pathlib import Path
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand import work_index
 from switchstand.contracts import Routing, WorkContext
+from switchstand.core import ProviderWork
 from switchstand.work_corpus import _with_digest, manifest_exception_digest, write_manifest
 from switchstand.work_index import (
     ActivationNotCommitted,
@@ -30,6 +32,8 @@ from switchstand.work_index_migration import (
     run,
     write_receipt,
 )
+from switchstand.work_metadata_migration import execute as metadata_execute
+from switchstand.work_metadata_migration import load_worksheet
 from switchstand.work_metadata_migration import run as metadata_run
 
 KNOWN = UUID("10000000-0000-4000-8000-000000000001")
@@ -273,6 +277,77 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     prepare_receipt = load_prepare_receipt(tmp_path / "prepare.json")
     inserted = dict(prepare_receipt.inserted_bindings)
     expected_before = (("gone", str(EXCEPTION)), ("known", str(KNOWN)))
+    by_provider = {row["provider_work_id"]: row for row in manifest["rows"]}
+
+    class Provider:
+        async def get(self, provider_id):
+            row = by_provider[provider_id]
+            return ProviderWork(
+                row["title"], "notes", row["completed"], row["revision"],
+                Routing.model_validate(row["routing"]), WorkContext.model_validate(row["context"]),
+                True,
+            )
+
+        async def dependencies_for_import(self, provider_id):
+            return frozenset(by_provider[provider_id]["dependencies"])
+
+    class Client:
+        async def aclose(self):
+            return None
+
+    async def resources():
+        return create_async_engine(os.environ["TEST_DATABASE_URL"]), Client(), Provider()
+
+    monkeypatch.setattr("switchstand.work_metadata_migration._resources", resources)
+    worksheet_path = tmp_path / "stage2.json"
+    await stage1_engine.dispose()
+    common = {
+        "confirm_offline": True, "receipt_path": tmp_path / "prepare.json",
+        "manifest_paths": paths, "expected_corpus_digest": corpus_digest,
+        "expected_exception_digest": exception_digest,
+    }
+    generated = await metadata_execute("generate-prepared", worksheet_path, **common)
+    assert generated.count == 3
+    reviewed_bytes = worksheet_path.read_bytes()
+    reviewed_digest = hashlib.sha256(reviewed_bytes).hexdigest()
+    with pytest.raises(ValueError, match="Human-Reviewed"):
+        await metadata_execute(
+            "validate-prepared", worksheet_path,
+            expected_worksheet_digest="0" * 64, **common,
+        )
+    validated = await metadata_execute(
+        "validate-prepared", worksheet_path,
+        expected_worksheet_digest=reviewed_digest, **common,
+    )
+    assert (validated.count, validated.digest) == (3, reviewed_digest)
+    def substitution(mutation):
+        async def substituting_resources():
+            if mutation == "replace":
+                replacement = worksheet_path.with_suffix(".replacement")
+                replacement.write_bytes(b"{")
+                replacement.chmod(0o600)
+                os.replace(replacement, worksheet_path)
+            else:
+                worksheet_path.write_bytes(b"{")
+            return await resources()
+        return substituting_resources
+
+    for mutation in ("replace", "in-place"):
+        worksheet_path.write_bytes(reviewed_bytes)
+        monkeypatch.setattr(
+            "switchstand.work_metadata_migration._resources", substitution(mutation),
+        )
+        validated = await metadata_execute(
+            "validate-prepared", worksheet_path,
+            expected_worksheet_digest=reviewed_digest, **common,
+        )
+        assert (validated.count, validated.digest) == (3, reviewed_digest)
+    worksheet_path.write_bytes(reviewed_bytes)
+    assert load_worksheet(worksheet_path).prepare_receipt_digest is not None
+    async with stage1_engine.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM work_authority")) == 0
+        assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 0
+    await stage1_engine.dispose()
     forged_inserted = tuple(sorted(prepare_receipt.inserted_bindings + (("known", str(KNOWN)),)))
     forged = PrepareReceipt(
         corpus_digest, digest, canonical_digest(forged_inserted),

@@ -39,6 +39,7 @@ class FrozenCorpus:
     items: tuple[ProviderSearchItem, ...]
     work_ids: dict[str, UUID | None]
     exceptions: dict[str, UUID]
+    dependencies: dict[str, frozenset[str]]
 
 
 def _stable_corpus(
@@ -158,7 +159,17 @@ def _stable_corpus(
         tuple(items),
         work_ids,
         exceptions,
+        {provider: frozenset(values) for provider, values in dependencies.items()},
     )
+
+
+def stable_corpus(
+    paths: tuple[Path, Path],
+    expected_corpus_digest: str,
+    expected_exception_digest: str,
+) -> FrozenCorpus:
+    """Load the exact reviewed two-scan corpus for another migration stage."""
+    return _stable_corpus(paths, expected_corpus_digest, expected_exception_digest)
 
 
 async def _validate_bindings(

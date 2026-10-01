@@ -723,13 +723,12 @@ async def prepare_manifest_exact(
     return await reconcile_preparation(engine, prepared)
 
 
-async def cleanup_preparation(
-    engine: AsyncEngine,
+def validate_prepare_receipt(
     receipt: PrepareReceipt,
     items: tuple[ImportItem, ...],
     expected_before: tuple[tuple[str, str], ...],
-) -> None:
-    """Remove only receipt-owned handles while authority is proven absent."""
+) -> dict[str, Handle]:
+    """Prove a preparation receipt is the exact reviewed binding transition."""
     providers = {item.provider_work_id for item in items}
     final_handles = {
         provider: Handle(UUID(value), "asana", provider)
@@ -744,6 +743,17 @@ async def cleanup_preparation(
         or manifest_digest(items, final_handles) != receipt.prepared_digest
     ):
         raise ActivationUnknown("prepare receipt does not match the reviewed manifests")
+    return final_handles
+
+
+async def cleanup_preparation(
+    engine: AsyncEngine,
+    receipt: PrepareReceipt,
+    items: tuple[ImportItem, ...],
+    expected_before: tuple[tuple[str, str], ...],
+) -> None:
+    """Remove only receipt-owned handles while authority is proven absent."""
+    validate_prepare_receipt(receipt, items, expected_before)
     connection = await engine.connect()
     transaction = await connection.begin()
     commit_started = False
