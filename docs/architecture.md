@@ -159,9 +159,9 @@ messaging, and required continuation:
   the exact Stage 1 preparation receipt and generated worksheet across the explicit Human Review
   pause. This checkpoint has no host-gate, service, or authority effect; those remain separate
   operator layers. See [Database-first Stage 2](database-first-stage2.md).
-  `stage12_operator.py` is the explicit target-bound composition layer: it stops at review, adopts
-  only the approved worksheet into the existing host receipt, then delegates authority/recovery to
-  reviewed owners. Landing invokes nothing; production and disposable targets are never inferred.
+  `stage12_operator.py` is the inert composition core: it stops at review, adopts only the approved
+  worksheet into the existing host receipt, then delegates authority/recovery to reviewed owners.
+  The explicit production/disposable CLI and C2d0 descriptor binding remain a separate layer.
 - `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
   inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
   its authority marker remains absent. It activates no runtime reads, writes, or content authority
@@ -307,6 +307,11 @@ the reviewed base, and the landing tree must equal the reviewed candidate tree.
 
 ## Operator provisioning surface
 
+`rehearsal_target.py` owns the explicit `switchstand-rehearsal-target` lifecycle for one
+descriptor-bound copied-state migration target. It creates only canonical private rehearsal
+roots and namespaced disposable Docker resources; teardown revalidates descriptor identity and
+Compose labels before removing that namespace. It never selects or changes production state.
+
 `durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command and the ordinary
 MCP `agent_project_bootstrap` adapter. It is a retained, explicit operator utility for creating or reconciling one marked Asana role project, its ordered
 CURRENT/WAITING/DEFERRED sections, the supplied custom fields, and a multihomed `AGENT MASTER` task.
@@ -333,6 +338,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
+| Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, Stage 1/2 cutover identity, and disposable Docker ownership tests |
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
 | Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |

@@ -33,6 +33,7 @@ class Review:
     def __init__(self):
         self.begins = self.prepares = self.aborts = 0
         self.digest = DIGEST
+        self.state = "REVIEW_PENDING"
 
     def begin(self) -> None:
         self.begins += 1
@@ -45,7 +46,7 @@ class Review:
         self.aborts += 1
 
     def status(self) -> str:
-        return "REVIEW_PENDING"
+        return self.state
 
 
 class Operations:
@@ -140,14 +141,23 @@ def test_resume_adopts_exact_approved_worksheet_before_deploy(
     assert len(deployed) == 1
     receipt = Receipt(config, deployed[0])
     assert receipt.value["offline_worksheet"] == DIGEST
+    assert status_window(config, review, deployed[0]) == "SNAPSHOTTED"
+    receipt.value["authority_crossed"] = True
+    receipt.write("OFFLINE_POSTGRES_AUTHORITY")
+    assert status_window(config, review, deployed[0]) == "POSTGRES_AUTHORITY"
+    receipt.write("OFFLINE_POSTGRES_AUTHORITY", "UNKNOWN")
+    assert status_window(config, review, deployed[0]) == "POSTGRES_AUTHORITY_UNKNOWN"
+    receipt.write("COMPLETE", "PASS")
+    assert status_window(config, review, deployed[0]) == "PASS"
 
 
-def test_resume_rejects_unapproved_digest_before_adoption(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("state", ["ATTEMPTING", "REVIEW_PENDING"])
+def test_resume_rejects_checkpoint_without_host_receipt_or_gate_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
 ):
     config, operations, review = _config(tmp_path), Operations(), Review()
     config.attempt_dir.mkdir(mode=0o700)
-    assert prepare_window(config, operations, review) == "REVIEW_PENDING"
+    review.state = state
     path = tmp_path / "evidence"
     path.write_bytes(b"evidence")
     evidence = Evidence(SHA, (path, path), DIGEST, DIGEST, path, "c" * 64, 1)
@@ -161,5 +171,6 @@ def test_resume_rejects_unapproved_digest_before_adoption(
     monkeypatch.setattr("switchstand.stage12_operator.deploy", deploy)
     assert resume_window(config, operations, review, evidence, "c" * 64) == "UNKNOWN"
     assert not called
-    assert operations.gated
+    assert not operations.gated
+    assert review.prepares == 0
     assert Receipt(config, None).value["offline_receipt"] is None
