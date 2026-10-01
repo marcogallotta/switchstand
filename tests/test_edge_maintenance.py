@@ -23,10 +23,10 @@ from switchstand.edge_maintenance import (
     HostOperations,
     Interrupted,
     Unknown,
-    _exclusive_lock,
     _validate_launch_mapping,
-    _validate_target,
     deploy,
+    exclusive_lock,
+    validate_target,
 )
 from switchstand.edge_monitor import HttpObservation
 
@@ -247,7 +247,7 @@ def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             output = str(subject.launcher) + "\n"
         return subprocess.CompletedProcess(command, 0, output, "")
 
-    monkeypatch.setattr(maintenance, "_run", run)
+    monkeypatch.setattr(maintenance, "run_host_command", run)
     return subject, HostOperations(subject), state
 
 
@@ -361,7 +361,7 @@ def test_resume_trust_rejects_host_identity_faults(
     elif fault == "git-read":
         monkeypatch.setattr(
             maintenance,
-            "_run",
+            "run_host_command",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 subprocess.CalledProcessError(1, ["git"])
             ),
@@ -497,7 +497,7 @@ def test_receipt_cannot_inject_retained_gate_proof(tmp_path: Path):
 def test_gate_retention_reports_its_own_unknown_class():
     operations = FakeOperations(unknown_at="gate")
     with pytest.raises(maintenance.GateRetentionUnknown):
-        maintenance._retain_gate(operations)
+        maintenance.retain_gate(operations)
 
 
 def test_offline_step_persists_ordered_boundaries_before_launcher_swap(tmp_path: Path):
@@ -753,7 +753,7 @@ def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):
 
     subject.candidate_launcher.write_text(f"runtime = {subject.candidate_runtime}\n")
     with pytest.raises(Failed, match="production target identity"):
-        _validate_target(replace(subject, fastmcp_state=tmp_path / "wrong-state"))
+        validate_target(replace(subject, fastmcp_state=tmp_path / "wrong-state"))
 
     _validate_launch_mapping(subject)
 
@@ -773,7 +773,7 @@ def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     rehearsals.chmod(0o700)
     root.chmod(0o700)
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
-    _validate_target(subject)
+    validate_target(subject)
     live = {
         "service": maintenance.SERVICE, "fastmcp_state": FASTMCP_STATE,
         "caddy": maintenance.CADDY, "local_url": maintenance.LOCAL_URL,
@@ -781,11 +781,11 @@ def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     }
     for field, value in live.items():
         with pytest.raises(Failed):
-            _validate_target(replace(subject, **{field: value}))  # pyright: ignore[reportCallIssue]
+            validate_target(replace(subject, **{field: value}))  # pyright: ignore[reportCallIssue]
     with pytest.raises(Failed):
-        _validate_target(replace(subject, local_url="http://127.0.0.1:8790/other"))
+        validate_target(replace(subject, local_url="http://127.0.0.1:8790/other"))
     with pytest.raises(Failed):
-        _validate_target(replace(subject, target="production"))
+        validate_target(replace(subject, target="production"))
 
     outside = tmp_path / "outside"
     escaped = replace(subject, attempt_dir=outside)
@@ -810,7 +810,7 @@ def test_disposable_target_rejects_symlinked_rehearsal_parent(
     )
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
     with pytest.raises(Failed, match="root is not exact"):
-        _validate_target(subject)
+        validate_target(subject)
 
 
 def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
@@ -843,7 +843,7 @@ def test_disposable_service_command_cannot_select_production_unit(
         commands.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="inactive\n", stderr="")
 
-    monkeypatch.setattr(maintenance, "_run", run)
+    monkeypatch.setattr(maintenance, "run_host_command", run)
     HostOperations(subject)._service("stop", "inactive")  # pyright: ignore[reportPrivateUsage]
     assert all(subject.service in command for command in commands)
     assert all(maintenance.SERVICE not in command for command in commands)
@@ -865,7 +865,7 @@ def test_running_process_binds_launcher_and_fastmcp_state(
     def main_pid(_command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 0, stdout=f"{pid}\n", stderr="")
 
-    monkeypatch.setattr(maintenance, "_run", main_pid)
+    monkeypatch.setattr(maintenance, "run_host_command", main_pid)
     operations = HostOperations(subject)
     assert operations._running_process_exact()
     assert not HostOperations(
@@ -883,10 +883,10 @@ def test_service_lock_contends_across_different_attempt_parents(tmp_path: Path):
     lock = tmp_path / "service.lock"
 
     with (
-        _exclusive_lock(lock),
+        exclusive_lock(lock),
         pytest.raises(SystemExit, match="another edge maintenance attempt"),
     ):
-        _exclusive_lock(lock)
+        exclusive_lock(lock)
 
 
 def test_gate_does_not_suppress_operator_interrupt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

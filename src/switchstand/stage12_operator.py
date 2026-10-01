@@ -1,5 +1,4 @@
 """Explicit two-step host operator for the Stage 1+2 review checkpoint."""
-# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -13,12 +12,8 @@ from .edge_maintenance import (
     Receipt,
     Unknown,
     deploy,
-)
-from .edge_maintenance import (
-    _retain_gate as retain_gate,
-)
-from .edge_maintenance import (
-    _validate_target as validate_target,
+    retain_gate,
+    validate_target,
 )
 from .stage12_cutover import (
     ConcreteCommands,

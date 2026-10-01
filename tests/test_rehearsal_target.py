@@ -325,7 +325,7 @@ def test_teardown_holds_shared_operator_lock(tmp_path, monkeypatch):
         yield
         events.append("released")
 
-    monkeypatch.setattr(target, "_exclusive_lock", locked)
+    monkeypatch.setattr(target, "exclusive_lock", locked)
     monkeypatch.setattr(target, "_teardown", lambda *_args, **_kwargs: events.append("teardown"))
     target.teardown("proof", run=docker)
     assert events == ["locked", "teardown", "released"]

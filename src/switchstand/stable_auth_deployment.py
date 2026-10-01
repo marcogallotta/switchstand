@@ -1,5 +1,4 @@
 """Fail-closed single-host activation and replacement for split authentication."""
-# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -34,9 +33,9 @@ from .edge_maintenance import (
     Failed,
     Interrupted,
     Unknown,
-    _atomic_copy,
-    _exclusive_lock,
-    _run,
+    atomic_copy,
+    exclusive_lock,
+    run_host_command,
 )
 from .edge_monitor_host import ExternalIngressHttp
 from .stable_auth import INTROSPECTION_PATH, IntrospectionContract
@@ -135,7 +134,7 @@ def _replace_proxy_nodes(value: object) -> object:
 
 
 def _unit_state(service: str) -> tuple[str, int, int]:
-    completed = _run(
+    completed = run_host_command(
         [
             "systemctl",
             "--user",
@@ -157,7 +156,7 @@ def _unit_state(service: str) -> tuple[str, int, int]:
 
 
 def _service(service: str, action: str, wanted: Literal["active", "inactive"]) -> None:
-    _run(["systemctl", "--user", action, service], check=False)
+    run_host_command(["systemctl", "--user", action, service], check=False)
     state, pid, _restarts = _unit_state(service)
     if wanted == "active" and state == "active" and pid > 0:
         return
@@ -173,7 +172,7 @@ def _inactive_exact(service: str, state: str, pid: int) -> bool:
 
 
 def _enablement_state(service: str) -> str:
-    completed = _run(["systemctl", "--user", "is-enabled", service], check=False)
+    completed = run_host_command(["systemctl", "--user", "is-enabled", service], check=False)
     state = completed.stdout.strip()
     if state not in {"enabled", "disabled", "not-found"}:
         raise Unknown(f"{service} startup state is unreadable")
@@ -185,7 +184,7 @@ def _enabled(service: str) -> bool:
 
 
 def _set_enabled(service: str, wanted: bool) -> None:
-    _run(["systemctl", "--user", "enable" if wanted else "disable", service], check=False)
+    run_host_command(["systemctl", "--user", "enable" if wanted else "disable", service], check=False)
     if _enabled(service) != wanted:
         raise Failed(f"{service} startup state did not change")
 
@@ -631,8 +630,8 @@ class HostActivationOperations:
             (c.current_runtime, c.current_sha),
             (c.candidate_runtime, c.candidate_sha),
         ):
-            head = _run(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
-            dirty = _run(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
+            head = run_host_command(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
+            dirty = run_host_command(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
             if head != expected or dirty:
                 raise Failed("runtime checkout is not the exact clean SHA")
         assets = HostAssets(
@@ -790,8 +789,8 @@ class HostActivationOperations:
 
     def install_split(self) -> None:
         for name in (AUTH_SERVICE, EDGE_SERVICE):
-            _atomic_copy(self.c.assets_dir / name, self.c.unit_dir / name, 0o600)
-        _run(["systemctl", "--user", "daemon-reload"])
+            atomic_copy(self.c.assets_dir / name, self.c.unit_dir / name, 0o600)
+        run_host_command(["systemctl", "--user", "daemon-reload"])
         _set_enabled(COMBINED_SERVICE, False)
         _set_enabled(AUTH_SERVICE, True)
         _set_enabled(EDGE_SERVICE, True)
@@ -860,7 +859,7 @@ class HostActivationOperations:
             "--public-url",
             self.c.public_origin.rstrip("/") + "/switchstand/mcp" if public else local_url,
         ]
-        return _run(command, check=False).returncode == 0
+        return run_host_command(command, check=False).returncode == 0
 
     def edge_ready(self) -> bool:
         return self._doctor(self.c.candidate_runtime, self.c.candidate_sha, False)
@@ -913,7 +912,7 @@ class HostActivationOperations:
         _set_enabled(COMBINED_SERVICE, True)
         for name in (AUTH_SERVICE, EDGE_SERVICE):
             (self.c.unit_dir / name).unlink(missing_ok=True)
-        _run(["systemctl", "--user", "daemon-reload"])
+        run_host_command(["systemctl", "--user", "daemon-reload"])
         _service(COMBINED_SERVICE, "start", "active")
         running = self._process_environment(COMBINED_SERVICE)
         if (
@@ -970,7 +969,7 @@ def run(argv: list[str] | None = None) -> int:
         parser.error("candidate SHAs or retry interval are invalid")
     arguments.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
     config = _config(arguments)
-    with _exclusive_lock(LOCK):
+    with exclusive_lock(LOCK):
 
         def interrupted(signum: int, _frame: object) -> None:
             raise Interrupted(f"activation interrupted by signal {signum}")

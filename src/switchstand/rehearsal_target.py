@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from .development import development_subnet
-from .edge_maintenance import Failed, Unknown, _exclusive_lock
+from .edge_maintenance import Failed, Unknown, exclusive_lock
 from .stage12_cutover import read_private
 
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
@@ -406,7 +406,7 @@ def operator_lock(name: str) -> Path:
 
 def teardown(name: str, *, run: Runner = _run) -> None:
     """Remove only resources whose exact namespace is owned by the descriptor."""
-    with _exclusive_lock(operator_lock(name)):
+    with exclusive_lock(operator_lock(name)):
         _teardown(name, run=run)
 
 

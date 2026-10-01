@@ -23,7 +23,7 @@ def args(tmp_path: Path, target: str) -> SimpleNamespace:
 def test_production_config_is_explicit_and_exact(tmp_path: Path, monkeypatch):
     values = args(tmp_path, "production")
     observed: list[Config] = []
-    monkeypatch.setattr(cli, "_validate_target", observed.append)
+    monkeypatch.setattr(cli, "validate_target", observed.append)
 
     config = cli._config(values)
 
@@ -47,7 +47,7 @@ def test_disposable_config_comes_only_from_ready_descriptor(tmp_path: Path, monk
     monkeypatch.setattr(cli, "load_ready", lambda name, sha, runtime: (
         called.append((name, sha, runtime)) or (root, descriptor)
     ))
-    monkeypatch.setattr(cli, "_validate_target", lambda _config: None)
+    monkeypatch.setattr(cli, "validate_target", lambda _config: None)
 
     config = cli._config(values)
 
@@ -99,7 +99,7 @@ def test_observation_failure_is_unknown_inside_shared_lock(monkeypatch, capsys):
         finally:
             events.append("released")
 
-    monkeypatch.setattr(cli, "_exclusive_lock", locked)
+    monkeypatch.setattr(cli, "exclusive_lock", locked)
     monkeypatch.setattr(cli, "_run", lambda _args: (_ for _ in ()).throw(Unknown("lost")))
     assert cli.main([]) == 2
     assert capsys.readouterr().out == "UNKNOWN\n"

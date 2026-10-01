@@ -279,7 +279,7 @@ def test_stop_requires_affirmative_inactive_zero_pid(
 ):
     monkeypatch.setattr(
         deployment,
-        "_run",
+        "run_host_command",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
     )
     monkeypatch.setattr(deployment, "_unit_state", lambda _service: (state, pid, 0))
@@ -292,7 +292,7 @@ def test_stop_requires_affirmative_inactive_zero_pid(
 def test_stop_accepts_only_terminal_zero_pid(state: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         deployment,
-        "_run",
+        "run_host_command",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
     )
     monkeypatch.setattr(deployment, "_unit_state", lambda _service: (state, 0, 0))
@@ -305,7 +305,7 @@ def test_stop_accepts_unknown_state_only_when_unit_absence_is_proved(
 ):
     monkeypatch.setattr(
         deployment,
-        "_run",
+        "run_host_command",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "not-found\n", ""),
     )
     monkeypatch.setattr(deployment, "_unit_state", lambda _service: ("unknown", 0, 0))
@@ -407,7 +407,7 @@ def test_public_doctor_overrides_optional_environment_url_with_activation_subjec
         observed.extend(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(deployment, "_run", run)
+    monkeypatch.setattr(deployment, "run_host_command", run)
 
     assert operations._doctor(subject.candidate_runtime, subject.candidate_sha, True)
     public_index = observed.index("--public-url")
@@ -420,10 +420,10 @@ def test_install_transfers_boot_ownership_from_combined_to_split(
     subject = config(tmp_path)
     operations = HostActivationOperations(subject)
     changes: list[tuple[str, bool]] = []
-    monkeypatch.setattr(deployment, "_atomic_copy", lambda *_args: None)
+    monkeypatch.setattr(deployment, "atomic_copy", lambda *_args: None)
     monkeypatch.setattr(
         deployment,
-        "_run",
+        "run_host_command",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
     )
     monkeypatch.setattr(
@@ -470,7 +470,7 @@ def test_pre_exposure_rollback_restores_boot_owner_before_ungating(
     )
     monkeypatch.setattr(
         deployment,
-        "_run",
+        "run_host_command",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
     )
     monkeypatch.setattr(deployment, "_unit_state", lambda _service: ("active", 42, 0))
