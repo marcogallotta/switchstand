@@ -69,6 +69,15 @@ apply, start, migrate, or activate those assets.
 `stable_auth_migration.py` owns offline exclusive-writer copy/checksum and immutable receipts for
 backup, relocation, explicit restore, and preserve-current-state rollback evidence. It never
 controls services or automatically restores OAuth state.
+`stable_auth_deployment.py` owns the inert, first combined-to-split activation transaction. It
+serializes with ordinary edge maintenance, retains a publicly verified Caddy gate across the
+service/state/route transition, binds both split processes to one exact candidate source tree, and
+transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
+the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
+combined service only while public exposure is still disproved. Any
+ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
+future split edge-only replacement transaction, candidate preparation, live qualification, or
+activation authority.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
@@ -266,6 +275,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
 | Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
 | Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
