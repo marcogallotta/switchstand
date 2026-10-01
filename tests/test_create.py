@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -118,6 +119,20 @@ async def test_create_binds_reserved_work_and_normal_work_readback():
     readback = await service.get(result.work_id)
     assert readback.status == "ok" and readback.item.id == result.work_id
     assert readback.item.title == "Created" and provider.creates == 1
+
+
+@pytest.mark.parametrize("invalid_title", [" \t ", "before\0after"])
+async def test_unindexable_title_is_rejected_before_create_preparation_or_send(
+    invalid_title,
+):
+    service, selected, _state, provider = subject()
+    req = request(selected, title=invalid_title)
+
+    result = await service.create(req)
+
+    assert result.status == "denied" and result.reason == "title_not_indexable"
+    assert provider.creates == 0
+    assert service.grants.effects == {}
 
 
 async def test_lost_create_response_recovers_after_restart_without_second_send():

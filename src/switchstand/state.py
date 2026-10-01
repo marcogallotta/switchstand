@@ -3,9 +3,25 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, ForeignKey, MetaData, Row, Table, Text, UniqueConstraint, select
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    MetaData,
+    Row,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .core import Handle
@@ -29,6 +45,47 @@ work_event_handles = Table(
     Column("provider_event_id", Text, nullable=False),
     UniqueConstraint("work_id", "provider", "provider_work_id", "provider_event_id"),
 )
+work_authority = Table(
+    "work_authority", metadata,
+    Column("scope", Text, primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_work_authority_scope"),
+    CheckConstraint("state = 'POSTGRES_AUTHORITY'", name="ck_work_authority_state"),
+    CheckConstraint("generation >= 1", name="ck_work_authority_generation"),
+)
+work_authority_cutovers = Table(
+    "work_authority_cutovers", metadata,
+    Column("scope", Text, primary_key=True),
+    Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_work_cutover_scope"),
+    CheckConstraint("generation >= 1", name="ck_work_cutover_generation"),
+)
+work_index = Table(
+    "work_index", metadata,
+    Column(
+        "work_id", PGUUID(as_uuid=True), ForeignKey("work_handles.id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("title", Text, nullable=False),
+    Column("normalized_title", Text, nullable=False),
+    Column("completed", Boolean, nullable=False),
+    Column("provider_revision", Text, nullable=False),
+    Column("row_version", BigInteger, nullable=False),
+    Column("routing", JSONB, nullable=False),
+    Column("context", JSONB, nullable=False),
+    CheckConstraint("title <> ''", name="ck_work_index_title"),
+    CheckConstraint("normalized_title <> ''", name="ck_work_index_normalized_title"),
+    CheckConstraint("provider_revision <> ''", name="ck_work_index_provider_revision"),
+    CheckConstraint("row_version >= 1", name="ck_work_index_row_version"),
+)
+Index(
+    "ix_work_index_title_search", text("to_tsvector('simple', normalized_title)"),
+    postgresql_using="gin",
+)
+Index("ix_work_index_page", work_index.c.normalized_title, work_index.c.work_id)
 columns = (work_handles.c.id, work_handles.c.provider, work_handles.c.provider_work_id)
 event_columns = (
     work_event_handles.c.id, work_event_handles.c.work_id, work_event_handles.c.provider,
@@ -50,7 +107,10 @@ def _handle(row: Row[tuple[UUID, str, str]] | None) -> Handle | None:
 
 class PostgresState:
     def __init__(self, engine: AsyncEngine):
+        from .work_index import WorkIndex
+
         self.engine = engine
+        self.work_index = WorkIndex(engine)
     async def get(self, work_id: UUID) -> Handle | None:
         async with self.engine.connect() as connection:
             query = select(*columns).where(work_handles.c.id == work_id)

@@ -143,6 +143,14 @@ This single-runtime maintenance path remains the **current deployed production m
 Agent-visible behavior during the gate is owned by
 [live-incident operations](operations-live-incident.md#known-edge-maintenance-window).
 
+The database-first Stage 1 cutover reuses this gate-and-stop boundary but is not performed by the
+edge replacement command. While the edge is stopped, the separately approved operator runs the
+one-shot final scan and atomic authority flip described in
+[Database-first Stage 1](database-first-stage1.md). Before that transaction commits, recovery may
+restart the old edge; afterward recovery is forward-only and the gate remains until the new runtime
+passes local verification. No agent announcement or acknowledgement protocol is part of this
+single-host maintenance window.
+
 The earlier deferral of zero-downtime authentication remains part of the decision history, but a
 later explicit decision reopened Option C for **bounded inert single-host implementation** after the
 corrected feasibility spike passed. The selected direction is a stable FastMCP authorization
