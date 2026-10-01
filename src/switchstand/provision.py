@@ -10,8 +10,10 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .core import ProviderError, provision_launch
+from .contracts import WorkGetRequest
+from .core import Controller, ProviderError, provision_launch
 from .grant_state import GrantState
+from .launch_source import repository_marker
 from .managed_identity import rotate_managed_grant
 from .provider import AsanaProvider
 from .state import PostgresState
@@ -27,11 +29,12 @@ def parser() -> argparse.ArgumentParser:
         "--reference", action="append", default=[], help="read-only Asana task URL or ID"
     )
     result.add_argument("--managed-agent", action="store_true")
+    result.add_argument("--repository", action="store_true")
     return result
 
 
 async def run(
-    active: str, references: tuple[str, ...], *, managed_agent: bool = False,
+    active: str, references: tuple[str, ...], *, managed_agent: bool = False, repository: bool = False,
 ) -> None:
     database_url = os.environ["DATABASE_URL"]
     token = os.environ["ASANA_TOKEN"]
@@ -49,6 +52,16 @@ async def run(
             asana_task_id(active),
             tuple(asana_task_id(value) for value in references),
         )
+        if repository:
+            current = await Controller(authority, PostgresState(engine), {
+                "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
+            }).get(WorkGetRequest(api_version="1", work_id=authority.active_work_id))
+            if current.status != "ok" or current.item is None:
+                raise ValueError("current work repository admission failed")
+            slug = repository_marker(current.item.notes)
+            if slug != "marcogallotta/ai-tools":
+                raise ValueError("repository is outside the prototype allowlist")
+            print(f"SWITCHSTAND_REPOSITORY={slug}")
         if managed_agent:
             await rotate_managed_grant(GrantState(engine), authority)
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
@@ -91,7 +104,8 @@ def main() -> None:
     try:
         require_current_schema()
         asyncio.run(run(
-            arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent
+            arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent,
+            repository=arguments.repository
         ))
     except (KeyError, ValueError, PermissionError, ProviderError, RuntimeError) as error:
         parser().exit(1, f"provisioning failed: {error}\n")

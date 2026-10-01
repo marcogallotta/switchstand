@@ -1,14 +1,17 @@
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .launch import clean_environment, provision
+from .launch import Authority, clean_environment, parse_authority, provision, provision_output
+from .launch_source import repository_marker
 from .session import supervise
 from .task_ref import asana_task_id
 
@@ -21,6 +24,7 @@ def initial_assignment(value: str) -> str:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Start development in a private task clone.")
+    result.add_argument("--target-repo", type=Path)
     result.add_argument("--active", required=True, help="active Asana task URL or ID")
     result.add_argument(
         "assignment", nargs=1, type=initial_assignment,
@@ -103,6 +107,63 @@ def _provider_origin(control: Path, env: dict[str, str]) -> str:
     return origin
 
 
+def provision_target(
+    control: Path, active: str, references: tuple[str, ...], env: dict[str, str]
+) -> tuple[Authority, str]:
+    output = provision_output(control, active, references, env, repository=True)
+    return parse_authority(output), repository_marker(output)
+
+
+@dataclass(frozen=True)
+class Target:
+    root: Path
+    origin: str
+    repository: str
+    main: str
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.repository.encode()).hexdigest()[:16]
+
+
+def validate_target(path: Path, repository: str, env: dict[str, str]) -> Target:
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError("target must be an absolute canonical checkout")
+    root = path.resolve(strict=True)
+    if root != path or Path(_git(root, "rev-parse", "--show-toplevel", env=env)) != root:
+        raise ValueError("target must be the canonical checkout root")
+    origin = _provider_origin(root, env)
+    allowed = {"https://github.com/marcogallotta/ai-tools.git",
+               "https://github.com/marcogallotta/ai-tools",
+               "git@github.com:marcogallotta/ai-tools.git",
+               "ssh://git@github.com/marcogallotta/ai-tools.git"}
+    if repository != "marcogallotta/ai-tools" or origin not in allowed:
+        raise ValueError("target origin does not match the admitted ai-tools repository")
+    _git(root, "fetch", "--no-tags", "origin",
+         "+refs/heads/main:refs/remotes/origin/main", env=env)
+    main = _git(root, "rev-parse", "refs/remotes/origin/main^{commit}", env=env)
+    return Target(root, origin, repository, main)
+
+
+def _task_mode(root: Path, task: str, target: Target | None) -> None:
+    marker = root / f"task-{task}.repository"
+    identity = target.repository if target else "switchstand"
+    legacy = root / f"task-{task}"
+    if target and legacy.exists():
+        raise ValueError("same-task cross-target/mode reuse is forbidden")
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink():
+            raise ValueError("unsafe task repository binding")
+        if marker.read_text().strip() != identity:
+            raise ValueError("same-task cross-target/mode reuse is forbidden")
+    elif target:
+        _write_managed(marker, identity + "\n")
+
+
+def _task_name(task: str, target: Target | None) -> str:
+    return f"task-{task}-{target.fingerprint}" if target else f"task-{task}"
+
+
 def durable_root(env: dict[str, str]) -> Path:
     return _private_directory(Path(env["HOME"]) / ".local/state/switchstand/writers")
 
@@ -116,10 +177,11 @@ def _bind_git_identity(control: Path, writer: Path, env: dict[str, str]) -> None
              _git(control, "config", "--get", key, env=env), env=env)
 
 
-def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
+def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str],
+                    target: Target | None = None) -> Path:
     writer = writer.resolve(strict=True)
     task = asana_task_id(active)
-    if writer != durable_root(env) / f"task-{task}":
+    if writer != durable_root(env) / _task_name(task, target):
         raise ValueError("writer is not the canonical private clone for this task")
     _private_directory(writer, create=False)
     git_dir = _private_directory(writer / ".git", create=False)
@@ -134,27 +196,31 @@ def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str
         raise ValueError("writer must not share an object store")
     if (git_dir / "switchstand-active-task").read_text().strip() != task:
         raise ValueError("writer task binding does not match")
+    if target and (git_dir / "switchstand-repository").read_text().strip() != target.repository:
+        raise ValueError("writer repository binding does not match")
     green = (git_dir / "switchstand-green-sha").read_text().strip()
     if subprocess.run(
         ["git", "-C", str(writer), "merge-base", "--is-ancestor", green, head],
         env=env, capture_output=True, check=False,
     ).returncode:
         raise ValueError("writer does not descend from its green baseline")
-    if _git(writer, "remote", "get-url", "origin", env=env) != _provider_origin(control, env):
+    if _git(writer, "remote", "get-url", "origin", env=env) != (target.origin if target else _provider_origin(control, env)):
         raise ValueError("writer origin is not the exact provider repository")
     return writer
 
 
-def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
+def create_writer(control: Path, active: str, env: dict[str, str],
+                  target: Target | None = None) -> Path:
     task = asana_task_id(active)
     root = durable_root(env)
-    writer = root / f"task-{task}"
+    _task_mode(root, task, target)
+    writer = root / _task_name(task, target)
     if writer.exists():
-        validated = validate_writer(control, writer, active, env)
+        validated = validate_writer(control, writer, active, env, target)
         head = _git(validated, "rev-parse", "HEAD", env=env)
         green_path = validated / ".git/switchstand-green-sha"
         green = green_path.read_text().strip()
-        accepted = _git(control, "rev-parse", "HEAD", env=env)
+        accepted = target.main if target else _git(control, "rev-parse", "HEAD", env=env)
         identity = f"writer {validated}: HEAD={head}; accepted main={accepted}"
         dirty = _git(validated, "status", "--porcelain", "--untracked-files=all", env=env)
         # A writer with task progress is recovery state, not a stale checkout.
@@ -162,25 +228,29 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
         # green baseline and no dirty files) may follow a newer accepted main.
         if not dirty and head == green and head != accepted:
             _git(validated, "fetch", "--no-tags", "--no-write-fetch-head",
-                 str(control), accepted, env=env)
+                 str(target.root if target else control), accepted, env=env)
             _fast_forward(validated, head, accepted, identity, env)
             green_path.write_text(accepted + "\n")
         _bind_git_identity(control, validated, env)
         return validated
     branch = f"v2-task-{task}"
-    base = _git(control, "rev-parse", "HEAD", env=env)
+    base = target.main if target else _git(control, "rev-parse", "HEAD", env=env)
     temporary = Path(tempfile.mkdtemp(prefix=f".task-{task}.", dir=root))
     try:
         subprocess.run(
-            ["git", "clone", "--no-local", "--no-checkout", str(control), str(temporary)],
+            ["git", "clone", "--no-local", "--no-checkout", str(target.root if target else control), str(temporary)],
             check=True, env=env, capture_output=True, text=True,
         )
         temporary.chmod(0o700)
         (temporary / ".git").chmod(0o700)
-        _git(temporary, "remote", "set-url", "origin", _provider_origin(control, env), env=env)
+        _git(temporary, "remote", "set-url", "origin", (target.origin if target else _provider_origin(control, env)), env=env)
+        if target:
+            _git(temporary, "fetch", "--no-tags", str(target.root), base, env=env)
         _git(temporary, "checkout", "-b", branch, base, env=env)
         _bind_git_identity(control, temporary, env)
         git_dir = temporary / ".git"
+        if target:
+            _write_managed(git_dir / "switchstand-repository", target.repository + "\n")
         (git_dir / "switchstand-active-task").write_text(task + "\n")
         (git_dir / "switchstand-green-sha").write_text(base + "\n")
         for marker in (git_dir / "switchstand-active-task", git_dir / "switchstand-green-sha"):
@@ -189,7 +259,7 @@ def create_writer(control: Path, active: str, env: dict[str, str]) -> Path:
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-    return validate_writer(control, writer, active, env)
+    return validate_writer(control, writer, active, env, target)
 
 
 def _validate_auth(home: Path) -> Path:
@@ -235,10 +305,17 @@ def prepared_check_environment(control: Path, env: dict[str, str]) -> str:
     return str(path.resolve(strict=True))
 
 
-def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str]) -> Path:
+def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str],
+                       target: Target | None = None) -> Path:
     task = asana_task_id(active)
     root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
-    managed = _private_directory(root / f"task-{task}")
+    _task_mode(root, task, target)
+    managed = _private_directory(root / _task_name(task, target))
+    binding = managed / "repository"
+    identity = target.repository if target else "switchstand"
+    if binding.exists() and binding.read_text().strip() != identity:
+        raise ValueError("runtime repository identity mismatch")
+    _write_managed(binding, identity + "\n")
     auth = _validate_auth(Path(env["HOME"]))
     link = managed / "auth.json"
     if link.exists() or link.is_symlink():
@@ -325,7 +402,7 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
     ]
 
 
-def run(active: str, assignment: str) -> None:
+def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     env = clean_environment(dict(os.environ))
     loaded_head = _git(Path.cwd(), "rev-parse", "HEAD", env=env)
     control = validate_control(Path.cwd(), env)
@@ -333,15 +410,25 @@ def run(active: str, assignment: str) -> None:
         # Load the accepted launcher's code before using any shared services.
         os.execv(str(control / "scripts/switchstand"),
                  [str(control / "scripts/switchstand"), "--active", active,
+                  *(["--target-repo", str(target_repo)] if target_repo else []),
                   "--", assignment])
     env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
-    writer = create_writer(control, active, env)
-    authority = provision(control, active, (), env)
+    target = None
+    if target_repo is not None:
+        authority, repository = provision_target(control, active, (), env)
+        target = validate_target(target_repo, repository, env)
+        runtime_root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
+        _task_mode(runtime_root, asana_task_id(active), target)
+        writer = create_writer(control, active, env, target)
+    else:
+        authority = provision(control, active, (), env)
+        writer = create_writer(control, active, env)
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)
     env["SWITCHSTAND_TASK_ID"] = asana_task_id(active)
-    env["CODEX_HOME"] = str(managed_codex_home(control, writer, active, env))
+    env["CODEX_HOME"] = str(managed_codex_home(control, writer, active, env, target)
+                            if target else managed_codex_home(control, writer, active, env))
     for name in tuple(env):
         upper = name.upper()
         if (any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))
@@ -354,7 +441,7 @@ def run(active: str, assignment: str) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        run(arguments.active, arguments.assignment[0])
+        run(arguments.active, arguments.assignment[0], arguments.target_repo)
     except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
         parser().exit(1, f"switchstand launch failed: {error}\n")
 

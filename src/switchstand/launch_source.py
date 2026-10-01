@@ -39,6 +39,15 @@ class LaunchSource:
     candidate_sha: str
 
 
+def repository_marker(notes: str) -> str:
+    values = [line.strip().partition("=") for line in notes.splitlines()
+              if line.strip().partition("=")[0] == "SWITCHSTAND_REPOSITORY"]
+    if (len(values) != 1 or values[0][1] != "="
+            or REPOSITORY_PATTERN.fullmatch(values[0][2]) is None):
+        raise LaunchSourceError("require exactly one valid SWITCHSTAND_REPOSITORY marker")
+    return values[0][2]
+
+
 def parse_notes(notes: str) -> LaunchSource:
     values: dict[str, str] = {}
     for line in notes.splitlines():

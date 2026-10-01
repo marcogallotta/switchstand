@@ -156,8 +156,8 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     with pytest.raises(RuntimeError, match="readback"):
         context.run("1218242783900077", "repair the launcher")
 
-    assert [event[0] for event in events] == ["preflight", "writer", "provision", "codex"]
-    provision_env = events[2][4]
+    assert [event[0] for event in events] == ["preflight", "provision", "writer", "codex"]
+    provision_env = events[1][4]
     codex_env = events[3][3]
     assert codex_env["SWITCHSTAND_CHECK_UV"] == str(tmp_path / "pinned-uv")
     assert "ASANA_TOKEN" not in provision_env
@@ -451,7 +451,8 @@ def test_clean_private_writer_fast_forwards_to_control(tmp_path):
     assert (writer / "tracked.txt").read_text() == "current\n"
 
 
-def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypatch, tmp_path):
+@pytest.mark.parametrize("external", [False, True])
+def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypatch, tmp_path, external):
     control = tmp_path / "control"
     control.mkdir()
     git(control, "init", "-b", "main")
@@ -462,6 +463,8 @@ def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypa
     git(control, "commit", "-m", "base")
     git(control, "remote", "add", "origin", "git@github.com:example/switchstand.git")
     environment = os.environ | {"HOME": str(tmp_path)}
+    target = context.Target(control, git(control, "remote", "get-url", "origin"),
+                            "marcogallotta/ai-tools", git(control, "rev-parse", "HEAD")) if external else None
     bind_identity = context._bind_git_identity
 
     def fail_identity(*args, **kwargs):
@@ -469,14 +472,15 @@ def test_failed_private_writer_creation_leaves_canonical_path_retryable(monkeypa
 
     monkeypatch.setattr(context, "_bind_git_identity", fail_identity)
     with pytest.raises(RuntimeError, match="identity unavailable"):
-        context.create_writer(control, "1218438438638352", environment)
+        context.create_writer(control, "1218438438638352", environment, target)
 
     root = context.durable_root(environment)
-    assert list(root.iterdir()) == []
+    assert sorted(path.name for path in root.iterdir()) == (
+        ["task-1218438438638352.repository"] if external else [])
     monkeypatch.setattr(context, "_bind_git_identity", bind_identity)
-    writer = context.create_writer(control, "1218438438638352", environment)
-    assert writer == root / "task-1218438438638352"
-    assert context.validate_writer(control, writer, "1218438438638352", environment) == writer
+    writer = context.create_writer(control, "1218438438638352", environment, target)
+    assert writer == root / context._task_name("1218438438638352", target)
+    assert context.validate_writer(control, writer, "1218438438638352", environment, target) == writer
 
 
 def test_exact_private_task_writer_allows_commit_while_primary_is_denied(tmp_path):
@@ -644,7 +648,8 @@ def test_durable_writer_root_rejects_symlink_and_permissive_directory(tmp_path):
         context.durable_root(os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
 
 
-def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch, tmp_path):
+@pytest.mark.parametrize("external", [False, True])
+def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch, tmp_path, external):
     monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: sys.executable)
     control = tmp_path / "control"
     writer = tmp_path / "writer"
@@ -656,8 +661,11 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     auth.write_text("{}\n")
     auth.chmod(0o600)
 
+    target = context.Target(writer, "origin", "marcogallotta/ai-tools", "a" * 40) if external else None
     managed = context.managed_codex_home(control, writer, "1218438438638352",
-                                         os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")})
+                                         os.environ | {"HOME": str(tmp_path), "SWITCHSTAND_CHECK_UV": str(tmp_path / "pinned-uv")}, target)
+    assert managed.name == context._task_name("1218438438638352", target)
+    assert (managed / "repository").read_text().strip() == (target.repository if target else "switchstand")
 
     assert (managed / "auth.json").is_symlink()
     assert (managed / "auth.json").resolve() == auth
@@ -748,3 +756,139 @@ def test_failed_preflight_stops_before_provision_or_codex(monkeypatch, tmp_path)
     monkeypatch.setattr(context.os, "execv", forbidden)
     with pytest.raises(ValueError, match="run scripts/bootstrap"):
         context.run("1218483858041754", "assignment")
+
+
+def test_external_writer_uses_target_main_and_preserves_progress(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    git(target, "init", "-b", "main")
+    git(target, "config", "user.name", "Test")
+    git(target, "config", "user.email", "test@example.invalid")
+    (target / "dish.txt").write_text("base")
+    git(target, "add", ".")
+    git(target, "commit", "-m", "base")
+    base = git(target, "rev-parse", "HEAD")
+    origin = "https://github.com/marcogallotta/ai-tools.git"
+    git(target, "remote", "add", "origin", origin)
+    (target / "dish.txt").write_text("dirty anchor")
+    admitted = context.Target(target, origin, "marcogallotta/ai-tools", base)
+    env = os.environ | {"HOME": str(tmp_path)}
+    task = "123"
+    writer = context.create_writer(target, task, env, admitted)
+    assert writer.name == f"task-{task}-{admitted.fingerprint}"
+    assert git(writer, "rev-parse", "HEAD") == base
+    assert (writer / "dish.txt").read_text() == "base"
+    assert git(writer, "remote", "get-url", "origin") == origin
+    (target / "dish.txt").write_text("new main")
+    git(target, "add", ".")
+    git(target, "commit", "-m", "advance target")
+    newer = context.Target(target, origin, admitted.repository, git(target, "rev-parse", "HEAD"))
+    context.create_writer(target, task, env, newer)
+    assert git(writer, "rev-parse", "HEAD") == newer.main
+    (writer / "dish.txt").write_text("task progress")
+    context.create_writer(target, task, env, admitted)
+    assert (writer / "dish.txt").read_text() == "task progress"
+    git(writer, "add", ".")
+    git(writer, "commit", "-m", "task progress")
+    checkpoint = git(writer, "rev-parse", "HEAD")
+    context.create_writer(target, task, env, newer)
+    assert git(writer, "rev-parse", "HEAD") == checkpoint
+    with pytest.raises(ValueError, match="cross-target/mode"):
+        context.create_writer(target, task, env)
+    (writer / ".git/switchstand-repository").write_text("wrong/repo")
+    with pytest.raises(ValueError, match="repository binding"):
+        context.validate_writer(target, writer, task, env, newer)
+
+
+@pytest.mark.parametrize("origin", ["/local/repo", "https://evil.test/marcogallotta/ai-tools.git",
+    "https://github.com/other/ai-tools.git", "https://token@github.com/marcogallotta/ai-tools.git"])
+def test_target_rejects_unsafe_origin_before_fetch(monkeypatch, tmp_path, origin):
+    def read(repo, *args, env):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        assert args == ("remote", "get-url", "origin")
+        return origin
+    monkeypatch.setattr(context, "_git", read)
+    with pytest.raises(ValueError):
+        context.validate_target(tmp_path, "marcogallotta/ai-tools", {})
+
+
+@pytest.mark.parametrize("target", [False, True])
+def test_reexec_preserves_target(monkeypatch, tmp_path, target):
+    monkeypatch.chdir(tmp_path)
+    heads = iter(("a" * 40, "b" * 40))
+    monkeypatch.setattr(context, "_git", lambda *a, **k: next(heads))
+    monkeypatch.setattr(context, "validate_control", lambda root, env: root)
+    def reexec(path, args):
+        assert args == [path, "--active", "123", *(["--target-repo", str(tmp_path)]
+                       if target else []), "--", "assignment"]
+        raise RuntimeError("reexec")
+    monkeypatch.setattr(context.os, "execv", reexec)
+    with pytest.raises(RuntimeError, match="reexec"):
+        context.run("123", "assignment", tmp_path if target else None)
+
+
+def test_external_admission_failure_precedes_writer(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(context, "_git", lambda *a, **k: "a" * 40)
+    monkeypatch.setattr(context, "validate_control", lambda root, env: root)
+    monkeypatch.setattr(context, "prepared_check_environment", lambda *a: "/uv")
+    def deny(*args):
+        raise ValueError("current work repository admission failed")
+    monkeypatch.setattr(context, "provision_target", deny)
+    monkeypatch.setattr(context, "create_writer", lambda *a: pytest.fail("writer effect"))
+    with pytest.raises(ValueError, match="admission"):
+        context.run("123", "assignment", tmp_path)
+
+
+def test_runtime_modes_cannot_share_task_state(tmp_path):
+    root = context._private_directory(tmp_path / "runtime")
+    target = context.Target(tmp_path, "origin", "marcogallotta/ai-tools", "a" * 40)
+    context._task_mode(root, "123", target)
+    context._task_mode(root, "123", target)
+    with pytest.raises(ValueError, match="cross-target/mode"):
+        context._task_mode(root, "123", None)
+    (root / "task-456").mkdir()
+    with pytest.raises(ValueError, match="cross-target/mode"):
+        context._task_mode(root, "456", target)
+
+
+def test_target_fetch_binds_remote_main_even_when_anchor_head_is_stale(monkeypatch, tmp_path):
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    git(anchor, "init", "-b", "main")
+    git(anchor, "config", "user.name", "Test")
+    git(anchor, "config", "user.email", "test@example.invalid")
+    (anchor / "file").write_text("old")
+    git(anchor, "add", ".")
+    git(anchor, "commit", "-m", "old")
+    old = git(anchor, "rev-parse", "HEAD")
+    (anchor / "file").write_text("provider main")
+    git(anchor, "commit", "-am", "new")
+    accepted = git(anchor, "rev-parse", "HEAD")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "--bare", str(anchor), str(remote))
+    git(anchor, "reset", "--hard", old)
+    (anchor / "file").write_text("dirty anchor")
+    git(anchor, "remote", "add", "origin", "https://github.com/marcogallotta/ai-tools.git")
+    real_git = context._git
+    def local_transport(repo, *args, env):
+        if args[:3] == ("fetch", "--no-tags", "origin"):
+            args = (*args[:2], str(remote), *args[3:])
+        return real_git(repo, *args, env=env)
+    monkeypatch.setattr(context, "_git", local_transport)
+    env = os.environ | {"HOME": str(tmp_path)}
+    admitted = context.validate_target(anchor, "marcogallotta/ai-tools", env)
+    assert admitted.main == accepted
+    control = tmp_path / "control"
+    control.mkdir()
+    git(control, "init", "-b", "main")
+    git(control, "config", "user.name", "Control")
+    git(control, "config", "user.email", "control@example.invalid")
+    git(control, "commit", "--allow-empty", "-m", "unrelated CONTROL")
+    writer = context.create_writer(control, "123", env, admitted)
+    assert git(writer, "config", "user.name") == "Control"
+    assert git(writer, "rev-parse", "HEAD") == accepted
+    assert (writer / "file").read_text() == "provider main"
+    assert git(anchor, "rev-parse", "HEAD") == old
+    assert (anchor / "file").read_text() == "dirty anchor"

@@ -140,6 +140,12 @@ explicit and evidence-gated. See [Resource-governed agent workers](resource-gove
 
 ### Development MCP
 
+`context.py` also owns the ai-tools-only ordinary `--target-repo` prototype. CONTROL remains
+Switchstand; `provision.py` admits the repository from one structured marker in provider-neutral
+current work before target effects. The canonical target origin and fetched main bind a separate
+private writer and repository-scoped Codex runtime. Task mode bindings prevent cross-repository
+state reuse; dirty and committed progress resumes without reset. Dish retains its native environment.
+
 `development.py` owns development-environment preparation and cleanup invoked by `launch.py`, plus
 the development-only MCP and its exact linked-writer/run boundary. The MCP exposes four tools:
 `check`, `commit_all_current_worktree`, `diagnostic_full_suite`, and `run_status`. The diagnostic
