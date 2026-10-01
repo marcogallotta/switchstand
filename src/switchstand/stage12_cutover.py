@@ -513,7 +513,7 @@ class ConcreteCommands:
             ]).stdout.strip()
         except (OSError, subprocess.SubprocessError) as error:
             raise Unknown("schema revision is unreadable") from error
-        if revision not in {"0007_agent_chat_identity", "0010_work_metadata_authority"}:
+        if revision not in {"0007_agent_chat_identity", "0011_workset_authority"}:
             raise Unknown("schema revision is unsupported")
         return revision
 

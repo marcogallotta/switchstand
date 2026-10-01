@@ -57,8 +57,10 @@ case "$*" in
     echo "$FAKE_REVISION" ;;
   "exec shared psql "*to_regclass*work_authority*) echo "$FAKE_STAGE1_EXISTS" ;;
   "exec shared psql "*to_regclass*work_metadata_authority*) echo "$FAKE_STAGE2_EXISTS" ;;
+  "exec shared psql "*to_regclass*workset_authority*) echo "$FAKE_STAGE3_EXISTS" ;;
   "exec shared psql "*"count(*) FROM work_authority"*) echo "$FAKE_STAGE1_ROWS" ;;
   "exec shared psql "*"count(*) FROM work_metadata_authority"*) echo "$FAKE_STAGE2_ROWS" ;;
+  "exec shared psql "*"count(*) FROM workset_authority"*) echo "$FAKE_STAGE3_ROWS" ;;
   "exec shared psql "*pg_stat_activity*) echo "$FAKE_CLIENTS" ;;
   "exec shared psql "*) echo "$FAKE_COUNTS" ;;
   "exec shared pg_dump "*--schema-only*) printf 'schema-%s%s' "$(cat "$FAKE_STATE/shared-revision" 2>/dev/null || echo "$FAKE_REVISION")" "$FAKE_DUMP_SUFFIX" ;;
@@ -77,7 +79,7 @@ case "$*" in
   "run --rm switchstand-upgrade:"*" heads") echo "$FAKE_HEADS" ;;
   "run --rm --network container:switchstand-upgrade-rehearsal-"*)
     [ "$FAKE_FAIL_REHEARSAL" = 0 ] || exit 17
-    case "$*" in *" downgrade "*) for arg do last=$arg; done; echo "$last" >"$FAKE_STATE/rehearsal-revision" ;; *) echo 0010_work_metadata_authority >"$FAKE_STATE/rehearsal-revision" ;; esac ;;
+    case "$*" in *" downgrade "*) for arg do last=$arg; done; echo "$last" >"$FAKE_STATE/rehearsal-revision" ;; *) echo 0011_workset_authority >"$FAKE_STATE/rehearsal-revision" ;; esac ;;
   "run --rm --network container:shared "*)
     case "$*" in
       *" downgrade "*) for arg do last=$arg; done; echo "$last" >"$FAKE_STATE/shared-revision" ;;
@@ -114,10 +116,12 @@ esac
         "FAKE_FAIL_SHARED": "0",
         "FAKE_STAGE1_EXISTS": "f",
         "FAKE_STAGE2_EXISTS": "f",
+        "FAKE_STAGE3_EXISTS": "f",
         "FAKE_STAGE1_ROWS": "0",
         "FAKE_STAGE2_ROWS": "0",
-        "FAKE_HEADS": "0010_work_metadata_authority (head)",
-        "FAKE_FAILED_REVISION": "0010_work_metadata_authority",
+        "FAKE_STAGE3_ROWS": "0",
+        "FAKE_HEADS": "0011_workset_authority (head)",
+        "FAKE_FAILED_REVISION": "0011_workset_authority",
         "FAKE_DUMP_SUFFIX": "",
     }
     return repo, env
@@ -275,7 +279,7 @@ def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 1
-    assert "expected exact source 0007_agent_chat_identity or 0010_work_metadata_authority; actual unexpected" in result.stderr
+    assert "expected exact source 0007_agent_chat_identity or 0011_workset_authority; actual unexpected" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
     assert "build" not in trace
@@ -371,7 +375,7 @@ def test_rehearses_before_shared_upgrade_and_preserves_backup(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0007_agent_chat_identity -> 0010_work_metadata_authority" in result.stdout
+    assert "0007_agent_chat_identity -> 0011_workset_authority" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7|8|9" in result.stdout
     backups = list((tmp_path / "backups").glob("*.dump"))
     assert len(backups) == 1
@@ -381,8 +385,8 @@ def test_rehearses_before_shared_upgrade_and_preserves_backup(tmp_path):
     rehearsal = trace.index("run --rm --network container:switchstand-upgrade-rehearsal-")
     shared = trace.index("run --rm --network container:shared")
     assert rehearsal < shared
-    assert (tmp_path / "state" / "rehearsal-revision").read_text().strip() == "0010_work_metadata_authority"
-    assert (tmp_path / "state" / "shared-revision").read_text().strip() == "0010_work_metadata_authority"
+    assert (tmp_path / "state" / "rehearsal-revision").read_text().strip() == "0011_workset_authority"
+    assert (tmp_path / "state" / "shared-revision").read_text().strip() == "0011_workset_authority"
     assert "--restrict-key=SWITCHSTANDSTATEDIGEST" in trace
 
 
@@ -425,7 +429,7 @@ def test_upgrades_existing_0006_and_preserves_agent_mailboxes(tmp_path):
 
 def test_current_head_without_exact_receipt_is_unknown(tmp_path):
     repo, env = _repo(tmp_path)
-    env["FAKE_REVISION"] = "0010_work_metadata_authority"
+    env["FAKE_REVISION"] = "0011_workset_authority"
 
     result = _run(repo, env)
 
@@ -443,7 +447,7 @@ def test_rehearse_cycles_without_mutating_shared_and_writes_private_receipt(tmp_
     result = _run(repo, env, "rehearse", str(receipt))
 
     assert result.returncode == 0, result.stderr
-    assert "0007_agent_chat_identity -> 0010_work_metadata_authority -> 0007_agent_chat_identity -> 0010_work_metadata_authority" in result.stdout
+    assert "0007_agent_chat_identity -> 0011_workset_authority -> 0007_agent_chat_identity -> 0011_workset_authority" in result.stdout
     assert receipt.stat().st_mode & 0o777 == 0o600
     assert '"outcome": "REHEARSED"' in receipt.read_text()
     assert "run --rm --network container:shared" not in Path(env["FAKE_TRACE"]).read_text()
@@ -453,14 +457,14 @@ def test_abort_uses_exact_apply_receipt_and_refuses_after_authority(tmp_path):
     repo, env = _repo(tmp_path)
     apply_receipt = tmp_path / "apply.json"
     assert _run(repo, env, "apply", str(apply_receipt)).returncode == 0
-    env["FAKE_STAGE1_EXISTS"] = "t"
-    env["FAKE_STAGE1_ROWS"] = "1"
+    env["FAKE_STAGE3_EXISTS"] = "t"
+    env["FAKE_STAGE3_ROWS"] = "1"
 
     result = _run(repo, env, "abort-pre-authority", str(apply_receipt))
 
     assert result.returncode == 1
     assert "POSTGRES_AUTHORITY present; downgrade forbidden" in result.stderr
-    assert Path(env["FAKE_STATE"]).joinpath("shared-revision").read_text().strip() == "0010_work_metadata_authority"
+    assert Path(env["FAKE_STATE"]).joinpath("shared-revision").read_text().strip() == "0011_workset_authority"
 
 
 def test_abort_before_authority_restores_exact_original_digest(tmp_path):
