@@ -321,7 +321,9 @@ the reviewed base, and the landing tree must equal the reviewed candidate tree.
 `rehearsal_target.py` owns the explicit `switchstand-rehearsal-target` lifecycle for one
 descriptor-bound copied-state migration target. It creates only canonical private rehearsal
 roots and namespaced disposable Docker resources; teardown revalidates descriptor identity and
-Compose labels before removing that namespace. Provisioning failures are durable and bounded;
+Compose labels before removing that namespace. Its default network is pre-created on the canonical
+deterministic development `/24`, and the descriptor binds the exact subnet and Docker IPAM.
+Provisioning failures are durable and bounded;
 their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
 namespaced resources. It never selects or changes production state.
 
