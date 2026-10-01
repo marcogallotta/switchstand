@@ -145,3 +145,14 @@ def test_control_python_does_not_execute_candidate_startup_or_indirect_import(tm
 
     assert control_marker.read_text() == "control"
     assert not candidate_marker.exists()
+
+
+@pytest.mark.parametrize("notes", ["", "SWITCHSTAND_REPOSITORY=",
+    "SWITCHSTAND_REPOSITORY=bad", "SWITCHSTAND_REPOSITORY=x/y\nSWITCHSTAND_REPOSITORY=x/y"])
+def test_ordinary_repository_requires_one_exact_marker(notes):
+    with pytest.raises(launch_source.LaunchSourceError):
+        launch_source.repository_marker(notes)
+
+
+def test_ordinary_repository_does_not_require_candidate_markers():
+    assert launch_source.repository_marker("SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools") == "marcogallotta/ai-tools"

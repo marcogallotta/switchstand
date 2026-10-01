@@ -198,6 +198,21 @@ keeps maintenance active and forbids schema rollback or old-runtime restart.
   process group are outside this bounded guarantee.
   The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
+- Cross-repository ordinary prototype (ai-tools only):
+  `scripts/switchstand --active <task> --target-repo <absolute canonical ai-tools checkout> -- <assignment>`.
+  Trusted CONTROL remains Switchstand. Before any target writer effect, provisioning binds the WorkId
+  and reads current work through `Controller.get`; notes must contain exactly one
+  `SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools` marker. No candidate/base markers are required.
+  TARGET is an identity anchor and may be dirty; its exact GitHub origin must match admission.
+  WRITER is an independent repo-scoped clone from freshly fetched target `origin/main`, never
+  CONTROL or dirty target contents. Repo-bound writer and CODEX_HOME identities reject same-task
+  cross-target/mode reuse. Dirty files and local commits resume exactly; only an untouched writer
+  follows newer target main. Omitting `--target-repo` preserves legacy paths and behavior.
+  Dish owns its native environment: `cd dish`, `python3 -m venv --clear .venv`, then
+  `.venv/bin/python -m pip install -r requirements-test.txt` and task-relevant focused pytest.
+  Switchstand's pinned uv remains launcher-only. Credential stripping and CONTROL context MCP
+  remain active. Publication and live Dish proof are unproved here; the latter requires the separately
+  authorized ai-tools bootstrap bridge. This prototype does not generalize isolated qualification.
 - Managed exact-candidate Codex qualification uses the isolated CONTROL route below; there is no
   candidate-local trusted launcher. The candidate remains writable work input only, while CONTROL owns launcher Python,
   Codex project configuration and managed/development MCP wrappers. Live use remains fail-closed until the separately
