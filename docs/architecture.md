@@ -321,7 +321,9 @@ the reviewed base, and the landing tree must equal the reviewed candidate tree.
 `rehearsal_target.py` owns the explicit `switchstand-rehearsal-target` lifecycle for one
 descriptor-bound copied-state migration target. It creates only canonical private rehearsal
 roots and namespaced disposable Docker resources; teardown revalidates descriptor identity and
-Compose labels before removing that namespace. It never selects or changes production state.
+Compose labels before removing that namespace. Provisioning failures are durable and bounded;
+their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
+namespaced resources. It never selects or changes production state.
 
 `durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command and the ordinary
 MCP `agent_project_bootstrap` adapter. It is a retained, explicit operator utility for creating or reconciling one marked Asana role project, its ordered

@@ -135,7 +135,10 @@ FastMCP snapshot digests, namespaced Compose resources, copied-state paths, and
 three isolated loopback endpoints, then restores the backup into its disposable
 PostgreSQL service and extracts the bounded FastMCP tree. `teardown NAME` first
 revalidates that descriptor and every Compose label, then removes only its
-containers, volume, network, and private root. A production or foreign identity
+container, volume, network, and private root. A failed provision durably records
+its exact step, exit status, and bounded diagnostic; teardown also accepts that
+exact `FAILED` descriptor and removes only the zero-or-one resources whose namespace,
+identity, and labels it proves. A production, incomplete, or foreign identity
 is rejected before removal. Provisioning and teardown do not change production
 services, state, settings, or routing.
 
