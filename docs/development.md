@@ -276,8 +276,12 @@ The standalone updater runs the published installer, whose `update_visible_comma
 atomically replaces `${CODEX_INSTALL_DIR:-$HOME/.local/bin}/codex` with a symlink to
 `~/.codex/packages/standalone/current/bin/codex`. The observed October 1 launcher
 was exactly that symlink. A one-time shim installation did not own subsequent writes.
-The replacement cause is established; the reported hang downstream of bypassing
-Coordinator dispatch remains a separate symptom, not a demonstrated binary defect.
+The launcher replacement is separate from the post-dispatch hang. Marco confirmed
+on 2026-10-02 that a stuck keyring caused the in-repository hang and is now fixed.
+Prior controlled evidence supports OAuth credential lookup blocking: disabling all
+MCP completed in 4.9 seconds; canonical HTTP MCP alone timed out, as did runs with
+plugins or hooks disabled. Shim overwrite did not cause that post-dispatch hang.
+The recurrence candidate addresses launcher replacement only.
 
 Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
 `switchstand-codex-shim.path` recovery watch. It requires a working user manager;
