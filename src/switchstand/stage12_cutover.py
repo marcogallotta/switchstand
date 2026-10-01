@@ -49,6 +49,17 @@ class Reconciled:
     backup_digest: str = ""
 
 
+@dataclass(frozen=True)
+class ReviewEvidence:
+    """Exact corpus inputs for the offline worksheet-review checkpoint."""
+
+    candidate_sha: str
+    manifests: tuple[Path, Path]
+    expected_corpus_digest: str
+    exception_digest: str
+    worksheet: Path
+
+
 class CutoverCommands(Protocol):
     def schema_state(self, receipt: Path) -> Reconciled: ...
     def apply_schema(self, receipt: Path) -> None: ...
@@ -61,6 +72,12 @@ class CutoverCommands(Protocol):
     def activate_stage1(self, prepared_digest: str, receipt: Path) -> None: ...
     def stage2_state(self, receipt: Path) -> Reconciled: ...
     def activate_stage2(self, receipt: Path) -> None: ...
+
+
+class ReviewCommands(Protocol):
+    def prepare_review(self, evidence: ReviewEvidence) -> tuple[str, str]: ...
+    def reconcile_review(self, evidence: ReviewEvidence, worksheet_digest: str) -> tuple[str, str]: ...
+    def cleanup_review(self, evidence: ReviewEvidence) -> None: ...
 
 
 def _digest(value: object) -> bool:
@@ -131,6 +148,162 @@ def _publish_or_match(path: Path, data: bytes, label: str) -> None:
             os.fsync(stream.fileno())
     finally:
         os.close(descriptor)
+
+
+class ReviewCheckpoint:
+    """Durable pre-authority pause between random WorkIds and worksheet approval."""
+
+    def __init__(
+        self, attempt_dir: Path, evidence: ReviewEvidence, commands: ReviewCommands
+    ) -> None:
+        self.attempt_dir, self.evidence, self.commands = attempt_dir, evidence, commands
+        self.receipt_path = attempt_dir / "stage12-review.json"
+
+    def _validate_attempt(self) -> None:
+        try:
+            metadata = self.attempt_dir.lstat()
+            valid = (
+                self.attempt_dir.is_absolute() and not self.attempt_dir.is_symlink()
+                and stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == os.getuid()
+                and metadata.st_mode & 0o777 == 0o700
+                and self.attempt_dir.resolve(strict=True) == self.attempt_dir
+            )
+        except (OSError, RuntimeError) as error:
+            raise Failed("review attempt directory is unavailable") from error
+        if not valid:
+            raise Failed("review attempt directory is not exact")
+
+    def _load(self) -> dict[str, object] | None:
+        if not self.receipt_path.exists():
+            return None
+        try:
+            raw = json.loads(read_private(self.receipt_path, "review checkpoint receipt"))
+        except (Failed, TypeError, ValueError) as error:
+            raise Unknown("review checkpoint receipt is invalid") from error
+        expected = {
+            "schema_version": 1,
+            "candidate_sha": self.evidence.candidate_sha,
+            "corpus_digest": self.evidence.expected_corpus_digest,
+            "exception_digest": self.evidence.exception_digest,
+        }
+        if not isinstance(raw, dict):
+            raise Unknown("review checkpoint does not bind exact evidence")
+        value = cast(dict[str, object], raw)
+        if any(value.get(key) != item for key, item in expected.items()):
+            raise Unknown("review checkpoint does not bind exact evidence")
+        status = value.get("status")
+        proofs = tuple(value.get(key) for key in (
+            "prepare_receipt", "prepared_import", "worksheet_digest"
+        ))
+        if status not in {"ATTEMPTING", "REVIEW_PENDING", "ABORTED"} or not (
+            all(item is None for item in proofs)
+            if status == "ATTEMPTING" or (status == "ABORTED" and proofs == (None,) * 3)
+            else all(_digest(item) for item in proofs)
+        ):
+            raise Unknown("review checkpoint proof is malformed")
+        if proofs == (None,) * 3:
+            return value
+        try:
+            worksheet = read_private(self.evidence.worksheet, "Stage 2 review worksheet")
+            prepare = read_private(
+                self.attempt_dir / "stage1-prepare.json", "Stage 1 preparation receipt"
+            )
+        except Failed as error:
+            raise Unknown("review checkpoint evidence is unavailable") from error
+        if (
+            hashlib.sha256(worksheet).hexdigest() != value["worksheet_digest"]
+            or hashlib.sha256(prepare).hexdigest() != value["prepare_receipt"]
+        ):
+            raise Unknown("review checkpoint evidence changed")
+        return value
+
+    def _write(
+        self, status: str, prepare: str | None = None,
+        prepared: str | None = None, worksheet: str | None = None,
+    ) -> None:
+        payload = {
+            "schema_version": 1,
+            "candidate_sha": self.evidence.candidate_sha,
+            "corpus_digest": self.evidence.expected_corpus_digest,
+            "exception_digest": self.evidence.exception_digest,
+            "prepare_receipt": prepare,
+            "prepared_import": prepared,
+            "worksheet_digest": worksheet,
+            "status": status,
+        }
+        encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{self.receipt_path.name}.", dir=self.attempt_dir
+        )
+        temporary = Path(name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.receipt_path)
+        finally:
+            os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+        directory = os.open(self.attempt_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def prepare(self) -> str:
+        self._validate_attempt()
+        existing = self._load()
+        if existing is not None:
+            if existing["status"] == "ABORTED":
+                raise Failed("review checkpoint was already aborted")
+            if existing["status"] == "REVIEW_PENDING":
+                prepared, worksheet = self.commands.reconcile_review(
+                    self.evidence, cast(str, existing["worksheet_digest"])
+                )
+                if (
+                    prepared != existing["prepared_import"]
+                    or worksheet != existing["worksheet_digest"]
+                ):
+                    raise Unknown("review checkpoint no longer reconciles exact evidence")
+                return worksheet
+        else:
+            if any(os.path.lexists(path) for path in (
+                self.attempt_dir / "stage1-prepare.json", self.evidence.worksheet,
+            )):
+                raise Unknown("fresh review attempt contains subordinate evidence")
+            self._write("ATTEMPTING")
+        prepared, worksheet = self.commands.prepare_review(self.evidence)
+        prepare_path = self.attempt_dir / "stage1-prepare.json"
+        if not _digest(prepared) or not _digest(worksheet):
+            raise Unknown("review preparation proof is malformed")
+        prepare = hashlib.sha256(read_private(prepare_path, "Stage 1 preparation receipt")).hexdigest()
+        observed = hashlib.sha256(
+            read_private(self.evidence.worksheet, "Stage 2 review worksheet")
+        ).hexdigest()
+        if worksheet != observed:
+            raise Unknown("generated worksheet proof does not match exact bytes")
+        self._write("REVIEW_PENDING", prepare, prepared, worksheet)
+        return worksheet
+
+    def abort(self) -> None:
+        self._validate_attempt()
+        existing = self._load()
+        if existing is None:
+            raise Unknown("review checkpoint is not durably prepared")
+        if existing["status"] == "ABORTED":
+            return
+        prepare_path = self.attempt_dir / "stage1-prepare.json"
+        if prepare_path.exists():
+            self.commands.cleanup_review(self.evidence)
+        elif self.evidence.worksheet.exists():
+            raise Unknown("worksheet exists without its preparation receipt")
+        self._write("ABORTED", *(
+            (cast(str, existing["prepare_receipt"]), cast(str, existing["prepared_import"]),
+             cast(str, existing["worksheet_digest"]))
+            if existing["status"] == "REVIEW_PENDING" else (None, None, None)
+        ))
 
 
 def freeze_evidence(evidence: Evidence, attempt_dir: Path) -> FrozenEvidence:
@@ -416,7 +589,7 @@ class Stage12Cutover:
 class ConcreteCommands:
     """Target-bound adapters for the reviewed schema, Stage 1, and Stage 2 CLIs."""
 
-    def __init__(self, config: Config, evidence: Evidence):
+    def __init__(self, config: Config, evidence: Evidence | ReviewEvidence):
         self.c, self.source = config, evidence
         self.target = "production" if config.target == "production" else f"disposable:{cast(Path, config.target_root).name}"
         self._environment_cache: dict[str, str] | None = None
@@ -532,6 +705,8 @@ class ConcreteCommands:
         return hashlib.sha256(read_private(path, "subordinate receipt")).hexdigest()
 
     def _frozen(self) -> FrozenEvidence:
+        if not isinstance(self.source, Evidence):
+            raise Failed("approved worksheet evidence is required")
         root = self.c.attempt_dir
         return FrozenEvidence(
             self.source.candidate_sha,
@@ -541,6 +716,82 @@ class ConcreteCommands:
             root / "stage2-worksheet.json",
             self.source.worksheet_digest,
         )
+
+    def _review_arguments(self, evidence: ReviewEvidence) -> list[object]:
+        return [
+            "--confirm-offline", "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.expected_corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--receipt", self.c.attempt_dir / "stage1-prepare.json",
+        ]
+
+    def prepare_review(self, evidence: ReviewEvidence) -> tuple[str, str]:
+        arguments = self._review_arguments(evidence)
+        prepared = self._module(
+            "switchstand.work_index_migration", "prepare", *arguments, check=False
+        )
+        match = re.search(
+            r"(?:^|\s)prepared_import_sha256=([0-9a-f]{64})(?:\s|$)", prepared.stdout
+        )
+        if prepared.returncode or match is None:
+            error = prepared.stderr.strip() or "Stage 1 preparation is unknown"
+            raise Unknown(error)
+        if evidence.worksheet.exists():
+            digest = hashlib.sha256(
+                read_private(evidence.worksheet, "Stage 2 review worksheet")
+            ).hexdigest()
+            action: tuple[object, ...] = (
+                "validate-prepared", evidence.worksheet, *arguments,
+                "--expected-worksheet-digest", digest,
+            )
+        else:
+            action = ("generate-prepared", evidence.worksheet, *arguments)
+        generated = self._module(
+            "switchstand.work_metadata_migration", *action, check=False
+        )
+        worksheet = re.search(
+            r"(?:^|\s)worksheet_sha256=([0-9a-f]{64})(?:\s|$)", generated.stdout
+        )
+        if generated.returncode or worksheet is None:
+            error = generated.stderr.strip() or "Stage 2 worksheet preparation is unknown"
+            raise Unknown(error)
+        return match.group(1), worksheet.group(1)
+
+    def cleanup_review(self, evidence: ReviewEvidence) -> None:
+        result = self._module(
+            "switchstand.work_index_migration",
+            "prepare-cleanup",
+            *self._review_arguments(evidence),
+            check=False,
+        )
+        if result.returncode:
+            raise Unknown(result.stderr.strip() or "Stage 1 preparation cleanup is unknown")
+
+    def reconcile_review(
+        self, evidence: ReviewEvidence, worksheet_digest: str
+    ) -> tuple[str, str]:
+        receipt = self.c.attempt_dir / "stage1-prepare.json"
+        prepared = self._module(
+            "switchstand.work_index_migration", "prepare-reconcile",
+            "--confirm-offline", "--receipt", receipt, check=False,
+        )
+        match = re.search(
+            r"(?:^|\s)prepared_import_sha256=([0-9a-f]{64})(?:\s|$)", prepared.stdout
+        )
+        if prepared.returncode or match is None:
+            raise Unknown(prepared.stderr.strip() or "Stage 1 preparation is unknown")
+        result = self._module(
+            "switchstand.work_metadata_migration", "validate-prepared", evidence.worksheet,
+            *self._review_arguments(evidence),
+            "--expected-worksheet-digest", worksheet_digest, check=False,
+        )
+        worksheet = re.search(
+            r"(?:^|\s)worksheet_sha256=([0-9a-f]{64})(?:\s|$)", result.stdout
+        )
+        if result.returncode or worksheet is None:
+            raise Unknown(result.stderr.strip() or "Stage 2 worksheet reconciliation is unknown")
+        return match.group(1), worksheet.group(1)
 
     def schema_state(self, receipt: Path) -> Reconciled:
         revision = self._revision()
