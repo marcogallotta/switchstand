@@ -201,5 +201,5 @@ def test_downgrade_refuses_after_stage3_authority(database_prerequisite):
     command.upgrade(config, "head")
     with engine.connect() as connection:
         assert connection.scalar(select(text("version_num")).select_from(
-            text("alembic_version"))) == "0011_workset_authority"
+            text("alembic_version"))) == "0012_outcome_state"
     engine.dispose()

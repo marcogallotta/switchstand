@@ -12,7 +12,7 @@ operation=${1:-apply}
 case "$operation" in rehearse|apply|abort-pre-authority) ;; *) echo "unknown state-upgrade operation: $operation" >&2; exit 2;; esac
 receipt=${2:-}
 prior_receipt=
-EXPECTED_NEW=0011_workset_authority
+EXPECTED_NEW=0012_outcome_state
 case "$target_identity" in
     production) PROJECT=switchstand; target_name=production ;;
     disposable:*)
@@ -223,7 +223,7 @@ volume_identity=$(docker volume inspect --format \
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
-    0011_workset_authority)
+    0012_outcome_state)
         [ "$operation" = abort-pre-authority ] || [ "$resume_attempt" = true ] \
             || { echo "schema is already $EXPECTED_NEW without an exact reconcilable receipt; outcome UNKNOWN" >&2; exit 1; }
         [ "$EXPECTED_OLD" = 0007_agent_chat_identity ] \

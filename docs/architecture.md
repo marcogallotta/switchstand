@@ -188,6 +188,9 @@ messaging, and required continuation:
   current-workset discovery is deferred until a runtime identity source and contract are selected;
   this foundation makes no handoff-readiness claim, activates no writes or content authority, and
   migrates no provider notes, comments, attachments, or history.
+  `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and
+  deterministic owner/Marco/dispatch action derivation. It does not own Stage 2 waits,
+  dependencies, authorization, scheduling, activation, or MCP result enrichment.
   `workset_capture.py` and the structure-only provider reads form the separate inert input
   boundary: they capture an exact, twice-stable, digestible inventory of projects, sections,
   task memberships, parents, and revisions with strictly bounded pagination. They do not map or
