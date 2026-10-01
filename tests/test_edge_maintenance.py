@@ -262,11 +262,34 @@ def test_reconcile_classifies_effect_completed_before_phase_receipt(
         assert added["fastmcp_snapshot"] == hashlib.sha256(b"snapshot").hexdigest()
 
 
+def test_reconcile_preserves_ungated_phase_when_safety_gate_was_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "APPLIED")
+    monkeypatch.setattr(operations, "_service_state", lambda: "ACTIVE")
+    monkeypatch.setattr(operations, "local_ready", lambda: True)
+    operations.snapshot_file.write_bytes(b"snapshot")
+    operations.snapshot_file.chmod(0o600)
+    operations.backup.write_bytes(b"current launcher")
+    operations.backup.chmod(0o600)
+    subject.launcher.write_bytes(b"candidate launcher")
+
+    phase, proof = operations.reconcile_phase(
+        "UNGATED",
+        {"fastmcp_snapshot": hashlib.sha256(b"snapshot").hexdigest()},
+        offline=True,
+    )
+
+    assert phase == "UNGATED"
+    assert proof == {"gate_retained": "true"}
+
+
 @pytest.mark.parametrize(
     "fault",
     [
         "attempt-mode", "attempt-link", "relative", "wrong-owner",
-        "launcher-link", "launcher-digest", "dirty",
+        "launcher-link", "launcher-loop", "launcher-digest", "dirty", "git-read",
     ],
 )
 def test_resume_trust_rejects_host_identity_faults(
@@ -288,8 +311,19 @@ def test_resume_trust_rejects_host_identity_faults(
     elif fault == "launcher-link":
         subject.candidate_launcher.unlink()
         subject.candidate_launcher.symlink_to(subject.launcher)
+    elif fault == "launcher-loop":
+        subject.candidate_launcher.unlink()
+        subject.candidate_launcher.symlink_to(subject.candidate_launcher)
     elif fault == "launcher-digest":
         subject.candidate_launcher.write_bytes(b"changed")
+    elif fault == "git-read":
+        monkeypatch.setattr(
+            maintenance,
+            "_run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, ["git"])
+            ),
+        )
     else:
         state["dirty"] = True
     with pytest.raises(Unknown):

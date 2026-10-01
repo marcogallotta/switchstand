@@ -375,7 +375,7 @@ class HostOperations:
                 raise OSError
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
                 return hashlib.file_digest(stream, "sha256").hexdigest()
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             raise Unknown(f"host artifact is not exact: {path.name}") from exc
         finally:
             if descriptor >= 0:
@@ -392,7 +392,7 @@ class HostOperations:
                 or c.attempt_dir.resolve(strict=True) != c.attempt_dir
             ):
                 raise OSError
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             raise Unknown("attempt directory is not exact") from exc
         for runtime, expected in (
             (c.current_runtime, c.current_sha), (c.candidate_runtime, c.candidate_sha),
@@ -402,21 +402,34 @@ class HostOperations:
                 or runtime.resolve(strict=True) != runtime
             ):
                 raise Unknown("runtime path is not exact")
-            head = _run(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
-            dirty = _run(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
+            head = self._observe(
+                ["git", "-C", str(runtime), "rev-parse", "HEAD"]
+            ).stdout.strip()
+            dirty = self._observe(
+                ["git", "-C", str(runtime), "status", "--porcelain"]
+            ).stdout
             if head != expected or dirty:
                 raise Unknown("runtime checkout is not the exact clean SHA")
         if self._artifact_digest(c.candidate_launcher, 0o700) != c.candidate_launcher_sha:
             raise Unknown("candidate launcher changed")
         self._artifact_digest(c.env_file, 0o600)
-        unit = _run([
+        unit = self._observe([
             "systemctl", "--user", "show", c.service, "--property=ExecStart", "--value",
         ]).stdout
         if str(c.launcher) not in unit:
             raise Unknown("edge unit does not execute the selected launcher")
 
+    @staticmethod
+    def _observe(
+        command: list[str], *, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            return _run(command, check=check)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise Unknown("host state readback failed") from exc
+
     def _service_state(self) -> Literal["ACTIVE", "INACTIVE", "UNKNOWN"]:
-        state = _run(
+        state = self._observe(
             ["systemctl", "--user", "is-active", self.c.service], check=False
         ).stdout.strip()
         if state == "active" and self._running_process_exact():
@@ -424,9 +437,11 @@ class HostOperations:
         if state != "inactive":
             return "UNKNOWN"
         endpoint = urlparse(self.c.local_url)
+        if endpoint.hostname is None or endpoint.port is None:
+            return "UNKNOWN"
         try:
             with socket.create_connection(
-                (cast(str, endpoint.hostname), cast(int, endpoint.port)), timeout=1
+                (endpoint.hostname, endpoint.port), timeout=1
             ):
                 return "UNKNOWN"
         except OSError:
@@ -507,7 +522,7 @@ class HostOperations:
         if phase == "STARTED" and gate == "ABSENT" and self.public_ready():
             return "UNGATED", {}
         if phase == "UNGATED" and gate == "APPLIED":
-            return "STARTED", {}
+            return phase, {"gate_retained": "true"}
         if phase in {"UNGATED", "COMPLETE"} and gate == "ABSENT":
             return phase, {}
         if phase == "STARTED" and gate == "APPLIED":
