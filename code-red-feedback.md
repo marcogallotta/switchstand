@@ -40,3 +40,18 @@ clearing evidence is:
 Remaining delivery truth: fresh remote fetch and exact-current-main composition are blocked by the
 host SSH configuration ownership failure recorded in ignored `friction.md`; cached `origin/main`
 is two commits ahead and its changed paths do not overlap this candidate.
+
+## 2026-10-01 delivery reconciliation
+
+The delivery blocker above is cleared. Exact candidate
+`4ce70e55b1d8d2778756260928d15ca3a22677ac` received terminal independent review after its
+focused corrections, passed exact-head and final composition qualification, and landed through
+PR #290 as merge `b8e95cf7f1a534df3ae57fe69a0cad2494cb55dc`. PR #289 was closed without merge because its
+reopened composition run retained the obsolete event base; PR #290 qualified the unchanged exact
+candidate against the current base.
+
+Current `main` `5631bdfdbbe2a3475c2f50da0036f5ab04bd46d8` descends from that merge and retains the
+atomic private-status publication, pre-evidence `PENDING` posture, non-deferrable authenticated
+restart/refresh-and-watch recovery gate, and their static regressions. Current-main exact-head CI
+and repository-bundle publication both passed. This closes delivery for the Code Red process
+documentation package; it did not deploy, activate, or change live service/provider settings.
