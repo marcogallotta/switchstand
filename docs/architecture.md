@@ -301,6 +301,11 @@ the reviewed base, and the landing tree must equal the reviewed candidate tree.
 
 ## Operator provisioning surface
 
+`rehearsal_target.py` owns the explicit `switchstand-rehearsal-target` lifecycle for one
+descriptor-bound copied-state migration target. It creates only canonical private rehearsal
+roots and namespaced disposable Docker resources; teardown revalidates descriptor identity and
+Compose labels before removing that namespace. It never selects or changes production state.
+
 `durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command and the ordinary
 MCP `agent_project_bootstrap` adapter. It is a retained, explicit operator utility for creating or reconciling one marked Asana role project, its ordered
 CURRENT/WAITING/DEFERRED sections, the supplied custom fields, and a multihomed `AGENT MASTER` task.
@@ -327,6 +332,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
+| Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, Stage 1/2 cutover identity, and disposable Docker ownership tests |
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
 | Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |

@@ -128,6 +128,17 @@ non-symlink `~/.local/state/switchstand/rehearsals/NAME` root. Receipts bind tha
 exact target, project, volume, and network, so resume or abort cannot cross targets.
 Selecting a target does not create or populate it.
 
+`switchstand-rehearsal-target provision NAME` is the separate copied-state
+provisioner. It creates only the canonical private rehearsal root, records a
+mode-`0600` descriptor binding the exact candidate, source database backup and
+FastMCP snapshot digests, namespaced Compose resources, copied-state paths, and
+three isolated loopback endpoints, then restores the backup into its disposable
+PostgreSQL service and extracts the bounded FastMCP tree. `teardown NAME` first
+revalidates that descriptor and every Compose label, then removes only its
+containers, volume, network, and private root. A production or foreign identity
+is rejected before removal. Provisioning and teardown do not change production
+services, state, settings, or routing.
+
 `stage12_cutover.ConcreteCommands` binds the offline state machine to reviewed migration
 commands. Disposable runs derive `DATABASE_URL` from their namespaced PostgreSQL container.
 A later host CLI must reconcile process loss; this adapter grants no activation authority.
