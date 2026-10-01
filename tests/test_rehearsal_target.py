@@ -22,11 +22,12 @@ class Docker:
         self.project = "switchstand-rehearsal-proof"
         self.container = "c" * 64
         self.container_present = True
+        self.subnet = target.development_subnet(target.REHEARSALS, "proof")
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
         output = ""
-        if self.fault == "compose" and command[-4:] == ["up", "-d", "--wait", "postgres"]:
+        if self.fault == "network_create" and command[:3] == ["docker", "network", "create"]:
             detail = "could not find an available, non-overlapping IPv4 address pool\x00\x7f\x85\u202e" + (
                 "x" * target.FAILURE_DETAIL_LIMIT
             )
@@ -61,16 +62,25 @@ class Docker:
             if self.fault != "absent" and self.container_present:
                 output = (self.container if "--no-trunc" in command else self.container[:12]) + "\n"
         elif command[:3] in (["docker", "volume", "ls"], ["docker", "network", "ls"]):
-            if self.fault != "absent":
+            if self.fault == "network_collision" and command[1] == "network":
+                if command[-1].startswith("name="):
+                    output = f"{self.project}_default\n"
+            elif self.fault != "absent":
                 suffix = "postgres-data" if command[1] == "volume" else "default"
                 output = f"{self.project}_{suffix}\n"
         elif command[:3] in (["docker", "volume", "inspect"], ["docker", "network", "inspect"]):
             suffix = "postgres-data" if command[1] == "volume" else "default"
             label = "production" if self.fault == "label" else suffix
-            output = json.dumps([{"Name": f"{self.project}_{suffix}", "Labels": {
+            value = {"Name": f"{self.project}_{suffix}", "Labels": {
                 "com.docker.compose.project": self.project,
                 f"com.docker.compose.{command[1]}": label,
-            }}])
+            }}
+            if command[1] == "network":
+                value["IPAM"] = {"Config": [{
+                    "Subnet": "10.255.255.0/24" if self.fault == "subnet" else self.subnet,
+                    "Gateway": self.subnet.removesuffix("0/24") + "1",
+                }]}
+            output = json.dumps([value])
         return subprocess.CompletedProcess(command, 0, output, "")
 
 
@@ -107,6 +117,7 @@ def test_provision_binds_and_populates_only_namespaced_target(tmp_path, monkeypa
     assert value["project"] == "switchstand-rehearsal-proof"
     assert value["volume"] == "switchstand-rehearsal-proof_postgres-data"
     assert value["network"] == "switchstand-rehearsal-proof_default"
+    assert value["subnet"] == target.development_subnet(target.REHEARSALS, "proof")
     assert len(set(value["endpoints"].values())) == 3
     assert all(item.startswith("http://127.0.0.1:") for item in value["endpoints"].values())
     assert Path(value["copied_database_backup"]).read_bytes() == b"postgres-copy"
@@ -114,6 +125,16 @@ def test_provision_binds_and_populates_only_namespaced_target(tmp_path, monkeypa
     assert copied.is_dir() and stat.S_IMODE(copied.stat().st_mode) == 0o700
     assert (copied / "oauth.json").read_bytes() == b"oauth-copy"
     assert value["database_backup_sha256"] != value["fastmcp_snapshot_sha256"]
+    network_create = [
+        "docker", "network", "create", "--subnet", value["subnet"],
+        "--label", f"com.docker.compose.project={value['project']}",
+        "--label", "com.docker.compose.network=default", value["network"],
+    ]
+    assert network_create in docker.commands
+    assert docker.commands.index(network_create) < next(
+        index for index, command in enumerate(docker.commands)
+        if command[-4:] == ["up", "-d", "--wait", "postgres"]
+    )
     assert any(command[:2] == ["docker", "cp"] for command in docker.commands)
     assert not any("switchstand_postgres-data" in part for command in docker.commands for part in command)
     root, ready = target.load_ready("proof", SHA, runtime, run=docker)
@@ -139,15 +160,15 @@ def test_failed_provision_records_bounded_command_evidence_and_zero_resource_cle
     tmp_path, monkeypatch,
 ):
     runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
-    failed = Docker(runtime, fault="compose")
+    failed = Docker(runtime, fault="network_create")
 
-    with pytest.raises(Failed, match="failed at compose_up"):
+    with pytest.raises(Failed, match="failed at network_create"):
         target.provision("proof", SHA, runtime, backup, snapshot, run=failed)
 
     descriptor = target.REHEARSALS / "proof/target.json"
     value = json.loads(descriptor.read_text())
     assert value["status"] == "FAILED"
-    assert value["failure"]["step"] == "compose_up"
+    assert value["failure"]["step"] == "network_create"
     assert value["failure"]["kind"] == "CalledProcessError"
     assert value["failure"]["exit_code"] == 1
     assert len(value["failure"]["stderr"]) == target.FAILURE_DETAIL_LIMIT
@@ -162,6 +183,20 @@ def test_failed_provision_records_bounded_command_evidence_and_zero_resource_cle
     assert not descriptor.parent.exists()
     assert not any(command[:2] == ["docker", "rm"] for command in absent.commands)
     assert not any(command[2:3] == ["rm"] for command in absent.commands)
+
+
+def test_failed_provision_refuses_foreign_network_name_collision(tmp_path, monkeypatch):
+    runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
+    failed = Docker(runtime, fault="network_create")
+    with pytest.raises(Failed):
+        target.provision("proof", SHA, runtime, backup, snapshot, run=failed)
+    observed = Docker(runtime, fault="network_collision")
+
+    with pytest.raises(Failed, match="does not own exact network inventory"):
+        target.teardown("proof", run=observed)
+
+    assert (target.REHEARSALS / "proof/target.json").exists()
+    assert not any(command[2:3] == ["rm"] for command in observed.commands)
 
 
 def test_failed_provision_cleanup_requires_and_removes_exact_partial_resources(
@@ -252,7 +287,7 @@ def test_load_ready_refuses_candidate_or_copied_state_drift(tmp_path, monkeypatc
     assert docker.commands == []
 
 
-@pytest.mark.parametrize("fault", ["endpoints", "container", "stopped", "tree"])
+@pytest.mark.parametrize("fault", ["endpoints", "container", "stopped", "tree", "subnet"])
 def test_load_ready_refuses_descriptor_or_live_container_drift(tmp_path, monkeypatch, fault):
     runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
     setup = Docker(runtime)
@@ -269,6 +304,8 @@ def test_load_ready_refuses_descriptor_or_live_container_drift(tmp_path, monkeyp
         observed.fault = "stopped"
     elif fault == "tree":
         (descriptor.parent / "copied-state/fastmcp/oauth.json").write_bytes(b"drift")
+    elif fault == "subnet":
+        observed.fault = "subnet"
 
     with pytest.raises(Failed):
         target.load_ready("proof", SHA, runtime, run=observed)
@@ -310,7 +347,7 @@ def test_teardown_refuses_foreign_descriptor_before_removal(tmp_path, monkeypatc
     assert descriptor.exists() and all("rm" not in command[1:3] for command in docker.commands)
 
 
-@pytest.mark.parametrize("fault", ["network", "volume", "label"])
+@pytest.mark.parametrize("fault", ["network", "volume", "label", "subnet"])
 def test_teardown_refuses_foreign_resources_before_any_removal(tmp_path, monkeypatch, fault):
     runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
     setup = Docker(runtime)

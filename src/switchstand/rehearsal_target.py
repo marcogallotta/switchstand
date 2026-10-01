@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from .development import development_subnet
 from .edge_maintenance import Failed, Unknown, _exclusive_lock
 from .stage12_cutover import read_private
 
@@ -110,6 +111,7 @@ def _identity(name: str) -> dict[str, str]:
         "edge_service": f"{project}.service",
         "volume": f"{project}_postgres-data",
         "network": f"{project}_default",
+        "subnet": development_subnet(REHEARSALS, name),
     }
 
 
@@ -252,8 +254,20 @@ def provision(
         "docker", "compose", "-p", identity["project"], "--project-directory", str(runtime),
         "-f", str(runtime / "compose.state.yaml"),
     ]
-    step = "compose_up"
+    step = "network_create"
     try:
+        run([
+            "docker", "network", "create", "--subnet", identity["subnet"],
+            "--label", f"com.docker.compose.project={identity['project']}",
+            "--label", "com.docker.compose.network=default", identity["network"],
+        ])
+        step = "network_verify"
+        if not _owned_resource(
+            "network", identity["network"], identity["project"],
+            subnet=identity["subnet"], run=run,
+        ):
+            raise Failed("provisioned network identity is unavailable")
+        step = "compose_up"
         run([*compose, "up", "-d", "--wait", "postgres"])
         step = "compose_container"
         container = run([*compose, "ps", "-q", "postgres"]).stdout.strip()
@@ -275,7 +289,7 @@ def provision(
         ])
         step = "database_copy_cleanup"
         run(["docker", "exec", container, "rm", "-f", "/tmp/source.dump"])
-    except (Failed, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+    except (Failed, IndexError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
         descriptor["status"] = "FAILED"
         descriptor["failure"] = _failure(step, error)
         _write(path, descriptor, replace=True)
@@ -373,6 +387,11 @@ def load_ready(
     exact_health = cast(dict[str, object], health) if isinstance(health, dict) else {}
     if exact_state.get("Running") is not True or exact_health.get("Status") != "healthy":
         raise Failed("disposable container is not running and healthy")
+    if not _owned_resource(
+        "network", cast(str, value["network"]), cast(str, value["project"]),
+        subnet=cast(str, value["subnet"]), run=run,
+    ):
+        raise Failed("descriptor does not bind the exact READY network")
     return root, value
 
 
@@ -392,7 +411,7 @@ def teardown(name: str, *, run: Runner = _run) -> None:
 
 
 def _owned_resource(
-    kind: str, resource: str, project: str, *, run: Runner,
+    kind: str, resource: str, project: str, *, subnet: str | None = None, run: Runner,
 ) -> bool:
     project_names = run([
         "docker", kind, "ls", "-q", "--filter", f"label=com.docker.compose.project={project}",
@@ -409,10 +428,21 @@ def _owned_resource(
     item = json.loads(run(["docker", kind, "inspect", resource]).stdout)[0]
     labels = cast(dict[str, object], item).get("Labels") if isinstance(item, dict) else None
     exact = cast(dict[str, object], labels) if isinstance(labels, dict) else {}
+    ipam = cast(dict[str, object], item).get("IPAM") if isinstance(item, dict) else None
+    configs = cast(dict[str, object], ipam).get("Config") if isinstance(ipam, dict) else None
+    valid_subnet = subnet is None
+    if subnet is not None and isinstance(configs, list):
+        exact_configs = cast(list[object], configs)
+        valid_subnet = (
+            len(exact_configs) == 1
+            and isinstance(exact_configs[0], dict)
+            and cast(dict[str, object], exact_configs[0]).get("Subnet") == subnet
+        )
     if (
         cast(dict[str, object], item).get("Name") != resource
         or exact.get("com.docker.compose.project") != project
         or exact.get(f"com.docker.compose.{kind}") != resource.removeprefix(f"{project}_")
+        or not valid_subnet
     ):
         raise Failed(f"descriptor does not own {kind} {resource}")
     return True
@@ -439,7 +469,11 @@ def _teardown(name: str, *, run: Runner) -> None:
         resources: list[tuple[str, str]] = []
         for kind in ("volume", "network"):
             resource = cast(str, value[kind])
-            if _owned_resource(kind, resource, project, run=run):
+            if _owned_resource(
+                kind, resource, project,
+                subnet=cast(str, value["subnet"]) if kind == "network" else None,
+                run=run,
+            ):
                 resources.append((kind, resource))
         if ids:
             run(["docker", "rm", "-f", ids[0]])

@@ -133,9 +133,12 @@ provisioner. It creates only the canonical private rehearsal root, records a
 mode-`0600` descriptor binding the exact candidate, source database backup and
 FastMCP snapshot digests, namespaced Compose resources, copied-state paths, and
 three isolated loopback endpoints, then restores the backup into its disposable
-PostgreSQL service and extracts the bounded FastMCP tree. `teardown NAME` first
-revalidates that descriptor and every Compose label, then removes only its
-container, volume, network, and private root. A failed provision durably records
+PostgreSQL service and extracts the bounded FastMCP tree. Before Compose starts, it
+creates that namespace's default network on the deterministic `/24` selected by the
+canonical development-subnet policy; the descriptor, provisioning readback, READY
+validation, and teardown bind both its exact Compose labels and IPAM subnet.
+`teardown NAME` first revalidates that descriptor and every Compose label, then
+removes only its container, volume, network, and private root. A failed provision durably records
 its exact step, exit status, and bounded diagnostic; teardown also accepts that
 exact `FAILED` descriptor and removes only the zero-or-one resources whose namespace,
 identity, and labels it proves. A production, incomplete, or foreign identity
