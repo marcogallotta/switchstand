@@ -466,6 +466,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             args = {"api_version": "1", "work_id": str(ACTIVE)}
             if tool != "work_get":
                 args["observed_revision"] = "r1"
+                args["purpose"] = "investigation"
             if tool == "work_event":
                 args["event_id"] = str(uuid4())
             result = await client.call_tool_mcp(tool, args)
@@ -482,6 +483,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
                     args = {"api_version": "1", "work_id": str(ACTIVE)}
                     if tool != "work_get":
                         args["observed_revision"] = "r1"
+                        args["purpose"] = "investigation"
                     if tool == "work_event":
                         args["event_id"] = str(binding.id)
                     result = await client.call_tool_mcp(tool, args)
@@ -496,6 +498,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "work_id": str(ACTIVE),
             "observed_revision": "r1",
             "text": "ChatGPT authorized feedback",
+            "purpose": "provenance",
         })
         replay = await client.call_tool("work_append", {
             "api_version": "1",
@@ -503,6 +506,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "work_id": str(ACTIVE),
             "observed_revision": "r1",
             "text": "ChatGPT authorized feedback",
+            "purpose": "provenance",
         })
         create = await client.call_tool("work_create", {
             "api_version": "1",

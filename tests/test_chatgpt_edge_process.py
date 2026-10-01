@@ -270,7 +270,7 @@ async def _discover(endpoint, selected):
                     ] == 1024
                     limit = schema["properties"]["limit"]
                     assert (limit["default"], limit["minimum"], limit["maximum"]) == (50, 1, 100)
-        await read_chain(client, search["items"][0]["id"])
+        await read_chain(client, search["items"][0]["id"], exceptional_purpose=True)
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
 
 
@@ -281,6 +281,7 @@ async def _exercise(endpoint, selected, operation_id):
             "api_version": "1", "operation_id": str(operation_id),
             "work_id": str(selected.authority.active_work_id),
             "observed_revision": "r1", "text": "durable vertical append",
+            "purpose": "provenance",
         })
         return result.structured_content
 
@@ -771,7 +772,10 @@ async def _boundaries(endpoint, selected, denied_work, effects):
             return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
 
         active = str(selected.authority.active_work_id)
-        args = {"work_id": active, "observed_revision": "r2", "text": "second"}
+        args = {
+            "work_id": active, "observed_revision": "r2", "text": "second",
+            "purpose": "provenance",
+        }
         for target in [str(denied_work), str(uuid4())]:
             denied = await call("work_append", **(args | {"work_id": target}),
                                 operation_id=str(uuid4()))
@@ -781,12 +785,13 @@ async def _boundaries(endpoint, selected, denied_work, effects):
         assert second["status"] == "ok"
         receipt = second["receipt"]
         first = await call(
-            "work_history", work_id=active, observed_revision="r3", limit=1
+            "work_history", work_id=active, observed_revision="r3", limit=1,
+            purpose="investigation",
         )
         assert len(first["events"]) == 1 and first["next_cursor"] is not None
         last = await call(
             "work_history", work_id=active, observed_revision="r3", limit=1,
-            cursor=first["next_cursor"],
+            cursor=first["next_cursor"], purpose="investigation",
         )
         assert len(last["events"]) == 1 and last["next_cursor"] is None
         assert first["events"][0]["id"] != last["events"][0]["id"]
@@ -796,7 +801,7 @@ async def _boundaries(endpoint, selected, denied_work, effects):
         )
         readback = await call(
             "work_event", work_id=active, event_id=appended["id"],
-            observed_revision="r3",
+            observed_revision="r3", purpose="investigation",
         )
         assert readback["item"]["text"] == receipt["text"]
         assert readback["item"]["id"] == appended["id"]

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.chatgpt import ChatGPTService, RequiredResultSaveRequest
 from switchstand.contracts import LaunchAuthority
-from switchstand.effects import AppendGateway
+from switchstand.core import ProviderError, ProviderSourceStory
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.lifecycle import (
@@ -20,6 +20,7 @@ from switchstand.lifecycle import (
     RequiredResultPersistence,
 )
 from switchstand.state import PostgresState, metadata
+from switchstand.updates import UpdateGateway
 
 
 @pytest.fixture
@@ -52,10 +53,10 @@ async def subject(
     grant = WorkGrant(
         id=uuid4(), version=1, principal=principal,
         authority=LaunchAuthority(active_work_id=handle.id),
-        operations=frozenset({"work_get", "work_append"}),
+        operations=frozenset({"work_get", "work_update"}),
         issuer="fixture-operator", provenance="required-result integration",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
-        append_qualification="test:required-result",
+        update_qualification="test:required-result",
     )
     await grants.issue(grant, None)
     provider = Provider()
@@ -82,10 +83,16 @@ async def test_save_closes_and_restart_replays_without_duplicate(
 ) -> None:
     service, principal, grant, provider = await subject(result_engine)
     action = request(grant)
+    provider.stories = [ProviderSourceStory(
+        "legacy", "123", "comment_added", "old comment-only final result",
+        "2026-09-01T00:00:00Z", "legacy-agent",
+    )]
 
     first = await service.required_result_save(action)
     assert first.status == "ok" and first.effect == "applied"
-    assert first.operation_id is not None and provider.sends == 1
+    assert first.operation_id is not None and provider.sends == 0
+    assert provider.notes == "initial notes\n\n## Current required result\n\nfinal result"
+    assert [story.text for story in provider.stories] == ["old comment-only final result"]
     stored = await service.required_results.repository.get(first.operation_id)  # type: ignore[union-attr]
     assert stored is not None and stored.state is ProfileState.TERMINAL
 
@@ -98,11 +105,88 @@ async def test_save_closes_and_restart_replays_without_duplicate(
     )
     replay = await restarted.required_result_save(action)
     assert replay.status == "ok" and replay.reason == "required_result_already_persisted"
-    assert replay.operation_id == first.operation_id and provider.sends == 1
+    assert replay.operation_id == first.operation_id and provider.revision == "r2"
 
     conflict = await restarted.required_result_save(request(grant, "different result"))
     assert conflict.status == "denied"
-    assert conflict.reason == "lifecycle_result_identity_conflict" and provider.sends == 1
+    assert conflict.reason == "lifecycle_result_identity_conflict" and provider.revision == "r2"
+
+
+async def test_save_refuses_to_replace_notes_when_promoted_result_will_not_fit(
+    result_engine: AsyncEngine, monkeypatch,
+) -> None:
+    service, _, grant, provider = await subject(result_engine)
+    provider.notes = ""
+    original_update = provider.update
+    updates = 0
+
+    async def update(task_gid, patch):
+        nonlocal updates
+        updates += 1
+        await original_update(task_gid, patch)
+
+    monkeypatch.setattr(provider, "update", update)
+
+    outcome = await service.required_result_save(request(grant, "x" * 8000))
+
+    assert outcome.status == "not_applied" and outcome.effect == "not_sent"
+    assert outcome.reason == "required_result_exceeds_notes_capacity"
+    assert provider.notes == "" and provider.revision == "r1" and updates == 0
+    stored = await service.required_results.repository.get(outcome.operation_id)  # type: ignore[union-attr]
+    assert stored is not None and stored.state is ProfileState.PENDING_RESULT
+
+    retry = await service.required_result_save(request(grant, "short result"))
+
+    assert retry.status == "ok" and retry.effect == "applied" and updates == 1
+    assert provider.notes == "## Current required result\n\nshort result"
+
+
+async def test_blank_notes_accept_exactly_8000_promoted_characters(
+    result_engine: AsyncEngine,
+) -> None:
+    service, _, grant, provider = await subject(result_engine)
+    provider.notes = ""
+    prefix = "## Current required result\n\n"
+
+    outcome = await service.required_result_save(
+        request(grant, "x" * (8000 - len(prefix)))
+    )
+
+    assert outcome.status == "ok" and outcome.effect == "applied"
+    assert len(provider.notes) == 8000 and provider.notes.startswith(prefix)
+
+
+async def test_ambiguous_notes_readback_reconciles_without_second_update(
+    result_engine: AsyncEngine, monkeypatch,
+) -> None:
+    service, _, grant, provider = await subject(result_engine)
+    original_get, original_update = provider.get, provider.update
+    reads_to_fail = 2
+    updates = 0
+
+    async def update(task_gid, patch):
+        nonlocal updates
+        updates += 1
+        await original_update(task_gid, patch)
+
+    async def get(task_gid):
+        nonlocal reads_to_fail
+        if provider.revision == "r2" and reads_to_fail:
+            reads_to_fail -= 1
+            raise ProviderError("injected readback outage")
+        return await original_get(task_gid)
+
+    monkeypatch.setattr(provider, "update", update)
+    monkeypatch.setattr(provider, "get", get)
+    action = request(grant)
+
+    ambiguous = await service.required_result_save(action)
+    assert (ambiguous.status, ambiguous.effect, updates) == ("unknown", "unknown", 1)
+
+    recovered = await service.required_result_save(action)
+    assert recovered.status == "ok" and recovered.effect == "applied"
+    assert updates == 1
+    assert provider.notes.endswith("## Current required result\n\nfinal result")
 
 
 async def test_terminal_replay_survives_authorized_grant_renewal_without_duplicate(
@@ -110,14 +194,14 @@ async def test_terminal_replay_survives_authorized_grant_renewal_without_duplica
 ) -> None:
     service, _, grant, provider = await subject(result_engine)
     first = await service.required_result_save(request(grant))
-    assert first.status == "ok" and first.effect == "applied" and provider.sends == 1
+    assert first.status == "ok" and first.effect == "applied" and provider.revision == "r2"
 
     renewed = grant.model_copy(update={"id": uuid4(), "version": 2})
     await service.grants.issue(renewed, 1)
     replay = await service.required_result_save(request(renewed))
 
     assert replay.status == "ok" and replay.reason == "required_result_already_persisted"
-    assert replay.operation_id == first.operation_id and provider.sends == 1
+    assert replay.operation_id == first.operation_id and provider.revision == "r2"
 
 
 class FailTerminalOnce(RequiredResultPersistence):
@@ -136,7 +220,7 @@ async def test_terminal_commit_interruption_recovers_through_existing_effect_rec
     action = request(grant)
     interrupted = await service.required_result_save(action)
     assert interrupted.status == "unknown" and interrupted.effect == "unknown"
-    assert interrupted.operation_id is not None and provider.sends == 1
+    assert interrupted.operation_id is not None and provider.revision == "r2"
 
     async def resolve() -> PrincipalContext:
         return principal
@@ -147,7 +231,7 @@ async def test_terminal_commit_interruption_recovers_through_existing_effect_rec
     )
     recovered = await restarted.required_result_save(action)
     assert recovered.status == "ok" and recovered.effect == "applied"
-    assert recovered.operation_id == interrupted.operation_id and provider.sends == 1
+    assert recovered.operation_id == interrupted.operation_id and provider.revision == "r2"
     stored = await restarted.required_results.repository.get(recovered.operation_id)  # type: ignore[union-attr]
     assert stored is not None and stored.state is ProfileState.TERMINAL
 
@@ -174,22 +258,24 @@ async def test_no_send_stale_obligation_adopts_renewed_current_grant(
     )
 
     stale = await service.required_result_save(request(grant))
-    assert stale.status == "stale" and stale.effect == "not_sent" and provider.sends == 0
+    assert stale.status == "stale" and stale.effect == "not_sent" and provider.revision == "r1"
 
     recovered = await service.required_result_save(request(renewed))
-    assert recovered.status == "ok" and recovered.effect == "applied" and provider.sends == 1
+    assert recovered.status == "ok" and recovered.effect == "applied"
+    assert provider.revision == "r2"
     stored = await service.required_results.repository.get(recovered.operation_id)  # type: ignore[union-attr]
     assert stored is not None and stored.state is ProfileState.TERMINAL
 
 
-class RenewAfterApplied(AppendGateway):
+class RenewAfterApplied(UpdateGateway):
     def __init__(self, state, grants, providers, renewed):
         super().__init__(state, grants, providers)
         self.renewed = renewed
 
-    async def append(self, principal, request):
-        outcome = await super().append(principal, request)
-        if outcome.effect == "applied":
+    async def update(self, principal, request):
+        outcome = await super().update(principal, request)
+        current = await self.grants.current(principal.key)
+        if outcome.effect == "applied" and current is not None and current.version == 1:
             await self.grants.issue(self.renewed, 1)
         return outcome
 
@@ -199,14 +285,16 @@ async def test_applied_readback_terminalizes_after_grant_renewal_without_second_
 ) -> None:
     service, _, grant, provider = await subject(result_engine)
     renewed = grant.model_copy(update={"id": uuid4(), "version": 2})
-    service.gateway = RenewAfterApplied(service.state, service.grants, service.providers, renewed)
+    service.update_gateway = RenewAfterApplied(
+        service.state, service.grants, service.providers, renewed
+    )
 
     interrupted = await service.required_result_save(request(grant))
     assert interrupted.status == "stale" and interrupted.effect == "unknown"
-    assert provider.sends == 1
+    assert provider.revision == "r2"
 
     recovered = await service.required_result_save(request(renewed))
     assert recovered.status == "ok" and recovered.effect == "applied"
-    assert recovered.operation_id == interrupted.operation_id and provider.sends == 1
+    assert recovered.operation_id == interrupted.operation_id and provider.revision == "r2"
     stored = await service.required_results.repository.get(recovered.operation_id)  # type: ignore[union-attr]
     assert stored is not None and stored.state is ProfileState.TERMINAL

@@ -65,6 +65,9 @@ from .messages import (
     send_received_result,
 )
 
+HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
+AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
+
 
 class OrdinaryWorkResult(ClosedModel):
     """Provider-neutral ordinary work result without legacy related/grouped inference."""
@@ -319,7 +322,7 @@ def build_ordinary_tools(
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
-        """Read admitted work. Use work_structure for complete parent/child relationships."""
+        """Read current state, including authoritative current notes; use work_structure for relations."""
         result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
@@ -360,13 +363,14 @@ def build_ordinary_tools(
 
     async def work_history(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        purpose: HistoryPurpose,
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> WorkHistoryResult:
-        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        """Exceptional investigation/recovery/legacy history; never normal grounding or polling."""
         result = await service.history(
             WorkHistoryRequest(api_version=api_version, work_id=work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
-        audited("work_history", str(work_id), result.status)
+        audited("work_history", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_attachments(
@@ -385,20 +389,20 @@ def build_ordinary_tools(
 
     async def work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
-        work_id: UUID,
+        work_id: UUID, purpose: HistoryPurpose,
     ) -> WorkEventResult:
-        """Reread one opaque event at the observed work revision."""
+        """Exceptional investigation/recovery/legacy event read; never normal grounding or polling."""
         result = await service.event(
             WorkEventRequest(api_version=api_version, work_id=work_id,
                              event_id=event_id, observed_revision=observed_revision))
-        audited("work_event", str(work_id), result.status)
+        audited("work_event", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, text: str,
+        observed_revision: str, text: str, purpose: AppendPurpose,
     ) -> GuardOutcome:
-        """Append through current authenticated workspace admission; never blind-retry UNKNOWN."""
+        """Append exceptional provenance/history only; never current state, results, or messaging."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_append", work_id, operation_id)
@@ -408,7 +412,7 @@ def build_ordinary_tools(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, text=text,
         ))
-        audited("work_append", str(work_id), result.status)
+        audited("work_append", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_create(
@@ -432,7 +436,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: ScalarPatch,
     ) -> GuardOutcome:
-        """Set bounded scalar state using current admission; UNKNOWN is never resent blindly."""
+        """Write canonical current state; use notes for intent, progress, findings, verdicts, and results."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_update", work_id, operation_id)
@@ -476,7 +480,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID,
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
     ) -> GuardOutcome:
-        """Save one required result; admission and stable operation identity are server-owned."""
+        """Promote one required result into canonical current notes with authoritative readback."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("required_result_save", work_id)
