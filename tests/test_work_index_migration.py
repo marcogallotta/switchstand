@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 from uuid import UUID
 
@@ -11,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.contracts import Routing, WorkContext
 from switchstand.work_corpus import _with_digest, manifest_exception_digest, write_manifest
-from switchstand.work_index import ActivationReceipt
-from switchstand.work_index_migration import _stable_corpus, migrate
+from switchstand.work_index import ActivationNotCommitted, ActivationReceipt
+from switchstand.work_index_migration import _stable_corpus, migrate, run, write_receipt
+from switchstand.work_metadata_migration import run as metadata_run
 
 KNOWN = UUID("10000000-0000-4000-8000-000000000001")
 EXCEPTION = UUID("20000000-0000-4000-8000-000000000002")
@@ -92,6 +94,60 @@ async def _prepare(paths, corpus_digest, exception_digest):
         manifest_paths=paths,
         expected_exception_digest=exception_digest,
     )
+
+
+def test_receipt_is_atomically_private_under_permissive_umask(tmp_path):
+    path = tmp_path / "receipt.json"
+    prior = os.umask(0o022)
+    try:
+        write_receipt(path, ActivationReceipt(1, 1, "a" * 64))
+    finally:
+        os.umask(prior)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".receipt.json.*"))
+    with pytest.raises(FileExistsError):
+        write_receipt(path, ActivationReceipt(2, 1, "b" * 64))
+
+
+def test_cli_distinguishes_proven_noncommit_from_unknown(monkeypatch, capsys):
+    async def not_committed(*_args, **_kwargs):
+        raise ActivationNotCommitted("proven absent")
+
+    monkeypatch.setattr("switchstand.work_index_migration.migrate", not_committed)
+    with pytest.raises(SystemExit) as stopped:
+        run(["reconcile", "--confirm-offline", "--receipt", "attempt.json"])
+    assert stopped.value.code == 3
+    assert "NOT_COMMITTED" in capsys.readouterr().err
+
+    async def malformed(*_args, **_kwargs):
+        raise ValueError("malformed receipt")
+
+    monkeypatch.setattr("switchstand.work_index_migration.migrate", malformed)
+    with pytest.raises(SystemExit) as stopped:
+        run(["reconcile", "--confirm-offline", "--receipt", "attempt.json"])
+    assert stopped.value.code == 2
+    assert "UNKNOWN" in capsys.readouterr().err
+
+
+def test_stage2_cli_distinguishes_proven_noncommit_from_unknown(monkeypatch, capsys):
+    async def fail(*_args, **_kwargs):
+        raise ActivationNotCommitted("proven absent")
+
+    monkeypatch.setattr("switchstand.work_metadata_migration.execute", fail)
+    args = ["reconcile", "worksheet.json", "--confirm-offline", "--receipt", "attempt.json"]
+    with pytest.raises(SystemExit) as stopped:
+        metadata_run(args)
+    assert stopped.value.code == 3
+    assert "NOT_COMMITTED" in capsys.readouterr().err
+
+    async def unknown(*_args, **_kwargs):
+        raise OSError("unreadable receipt")
+
+    monkeypatch.setattr("switchstand.work_metadata_migration.execute", unknown)
+    with pytest.raises(SystemExit) as stopped:
+        metadata_run(args)
+    assert stopped.value.code == 2
+    assert "UNKNOWN" in capsys.readouterr().err
 
 
 def test_frozen_corpus_requires_matching_scans_reviewed_exceptions_and_closed_dependencies(

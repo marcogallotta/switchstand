@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError
 from .provider import AsanaProvider
-from .work_index import ActivationReceipt, ActivationUnknown
+from .work_index import ActivationNotCommitted, ActivationReceipt, ActivationUnknown
 from .work_index_migration import load_receipt, require_offline, write_receipt
 from .work_metadata import (
     ImportWorksheet,
@@ -157,9 +157,13 @@ def run(argv: list[str] | None = None) -> None:
             arguments.action, arguments.worksheet, confirm_offline=arguments.confirm_offline
             , receipt_path=arguments.receipt
         ))
+    except ActivationNotCommitted as error:
+        parser.exit(3, f"NOT_COMMITTED: {error}\n")
     except ActivationUnknown as error:
         parser.exit(2, f"{error}\n")
     except (KeyError, OSError, ProviderError, RuntimeError, SQLAlchemyError, ValidationError, ValueError) as error:
+        if arguments.action == "reconcile":
+            parser.exit(2, f"UNKNOWN: reconciliation failed: {error}\n")
         parser.exit(1, f"Stage 2 {arguments.action} failed before authority flip: {error}\n")
     if isinstance(result, ActivationReceipt):
         print(
