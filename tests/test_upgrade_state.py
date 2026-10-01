@@ -40,6 +40,7 @@ esac
     docker.write_text(
         """#!/bin/sh
 set -eu
+[ -z "${FAKE_START_GATE:-}" ] || { while [ ! -f "$FAKE_START_GATE" ]; do sleep 0.01; done; }
 printf '%s\n' "$*" >>"$FAKE_TRACE"
 case "$*" in
   "compose "*" ps -q postgres") echo shared ;;
@@ -49,9 +50,8 @@ case "$*" in
       *"{{.Name}}"*) echo /shared-name ;;
       *) echo "$FAKE_IDENTITY" ;;
     esac ;;
-  "network inspect --format "*" switchstand_default") printf '%s\n' "$FAKE_MEMBERS" ;;
-  "volume inspect --format "*" switchstand_postgres-data")
-    echo "switchstand|postgres-data" ;;
+  "network inspect --format "*) printf '%s\n' "$FAKE_MEMBERS" ;;
+  "volume inspect --format "*) echo "$FAKE_VOLUME_IDENTITY" ;;
   "exec shared psql "*version_num*)
     [ ! -f "$FAKE_STATE/shared-revision" ] || { cat "$FAKE_STATE/shared-revision"; exit; }
     echo "$FAKE_REVISION" ;;
@@ -107,6 +107,7 @@ esac
         "FAKE_COUNTS": "78|2|3|4|5|6|7|8|9",
         "FAKE_IDENTITY": "switchstand|postgres|postgres:18-alpine|healthy",
         "FAKE_MOUNT": "switchstand_postgres-data|true",
+        "FAKE_VOLUME_IDENTITY": "switchstand|postgres-data",
         "FAKE_CLIENTS": "0",
         "FAKE_MEMBERS": "shared-name",
         "FAKE_FAIL_REHEARSAL": "0",
@@ -123,13 +124,148 @@ esac
 
 
 def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return _run_target(repo, env, "production", *args)
+
+
+def _run_target(
+    repo: Path, env: dict[str, str], target: str, *args: str | Path
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [repo / "scripts" / SCRIPT.name, *args],
+        [repo / "scripts" / SCRIPT.name, "--target", target, *args],
         env=env,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def _disposable(env: dict[str, str], name: str) -> Path:
+    env.pop("SWITCHSTAND_BACKUP_DIR", None)
+    parent = Path(env["HOME"]) / ".local/state/switchstand/rehearsals"
+    target = parent / name
+    target.mkdir(mode=0o700, parents=True)
+    parent.chmod(0o700)
+    target.chmod(0o700)
+    return target
+
+
+def _target_env(env: dict[str, str], project: str) -> None:
+    env.update(FAKE_IDENTITY=f"{project}|postgres|postgres:18-alpine|healthy",
+               FAKE_MOUNT=f"{project}_postgres-data|true",
+               FAKE_VOLUME_IDENTITY=f"{project}|postgres-data")
+
+
+def test_requires_explicit_target_before_docker(tmp_path):
+    repo, env = _repo(tmp_path)
+    result = subprocess.run(
+        [repo / "scripts" / SCRIPT.name], env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 2
+    assert not Path(env["FAKE_TRACE"]).exists()
+
+
+def test_disposable_target_derives_only_namespaced_docker_identities(tmp_path):
+    repo, env = _repo(tmp_path)
+    target = _disposable(env, "proof")
+    project = "switchstand-rehearsal-proof"
+    _target_env(env, project)
+    result = _run_target(repo, env, "disposable:proof", "rehearse")
+    assert result.returncode == 0, result.stderr
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert f"-p {project}" in trace and f"{project}_default" in trace
+    assert "-p switchstand --project" not in trace
+    assert not (Path(env["HOME"]) / ".local/state/switchstand/backups").exists()
+    assert len(list((target / "backups").glob("*.dump"))) == 1
+
+
+def test_disposable_target_rejects_production_receipt_path_before_docker(tmp_path):
+    repo, env = _repo(tmp_path)
+    _disposable(env, "proof")
+    receipt = Path(env["HOME"]) / ".local/state/switchstand/production.json"
+    result = _run_target(repo, env, "disposable:proof", "apply", receipt)
+    assert result.returncode != 0
+    assert "escapes its private state directory" in result.stderr
+    assert not Path(env["FAKE_TRACE"]).exists()
+
+
+def test_disposable_target_rejects_symlink_to_production_before_artifacts(tmp_path):
+    repo, env = _repo(tmp_path)
+    env.pop("SWITCHSTAND_BACKUP_DIR")
+    parent = Path(env["HOME"]) / ".local/state/switchstand/rehearsals"
+    production = Path(env["HOME"]) / ".local/state/switchstand/production"
+    parent.mkdir(mode=0o700, parents=True)
+    parent.chmod(0o700)
+    production.mkdir(mode=0o700)
+    (parent / "proof").symlink_to(production, target_is_directory=True)
+
+    result = _run_target(repo, env, "disposable:proof", "rehearse")
+    assert result.returncode != 0
+    assert "not canonical, owned, and private" in result.stderr
+    assert not Path(env["FAKE_TRACE"]).exists()
+    assert not (production / "state-upgrade.lock").exists()
+
+
+def test_disposable_target_rejects_backup_override_before_artifacts(tmp_path):
+    repo, env = _repo(tmp_path)
+    target = _disposable(env, "proof")
+    env["SWITCHSTAND_BACKUP_DIR"] = str(tmp_path / "production-backups")
+    result = _run_target(repo, env, "disposable:proof", "rehearse")
+    assert result.returncode != 0 and not Path(env["FAKE_TRACE"]).exists()
+    assert not (target / "state-upgrade.lock").exists()
+
+
+def test_disposable_backup_and_digest_temp_resist_symlinks(tmp_path):
+    repo, env = _repo(tmp_path)
+    target = _disposable(env, "proof")
+    victim_dir = tmp_path / "production-backups"
+    victim_dir.mkdir()
+    (target / "backups").symlink_to(victim_dir, target_is_directory=True)
+    result = _run_target(repo, env, "disposable:proof", "rehearse")
+    assert result.returncode != 0 and not Path(env["FAKE_TRACE"]).exists()
+    assert not list(victim_dir.iterdir())
+    (target / "backups").unlink()
+    (target / "backups").mkdir(mode=0o700)
+    gate, victim = tmp_path / "docker-go", tmp_path / "production-digest"
+    victim.write_text("unchanged")
+    env["FAKE_START_GATE"] = str(gate)
+    _target_env(env, "switchstand-rehearsal-proof")
+    process = subprocess.Popen(
+        [repo / "scripts" / SCRIPT.name, "--target", "disposable:proof", "rehearse"],
+        env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    (target / f"state-upgrade-schema-{process.pid}.sql").symlink_to(victim)
+    gate.touch()
+    _, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr
+    assert victim.read_text() == "unchanged"
+
+
+def test_production_rejects_disposable_resume_and_abort_receipts_before_docker(tmp_path):
+    repo, env = _repo(tmp_path)
+    target = _disposable(env, "proof")
+    project = "switchstand-rehearsal-proof"
+    _target_env(env, project)
+    receipt = target / "apply.json"
+    applied = _run_target(repo, env, "disposable:proof", "apply", receipt)
+    assert applied.returncode == 0, applied.stderr
+    original = receipt.read_text()
+    identity = {"target": "disposable:proof", "project": project,
+                "volume": f"{project}_postgres-data", "network": f"{project}_default"}
+    assert all(identity.items() <= value.items()
+               for value in map(json.loads, original.splitlines()))
+    abort_receipt = target / "abort-source.json"
+    abort_receipt.write_text(original)
+    records = [json.loads(line) for line in original.splitlines()]
+    records[-1]["outcome"] = "UNKNOWN"
+    receipt.write_text("".join(json.dumps(value) + "\n" for value in records))
+    _target_env(env, "switchstand")
+    trace = Path(env["FAKE_TRACE"])
+    trace.unlink()
+    resumed = _run(repo, env, "apply", str(receipt))
+    aborted = _run(repo, env, "abort-pre-authority", str(abort_receipt))
+    assert resumed.returncode != 0 and "stale or terminal" in resumed.stderr
+    assert aborted.returncode != 0 and "stale or mismatched" in aborted.stderr
+    assert not trace.exists()
 
 
 def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):

@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
 
-[ "$#" -le 2 ] || { echo "usage: scripts/switchstand-upgrade-state [rehearse|apply|abort-pre-authority [receipt]]" >&2; exit 2; }
+[ "$#" -ge 2 ] && [ "$1" = --target ] \
+    || { echo "usage: scripts/switchstand-upgrade-state --target production|disposable:NAME [rehearse|apply|abort-pre-authority [receipt]]" >&2; exit 2; }
+target_identity=$2
+shift 2
+[ "$#" -le 2 ] || { echo "too many state-upgrade arguments" >&2; exit 2; }
 umask 077
 
 operation=${1:-apply}
@@ -9,9 +13,17 @@ case "$operation" in rehearse|apply|abort-pre-authority) ;; *) echo "unknown sta
 receipt=${2:-}
 prior_receipt=
 EXPECTED_NEW=0010_work_metadata_authority
-PROJECT=switchstand
+case "$target_identity" in
+    production) PROJECT=switchstand; target_name=production ;;
+    disposable:*)
+        target_name=${target_identity#disposable:}
+        case "$target_name" in ''|*[!a-z0-9-]*|-*|*-) echo "invalid disposable target name" >&2; exit 2;; esac
+        PROJECT=switchstand-rehearsal-$target_name ;;
+    *) echo "unknown state-upgrade target: $target_identity" >&2; exit 2 ;;
+esac
 SERVICE=postgres
-VOLUME=switchstand_postgres-data
+VOLUME=${PROJECT}_postgres-data
+NETWORK=${PROJECT}_default
 IMAGE=postgres:18-alpine
 backup=
 backup_ready=false
@@ -20,6 +32,42 @@ shared_migration_attempted=false
 outcome=NOT_RUN
 terminal_written=false
 resume_attempt=false
+
+state_dir=$HOME/.local/state/switchstand
+if [ "$target_identity" != production ]; then
+    rehearsals=$state_dir/rehearsals
+    state_dir=$rehearsals/$target_name
+    python - "$rehearsals" "$state_dir" "${SWITCHSTAND_BACKUP_DIR:-}" "$receipt" <<'PY'
+import os, pathlib, stat, sys
+parent, target = (pathlib.Path(value) for value in sys.argv[1:3])
+for path in (parent, target):
+    try:
+        info = path.stat()
+    except OSError as error:
+        raise SystemExit(f"disposable state root is unavailable: {error}")
+    if (not path.is_absolute() or not path.is_dir() or path.resolve() != path
+            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        raise SystemExit("disposable state root is not canonical, owned, and private")
+if target.parent != parent:
+    raise SystemExit("disposable target is outside the canonical rehearsals root")
+if sys.argv[3]:
+    raise SystemExit("disposable target does not accept a backup-directory override")
+if sys.argv[4]:
+    receipt = pathlib.Path(sys.argv[4])
+    if (not receipt.is_absolute() or receipt.resolve(strict=False) != receipt
+            or not receipt.resolve(strict=False).is_relative_to(target)):
+        raise SystemExit("disposable receipt path escapes its private state directory")
+backup = target / "backups"
+try:
+    backup.mkdir(mode=0o700)
+except FileExistsError:
+    pass
+info = backup.lstat()
+if (not stat.S_ISDIR(info.st_mode) or backup.resolve() != backup
+        or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+    raise SystemExit("disposable backup directory is not exact, owned, and private")
+PY
+fi
 
 control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 head=$(git -C "$control" rev-parse HEAD)
@@ -41,17 +89,20 @@ else
         || { echo "state upgrade requires clean current main CONTROL" >&2; exit 1; }
 fi
 
-state_dir=$HOME/.local/state/switchstand
 if [ "$operation" = abort-pre-authority ]; then
     prior_receipt=$receipt
-    [ -n "$prior_receipt" ] && [ -f "$prior_receipt" ] \
+    [ -n "$prior_receipt" ] \
+        || { echo "abort-pre-authority requires the exact apply receipt" >&2; exit 2; }
+    [ -f "$prior_receipt" ] \
         || { echo "abort-pre-authority requires the exact apply receipt" >&2; exit 2; }
     receipt=
-    receipt_values=$(python - "$prior_receipt" "$head" "$EXPECTED_NEW" <<'PY'
+    receipt_values=$(python - "$prior_receipt" "$head" "$EXPECTED_NEW" "$target_identity" "$PROJECT" "$VOLUME" "$NETWORK" <<'PY'
 import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 data, terminal = records[0], records[-1]
-if data.get("outcome") != "ATTEMPTING" or data.get("sha") != sys.argv[2] or data.get("new") != sys.argv[3] or terminal.get("sha") != sys.argv[2] or terminal.get("new") != sys.argv[3] or terminal.get("outcome") != "APPLIED":
+identity = dict(zip(("sha", "new", "target", "project", "volume", "network"), sys.argv[2:]))
+if (data.get("outcome") != "ATTEMPTING" or terminal.get("outcome") != "APPLIED"
+        or any(data.get(key) != value or terminal.get(key) != value for key, value in identity.items())):
     raise SystemExit("stale or mismatched apply receipt")
 print(data["old"], data["before_counts"], data["before_schema"], data["before_data"],
       data["after_counts"], data["after_schema"], data["after_data"], sep=";")
@@ -67,11 +118,13 @@ fi
 case "$receipt" in /*) ;; *) echo "receipt path must be absolute" >&2; exit 2;; esac
 if [ -e "$receipt" ]; then
     [ "$operation" = apply ] || { echo "receipt already exists: $receipt" >&2; exit 1; }
-    receipt_values=$(python - "$receipt" "$head" "$EXPECTED_NEW" <<'PY'
+    receipt_values=$(python - "$receipt" "$head" "$EXPECTED_NEW" "$target_identity" "$PROJECT" "$VOLUME" "$NETWORK" <<'PY'
 import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 data, terminal = records[0], records[-1]
-if data.get("outcome") != "ATTEMPTING" or data.get("sha") != sys.argv[2] or data.get("new") != sys.argv[3] or terminal.get("sha") != sys.argv[2] or terminal.get("new") != sys.argv[3] or terminal.get("outcome") not in ("ATTEMPTING", "UNKNOWN"):
+identity = dict(zip(("sha", "new", "target", "project", "volume", "network"), sys.argv[2:]))
+if (data.get("outcome") != "ATTEMPTING" or terminal.get("outcome") not in ("ATTEMPTING", "UNKNOWN")
+        or any(data.get(key) != value or terminal.get(key) != value for key, value in identity.items())):
     raise SystemExit("stale or terminal apply receipt")
 print(data["old"], data["before_counts"], data["before_schema"], data["before_data"],
       data["after_counts"], data["after_schema"], data["after_data"], sep=";")
@@ -87,6 +140,7 @@ write_receipt() {
     receipt_mode=$1
     RECEIPT_MODE=$receipt_mode RECEIPT_PATH=$receipt RECEIPT_OPERATION=$operation RECEIPT_OUTCOME=$outcome \
     RECEIPT_SHA=$head RECEIPT_OLD=${EXPECTED_OLD:-UNKNOWN} RECEIPT_NEW=$EXPECTED_NEW \
+    RECEIPT_TARGET=$target_identity RECEIPT_PROJECT=$PROJECT RECEIPT_VOLUME=$VOLUME RECEIPT_NETWORK=$NETWORK \
     RECEIPT_BEFORE_COUNTS=${before_counts:-UNKNOWN} RECEIPT_AFTER_COUNTS=${after_counts:-UNKNOWN} \
     RECEIPT_BEFORE_SCHEMA=${before_schema:-UNKNOWN} RECEIPT_AFTER_SCHEMA=${after_schema:-UNKNOWN} \
     RECEIPT_BEFORE_DATA=${before_data:-UNKNOWN} RECEIPT_AFTER_DATA=${after_data:-UNKNOWN} \
@@ -97,7 +151,7 @@ p = Path(os.environ["RECEIPT_PATH"])
 p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 names = ("PATH", "OPERATION", "OUTCOME", "SHA", "OLD", "NEW", "BEFORE_COUNTS",
          "AFTER_COUNTS", "BEFORE_SCHEMA", "AFTER_SCHEMA", "BEFORE_DATA",
-         "AFTER_DATA", "BACKUP")
+         "AFTER_DATA", "BACKUP", "TARGET", "PROJECT", "VOLUME", "NETWORK")
 payload = {name.lower(): os.environ[f"RECEIPT_{name}"] for name in names if name != "PATH"}
 flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if os.environ["RECEIPT_MODE"] == "create" else os.O_APPEND)
 fd = os.open(p, flags, 0o600)
@@ -145,7 +199,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-compose() { docker compose --project-directory "$control" -f "$control/compose.state.yaml" "$@"; }
+compose() { docker compose -p "$PROJECT" --project-directory "$control" -f "$control/compose.state.yaml" "$@"; }
 container=$(compose ps -q "$SERVICE")
 [ -n "$container" ] && [ "$(printf '%s\n' "$container" | wc -l)" -eq 1 ] \
     || { echo "expected exactly one running Switchstand PostgreSQL service" >&2; exit 1; }
@@ -189,14 +243,20 @@ if [ "$operation" != abort-pre-authority ] && [ "$resume_attempt" = false ]; the
 fi
 dump_digest() {
     target=$1 kind=$2
-    digest_file=$state_dir/state-upgrade-$kind-$$.sql
-    docker exec "$target" pg_dump -U switchstand -d switchstand \
-        "--$kind-only" --no-owner --no-privileges \
-        --restrict-key=SWITCHSTANDSTATEDIGEST >"$digest_file" \
-        || { rm -f "$digest_file"; return 1; }
-    digest=$(sha256sum "$digest_file" | cut -d' ' -f1)
-    rm -f "$digest_file"
-    printf %s "$digest"
+    python - "$state_dir" "$target" "$kind" <<'PY'
+import hashlib, os, subprocess, sys, tempfile
+fd, path = tempfile.mkstemp(dir=sys.argv[1], prefix="state-upgrade-", suffix=".sql")
+try:
+    with os.fdopen(fd, "w+b") as output:
+        subprocess.run(["docker", "exec", sys.argv[2], "pg_dump", "-U", "switchstand",
+            "-d", "switchstand", f"--{sys.argv[3]}-only", "--no-owner", "--no-privileges",
+            "--restrict-key=SWITCHSTANDSTATEDIGEST"], stdout=output, check=True)
+        output.flush()
+        output.seek(0)
+        print(hashlib.file_digest(output, "sha256").hexdigest(), end="")
+finally:
+    os.unlink(path)
+PY
 }
 marker_state() {
     target=$1 table=$2
@@ -214,7 +274,7 @@ assert_quiescent() {
         || { echo "shared state has $clients other database client(s); stop Switchstand writers before upgrading" >&2; exit 1; }
     container_name=$(docker inspect --format '{{.Name}}' "$container")
     container_name=${container_name#/}
-    network_members=$(docker network inspect --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' switchstand_default)
+    network_members=$(docker network inspect --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "$NETWORK")
     [ "$network_members" = "$container_name" ] \
         || { echo "shared state network has an attached application container; stop Switchstand writers before upgrading" >&2; exit 1; }
 }
@@ -241,9 +301,15 @@ if [ "$operation" != abort-pre-authority ] && [ "$resume_attempt" = false ]; the
     before_data=$(dump_digest "$container" data)
 fi
 
-backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
-mkdir -p "$backup_dir"
-chmod 700 "$backup_dir"
+if [ "$target_identity" = production ]; then
+    backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
+else
+    backup_dir=$state_dir/backups
+fi
+if [ "$target_identity" = production ]; then
+    mkdir -p "$backup_dir"
+    chmod 700 "$backup_dir"
+fi
 backup="$backup_dir/state-$revision-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
 set -C
 docker exec "$container" pg_dump -U switchstand -d switchstand -Fc >"$backup"

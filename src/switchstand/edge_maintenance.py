@@ -18,7 +18,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO, cast
+from typing import Literal, Protocol, TextIO, cast
 from urllib.parse import urlparse
 
 from .edge_monitor_host import ExternalIngressHttp
@@ -47,6 +47,7 @@ PROXIES = {
 GATE_ID = "switchstand_edge_maintenance"
 LOCK = Path("/home/marco/.local/state/switchstand/edge-maintenance.lock")
 FASTMCP_STATE = Path("/home/marco/.local/share/fastmcp")
+REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
 
 
 class Failed(RuntimeError):
@@ -74,9 +75,14 @@ class Config:
     current_launcher_sha: str
     fastmcp_state: Path
     env_file: Path
+    target: Literal["production", "disposable"]
     retry_after: int = 60
     caddy: str = CADDY
     public_origin: str = PUBLIC_ORIGIN
+    target_root: Path | None = None
+    service: str = SERVICE
+    local_url: str = LOCAL_URL
+    lock_path: Path = LOCK
 
 
 class Operations(Protocol):
@@ -147,6 +153,63 @@ def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProce
     return subprocess.run(command, check=check, capture_output=True, text=True, timeout=45)
 
 
+def _validate_target(config: Config) -> None:
+    if config.target == "production":
+        if config.target_root is not None or (
+            config.service, config.fastmcp_state, config.local_url,
+            config.caddy, config.public_origin, config.lock_path,
+        ) != (SERVICE, FASTMCP_STATE, LOCAL_URL, CADDY, PUBLIC_ORIGIN, LOCK):
+            raise Failed("production target identity is not exact")
+        return
+    if config.target != "disposable":
+        raise Failed("maintenance target is unknown")
+    root = config.target_root
+    parent = REHEARSALS
+    try:
+        invalid_root = root is None or root.parent != parent or any(
+            not path.is_absolute()
+            or not path.is_dir()
+            or path.resolve(strict=True) != path
+            or path.stat().st_uid != os.getuid()
+            or path.stat().st_mode & 0o077
+            for path in (parent, root)
+        )
+    except OSError as error:
+        raise Failed("disposable target root is not exact") from error
+    if invalid_root or root is None:
+        raise Failed("disposable target root is not exact")
+    mutable = (
+        config.attempt_dir, config.fastmcp_state, config.launcher,
+        config.candidate_launcher, config.env_file, config.lock_path,
+        config.attempt_dir / "receipt.json",
+        config.attempt_dir / "launcher.before",
+        config.attempt_dir / "fastmcp.before.tar",
+        config.launcher.with_name(f".{config.launcher.name}.maintenance.tmp"),
+    )
+    if any(
+        path.resolve(strict=False) != path
+        or not path.resolve(strict=False).is_relative_to(root)
+        for path in mutable
+    ):
+        raise Failed("disposable target path escapes its private root")
+    endpoints = (config.caddy, config.local_url, config.public_origin)
+    try:
+        parsed = tuple(urlparse(value) for value in endpoints)
+        ports = {value.port for value in parsed}
+        live_ports = {urlparse(value).port for value in (CADDY, LOCAL_URL)}
+    except ValueError as error:
+        raise Failed("disposable target endpoint is invalid") from error
+    if (
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", root.name)
+        or config.service != f"switchstand-rehearsal-{root.name}.service"
+        or any(value in {CADDY, LOCAL_URL, PUBLIC_ORIGIN} for value in endpoints)
+        or any(value.scheme != "http" or value.hostname != "127.0.0.1" or not value.port for value in parsed)
+        or not ports.isdisjoint(live_ports)
+        or len(ports) != 3
+    ):
+        raise Failed("disposable target resolves a live or non-isolated identity")
+
+
 def _atomic_copy(source: Path, target: Path, mode: int) -> None:
     temporary = target.with_name(f".{target.name}.maintenance.tmp")
     shutil.copy2(source, temporary, follow_symlinks=False)
@@ -162,8 +225,6 @@ def _atomic_copy(source: Path, target: Path, mode: int) -> None:
 
 
 def _validate_launch_mapping(config: Config) -> None:
-    if config.fastmcp_state != FASTMCP_STATE:
-        raise Failed("FastMCP state path is not the production edge store")
     current = config.launcher.read_bytes()
     old_runtime = os.fsencode(config.current_runtime)
     if current.count(old_runtime) != 1:
@@ -226,6 +287,7 @@ class HostOperations:
 
     def preflight(self) -> None:
         c = self.c
+        _validate_target(c)
         for path in (
             c.attempt_dir,
             c.current_runtime,
@@ -269,7 +331,7 @@ class HostOperations:
                 "systemctl",
                 "--user",
                 "show",
-                SERVICE,
+                c.service,
                 "--property=ExecStart",
                 "--value",
             ]
@@ -277,7 +339,7 @@ class HostOperations:
         if str(c.launcher) not in unit:
             raise Failed("edge unit does not execute the selected launcher")
         if (
-            _run(["systemctl", "--user", "is-active", SERVICE], check=False).stdout.strip()
+            _run(["systemctl", "--user", "is-active", c.service], check=False).stdout.strip()
             != "active"
         ):
             raise Failed("edge service is not active")
@@ -285,12 +347,14 @@ class HostOperations:
             raise Failed("running edge launcher or FastMCP state is not exact")
         if self.gate_exact():
             raise Failed("maintenance gate already exists")
+        local = urlparse(c.local_url)
+        expected_upstream = [{"dial": f"{local.hostname}:{local.port}"}]
         for proxy in PROXIES:
             value = self._api("GET", f"/id/{proxy}")
             if (
                 not isinstance(value, dict)
                 or cast(dict[str, object], value).get("handler") != "reverse_proxy"
-                or cast(dict[str, object], value).get("upstreams") != [{"dial": "127.0.0.1:8790"}]
+                or cast(dict[str, object], value).get("upstreams") != expected_upstream
             ):
                 raise Failed("Switchstand Caddy proxy set is not exact")
 
@@ -377,8 +441,10 @@ class HostOperations:
         return True
 
     def _service(self, action: str, wanted: str) -> None:
-        _run(["systemctl", "--user", action, SERVICE], check=False)
-        state = _run(["systemctl", "--user", "is-active", SERVICE], check=False).stdout.strip()
+        _run(["systemctl", "--user", action, self.c.service], check=False)
+        state = _run(
+            ["systemctl", "--user", "is-active", self.c.service], check=False
+        ).stdout.strip()
         if (wanted == "active") != (state == "active"):
             raise Unknown(f"service did not become {wanted}")
 
@@ -390,7 +456,7 @@ class HostOperations:
                         "systemctl",
                         "--user",
                         "show",
-                        SERVICE,
+                        self.c.service,
                         "--property=MainPID",
                         "--value",
                     ]
@@ -418,8 +484,11 @@ class HostOperations:
 
     def stop(self) -> None:
         self._service("stop", "inactive")
+        endpoint = urlparse(self.c.local_url)
         try:
-            with socket.create_connection(("127.0.0.1", 8790), timeout=1):
+            with socket.create_connection(
+                (cast(str, endpoint.hostname), cast(int, endpoint.port)), timeout=1
+            ):
                 pass
         except OSError:
             return
@@ -432,7 +501,7 @@ class HostOperations:
                 "systemctl",
                 "--user",
                 "show",
-                SERVICE,
+                self.c.service,
                 "--property=NRestarts",
                 "--value",
             ]
@@ -487,7 +556,7 @@ class HostOperations:
             expected_sha,
         ]
         if not public:
-            command += ["--local-url", LOCAL_URL, "--public-url", LOCAL_URL]
+            command += ["--local-url", self.c.local_url, "--public-url", self.c.local_url]
         return _run(command, check=False).returncode == 0
 
     def local_ready(self) -> bool:
@@ -537,6 +606,14 @@ class Receipt:
         self.path = config.attempt_dir / "receipt.json"
         self.value: dict[str, object] = {
             "schema": 1,
+            "target": config.target,
+            "target_root": str(config.target_root) if config.target_root else None,
+            "service": config.service,
+            "fastmcp_state": str(config.fastmcp_state),
+            "lock_path": str(config.lock_path),
+            "caddy": config.caddy,
+            "local_url": config.local_url,
+            "public_origin": config.public_origin,
             "current_sha": config.current_sha,
             "candidate_sha": config.candidate_sha,
             "current_launcher_sha": config.current_launcher_sha,
@@ -565,9 +642,13 @@ class Receipt:
 
 
 def deploy(config: Config, operations: Operations, offline: OfflineStep | None = None) -> str:
-    receipt = Receipt(config)
     phase = "PREFLIGHT"
     gate_attempted = False
+    try:
+        _validate_target(config)
+    except (Failed, OSError):
+        return "FAIL"
+    receipt = Receipt(config)
     receipt.write(phase)
     try:
         operations.preflight()
@@ -694,9 +775,10 @@ def main(argv: list[str] | None = None) -> int:
         or args.retry_after < 1
     ):
         parser.error("candidate SHA or retry interval is invalid")
+    config = Config(**vars(args), target="production")
+    _validate_target(config)
     args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-    config = Config(**vars(args))
-    with _exclusive_lock():
+    with _exclusive_lock(config.lock_path):
 
         def interrupted(signum: int, _frame: object) -> None:
             raise Interrupted(f"maintenance interrupted by signal {signum}")

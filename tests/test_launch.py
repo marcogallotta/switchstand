@@ -292,7 +292,9 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
     assert controller[0][2:6] == [
         "--project-directory", "/repo", "-f", "/repo/compose.yaml"
     ]
-    assert upgrade[0] == ["/repo/scripts/switchstand-upgrade-state"]
+    assert upgrade[0] == [
+        "/repo/scripts/switchstand-upgrade-state", "--target", "production"
+    ]
     assert upgrade[1]["env"] == {
         "HOME": "/home/test",
         "SWITCHSTAND_CONTROL_PATH": "/repo",

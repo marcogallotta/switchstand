@@ -25,6 +25,7 @@ from switchstand.edge_maintenance import (
     Unknown,
     _exclusive_lock,
     _validate_launch_mapping,
+    _validate_target,
     deploy,
 )
 from switchstand.edge_monitor import HttpObservation
@@ -33,8 +34,8 @@ from switchstand.edge_monitor import HttpObservation
 def config(
     tmp_path: Path,
     *,
-    caddy: str = "http://127.0.0.1:1",
-    public_origin: str = "https://public.invalid",
+    caddy: str = maintenance.CADDY,
+    public_origin: str = maintenance.PUBLIC_ORIGIN,
 ) -> Config:
     attempt = tmp_path / "attempt"
     attempt.mkdir(parents=True)
@@ -48,8 +49,9 @@ def config(
         candidate_launcher_sha="b" * 64,
         launcher=tmp_path / "launcher",
         current_launcher_sha="c" * 64,
-        fastmcp_state=tmp_path / "fastmcp",
+        fastmcp_state=FASTMCP_STATE,
         env_file=tmp_path / "edge.env",
+        target="production",
         caddy=caddy,
         public_origin=public_origin,
     )
@@ -355,7 +357,6 @@ def test_receipt_redacts_failure_detail(tmp_path: Path):
     operations = FakeOperations(fail_at="preflight")
 
     assert deploy(subject, operations) == "FAIL"
-
     rendered = (subject.attempt_dir / "receipt.json").read_text()
     assert "secret" not in rendered
     assert receipt(subject)["error"] == "Failed"
@@ -372,7 +373,7 @@ def test_ambiguous_preflight_does_not_create_a_gate(tmp_path: Path):
 
 
 def test_rollback_restores_launcher_without_rewinding_oauth_state(tmp_path: Path):
-    subject = config(tmp_path)
+    subject = replace(config(tmp_path), fastmcp_state=tmp_path / "fastmcp")
     subject.launcher.write_text("candidate")
     old = subject.attempt_dir / "launcher.before"
     old.write_text("old")
@@ -395,10 +396,101 @@ def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):
         _validate_launch_mapping(replace(subject, fastmcp_state=FASTMCP_STATE))
 
     subject.candidate_launcher.write_text(f"runtime = {subject.candidate_runtime}\n")
-    with pytest.raises(Failed, match="production edge store"):
-        _validate_launch_mapping(subject)
+    with pytest.raises(Failed, match="production target identity"):
+        _validate_target(replace(subject, fastmcp_state=tmp_path / "wrong-state"))
 
-    _validate_launch_mapping(replace(subject, fastmcp_state=FASTMCP_STATE))
+    _validate_launch_mapping(subject)
+
+
+def test_disposable_target_rejects_every_live_identity_and_escaping_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    rehearsals = tmp_path / "rehearsals"
+    root = rehearsals / "proof"
+    subject = replace(
+        config(root), target="disposable", target_root=root,
+        service="switchstand-rehearsal-proof.service",
+        fastmcp_state=root / "fastmcp",
+        caddy="http://127.0.0.1:22019", local_url="http://127.0.0.1:28790/mcp",
+        public_origin="http://127.0.0.1:28443", lock_path=root / "edge.lock",
+    )
+    rehearsals.chmod(0o700)
+    root.chmod(0o700)
+    monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    _validate_target(subject)
+    live = {
+        "service": maintenance.SERVICE, "fastmcp_state": FASTMCP_STATE,
+        "caddy": maintenance.CADDY, "local_url": maintenance.LOCAL_URL,
+        "public_origin": maintenance.PUBLIC_ORIGIN, "lock_path": maintenance.LOCK,
+    }
+    for field, value in live.items():
+        with pytest.raises(Failed):
+            _validate_target(replace(subject, **{field: value}))  # pyright: ignore[reportCallIssue]
+    with pytest.raises(Failed):
+        _validate_target(replace(subject, local_url="http://127.0.0.1:8790/other"))
+    with pytest.raises(Failed):
+        _validate_target(replace(subject, target="production"))
+
+    outside = tmp_path / "outside"
+    escaped = replace(subject, attempt_dir=outside)
+    assert deploy(escaped, HostOperations(escaped)) == "FAIL"
+    assert not outside.exists()
+
+
+def test_disposable_target_rejects_symlinked_rehearsal_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    production = tmp_path / "production"
+    production.mkdir(mode=0o700)
+    rehearsals = tmp_path / "rehearsals"
+    rehearsals.symlink_to(production, target_is_directory=True)
+    root = rehearsals / "proof"
+    subject = replace(
+        config(root), target="disposable", target_root=root,
+        service="switchstand-rehearsal-proof.service",
+        fastmcp_state=root / "fastmcp",
+        caddy="http://127.0.0.1:22019", local_url="http://127.0.0.1:28790/mcp",
+        public_origin="http://127.0.0.1:28443", lock_path=root / "edge.lock",
+    )
+    monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    with pytest.raises(Failed, match="root is not exact"):
+        _validate_target(subject)
+
+
+def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
+    attempt = tmp_path / "outside-attempt"
+    arguments = [
+        "--attempt-dir", str(attempt),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(tmp_path / "candidate-launcher"),
+        "--launcher", str(tmp_path / "launcher"),
+        "--fastmcp-state", str(tmp_path / "not-production-state"),
+        "--env-file", str(tmp_path / "edge.env"),
+        "--current-sha", "a" * 40,
+        "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64,
+        "--current-launcher-sha", "d" * 64,
+    ]
+    with pytest.raises(Failed, match="production target identity"):
+        maintenance.main(arguments)
+    assert not attempt.exists()
+
+
+def test_disposable_service_command_cannot_select_production_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    subject = replace(config(tmp_path), service="switchstand-rehearsal-proof.service")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="inactive\n", stderr="")
+
+    monkeypatch.setattr(maintenance, "_run", run)
+    HostOperations(subject)._service("stop", "inactive")  # pyright: ignore[reportPrivateUsage]
+    assert all(subject.service in command for command in commands)
+    assert all(maintenance.SERVICE not in command for command in commands)
 
 
 def test_running_process_binds_launcher_and_fastmcp_state(
