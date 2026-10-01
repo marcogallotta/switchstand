@@ -130,11 +130,9 @@ def test_disposable_database_is_derived_from_exact_namespaced_container(
     subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
     calls: list[list[str]] = []
     working: list[Path | None] = []
-
     for key in ("PYTHONPATH", "DATABASE_URL", "SWITCHSTAND_BACKUP_DIR"):
         monkeypatch.setenv(key, "/attacker")
     monkeypatch.chdir(tmp_path)
-
     def run(command: list[str], _environment=None, *, check=True, cwd=None):
         calls.append(command)
         working.append(cwd)
@@ -195,7 +193,6 @@ def test_adapter_uses_exact_prepared_evidence_and_cleanup(
     subject.validate_stage2_pre_authority(frozen)
     assert subject.prepare_stage1(frozen) == "d" * 64
     subject.cleanup_stage1(frozen)
-
     rendered = [tuple(str(value) for value in call) for call in calls]
     assert rendered[0][1] == "validate-prepared"
     assert "--expected-worksheet-digest" in rendered[0]

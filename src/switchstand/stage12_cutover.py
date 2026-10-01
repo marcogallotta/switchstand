@@ -72,8 +72,10 @@ def _binding_digest(before: Path, after: Path) -> str:
     left, right = load_manifest(before), load_manifest(after)
     result = right.pop("sha256", None)
     try:
-        rows = zip(cast(list[dict[str, object]], left["rows"]),
-                   cast(list[dict[str, object]], right["rows"]), strict=True)
+        rows = zip(
+            cast(list[dict[str, object]], left["rows"]),
+            cast(list[dict[str, object]], right["rows"]), strict=True,
+        )
         added = 0
         for old, new in rows:
             old_id, new_id = old["work_id"], new["work_id"]
@@ -84,7 +86,9 @@ def _binding_digest(before: Path, after: Path) -> str:
             elif new_id != old_id:
                 raise ValueError
             new["work_id"] = old_id
-        left_counts, right_counts = cast(dict[str, int], left["counts"]), cast(dict[str, int], right["counts"])
+        left_counts, right_counts = (
+            cast(dict[str, int], item["counts"]) for item in (left, right)
+        )
         if right_counts["bound"] != left_counts["bound"] + added:
             raise ValueError
         right_counts["bound"] = left_counts["bound"]
@@ -204,10 +208,7 @@ class Stage12Cutover:
         self._stage2 = attempt_dir / "stage2-activation.json"
         self._final = attempt_dir / "corpus-final.json"
         self.database_backup = "PENDING"
-        self.corpus_manifests: tuple[str, str] = (
-            evidence.expected_corpus_digest,
-            evidence.expected_corpus_digest,
-        )
+        self.corpus_manifests = (evidence.expected_corpus_digest,) * 2
         self.worksheet = evidence.worksheet_digest
 
     def _load(self, frozen: FrozenEvidence) -> dict[str, object] | None:
@@ -321,10 +322,8 @@ class Stage12Cutover:
             stage1 = self._commands.stage1_state(self._stage1)
             names = ("prepared_import", "stage2_validation", "final_manifest")
             has_preproof = any(name in top for name in names)
-            valid_preproof = (
-                _digest(prepared)
-                and _digest(validation)
-                and _digest(top.get("final_manifest"))
+            valid_preproof = all(
+                _digest(value) for value in (prepared, validation, top.get("final_manifest"))
             )
             if stage1.state == "APPLIED" and not valid_preproof:
                 raise Unknown("Stage 1 applied without durable pre-authority proof")
@@ -409,7 +408,8 @@ class ConcreteCommands:
 
     def __init__(self, config: Config, evidence: Evidence):
         self.c, self.source = config, evidence
-        self.target = "production" if config.target == "production" else f"disposable:{cast(Path, config.target_root).name}"
+        suffix = cast(Path, config.target_root).name
+        self.target = "production" if config.target == "production" else f"disposable:{suffix}"
         self._environment_cache: dict[str, str] | None = None
         self._container = ""
         self._python = Path()
@@ -432,7 +432,8 @@ class ConcreteCommands:
         }
         if not supplied.get("ASANA_TOKEN"):
             raise Failed("migration environment lacks ASANA_TOKEN")
-        project = "switchstand" if self.target == "production" else f"switchstand-rehearsal-{self.target.split(':', 1)[1]}"
+        name = self.target.split(":", 1)[-1]
+        project = "switchstand" if self.target == "production" else f"switchstand-rehearsal-{name}"
         compose = [
             "docker", "compose", "-p", project, "--project-directory",
             str(self.c.candidate_runtime), "-f", str(self.c.candidate_runtime / "compose.state.yaml"),
@@ -495,16 +496,10 @@ class ConcreteCommands:
         )
 
     def _schema(self, receipt: Path, operation: str = "apply") -> None:
+        command = self.c.candidate_runtime / "scripts/switchstand-upgrade-state"
         result = self._run(
-            [
-                str(self.c.candidate_runtime / "scripts/switchstand-upgrade-state"),
-                "--target",
-                self.target,
-                operation,
-                str(receipt),
-            ],
-            self._env(),
-            check=False,
+            [str(command), "--target", self.target, operation, str(receipt)],
+            self._env(), check=False,
         )
         if result.returncode:
             raise Unknown(result.stderr.strip() or "schema operation failed")
@@ -571,12 +566,10 @@ class ConcreteCommands:
             "validate-prepared",
             evidence.worksheet,
             "--confirm-offline",
-            "--manifest", evidence.manifests[0],
-            "--manifest", evidence.manifests[1],
+            "--manifest", evidence.manifests[0], "--manifest", evidence.manifests[1],
             "--expected-corpus-digest", evidence.corpus_digest,
             "--expected-exception-digest", evidence.exception_digest,
-            "--expected-worksheet-digest", evidence.worksheet_digest,
-            "--receipt", prepare_receipt,
+            "--expected-worksheet-digest", evidence.worksheet_digest, "--receipt", prepare_receipt,
             check=False,
         )
         if result.returncode:
@@ -589,17 +582,10 @@ class ConcreteCommands:
         result = self._module(
             "switchstand.work_index_migration",
             "prepare",
-            "--confirm-offline",
-            "--manifest",
-            evidence.manifests[0],
-            "--manifest",
-            evidence.manifests[1],
-            "--expected-corpus-digest",
-            evidence.corpus_digest,
-            "--expected-exception-digest",
-            evidence.exception_digest,
-            "--receipt",
-            receipt,
+            "--confirm-offline", "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest, "--receipt", receipt,
         )
         match = re.search(r"(?:^|\s)prepared_import_sha256=([0-9a-f]{64})(?:\s|$)", result.stdout)
         if match is None:
@@ -655,19 +641,11 @@ class ConcreteCommands:
         result = self._module(
             "switchstand.work_index_migration",
             "activate",
-            "--confirm-offline",
-            "--manifest",
-            evidence.manifests[0],
-            "--manifest",
-            evidence.manifests[1],
-            "--expected-corpus-digest",
-            evidence.corpus_digest,
-            "--expected-exception-digest",
-            evidence.exception_digest,
-            "--expected-prepared-digest",
-            prepared_digest,
-            "--receipt",
-            receipt,
+            "--confirm-offline", "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--expected-prepared-digest", prepared_digest, "--receipt", receipt,
             check=False,
         )
         if result.returncode:

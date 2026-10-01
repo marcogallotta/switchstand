@@ -795,5 +795,7 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGTERM, previous_term)
     print(result)
     return {"PASS": 0, "FAIL": 1, "UNKNOWN": 2}[result]
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
