@@ -127,7 +127,7 @@ class Provider:
 
     async def source_task(self, task_gid):
         return ProviderSourceTask(self.title, self.notes, self.completed, self.revision,
-                                  task_gid in self.canonical_ids)
+                                  CONTEXT, task_gid in self.canonical_ids)
 
     async def append(self, task_gid, text):
         if self.before_send:

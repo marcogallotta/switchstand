@@ -145,6 +145,11 @@ messaging, and required continuation:
   provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
   the provider revision. `work_index_migration.py` owns the one-shot offline final scan and atomic
   flip; see [Database-first Stage 1](database-first-stage1.md).
+- `work_metadata.py` owns the inert Stage 2 metadata authority marker, WorkId-keyed import
+  worksheet contract, frozen-corpus validation, canonical dependency edges, and atomic authority
+  flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata
+  truth. `work_metadata_migration.py` owns the one-time offline operator command; see
+  [Database-first Stage 2](database-first-stage2.md).
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
@@ -305,6 +310,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
+| Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |

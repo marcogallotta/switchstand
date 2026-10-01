@@ -9,6 +9,7 @@ from .core import (
     Provider,
     ProviderError,
     ProviderRelation,
+    ProviderWork,
     State,
     UnknownEffect,
     observed_revision_matches,
@@ -23,11 +24,17 @@ from .grants import (
     WorkGrant,
 )
 from .mutation_effect import PreparedMutation, run_update_or_relation
+from .work_index import WorkIndex
+from .work_metadata import authority_generation
 
 
 class RelationProvider(Protocol):
     async def update_relation(self, provider_work_id: str, patch: ProviderRelation) -> None: ...
     async def relation_matches(self, provider_work_id: str, patch: ProviderRelation) -> bool: ...
+
+
+class Stage2State(Protocol):
+    work_index: WorkIndex
 
 
 class RelationGateway:
@@ -99,22 +106,52 @@ class RelationGateway:
         if handle is None:
             return self.guard(request, "denied", "work_not_bound")
         provider = self.providers.get(handle.provider)
+        index = getattr(self.state, "work_index", None)
+        postgres_dependency = (
+            request.patch.kind == "dependency" and index is not None
+            and await authority_generation(index.engine) is not None
+        )
         if (
             provider is None
-            or not hasattr(provider, "update_relation")
-            or not hasattr(provider, "relation_matches")
+            or (not postgres_dependency and (
+                not hasattr(provider, "update_relation")
+                or not hasattr(provider, "relation_matches")
+            ))
         ):
             return self.guard(request, "denied", "provider_relation_not_supported")
         current = await provider.get(handle.provider_work_id)
         if current is None or not current.canonical:
             return self.guard(request, "not_applied", "source_read_unavailable")
         if not await observed_revision_matches(
-            self.state, request.work_id, request.observed_revision, current.revision
+            self.state, request.work_id, request.observed_revision, current.revision,
+            provider_notes=current.notes, provider_context=current.context,
         ):
             return self.guard(request, "stale", "source_revision_changed")
         resolved = await self._resolved(grant, handle.provider, request)
         if resolved is None:
             return self.guard(request, "denied", "relation_target_not_granted")
+        if postgres_dependency:
+            if request.patch.target_work_id is None or request.patch.action not in {"add", "remove"}:
+                return self.guard(request, "denied", "invalid_database_dependency")
+            try:
+                await cast(WorkIndex, index).validate_dependency(
+                    request.work_id, request.patch.target_work_id
+                )
+            except ValueError:
+                return self.guard(request, "denied", "invalid_database_dependency")
+            return PreparedMutation(
+                intent={
+                    "request": request.model_dump(mode="json"),
+                    "authority": "postgres",
+                    "provider": handle.provider,
+                    "task_gid": handle.provider_work_id,
+                    "qualification": qualification,
+                },
+                send=lambda: self._send_database_dependency(
+                    principal, request, grant, handle.provider,
+                    handle.provider_work_id, qualification, current,
+                ),
+            )
         return PreparedMutation(
             intent={
                 "request": request.model_dump(mode="json"),
@@ -134,6 +171,24 @@ class RelationGateway:
                 handle.provider_work_id, qualification, resolved,
                 cast(RelationProvider, provider),
             ),
+        )
+
+    async def _send_database_dependency(
+        self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
+        provider_name: str, task_gid: str, qualification: str, current: ProviderWork,
+    ) -> GuardOutcome:
+        if request.patch.target_work_id is None:
+            return self.guard(request, "denied", "invalid_database_dependency")
+        index = cast(Stage2State, self.state).work_index
+        _revision, applied = await index.update_dependency(
+            request.work_id, request.patch.target_work_id,
+            request.observed_revision, current, add=request.patch.action == "add",
+        )
+        if not applied:
+            return self.guard(request, "stale", "source_revision_changed")
+        return self._applied(
+            principal, request, grant.id, grant.version,
+            provider_name, task_gid, qualification,
         )
 
     async def _send(
@@ -163,6 +218,26 @@ class RelationGateway:
         task_gid = record.intent.get("task_gid")
         qualification = record.intent.get("qualification")
         raw = record.intent.get("resolved")
+        if record.intent.get("authority") == "postgres":
+            if request.patch.target_work_id is None:
+                raise TypeError("durable database dependency intent invalid")
+            index = getattr(self.state, "work_index", None)
+            if index is None or not await index.dependency_matches(
+                request.work_id, request.patch.target_work_id,
+                add=request.patch.action == "add",
+            ):
+                return self.guard(
+                    request, "unknown", "effect_readback_unconfirmed", possible_send=True
+                )
+            if not isinstance(provider_name, str) or not isinstance(task_gid, str) \
+                    or not isinstance(qualification, str):
+                raise TypeError("durable database dependency intent invalid")
+            outcome = self._applied(
+                principal, request, record.grant_id, record.grant_version,
+                provider_name, task_gid, qualification,
+            )
+            await self.grants.finish(outcome)
+            return outcome
         if (
             not isinstance(provider_name, str) or not isinstance(task_gid, str)
             or not isinstance(qualification, str) or not isinstance(raw, dict)

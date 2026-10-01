@@ -25,6 +25,7 @@ from .grants import (
 )
 from .mutation_effect import PreparedMutation, run_update_or_relation
 from .work_index import WorkIndex, normalize_title
+from .work_metadata import MUTABLE_FIELDS, authority_generation
 
 
 class Stage1State(Protocol):
@@ -52,13 +53,27 @@ class UpdateGateway:
         })
     async def update(self, principal: PrincipalContext, request: ProtectedUpdate) -> GuardOutcome:
         fields = request.patch.model_fields_set
+        if fields & {"horizon", "stage3_gate"}:
+            return self.guard(request, "denied", "legacy_metadata_is_read_only")
         if "title" in fields:
             try:
                 normalize_title(cast(str, request.patch.title))
             except (TypeError, ValueError):
                 return self.guard(request, "denied", "title_not_indexable")
-        database_fields = fields & {"title", "completed"}
         index = getattr(self.state, "work_index", None)
+        metadata_active = (
+            index is not None and await authority_generation(index.engine) is not None
+        )
+        if "review_next_action" in fields and "notes" not in fields and not metadata_active:
+            return self.guard(request, "denied", "review_next_action_requires_notes")
+        new_metadata_fields = set(MUTABLE_FIELDS) - {
+            "priority", "work_type", "review_next_action"
+        }
+        if fields & new_metadata_fields and not metadata_active:
+            return self.guard(request, "denied", "metadata_authority_not_active")
+        database_fields = fields & ({"title", "completed"} | (
+            set(MUTABLE_FIELDS) if metadata_active else set()
+        ))
         if (
             database_fields and fields - database_fields and index is not None
             and await index.active()
@@ -88,14 +103,24 @@ class UpdateGateway:
         if current is None or not current.canonical:
             return self.guard(request, "not_applied", "source_read_unavailable")
         if not await observed_revision_matches(
-            self.state, request.work_id, request.observed_revision, current.revision
+            self.state, request.work_id, request.observed_revision, current.revision,
+            provider_notes=current.notes, provider_context=current.context,
         ):
             return self.guard(request, "stale", "source_revision_changed")
         index = getattr(self.state, "work_index", None)
+        database_fields = {"title", "completed"}
+        if index is not None and await authority_generation(index.engine) is not None:
+            database_fields |= set(MUTABLE_FIELDS)
         if (
-            request.patch.model_fields_set <= {"title", "completed"}
+            request.patch.model_fields_set <= database_fields
             and index is not None and await index.active()
         ):
+            try:
+                await index.validate_update_fields(
+                    request.work_id, request.patch.model_dump(exclude_unset=True)
+                )
+            except (PermissionError, TypeError, ValueError):
+                return self.guard(request, "denied", "invalid_database_metadata")
             return PreparedMutation(
                 intent={
                     "request": request.model_dump(mode="json"), "authority": "postgres",
@@ -130,7 +155,15 @@ class UpdateGateway:
         if not applied:
             return self.guard(request, "stale", "source_revision_changed")
         after = await self.providers[provider_name].get(task_gid)
-        if after is None or not after.canonical or after.revision != current.revision:
+        metadata_active = await authority_generation(index.engine) is not None
+        unchanged = (
+            after is not None and after.canonical
+            and (
+                (after.notes, after.context) == (current.notes, current.context)
+                if metadata_active else after.revision == current.revision
+            )
+        )
+        if not unchanged:
             return self.guard(
                 request, "unknown", "effect_readback_unconfirmed", possible_send=True
             )
@@ -172,13 +205,35 @@ class UpdateGateway:
             index = cast(Stage1State, self.state).work_index
             indexed = await index.get(request.work_id)
             requested = request.patch.model_dump(exclude_unset=True)
-            if indexed is None or any(
-                getattr(indexed, field) != value for field, value in requested.items()
-            ):
+            scalar = {"title", "completed"}
+            if indexed is None:
                 return self.guard(
                     request, "unknown", "effect_readback_unconfirmed", possible_send=True
                 )
-            revision = await index.revision(request.work_id, current.revision)
+            matches = not any(
+                (
+                    getattr(indexed, field) if field in scalar
+                    else getattr(indexed.routing, field)
+                ) != value
+                for field, value in requested.items()
+            )
+            if matches and await authority_generation(index.engine) is not None:
+                if "lifecycle_state" in requested:
+                    matches = indexed.completed == (
+                        requested["lifecycle_state"] == "TERMINAL"
+                    )
+                if matches and "completed" in requested:
+                    matches = indexed.routing.lifecycle_state == (
+                        "TERMINAL" if requested["completed"] else "CURRENT"
+                    )
+            if not matches:
+                return self.guard(
+                    request, "unknown", "effect_readback_unconfirmed", possible_send=True
+                )
+            revision = await index.revision(
+                request.work_id, current.revision,
+                provider_notes=current.notes, provider_context=current.context,
+            )
             outcome = self._applied(
                 principal, request, record.grant_id, record.grant_version,
                 provider_name, task_gid, qualification, current,

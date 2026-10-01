@@ -43,9 +43,9 @@ class Provider:
 
     async def source_task(self, task_gid):
         if task_gid in self.parent_ids:
-            return ProviderSourceTask("Parent", "", False, "r1", True)
+            return ProviderSourceTask("Parent", "", False, "r1", WorkContext(), True)
         if task_gid in self.created.values():
-            return ProviderSourceTask("Created", "notes", False, "r2", True)
+            return ProviderSourceTask("Created", "notes", False, "r2", WorkContext(), True)
         return None
 
     async def get(self, task_gid):

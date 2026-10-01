@@ -558,7 +558,8 @@ class AsanaProvider:
                     or not isinstance(completed, bool) or not isinstance(revision, str)):
                 raise TypeError
             return ProviderSourceTask(
-                title, notes, completed, revision, await self._canonical(task)
+                title, notes, completed, revision, self._work_context(task),
+                await self._canonical(task),
             )
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
@@ -745,6 +746,10 @@ class AsanaProvider:
                 offset = next_offset
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("dependency read failed") from None
+
+    async def dependencies_for_import(self, provider_work_id: str) -> frozenset[str]:
+        """Read exact dependency identities for the bounded offline migration."""
+        return await self._dependency_gids(provider_work_id)
 
     def _placement_memberships(self, task: JSON) -> dict[str, str | None]:
         memberships = task.get("memberships")

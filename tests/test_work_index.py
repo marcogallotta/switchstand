@@ -11,13 +11,35 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import Routing, WorkContext, WorkPlacement, WorkSearchRequest
-from switchstand.core import Handle, ProviderWork
+from switchstand.contracts import (
+    LaunchAuthority,
+    Routing,
+    WorkAttachmentsRequest,
+    WorkContext,
+    WorkGetRequest,
+    WorkPlacement,
+    WorkSearchRequest,
+)
+from switchstand.core import (
+    AttachmentPage,
+    Controller,
+    Handle,
+    ProviderAttachment,
+    ProviderWork,
+)
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import GrantState
 from switchstand.state import PostgresState, metadata
 from switchstand.work_index import WorkIndex, activate, normalize_title
 from switchstand.work_index_migration import final_scan
+from switchstand.work_metadata import (
+    UNKNOWN,
+    ProviderMetadataSnapshot,
+    WorksheetRow,
+    activate_metadata,
+    authority_generation,
+    generate_worksheet,
+)
 
 
 def item(gid: str, title: str, *, completed: bool = False) -> ProviderSearchItem:
@@ -52,7 +74,8 @@ async def index(database_prerequisite):
     yield WorkIndex(engine)
     async with engine.begin() as connection:
         await connection.execute(text(
-            "TRUNCATE work_authority_cutovers, work_authority, work_index CASCADE"
+            "TRUNCATE work_metadata_cutovers, work_metadata_authority, work_edges, "
+            "work_authority_cutovers, work_authority, work_index CASCADE"
         ))
     await engine.dispose()
 
@@ -213,6 +236,163 @@ async def test_failed_pre_cutover_import_leaves_no_authority(index):
     async with index.engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 0
         assert await connection.scalar(text("SELECT count(*) FROM work_authority_cutovers")) == 0
+
+
+def test_stage2_waiting_requires_operator_supplied_reopen_truth():
+    with pytest.raises(ValueError, match="exact wait"):
+        WorksheetRow(
+            work_id=UUID(int=1), provider_work_id="1", provider_revision="r1",
+            lifecycle_state="WAITING", canonical_root=UNKNOWN, owner_key=UNKNOWN,
+            wait_kind=UNKNOWN, unblock_condition=UNKNOWN, next_due=UNKNOWN,
+            next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
+        )
+
+
+async def test_stage2_worksheet_is_complete_atomic_and_ignores_provider_metadata(index):
+    first = item("1", "Alpha")
+    second = item("2", "Done", completed=True)
+    await activate(index.engine, (first, second))
+    worksheet = await generate_worksheet(index.engine)
+    by_provider = {row.provider_work_id: row for row in worksheet.rows}
+    alpha = by_provider["1"]
+    done = by_provider["2"]
+    worksheet = worksheet.model_copy(update={"rows": (
+        alpha.model_copy(update={"depends_on": (done.work_id,)}), done,
+    )})
+    snapshots = (
+        ProviderMetadataSnapshot(
+            "1", first.revision, first.routing, "notes", first.context, frozenset({"2"})
+        ),
+        ProviderMetadataSnapshot(
+            "2", second.revision, second.routing, "notes", second.context, frozenset()
+        ),
+    )
+    assert await activate_metadata(index.engine, worksheet, snapshots) == 2
+    assert await authority_generation(index.engine) == 1
+    projected = await index.project(alpha.work_id, ProviderWork(
+        "ignored", "provider notes", False, first.revision,
+        Routing(priority="changed in Asana"), first.context, True,
+    ))
+    assert projected.routing.priority == "P0"
+    assert projected.routing.lifecycle_state == "UNKNOWN"
+    assert projected.routing.canonical_root == UNKNOWN
+    assert projected.notes == "provider notes"
+    async with index.engine.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM work_edges")) == 1
+    assert await index.dependencies(alpha.work_id) == (done.work_id,)
+    assert await index.blocks(done.work_id) == (alpha.work_id,)
+
+
+async def test_stage2_stale_or_incomplete_worksheet_leaves_no_marker(index):
+    source = item("1", "Alpha")
+    await activate(index.engine, (source,))
+    worksheet = await generate_worksheet(index.engine)
+    stale = ProviderMetadataSnapshot(
+        "1", "changed", source.routing, "notes", source.context, frozenset()
+    )
+    with pytest.raises(ValueError, match="revision changed"):
+        await activate_metadata(index.engine, worksheet, (stale,))
+    assert await authority_generation(index.engine) is None
+
+
+async def test_stage2_metadata_and_dependency_updates_share_versioned_db_truth(index):
+    first, second = item("1", "Alpha"), item("2", "Beta")
+    await activate(index.engine, (first, second))
+    worksheet = await generate_worksheet(index.engine)
+    snapshots = tuple(
+        ProviderMetadataSnapshot(
+            row.provider_work_id, row.provider_revision,
+            row.routing_projection(), "notes",
+            first.context if row.provider_work_id == "1" else second.context,
+            frozenset(),
+        )
+        for row in worksheet.rows
+    )
+    await activate_metadata(index.engine, worksheet, snapshots)
+    by_provider = {row.provider_work_id: row for row in worksheet.rows}
+    alpha, beta = by_provider["1"], by_provider["2"]
+    provider = ProviderWork(
+        first.title, "notes", False, first.revision,
+        first.routing, first.context, True,
+    )
+    projected = await index.project(alpha.work_id, provider)
+    revision, applied = await index.update_fields(alpha.work_id, projected.revision, provider, {
+        "lifecycle_state": "WAITING", "wait_kind": "DEPENDENCY",
+        "unblock_condition": f"WorkId {beta.work_id} becomes TERMINAL",
+        "next_due": "NONE", "next_action_class": "RECHECK",
+        "next_action_ref": str(beta.work_id),
+    })
+    assert applied and revision != projected.revision
+    revision, applied = await index.update_dependency(
+        alpha.work_id, beta.work_id, revision, provider, add=True,
+    )
+    assert applied and await index.dependency_matches(alpha.work_id, beta.work_id, add=True)
+    assert revision != projected.revision
+
+
+async def test_stage2_ignored_provider_metadata_does_not_change_currentness(index):
+    source = item("1", "Alpha")
+    await activate(index.engine, (source,))
+    worksheet = await generate_worksheet(index.engine)
+    row = worksheet.rows[0]
+    snapshots = (ProviderMetadataSnapshot(
+        "1", source.revision, source.routing, "notes", source.context, frozenset()
+    ),)
+    await activate_metadata(index.engine, worksheet, snapshots)
+    before = await index.project(row.work_id, ProviderWork(
+        source.title, "notes", False, "provider-r1",
+        Routing(priority="P0"), source.context, True,
+    ))
+    after = await index.project(row.work_id, ProviderWork(
+        "ignored title", "notes", True, "provider-r2",
+        Routing(priority="provider changed this"), source.context, True,
+    ))
+    assert after.revision == before.revision
+    assert (after.title, after.completed, after.routing.priority) == ("Alpha", False, "P0")
+
+
+async def test_stage2_revision_is_shared_across_get_and_attachments_and_tracks_context(index):
+    source = item("1", "Alpha")
+    await activate(index.engine, (source,))
+    worksheet = await generate_worksheet(index.engine)
+    row = worksheet.rows[0]
+    snapshots = (ProviderMetadataSnapshot(
+        "1", source.revision, source.routing, "notes", source.context, frozenset()
+    ),)
+    await activate_metadata(index.engine, worksheet, snapshots)
+
+    class Provider:
+        work = ProviderWork(
+            source.title, "notes", False, "provider-r1",
+            source.routing, source.context, True,
+        )
+
+        async def get(self, _provider_work_id):
+            return self.work
+
+        async def list_attachments(self, _provider_work_id, _cursor, _limit):
+            return AttachmentPage((ProviderAttachment("proof.txt"),), None)
+
+    provider = Provider()
+    controller = Controller(
+        LaunchAuthority(active_work_id=row.work_id), PostgresState(index.engine),
+        {"asana": provider},
+    )
+    read = await controller.get(WorkGetRequest(api_version="1", work_id=row.work_id))
+    assert read.status == "ok" and read.item is not None
+    attachments = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=row.work_id, observed_revision=read.item.revision,
+    ))
+    assert attachments.status == "ok" and attachments.revision == read.item.revision
+
+    provider.work = ProviderWork(
+        source.title, "notes", False, "provider-r2", source.routing,
+        WorkContext(assignee="New owner"), True,
+    )
+    stale = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=row.work_id, observed_revision=read.item.revision,
+    ))
+    assert stale.status == "stale" and stale.revision != read.item.revision
 
 
 async def test_populated_cutover_marker_refuses_downgrade(index, monkeypatch):

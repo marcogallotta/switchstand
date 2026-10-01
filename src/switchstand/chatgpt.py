@@ -244,7 +244,8 @@ class ChatGPTService:
                     return WorkStructureResult(status="provider_error")
                 from .core import authoritative_revision
                 revision = await authoritative_revision(
-                    self.state, request.work_id, current.revision
+                    self.state, request.work_id, current.revision,
+                    provider_notes=current.notes, provider_context=current.context,
                 )
                 if revision != request.observed_revision:
                     return WorkStructureResult(
@@ -255,17 +256,22 @@ class ChatGPTService:
                 ).structure(request.work_id, handle.provider_work_id, current.revision)
                 if result is None:
                     return WorkStructureResult(status="provider_error")
+                latest = await provider.get(handle.provider_work_id)
+                if latest is None or not latest.canonical:
+                    return WorkStructureResult(status="provider_error")
+                resulting_revision = await authoritative_revision(
+                    self.state, request.work_id, latest.revision,
+                    provider_notes=latest.notes, provider_context=latest.context,
+                )
                 if result.status == "stale":
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,
                         revision=await authoritative_revision(
-                            self.state, request.work_id, result.revision
+                            self.state, request.work_id, result.revision,
+                            provider_notes=latest.notes, provider_context=latest.context,
                         ),
                     )
-                resulting_revision = await authoritative_revision(
-                    self.state, request.work_id, result.revision
-                )
-                if resulting_revision != revision:
+                if result.revision != latest.revision or resulting_revision != revision:
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,
                         revision=resulting_revision,

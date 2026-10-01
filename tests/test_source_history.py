@@ -96,7 +96,9 @@ class FakeProvider:
         )
 
     async def source_task(self, provider_task_id):
-        return ProviderSourceTask("Task", "Notes", False, self.revision, self.canonical)
+        return ProviderSourceTask(
+            "Task", "Notes", False, self.revision, WorkContext(), self.canonical
+        )
 
     async def source_stories(self, provider_task_id, observed_revision, offset, limit):
         if self.history_error:

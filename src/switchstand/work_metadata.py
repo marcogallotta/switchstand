@@ -1,0 +1,301 @@
+"""Inert Stage 2 worksheet validation and atomic metadata authority flip."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from .contracts import Routing, WorkContext
+from .state import (
+    work_authority,
+    work_edges,
+    work_handles,
+    work_index,
+    work_metadata_authority,
+    work_metadata_cutovers,
+)
+
+SCOPE = "workspace"
+AUTHORITY = "POSTGRES_AUTHORITY"
+UNKNOWN = "UNKNOWN"
+NONE = "NONE"
+MUTABLE_FIELDS: frozenset[str] = frozenset({
+    "priority", "work_type", "lifecycle_state", "canonical_root", "owner_key",
+    "wait_kind", "unblock_condition", "next_due", "next_action_class",
+    "next_action_ref", "review_next_action",
+})
+
+
+async def authority_generation(engine: AsyncEngine) -> int | None:
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(
+            select(work_metadata_authority.c.state).where(
+                work_metadata_authority.c.scope == SCOPE
+            ).scalar_subquery(),
+            select(work_metadata_authority.c.generation).where(
+                work_metadata_authority.c.scope == SCOPE
+            ).scalar_subquery(),
+            select(work_metadata_cutovers.c.generation).where(
+                work_metadata_cutovers.c.scope == SCOPE
+            ).scalar_subquery(),
+        ))).one()
+    if row == (None, None, None):
+        return None
+    if row[0] != AUTHORITY or row[1] != row[2] or not isinstance(row[1], int) or row[1] < 1:
+        raise ValueError("inconsistent irreversible work metadata authority state")
+    return row[1]
+
+
+class _Closed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorksheetRow(_Closed):
+    work_id: UUID
+    provider_work_id: str = Field(min_length=1)
+    provider_revision: str = Field(min_length=1)
+    priority: str | None = None
+    work_type: str | None = None
+    lifecycle_state: Literal["CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"]
+    canonical_root: str = Field(min_length=1)
+    owner_key: str = Field(min_length=1)
+    wait_kind: str = Field(min_length=1)
+    unblock_condition: str = Field(min_length=1)
+    next_due: str = Field(min_length=1)
+    next_action_class: str = Field(min_length=1)
+    next_action_ref: str = Field(min_length=1)
+    review_next_action: str | None = None
+    horizon: str | None = None
+    stage3_gate: str | None = None
+    depends_on: tuple[UUID, ...] = ()
+
+    def routing_projection(self) -> Routing:
+        return Routing(
+            priority=self.priority,
+            work_type=self.work_type,
+            review_next_action=self.review_next_action,
+            horizon=self.horizon,
+            stage3_gate=self.stage3_gate,
+        )
+
+    @model_validator(mode="after")
+    def coherent(self) -> WorksheetRow:
+        if len(set(self.depends_on)) != len(self.depends_on) or self.work_id in self.depends_on:
+            raise ValueError("dependency WorkIds must be unique and cannot be self-references")
+        if self.lifecycle_state in {"WAITING", "DEFERRED"}:
+            if self.wait_kind in {UNKNOWN, NONE} or self.unblock_condition in {UNKNOWN, NONE}:
+                raise ValueError("waiting/deferred work requires exact wait kind and reopen condition")
+        elif self.lifecycle_state in {"CURRENT", "TERMINAL"} and (
+            self.wait_kind != NONE or self.unblock_condition != NONE or self.next_due != NONE
+        ):
+            raise ValueError("current/terminal work cannot carry a wait")
+        return self
+
+
+class ImportWorksheet(_Closed):
+    format_version: Literal[1] = 1
+    stage1_generation: int = Field(ge=1)
+    rows: tuple[WorksheetRow, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def complete(self) -> ImportWorksheet:
+        ids = [row.work_id for row in self.rows]
+        provider_ids = [row.provider_work_id for row in self.rows]
+        if len(ids) != len(set(ids)) or len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("worksheet must contain each WorkId/provider identity exactly once")
+        admitted = set(ids)
+        for row in self.rows:
+            if row.canonical_root not in {UNKNOWN, NONE}:
+                try:
+                    root = UUID(row.canonical_root)
+                except ValueError as error:
+                    raise ValueError("canonical_root must be UNKNOWN, NONE, or a WorkId") from error
+                if root not in admitted:
+                    raise ValueError("canonical_root must reference the frozen admitted corpus")
+            if not set(row.depends_on) <= admitted:
+                raise ValueError("dependencies must reference the frozen admitted corpus")
+        return self
+
+
+@dataclass(frozen=True)
+class ProviderMetadataSnapshot:
+    provider_work_id: str
+    revision: str
+    routing: Routing
+    notes: str
+    context: WorkContext
+    dependency_provider_ids: frozenset[str]
+
+
+async def generate_worksheet(engine: AsyncEngine) -> ImportWorksheet:
+    """Generate an operator-editable worksheet only from the frozen Stage 1 corpus."""
+    async with engine.connect() as connection:
+        authority = (await connection.execute(select(
+            work_authority.c.generation, work_authority.c.state,
+        ).where(work_authority.c.scope == SCOPE))).one_or_none()
+        if authority is None or authority[1] != AUTHORITY:
+            raise RuntimeError("Stage 1 POSTGRES_AUTHORITY is required")
+        rows = (await connection.execute(select(
+            work_index.c.work_id,
+            work_handles.c.provider_work_id,
+            work_index.c.provider_revision,
+            work_index.c.completed,
+            work_index.c.routing,
+        ).join(work_handles, work_handles.c.id == work_index.c.work_id).order_by(
+            work_index.c.work_id
+        ))).all()
+    if not rows:
+        raise RuntimeError("Stage 1 admitted corpus is empty")
+    generated: list[WorksheetRow] = []
+    for row in rows:
+        routing = Routing.model_validate(row[4])
+        terminal = bool(row[3])
+        generated.append(WorksheetRow(
+            work_id=row[0], provider_work_id=row[1], provider_revision=row[2],
+            priority=routing.priority, work_type=routing.work_type,
+            lifecycle_state="TERMINAL" if terminal else "UNKNOWN",
+            canonical_root=UNKNOWN, owner_key=UNKNOWN,
+            wait_kind=NONE if terminal else UNKNOWN,
+            unblock_condition=NONE if terminal else UNKNOWN,
+            next_due=NONE if terminal else UNKNOWN,
+            next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
+            review_next_action=routing.review_next_action,
+            horizon=routing.horizon, stage3_gate=routing.stage3_gate,
+        ))
+    return ImportWorksheet(stage1_generation=authority[0], rows=tuple(generated))
+
+
+def validate_snapshots(
+    worksheet: ImportWorksheet,
+    snapshots: tuple[ProviderMetadataSnapshot, ...],
+) -> None:
+    by_provider = {snapshot.provider_work_id: snapshot for snapshot in snapshots}
+    if len(by_provider) != len(snapshots):
+        raise ValueError("provider snapshot contains duplicate work")
+    if set(by_provider) != {row.provider_work_id for row in worksheet.rows}:
+        raise ValueError("provider snapshot does not exactly match worksheet corpus")
+    work_to_provider = {row.work_id: row.provider_work_id for row in worksheet.rows}
+    for row in worksheet.rows:
+        snapshot = by_provider[row.provider_work_id]
+        if snapshot.revision != row.provider_revision:
+            raise ValueError("provider revision changed after worksheet generation")
+        if snapshot.routing != row.routing_projection():
+            raise ValueError("structured provider metadata changed after worksheet generation")
+        expected_dependencies = frozenset(work_to_provider[value] for value in row.depends_on)
+        if snapshot.dependency_provider_ids != expected_dependencies:
+            raise ValueError("provider dependencies do not match the worksheet")
+
+
+async def validate_worksheet(
+    engine: AsyncEngine,
+    worksheet: ImportWorksheet,
+    snapshots: tuple[ProviderMetadataSnapshot, ...],
+) -> None:
+    validate_snapshots(worksheet, snapshots)
+    ordered = sorted(worksheet.rows, key=lambda row: row.work_id.int)
+    async with engine.connect() as connection:
+        authority = (await connection.execute(select(
+            work_authority.c.generation, work_authority.c.state,
+        ).where(work_authority.c.scope == SCOPE))).one_or_none()
+        frozen = (await connection.execute(select(
+            work_index.c.work_id,
+            work_handles.c.provider_work_id,
+            work_index.c.provider_revision,
+            work_index.c.completed,
+        ).join(work_handles, work_handles.c.id == work_index.c.work_id).order_by(
+            work_index.c.work_id
+        ))).all()
+    if authority != (worksheet.stage1_generation, AUTHORITY):
+        raise ValueError("Stage 1 authority generation changed")
+    if [(row[0], row[1]) for row in frozen] != [
+        (row.work_id, row.provider_work_id) for row in ordered
+    ]:
+        raise ValueError("worksheet is not complete for the frozen Stage 1 corpus")
+    completed = {row[0]: row[3] for row in frozen}
+    for row in ordered:
+        if completed[row.work_id] != (row.lifecycle_state == "TERMINAL"):
+            raise ValueError("lifecycle TERMINAL must exactly match Stage 1 completion")
+
+
+async def activate_metadata(
+    engine: AsyncEngine,
+    worksheet: ImportWorksheet,
+    snapshots: tuple[ProviderMetadataSnapshot, ...],
+) -> int:
+    """Validate the frozen provider snapshot and atomically flip all Stage 2 authority."""
+    from .work_index import WorkIndex
+
+    validate_snapshots(worksheet, snapshots)
+    by_provider = {snapshot.provider_work_id: snapshot for snapshot in snapshots}
+
+    ordered = sorted(worksheet.rows, key=lambda row: row.work_id.int)
+    async with engine.begin() as connection:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544732)))
+        if (await connection.execute(select(work_metadata_cutovers.c.scope))).first() is not None:
+            raise RuntimeError("Stage 2 POSTGRES_AUTHORITY is already active")
+        authority = (await connection.execute(select(
+            work_authority.c.generation, work_authority.c.state,
+        ).where(work_authority.c.scope == SCOPE).with_for_update())).one_or_none()
+        if authority != (worksheet.stage1_generation, AUTHORITY):
+            raise ValueError("Stage 1 authority generation changed")
+        frozen = (await connection.execute(select(
+            work_index.c.work_id,
+            work_handles.c.provider_work_id,
+            work_index.c.provider_revision,
+            work_index.c.completed,
+        ).join(work_handles, work_handles.c.id == work_index.c.work_id).order_by(
+            work_index.c.work_id
+        ).with_for_update())).all()
+        if [(row[0], row[1]) for row in frozen] != [
+            (row.work_id, row.provider_work_id) for row in ordered
+        ]:
+            raise ValueError("worksheet is not complete for the frozen Stage 1 corpus")
+        completed = {row[0]: row[3] for row in frozen}
+        for row in ordered:
+            if completed[row.work_id] != (row.lifecycle_state == "TERMINAL"):
+                raise ValueError("lifecycle TERMINAL must exactly match Stage 1 completion")
+        for row in ordered:
+            snapshot = by_provider[row.provider_work_id]
+            routing = Routing(
+                priority=row.priority,
+                work_type=row.work_type,
+                lifecycle_state=row.lifecycle_state,
+                canonical_root=row.canonical_root,
+                owner_key=row.owner_key,
+                wait_kind=row.wait_kind,
+                unblock_condition=row.unblock_condition,
+                next_due=row.next_due,
+                next_action_class=row.next_action_class,
+                next_action_ref=row.next_action_ref,
+                review_next_action=row.review_next_action,
+                horizon=row.horizon,
+                stage3_gate=row.stage3_gate,
+            )
+            await connection.execute(update(work_index).where(
+                work_index.c.work_id == row.work_id
+            ).values(
+                provider_revision=WorkIndex.content_revision(
+                    snapshot.notes, snapshot.context
+                ),
+                context=snapshot.context.model_dump(mode="json"),
+                routing=routing.model_dump(mode="json"),
+                row_version=work_index.c.row_version + 1,
+            ))
+        edges = [
+            {"work_id": row.work_id, "depends_on_work_id": dependency}
+            for row in ordered for dependency in row.depends_on
+        ]
+        if edges:
+            await connection.execute(insert(work_edges), edges)
+        await connection.execute(insert(work_metadata_authority).values(
+            scope=SCOPE, state=AUTHORITY, generation=1,
+        ))
+        await connection.execute(insert(work_metadata_cutovers).values(
+            scope=SCOPE, generation=1,
+        ))
+    return len(ordered)
