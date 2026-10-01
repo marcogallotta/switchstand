@@ -158,8 +158,10 @@ def test_existing_unapplied_subordinate_receipt_forbids_blind_retry(tmp_path: Pa
 
     with pytest.raises(Unknown, match="Stage 1 authority"):
         subject.run(lambda _boundary: None)
+    subject.abort_pre_authority()
 
     assert "stage1-activate" not in commands.calls
+    assert commands.schema == "ABSENT"
 
 
 @pytest.mark.parametrize("proof", ["validation", "prepared", "backup"])

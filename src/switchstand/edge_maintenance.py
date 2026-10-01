@@ -717,7 +717,10 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
             return "UNKNOWN"
         try:
             if phase in {"OFFLINE_PENDING", "OFFLINE_PRE_MARKER"}:
-                if offline is None or _offline_boundary(offline, config) != "PRE_MARKER":
+                if offline is None or (
+                    offline.receipt_path.exists()
+                    and _offline_boundary(offline, config) != "PRE_MARKER"
+                ):
                     raise Unknown("pre-authority boundary is not proven")
                 offline.abort_pre_authority()
                 operations.start()
@@ -792,7 +795,5 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signal.SIGTERM, previous_term)
     print(result)
     return {"PASS": 0, "FAIL": 1, "UNKNOWN": 2}[result]
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

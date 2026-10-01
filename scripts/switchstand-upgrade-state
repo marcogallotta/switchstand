@@ -123,14 +123,15 @@ import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 data, terminal = records[0], records[-1]
 identity = dict(zip(("sha", "new", "target", "project", "volume", "network"), sys.argv[2:]))
-if (data.get("outcome") != "ATTEMPTING" or terminal.get("outcome") not in ("ATTEMPTING", "UNKNOWN")
+if (data.get("outcome") != "ATTEMPTING" or terminal.get("outcome") not in ("ATTEMPTING", "UNKNOWN", "APPLIED")
         or any(data.get(key) != value or terminal.get(key) != value for key, value in identity.items())):
     raise SystemExit("stale or terminal apply receipt")
 print(data["old"], data["before_counts"], data["before_schema"], data["before_data"],
-      data["after_counts"], data["after_schema"], data["after_data"], sep=";")
+      data["after_counts"], data["after_schema"], data["after_data"],
+      terminal["outcome"], terminal["backup"], sep=";")
 PY
     ) || { echo "stale or terminal apply receipt" >&2; exit 1; }
-    IFS=';' read -r EXPECTED_OLD before_counts before_schema before_data expected_counts expected_schema expected_data <<EOF
+    IFS=';' read -r EXPECTED_OLD before_counts before_schema before_data expected_counts expected_schema expected_data terminal_outcome backup <<EOF
 $receipt_values
 EOF
     resume_attempt=true
@@ -285,7 +286,7 @@ if [ "$resume_attempt" = true ]; then
     current_counts=$(sql "$counts_sql")
     if [ "$revision|$current_counts|$current_schema|$current_data" = "$EXPECTED_NEW|$expected_counts|$expected_schema|$expected_data" ]; then
         outcome=APPLIED after_counts=$current_counts after_schema=$current_schema after_data=$current_data
-        write_receipt append
+        [ "$terminal_outcome" = APPLIED ] || write_receipt append
         printf 'state upgrade APPLIED reconciled from exact receipt %s\n' "$receipt"
         exit 0
     fi

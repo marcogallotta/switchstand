@@ -1,12 +1,13 @@
 import hashlib
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from switchstand.edge_maintenance import Failed
-from switchstand.stage12_cutover import Evidence, freeze_evidence
+from switchstand.edge_maintenance import Config, Failed
+from switchstand.stage12_cutover import ConcreteCommands, Evidence, freeze_evidence
 
 SHA = "a" * 40
 
@@ -98,3 +99,72 @@ def test_symlink_source_and_nonprivate_attempt_are_rejected(tmp_path: Path):
     attempt.chmod(0o755)
     with pytest.raises(Failed, match="identity or mode"):
         freeze_evidence(evidence, attempt)
+
+
+def _config(tmp_path: Path, attempt: Path, *, target: str = "disposable") -> Config:
+    root = tmp_path / "proof"
+    root.mkdir(exist_ok=True)
+    env = root / "edge.env"
+    _private(env, b"ASANA_TOKEN=secret\nDATABASE_URL=postgresql:///live\n")
+    return Config(
+        attempt, tmp_path / "current", SHA, tmp_path / "candidate", SHA,
+        root / "candidate-launcher", "b" * 64, root / "launcher", "c" * 64,
+        root / "fastmcp", env, target, target_root=root if target == "disposable" else None,
+        service="switchstand-rehearsal-proof.service" if target == "disposable" else "switchstand-chatgpt-mcp.service",
+        local_url="http://127.0.0.1:18801/mcp" if target == "disposable" else "http://127.0.0.1:8790/mcp",
+        caddy="http://127.0.0.1:18802" if target == "disposable" else "http://127.0.0.1:2019",
+        public_origin="http://127.0.0.1:18803" if target == "disposable" else "https://laptop.tail46f0b9.ts.net",
+        lock_path=root / "lock" if target == "disposable" else Path("/home/marco/.local/state/switchstand/edge-maintenance.lock"),
+    )
+
+
+def test_disposable_database_is_derived_from_exact_namespaced_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    evidence, attempt = _inputs(tmp_path)
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    calls: list[list[str]] = []
+
+    def run(command: list[str], _environment=None, *, check=True):
+        calls.append(command)
+        if command[:2] == ["docker", "inspect"]:
+            value = [{"Config": {"Labels": {
+                "com.docker.compose.project": "switchstand-rehearsal-proof",
+                "com.docker.compose.service": "postgres",
+            }}, "NetworkSettings": {"Networks": {
+                "switchstand-rehearsal-proof_default": {"IPAddress": "172.30.0.9"}
+            }}}]
+            return subprocess.CompletedProcess(command, 0, json.dumps(value), "")
+        return subprocess.CompletedProcess(command, 0, "/git/common\n" if command[0] == "git" else "cid\n", "")
+
+    monkeypatch.setattr(subject, "_run", run)
+    environment = subject._env()  # pyright: ignore[reportPrivateUsage]
+    assert environment["DATABASE_URL"].endswith("@172.30.0.9/switchstand")
+    assert any("switchstand-rehearsal-proof" in command for command in calls)
+
+
+def test_disposable_database_rejects_live_project_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    evidence, attempt = _inputs(tmp_path)
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    value = [{"Config": {"Labels": {"com.docker.compose.project": "switchstand",
+        "com.docker.compose.service": "postgres"}}, "NetworkSettings": {"Networks": {
+        "switchstand-rehearsal-proof_default": {"IPAddress": "172.30.0.9"}}}}]
+    monkeypatch.setattr(subject, "_run", lambda command, *args, **kwargs:
+        subprocess.CompletedProcess(command, 0, json.dumps(value) if command[:2] == ["docker", "inspect"] else "cid\n", ""))
+    with pytest.raises(Failed, match="database target"):
+        subject._env()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(("status", "state"), [(0, "APPLIED"), (1, "ABSENT"), (2, "UNKNOWN")])
+def test_stage1_resume_classifies_exact_reconcile_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, state: str
+):
+    evidence, attempt = _inputs(tmp_path)
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    receipt = attempt / "stage1-activation.json"
+    _private(receipt, b"{}")
+    monkeypatch.setattr(subject, "_module", lambda *args, **kwargs:
+        subprocess.CompletedProcess([], status, "", ""))
+    assert subject.stage1_state(receipt).state == state

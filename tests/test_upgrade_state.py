@@ -501,6 +501,17 @@ def test_apply_reconciles_fsynced_attempt_after_effect_without_retry(tmp_path):
     assert Path(env["FAKE_TRACE"]).read_text().count("run --rm --network container:shared") == before
 
 
+def test_apply_reconciles_terminal_receipt_without_changing_its_identity(tmp_path):
+    repo, env = _repo(tmp_path)
+    receipt = tmp_path / "apply.json"
+    assert _run(repo, env, "apply", str(receipt)).returncode == 0
+    before = receipt.read_bytes()
+
+    result = _run(repo, env, "apply", str(receipt))
+
+    assert result.returncode == 0 and receipt.read_bytes() == before
+
+
 def test_unknown_observation_cannot_replace_intended_after_identity(tmp_path):
     repo, env = _repo(tmp_path)
     receipt = tmp_path / "apply.json"
