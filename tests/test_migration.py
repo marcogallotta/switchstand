@@ -10,6 +10,17 @@ from sqlalchemy.engine import make_url
 from switchstand.provision import require_current_schema
 
 
+@pytest.fixture(autouse=True)
+def clean_stage2_tables(database_prerequisite):
+    engine = create_engine(disposable_url())
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS work_edges, work_metadata_cutovers, "
+            "work_metadata_authority CASCADE"
+        ))
+    engine.dispose()
+
+
 def disposable_url() -> str:
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
@@ -25,12 +36,12 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0007_agent_chat_identity; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0010_work_metadata_authority; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -42,15 +53,16 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
     assert set(inspect(engine).get_table_names()) == {
-        "agent_mailboxes", "work_event_handles", "lifecycle_obligations", "alembic_version", "work_handles",
+        "human_trajectory_revisions", "work_index", "work_authority", "work_authority_cutovers", "agent_mailboxes", "work_event_handles", "lifecycle_obligations", "alembic_version", "work_handles",
         "work_grants", "effect_intents", "messages", "message_deliveries", "message_projection",
+        "work_metadata_authority", "work_metadata_cutovers", "work_edges",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
 
@@ -65,7 +77,7 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -106,7 +118,7 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "recipient_grant_version, state FROM message_deliveries"
         )).one()
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0007_agent_chat_identity"
+            == "0010_work_metadata_authority"
     assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
     assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
     assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
@@ -131,7 +143,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -159,7 +171,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0007_agent_chat_identity"
+            == "0010_work_metadata_authority"
         assert connection.execute(text(
             "SELECT endpoint_id, principal_key, session_key, generation FROM agent_mailboxes"
         )).one() == (endpoint_id, "owner", "session", 4)
@@ -182,7 +194,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -195,7 +207,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0007_agent_chat_identity"
+            == "0010_work_metadata_authority"
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
         >= {"endpoint_id", "principal_key", "session_key", "generation"}
 
@@ -210,7 +222,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     command.upgrade(config, "head")
@@ -225,7 +237,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0007_agent_chat_identity"
+            == "0010_work_metadata_authority"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite):
@@ -233,7 +245,7 @@ def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -270,7 +282,7 @@ def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema(database_prereq
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -287,7 +299,7 @@ def test_event_identity_downgrade_refuses_to_discard_mapping(database_prerequisi
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, agent_mailboxes, work_event_handles, lifecycle_obligations, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, message_deliveries, messages, effect_intents, work_grants, "
             "work_handles CASCADE"
         ))

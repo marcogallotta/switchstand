@@ -18,10 +18,18 @@ dependencies = [
 [project.scripts]
 switchstand = "switchstand.mcp:main"
 switchstand-chatgpt-edge = "switchstand.chatgpt_edge:main"
+switchstand-stable-auth = "switchstand.stable_auth_runtime:auth_main"
+switchstand-delegated-edge = "switchstand.stable_auth_runtime:edge_main"
+switchstand-stable-auth-host = "switchstand.stable_auth_host:run"
+switchstand-stable-auth-migrate = "switchstand.stable_auth_migration:run"
+switchstand-stable-auth-deploy = "switchstand.stable_auth_deployment:run"
+switchstand-work-index-migrate = "switchstand.work_index_migration:run"
+switchstand-work-metadata-migrate = "switchstand.work_metadata_migration:run"
 switchstand-bootstrap-agent-project = "switchstand.durable_agent_project:main"
 switchstand-edge-doctor = "switchstand.edge_doctor:run"
 switchstand-provision = "switchstand.provision:main"
 switchstand-test-grant = "switchstand.test_grant:main"
+switchstand-affected-tests = "switchstand.affected_tests:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]

@@ -1,6 +1,6 @@
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from .contracts import (
@@ -33,9 +33,34 @@ from .contracts import (
     WorkUpdateRequest,
 )
 
+ProviderFailure = Literal[
+    "invalid_request",
+    "admission_denied",
+    "authority_denied",
+    "transient",
+    "permanent",
+    "unspecified",
+]
+
 
 class ProviderError(Exception):
-    """A provider failure whose details must not cross the controller boundary."""
+    """A provider failure whose raw details must not cross the controller boundary."""
+
+    def __init__(self, message: str, *, failure: ProviderFailure = "unspecified"):
+        super().__init__(message)
+        self.failure = failure
+
+
+def provider_rejection_reason(error: ProviderError) -> str:
+    """Return a closed, provider-neutral reason without exposing raw provider detail."""
+    return {
+        "invalid_request": "provider_rejected_input",
+        "admission_denied": "provider_admission_denied",
+        "authority_denied": "provider_authority_denied",
+        "transient": "provider_temporarily_unavailable",
+        "permanent": "provider_permanent_rejection",
+        "unspecified": "provider_rejected_send",
+    }[error.failure]
 
 
 class UnknownEffect(ProviderError):
@@ -85,6 +110,7 @@ class ProviderSourceTask:
     notes: str
     completed: bool
     revision: str
+    context: WorkContext
     canonical: bool
 
 
@@ -152,6 +178,38 @@ class Provider(Protocol):
     ) -> ProviderSourceStory | None: ...
 
 
+async def authoritative_revision(
+    state: object, work_id: UUID, provider_revision: str, *,
+    provider_notes: str | None = None, provider_context: WorkContext | None = None,
+) -> str:
+    index = getattr(state, "work_index", None)
+    if index is None:
+        return provider_revision
+    return await index.revision(
+        work_id, provider_revision, provider_notes=provider_notes,
+        provider_context=provider_context,
+    )
+
+
+async def observed_revision_matches(
+    state: object, work_id: UUID, observed: str, provider_revision: str, *,
+    provider_notes: str | None = None, provider_context: WorkContext | None = None,
+) -> bool:
+    return observed == await authoritative_revision(
+        state, work_id, provider_revision, provider_notes=provider_notes,
+        provider_context=provider_context,
+    )
+
+
+async def authoritative_work(
+    state: object, work_id: UUID, provider: ProviderWork,
+) -> ProviderWork:
+    index = getattr(state, "work_index", None)
+    if index is None:
+        return provider
+    return await index.project(work_id, provider)
+
+
 async def apply_scalar(
     provider: Provider, provider_work_id: str, patch: WorkPatch, *, send: bool = True,
 ) -> ProviderWork | None:
@@ -216,7 +274,22 @@ class Controller:
             return WorkResult(status="unknown")
         if not work.canonical:
             return WorkResult(status="denied")
-        return WorkResult(status="ok", item=self._item(work_id, work, handle))
+        try:
+            projected = await authoritative_work(self.state, work_id, work)
+            index = getattr(self.state, "work_index", None)
+            if index is not None and await index.active():
+                after = await provider.get(handle.provider_work_id)
+                if after is None:
+                    return WorkResult(status="unknown")
+                if not after.canonical:
+                    return WorkResult(status="denied")
+                stable = await authoritative_work(self.state, work_id, after)
+                if after.revision != work.revision or stable.revision != projected.revision:
+                    return WorkResult(status="stale", item=self._item(work_id, stable, handle))
+                projected = stable
+        except PermissionError:
+            return WorkResult(status="denied")
+        return WorkResult(status="ok", item=self._item(work_id, projected, handle))
 
     def _source_provider(self) -> Provider | None:
         return self.providers.get("asana")
@@ -256,9 +329,13 @@ class Controller:
                 return WorkAttachmentsResult(status="unknown")
             if not before.canonical:
                 return WorkAttachmentsResult(status="denied")
-            if before.revision != request.observed_revision:
+            current_revision = await authoritative_revision(
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
+            )
+            if current_revision != request.observed_revision:
                 return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id, revision=before.revision
+                    status="stale", work_id=request.work_id, revision=current_revision
                 )
             page = await provider.list_attachments(
                 handle.provider_work_id, request.cursor, request.limit
@@ -270,10 +347,15 @@ class Controller:
                 return WorkAttachmentsResult(status="denied")
             if after.revision != before.revision:
                 return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id, revision=after.revision
+                    status="stale", work_id=request.work_id,
+                    revision=await authoritative_revision(
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
+                    ),
                 )
+            projected = await authoritative_work(self.state, request.work_id, after)
             return WorkAttachmentsResult(
-                status="ok", work_id=request.work_id, revision=after.revision,
+                status="ok", work_id=request.work_id, revision=projected.revision,
                 attachments=tuple(WorkAttachment(name=item.name) for item in page.attachments),
                 next_cursor=page.next_cursor,
             )
@@ -292,8 +374,21 @@ class Controller:
             provider = self.providers.get(handle.provider)
             if provider is None:
                 return WorkHistoryResult(status="provider_error")
+            before = await provider.source_task(handle.provider_work_id)
+            if before is None:
+                return WorkHistoryResult(status="unknown")
+            if not before.canonical:
+                return WorkHistoryResult(status="denied")
+            current_revision = await authoritative_revision(
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
+            )
+            if current_revision != request.observed_revision:
+                return WorkHistoryResult(
+                    status="stale", work_id=request.work_id, revision=current_revision
+                )
             page = await provider.source_stories(
-                handle.provider_work_id, request.observed_revision, request.cursor, request.limit
+                handle.provider_work_id, before.revision, request.cursor, request.limit
             )
             if page is None:
                 return WorkHistoryResult(status="unknown")
@@ -302,9 +397,26 @@ class Controller:
             if (page.task_gid != handle.provider_work_id or len(page.stories) > request.limit
                     or any(story.task_gid != handle.provider_work_id for story in page.stories)):
                 return WorkHistoryResult(status="provider_error")
-            if page.stale or page.revision != request.observed_revision:
+            if page.stale or page.revision != before.revision:
                 return WorkHistoryResult(
-                    status="stale", work_id=request.work_id, revision=page.revision
+                    status="stale", work_id=request.work_id,
+                    revision=await authoritative_revision(
+                        self.state, request.work_id, page.revision,
+                        provider_notes=before.notes, provider_context=before.context,
+                    ),
+                )
+            after = await provider.source_task(handle.provider_work_id)
+            if after is None:
+                return WorkHistoryResult(status="unknown")
+            if not after.canonical:
+                return WorkHistoryResult(status="denied")
+            if after.revision != before.revision:
+                return WorkHistoryResult(
+                    status="stale", work_id=request.work_id,
+                    revision=await authoritative_revision(
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
+                    ),
                 )
             event_state = cast(EventState, self.state)
             events: list[WorkEvent] = []
@@ -316,7 +428,10 @@ class Controller:
             return WorkHistoryResult(
                 status="ok",
                 work_id=request.work_id,
-                revision=page.revision,
+                revision=await authoritative_revision(
+                    self.state, request.work_id, after.revision,
+                    provider_notes=after.notes, provider_context=after.context,
+                ),
                 events=tuple(events),
                 next_cursor=page.next_offset,
             )
@@ -346,9 +461,13 @@ class Controller:
                 return WorkEventResult(status="unknown")
             if not before.canonical:
                 return WorkEventResult(status="denied")
-            if before.revision != request.observed_revision:
+            current_revision = await authoritative_revision(
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
+            )
+            if current_revision != request.observed_revision:
                 return WorkEventResult(
-                    status="stale", work_id=request.work_id, revision=before.revision
+                    status="stale", work_id=request.work_id, revision=current_revision
                 )
             story = await provider.source_story(handle.provider_work_id, provider_event_id)
             if story is None:
@@ -363,12 +482,19 @@ class Controller:
                 return WorkEventResult(status="denied")
             if after.revision != before.revision:
                 return WorkEventResult(
-                    status="stale", work_id=request.work_id, revision=after.revision
+                    status="stale", work_id=request.work_id,
+                    revision=await authoritative_revision(
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
+                    ),
                 )
             return WorkEventResult(
                 status="ok",
                 work_id=request.work_id,
-                revision=after.revision,
+                revision=await authoritative_revision(
+                    self.state, request.work_id, after.revision,
+                    provider_notes=after.notes, provider_context=after.context,
+                ),
                 item=self._work_event(request.work_id, request.event_id, story),
             )
         except UnknownEffect:

@@ -14,6 +14,38 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Repository bootstrap and safety
 
+### Live incidents
+
+A credible live-user failure enters incident mode; the reporter does not need to say
+`CODE RED`; an explicit `CODE RED` also enters it. Immediately acknowledge, name one
+operator, open the canonical private incident record, and inspect current service state
+and newest logs before broad delegation. During interactive urgency, keep updates short
+and frequent; include impact, prognosis, Human/agent action, service decision, current
+action, next checkpoint, and any temporary coordination change. Label evidence
+`CURRENT`, `HISTORICAL`, or `UNKNOWN`; transport-up is not functional health. Prefer the
+smallest reversible mitigation before RCA or broad parallel work, without bypassing
+authority or ambiguous-effect safeguards.
+
+`STOP` means pause new action, listen, and re-ground on Marco's newest direction; it does
+not terminate workers or abandon the incident. `CANCEL` or `STOP WORK` means terminate
+active work best-effort and report residual effects. A rollback is temporary mitigation:
+track its exact removed candidate and bundled good work through roll-forward/redeploy or
+explicit retirement, and never rewind forward-only state. If multiple products fail at
+the same public boundary, test the shared ingress before resetting product-local OAuth,
+data, or service state. A user saying the path works establishes a recovery checkpoint,
+not completion: immediately verify it, update the record, and continue cleanup, RCA,
+monitoring, and owned follow-ups without waiting for another prompt. Close the incident
+only after authenticated recovery proof, temporary-setting disposition, RCA, regression
+and monitoring follow-up, and owned residual work. The complete operator procedure and
+the canonical record/status templates are in
+[live-incident operations](docs/operations-live-incident.md). If local `main` cannot be
+proved current during an incident, this paragraph remains the minimum procedure; do not
+delay mitigation for repository synchronization or trust a possibly stale detailed copy.
+During an explicitly announced edge-maintenance attempt, generic MCP connection failure may be
+the verified `503 Retry-After` gate. Follow the bounded read-only retry and 90-second escalation
+contract in [live-incident operations](docs/operations-live-incident.md#known-edge-maintenance-window).
+Never automatically retry writes, OAuth transitions, or `UNKNOWN` effects during that window.
+
 - In the canonical Switchstand Git common directory, raw `codex` must enter through the host-installed materialized shim and repository `scripts/codex-dispatch`; outside it, the shim directly launches the real Codex binary even when the checkout is absent or broken. The dispatcher intentionally uses an isolated Coordinator home without global `AGENTS.md`, and the repository-configured canonical Switchstand MCP must be present and callable there. Install or update the host shim with `scripts/install-codex-shim`; never point the global launcher at mutable checkout content. Raw `claude` works the same way through `scripts/install-claude-shim` and `scripts/claude-dispatch`, which loads only repository Coordinator settings and MCP, excludes global `~/.claude/CLAUDE.md`, and fences the primary checkout.
 - Only ordinary ChatGPT without a normal checkout uses `repository_bundle_get`. Accept only `current`, verify the advertised SHA-256, and materialize the bundle as a normal repository. Retry `refresh_pending`; never substitute stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. Codex/Claude with a repository stays on normal Git.
 - `~/.claude/CLAUDE.md` is not Switchstand authority; repository `CLAUDE.md` only imports `AGENTS.md` here. Do not inject raw Asana/PostgreSQL credentials or broaden permissions because a capability is missing. Use `~/.config/switchstand/.env` only when current authority permits the capability.
@@ -31,7 +63,7 @@ An owner of an exact work-addressed message or review obligation keeps that exac
 
 Here, “poll” or “keep polling” means repeatedly read the exact owned message/review in the current active session, using a supported bounded wait between checks. No fixed number of empty checks ends the obligation. Do not turn that request into a ChatGPT Scheduled task or an hourly `condition_watch` unless Marco explicitly asks for future scheduled runs. If the host actually stops the session, persist the exact watch and report that active polling stopped; resume it on re-entry rather than claiming that an inactive chat will keep checking.
 
-Raw `source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy/reference/recovery/failback needs, not the primary inbox or ordinary MCP model. `work_append` is bounded feedback, not durable agent messaging. Follow [work, messaging, and source compatibility](docs/source-history-feedback.md) for surface-specific semantics.
+Raw `source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy/reference/recovery/failback needs, not the primary inbox or ordinary MCP model. Ordinary current meaning belongs in notes through `work_update`; `work_append` is exceptional provenance/investigation/legacy feedback, not current state or durable agent messaging. Follow [work, messaging, and source compatibility](docs/source-history-feedback.md) for surface-specific semantics.
 
 The sole unscoped route for Codex and ChatGPT is `START HERE` `1218327002478382`, resolved through the authenticated provider-neutral `switchstand` HTTP/OAuth MCP in repository config. Follow its current routes rather than broad search or candidate documents. The Project Settings router may point there but is not a parallel authority. See [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for current modes and identity boundaries.
 

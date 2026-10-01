@@ -4,6 +4,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+import switchstand.provider as provider_module
 from switchstand.contracts import Routing, WorkContext, WorkPatch, WorkPlacement
 from switchstand.core import ProviderError, ProviderRelation, UnknownEffect
 from switchstand.discovery import ProviderSearchItem
@@ -87,6 +88,46 @@ async def test_work_context_uses_exact_task_read_and_hides_provider_ids():
     assert all(secret not in serialized for secret in (
         "user-secret", "task-secret", "section-secret", "outside-secret", "outside-section",
     ))
+
+
+async def test_task_read_retries_transient_provider_failure(monkeypatch, caplog):
+    payload = task(project=PROJECT)
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0,))
+    subject, api = provider((503, {"errors": [{"message": "secret"}]}), (200, payload))
+
+    with caplog.at_level("WARNING"):
+        result = await subject.get("sensitive-task-id")
+
+    assert result is not None and len(api.requests) == 2
+    assert "failure=http_status status=503 attempt=1" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
+
+
+async def test_task_read_retries_transport_failure(monkeypatch, caplog):
+    payload = task(project=PROJECT)
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0,))
+    timeout = httpx.ReadTimeout("secret", request=httpx.Request("GET", "https://secret"))
+    subject, api = provider(timeout, (200, payload))
+
+    with caplog.at_level("WARNING"):
+        result = await subject.get("sensitive-task-id")
+
+    assert result is not None and len(api.requests) == 2
+    assert "failure=transport error_type=ReadTimeout attempt=1" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
+
+
+async def test_task_read_reports_sanitized_exhausted_failure(monkeypatch, caplog):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    failure = (503, {"errors": [{"message": "secret"}]})
+    subject, api = provider(failure, failure, failure)
+
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError):
+        await subject.get("sensitive-task-id")
+
+    assert len(api.requests) == 3
+    assert "failure=http_status status=503 attempts=3" in caplog.text
+    assert "secret" not in caplog.text and "sensitive-task-id" not in caplog.text
 
 
 @pytest.mark.parametrize("change", [
@@ -194,16 +235,18 @@ async def test_test_only_update_preserves_cleanup_marker_and_denies_project_remo
             client, TEST_PROJECT, test_only=True, create_notes_suffix="marker",
         )
         await subject.update("created", WorkPatch(notes="changed"))
-        with pytest.raises(ProviderError, match="placement removal denied"):
+        with pytest.raises(ProviderError, match="placement removal denied") as placement:
             await subject.update_relation(
                 "created", ProviderRelation(
                     kind="placement", action="remove", project_gid=TEST_PROJECT,
                 ),
             )
-        with pytest.raises(ProviderError, match="parent removal denied"):
+        assert placement.value.failure == "admission_denied"
+        with pytest.raises(ProviderError, match="parent removal denied") as parent:
             await subject.update_relation(
                 "created", ProviderRelation(kind="parent", action="remove", target_gid=None),
             )
+        assert parent.value.failure == "admission_denied"
     assert json.loads(api.requests[0].content)["data"]["notes"] == "changed\n\nmarker"
 
 
@@ -416,8 +459,9 @@ async def test_list_rejects_invalid_provider_page(problem):
         await subject.search_work(None, None, cursor, 1)
 
 
-async def test_search_provider_failure_is_closed():
-    subject, _ = provider((503, {}))
+async def test_search_provider_failure_is_closed(monkeypatch):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    subject, _ = provider((503, {}), (503, {}), (503, {}))
 
     with pytest.raises(ProviderError):
         await subject.search_work(None, None, None, 50)
@@ -465,7 +509,7 @@ async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
     fields = [field(gid, option=name, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
-    result = await subject.get("t"); assert result and result.routing.model_dump() == ({name: name for name in FIELDS} | {"work_type": None})
+    result = await subject.get("t"); assert result and result.routing.model_dump(exclude_none=True) == {name: name for name in FIELDS}
 def test_project_registry_does_not_expand_writable_routing_fields():
     assert FIELDS == {
         "priority": "1217653169990249",
@@ -602,8 +646,38 @@ async def test_update_ambiguous_response_is_unknown_and_not_retried():
         await subject.update("t", WorkPatch(notes="x"))
     assert len(api.requests) == 1
     subject, api = provider((400, {}))
-    with pytest.raises(ProviderError, match="provider write failed"):
+    with pytest.raises(ProviderError, match="provider write failed") as rejected:
         await subject.update("t", WorkPatch(notes="x"))
+    assert rejected.value.failure == "permanent"
+    assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize(("status", "failure"), [
+    (400, "permanent"),
+    (403, "authority_denied"),
+    (429, "transient"),
+])
+async def test_write_http_status_has_bounded_sanitized_classification(status, failure):
+    subject, api = provider((status, {"errors": [{"message": "private detail"}]}))
+
+    with pytest.raises(ProviderError) as rejected:
+        await subject.update("t", WorkPatch(notes="x"))
+
+    assert rejected.value.failure == failure
+    assert "private detail" not in str(rejected.value)
+    assert len(api.requests) == 1
+
+
+async def test_unknown_routing_enum_value_is_classified_as_invalid_before_send():
+    catalogue = field(FIELDS["review_next_action"], option="Code Review")
+    subject, api = provider((200, task(fields=[catalogue])))
+
+    with pytest.raises(ProviderError) as rejected:
+        await subject.update(
+            "t", WorkPatch(notes="review evidence", review_next_action="free text")
+        )
+
+    assert rejected.value.failure == "invalid_request"
     assert len(api.requests) == 1
 @pytest.mark.parametrize("fields", [[], [field(enabled=False)], [field(), field()],
                                      [field(option="Other")]])
@@ -625,14 +699,18 @@ async def test_append_once_and_ambiguous_response_is_not_retried():
     with pytest.raises(UnknownEffect): await subject.append("t", "x")
     subject, _ = provider((400, {}))
     with pytest.raises(ProviderError): await subject.append("t", "x")
-async def test_failures_are_sanitized():
-    subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
+async def test_failures_are_sanitized(monkeypatch, caplog):
+    monkeypatch.setattr(provider_module, "READ_RETRY_DELAYS", (0, 0))
+    read_failure = (500, {"errors": [{"message": "secret"}]})
+    subject, _ = provider(read_failure, read_failure, read_failure)
     with pytest.raises(ProviderError) as read_error: await subject.get("t")
     subject, _ = provider((500, {"errors": [{"message": "secret"}]}))
     with pytest.raises(ProviderError) as write_error: await subject.update("t", WorkPatch(notes="x"))
     malformed = task(project=PROJECT); malformed["data"]["notes"] = {"secret": True}
     with pytest.raises(ProviderError) as malformed_error: await provider((200, malformed))[0].get("t")
-    assert "secret" not in str(read_error.value) + str(write_error.value) + str(malformed_error.value)
+    assert "secret" not in (
+        str(read_error.value) + str(write_error.value) + str(malformed_error.value) + caplog.text
+    )
 
 def source_task_payload(*, gid="123", revision="r1", canonical=True):
     payload = task(project=PROJECT if canonical else None)

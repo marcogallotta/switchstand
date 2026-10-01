@@ -5,16 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.auth.auth import AccessToken
-from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.dependencies import get_context
-from joserfc.errors import JoseError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -28,15 +26,24 @@ from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
+from .oauth_continuity import (
+    FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
+    SwitchstandGitHubProvider,
+)
 from .principal import RequestPrincipal
 from .provider import AsanaProvider
+from .stable_auth import (
+    REQUIRED_SCOPE,
+    IntrospectionTokenVerifier,
+    delegated_auth,
+    normalize_resource_url,
+)
 from .state import PostgresState
 
 LOG = logging.getLogger(__name__)
-REQUIRED_SCOPE = "read:user"
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
-FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60
+_https_resource_url = normalize_resource_url
 
 
 class _CompleteMCPStream:
@@ -71,18 +78,8 @@ class _CompleteMCPStream:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
-def _http_middleware() -> list[Middleware]:
+def http_middleware() -> list[Middleware]:
     return [Middleware(_CompleteMCPStream)]
-
-
-def _https_resource_url(raw_value: str) -> str:
-    value = raw_value.strip()
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("SWITCHSTAND_MCP_RESOURCE_URL must be an absolute HTTPS URL")
-    if not parsed.path.endswith("/mcp") or parsed.params or parsed.query or parsed.fragment:
-        raise ValueError("SWITCHSTAND_MCP_RESOURCE_URL must end exactly in /mcp")
-    return str(AnyHttpUrl(value))
 
 
 def _loopback_host(raw_value: str) -> str:
@@ -133,47 +130,10 @@ class MCPAuthConfig:
         if not values["github_user_id"].isdigit():
             raise ValueError("SWITCHSTAND_MCP_GITHUB_USER_ID must be a numeric GitHub user ID")
         return cls(
-            **(values | {"resource_url": _https_resource_url(values["resource_url"])}),
+            **(values | {"resource_url": normalize_resource_url(values["resource_url"])}),
             bind_host=_loopback_host(os.getenv("SWITCHSTAND_MCP_BIND_HOST", "127.0.0.1")),
             bind_port=_bind_port(os.getenv("SWITCHSTAND_MCP_BIND_PORT", "8790")),
         )
-
-
-class SwitchstandGitHubProvider(GitHubProvider):
-    """GitHub proxy restricted to one user and bridged to RequestPrincipal."""
-
-    def __init__(self, *, allowed_user_id: str, **kwargs: Any) -> None:
-        self.allowed_user_id = allowed_user_id
-        super().__init__(**kwargs)
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        access = await super().verify_token(token)
-        if access is None or access.subject != self.allowed_user_id:
-            if access is not None:
-                LOG.warning("mcp_github_user_rejected")
-            return None
-        try:
-            claims = self.jwt_issuer.verify_token(token)
-        except JoseError:
-            return None
-        scope = claims.get("scope")
-        client_id = claims.get("client_id")
-        issuer = claims.get("iss")
-        resource = claims.get("aud")
-        expires_at = claims.get("exp")
-        if (not isinstance(scope, str) or REQUIRED_SCOPE not in scope.split()
-                or not isinstance(client_id, str) or not client_id
-                or not isinstance(issuer, str) or not isinstance(resource, str)
-                or not isinstance(expires_at, int)):
-            return None
-        bridged_claims = dict(access.claims or {}) | {"iss": issuer}
-        return access.model_copy(update={
-            "client_id": client_id,
-            "scopes": scope.split(),
-            "expires_at": expires_at,
-            "resource": resource,
-            "claims": bridged_claims,
-        })
 
 
 def _audit(tool: str, target: str | None, status: str) -> None:
@@ -213,16 +173,7 @@ def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
     certification_runtime: tuple[str, str] | None = None,
 ):
-    """Build the inert-until-called authenticated HTTP application."""
-    service = ChatGPTService(
-        RequestPrincipal(config.issuer_url, config.resource_url, REQUIRED_SCOPE),
-        service.state,
-        service.grants,
-        service.providers,
-        service.messages,
-        service.required_results,
-        ordinary_workspace_admission=True,
-    )
+    """Build the current combined OAuth/resource application."""
     auth_options: dict[str, Any] = {}
     if client_storage is not None:
         auth_options["client_storage"] = client_storage
@@ -237,16 +188,57 @@ def create_app(
         fastmcp_access_token_expiry_seconds=FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
         **auth_options,
     )
+    return _create_resource_app(
+        service,
+        issuer_url=config.issuer_url,
+        resource_url=config.resource_url,
+        auth=auth,
+        certification_runtime=certification_runtime,
+    )
+
+
+def create_delegated_app(
+    service: ChatGPTService,
+    verifier: IntrospectionTokenVerifier,
+    *,
+    certification_runtime: tuple[str, str] | None = None,
+):
+    """Build an inert resource edge with no GitHub or OAuth signing state."""
+    return _create_resource_app(
+        service,
+        issuer_url=verifier.contract.issuer_url,
+        resource_url=verifier.contract.resource_url,
+        auth=delegated_auth(verifier),
+        certification_runtime=certification_runtime,
+    )
+
+
+def _create_resource_app(
+    service: ChatGPTService,
+    *,
+    issuer_url: str,
+    resource_url: str,
+    auth: Any,
+    certification_runtime: tuple[str, str] | None,
+):
+    service = ChatGPTService(
+        RequestPrincipal(issuer_url, resource_url, REQUIRED_SCOPE),
+        service.state,
+        service.grants,
+        service.providers,
+        service.messages,
+        service.required_results,
+        ordinary_workspace_admission=True,
+    )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for name, tool in build_ordinary_tools(
         service, _audit,
-        session_generation=lambda: get_context().session_id,
         agent_identity=_runtime_identity,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
     app = server.http_app(
         path="/mcp", json_response=True, stateless_http=False,
-        middleware=_http_middleware(),
+        middleware=http_middleware(),
     )
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime
@@ -258,8 +250,9 @@ def create_app(
     return app
 
 
-async def serve() -> None:
-    config = MCPAuthConfig.from_environment()
+@asynccontextmanager
+async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
+    """Own the resource edge's provider/database dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
     client = httpx.AsyncClient(
         base_url="https://app.asana.com/api/1.0", trust_env=False,
@@ -285,16 +278,22 @@ async def serve() -> None:
                 os.environ["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
                 os.environ["SWITCHSTAND_CERTIFICATION_RUN_ID"],
             )
+        yield service, runtime
+    finally:
+        await client.aclose()
+        await engine.dispose()
+
+
+async def serve() -> None:
+    config = MCPAuthConfig.from_environment()
+    async with resource_service() as (service, runtime):
         app = create_app(service, config, certification_runtime=runtime)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",
             json_response=True, stateless_http=False, show_banner=False,
             uvicorn_config={"timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_SECONDS},
-            middleware=_http_middleware(),
+            middleware=http_middleware(),
         )
-    finally:
-        await client.aclose()
-        await engine.dispose()
 
 
 def main() -> None:

@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Any, cast
 from uuid import UUID
 
@@ -33,6 +35,8 @@ PROJECTS = (
     "1218431586138793",
 )
 PROJECT = PROJECTS[0]
+REVIEW_INTAKE_PROJECT = "1218915787182921"
+REVIEW_INTAKE_SECTION = "1218916346671509"
 WORKSPACE = "1200569426771227"
 ANCESTRY_GETS = 9
 FIELDS = {
@@ -53,6 +57,10 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
 ATTACHMENT_FIELDS = "name,parent.gid"
 JSON = dict[str, Any]
+LOG = logging.getLogger(__name__)
+READ_RETRY_DELAYS = (0.1, 0.25)
+READ_RETRY_STATUSES = frozenset((408, 425, 429, *range(500, 600)))
+WRITE_TRANSIENT_STATUSES = frozenset((408, 425, 429))
 
 
 class _TraversalFailure(Exception):
@@ -71,7 +79,8 @@ class AsanaProvider:
         if test_only and not test_project_gid:
             raise ValueError("test-only admission requires a test project GID")
         if test_project_gid and (not all(digit in "0123456789" for digit in test_project_gid)
-                                 or test_project_gid in PROJECTS):
+                                 or test_project_gid in PROJECTS
+                                 or test_project_gid == REVIEW_INTAKE_PROJECT):
             raise ValueError("invalid test project GID")
         if create_notes_suffix is not None and (not test_only or not create_notes_suffix.strip()):
             raise ValueError("create notes suffix requires test-only admission")
@@ -83,15 +92,74 @@ class AsanaProvider:
             frozenset((*PROJECTS, test_project_gid)) if test_project_gid else frozenset(PROJECTS)
         )
 
+    async def _read(
+        self, operation: str, path: str, *, params: dict[str, str | int],
+    ) -> httpx.Response:
+        """Perform one idempotent read with bounded, sanitized transient recovery."""
+        for attempt in range(len(READ_RETRY_DELAYS) + 1):
+            try:
+                response = await self.client.get(path, params=params)
+            except httpx.RequestError as error:
+                if attempt < len(READ_RETRY_DELAYS):
+                    LOG.warning(
+                        "asana_provider_read_retry operation=%s failure=transport "
+                        "error_type=%s attempt=%d",
+                        operation, type(error).__name__, attempt + 1,
+                    )
+                    await asyncio.sleep(READ_RETRY_DELAYS[attempt])
+                    continue
+                LOG.error(
+                    "asana_provider_read_failed operation=%s failure=transport "
+                    "error_type=%s attempts=%d",
+                    operation, type(error).__name__, attempt + 1,
+                )
+                raise
+            if response.status_code not in READ_RETRY_STATUSES:
+                if response.status_code >= 400 and response.status_code != 404:
+                    LOG.error(
+                        "asana_provider_read_failed operation=%s failure=http_status "
+                        "status=%d attempts=%d",
+                        operation, response.status_code, attempt + 1,
+                    )
+                return response
+            if attempt < len(READ_RETRY_DELAYS):
+                LOG.warning(
+                    "asana_provider_read_retry operation=%s failure=http_status "
+                    "status=%d attempt=%d",
+                    operation, response.status_code, attempt + 1,
+                )
+                await asyncio.sleep(READ_RETRY_DELAYS[attempt])
+                continue
+            LOG.error(
+                "asana_provider_read_failed operation=%s failure=http_status "
+                "status=%d attempts=%d",
+                operation, response.status_code, attempt + 1,
+            )
+            return response
+        raise AssertionError("bounded provider read loop exhausted")
+
+    @staticmethod
+    def _invalid_read(operation: str, error: Exception) -> None:
+        LOG.error(
+            "asana_provider_read_failed operation=%s failure=response_invalid "
+            "error_type=%s",
+            operation, type(error).__name__,
+        )
+
     async def _task(self, gid: str) -> JSON | None:
         try:
-            response = await self.client.get(f"/tasks/{gid}", params={"opt_fields": OPT_FIELDS})
+            response = await self._read(
+                "task", f"/tasks/{gid}", params={"opt_fields": OPT_FIELDS},
+            )
             if response.status_code == 404: return None
             response.raise_for_status()
             data = response.json()["data"]
             if not isinstance(data, dict): raise TypeError
             return cast(JSON, data)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("task", error)
+            raise ProviderError("provider request failed") from None
+        except httpx.HTTPError:
             raise ProviderError("provider request failed") from None
 
     async def _exact_task(self, gid: str) -> JSON:
@@ -116,8 +184,8 @@ class AsanaProvider:
                 params: dict[str, str | int] = {"limit": FINDER_LIMIT, "opt_fields": "gid"}
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get(
-                    f"/tasks/{parent_gid}/subtasks", params=params
+                response = await self._read(
+                    "subtasks", f"/tasks/{parent_gid}/subtasks", params=params,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -168,15 +236,18 @@ class AsanaProvider:
 
     async def _story(self, gid: str) -> JSON | None:
         try:
-            response = await self.client.get(
-                f"/stories/{gid}", params={"opt_fields": STORY_FIELDS}
+            response = await self._read(
+                "story", f"/stories/{gid}", params={"opt_fields": STORY_FIELDS},
             )
             if response.status_code == 404: return None
             response.raise_for_status()
             data = response.json()["data"]
             if not isinstance(data, dict): raise TypeError
             return cast(JSON, data)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("story", error)
+            raise ProviderError("provider request failed") from None
+        except httpx.HTTPError:
             raise ProviderError("provider request failed") from None
 
     @staticmethod
@@ -374,7 +445,8 @@ class AsanaProvider:
                 title, notes, completed, revision, routing, self._work_context(task),
                 await self._canonical(task),
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("work", error)
             raise ProviderError("provider response invalid") from None
 
     async def list_attachments(
@@ -386,7 +458,7 @@ class AsanaProvider:
             }
             if cursor is not None:
                 params["offset"] = cursor
-            response = await self.client.get("/attachments", params=params)
+            response = await self._read("attachments", "/attachments", params=params)
             response.raise_for_status()
             payload = response.json()
             data, next_page = payload["data"], payload["next_page"]
@@ -486,7 +558,8 @@ class AsanaProvider:
                     or not isinstance(completed, bool) or not isinstance(revision, str)):
                 raise TypeError
             return ProviderSourceTask(
-                title, notes, completed, revision, await self._canonical(task)
+                title, notes, completed, revision, self._work_context(task),
+                await self._canonical(task),
             )
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
@@ -508,7 +581,9 @@ class AsanaProvider:
         try:
             params: dict[str, str | int] = {"opt_fields": STORY_FIELDS, "limit": limit}
             if offset is not None: params["offset"] = offset
-            response = await self.client.get(f"/tasks/{provider_task_id}/stories", params=params)
+            response = await self._read(
+                "stories", f"/tasks/{provider_task_id}/stories", params=params,
+            )
             response.raise_for_status()
             payload = response.json()
             data = payload["data"]
@@ -565,7 +640,13 @@ class AsanaProvider:
         except httpx.HTTPStatusError:
             if unknown_on_server_error and response.status_code >= 500:
                 raise UnknownEffect("provider effect unknown") from None
-            raise ProviderError("provider write failed") from None
+            if response.status_code in WRITE_TRANSIENT_STATUSES:
+                failure = "transient"
+            elif response.status_code in {401, 403}:
+                failure = "authority_denied"
+            else:
+                failure = "permanent"
+            raise ProviderError("provider write failed", failure=failure) from None
         return response
 
     def recovery_identity(self) -> str:
@@ -578,19 +659,19 @@ class AsanaProvider:
     ) -> str:
         del operation_id
         if (parent_task_gid is None) == (project_gid is None):
-            raise ProviderError("create target invalid")
+            raise ProviderError("create target invalid", failure="invalid_request")
         if self._create_notes_suffix is not None:
             notes = f"{notes.rstrip()}\n\n{self._create_notes_suffix}"
         data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
         if parent_task_gid is not None:
             parent = await self._task(parent_task_gid)
             if parent is None or not await self._canonical(parent):
-                raise ProviderError("create parent denied")
+                raise ProviderError("create parent denied", failure="admission_denied")
             data["parent"] = parent_task_gid
         else:
             assert project_gid is not None
             if project_gid not in self._admission_projects:
-                raise ProviderError("create project denied")
+                raise ProviderError("create project denied", failure="admission_denied")
             data["projects"] = [project_gid]
         response = await self._write("POST", "/tasks", data, unknown_on_server_error=True)
         try:
@@ -634,8 +715,8 @@ class AsanaProvider:
                 params: dict[str, str | int] = {"limit": 100, "opt_fields": "gid"}
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get(
-                    f"/tasks/{provider_work_id}/dependencies", params=params
+                response = await self._read(
+                    "dependencies", f"/tasks/{provider_work_id}/dependencies", params=params,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -665,6 +746,10 @@ class AsanaProvider:
                 offset = next_offset
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             raise ProviderError("dependency read failed") from None
+
+    async def dependencies_for_import(self, provider_work_id: str) -> frozenset[str]:
+        """Read exact dependency identities for the bounded offline migration."""
+        return await self._dependency_gids(provider_work_id)
 
     def _placement_memberships(self, task: JSON) -> dict[str, str | None]:
         memberships = task.get("memberships")
@@ -723,10 +808,22 @@ class AsanaProvider:
             return
         if patch.kind == "placement":
             assert patch.project_gid is not None
+            if patch.project_gid == REVIEW_INTAKE_PROJECT:
+                if (self._test_project is not None or patch.action != "add"
+                        or patch.section_gid != REVIEW_INTAKE_SECTION):
+                    raise ProviderError("placement project denied", failure="admission_denied")
+                await self._write(
+                    "POST", f"/tasks/{provider_work_id}/addProject",
+                    {"project": patch.project_gid, "section": patch.section_gid},
+                    unknown_on_server_error=True,
+                )
+                return
             if patch.project_gid not in self._admission_projects:
-                raise ProviderError("placement project denied")
+                raise ProviderError("placement project denied", failure="admission_denied")
             if self._test_project is not None and patch.action == "remove":
-                raise ProviderError("test-only placement removal denied")
+                raise ProviderError(
+                    "test-only placement removal denied", failure="admission_denied"
+                )
             if patch.action == "remove":
                 await self._write(
                     "POST", f"/tasks/{provider_work_id}/removeProject",
@@ -746,11 +843,13 @@ class AsanaProvider:
             return
         if patch.kind == "parent":
             if self._create_notes_suffix is not None and patch.target_gid is None:
-                raise ProviderError("test-only parent removal denied")
+                raise ProviderError(
+                    "test-only parent removal denied", failure="admission_denied"
+                )
             if patch.target_gid is not None:
                 parent = await self._task(patch.target_gid)
                 if parent is None or not await self._canonical(parent):
-                    raise ProviderError("parent target denied")
+                    raise ProviderError("parent target denied", failure="admission_denied")
             await self._write(
                 "POST", f"/tasks/{provider_work_id}/setParent", {"parent": patch.target_gid},
                 unknown_on_server_error=True,
@@ -759,7 +858,7 @@ class AsanaProvider:
         assert patch.target_gid is not None
         target = await self._task(patch.target_gid)
         if target is None or not await self._canonical(target):
-            raise ProviderError("dependency target denied")
+            raise ProviderError("dependency target denied", failure="admission_denied")
         path = "addDependencies" if patch.action == "add" else "removeDependencies"
         await self._write(
             "POST", f"/tasks/{provider_work_id}/{path}",
@@ -827,12 +926,14 @@ class AsanaProvider:
         if routing:
             task = await self._task(provider_work_id)
             raw_fields = None if task is None else task.get("custom_fields")
-            if task is None or not isinstance(raw_fields, list):
-                raise ProviderError("routing write denied")
+            if task is None:
+                raise ProviderError("routing write denied", failure="admission_denied")
+            if not isinstance(raw_fields, list):
+                raise ProviderError("routing write denied", failure="permanent")
             fields = self._custom_fields(task)
             if (routing & {"priority", "work_type", "review_next_action"}
                     and len(fields) != len(cast(list[object], raw_fields))):
-                raise ProviderError("routing write denied")
+                raise ProviderError("routing write denied", failure="permanent")
             custom: dict[str, str] = {}
             for name in routing:
                 gid = WORK_TYPE if name == "work_type" else FIELDS[name]
@@ -853,7 +954,8 @@ class AsanaProvider:
                             and option.get("enabled") is True] if valid else [])
                 if (len(choices) != 1 or not isinstance(choices[0].get("gid"), str)
                         or name in {"priority", "work_type", "review_next_action"} and not choices[0]["gid"]):
-                    raise ProviderError("routing write denied")
+                    failure = "invalid_request" if valid and not choices else "permanent"
+                    raise ProviderError("routing write denied", failure=failure)
                 custom[gid] = choices[0]["gid"]
             data["custom_fields"] = custom
         await self._write(
@@ -990,8 +1092,8 @@ class AsanaProvider:
                 }
                 if completed is not None:
                     params["completed"] = "true" if completed else "false"
-                response = await self.client.get(
-                    f"/workspaces/{WORKSPACE}/tasks/search", params=params
+                response = await self._read(
+                    "task_search", f"/workspaces/{WORKSPACE}/tasks/search", params=params,
                 )
             else:
                 projects = tuple(sorted(self._admission_projects))
@@ -1005,7 +1107,7 @@ class AsanaProvider:
                 }
                 if offset is not None:
                     params["offset"] = offset
-                response = await self.client.get("/tasks", params=params)
+                response = await self._read("tasks", "/tasks", params=params)
 
             response.raise_for_status()
             payload = response.json()

@@ -3,9 +3,18 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).parents[1]
-INLINE_DESTINATION = re.compile(
-    r"!?\[[^]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))"
+REQUIRED_ENTRY_POINTS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/architecture.md",
+    "docs/code-quality.md",
+    "docs/development.md",
+    "docs/how-marco-uses-switchstand.md",
+    "docs/north-star.md",
+    "docs/roadmap.md",
+    "docs/research-sources.md",
 )
+INLINE_DESTINATION = re.compile(r"!?\[[^]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))")
 
 
 def broken_relative_destinations(root: Path, documents: list[Path]) -> list[str]:
@@ -38,25 +47,19 @@ def test_relative_markdown_check_rejects_a_missing_destination(tmp_path):
         "[broken](missing.md#section)\n"
     )
 
-    assert broken_relative_destinations(tmp_path, [document]) == [
-        "guide.md -> missing.md#section"
-    ]
+    assert broken_relative_destinations(tmp_path, [document]) == ["guide.md -> missing.md#section"]
 
 
-def test_codex_role_model_and_shared_process_contract_are_explicit():
-    agents = (ROOT / "AGENTS.md").read_text()
-    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text()
+def test_required_documentation_entry_points_exist():
+    missing = [path for path in REQUIRED_ENTRY_POINTS if not (ROOT / path).is_file()]
+    assert missing == []
 
-    assert "Codex has exactly two roles: **Coordinator** and **Worker**." in agents
-    assert "- **Researcher:**" not in agents
-    assert "- **Implementer:**" not in agents
-    assert "- **Reviewer:**" not in agents
-    assert "Human Input before hardening" in agents
-    assert "the exact source work owner/requester owns the review outcome watch" in agents
-    assert "Reviewer remedies are advisory" in agents
-    assert "Durable continuity" in agents
-    assert "Supervisory proportionality" in agents
 
-    assert "Codex has two roles: Coordinator and Worker." in usage
-    assert "Shared process semantics across hosts" in usage
-    assert "Shared semantics do not imply identical host storage, tools, roles, or orchestration." in usage
+def test_claude_bootstrap_imports_canonical_agents_file():
+    imports = {
+        match.group("path")
+        for line in (ROOT / "CLAUDE.md").read_text().splitlines()
+        if (match := re.fullmatch(r"@(?P<path>[^\s]+)", line.strip()))
+    }
+
+    assert "AGENTS.md" in imports

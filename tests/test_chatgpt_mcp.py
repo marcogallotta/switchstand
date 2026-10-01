@@ -28,6 +28,7 @@ from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferen
 from switchstand.core import ProviderError
 from switchstand.discovery import ProviderSearchItem, ProviderStructure
 from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
+from switchstand.repository_candidate import RepositoryCandidateQualification
 
 
 def test_ordinary_annotation_policy_is_exhaustive():
@@ -36,6 +37,27 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_candidate_qualification_adapter_is_read_only_and_audited(monkeypatch):
+    observed = []
+    expected = RepositoryCandidateQualification(
+        status="NOT_READY", pull_request=7, gates=[], reason="gates_not_ready",
+    )
+
+    async def qualify(pull_request, include_failure_detail):
+        assert (pull_request, include_failure_detail) == (7, True)
+        return expected
+
+    monkeypatch.setattr(
+        "switchstand.chatgpt_mcp.repository_candidate.qualify_repository_candidate", qualify,
+    )
+    tool = dict(build_ordinary_tools(
+        service(), audit=lambda name, target, status: observed.append((name, target, status)),
+    ))["repository_candidate_qualification_get"]
+    assert await tool("1", 7, True) == expected
+    assert observed == [("repository_candidate_qualification_get", "7", "NOT_READY")]
+    assert "repository_candidate_qualification_get" in ORDINARY_GENUINE_READ_TOOLS
 
 
 def test_ordinary_relation_patch_converts_only_work_ids():
@@ -64,7 +86,7 @@ def test_append_cannot_accept_authority_arguments(field):
 
 async def test_ordinary_facade_preserves_unknown_admission_without_sending(monkeypatch):
     subject = service()
-    tools = dict(build_ordinary_tools(subject, session_generation=lambda: "session-a"))
+    tools = dict(build_ordinary_tools(subject))
 
     async def unavailable():
         return GrantResult(status="unknown", principal=PRINCIPAL)
@@ -72,24 +94,35 @@ async def test_ordinary_facade_preserves_unknown_admission_without_sending(monke
     monkeypatch.setattr(subject, "admission_get", unavailable)
     monkeypatch.setattr(subject, "grant_get", unavailable)
     operation_id = uuid4()
-    append = await tools["work_append"]("1", operation_id, ACTIVE, "r1", "feedback")
+    append = await tools["work_append"](
+        "1", operation_id, ACTIVE, "r1", "feedback", "investigation"
+    )
     assert (append.status, append.effect, append.reason) == (
         "unknown", "not_sent", "admission_state_unavailable"
     )
     assert subject.providers["asana"].sends == 0
 
-    pending = await tools["message_pending"]("1", ACTIVE)
-    assert (pending.status, pending.reason) == ("recovery_required", "state_unavailable")
+async def test_exceptional_work_purpose_is_preserved_in_audit() -> None:
+    records: list[tuple[str, str | None, str]] = []
+    tools = dict(build_ordinary_tools(service(), lambda *record: records.append(record)))
 
-    delivery_id = uuid4()
-    transition = await tools["message_receive"]("1", ACTIVE, delivery_id)
-    assert (transition.status, transition.reason) == (
-        "recovery_required", "state_unavailable"
+    await tools["work_history"]("1", ACTIVE, "r1", "recovery")
+    await tools["work_event"]("1", uuid4(), "r1", ACTIVE, "legacy_reconciliation")
+    await tools["work_append"](
+        "1", uuid4(), ACTIVE, "r1", "provenance evidence", "provenance"
     )
 
-    submitted = await tools["message_send"]("1", ACTIVE, uuid4(), {"request": "review"})
-    assert (submitted.status, submitted.reason) == (
-        "recovery_required", "state_unavailable"
+    assert any(
+        tool == "work_history" and target == f"{ACTIVE}:purpose=recovery"
+        for tool, target, _ in records
+    )
+    assert any(
+        tool == "work_event" and target == f"{ACTIVE}:purpose=legacy_reconciliation"
+        for tool, target, _ in records
+    )
+    assert any(
+        tool == "work_append" and target == f"{ACTIVE}:purpose=provenance"
+        for tool, target, _ in records
     )
 
 
@@ -344,10 +377,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
+            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
-            "work_create", "work_update", "work_relate", "message_send", "message_pending",
-            "message_receive", "message_recover", "message_result_send", "message_disposition",
+            "work_create", "work_update", "work_relate", "effect_reconcile",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
             "agent_message_result_send", "agent_message_disposition",
@@ -366,6 +398,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 assert_public(tool.model_dump(mode="json"))
             if tool.name == "work_attachments":
                 assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
+            if tool.name == "repository_candidate_qualification_get":
+                assert tool.input_schema["properties"]["pull_request"]["minimum"] == 1
+                assert tool.input_schema["properties"]["include_failure_detail"]["default"] is False
             assert tool.input_schema.get("additionalProperties") is False
             forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
             if tool.name != "agent_project_bootstrap":
@@ -376,9 +411,32 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         ).annotations.read_only_hint is True
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
-        ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save",
-                            "message_send", "message_pending", "message_receive",
-                            "message_recover", "message_result_send", "message_disposition"}
+        history = next(tool for tool in tools if tool.name == "work_history")
+        event = next(tool for tool in tools if tool.name == "work_event")
+        append = next(tool for tool in tools if tool.name == "work_append")
+        assert history.input_schema["properties"]["purpose"]["enum"] == [
+            "investigation", "recovery", "legacy_reconciliation",
+        ]
+        assert event.input_schema["properties"]["purpose"]["enum"] == [
+            "investigation", "recovery", "legacy_reconciliation",
+        ]
+        assert append.input_schema["properties"]["purpose"]["enum"] == [
+            "provenance", "investigation", "legacy_reconciliation",
+        ]
+        assert {"api_version", "work_id", "observed_revision", "purpose"} <= set(
+            history.input_schema["required"]
+        )
+        assert {"api_version", "work_id", "event_id", "observed_revision", "purpose"} <= set(
+            event.input_schema["required"]
+        )
+        assert "purpose" in append.input_schema["required"]
+        assert "current notes" in next(
+            tool for tool in tools if tool.name == "work_get"
+        ).description
+        assert "canonical current state" in next(
+            tool for tool in tools if tool.name == "work_update"
+        ).description
+        ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save"}
         for tool in tools:
             if tool.name in ordinary_effects:
                 assert "grant_version" not in tool.input_schema["properties"]
@@ -392,6 +450,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
         assert "gid" not in str(relation).lower()
+        recovery = next(tool for tool in tools if tool.name == "effect_reconcile")
+        assert set(recovery.input_schema["properties"]) == {"api_version", "operation_id"}
+        assert "patch" not in str(recovery.input_schema).lower()
+        assert "work_id" not in recovery.input_schema["properties"]
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)
         resolved = await client.call_tool(
@@ -409,7 +471,20 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert "grouped" not in get_tool.output_schema["properties"]
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
-        args = {'api_version': "1", 'operation_id': str(uuid4()), 'work_id': str(ACTIVE), 'observed_revision': "r1", 'text': "protocol feedback"}
+        missing_purpose = await client.call_tool("work_history", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+        })
+        assert missing_purpose.is_error
+        invalid_purpose = await client.call_tool("work_event", {
+            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+            "event_id": str(uuid4()), "purpose": "routine_polling",
+        })
+        assert invalid_purpose.is_error
+        args = {
+            "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
+            "observed_revision": "r1", "text": "protocol feedback",
+            "purpose": "provenance",
+        }
         reference = await client.call_tool("work_append", args | {"work_id": str(REFERENCE)})
         assert reference.structured_content["status"] == "denied"
         first = (await client.call_tool("work_append", args)).structured_content
@@ -430,15 +505,25 @@ async def test_workspace_read_chain_and_causal_denials(monkeypatch):
     found = await server.call_tool("work_search", {"api_version": "1"})
     assert_public(found.model_dump(mode="json"))
     assert found.structured_content["items"][0]["context"]["assignee"] == "Ada"
-    await read_chain(server, found.structured_content["items"][0]["id"])
+    await read_chain(
+        server, found.structured_content["items"][0]["id"], exceptional_purpose=True
+    )
     for selected, target in ((grant(scope="workspace", operations=frozenset({"work_search"})), ACTIVE),
                              (grant(scope="launch"), uuid4())):
         subject.grants.grant = selected
         with monkeypatch.context() as patch:
             for method in ("get", "source_task", "source_stories", "source_story"):
                 patch.setattr(provider, method, AsyncMock(side_effect=AssertionError("unauthorized access")))
-            for tool, extra in (("work_get", {}), ("work_history", {"observed_revision": "r1"}),
-                                ("work_event", {"observed_revision": "r1", "event_id": str(uuid4())})):
+            for tool, extra in (
+                ("work_get", {}),
+                ("work_history", {
+                    "observed_revision": "r1", "purpose": "investigation",
+                }),
+                ("work_event", {
+                    "observed_revision": "r1", "event_id": str(uuid4()),
+                    "purpose": "investigation",
+                }),
+            ):
                 denied = await server.call_tool(tool, {"api_version": "1", "work_id": str(target), **extra})
                 assert_public(denied.model_dump(mode="json"))
                 assert denied.structured_content["status"] == "denied"

@@ -1,6 +1,6 @@
 # Research sources
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 A seed list of where to research, for any Switchstand task. It is a lookup, not a report and not
 authority: it grants nothing and settles no design question. Entries are sites, orgs and tools, not
@@ -105,8 +105,16 @@ agent-reported and not independently verified.
   scale. Skip: product launches. Use: evidence. Fit: good, but its review blocks merges.
 - **Scott Logic** — https://blog.scottlogic.com. Go for: agent safety by design, measured spec-driven
   trials. Use: opinion. Fit: partial.
-- **Google SRE** — https://sre.google. Go for: postmortem culture, canarying, blameless learning.
-  Skip: Google-scale capacity material. Use: mechanics. Fit: good.
+- **Google SRE** — https://sre.google. Go for: incident command and live-state documents,
+  postmortem culture, canarying, blameless learning, and owned follow-up actions. Skip:
+  Google-scale capacity and role machinery. Use: mechanics. Fit: good. Incident-management and
+  postmortem chapters verified reachable and used for the Code Red runbook on 2026-09-30.
+- **PagerDuty Incident Response** — https://response.pagerduty.com. Go for: an independent
+  operational playbook capable of challenging Google-derived incident roles, status, and
+  lifecycle. Use: mechanics and vendor voice. Fit: good after removing its larger-team ceremony.
+  The legacy page was not fetchable by the automated research client on 2026-09-30, but the
+  first-party GitHub source and current PagerDuty Ops Guide were reachable and used for the Code
+  Red update/verification/follow-up lifecycle.
 - **Cursor Blog** — https://cursor.com/blog. Go for: running many agents, long-run efficiency. Use:
   vendor voice. Fit: mixed; autonomy-forward.
 - **Cognition Blog** — https://cognition.com/blog. Go for: multi-agent arguments (writes stay
@@ -138,6 +146,63 @@ agent-reported and not independently verified.
 - **Goose (Block)** — https://github.com/aaif-goose/goose. Go for: MCP extension model. Use:
   mechanics. Fit: mixed; its Smart Approval mode is an LLM judging its own gate.
 - **OpenHands** — https://docs.openhands.dev. Go for: agent SDK, sandbox server. Use: mechanics.
+
+### MCP external and stable authentication
+
+Use this group when evaluating an authorization service outside the replaceable MCP edge. The
+current dispositions and remaining proof are summarized in
+[deferred zero-downtime authentication options](deferred-zero-downtime-auth.md).
+
+- **MCP authorization specification and RFC 8707** —
+  https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization and
+  https://www.rfc-editor.org/info/rfc8707/. Go for: required OAuth, protected-resource, `resource`,
+  and audience behavior. Skip: product topology advice. Use: normative mechanics. Fit: strong;
+  verified and USED as the protocol baseline.
+- **FastMCP remote OAuth providers** — https://gofastmcp.com/servers/auth/remote-oauth,
+  https://gofastmcp.com/python-sdk/fastmcp-server-auth-providers-descope, and
+  https://gofastmcp.com/python-sdk/fastmcp-server-auth-providers-workos. Go for: external
+  authorization-server and local resource-server seams. Skip: treating OAuth Proxy or the
+  full-server helpers as a ready stable auth boundary. Use: framework mechanics. Fit: strong for a
+  disposable spike; remote providers USED, embedded proxy/full-server route REJECTED for now.
+- **Descope MCP and inbound authorization server** — https://docs.descope.com/mcp and
+  https://docs.descope.com/identity-federation/inbound-apps/authorization-server. Go for: managed
+  MCP authorization, CIMD/DCR, resources, JWTs, and a custom GitHub upstream. Skip: assuming exact
+  GitHub numeric-ID claims or refresh-family replay semantics without live proof. Use: provider
+  mechanics. Fit: best managed spike candidate; verified and USED with those unknowns preserved.
+- **WorkOS AuthKit MCP** — https://workos.com/docs/authkit/mcp. Go for: managed CIMD/DCR and
+  resource-bound MCP tokens. Skip: assuming its email/user-centered identity model preserves the
+  current GitHub numeric-ID-plus-scope trust claim. Use: provider mechanics. Fit: viable managed
+  runner-up; verified and USED, exact identity preservation still requires proof.
+- **Pomerium MCP** — https://www.pomerium.com/docs/capabilities/mcp/protect-mcp-server. Go for: a
+  stable self-hosted gateway, client compatibility, policy, audit, and upstream token handling.
+  Skip: default-memory state or assuming a not-yet-qualified GitHub stable-ID release. Use: gateway
+  mechanics. Fit: best self-hosted candidate but operationally larger; verified and USED, deferred.
+- **GitHub OAuth docs** —
+  https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps and
+  https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps. Go for:
+  upstream identity, scope, token, and authorization constraints. Skip: using mutable login or email
+  as the Switchstand trust anchor. Use: provider mechanics. Fit: strong and USED to define the exact
+  numeric-ID/scope qualification boundary.
+- **Keycloak MCP authorization** — https://www.keycloak.org/securing-apps/mcp-authz-server. Go for:
+  tracking future standards support. Skip now: incomplete RFC 8707 support, experimental CIMD, and
+  disproportionate single-host operations. Use: implementation-status evidence. Fit: weak today;
+  verified and REJECTED for the current shortlist.
+
+- **CNCF CloudEvents** — https://github.com/cloudevents/spec. Go for: a small vendor-neutral event
+  envelope, stable source/event identity, and transport-independent producer/consumer boundaries.
+  Skip: claiming CloudEvents conformance when only its concepts are needed. Use: specification
+  mechanics. Fit: strong for Wakeful's agent-neutral event seam; verified and used for the Wakeful
+  product draft on 2026-09-30.
+- **GitHub Docs (webhooks)** — https://docs.github.com/en/webhooks. Go for: signed event intake,
+  stable delivery identity, quick acceptance with asynchronous work, and explicit redelivery. Use:
+  provider mechanics. Fit: strong for CI and repository event producers; verified and used for the
+  Wakeful product draft on 2026-09-30.
+- **OpenAI Agents API sessions/webhooks** —
+  https://developers.openai.com/api/docs/guides/agents-api/sessions. Go for: persistent session
+  continuation, terminal lifecycle states, and webhook-driven agent lifecycle integration. Use:
+  first-party mechanics, not as proof that the local Codex host exposes the same delivery surface.
+  Fit: useful candidate adapter evidence; verified and used for the Wakeful product draft on
+  2026-09-30.
 - **DBOS** — https://www.dbos.dev/blog. Go for: Postgres-backed durable execution. Use: vendor voice.
   Fit: use when a concrete checkpoint/resume consumer exists, not as generic inspiration.
 - **Temporal** — https://temporal.io/blog. Go for: durable agent workflows. Use: vendor voice. Fit:

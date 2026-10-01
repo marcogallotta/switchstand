@@ -98,9 +98,14 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 ## Work, messages, and feedback
 
-Durable message tools and state are the current agent-to-agent surface. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
+Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
 
-`work_append` records bounded feedback on writable admitted work. It is not agent messaging, and its ordinary and managed contracts differ. An ambiguous possible effect remains UNKNOWN and must be reconciled rather than resent under a new identity.
+Ordinary current intent, progress, findings, verdicts, and results belong in
+notes through `work_update`. `work_append` is only for explicitly purposed
+provenance, investigation, or legacy reconciliation on writable admitted work;
+it is not current state or agent messaging, and its ordinary and managed
+contracts differ. An ambiguous possible effect remains UNKNOWN and must be
+reconciled rather than resent under a new identity.
 
 `source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy, reference, recovery, or failback cases. They are not the primary inbox and are not part of the ordinary current MCP model. Use [work, messaging, and source compatibility](source-history-feedback.md) for their exact limits.
 

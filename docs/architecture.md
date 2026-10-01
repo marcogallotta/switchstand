@@ -30,16 +30,55 @@ does not own ordinary HTTP authentication or grant issuance.
 
 `chatgpt_mcp.py::build_ordinary_tools` is the canonical definition of the ordinary tool inventory
 and behavior. It includes provider-neutral work discovery, structure, history, attachments and
-events; protected append/create/update/relation operations; durable work-addressed and agent-name
-messaging; required-result persistence; and repository bundle transport.
+events; protected append/create/update/relation operations; registered-name `agent_message_*`
+messaging; required-result persistence; and repository bundle transport. Managed task-bound
+runtimes separately retain the WorkId-addressed `message_*` family.
 
-`chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. It restricts authentication
-to the configured GitHub user, bridges the authenticated request into a `RequestPrincipal`, builds
+`chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. Its
+`oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one
+validated upstream GitHub credential behind a stable storage identity; downstream client JWTs,
+JTIs, grants, and runtime identities remain distinct. Legacy JTI mappings converge lazily to that
+credential. A still-valid signed downstream token can rebuild a missing or expired JTI mapping only
+while its signed claims remain valid, its stored client metadata remains current for refresh, and
+that canonical upstream credential still passes the configured identity and scope checks. Explicit
+and transparent refresh share one process-local serialization boundary.
+The edge bridges the authenticated request into a `RequestPrincipal`, builds
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
 standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
+
+`stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
+owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
+mappings, and a private authenticated per-request introspection route. Its edge verifier accepts
+only the exact configured issuer, resource, immutable numeric GitHub subject, scope set, nonempty
+client ID, and sufficiently future integer expiry. It owns a finite per-call deadline (two seconds
+by default and never more than five) and streams at most 4 KiB of response data, closing on the
+first excess byte; transport, authentication, status, size, and schema failures reject the bearer
+token. `chatgpt_edge.py::create_delegated_app` can wire that
+verifier into the unchanged ordinary tool surface without GitHub credentials, signing keys, or an
+OAuth store. The ordinary `serve` entry point still calls the combined `create_app`; no split
+process is activated by default. `stable_auth_runtime.py` adds explicit default-off stable-auth and
+delegated-edge launch modes. The two processes share only a mode-0600 internal credential and an
+authenticated loopback introspection call; separate environment files keep the GitHub secret and
+FastMCP state configuration out of the delegated edge. `stable_auth_host.py` owns offline
+credential provisioning/rotation/readback plus inert systemd and Caddy asset generation. Its Caddy
+contract routes only public OAuth paths to the stable service and MCP/resource metadata to the
+delegated edge; it has no public match for private introspection. The host layer does not install,
+apply, start, migrate, or activate those assets.
+`stable_auth_migration.py` owns offline exclusive-writer copy/checksum and immutable receipts for
+backup, relocation, explicit restore, and preserve-current-state rollback evidence. It never
+controls services or automatically restores OAuth state.
+`stable_auth_deployment.py` owns the inert, first combined-to-split activation transaction. It
+serializes with ordinary edge maintenance, retains a publicly verified Caddy gate across the
+service/state/route transition, binds both split processes to one exact candidate source tree, and
+transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
+the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
+combined service only while public exposure is still disproved. Any
+ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
+future split edge-only replacement transaction, candidate preparation, live qualification, or
+activation authority.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
@@ -53,6 +92,23 @@ are idempotent under their stable identity or transition contracts except
 `agent_project_bootstrap`: its applied provider writes can return UNKNOWN without a stable
 operation identity and must not be blindly retried. Registration rejects a new ordinary tool until
 that classification is extended.
+
+`edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
+edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
+transport state only while the service is offline, swaps the launcher atomically, verifies locally
+before ungating, and preserves `UNKNOWN` behind the gate. It does not own tool semantics, OAuth
+state format, candidate preparation, host installation, or activation authority.
+
+`wakeful.py` is an inert, agent-system-neutral event persistence prototype. It owns the sanitized
+event envelope and local SQLite cursor, transition, bounded lease, and durable outbox state. It has
+no probes, dispatcher, service activation, or Codex/Claude launcher. See
+[Wakeful persistence prototype](wakeful.md).
+
+`edge_monitor.py` is the first dependent producer for that neutral outbox. It classifies injected
+systemd, journal, HTTP, and fixed authenticated-canary observations without importing the edge
+runtime or performing host I/O. See [Wakeful edge-monitor prototype](wakeful-edge-monitor.md).
+`edge_monitor_host.py` is its inert one-shot host/fixture adapter; it neither schedules itself nor
+delivers the resulting neutral events.
 
 `source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
 remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
@@ -72,7 +128,9 @@ state, but their authority and inventories are intentionally not interchangeable
 
 `development.py` owns development-environment preparation and cleanup invoked by `launch.py`, plus
 the development-only MCP and its exact linked-writer/run boundary. The MCP exposes four tools:
-`check`, `commit_all_current_worktree`, `quality`, and `run_status`. Preparation and cleanup are
+`check`, `commit_all_current_worktree`, `diagnostic_full_suite`, and `run_status`. The diagnostic
+full-suite tool is explicitly non-authoritative; exact-head/composition GitHub Quality owns full
+qualification. Preparation and cleanup are
 module functions used by launch, not MCP tools. This surface is separate from product work authority.
 
 ## Durable state, identity, and currentness
@@ -82,22 +140,39 @@ messaging, and required continuation:
 
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
+- `work_index.py` owns the default-off Stage 1 title, completion, and admitted-work corpus. Once its single
+  durable `POSTGRES_AUTHORITY` marker is committed, ordinary broad search is DB-only, exact
+  provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
+  the provider revision. `work_index_migration.py` owns the one-shot offline final scan and atomic
+  flip; see [Database-first Stage 1](database-first-stage1.md).
+- `work_metadata.py` owns the inert Stage 2 metadata authority marker, WorkId-keyed import
+  worksheet contract, frozen-corpus validation, canonical dependency edges, and atomic authority
+  flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata
+  truth. `work_metadata_migration.py` owns the one-time offline operator command; see
+  [Database-first Stage 2](database-first-stage2.md).
+- `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
+  Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
+  MCP wiring, and landing its schema does not activate process reliance or provider cutover.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and `message_projection`, including the
   AVAILABLE/RECEIVED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Provider projection is optional and does not replace the durable message record.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
-  name to an authenticated principal and hidden chat-session hash, with a synthetic mailbox WorkId
-  and generation. `agent_messages.py` supplies public name-based views over the existing
-  `MessageState` records.
+  name to an authenticated principal and hidden chat-session hash, with an independently generated
+  endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
+  endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
+  unreferenced legacy residue. `agent_messages.py` supplies public name-based views over the
+  existing `MessageState` records.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
-the final identity model: it reuses work-addressed message storage by creating `agent-mailbox`
-handles. The HTTP edge reads exactly one hidden host identity—ChatGPT `openai/session` unchanged or
-Codex `threadId` namespaced as `codex:<id>`—and fails closed on missing, invalid, or ambiguous
-metadata; the mailbox stores its hash and binds one visible name per principal-and-chat pair.
+the final identity model. It reuses the UUID-shaped sender and recipient columns in `MessageState`
+without asserting WorkId identity or requiring or creating provider bindings. Migrated installations
+can retain the legacy handle residue described above. The HTTP edge reads exactly one hidden host
+identity—ChatGPT `openai/session` unchanged or Codex `threadId` namespaced as `codex:<id>`—and fails
+closed on missing, invalid, or ambiguous metadata; the mailbox stores its hash and binds one visible
+name per principal-and-chat pair.
 Principal, chat identity, visible name, mailbox
 generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
@@ -117,6 +192,18 @@ The protected gateways are the semantic owners of provider writes:
 - `relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
 - `provider.py::AsanaProvider` owns how each operation is expressed and verified in Asana.
 
+Asana provider reads retry only bounded transient transport, throttling, and server failures. They
+emit sanitized internal failure classification (operation class, HTTP status or exception type, and
+attempt count) without provider identifiers, response bodies, credentials, or changing the bounded
+public `provider_error` contract. Provider writes are never retried by this read policy.
+Definite write nonapplication retains the existing provider-neutral status/effect contract and a
+closed sanitized reason: caller-invalid input, local admission denial, provider authority denial,
+provider transient rejection, provider permanent rejection, or the legacy unclassified rejection.
+The provider assigns a narrower reason only from trusted local validation or an unambiguous HTTP
+status class; it never exposes response bodies or infers precision from provider prose. An ambiguous
+transport or server outcome remains `UNKNOWN`, so diagnostics cannot weaken the effect journal or
+authorize a blind resend.
+
 The checks and recovery path are operation-specific. Append validates the bound target's canonical,
 nonterminal state and observed revision; update and relation validate a bound canonical target and
 its observed revision. Create has no observed revision: its contract requires exactly one parent or
@@ -126,6 +213,19 @@ and durable prepared intent before a possible send. Create, update, and relation
 only through their explicit provider recovery or readback paths; append has no equivalent recovery
 search and can retain an unresolved `UNKNOWN` as the durable barrier. `UNKNOWN` means a send may have
 happened or recovery state is unreadable; it is not permission to create a new operation and resend.
+When that barrier blocks a later authorized request, the later request remains explicitly `not_sent`
+and names the older blocking operation. Update and relation gateways verify the caller's current
+grant, write access, operation, version, and qualification before disclosing that blocker; denied
+callers receive no blocking-operation detail. `effect_reconcile` accepts only that OperationId, loads the durable
+provider-neutral scalar-update intent internally, requires the same authenticated principal and
+a current grant for the exact work and operation, and uses the existing operation-specific readback
+path. Its inspection omits provider identifiers, principal keys, and qualification internals. It can
+confirm the existing update or preserve `UNKNOWN`; relation and append recovery remain unsupported.
+Blocker guidance therefore points to `effect_reconcile` only for scalar updates and directs relation
+or append blockers to trusted operator adjudication without resend. It cannot retire, release, or
+overwrite an unresolved effect, including an orphan whose stored intent does not match the provider.
+Such adjudication remains an
+unimplemented trusted-operator product decision.
 An applied result requires the operation's authoritative provider readback to match the intended
 change. Changes to provider relation behavior therefore normally require coordinated edits to the
 provider implementation, the relation gateway contract only when its provider-neutral semantics
@@ -143,6 +243,15 @@ provider failure returns `unavailable`.
 The bundle can transport branch objects and allow an exact requested SHA to be checked out, but the
 release tag and manifest do not become source authority. GitHub branch refs remain authoritative,
 and consumers must verify the advertised SHA-256 before materializing the bundle.
+
+`repository_candidate.py` owns the ordinary read-only GitHub candidate qualification. It binds the
+current public pull-request base and head to the merge-ref commit's ordered parents, then evaluates
+the four exact-head/composition job names in its versioned code-owned catalogue. Missing, stale,
+ambiguous, skipped, or wrong-subject evidence fails closed; provider failure is `UNKNOWN`. Compact
+gate identity, reason, and timing are returned by default, while bounded failed-step and check-output
+detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
+ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
+fallback during qualification of the semantic path.
 
 ## Launch, candidate, and host control
 
@@ -194,7 +303,14 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | --- | --- | --- |
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
+| Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
+| Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |
+| Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
+| Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
+| Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
+| Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |
@@ -209,8 +325,8 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 
 - Raw `source_*` tools remain until ordinary, recovery, and failback consumers have verified
   provider-neutral replacements and legacy references are drained.
-- Agent-name mailboxes remain until canonical durable agent identity replaces their synthetic
-  WorkId bridge and existing messages can be migrated without losing currentness or reply identity.
+- Agent-name mailboxes remain until canonical durable agent identity replaces their endpoint UUID
+  bridge and existing messages can be migrated without losing currentness or reply identity.
 - `launch_source.py` remains until isolated launch no longer needs host-side source translation and
   the replacement preserves exact-source and authority checks.
 - `scripts/switchstand-context` and `scripts/switchstand-start` are compatibility wrappers around

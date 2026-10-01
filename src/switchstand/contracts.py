@@ -19,6 +19,36 @@ class Routing(ClosedModel):
     horizon: str | None = None
     review_next_action: str | None = None
     stage3_gate: str | None = None
+    lifecycle_state: str | None = None
+    canonical_root: str | None = Field(default=None, min_length=1)
+    owner_key: str | None = Field(default=None, min_length=1)
+    wait_kind: str | None = Field(default=None, min_length=1)
+    unblock_condition: str | None = Field(default=None, min_length=1)
+    next_due: str | None = Field(default=None, min_length=1)
+    next_action_class: str | None = Field(default=None, min_length=1)
+    next_action_ref: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def coherent_wait(self) -> Self:
+        if self.lifecycle_state not in {
+            None, "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+        }:
+            raise ValueError("invalid lifecycle state")
+        if self.canonical_root not in {None, "NONE", "UNKNOWN"}:
+            try:
+                UUID(self.canonical_root)
+            except ValueError as error:
+                raise ValueError("canonical root must be NONE, UNKNOWN, or a WorkId") from error
+        if self.lifecycle_state in {"WAITING", "DEFERRED"}:
+            if self.wait_kind in {None, "NONE", "UNKNOWN"}:
+                raise ValueError("waiting/deferred work requires exact wait kind")
+            if self.unblock_condition in {None, "NONE", "UNKNOWN"}:
+                raise ValueError("waiting/deferred work requires exact reopen condition")
+        if self.lifecycle_state in {"CURRENT", "TERMINAL"} and any(
+            value != "NONE" for value in (self.wait_kind, self.unblock_condition, self.next_due)
+        ):
+            raise ValueError("current/terminal work cannot carry a wait")
+        return self
 
 
 class WorkSource(ClosedModel):
@@ -56,6 +86,16 @@ class WorkPatch(ClosedModel):
     horizon: str | None = None
     review_next_action: str | None = None
     stage3_gate: str | None = None
+    lifecycle_state: Literal[
+        "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+    ] | None = None
+    canonical_root: str | None = Field(default=None, min_length=1)
+    owner_key: str | None = Field(default=None, min_length=1)
+    wait_kind: str | None = Field(default=None, min_length=1)
+    unblock_condition: str | None = Field(default=None, min_length=1)
+    next_due: str | None = Field(default=None, min_length=1)
+    next_action_class: str | None = Field(default=None, min_length=1)
+    next_action_ref: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def valid_patch(self) -> Self:
@@ -65,7 +105,7 @@ class WorkPatch(ClosedModel):
         if any(getattr(self, field) is None for field in changed):
             raise ValueError("patch values must not be null")
         if changed & {"horizon", "review_next_action", "stage3_gate"} and "notes" not in changed:
-            raise ValueError("routing changes require notes")
+            raise ValueError("legacy routing changes require notes")
         return self
 
 

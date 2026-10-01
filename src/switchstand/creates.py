@@ -7,9 +7,10 @@ from uuid import UUID, uuid5
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .core import Provider, ProviderError, State, UnknownEffect
+from .core import Provider, ProviderError, State, UnknownEffect, provider_rejection_reason
 from .grant_state import EffectRecord, GrantState
 from .grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate
+from .work_index import normalize_title
 
 CREATE_NAMESPACE = UUID("238ea5f0-fb67-4f46-81b1-560fa39375ce")
 
@@ -78,6 +79,10 @@ class CreateGateway:
         return value
 
     async def create(self, principal: PrincipalContext, request: ProtectedCreate) -> GuardOutcome:
+        try:
+            normalize_title(request.title)
+        except (TypeError, ValueError):
+            return self.guard(request, "denied", "title_not_indexable")
         possible_send = False
         history_known = False
         try:
@@ -174,8 +179,14 @@ class CreateGateway:
         provider: CreateProvider,
     ) -> GuardOutcome:
         try:
+            index = getattr(self.state, "work_index", None)
+            provider_title = (
+                "Switchstand work"
+                if index is not None and await index.active()
+                else request.title
+            )
             task_gid = await provider.create_work(
-                request.title, request.notes, request.operation_id,
+                provider_title, request.notes, request.operation_id,
                 parent_task_gid=parent_task_gid, project_gid=project_gid,
             )
         except UnknownEffect:
@@ -183,8 +194,8 @@ class CreateGateway:
                 principal, request, grant_id, grant_version, qualification, recovery_identity,
                 provider_name, parent_task_gid, project_gid,
             )
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         return await self._applied(
             principal, request, grant_id, grant_version, qualification,
             provider_name, parent_task_gid, project_gid, task_gid,
@@ -256,6 +267,14 @@ class CreateGateway:
             )
         work_id = self.work_id(request.operation_id)
         await cast(CreateState, self.state).bind_reserved(work_id, provider_name, task_gid)
+        index = getattr(self.state, "work_index", None)
+        if index is not None and await index.active():
+            work = await provider.get(task_gid)
+            if work is None or not work.canonical:
+                return self.guard(
+                    request, "unknown", "created_task_readback_unconfirmed", possible_send=True
+                )
+            await index.admit_created(work_id, request.title, work)
         receipt = CreateReceipt(
             operation_id=request.operation_id, principal=principal, grant_id=grant_id,
             grant_version=grant_version, work_id=work_id, provider=provider_name,

@@ -5,9 +5,25 @@ import json
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .core import Provider, ProviderError, State, UnknownEffect
+from .core import (
+    Provider,
+    ProviderError,
+    State,
+    UnknownEffect,
+    observed_revision_matches,
+    provider_rejection_reason,
+)
 from .grant_state import GrantState
-from .grants import EffectReceipt, GuardOutcome, PrincipalContext, ProtectedAppend, WorkGrant
+from .grants import (
+    EffectBlocker,
+    EffectOutcomeView,
+    EffectReceipt,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedAppend,
+    WorkGrant,
+)
+from .mutation_effect import blocked_effect_next_action
 
 
 class AppendGateway:
@@ -61,8 +77,21 @@ class AppendGateway:
                         return outcome
                     if outcome.operation_id == request.operation_id:
                         return self.guard(request, "denied", "operation_identity_conflict")
-                    return self.guard(request, "unknown", "target_has_unresolved_effect",
-                                      possible_send=True)
+                    assert outcome.operation_id is not None and outcome.work_id is not None
+                    return self.guard(
+                        request, "unknown", "target_has_unresolved_effect",
+                    ).model_copy(update={
+                        "next_action": blocked_effect_next_action(outcome.operation),
+                        "blocked_by": EffectBlocker(
+                            operation=outcome.operation,
+                            operation_id=outcome.operation_id,
+                            work_id=outcome.work_id,
+                            outcome=EffectOutcomeView(
+                                status=outcome.status, reason=outcome.reason,
+                                effect=outcome.effect, retry=outcome.retry,
+                            ),
+                        ),
+                    })
                 handle = await self.state.get(request.work_id)
                 if handle is None:
                     return self.guard(request, "denied", "work_not_bound")
@@ -74,7 +103,10 @@ class AppendGateway:
                     return self.guard(request, "denied", "source_not_canonical")
                 if current.completed:
                     return self.guard(request, "denied", "work_is_terminal")
-                if current.revision != request.observed_revision:
+                if not await observed_revision_matches(
+                    self.state, request.work_id, request.observed_revision, current.revision,
+                    provider_notes=current.notes, provider_context=current.context,
+                ):
                     return self.guard(request, "stale", "source_revision_changed")
                 unknown = self.guard(request, "unknown", "prepared_or_unconfirmed_send",
                                      possible_send=True)
@@ -105,8 +137,8 @@ class AppendGateway:
             story_gid = await provider.append(task_gid, request.text)
         except UnknownEffect:
             return self.guard(request, "unknown", "ambiguous_provider_send", possible_send=True)
-        except ProviderError:
-            return self.guard(request, "not_applied", "provider_rejected_send")
+        except ProviderError as error:
+            return self.guard(request, "not_applied", provider_rejection_reason(error))
         if story_gid is not None:
             story = await provider.source_story(task_gid, story_gid)
             task = await provider.source_task(task_gid)
