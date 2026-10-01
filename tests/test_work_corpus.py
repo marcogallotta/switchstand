@@ -1,7 +1,10 @@
+import json
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -11,11 +14,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderError, ProviderWork
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
+from switchstand.provider import FIELDS, PROJECT, AsanaProvider
 from switchstand.state import metadata
 from switchstand.work_corpus import (
+    CorpusCaptureDecodeError,
     _capture,
     capture_manifest,
+    capture_to_path,
     compare_manifests,
+    failure_receipt_path,
     load_manifest,
     write_manifest,
 )
@@ -180,6 +187,73 @@ async def test_provider_failure_aborts_instead_of_becoming_exception(index):
     provider = Failed({None: ProviderSearchPage((), None)}, {})
     with pytest.raises(ProviderError):
         await capture_manifest(index.engine, provider, SHA)
+
+
+async def test_bound_only_real_provider_decode_failure_writes_private_receipt(
+    tmp_path: Path, caplog,
+):
+    result = MagicMock()
+    result.all.return_value = [("secret-bound-id", UUID(int=32))]
+    connection = AsyncMock()
+    connection.execute.return_value = result
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__.return_value = connection
+    payload = {
+        "data": {
+            "gid": "secret-bound-id",
+            "name": "secret-title",
+            "notes": "secret-notes",
+            "completed": False,
+            "modified_at": "r1",
+            "memberships": [{
+                "project": {"gid": PROJECT, "name": "secret-project"},
+                "section": None,
+            }],
+            "assignee": None,
+            "parent": None,
+            "custom_fields": [{
+                "gid": FIELDS["priority"],
+                "enabled": True,
+                "resource_subtype": "enum",
+                "display_value": "secret-priority",
+            }],
+        }
+    }
+
+    class BoundOnlyProvider(AsanaProvider):
+        async def search_work(self, _text, _completed, _cursor, _limit):
+            return ProviderSearchPage((), None)
+
+        async def dependencies_for_import(self, _provider_work_id):
+            return frozenset()
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0",
+        transport=httpx.MockTransport(respond),
+    )
+    provider = BoundOnlyProvider(client)
+    manifest_path = tmp_path / "corpus.json"
+    try:
+        with caplog.at_level("ERROR"), pytest.raises(CorpusCaptureDecodeError) as rejected:
+            await capture_to_path(engine, provider, manifest_path, SHA)
+    finally:
+        await client.aclose()
+
+    receipt_path = failure_receipt_path(manifest_path)
+    assert not manifest_path.exists()
+    assert receipt_path.stat().st_mode & 0o777 == 0o600
+    assert json.loads(receipt_path.read_text()) == {
+        "provider_work_id": "secret-bound-id",
+        "reason": "priority_truth",
+    }
+    assert str(rejected.value) == "provider response invalid"
+    assert all(secret not in caplog.text for secret in (
+        "secret-bound-id", "secret-title", "secret-notes", "secret-project",
+        "secret-priority", "priority_truth",
+    ))
 
 
 async def test_manifest_is_deterministic_create_new_and_revision_sensitive(index, tmp_path: Path):

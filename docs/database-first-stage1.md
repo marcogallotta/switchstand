@@ -62,7 +62,10 @@ switchstand-work-index-migrate activate --confirm-offline --manifest corpus-a.js
 ```
 
 The read-only corpus command captures the deterministic union of admitted search and exact-readable
-bound Asana work twice. The migration command verifies database quiescence and both matching,
+bound Asana work twice. If strict decoding of a bound-only item fails, capture remains failed and
+creates `<manifest>.failure.json` as mode-0600 evidence containing only the provider work ID and a
+credential-safe reason code; it never writes a partial manifest or prints that evidence. The
+migration command verifies database quiescence and both matching,
 reviewed manifests, including both the full corpus and explicit missing/noncanonical exception
 digests, then writes a distinct create-new preparation receipt before freezing missing WorkId
 bindings. That receipt binds the exact before/final/inserted handles and prepared digest; activation

@@ -20,6 +20,7 @@ from switchstand.provider import (
     WORKSET_SECTION_FIELDS,
     WORKSET_TASK_FIELDS,
     AsanaProvider,
+    ProviderWorkDecodeError,
 )
 
 
@@ -257,6 +258,44 @@ async def test_work_context_rejects_missing_malformed_or_conflicting_truth(chang
 
     with pytest.raises(ProviderError, match="provider response invalid"):
         await subject.get("123")
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    (
+        lambda data: data.update(custom_fields=[{
+            "gid": FIELDS["priority"], "enabled": True,
+            "resource_subtype": "enum", "display_value": "secret-value",
+        }]),
+        "priority_truth",
+    ),
+    (
+        lambda data: data.update(custom_fields=[{
+            "gid": FIELDS["review_next_action"], "enabled": False,
+            "resource_subtype": "enum", "display_value": "secret-value",
+        }]),
+        "review_next_action_truth",
+    ),
+    (lambda data: data.update(notes={"credential": "secret-value"}), "core_fields"),
+    (
+        lambda data: data.update(assignee={"gid": "secret-user", "name": ""}),
+        "work_context",
+    ),
+])
+async def test_work_decode_reason_is_stable_and_not_logged(change, reason, caplog):
+    payload = task(project=PROJECT)
+    payload["data"]["gid"] = "secret-task"
+    change(payload["data"])
+    subject, _ = provider((200, payload))
+
+    with caplog.at_level("ERROR"), pytest.raises(ProviderWorkDecodeError) as rejected:
+        await subject.get("secret-task")
+
+    assert rejected.value.reason == reason
+    exposed = str(rejected.value) + caplog.text
+    assert "provider response invalid" in exposed
+    assert all(secret not in exposed for secret in (
+        "secret-task", "secret-user", "secret-value", reason,
+    ))
 
 
 @pytest.mark.parametrize("malformed", [False, True])

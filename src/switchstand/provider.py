@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import httpx
@@ -45,6 +45,24 @@ REVIEW_INTAKE_PROJECT = "1218915787182921"
 REVIEW_INTAKE_SECTION = "1218916346671509"
 WORKSPACE = "1200569426771227"
 ANCESTRY_GETS = 9
+WorkDecodeReason = Literal[
+    "priority_truth",
+    "review_next_action_truth",
+    "routing_fields",
+    "core_fields",
+    "work_context",
+    "canonicality",
+]
+
+
+class ProviderWorkDecodeError(ProviderError):
+    """A work response rejected at a credential-safe decoding boundary."""
+
+    def __init__(self, reason: WorkDecodeReason):
+        super().__init__("provider response invalid")
+        self.reason: WorkDecodeReason = reason
+
+
 FIELDS = {
     "priority": "1217653169990249", "horizon": "1218212397743203",
     "review_next_action": "1218212397743210", "stage3_gate": "1218212397743217"}
@@ -539,9 +557,9 @@ class AsanaProvider:
         fields = self._custom_fields(task)
         values = {name: next((f.get("display_value") for f in fields
                   if f.get("gid") == gid), None) for name, gid in FIELDS.items()}
-        try:
-            for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE),
-                              ("review_next_action", FIELDS["review_next_action"])):
+        for name, gid in (("priority", FIELDS["priority"]), ("work_type", WORK_TYPE),
+                          ("review_next_action", FIELDS["review_next_action"])):
+            try:
                 strict = [field for field in fields if field.get("gid") == gid]
                 required_truth = name in REQUIRED_ROUTING_TRUTH
                 if len(strict) > 1 and required_truth: raise TypeError
@@ -575,18 +593,41 @@ class AsanaProvider:
                         or len(identities) != 1 or len(matches) != 1):
                     if required_truth: raise TypeError
                     values[name] = None
-                else: values[name] = display
+                else:
+                    values[name] = display
+            except (KeyError, TypeError, ValueError) as error:
+                self._invalid_read("work", error)
+                reason: WorkDecodeReason = (
+                    "priority_truth" if name == "priority"
+                    else "review_next_action_truth" if name == "review_next_action"
+                    else "routing_fields"
+                )
+                raise ProviderWorkDecodeError(reason) from None
+        try:
             title, notes, completed, revision = (task[key] for key in ("name", "notes", "completed", "modified_at"))
             if not all(isinstance(value, str) for value in (title, notes, revision)) or not isinstance(completed, bool): raise TypeError
-            routing = Routing(**{key: value if isinstance(value, str) else None
-                               for key, value in values.items()})
-            return ProviderWork(
-                title, notes, completed, revision, routing, self._work_context(task),
-                await self._canonical(task),
-            )
         except (KeyError, TypeError, ValueError) as error:
             self._invalid_read("work", error)
-            raise ProviderError("provider response invalid") from None
+            raise ProviderWorkDecodeError("core_fields") from None
+        try:
+            routing = Routing(**{key: value if isinstance(value, str) else None
+                               for key, value in values.items()})
+        except (TypeError, ValueError) as error:
+            self._invalid_read("work", error)
+            raise ProviderWorkDecodeError("routing_fields") from None
+        try:
+            context = self._work_context(task)
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("work", error)
+            raise ProviderWorkDecodeError("work_context") from None
+        try:
+            canonical = await self._canonical(task)
+        except (KeyError, TypeError, ValueError) as error:
+            self._invalid_read("work", error)
+            raise ProviderWorkDecodeError("canonicality") from None
+        return ProviderWork(
+            title, notes, completed, revision, routing, context, canonical,
+        )
 
     async def list_attachments(
         self, provider_work_id: str, cursor: str | None, limit: int
