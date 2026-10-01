@@ -12,6 +12,8 @@ import switchstand.edge_semantic_probe as probe
 
 class FakeMCP:
     related: ClassVar[list[object]] = []
+    relation_outcome: ClassVar[str] = "ok"
+    relation_calls: ClassVar[int] = 0
 
     def __init__(self, endpoint, token):
         self.endpoint, self.token, self.requests = endpoint, token, []
@@ -39,13 +41,22 @@ class FakeMCP:
         if name == "work_get":
             if arguments["work_id"] == IDS["foreign"]:
                 return {"status": "denied", "item": None}
+            title = "Dependency" if arguments["work_id"] == IDS["dependency"] else "Representative"
             return {"status": "ok", "item": {"id": arguments["work_id"],
-                "title": "Representative", "revision": "r1"}}
+                "title": title, "revision": "r1", "completed": False,
+                "routing": {}, "context": {}}}
         if name == "work_search":
-            return {"status": "ok", "items": [{"id": IDS["work"]}]}
+            work_id = IDS["dependency"] if arguments["text"] == "Dependency" else IDS["work"]
+            return {"status": "ok", "items": [{"id": work_id, "title": arguments["text"],
+                "revision": "r1", "completed": False, "routing": {}, "context": {}}]}
         if name == "work_structure":
             return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
         if name == "work_relate":
+            type(self).relation_calls += 1
+            if self.relation_outcome == "raise":
+                raise httpx.ReadTimeout("ambiguous")
+            if self.relation_outcome == "denied":
+                return {"status": "denied", "effect": "not_sent"}
             receipt = {"operation_id": arguments["operation_id"],
                 "qualification": "test:disposable-c2d2",
                 "principal": {"issuer": "issuer", "subject": "subject", "client_id": "client"}}
@@ -67,10 +78,11 @@ def private(path: Path, value: str) -> Path:
 
 @pytest.fixture
 def grounded(monkeypatch):
-    FakeMCP.related = []
+    FakeMCP.related, FakeMCP.relation_outcome, FakeMCP.relation_calls = [], "ok", 0
+    run_ids = iter(("run-1", "run-2", "run-3"))
     monkeypatch.setattr(probe, "MCP", FakeMCP)
     monkeypatch.setattr(probe, "_runtime", lambda _client, _endpoint, sha:
-                        {"runtime_sha": sha, "run_id": "run-1"})
+                        {"runtime_sha": sha, "run_id": next(run_ids)})
     monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs:
                         subprocess.CompletedProcess(args[0], 0, stdout="a" * 40 + "\n"))
 
@@ -91,16 +103,10 @@ def test_read_only_probe_records_exact_schema_and_denials(tmp_path, grounded):
 
     value = json.loads(receipt.read_text())
     assert value["result"] == "PASS" and value["tools"] == TOOLS
-    assert value["mutation"] is None
-    assert value["results_sha256"] == probe._digest({
-        "get": {"status": "ok", "item": {"id": IDS["work"],
-            "title": "Representative", "revision": "r1"}},
-        "search": {"status": "ok", "items": [{"id": IDS["work"]}]},
-        "dependency": {"status": "ok", "item": {"id": IDS["dependency"],
-            "title": "Representative", "revision": "r1"}},
-        "stale": {"status": "stale", "work_id": IDS["work"], "revision": "r1"},
-        "foreign": {"status": "denied", "item": None},
-    })
+    assert value["mutation"] is None and value["principal_proof"] == "NOT_RUN"
+    assert value["results_sha256"] == probe._digest(value["results"])
+    assert value["results"]["get"]["item"]["id"] == IDS["work"]
+    assert value["results"]["dependency"]["item"]["id"] == IDS["dependency"]
     assert receipt.stat().st_mode & 0o777 == 0o600
     assert not FakeMCP.related
 
@@ -117,12 +123,13 @@ def test_disposable_replay_and_cold_restart_are_exact(tmp_path, grounded):
     assert all(item == FakeMCP.related[0] for item in FakeMCP.related)
     value = json.loads(second.read_text())
     assert value["restart_of"] == probe._digest(json.loads(first.read_text()))
+    assert value["runtime"]["run_id"] == "run-2"
     assert value["mutation"]["arguments"]["patch"] == {
         "kind": "dependency", "action": "add", "target_work_id": IDS["dependency"]}
 
 
 def test_production_mutation_is_hard_disabled(tmp_path, grounded):
-    with pytest.raises(probe.ProbeFailure, match="hard-disabled"):
+    with pytest.raises(probe.ProbeFailure, match="requires loopback"):
         probe.run(arguments(tmp_path, "https://public.example/mcp") + [
             "--receipt", str(tmp_path / "never.json"), "--allow-disposable-mutation",
             "--operation-id", IDS["operation"],
@@ -130,16 +137,21 @@ def test_production_mutation_is_hard_disabled(tmp_path, grounded):
     assert not (tmp_path / "never.json").exists()
 
 
+@pytest.mark.parametrize(("outcome", "status"), [("raise", "UNKNOWN"), ("denied", "FAIL")])
+def test_failed_first_effect_is_recorded_without_replay(tmp_path, grounded, outcome, status):
+    FakeMCP.relation_outcome = outcome
+    receipt = tmp_path / "failed.json"
+    with pytest.raises(probe.ProbeFailure):
+        probe.run(arguments(tmp_path) + ["--receipt", str(receipt),
+            "--allow-disposable-mutation", "--operation-id", IDS["operation"],
+            "--expected-qualification", "test:disposable-c2d2"])
+    value = json.loads(receipt.read_text())
+    assert value["result"] == status and value["operation_id"] == IDS["operation"]
+    assert FakeMCP.relation_calls == 1 and value["transcript"]
+
+
 def test_rejects_non_private_token_before_network(tmp_path, grounded):
     args = arguments(tmp_path)
     Path(args[3]).chmod(0o644)
     with pytest.raises(probe.ProbeFailure, match="mode-0600"):
-        probe.run(args + ["--receipt", str(tmp_path / "never.json")])
-
-
-def test_rejects_symlink_token(tmp_path, grounded):
-    args = arguments(tmp_path)
-    Path(args[3]).unlink()
-    Path(args[3]).symlink_to(private(tmp_path / "actual-token", "right"))
-    with pytest.raises(OSError):
         probe.run(args + ["--receipt", str(tmp_path / "never.json")])

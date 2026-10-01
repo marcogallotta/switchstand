@@ -101,11 +101,12 @@ scripts/switchstand-edge-doctor --env-file /path/to/edge-doctor.env \
 ```
 
 After startup, `switchstand-edge-semantic-probe` is the separate authenticated semantic check.
-Its default path is read-only and writes a mode-0600 receipt binding the runtime candidate,
-endpoint, expected principal, exact `tools/list`, representative WorkIds/revisions, denials, and
-transcript. Its optional dependency mutation is hard-disabled except on loopback and requires an
-explicit disposable qualification and OperationId; rerun with `--restart-of` only after a cold
-restart to prove the same durable receipt. Production mutation remains `NOT_RUN`.
+Its default path is read-only and reserves a mode-0600 receipt before effects, then records the
+runtime candidate/run, endpoint, exact `tools/list`, representative WorkIds/revisions, denials, and
+transcript. The nonmutating path records only an expected principal; exact proof is `NOT_RUN`.
+Its optional dependency mutation is hard-disabled except on loopback and requires an
+explicit disposable qualification and OperationId; `--restart-of` requires a new runtime run ID;
+production mutation remains `NOT_RUN`.
 
 Command-line resource, local, and public URL options remain available for
 one-off checks and override values in the file. An explicit local probe URL

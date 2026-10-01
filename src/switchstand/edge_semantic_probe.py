@@ -60,8 +60,10 @@ class MCP:
         }
         if session and self.session:
             headers |= {"mcp-session-id": self.session, "mcp-protocol-version": PROTOCOL}
+        entry: dict[str, object] = {"request": body}
+        self.requests.append(entry)
         response = self.client.post(self.endpoint, headers=headers, json=body)
-        self.requests.append({"request": body, "http_status": response.status_code})
+        entry["http_status"] = response.status_code
         return response
 
     def initialize(self) -> None:
@@ -122,6 +124,38 @@ def _publish(path: Path, value: object) -> None:
         stream.flush()
         os.fsync(stream.fileno())
 
+def _replace(path: Path, value: object) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    _publish(temporary, value)
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _item(result: dict[str, object], expected_id: UUID, label: str) -> dict[str, object]:
+    item = cast(dict[str, object], result.get("item", {}))
+    if (item.get("id") != str(expected_id) or not isinstance(item.get("title"), str)
+            or not item["title"] or not isinstance(item.get("revision"), str)
+            or not item["revision"] or not isinstance(item.get("completed"), bool)
+            or not isinstance(item.get("routing"), dict) or not isinstance(item.get("context"), dict)):
+        raise ProbeFailure(f"{label} identity or representative fields differ")
+    return item
+
+
+def _search_match(client: MCP, item: dict[str, object], request_id: int) -> dict[str, object]:
+    found = _status(client.call("tools/call", {"name": "work_search", "arguments": {
+        "api_version": "1", "text": str(item["title"]),
+    }}, request_id), "ok", "work_search")
+    rows = cast(list[dict[str, object]], found["items"])
+    match = next((row for row in rows if row.get("id") == item["id"]), None)
+    fields = ("id", "title", "completed", "revision", "routing", "context")
+    if match is None or any(match.get(field) != item.get(field) for field in fields):
+        raise ProbeFailure("work_search differs from exact work_get")
+    return found
+
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -158,14 +192,39 @@ def run(argv: list[str] | None = None) -> int:
         raise ProbeFailure("checkout does not match expected candidate")
     if args.restart_of is not None and not args.allow_disposable_mutation:
         raise ProbeFailure("--restart-of requires explicitly enabled disposable mutation")
+    if args.allow_disposable_mutation and (
+        parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or args.operation_id is None
+        or not (args.expected_qualification or "").startswith("test:disposable")
+    ):
+        raise ProbeFailure("mutation requires loopback, OperationId, and disposable qualification")
 
     token, wrong = _private(args.token_file), _private(args.wrong_token_file)
     if not token or not wrong or token == wrong:
         raise ProbeFailure("distinct non-empty token files are required")
+    prior = None if args.restart_of is None else json.loads(_private(args.restart_of))
+    record: dict[str, object] = {
+        "schema": 1, "result": "UNKNOWN" if args.allow_disposable_mutation else "FAIL",
+        "candidate_sha": args.expected_sha, "endpoint": endpoint,
+        "expected_principal": args.expected_principal, "principal_proof": "NOT_RUN",
+        "operation_id": None if args.operation_id is None else str(args.operation_id),
+        "work_id": str(args.work_id), "dependency_work_id": str(args.dependency_work_id),
+        "foreign_work_id": str(args.foreign_work_id), "transcript": [],
+        "production_mutation": "NOT_RUN",
+    }
+    _replace(args.receipt, record)
     client = MCP(endpoint, token)
     results: dict[str, object] = {}
+    terminal = "FAIL"
     try:
         runtime = _runtime(client.client, endpoint, str(args.expected_sha))
+        if prior is not None:
+            old_runtime = cast(dict[str, object], prior.get("runtime", {}))
+            if (prior.get("candidate_sha") != args.expected_sha
+                    or prior.get("endpoint") != endpoint
+                    or old_runtime.get("runtime_sha") != runtime.get("runtime_sha")
+                    or not old_runtime.get("run_id") or old_runtime.get("run_id") == runtime.get("run_id")):
+                raise ProbeFailure("cold restart requires same runtime SHA and a different run_id")
         client.initialize()
         tools = cast(dict[str, object], client.call("tools/list", {}, 2))["tools"]
         if _digest(tools) != args.expected_tools_sha256:
@@ -173,24 +232,23 @@ def run(argv: list[str] | None = None) -> int:
         got = _status(client.call("tools/call", {"name": "work_get", "arguments": {
             "api_version": "1", "work_id": str(args.work_id),
         }}, 3), "ok", "work_get")
-        item = cast(dict[str, object], got["item"])
+        item = _item(got, args.work_id, "target")
         revision = str(item["revision"])
-        found = _status(client.call("tools/call", {"name": "work_search", "arguments": {
-            "api_version": "1", "text": str(item["title"]),
-        }}, 4), "ok", "work_search")
-        rows = cast(list[dict[str, object]], found["items"])
-        if str(args.work_id) not in {str(row["id"]) for row in rows}:
-            raise ProbeFailure("work_search omitted target")
+        found = _search_match(client, item, 4)
         dependency = _status(client.call("tools/call", {"name": "work_get", "arguments": {
             "api_version": "1", "work_id": str(args.dependency_work_id),
         }}, 5), "ok", "dependency work_get")
+        dependency_item = _item(dependency, args.dependency_work_id, "dependency")
+        dependency_search = _search_match(client, dependency_item, 6)
         stale = _status(client.call("tools/call", {"name": "work_structure", "arguments": {
             "api_version": "1", "work_id": str(args.work_id),
             "observed_revision": "semantic-probe-deliberately-stale",
-        }}, 6), "stale", "stale currentness")
+        }}, 7), "stale", "stale currentness")
+        if stale.get("work_id") != str(args.work_id) or stale.get("revision") != revision:
+            raise ProbeFailure("stale currentness did not return exact target revision")
         foreign = _status(client.call("tools/call", {"name": "work_get", "arguments": {
             "api_version": "1", "work_id": str(args.foreign_work_id),
-        }}, 7), "denied", "foreign WorkId")
+        }}, 8), "denied", "foreign WorkId")
         wrong_client = MCP(endpoint, wrong)
         try:
             wrong_token_status = wrong_client.unauthorized_initialize()
@@ -199,24 +257,27 @@ def run(argv: list[str] | None = None) -> int:
         finally:
             wrong_client.close()
         results = {"get": got, "search": found, "dependency": dependency,
+                   "dependency_search": dependency_search,
                    "stale": stale, "foreign": foreign}
-
         mutation = None
         if args.allow_disposable_mutation:
-            if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-                raise ProbeFailure("disposable mutation is hard-disabled outside loopback")
-            if args.operation_id is None or not (args.expected_qualification or "").startswith(
-                "test:disposable"
-            ):
-                raise ProbeFailure("mutation requires OperationId and disposable qualification")
             arguments = {"api_version": "1", "operation_id": str(args.operation_id),
                 "work_id": str(args.work_id), "observed_revision": revision,
                 "patch": {"kind": "dependency", "action": "add",
                           "target_work_id": str(args.dependency_work_id)}}
-            first = _status(client.call("tools/call", {"name": "work_relate",
-                "arguments": arguments}, 8), "ok", "dependency mutation")
+            terminal = "UNKNOWN"
+            first_raw = client.call("tools/call", {"name": "work_relate",
+                "arguments": arguments}, 9)
+            first_value = cast(dict[str, object], first_raw) if isinstance(first_raw, dict) else {}
+            if first_value.get("status") != "ok":
+                terminal = ("UNKNOWN" if first_value.get("status") == "unknown"
+                            or first_value.get("effect") == "unknown" else "FAIL")
+                raise ProbeFailure("dependency mutation was not conclusively applied")
+            terminal = "FAIL"
+            first = _status(first_value, "ok", "dependency mutation")
+            mutation = {"arguments": arguments, "first": first}
             replay = _status(client.call("tools/call", {"name": "work_relate",
-                "arguments": arguments}, 9), "ok", "OperationId replay")
+                "arguments": arguments}, 10), "ok", "OperationId replay")
             if first != replay:
                 raise ProbeFailure("same OperationId replay changed receipt")
             receipt = cast(dict[str, object], first["receipt"])
@@ -227,24 +288,28 @@ def run(argv: list[str] | None = None) -> int:
                     or observed_principal != args.expected_principal):
                 raise ProbeFailure("mutation receipt principal or qualification mismatch")
             mutation = {"arguments": arguments, "first": first, "replay": replay}
-            if args.restart_of:
-                prior = json.loads(_private(args.restart_of))
-                if prior.get("candidate_sha") != args.expected_sha or prior.get("mutation") != mutation:
-                    raise ProbeFailure("cold-restart replay differs from prior receipt")
-
-        _publish(args.receipt, {"schema": 1, "result": "PASS", "candidate_sha": args.expected_sha,
-            "endpoint": endpoint, "principal": args.expected_principal,
+            record["principal_proof"] = receipt["principal"]
+            if (prior is not None and (
+                prior.get("candidate_sha") != args.expected_sha or prior.get("mutation") != mutation
+            )):
+                raise ProbeFailure("cold-restart replay differs from prior receipt")
+        record.update({"result": "PASS",
             "runtime": runtime, "tools": tools, "tools_sha256": _digest(tools),
             "work_id": str(args.work_id), "dependency_work_id": str(args.dependency_work_id),
             "foreign_work_id": str(args.foreign_work_id), "revision": revision,
             "results": results, "results_sha256": _digest(results),
             "wrong_token_http_status": wrong_token_status,
-            "mutation": mutation, "production_mutation": "NOT_RUN",
-            "restart_of": None if args.restart_of is None else _digest(json.loads(_private(args.restart_of))),
+            "mutation": mutation,
+            "restart_of": None if prior is None else _digest(prior),
             "transcript": client.requests})
+        _replace(args.receipt, record)
         print("PASS authenticated semantic probe")
         return 0
-    except (KeyError, OSError, TypeError, ValueError, httpx.HTTPError) as error:
+    except Exception as error:
+        record.update({"result": terminal, "failure": str(error), "transcript": client.requests})
+        _replace(args.receipt, record)
+        if isinstance(error, ProbeFailure):
+            raise
         raise ProbeFailure(type(error).__name__) from error
     finally:
         client.close()
