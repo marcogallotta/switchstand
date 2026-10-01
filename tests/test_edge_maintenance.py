@@ -129,6 +129,53 @@ class FakeOperations:
         self._event("restore_launcher")
 
 
+class FakeOffline:
+    def __init__(
+        self,
+        subject: Config,
+        events: list[str],
+        *,
+        fail_after: str | None = None,
+        unknown_after: str | None = None,
+        candidate_sha: str | None = None,
+    ):
+        self.receipt_path = subject.attempt_dir / "offline.json"
+        self.candidate_sha = candidate_sha or subject.candidate_sha
+        self.database_backup = "/evidence/database.dump"
+        self.corpus_manifests = ("manifest-a", "manifest-b")
+        self.worksheet = "worksheet-digest"
+        self.events = events
+        self.fail_after = fail_after
+        self.unknown_after = unknown_after
+
+    def _write(self, boundary: str) -> None:
+        self.receipt_path.write_text(
+            json.dumps(
+                {
+                    "candidate_sha": self.candidate_sha,
+                    "database_backup": self.database_backup,
+                    "corpus_manifests": list(self.corpus_manifests),
+                    "worksheet": self.worksheet,
+                    "terminal_boundary": boundary,
+                }
+            )
+        )
+        self.receipt_path.chmod(0o600)
+
+    def run(self, advance) -> None:
+        for boundary in ("PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"):
+            self.events.append("offline_" + boundary.lower())
+            self._write(boundary)
+            advance(boundary)
+            if self.fail_after == boundary:
+                raise Failed("offline failed")
+            if self.unknown_after == boundary:
+                raise Unknown("offline unknown")
+
+    def abort_pre_authority(self) -> None:
+        self.events.append("offline_abort")
+
+
 def receipt(subject: Config) -> dict[str, object]:
     return json.loads((subject.attempt_dir / "receipt.json").read_text())
 
@@ -154,13 +201,86 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     assert receipt(subject)["status"] == "PASS"
 
 
+def test_offline_step_persists_ordered_boundaries_before_launcher_swap(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events)
+
+    assert deploy(subject, operations, offline) == "PASS"
+
+    assert operations.events[4:10] == [
+        "snapshot",
+        "offline_pre_marker",
+        "offline_postgres_authority",
+        "offline_complete",
+        "swap",
+        "start",
+    ]
+    assert receipt(subject)["phase"] == "COMPLETE"
+
+
+def test_definite_pre_marker_failure_aborts_and_restores_old_runtime(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events, fail_after="PRE_MARKER")
+
+    assert deploy(subject, operations, offline) == "FAIL"
+
+    assert operations.events[-5:] == [
+        "offline_abort",
+        "start",
+        "rollback_ready",
+        "ungate",
+        "public_ready",
+    ]
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+
+
+def test_post_marker_failure_stays_gated_for_forward_fix(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events, fail_after="POSTGRES_AUTHORITY")
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+
+    assert operations.gated
+    assert "offline_abort" not in operations.events
+    assert "restore_launcher" not in operations.events
+    assert receipt(subject)["error"] == "ForwardFixRequired"
+
+
+@pytest.mark.parametrize("boundary", ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"])
+def test_ambiguous_offline_boundary_stays_gated(tmp_path: Path, boundary: str):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events, unknown_after=boundary)
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+
+    assert operations.gated
+    assert "offline_abort" not in operations.events
+
+
+def test_offline_receipt_must_bind_exact_candidate(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events, candidate_sha="f" * 40)
+
+    assert deploy(subject, operations, offline) == "UNKNOWN"
+
+    assert "swap" not in operations.events
+    assert operations.gated
+
+
 def test_unproved_public_gate_is_unknown_and_service_is_not_stopped(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(public_gate=False)
+    offline = FakeOffline(subject, operations.events)
 
-    assert deploy(subject, operations) == "UNKNOWN"
+    assert deploy(subject, operations, offline) == "UNKNOWN"
 
     assert "stop" not in operations.events
+    assert not any(event.startswith("offline_") for event in operations.events)
     assert operations.gated
     assert {key: receipt(subject)[key] for key in ("phase", "status", "error")} == {
         "phase": "GATED",
