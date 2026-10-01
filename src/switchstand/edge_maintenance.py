@@ -113,10 +113,12 @@ class Operations(Protocol):
 
 class OfflineStep(Protocol):
     receipt_path: Path
+    candidate_sha: str
     database_backup: str
     corpus_manifests: tuple[str, str]
     worksheet: str
 
+    def reconcile_boundary(self) -> str: ...
     def run(self, advance: Callable[[str], None]) -> None: ...
     def abort_pre_authority(self) -> None: ...
 
@@ -129,29 +131,13 @@ OFFLINE_PHASES = {
 
 
 def _offline_boundary(step: OfflineStep, config: Config) -> str:
-    path = step.receipt_path
     try:
-        stat = path.lstat()
-        raw = json.loads(path.read_text())
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise Unknown("offline receipt is unreadable") from exc
-    if path.is_symlink() or not path.is_file() or stat.st_mode & 0o777 != 0o600:
-        raise Unknown("offline receipt identity or mode is invalid")
-    if not isinstance(raw, dict):
-        raise Unknown("offline receipt is not an object")
-    value = cast(dict[str, object], raw)
-    manifests = value.get("corpus_manifests")
-    if (
-        value.get("candidate_sha") != config.candidate_sha
-        or value.get("database_backup") != step.database_backup
-        or value.get("worksheet") != step.worksheet
-        or manifests != list(step.corpus_manifests)
-    ):
-        raise Unknown("offline receipt does not bind exact migration evidence")
-    boundary = value.get("terminal_boundary")
-    if boundary not in OFFLINE_PHASES:
+        boundary = step.reconcile_boundary()
+    except (Failed, OSError, UnicodeError, ValueError) as exc:
+        raise Unknown("offline receipt reconciliation failed") from exc
+    if boundary not in OFFLINE_PHASES or step.candidate_sha != config.candidate_sha:
         raise Unknown("offline receipt boundary is unknown")
-    return cast(str, boundary)
+    return boundary
 
 
 def _sha(path: Path) -> str:
@@ -818,6 +804,7 @@ class Receipt:
             "candidate_launcher_sha": config.candidate_launcher_sha,
             "retry_after": config.retry_after,
             "offline_receipt": str(offline.receipt_path) if offline else None,
+            "offline_candidate": offline.candidate_sha if offline else None,
             "offline_corpus": list(offline.corpus_manifests) if offline else None,
             "offline_worksheet": offline.worksheet if offline else None,
             "authority_crossed": False,

@@ -173,6 +173,17 @@ class FakeOffline:
         )
         self.receipt_path.chmod(0o600)
 
+    def reconcile_boundary(self) -> str:
+        value = json.loads(self.receipt_path.read_text())
+        if (
+            value.get("candidate_sha") != self.candidate_sha
+            or value.get("corpus_manifests") != list(self.corpus_manifests)
+            or value.get("worksheet") != self.worksheet
+        ):
+            raise Unknown("offline receipt does not bind exact evidence")
+        self.database_backup = value["database_backup"]
+        return value["terminal_boundary"]
+
     def run(self, advance) -> None:
         if self.fail_after == "PENDING":
             raise Failed("offline failed before its first receipt")
