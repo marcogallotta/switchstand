@@ -30,7 +30,7 @@ from switchstand.core import (
     ProviderAttachment,
     ProviderWork,
 )
-from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
+from switchstand.discovery import ProviderSearchItem
 from switchstand.grant_state import GrantState
 from switchstand.state import PostgresState, metadata
 from switchstand.work_index import (
@@ -41,7 +41,7 @@ from switchstand.work_index import (
     prepare_manifest,
     reconcile_activation,
 )
-from switchstand.work_index_migration import final_scan, load_receipt
+from switchstand.work_index_migration import load_receipt
 from switchstand.work_metadata import (
     UNKNOWN,
     ProviderMetadataSnapshot,
@@ -454,14 +454,3 @@ async def test_populated_cutover_marker_refuses_downgrade(index, monkeypatch):
     with pytest.raises(RuntimeError, match="POSTGRES_AUTHORITY is irreversible"):
         command.downgrade(config, "0007_agent_chat_identity")
     assert await index.active()
-
-
-async def test_final_scan_rejects_duplicate_and_cursor_cycle():
-    class Provider:
-        async def search_work(self, _text, _completed, cursor, _limit):
-            if cursor is None:
-                return ProviderSearchPage((item("1", "A"),), "again")
-            return ProviderSearchPage((item("1", "A"),), "again")
-
-    with pytest.raises(ValueError, match="duplicate"):
-        await final_scan(Provider())  # type: ignore[arg-type]

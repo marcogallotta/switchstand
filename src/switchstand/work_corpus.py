@@ -195,6 +195,13 @@ def compare_manifests(first: Path, second: Path) -> str:
     return str(left["sha256"])
 
 
+def manifest_exception_digest(manifest: dict[str, object]) -> str:
+    exceptions = manifest.get("exceptions")
+    if not isinstance(exceptions, list):
+        raise TypeError("manifest exceptions are invalid")
+    return hashlib.sha256(_canonical(cast(list[object], exceptions))).hexdigest()
+
+
 async def _capture(path: Path, source_candidate: str) -> str:
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
     client = httpx.AsyncClient(
@@ -230,7 +237,8 @@ def run(argv: list[str] | None = None) -> None:
         )
     except (KeyError, OSError, ProviderError, ValueError) as error:
         parser.exit(1, f"Stage 1 corpus capture failed: {error}\n")
-    print(f"corpus_sha256={digest}")
+    manifest = load_manifest(arguments.path if arguments.action == "capture" else arguments.first)
+    print(f"corpus_sha256={digest} exception_sha256={manifest_exception_digest(manifest)}")
 
 
 if __name__ == "__main__":
