@@ -104,8 +104,16 @@ After startup, `switchstand-edge-semantic-probe` is the separate authenticated s
 Its only path is read-only and writes a create-new, mode-0600, directory-synced receipt recording the
 runtime candidate/run, endpoint, exact `tools/list`, representative WorkIds/revisions, denials, and
 transcript. The nonmutating path records only an expected principal; exact proof is `NOT_RUN`.
-It accepts no mutation, replay, or restart options; those require a separate reviewed package.
-Production mutation and exact authenticated principal proof remain `NOT_RUN`.
+It accepts no mutation, replay, or restart options. A separate reviewed C2d2b package must keep
+mutation loopback-only, require an exact `test:disposable` qualification and explicit OperationId,
+and hard-disable production mutation. Before its first possible effect it must exclusively create
+a mode-0600 receipt, fsync both file and parent, and terminalize it as `PASS`, `FAIL`, or `UNKNOWN`.
+It may replay only after fully validating a first `status=ok`, `effect=applied` receipt whose
+OperationId, principal, qualification, target, and effect identity match the request; ambiguous,
+malformed, or non-ok outcomes are never replayed. Restart proof must bind the same candidate SHA,
+runtime SHA, endpoint, prior receipt and readback, plus a different nonempty current run ID.
+Neither receipt nor transcript may persist tokens or other secrets. Until that package is
+independently reviewed, production mutation and exact authenticated principal proof are `NOT_RUN`.
 
 Command-line resource, local, and public URL options remain available for
 one-off checks and override values in the file. An explicit local probe URL
