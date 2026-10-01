@@ -123,6 +123,12 @@ downgrade and verify the original revision and digests. Either marker, unreadabl
 marker state, an ambiguous migration outcome, or any digest mismatch forbids
 rollback and retains the maintenance gate for forward repair. The command never
 automatically restores a backup.
+
+Stage 1 `prepare` requires a create-new receipt and durably records the exact
+before/final/inserted Asana handle bindings before commit. Use `prepare-reconcile`
+after ambiguous output; `prepare-cleanup` removes only that exact inserted set while
+both authority markers are absent and the full binding map still matches. `UNKNOWN`
+keeps maintenance active and forbids schema rollback or old-runtime restart.
 - Writer worktree: from the ordinary checkout, run
   `scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>`, then work from the printed path. The
   helper creates a new linked worktree when the target is absent. If the target and branch already exist, reuse succeeds

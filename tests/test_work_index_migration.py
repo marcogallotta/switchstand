@@ -10,10 +10,23 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from switchstand import work_index
 from switchstand.contracts import Routing, WorkContext
 from switchstand.work_corpus import _with_digest, manifest_exception_digest, write_manifest
-from switchstand.work_index import ActivationNotCommitted, ActivationReceipt
-from switchstand.work_index_migration import _stable_corpus, migrate, run, write_receipt
+from switchstand.work_index import (
+    ActivationNotCommitted,
+    ActivationReceipt,
+    ActivationUnknown,
+    PrepareReceipt,
+    cleanup_preparation,
+)
+from switchstand.work_index_migration import (
+    _stable_corpus,
+    load_prepare_receipt,
+    migrate,
+    run,
+    write_receipt,
+)
 from switchstand.work_metadata_migration import run as metadata_run
 
 KNOWN = UUID("10000000-0000-4000-8000-000000000001")
@@ -29,6 +42,10 @@ async def stage1_engine(database_prerequisite):
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.execute(text(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        ))
         await connection.execute(text("DROP SCHEMA public CASCADE"))
         await connection.execute(text("CREATE SCHEMA public"))
     await engine.dispose()
@@ -85,15 +102,17 @@ def _paths(tmp_path: Path, manifest: dict[str, object]) -> tuple[Path, Path]:
 
 
 async def _prepare(paths, corpus_digest, exception_digest):
-    return await migrate(
+    result = await migrate(
         "prepare",
         confirm_offline=True,
         expected_corpus_digest=corpus_digest,
         expected_prepared_digest=None,
-        receipt_path=None,
+        receipt_path=paths[0].parent / "prepare.json",
         manifest_paths=paths,
         expected_exception_digest=exception_digest,
     )
+    assert isinstance(result, PrepareReceipt)
+    return result.prepared_digest
 
 
 def test_receipt_is_atomically_private_under_permissive_umask(tmp_path):
@@ -107,6 +126,18 @@ def test_receipt_is_atomically_private_under_permissive_umask(tmp_path):
     assert not list(tmp_path.glob(".receipt.json.*"))
     with pytest.raises(FileExistsError):
         write_receipt(path, ActivationReceipt(2, 1, "b" * 64))
+
+
+def test_prepare_receipt_rejects_noncanonical_or_unbound_identity(tmp_path):
+    receipt = PrepareReceipt(
+        "a" * 64, "b" * 64, "c" * 64, (),
+        (("item", "10000000-0000-4000-8000-000000000001"),),
+        (("item", "10000000-0000-4000-8000-000000000001"),),
+    )
+    path = tmp_path / "prepare.json"
+    write_receipt(path, receipt)
+    with pytest.raises(ValueError, match="digest is inconsistent"):
+        load_prepare_receipt(path)
 
 
 def test_cli_distinguishes_proven_noncommit_from_unknown(monkeypatch, capsys):
@@ -123,10 +154,11 @@ def test_cli_distinguishes_proven_noncommit_from_unknown(monkeypatch, capsys):
         raise ValueError("malformed receipt")
 
     monkeypatch.setattr("switchstand.work_index_migration.migrate", malformed)
-    with pytest.raises(SystemExit) as stopped:
-        run(["reconcile", "--confirm-offline", "--receipt", "attempt.json"])
-    assert stopped.value.code == 2
-    assert "UNKNOWN" in capsys.readouterr().err
+    for action in ("reconcile", "prepare-reconcile", "prepare-cleanup"):
+        with pytest.raises(SystemExit) as stopped:
+            run([action, "--confirm-offline", "--receipt", "attempt.json"])
+        assert stopped.value.code == 2
+        assert "UNKNOWN" in capsys.readouterr().err
 
 
 def test_stage2_cli_distinguishes_proven_noncommit_from_unknown(monkeypatch, capsys):
@@ -209,7 +241,15 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     async with stage1_engine.begin() as connection:
         await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'new'"))
     await stage1_engine.dispose()
+    real_commit = work_index._commit
+
+    async def commit_then_lose_output(transaction):
+        await real_commit(transaction)
+        raise OSError("simulated lost commit response")
+
+    monkeypatch.setattr(work_index, "_commit", commit_then_lose_output)
     digest = await _prepare(paths, corpus_digest, exception_digest)
+    monkeypatch.setattr(work_index, "_commit", real_commit)
     assert isinstance(digest, str)
     async with stage1_engine.begin() as connection:
         await connection.execute(
@@ -219,7 +259,7 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
             )
         )
     await stage1_engine.dispose()
-    with pytest.raises(ValueError, match="bindings changed"):
+    with pytest.raises(ActivationUnknown, match="bindings changed"):
         await _prepare(paths, corpus_digest, exception_digest)
     async with stage1_engine.begin() as connection:
         await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'drift'"))
@@ -227,16 +267,50 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     await stage1_engine.dispose()
     retry_digest = await _prepare(paths, corpus_digest, exception_digest)
     assert retry_digest == digest
-    receipt = await migrate(
+    prepare_receipt = load_prepare_receipt(tmp_path / "prepare.json")
+    inserted = dict(prepare_receipt.inserted_bindings)
+    async with stage1_engine.begin() as connection:
+        await connection.execute(text(
+            "INSERT INTO work_handles (id, provider, provider_work_id) VALUES "
+            "('40000000-0000-4000-8000-000000000004', 'asana', 'drift')"
+        ))
+    with pytest.raises(ActivationUnknown, match="bindings changed"):
+        await cleanup_preparation(stage1_engine, prepare_receipt)
+    async with stage1_engine.begin() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM work_handles WHERE provider_work_id IN ('new', 'other')"
+        )) == 2
+        await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'drift'"))
+    monkeypatch.setattr(work_index, "_commit", commit_then_lose_output)
+    await cleanup_preparation(stage1_engine, prepare_receipt)
+    monkeypatch.setattr(work_index, "_commit", real_commit)
+    await cleanup_preparation(stage1_engine, prepare_receipt)
+    async with stage1_engine.connect() as connection:
+        rows = (await connection.execute(text(
+            "SELECT provider_work_id, id FROM work_handles WHERE provider = 'asana'"
+        ))).all()
+    assert {row[0] for row in rows} == {"known", "gone"}
+    await stage1_engine.dispose()
+    assert await _prepare(paths, corpus_digest, exception_digest) == digest
+    async with stage1_engine.connect() as connection:
+        restored = (await connection.execute(text(
+            "SELECT provider_work_id, id FROM work_handles "
+            "WHERE provider_work_id IN ('new', 'other')"
+        ))).all()
+    assert {provider: str(identity) for provider, identity in restored} == inserted
+    await stage1_engine.dispose()
+    activation = await migrate(
         "activate",
         confirm_offline=True,
         expected_corpus_digest=corpus_digest,
         expected_prepared_digest=digest,
-        receipt_path=tmp_path / "receipt.json",
+        receipt_path=tmp_path / "activation.json",
         manifest_paths=paths,
         expected_exception_digest=exception_digest,
     )
-    assert isinstance(receipt, ActivationReceipt) and receipt.count == 3
+    assert isinstance(activation, ActivationReceipt) and activation.count == 3
+    with pytest.raises(ActivationUnknown, match="authority exists"):
+        await cleanup_preparation(stage1_engine, prepare_receipt)
     async with stage1_engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 3
         assert await connection.scalar(text("SELECT count(*) FROM work_handles")) == 5
