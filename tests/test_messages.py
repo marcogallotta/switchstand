@@ -50,7 +50,8 @@ async def subject(database_prerequisite):
     sync = create_engine(url)
     with sync.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, work_index, work_authority_cutovers, "
+            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, "
+            "work_authority_cutovers, "
             "work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"

@@ -142,6 +142,9 @@ messaging, and required continuation:
   provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
   the provider revision. `work_index_migration.py` owns the one-shot offline final scan and atomic
   flip; see [Database-first Stage 1](database-first-stage1.md).
+- `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
+  Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
+  MCP wiring, and landing its schema does not activate process reliance or provider cutover.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and `message_projection`, including the

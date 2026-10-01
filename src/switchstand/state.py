@@ -81,6 +81,38 @@ work_index = Table(
     CheckConstraint("provider_revision <> ''", name="ck_work_index_provider_revision"),
     CheckConstraint("row_version >= 1", name="ck_work_index_row_version"),
 )
+human_trajectory_revisions = Table(
+    "human_trajectory_revisions", metadata,
+    Column("trajectory_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("append_request_id", PGUUID(as_uuid=True), nullable=False, unique=True),
+    Column(
+        "work_id_ref", PGUUID(as_uuid=True),
+        ForeignKey("work_handles.id", ondelete="RESTRICT"), nullable=False,
+    ),
+    Column("generation", BigInteger, nullable=False),
+    Column(
+        "predecessor_id", PGUUID(as_uuid=True),
+        ForeignKey("human_trajectory_revisions.trajectory_id", ondelete="RESTRICT"),
+    ),
+    Column("source_kind", Text, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("source_revision", Text),
+    Column("content_digest", Text, nullable=False),
+    Column("trajectory_data", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    UniqueConstraint("work_id_ref", "generation"),
+    CheckConstraint("generation >= 1", name="ck_human_trajectory_generation"),
+    CheckConstraint(
+        "source_kind IN ('HUMAN_INPUT', 'HUMAN_REVIEW', 'HUMAN_STEERING')",
+        name="ck_human_trajectory_source_kind",
+    ),
+    CheckConstraint("length(source_ref) BETWEEN 1 AND 512", name="ck_human_trajectory_source_ref"),
+    CheckConstraint(
+        "source_revision IS NULL OR length(source_revision) BETWEEN 1 AND 512",
+        name="ck_human_trajectory_source_revision",
+    ),
+    CheckConstraint("length(content_digest) = 64", name="ck_human_trajectory_digest"),
+)
 Index(
     "ix_work_index_title_search", text("to_tsvector('simple', normalized_title)"),
     postgresql_using="gin",
