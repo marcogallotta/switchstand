@@ -191,7 +191,7 @@ def _failure(step: str, error: BaseException) -> dict[str, object]:
         result["exit_code"] = error.returncode
         detail = (error.stderr or "").strip()
         result["stderr"] = "".join(
-            character if character in "\n\t" or ord(character) >= 32 else "?"
+            character if character in "\n\t" or character.isprintable() else "?"
             for character in detail
         )[:FAILURE_DETAIL_LIMIT]
     return result
@@ -429,8 +429,8 @@ def _teardown(name: str, *, run: Runner) -> None:
         bound = value.get("container")
         if (
             len(ids) > 1
-            or status == "READY" and not ids
-            or isinstance(bound, str) and ids != [bound]
+            or status == "READY" and ids != [bound]
+            or status == "FAILED" and bool(ids) and isinstance(bound, str) and ids != [bound]
         ):
             raise Failed("descriptor does not bind the exact container")
         if ids:
