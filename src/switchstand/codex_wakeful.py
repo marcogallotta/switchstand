@@ -121,13 +121,19 @@ def bind(client: SharedClient, home: Path, token: Path) -> CodexBinding | str:
                 path = Path(thread["path"])
                 if not path.resolve().is_relative_to(home.resolve()):
                     return "UNAVAILABLE"
-                instructions = None
-                for line in path.read_text().splitlines():
+                matched = False
+                for line in path.read_text().split("\n"):
+                    if not line:
+                        continue
                     record = json.loads(line)
-                    if record["type"] == "turn_context":
-                        instructions = record["payload"].get("collaboration_mode", {}).get(
-                            "settings", {}).get("developer_instructions")
-                if instructions and re.search(r"(?<!\S)" + re.escape(str(token)) + r"(?=$|[\s.])", instructions):
+                    payload = record.get("payload", {})
+                    if (record["type"] == "response_item" and payload.get("type") == "message"
+                            and payload.get("role") == "developer"):
+                        matched |= any(re.search(r"(?<!\S)" + re.escape(str(token))
+                            + r"(?=$|\s|[.,;:!?](?=\s|$))", part.get("text", "")) is not None
+                            for part in payload.get("content", [])
+                            if part.get("type") == "input_text")
+                if matched:
                     matches.append(thread["id"])
             cursor = page.get("nextCursor")
             if not cursor:
@@ -167,9 +173,8 @@ class Projection:
     def __init__(self, home: Path, binding: CodexBinding):
         self.path = home / "codex-wakeful.json"
         self.binding = binding
-        self.records: dict[str, dict[str, Any]]
         try:
-            self.records = json.loads(read_private_bytes(self.path))
+            self.records: dict[str, dict[str, Any]] = json.loads(read_private_bytes(self.path))
         except OSError:
             if self.path.exists() or self.path.is_symlink():
                 raise
@@ -217,6 +222,8 @@ class Projection:
             result = self.reconcile_thread(thread, identity)
             if result != "PROVEN_ABSENT":
                 return result
+            if source.source_kind == "child_completion" and source not in children(thread):
+                return "STALE"
             state = current_state(thread)
             if state == "ACTIVE_NOT_STEERABLE":
                 return "PENDING"

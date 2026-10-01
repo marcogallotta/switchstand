@@ -26,9 +26,11 @@ class Client(SharedClient):
         self.thread = {"id": "exact", "historyMode": "legacy", "turns": [],
                        "status": {"type": "idle"}, "canAcceptDirectInput": True}
         self.path = home / "rollout.jsonl"
-        self.path.write_text(json.dumps({"type": "turn_context", "payload": {
-            "collaboration_mode": {"settings": {"developer_instructions":
-                f"Coordinator start commit is recorded at {token}. Reread it."}}}}) + "\n")
+        self.record = {"type": "response_item", "payload": {"type": "message",
+            "role": "developer", "content": [{"type": "input_text", "text":
+            f"Coordinator start commit is recorded at {token}. Reread that file after "
+            "context compaction and before handoff."}]}}
+        self.path.write_text(json.dumps(self.record, ensure_ascii=False) + "\n")
         self.listed = [{"id": "exact", "path": str(self.path)}]
 
     def call(self, method, params):
@@ -47,7 +49,6 @@ class Client(SharedClient):
             raise OSError("lost response")
         return {}
 
-
 @pytest.fixture
 def setup(tmp_path):
     token = tmp_path / "start-commit.one"
@@ -56,7 +57,6 @@ def setup(tmp_path):
     binding = bind(client, tmp_path, token)
     assert isinstance(binding, CodexBinding)
     return tmp_path, token, client, binding
-
 
 def test_binding_exact_zero_multiple_and_reconnect(setup):
     home, token, client, binding = setup
@@ -70,8 +70,17 @@ def test_binding_exact_zero_multiple_and_reconnect(setup):
     client.listed[0]["id"] = "replacement"
     p = Projection(home, binding)
     assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "STALE"
-    assert client.calls == []
 
+@pytest.mark.parametrize("suffix,expected", [(". Reread", True), (", next", True),
+    (".suffix", False), ("/child", False), ("longer", False), (".suffix next", False)])
+def test_binding_path_boundary_and_unicode_jsonl(setup, suffix, expected):
+    home, token, client, binding = setup
+    client.record["payload"]["content"][0]["text"] = f"Start record: {token}{suffix}\u2028\u0085"
+    client.path.write_text(json.dumps(client.record, ensure_ascii=False) + "\n")
+    assert bind(client, home, token) == (binding if expected else "NOT_BOUND")
+    client.record["payload"]["role"] = "user"
+    client.path.write_text(json.dumps(client.record) + "\n")
+    assert bind(client, home, token) == "NOT_BOUND"
 
 @pytest.mark.parametrize("lost", [False, True])
 def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
@@ -86,14 +95,13 @@ def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
     assert Projection(home, binding).admit(client, source) == "ADMITTED"
     assert len(client.calls) == 1
     assert client.calls[0]["clientUserMessageId"] == wake_id(binding, source)
+    assert set(asdict(source)) == {"source_kind", "source_id"}
     replacement = CodexBinding(binding.thread_id, binding.start_record, "new-generation")
     assert wake_id(replacement, source) != wake_id(binding, source)
-    assert set(asdict(source)) == {"source_kind", "source_id"}
-
 
 def test_nonsteerable_pending_and_unresolved_absence_never_resends(setup):
     home, _, client, binding = setup
-    source = WakeSourceRef("child_completion", "call/child/completed")
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
     p = Projection(home, binding)
     client.thread.update(status={"type": "active", "activeFlags": []},
                          canAcceptDirectInput=False)
@@ -105,8 +113,9 @@ def test_nonsteerable_pending_and_unresolved_absence_never_resends(setup):
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert len(client.calls) == 1
 
-
-def test_delivery_identity_and_missed_child_latest_parent_oracle(setup):
+@pytest.mark.parametrize("stale", [["other", "child", "completed"],
+    ["call", "other", "completed"], ["call", "child", "errored"]])
+def test_delivery_identity_and_missed_child_latest_parent_oracle(setup, stale):
     home, _, client, binding = setup
     delivery = PendingMessage(delivery_id=uuid4(), message_id=uuid4(), sender_work_id=uuid4(),
         recipient_work_id=uuid4(), route_ref="synthetic", kind="request", payload="discard",
@@ -120,13 +129,18 @@ def test_delivery_identity_and_missed_child_latest_parent_oracle(setup):
     thread = {"turns": [{"items": [spawn, terminal]}]}
     source, = children(thread)
     assert "discard" not in source.source_id
+    client.thread["turns"] = thread["turns"]
     p = Projection(home, binding)
+    terminal["agentsStates"]["child"]["status"] = "running"
+    assert p.admit(client, source) == "STALE"
+    assert not client.calls
+    terminal["agentsStates"]["child"]["status"] = "completed"
+    assert p.admit(client, WakeSourceRef("child_completion",
+        json.dumps(stale, separators=(",", ":")))) == "STALE"
+    assert not client.calls
     assert p.admit(client, source) == "UNKNOWN"
     assert Projection(home, binding).admit(client, children(thread)[0]) == "ADMITTED"
     assert len(client.calls) == 1
-    terminal["agentsStates"]["child"]["status"] = "running"
-    assert children(thread) == []
-
 
 def test_simultaneous_probe_and_private_file_boundary(setup):
     import fcntl
@@ -139,8 +153,7 @@ def test_simultaneous_probe_and_private_file_boundary(setup):
         result = subprocess.run([sys.executable, "-m", "switchstand.codex_wakeful",
             "--opt-in", "--home", str(home), "--codex", "/must-not-run",
             "--start-record", str(token)], capture_output=True, text=True, check=False)
-    assert result.returncode == 0
-    assert "simultaneous probe" in result.stdout
+    assert result.returncode == 0 and "simultaneous probe" in result.stdout
     path = home / "codex-wakeful.json"
     path.symlink_to(token)
     with pytest.raises(OSError):
@@ -151,7 +164,6 @@ def test_simultaneous_probe_and_private_file_boundary(setup):
     with pytest.raises(ValueError):
         Projection(home, binding)
 
-
 def test_claude_conformance_fake_only():
     def fake(session_id, generation, candidates):
         return (session_id, generation) if candidates == [(session_id, generation)] else "UNKNOWN"
@@ -159,9 +171,7 @@ def test_claude_conformance_fake_only():
     assert fake("exact", "one", [("newest", "two")]) == "UNKNOWN"
     assert fake("exact", "one", [("exact", "one"), ("exact", "two")]) == "UNKNOWN"
 
-
 def test_proxy_stream_multiple_buffered_frames():
-    import subprocess
     import sys
 
     client = object.__new__(SharedClient)
