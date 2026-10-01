@@ -14,6 +14,7 @@ import signal
 import socket
 import stat
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -100,6 +101,8 @@ class Operations(Protocol):
     def ungate(self) -> None: ...
     def public_ready(self) -> bool: ...
     def restore_launcher(self) -> None: ...
+    def snapshot_digest(self) -> str: ...
+    def reconcile_phase(self, phase: str, proof: dict[str, object]) -> None: ...
 
 
 class OfflineStep(Protocol):
@@ -716,6 +719,51 @@ class HostOperations:
             temporary.unlink(missing_ok=True)
             raise Failed("FastMCP snapshot failed") from exc
 
+    def snapshot_digest(self) -> str:
+        try:
+            descriptor = os.open(
+                self.snapshot_file, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o777 != 0o600
+                ):
+                    raise OSError
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    return hashlib.file_digest(stream, "sha256").hexdigest()
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            raise Unknown("FastMCP snapshot proof is unreadable") from exc
+
+    def reconcile_phase(self, phase: str, proof: dict[str, object]) -> None:
+        gated = phase not in {"PREFLIGHT", "UNGATED", "COMPLETE"}
+        if gated and (not self.gate_exact() or not self.public_gated()):
+            raise Unknown("durable host phase lacks the exact public gate")
+        if phase == "PREFLIGHT":
+            self.preflight()
+            return
+        stopped = {
+            "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING", "OFFLINE_PRE_MARKER",
+            "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE", "SWAPPED",
+        }
+        if phase in stopped:
+            self.stop()
+        snapshot_phases = stopped - {"STOPPED"} | {"STARTED", "UNGATED", "COMPLETE"}
+        if phase in snapshot_phases and proof.get("fastmcp_snapshot") != self.snapshot_digest():
+            raise Unknown("FastMCP snapshot changed after the durable host phase")
+        swapped = phase in {"SWAPPED", "STARTED", "UNGATED", "COMPLETE"}
+        expected = self.c.candidate_launcher_sha if swapped else self.c.current_launcher_sha
+        if _sha(self.c.launcher) != expected:
+            raise Unknown("launcher does not match the durable host phase")
+        if swapped and _sha(self.backup) != self.c.current_launcher_sha:
+            raise Unknown("launcher backup does not match the durable host phase")
+        if phase in {"STARTED", "UNGATED", "COMPLETE"} and not self.local_ready():
+            raise Unknown("candidate runtime does not match the durable host phase")
+
     def swap(self) -> None:
         _atomic_copy(self.c.launcher, self.backup, 0o600)
         try:
@@ -783,9 +831,9 @@ class HostOperations:
 
 
 class Receipt:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, offline: OfflineStep | None):
         self.path = config.attempt_dir / "receipt.json"
-        self.value: dict[str, object] = {
+        expected: dict[str, object] = {
             "schema": 1,
             "target": config.target,
             "target_root": str(config.target_root) if config.target_root else None,
@@ -797,24 +845,89 @@ class Receipt:
             "public_origin": config.public_origin,
             "current_sha": config.current_sha,
             "candidate_sha": config.candidate_sha,
+            "current_runtime": str(config.current_runtime),
+            "candidate_runtime": str(config.candidate_runtime),
+            "candidate_launcher": str(config.candidate_launcher),
+            "launcher": str(config.launcher),
+            "env_file": str(config.env_file),
             "current_launcher_sha": config.current_launcher_sha,
             "candidate_launcher_sha": config.candidate_launcher_sha,
+            "retry_after": config.retry_after,
+            "offline_receipt": str(offline.receipt_path) if offline else None,
+            "offline_corpus": list(offline.corpus_manifests) if offline else None,
+            "offline_worksheet": offline.worksheet if offline else None,
             "status": "RUNNING",
             "phase": "PREFLIGHT",
         }
+
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            self.existing = False
+            self.value = expected
+            return
+        except OSError as exc:
+            raise Unknown("host receipt is unreadable") from exc
+        self.existing = True
+        try:
+            metadata = os.fstat(fd)
+            with os.fdopen(fd) as handle:
+                value = json.load(handle)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise Unknown("host receipt is unreadable") from exc
+        if not isinstance(value, dict):
+            raise Unknown("host receipt is malformed or belongs to another attempt")
+        parsed = cast(dict[str, object], value)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o777 != 0o600
+            or any(parsed.get(key) != item for key, item in expected.items() if key not in {"status", "phase"})
+            or parsed.get("status") not in {"RUNNING", "UNKNOWN", "PASS", "FAIL"}
+            or parsed.get("phase") not in {
+                "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING",
+                "OFFLINE_PRE_MARKER", "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE",
+                "SWAPPED", "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK",
+            }
+        ):
+            raise Unknown("host receipt is malformed or belongs to another attempt")
+        status, phase = parsed["status"], parsed["phase"]
+        if (status == "PASS") != (phase == "COMPLETE") or (
+            status == "FAIL"
+        ) != (phase == "ROLLED_BACK"):
+            raise Unknown("host receipt terminal state is inconsistent")
+        snapshot_phases = {
+            "SNAPSHOTTED", "OFFLINE_PENDING", "OFFLINE_PRE_MARKER",
+            "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE", "SWAPPED", "STARTED",
+            "UNGATED", "COMPLETE",
+        }
+        snapshot = parsed.get("fastmcp_snapshot")
+        if (
+            phase in snapshot_phases
+            and (not isinstance(snapshot, str) or not re.fullmatch(r"[0-9a-f]{64}", snapshot))
+        ) or (cast(str, phase).startswith("OFFLINE_") and offline is None):
+            raise Unknown("host receipt phase proof is incomplete")
+        self.value = parsed
 
     def write(self, phase: str, status: str = "RUNNING", error: str | None = None) -> None:
         self.value.update(phase=phase, status=status)
         if error:
             self.value["error"] = error
+        else:
+            self.value.pop("error", None)
         payload = (json.dumps(self.value, sort_keys=True) + "\n").encode()
-        temporary = self.path.with_suffix(".tmp")
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.path)
+        fd, name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        temporary = Path(name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb", closefd=False) as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            os.close(fd)
+            temporary.unlink(missing_ok=True)
         directory = os.open(self.path.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
@@ -829,25 +942,57 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         _validate_target(config)
     except (Failed, OSError):
         return "FAIL"
-    receipt = Receipt(config)
-    receipt.write(phase)
     try:
-        operations.preflight()
-        gate_attempted = True
-        operations.gate()
-        phase = "GATED"
-        receipt.write(phase)
-        if not operations.public_gated():
-            raise Unknown("public maintenance gate is not exact")
-        operations.stop()
-        phase = "STOPPED"
-        receipt.write(phase)
-        operations.snapshot()
-        phase = "SNAPSHOTTED"
-        receipt.write(phase)
-        if offline is not None:
-            phase = "OFFLINE_PENDING"
+        receipt = Receipt(config, offline)
+    except Unknown:
+        return "UNKNOWN"
+    if receipt.existing and receipt.value["status"] in {"PASS", "FAIL"}:
+        return cast(str, receipt.value["status"])
+    phase = cast(str, receipt.value["phase"])
+    phases = [
+        "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING",
+        "OFFLINE_PRE_MARKER", "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE",
+        "SWAPPED", "STARTED", "UNGATED", "COMPLETE",
+    ]
+    try:
+        start = phases.index(phase)
+    except ValueError:
+        return "FAIL"
+    try:
+        if receipt.existing:
+            gate_attempted = phase != "PREFLIGHT"
+            if offline is not None and start >= phases.index("OFFLINE_PRE_MARKER"):
+                observed = _offline_boundary(offline, config)
+                required = (
+                    phase.removeprefix("OFFLINE_")
+                    if phase.startswith("OFFLINE_") else "COMPLETE"
+                )
+                if list(OFFLINE_PHASES).index(observed) < list(OFFLINE_PHASES).index(required):
+                    raise Unknown("offline receipt trails the durable host phase")
+            operations.reconcile_phase(phase, receipt.value)
+        else:
             receipt.write(phase)
+            operations.preflight()
+        if start <= phases.index("PREFLIGHT"):
+            gate_attempted = True
+            operations.gate()
+            phase = "GATED"
+            receipt.write(phase)
+        if start <= phases.index("GATED"):
+            if not operations.public_gated():
+                raise Unknown("public maintenance gate is not exact")
+            operations.stop()
+            phase = "STOPPED"
+            receipt.write(phase)
+        if start <= phases.index("STOPPED"):
+            operations.snapshot()
+            phase = "SNAPSHOTTED"
+            receipt.value["fastmcp_snapshot"] = operations.snapshot_digest()
+            receipt.write(phase)
+        if offline is not None and start <= phases.index("OFFLINE_COMPLETE"):
+            if start <= phases.index("SNAPSHOTTED"):
+                phase = "OFFLINE_PENDING"
+                receipt.write(phase)
             expected = iter(OFFLINE_PHASES)
             advanced: list[str] = []
 
@@ -860,25 +1005,30 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
                     < list(OFFLINE_PHASES).index(boundary)
                 ):
                     raise Unknown("offline phase or receipt advanced out of order")
-                phase = OFFLINE_PHASES[boundary]
                 advanced.append(boundary)
-                receipt.write(phase)
+                candidate = OFFLINE_PHASES[boundary]
+                if phases.index(candidate) >= start:
+                    phase = candidate
+                    receipt.write(phase)
 
             offline.run(advance)
             if advanced != list(OFFLINE_PHASES):
                 raise Unknown("offline step did not reach its terminal boundary")
             phase = "OFFLINE_COMPLETE"
-        operations.swap()
-        phase = "SWAPPED"
-        receipt.write(phase)
-        operations.start()
-        phase = "STARTED"
-        receipt.write(phase)
+        if start <= phases.index("OFFLINE_COMPLETE" if offline is not None else "SNAPSHOTTED"):
+            operations.swap()
+            phase = "SWAPPED"
+            receipt.write(phase)
+        if start <= phases.index("SWAPPED"):
+            operations.start()
+            phase = "STARTED"
+            receipt.write(phase)
         if not operations.local_ready():
             raise Failed("candidate local verification failed")
-        operations.ungate()
-        phase = "UNGATED"
-        receipt.write(phase)
+        if start <= phases.index("STARTED") or operations.gate_exact():
+            operations.ungate()
+            phase = "UNGATED"
+            receipt.write(phase)
         if not operations.public_ready():
             raise Unknown("candidate public verification failed after ungating")
         receipt.write("COMPLETE", "PASS")

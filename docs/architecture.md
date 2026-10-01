@@ -96,10 +96,11 @@ that classification is extended.
 `edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
 edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
 transport state only while the service is offline, swaps the launcher atomically, verifies locally
-before ungating, and preserves `UNKNOWN` behind the gate. Its read-only host-phase reconciler
-revalidates runtime and artifact trust boundaries and classifies only the durable phase or one
-exactly proven next state; it does not decide whether a later receipt runner may continue.
-It does not own tool semantics, OAuth state format, host installation, or activation authority.
+before ungating, and preserves `UNKNOWN` behind the gate. Its exact attempt receipt binds host and
+offline evidence; reopening an attempt revalidates trust boundaries and uses the read-only
+host-phase reconciler to accept only the durable phase or one exactly proven next state before
+continuing. It does not own tool semantics, OAuth state format, host installation, or activation
+authority.
 
 `wakeful.py` is an inert, agent-system-neutral event persistence prototype. It owns the sanitized
 event envelope and local SQLite cursor, transition, bounded lease, and durable outbox state. It has

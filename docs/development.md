@@ -130,7 +130,9 @@ Selecting a target does not create or populate it.
 
 `stage12_cutover.ConcreteCommands` binds the offline state machine to reviewed migration
 commands. Disposable runs derive `DATABASE_URL` from their namespaced PostgreSQL container.
-A later host CLI must reconcile process loss; this adapter grants no activation authority.
+The enclosing maintenance transaction can reopen the same exact attempt after process loss: it
+validates host/offline identity and live phase state, then skips effects already proven by durable
+receipts. The disposable operator CLI remains a separate layer; none of this grants activation.
 
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
