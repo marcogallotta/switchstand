@@ -11,6 +11,7 @@ import stat
 import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -216,6 +217,37 @@ class Broker:
     def status(self) -> dict[str, Any]:
         with self._locked():
             return self._read_state()
+
+    def lease(self, lease_id: str) -> dict[str, Any]:
+        with self._locked():
+            return deepcopy(self._active_lease(self._read_state(), lease_id))
+
+    def execution_dir(self, lease_id: str) -> Path:
+        if not ID.fullmatch(lease_id):
+            raise ValueError("invalid identifier")
+        executions = self.root / "executions"
+        self._secure_dir(executions)
+        path = executions / lease_id
+        self._secure_dir(path)
+        return path
+
+    def record_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
+        with self._locked():
+            self._atomic_json(self.execution_dir(lease_id) / "status.json", receipt)
+
+    def claim_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
+        with self._locked():
+            self._active_lease(self._read_state(), lease_id)
+            path = self.execution_dir(lease_id) / "status.json"
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+            )
+            with os.fdopen(descriptor, "w") as handle:
+                json.dump(receipt, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._fsync_dir(path.parent)
 
     def _reserve(self, state: dict[str, Any], request: LeaseRequest) -> dict[str, Any]:
         if request.worker == "root" or request.worker in state["leases"]:
