@@ -239,6 +239,18 @@ class Broker:
         with self._locked():
             self._atomic_json(self.execution_dir(lease_id) / "status.json", receipt)
 
+    def record_canary(self, run_id: str, receipt: Mapping[str, Any]) -> Path:
+        if not ID.fullmatch(run_id):
+            raise ValueError("invalid identifier")
+        with self._locked():
+            canaries = self.root / "canaries"
+            self._secure_dir(canaries)
+            directory = canaries / run_id
+            self._secure_dir(directory)
+            path = directory / "report.json"
+            self._atomic_json(path, receipt)
+            return path
+
     def claim_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
         with self._locked():
             state = self._read_state()
