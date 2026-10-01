@@ -16,7 +16,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Protocol, TextIO, cast
 from urllib.parse import urlparse
@@ -665,7 +665,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         return "FAIL"
 
 
-def main(argv: list[str] | None = None) -> int:
+def maintenance_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
         "attempt-dir",
@@ -685,15 +685,21 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--retry-after", type=int, default=60)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Config:
     if (
         not re.fullmatch(r"[0-9a-f]{40}", args.current_sha)
         or not re.fullmatch(r"[0-9a-f]{40}", args.candidate_sha)
         or args.retry_after < 1
     ):
         parser.error("candidate SHA or retry interval is invalid")
-    args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-    config = Config(**vars(args))
+    return Config(**{field.name: getattr(args, field.name) for field in fields(Config)})
+
+
+def execute(config: Config, offline: OfflineStep | None = None) -> str:
+    config.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
     with _exclusive_lock():
 
         def interrupted(signum: int, _frame: object) -> None:
@@ -702,10 +708,16 @@ def main(argv: list[str] | None = None) -> int:
         previous_int = signal.signal(signal.SIGINT, interrupted)
         previous_term = signal.signal(signal.SIGTERM, interrupted)
         try:
-            result = deploy(config, HostOperations(config))
+            return deploy(config, HostOperations(config), offline)
         finally:
             signal.signal(signal.SIGINT, previous_int)
             signal.signal(signal.SIGTERM, previous_term)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = maintenance_parser()
+    args = parser.parse_args(argv)
+    result = execute(config_from_args(args, parser))
     print(result)
     return {"PASS": 0, "FAIL": 1, "UNKNOWN": 2}[result]
 

@@ -151,8 +151,11 @@ Postgres-authority, and complete phases, and accepts only a mode-`0600` subordin
 the exact candidate, database backup, two corpus manifests, worksheet, and terminal boundary. A
 definite, receipt-proven pre-marker failure invokes the step's exact abort and verifies the old
 runtime before ungating. An unreadable receipt, ambiguous result, or any post-marker failure remains
-gated for forward repair; the FastMCP snapshot is still never restored automatically. The concrete
-Stage 1+2 adapter is separate later work, so landing this contract alone runs no database operation.
+gated for forward repair; the FastMCP snapshot is still never restored automatically. The Stage 1+2
+offline step now owns exact candidate, matching corpus-manifest, reviewed-exception,
+worksheet-digest, free-space, backup, and subordinate-receipt validation. It advances only after
+each subordinate boundary is durable. The host command binding and operator CLI remain a separate
+final layer, so landing this contract alone runs no database operation.
 While the edge is stopped, that separately reviewed adapter will run the final scan and atomic
 authority flip described in
 [Database-first Stage 1](database-first-stage1.md). Before that transaction commits, recovery may
