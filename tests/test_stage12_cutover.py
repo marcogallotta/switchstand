@@ -162,6 +162,7 @@ def test_disposable_database_rejects_live_project_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     evidence, attempt = _inputs(tmp_path)
+    assert ConcreteCommands(_config(tmp_path, attempt, target="production"), evidence).target == "production"
     subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
     value = [{"Config": {"Labels": {"com.docker.compose.project": "switchstand",
         "com.docker.compose.service": "postgres"}}, "NetworkSettings": {"Networks": {

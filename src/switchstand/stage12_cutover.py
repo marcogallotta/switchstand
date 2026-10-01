@@ -408,8 +408,7 @@ class ConcreteCommands:
 
     def __init__(self, config: Config, evidence: Evidence):
         self.c, self.source = config, evidence
-        suffix = cast(Path, config.target_root).name
-        self.target = "production" if config.target == "production" else f"disposable:{suffix}"
+        self.target = "production" if config.target == "production" else f"disposable:{cast(Path, config.target_root).name}"
         self._environment_cache: dict[str, str] | None = None
         self._container = ""
         self._python = Path()
