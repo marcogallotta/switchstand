@@ -4,6 +4,7 @@ The fakes below model causal state, not command ordering: a fault can happen bef
 or after one state transition, and reconciliation observes the resulting state.
 No Docker, service manager, Caddy, provider, or network boundary is touched.
 """
+# pyright: reportPrivateUsage=false
 
 import hashlib
 import json
@@ -32,8 +33,9 @@ from switchstand.stage12_cutover import Evidence, FrozenEvidence, Reconciled, St
 SHA = "a" * 40
 DIGEST = "b" * 64
 INTERRUPTION_POINTS = (
-    "gate", "stop", "snapshot", "schema", "stage1_prepare", "stage1_commit",
-    "stage2_commit", "swap", "start", "probe", "ungate",
+    "gate", "stop", "snapshot", "schema", "stage2_validate", "stage1_prepare",
+    "capture_final", "stage1_commit", "stage2_commit", "swap", "start", "probe",
+    "ungate",
 )
 
 
@@ -68,7 +70,10 @@ class Host:
             self.transitions[point] += 1
         self.fault.after(point)
 
-    def preflight(self) -> None: pass
+    def preflight(self) -> None:
+        self.transitions["preflight"] += 1
+        if self.gated or not self.active or self.snapshot_present or self.swapped:
+            raise Failed("host is not in exact preflight state")
     def gate(self) -> None:
         self._change("gate", lambda: False if self.gated else self._set("gated", True))
     def gate_exact(self) -> bool: return self.gated
@@ -126,7 +131,7 @@ class Commands:
     def __init__(self, fault: Fault):
         self.fault = fault
         self.schema = self.stage1 = self.stage2 = False
-        self.prepared = False
+        self.prepared = self.captured = False
         self.transitions: Counter[str] = Counter()
 
     def _effect(self, point: str, name: str, receipt: Path | None = None) -> None:
@@ -140,7 +145,7 @@ class Commands:
 
     def schema_state(self, receipt: Path) -> Reconciled:
         if self.schema:
-            return Reconciled("APPLIED", DIGEST, "d" * 64) if receipt.exists() else Reconciled("UNKNOWN")
+            return Reconciled("APPLIED", DIGEST, "d" * 64) if _exact(receipt) else Reconciled("UNKNOWN")
         return Reconciled("ABSENT")
     def apply_schema(self, receipt: Path) -> None:
         self._effect("schema", "schema", receipt)
@@ -151,13 +156,20 @@ class Commands:
             self.transitions["schema_abort"] += 1
     def validate_stage2_pre_authority(self, evidence: FrozenEvidence) -> str:
         del evidence
+        self.fault.before("stage2_validate")
+        self.fault.after("stage2_validate")
         return DIGEST
     def prepare_stage1(self, evidence: FrozenEvidence) -> str:
         del evidence
         self._effect("stage1_prepare", "prepared")
         return DIGEST
     def capture_final_corpus(self, evidence: FrozenEvidence, destination: Path) -> str:
-        _private(destination, evidence.manifests[0].read_bytes())
+        self.fault.before("capture_final")
+        if not self.captured:
+            _private(destination, evidence.manifests[0].read_bytes())
+            self.captured = True
+            self.transitions["capture_final"] += 1
+        self.fault.after("capture_final")
         return evidence.corpus_digest
     def cleanup_stage1(self, evidence: FrozenEvidence) -> None:
         del evidence
@@ -165,14 +177,14 @@ class Commands:
         self.transitions["stage1_cleanup"] += 1
     def stage1_state(self, receipt: Path) -> Reconciled:
         if self.stage1:
-            return Reconciled("APPLIED", DIGEST) if receipt.exists() else Reconciled("UNKNOWN")
+            return Reconciled("APPLIED", DIGEST) if _exact(receipt) else Reconciled("UNKNOWN")
         return Reconciled("ABSENT")
     def activate_stage1(self, prepared_digest: str, receipt: Path) -> None:
         del prepared_digest
         self._effect("stage1_commit", "stage1", receipt)
     def stage2_state(self, receipt: Path) -> Reconciled:
         if self.stage2:
-            return Reconciled("APPLIED", DIGEST) if receipt.exists() else Reconciled("UNKNOWN")
+            return Reconciled("APPLIED", DIGEST) if _exact(receipt) else Reconciled("UNKNOWN")
         return Reconciled("ABSENT")
     def activate_stage2(self, receipt: Path) -> None:
         self._effect("stage2_commit", "stage2", receipt)
@@ -181,6 +193,10 @@ class Commands:
 def _private(path: Path, data: bytes = b"receipt\n") -> None:
     path.write_bytes(data)
     path.chmod(0o600)
+
+
+def _exact(path: Path) -> bool:
+    return path.is_file() and path.read_bytes() == b"receipt\n"
 
 
 def _subject(
@@ -225,7 +241,9 @@ def test_interruption_retains_gate_then_same_attempt_resumes_without_duplicate_e
 
     assert deploy(config, host, offline) == "PASS"
     assert not host.gated
-    for effect in ("schema", "stage1_prepare", "stage1_commit", "stage2_commit"):
+    for effect in (
+        "schema", "stage1_prepare", "capture_final", "stage1_commit", "stage2_commit",
+    ):
         assert commands.transitions[effect] == 1
     for effect in ("snapshot", "swap"):
         assert host.transitions[effect] == 1
@@ -254,27 +272,37 @@ def test_post_marker_failure_is_forward_only_and_retains_gate(tmp_path: Path):
     assert host.gated and not host.active
 
 
+@pytest.mark.parametrize("receipt", ("host", "cutover", "schema", "stage1", "stage2"))
 @pytest.mark.parametrize("damage", ("missing", "malformed", "changed"))
-def test_unreconcilable_post_marker_receipt_is_unknown_without_replaying_effects(
-    tmp_path: Path, damage: Literal["missing", "malformed", "changed"],
+def test_post_marker_receipt_damage_is_unknown_without_effect_replay(
+    tmp_path: Path, receipt: str, damage: Literal["missing", "malformed", "changed"],
 ):
-    config, host, commands, offline = _subject(
-        tmp_path, Fault("stage2_commit", "after")
-    )
+    config, host, commands, offline = _subject(tmp_path, Fault("swap", "before"))
     assert deploy(config, host, offline) == "UNKNOWN"
     before = commands.transitions.copy()
+    preflights = host.transitions["preflight"]
+    path = {
+        "host": config.attempt_dir / "receipt.json",
+        "cutover": offline.receipt_path,
+        "schema": offline._schema,
+        "stage1": offline._stage1,
+        "stage2": offline._stage2,
+    }[receipt]
     if damage == "missing":
-        offline.receipt_path.unlink()
+        path.unlink()
     elif damage == "malformed":
-        _private(offline.receipt_path, b"{")
+        _private(path, b"{")
+    elif receipt in {"host", "cutover"}:
+        value = json.loads(path.read_text())
+        value["candidate_sha" if receipt == "host" else "schema_receipt"] = "0" * 64
+        _private(path, json.dumps(value).encode())
     else:
-        value = json.loads(offline.receipt_path.read_text())
-        value["schema_receipt"] = "0" * 64
-        _private(offline.receipt_path, json.dumps(value).encode())
+        _private(path, b"changed receipt\n")
 
     assert deploy(config, host, offline) == "UNKNOWN"
     assert host.gated
     assert commands.transitions == before
+    assert host.transitions["preflight"] == preflights + int(receipt == "host" and damage == "missing")
 
 
 def test_ambiguous_caddy_readback_stops_before_service_effects(tmp_path: Path):

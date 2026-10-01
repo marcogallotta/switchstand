@@ -1029,6 +1029,17 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         receipt.write(phase, "UNKNOWN", error)
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
+        if (
+            phase == "PREFLIGHT" and not receipt.existing
+            and offline is not None and offline.receipt_path.exists()
+        ):
+            try:
+                _retain_gate(operations)
+            except GateRetentionUnknown:
+                receipt.write(phase, "UNKNOWN", "GateRetentionUnknown")
+                return "UNKNOWN"
+            receipt.write(phase, "UNKNOWN", "OfflinePreflightUnknown")
+            return "UNKNOWN"
         if authority_crossed:
             try:
                 _retain_gate(operations)
