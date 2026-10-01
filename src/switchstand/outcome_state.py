@@ -188,21 +188,6 @@ class OutcomeStateStore:
             return OutcomeWrite("DENIED")
         digest = _digest(owner_work_id, expected_state_id, owner_currentness_token, items)
         async with self.engine.begin() as connection:
-            replay = (await connection.execute(select(*_COLUMNS).where(
-                outcome_state_revisions.c.operation_id == operation_id
-            ))).mappings().one_or_none()
-            if replay is not None:
-                row = _row(replay)
-                if (
-                    row.content_digest != _digest(
-                        row.owner_work_id, row.predecessor_id,
-                        row.owner_currentness_token, row.items,
-                    )
-                ):
-                    return OutcomeWrite("UNKNOWN", row.state_id)
-                if row.content_digest != digest or row.owner_work_id != owner_work_id:
-                    return OutcomeWrite("CONFLICT", row.state_id)
-                return OutcomeWrite("REPLAYED", row.state_id)
             handle = (await connection.execute(select(work_handles.c.id).where(
                 work_handles.c.id == owner_work_id
             ).with_for_update())).scalar_one_or_none()
@@ -214,6 +199,20 @@ class OutcomeStateStore:
             chain = _chain(list(values))
             if chain is None:
                 return OutcomeWrite("UNKNOWN")
+            replay = (await connection.execute(select(*_COLUMNS).where(
+                outcome_state_revisions.c.operation_id == operation_id
+            ))).mappings().one_or_none()
+            if replay is not None:
+                row = _row(replay)
+                if row.content_digest != _digest(
+                    row.owner_work_id, row.predecessor_id, row.owner_currentness_token, row.items,
+                ):
+                    return OutcomeWrite("UNKNOWN", row.state_id)
+                if row.owner_work_id == owner_work_id:
+                    return OutcomeWrite(
+                        "REPLAYED" if row.content_digest == digest else "CONFLICT", row.state_id,
+                    )
+                return OutcomeWrite("CONFLICT", row.state_id)
             head = None if not chain else chain[-1]
             if expected_state_id != (None if head is None else head.state_id):
                 return OutcomeWrite("STALE", None if head is None else head.state_id)

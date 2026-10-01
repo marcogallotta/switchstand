@@ -66,9 +66,10 @@ async def test_owner_cas_replay_concurrency_corruption_and_projection(store):
     assert (await store.record(**args(
         uuid4(), items=(item().model_copy(update={"source_label": "MARCO"}),)
     ))).status == "DENIED"
-    assert (await store.record(**args(operation))).status == "APPLIED"
-    replay = await store.record(**args(operation))
-    assert replay.status == "REPLAYED"
+    first, replay = await asyncio.gather(
+        store.record(**args(operation)), store.record(**args(operation)),
+    )
+    assert {first.status, replay.status} == {"APPLIED", "REPLAYED"}
     assert (await store.record(**args(
         operation, items=(item("changed replay"),)
     ))).status == "CONFLICT"
@@ -100,3 +101,4 @@ async def test_owner_cas_replay_concurrency_corruption_and_projection(store):
             "UPDATE outcome_state_revisions SET items='[]'::jsonb WHERE generation=2"
         ))
     assert await store.summary(OWNER, "s1_next") == "UNKNOWN"
+    assert (await store.record(**args(operation))).status == "UNKNOWN"
