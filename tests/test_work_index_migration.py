@@ -306,17 +306,43 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
         "manifest_paths": paths, "expected_corpus_digest": corpus_digest,
         "expected_exception_digest": exception_digest,
     }
-    assert await metadata_execute("generate-prepared", worksheet_path, **common) == 3
+    generated = await metadata_execute("generate-prepared", worksheet_path, **common)
+    assert generated.count == 3
+    reviewed_bytes = worksheet_path.read_bytes()
+    reviewed_digest = hashlib.sha256(reviewed_bytes).hexdigest()
     with pytest.raises(ValueError, match="Human-Reviewed"):
         await metadata_execute(
             "validate-prepared", worksheet_path,
             expected_worksheet_digest="0" * 64, **common,
         )
-    assert await metadata_execute(
+    validated = await metadata_execute(
         "validate-prepared", worksheet_path,
-        expected_worksheet_digest=hashlib.sha256(worksheet_path.read_bytes()).hexdigest(),
-        **common,
-    ) == 3
+        expected_worksheet_digest=reviewed_digest, **common,
+    )
+    assert (validated.count, validated.digest) == (3, reviewed_digest)
+    def substitution(mutation):
+        async def substituting_resources():
+            if mutation == "replace":
+                replacement = worksheet_path.with_suffix(".replacement")
+                replacement.write_bytes(b"{")
+                replacement.chmod(0o600)
+                os.replace(replacement, worksheet_path)
+            else:
+                worksheet_path.write_bytes(b"{")
+            return await resources()
+        return substituting_resources
+
+    for mutation in ("replace", "in-place"):
+        worksheet_path.write_bytes(reviewed_bytes)
+        monkeypatch.setattr(
+            "switchstand.work_metadata_migration._resources", substitution(mutation),
+        )
+        validated = await metadata_execute(
+            "validate-prepared", worksheet_path,
+            expected_worksheet_digest=reviewed_digest, **common,
+        )
+        assert (validated.count, validated.digest) == (3, reviewed_digest)
+    worksheet_path.write_bytes(reviewed_bytes)
     assert load_worksheet(worksheet_path).prepare_receipt_digest is not None
     async with stage1_engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_authority")) == 0

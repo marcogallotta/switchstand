@@ -62,7 +62,7 @@ def _digest(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and not set(value) - set("0123456789abcdef")
 
 
-def _read_private(path: Path, label: str) -> bytes:
+def read_private(path: Path, label: str) -> bytes:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     except OSError as error:
@@ -81,7 +81,7 @@ def _publish_or_match(path: Path, data: bytes, label: str) -> None:
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
-        if _read_private(path, label) != data:
+        if read_private(path, label) != data:
             raise Failed(f"existing {label} does not match this attempt") from None
         return
     except OSError as error:
@@ -123,7 +123,7 @@ def freeze_evidence(evidence: Evidence, attempt_dir: Path) -> FrozenEvidence:
         (evidence.worksheet, attempt_dir / "stage2-worksheet.json", "Stage 2 worksheet"),
     )
     for source, destination, label in sources:
-        _publish_or_match(destination, _read_private(source, label), label)
+        _publish_or_match(destination, read_private(source, label), label)
     directory = os.open(attempt_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(directory)
@@ -145,7 +145,7 @@ def freeze_evidence(evidence: Evidence, attempt_dir: Path) -> FrozenEvidence:
         raise Failed("corpus evidence is invalid") from error
     frozen_worksheet = sources[2][1]
     worksheet_digest = hashlib.sha256(
-        _read_private(frozen_worksheet, "frozen Stage 2 worksheet")
+        read_private(frozen_worksheet, "frozen Stage 2 worksheet")
     ).hexdigest()
     if worksheet_digest != evidence.worksheet_digest:
         raise Failed("Stage 2 worksheet digest does not match")
@@ -177,7 +177,7 @@ class Stage12Cutover:
         if not self.receipt_path.exists():
             return None
         try:
-            raw = json.loads(_read_private(self.receipt_path, "cutover receipt"))
+            raw = json.loads(read_private(self.receipt_path, "cutover receipt"))
         except (Failed, TypeError, ValueError) as error:
             raise Unknown("cutover receipt is invalid") from error
         if not isinstance(raw, dict):

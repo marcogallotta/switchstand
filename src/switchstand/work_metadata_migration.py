@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError
 from .provider import AsanaProvider
+from .stage12_cutover import read_private
 from .work_index import (
     ActivationNotCommitted,
     ActivationReceipt,
@@ -97,21 +99,24 @@ async def populate_dependencies(
     return worksheet.model_copy(update={"rows": tuple(rows)})
 
 
+@dataclass(frozen=True)
+class PreparedWorksheetResult:
+    count: int
+    digest: str
+
+
 def load_worksheet(path: Path) -> ImportWorksheet:
-    return ImportWorksheet.model_validate_json(path.read_text(encoding="utf-8"))
+    return ImportWorksheet.model_validate_json(path.read_bytes())
 
 
-def worksheet_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def write_worksheet(path: Path, worksheet: ImportWorksheet) -> None:
+def write_worksheet(path: Path, worksheet: ImportWorksheet) -> str:
+    data = (worksheet.model_dump_json(indent=2) + "\n").encode()
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
-            stream.write(worksheet.model_dump_json(indent=2) + "\n")
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, path, follow_symlinks=False)
@@ -124,6 +129,7 @@ def write_worksheet(path: Path, worksheet: ImportWorksheet) -> None:
     finally:
         os.close(descriptor)
         temporary.unlink(missing_ok=True)
+    return hashlib.sha256(data).hexdigest()
 
 
 async def _resources() -> tuple[AsyncEngine, httpx.AsyncClient, AsanaProvider]:
@@ -141,14 +147,16 @@ async def execute(
     expected_corpus_digest: str | None = None,
     expected_exception_digest: str | None = None,
     expected_worksheet_digest: str | None = None,
-) -> int | ActivationReceipt:
+) -> int | ActivationReceipt | PreparedWorksheetResult:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
-    if action == "validate-prepared" and (
-        expected_worksheet_digest is None
-        or worksheet_digest(path) != expected_worksheet_digest
-    ):
-        raise ValueError("worksheet does not match the Human-Reviewed digest")
+    worksheet_bytes = None
+    reviewed_worksheet_digest = None
+    if action == "validate-prepared":
+        worksheet_bytes = read_private(path, "Human-Reviewed Stage 2 worksheet")
+        reviewed_worksheet_digest = hashlib.sha256(worksheet_bytes).hexdigest()
+        if reviewed_worksheet_digest != expected_worksheet_digest:
+            raise ValueError("worksheet does not match the Human-Reviewed digest")
     if action == "reconcile":
         if receipt_path is None:
             raise ValueError("--receipt is required")
@@ -184,7 +192,8 @@ async def execute(
                 snapshots = await provider_snapshots(provider, generated)
                 worksheet = await populate_dependencies(generated, snapshots)
             else:
-                worksheet = load_worksheet(path)
+                assert worksheet_bytes is not None
+                worksheet = ImportWorksheet.model_validate_json(worksheet_bytes)
                 snapshots = await provider_snapshots(provider, worksheet)
             await require_offline(engine)
             await reconcile_preparation(engine, receipt)
@@ -193,8 +202,9 @@ async def execute(
                 expected_corpus_digest, corpus.dependencies,
             )
             if action == "generate-prepared":
-                write_worksheet(path, worksheet)
-            return len(worksheet.rows)
+                reviewed_worksheet_digest = write_worksheet(path, worksheet)
+            assert reviewed_worksheet_digest is not None
+            return PreparedWorksheetResult(len(worksheet.rows), reviewed_worksheet_digest)
         if action == "generate":
             worksheet = await generate_worksheet(engine)
             worksheet = await populate_dependencies(
@@ -265,12 +275,13 @@ def run(argv: list[str] | None = None) -> None:
             f"edges_sha256={result.edge_digest} "
             f"recovered_after_commit_error={str(result.recovered_after_commit_error).lower()}"
         )
-    else:
-        suffix = (
-            f" worksheet_sha256={worksheet_digest(arguments.worksheet)}"
-            if arguments.action in {"generate-prepared", "validate-prepared"} else ""
+    elif isinstance(result, PreparedWorksheetResult):
+        print(
+            f"Stage 2 {arguments.action} complete for {result.count} admitted work items "
+            f"worksheet_sha256={result.digest}"
         )
-        print(f"Stage 2 {arguments.action} complete for {result} admitted work items{suffix}")
+    else:
+        print(f"Stage 2 {arguments.action} complete for {result} admitted work items")
 
 
 if __name__ == "__main__":
