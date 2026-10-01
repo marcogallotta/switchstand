@@ -34,9 +34,10 @@ The inert `ReviewCheckpoint` core makes this outage pause resumable. It binds th
 exception decision, Stage 1 preparation receipt, prepared-import digest, and generated worksheet
 bytes in a private durable `REVIEW_PENDING` receipt. Re-entry accepts only those same bytes and
 receipts. Its abort path delegates to the receipt-bound Stage 1 preparation cleanup; ambiguity
-remains `UNKNOWN`. Host gate/stop/snapshot orchestration and the operator CLI remain a later layer,
-so landing this core neither starts an attempt nor changes authority.
-The `switchstand-stage12-cutover` CLI exposes prepare, status, approved resume, and pre-review abort. Targets are explicit; disposable runs require their exact C2d0 READY descriptor.
+remains `UNKNOWN`. The separately landed host operator composes gate/stop/snapshot orchestration
+around this core; landing either layer remains inert and neither starts an attempt nor changes
+authority. The `switchstand-stage12-cutover` CLI exposes prepare, status, approved resume, and
+pre-review abort. Targets are explicit; disposable runs require their exact C2d0 READY descriptor.
 
 The standalone post-Stage-1 procedure can instead generate a JSON worksheet with:
 

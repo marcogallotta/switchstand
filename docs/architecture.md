@@ -127,6 +127,17 @@ gateways. Omitting a WorkId selects the active assignment; it is not workspace d
 launch-bound work and its revision-checked history. Managed and ordinary MCPs reuse contracts and
 state, but their authority and inventories are intentionally not interchangeable.
 
+### Inert resource-worker trial
+
+`agent_broker.py`, `agent_executor.py`, and `agent_canary.py` are a default-off trial architecture,
+not the active worker launcher. The broker owns host-wide lease admission and durable status; the
+executor applies a reserved leaf lease through a sandboxed transient systemd unit; the canary owns
+the bounded live proof. Adoption requires that separately authorized canary to prove limits,
+read-only output, recursive cancellation and cleanup, pressure capture, and deterministic excess
+worker denial. A failed or incomplete proof preserves the trial for diagnosis or retirement; it
+does not authorize retries or partial reliance. The adoption-versus-retirement decision remains
+explicit and evidence-gated. See [Resource-governed agent workers](resource-governed-agent-workers.md).
+
 ### Development MCP
 
 `development.py` owns development-environment preparation and cleanup invoked by `launch.py`, plus
@@ -347,6 +358,9 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
 | Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
+| Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
+| Change Stage 3 provider inventory capture or review worksheet | `workset_capture.py`, `workset_worksheet.py` | structure-only provider reads, Stage 1 prepare binding, bounded pagination/stability tests, and no staging or authority effect |
+| Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |
@@ -354,11 +368,24 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
 | Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, Stage 1/2 cutover identity, and disposable Docker ownership tests |
+| Change resource-worker admission, execution, or live proof | `agent_broker.py`, `agent_executor.py`, `agent_canary.py` | [resource-worker architecture](resource-governed-agent-workers.md), owner-local tests, host pressure/sandbox boundaries, and the separate activation decision |
+| Change affected-test selection or repository qualification | `affected_tests.py`, `repository_candidate.py` | their owner-local tests, `scripts/check`, GitHub Quality/composition evidence, and exact-head-versus-local truth |
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
 | Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |
 
 ## Compatibility and retirement boundaries
+
+Transition-only surfaces stay until their exact recovery and reliance evidence is terminal. These
+are removal predicates, not removal decisions:
+
+| Transition surface | Why keep it now | Evidence required before removal | Durable retirement owner |
+| --- | --- | --- | --- |
+| Stage 1 offline migration (`work_index_migration.py`) | Reconciles the prepared corpus and pre-authority cleanup without guessing after ambiguous output. | Exact Stage 1 and Stage 2 marker/readback evidence is committed, no preparation receipt remains unresolved, and the retained runtime no longer has a Stage 1 recovery or failback obligation. | Stage 1 migration owner (`work_index_migration.py`, `database-first-stage1.md`) |
+| Stage 2 migration and combined operator (`work_metadata_migration.py`, `stage12_cutover.py`, `stage12_operator*.py`) | Preserves the reviewed worksheet/checkpoint, maintenance gate, and forward-only recovery across the one-shot cutover. | Exact post-marker metadata/dependency digests and client-visible behavior are verified, every checkpoint/attempt is terminal, and no supported recovery path still invokes the operator. | Stage 2 migration/operator owner (`work_metadata.py`, `database-first-stage2.md`) |
+| Copied-state rehearsal (`rehearsal_target.py`) | Supplies the supported disposable real boundary for Stage 1+2 qualification and bounded cleanup. | The required composed rehearsal evidence is retained and every READY/FAILED target is either intentionally retained with an owner or has teardown proof; a replacement qualification boundary must cover the same claims before deletion. | Rehearsal owner (`rehearsal_target.py`, `development.md`) |
+| Stable-auth activation-only migration/deployment (`stable_auth_migration.py`, `stable_auth_deployment.py`) | Owns state-copy receipts, the public gate, first split activation, and ambiguous/post-exposure forward repair. | The topology decision and separately authorized activation are terminal, exact live readback has closed every migration/deployment receipt and rollback window, and the retained topology has another owner for every still-required recovery path. | Stable-auth transition owner (`stable_auth_deployment.py`, `chatgpt-mcp-edge.md`) |
+| Resource-worker broker/executor/canary trial | Keeps the inert candidate available for the bounded evidence needed to adopt or retire it. | A separately authorized exact canary is terminal and the explicit decision either assigns an active runtime owner after PASS or records retirement plus disposal of broker state/units after non-adoption; incomplete/UNKNOWN evidence permits neither. | Resource-worker trial owner (`agent_broker.py`, `resource-governed-agent-workers.md`) |
 
 - Raw `source_*` tools remain until ordinary, recovery, and failback consumers have verified
   provider-neutral replacements and legacy references are drained.

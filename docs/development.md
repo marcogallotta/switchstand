@@ -147,7 +147,8 @@ services, state, settings, or routing.
 
 `stage12_cutover.ConcreteCommands` binds the offline state machine to reviewed migration
 commands. Disposable runs derive `DATABASE_URL` from their namespaced PostgreSQL container.
-A later host CLI must reconcile process loss; this adapter grants no activation authority.
+The landed `switchstand-stage12-cutover` host CLI durably reconciles process loss around this
+adapter; neither the CLI nor this adapter grants activation authority.
 
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
