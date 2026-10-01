@@ -591,9 +591,11 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
 
             def advance(boundary: str) -> None:
                 nonlocal phase
+                observed = _offline_boundary(offline, config)
                 if (
                     boundary != next(expected, None)
-                    or _offline_boundary(offline, config) != boundary
+                    or list(OFFLINE_PHASES).index(observed)
+                    < list(OFFLINE_PHASES).index(boundary)
                 ):
                     raise Unknown("offline phase or receipt advanced out of order")
                 phase = OFFLINE_PHASES[boundary]

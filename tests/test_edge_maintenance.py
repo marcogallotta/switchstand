@@ -138,6 +138,7 @@ class FakeOffline:
         fail_after: str | None = None,
         unknown_after: str | None = None,
         candidate_sha: str | None = None,
+        resumed: bool = False,
     ):
         self.receipt_path = subject.attempt_dir / "offline.json"
         self.candidate_sha = candidate_sha or subject.candidate_sha
@@ -147,6 +148,7 @@ class FakeOffline:
         self.events = events
         self.fail_after = fail_after
         self.unknown_after = unknown_after
+        self.resumed = resumed
 
     def _write(self, boundary: str) -> None:
         self.receipt_path.write_text(
@@ -165,7 +167,8 @@ class FakeOffline:
     def run(self, advance) -> None:
         for boundary in ("PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"):
             self.events.append("offline_" + boundary.lower())
-            self._write(boundary)
+            if not self.resumed:
+                self._write(boundary)
             advance(boundary)
             if self.fail_after == boundary:
                 raise Failed("offline failed")
@@ -217,6 +220,15 @@ def test_offline_step_persists_ordered_boundaries_before_launcher_swap(tmp_path:
         "start",
     ]
     assert receipt(subject)["phase"] == "COMPLETE"
+
+
+def test_offline_step_accepts_replayed_callbacks_from_advanced_receipt(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+    offline = FakeOffline(subject, operations.events, resumed=True)
+    offline._write("COMPLETE")
+
+    assert deploy(subject, operations, offline) == "PASS" and "offline_abort" not in operations.events
 
 
 def test_definite_pre_marker_failure_aborts_and_restores_old_runtime(tmp_path: Path):
