@@ -15,6 +15,7 @@ import socket
 import subprocess
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO, cast
@@ -92,6 +93,49 @@ class Operations(Protocol):
     def ungate(self) -> None: ...
     def public_ready(self) -> bool: ...
     def restore_launcher(self) -> None: ...
+
+
+class OfflineStep(Protocol):
+    receipt_path: Path
+    database_backup: str
+    corpus_manifests: tuple[str, str]
+    worksheet: str
+
+    def run(self, advance: Callable[[str], None]) -> None: ...
+    def abort_pre_authority(self) -> None: ...
+
+
+OFFLINE_PHASES = {
+    "PRE_MARKER": "OFFLINE_PRE_MARKER",
+    "POSTGRES_AUTHORITY": "OFFLINE_POSTGRES_AUTHORITY",
+    "COMPLETE": "OFFLINE_COMPLETE",
+}
+
+
+def _offline_boundary(step: OfflineStep, config: Config) -> str:
+    path = step.receipt_path
+    try:
+        stat = path.lstat()
+        raw = json.loads(path.read_text())
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise Unknown("offline receipt is unreadable") from exc
+    if path.is_symlink() or not path.is_file() or stat.st_mode & 0o777 != 0o600:
+        raise Unknown("offline receipt identity or mode is invalid")
+    if not isinstance(raw, dict):
+        raise Unknown("offline receipt is not an object")
+    value = cast(dict[str, object], raw)
+    manifests = value.get("corpus_manifests")
+    if (
+        value.get("candidate_sha") != config.candidate_sha
+        or value.get("database_backup") != step.database_backup
+        or value.get("worksheet") != step.worksheet
+        or manifests != list(step.corpus_manifests)
+    ):
+        raise Unknown("offline receipt does not bind exact migration evidence")
+    boundary = value.get("terminal_boundary")
+    if boundary not in OFFLINE_PHASES:
+        raise Unknown("offline receipt boundary is unknown")
+    return cast(str, boundary)
 
 
 def _sha(path: Path) -> str:
@@ -520,7 +564,7 @@ class Receipt:
             os.close(directory)
 
 
-def deploy(config: Config, operations: Operations) -> str:
+def deploy(config: Config, operations: Operations, offline: OfflineStep | None = None) -> str:
     receipt = Receipt(config)
     phase = "PREFLIGHT"
     gate_attempted = False
@@ -539,6 +583,27 @@ def deploy(config: Config, operations: Operations) -> str:
         operations.snapshot()
         phase = "SNAPSHOTTED"
         receipt.write(phase)
+        if offline is not None:
+            phase = "OFFLINE_PENDING"
+            receipt.write(phase)
+            expected = iter(OFFLINE_PHASES)
+            advanced: list[str] = []
+
+            def advance(boundary: str) -> None:
+                nonlocal phase
+                if (
+                    boundary != next(expected, None)
+                    or _offline_boundary(offline, config) != boundary
+                ):
+                    raise Unknown("offline phase or receipt advanced out of order")
+                phase = OFFLINE_PHASES[boundary]
+                advanced.append(boundary)
+                receipt.write(phase)
+
+            offline.run(advance)
+            if advanced != list(OFFLINE_PHASES):
+                raise Unknown("offline step did not reach its terminal boundary")
+            phase = "OFFLINE_COMPLETE"
         operations.swap()
         phase = "SWAPPED"
         receipt.write(phase)
@@ -564,8 +629,18 @@ def deploy(config: Config, operations: Operations) -> str:
         receipt.write(phase, "UNKNOWN", error)
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
+        if phase in {"OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE"}:
+            receipt.write(phase, "UNKNOWN", "ForwardFixRequired")
+            return "UNKNOWN"
         try:
-            if phase in {"SWAPPED", "STARTED", "UNGATED"}:
+            if phase in {"OFFLINE_PENDING", "OFFLINE_PRE_MARKER"}:
+                if offline is None or _offline_boundary(offline, config) != "PRE_MARKER":
+                    raise Unknown("pre-authority boundary is not proven")
+                offline.abort_pre_authority()
+                operations.start()
+                if not operations.rollback_ready():
+                    raise Unknown("pre-authority rollback verification failed")
+            elif phase in {"SWAPPED", "STARTED", "UNGATED"}:
                 operations.stop()
                 operations.restore_launcher()
                 operations.start()
