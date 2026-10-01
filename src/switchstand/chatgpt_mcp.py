@@ -502,15 +502,23 @@ def build_ordinary_tools(
             return AgentMessageSubmitResult(
                 status="recovery_required", reason="state_unavailable"
             )
-        return AgentMessageSubmitResult(
-            status="ok", message=view,
-            next_action=(
+        next_action = None
+        if request and view.state in ("AVAILABLE", "RECEIVED"):
+            next_action = (
                 "SENT is not a reply or completion. If this request needs a response, "
                 "keep its watch active while this chat can run: read pending results, "
                 "use a bounded wait, and reread. An empty read does not end the watch. "
                 "Do not substitute an hourly Scheduled watch. If the chat stops, "
                 "preserve the exact request for re-entry."
-            ) if request and view.state in ("AVAILABLE", "RECEIVED") else None,
+            )
+        elif request and view.state == "DISPOSITIONED":
+            next_action = (
+                "The recipient completed this request. Check and act on its pending result; "
+                "if already handled, continue your assigned work. Do not wait for the "
+                "original delivery."
+            )
+        return AgentMessageSubmitResult(
+            status="ok", message=view, next_action=next_action,
         )
 
     async def agent_register(
