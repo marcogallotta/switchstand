@@ -40,6 +40,10 @@ class FrozenCorpus:
     work_ids: dict[str, UUID | None]
     exceptions: dict[str, UUID]
     dependencies: dict[str, frozenset[str]]
+    source_candidate: str
+    corpus_digest: str
+    exception_digest: str
+    exception_reasons: dict[str, str]
 
 
 def _stable_corpus(
@@ -124,6 +128,7 @@ def _stable_corpus(
         raise ValueError("corpus dependencies must remain inside the included corpus")
 
     exceptions: dict[str, UUID] = {}
+    exception_reasons: dict[str, str] = {}
     for raw in cast(list[object], raw_exceptions):
         if not isinstance(raw, dict):
             raise TypeError("invalid corpus exception")
@@ -141,6 +146,7 @@ def _stable_corpus(
         ):
             raise ValueError("invalid corpus exception identity")
         exceptions[provider_id] = UUID(exception_work_id)
+        exception_reasons[provider_id] = cast(str, row["reason"])
     counts = first.get("counts")
     if not isinstance(counts, dict):
         raise TypeError("corpus manifest counts do not match its contents")
@@ -160,6 +166,10 @@ def _stable_corpus(
         work_ids,
         exceptions,
         {provider: frozenset(values) for provider, values in dependencies.items()},
+        source_candidate,
+        expected_corpus_digest,
+        expected_exception_digest,
+        exception_reasons,
     )
 
 
