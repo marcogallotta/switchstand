@@ -1,4 +1,5 @@
 """Provision and remove one copied-state, disposable migration target."""
+# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from .edge_maintenance import Failed
+from .edge_maintenance import Failed, Unknown, _exclusive_lock
 from .stage12_cutover import read_private
 
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
@@ -131,6 +132,27 @@ def _extract(snapshot: Path, destination: Path) -> None:
         raise Failed("FastMCP snapshot cannot be copied") from error
 
 
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(root.rglob("*")):
+            info = path.lstat()
+            relative = path.relative_to(root).as_posix().encode()
+            if path.is_symlink() or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise OSError
+            digest.update(relative + (b"/\0" if stat.S_ISDIR(info.st_mode) else b"\0"))
+            if stat.S_ISREG(info.st_mode):
+                descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                try:
+                    with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                        digest.update(hashlib.file_digest(stream, "sha256").digest())
+                finally:
+                    os.close(descriptor)
+    except OSError as error:
+        raise Failed("copied FastMCP state is not an exact regular tree") from error
+    return digest.hexdigest()
+
+
 def _docker_identity(value: dict[str, Any], expected: dict[str, str]) -> None:
     config, network_settings, mounts = (
         value.get("Config"), value.get("NetworkSettings"), value.get("Mounts")
@@ -212,6 +234,7 @@ def provision(
     _write_bytes(frozen_backup, backup_data)
     _write_bytes(frozen_snapshot, snapshot_data)
     _extract(frozen_snapshot, root / "copied-state")
+    descriptor["fastmcp_tree_sha256"] = _tree_digest(root / "copied-state" / "fastmcp")
     compose = [
         "docker", "compose", "-p", identity["project"], "--project-directory", str(runtime),
         "-f", str(runtime / "compose.state.yaml"),
@@ -286,21 +309,48 @@ def load_ready(
         data = read_private(Path(cast(str, value[path_key])), path_key)
         if hashlib.sha256(data).hexdigest() != value.get(digest_key):
             raise Failed("disposable copied-state digest changed")
-    ids = run([
-        "docker", "ps", "-aq", "--no-trunc", "--filter",
-        f"label=com.docker.compose.project={value['project']}",
-    ]).stdout.split()
+    if _tree_digest(Path(cast(str, value["fastmcp_state"]))) != value.get("fastmcp_tree_sha256"):
+        raise Failed("copied FastMCP state digest changed")
+    try:
+        ids = run([
+            "docker", "ps", "-aq", "--no-trunc", "--filter",
+            f"label=com.docker.compose.project={value['project']}",
+        ]).stdout.split()
+        inspected = json.loads(run(["docker", "inspect", cast(str, value["container"])]).stdout)
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+        raise Unknown("disposable container observation is unavailable") from error
     if ids != [value["container"]]:
         raise Failed("descriptor does not bind the exact READY container")
-    inspected = json.loads(run(["docker", "inspect", ids[0]]).stdout)
     if len(inspected) != 1:
         raise Failed("descriptor container identity is unavailable")
     _docker_identity(inspected[0], cast(dict[str, str], value))
+    state = inspected[0].get("State")
+    if not isinstance(state, dict):
+        raise Failed("disposable container is not running and healthy")
+    exact_state = cast(dict[str, object], state)
+    health = exact_state.get("Health")
+    exact_health = cast(dict[str, object], health) if isinstance(health, dict) else {}
+    if exact_state.get("Running") is not True or exact_health.get("Status") != "healthy":
+        raise Failed("disposable container is not running and healthy")
     return root, value
+
+
+def operator_lock(name: str) -> Path:
+    """Return the one validated exclusion boundary shared by operator and teardown."""
+    _identity(name)
+    _private_directory(REHEARSALS)
+    root = REHEARSALS / name
+    _private_directory(root)
+    return root / "operator.lock"
 
 
 def teardown(name: str, *, run: Runner = _run) -> None:
     """Remove only resources whose exact namespace is owned by the descriptor."""
+    with _exclusive_lock(operator_lock(name)):
+        _teardown(name, run=run)
+
+
+def _teardown(name: str, *, run: Runner) -> None:
     root, value = _load(name)
     project = cast(str, value["project"])
     try:

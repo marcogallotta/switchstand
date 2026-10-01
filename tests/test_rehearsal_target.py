@@ -3,6 +3,7 @@ import json
 import stat
 import subprocess
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ class Docker:
                     "com.docker.compose.service": "postgres",
                 }},
                 "NetworkSettings": {"Networks": networks}, "Mounts": mounts,
+                "State": {"Running": self.fault != "stopped", "Health": {"Status": "healthy"}},
             }])
         elif command[:3] == ["docker", "ps", "-aq"]:
             output = (self.container if "--no-trunc" in command else self.container[:12]) + "\n"
@@ -133,7 +135,7 @@ def test_load_ready_refuses_candidate_or_copied_state_drift(tmp_path, monkeypatc
     assert docker.commands == []
 
 
-@pytest.mark.parametrize("fault", ["endpoints", "container"])
+@pytest.mark.parametrize("fault", ["endpoints", "container", "stopped", "tree"])
 def test_load_ready_refuses_descriptor_or_live_container_drift(tmp_path, monkeypatch, fault):
     runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
     setup = Docker(runtime)
@@ -146,9 +148,31 @@ def test_load_ready_refuses_descriptor_or_live_container_drift(tmp_path, monkeyp
     observed = Docker(runtime)
     if fault == "container":
         observed.container = "d" * 64
+    elif fault == "stopped":
+        observed.fault = "stopped"
+    elif fault == "tree":
+        (descriptor.parent / "copied-state/fastmcp/oauth.json").write_bytes(b"drift")
 
     with pytest.raises(Failed):
         target.load_ready("proof", SHA, runtime, run=observed)
+
+
+def test_teardown_holds_shared_operator_lock(tmp_path, monkeypatch):
+    runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
+    docker = Docker(runtime)
+    target.provision("proof", SHA, runtime, backup, snapshot, run=docker)
+    events: list[str] = []
+
+    @contextmanager
+    def locked(_path):
+        events.append("locked")
+        yield
+        events.append("released")
+
+    monkeypatch.setattr(target, "_exclusive_lock", locked)
+    monkeypatch.setattr(target, "_teardown", lambda *_args, **_kwargs: events.append("teardown"))
+    target.teardown("proof", run=docker)
+    assert events == ["locked", "teardown", "released"]
 
 
 @pytest.mark.parametrize(("key", "changed"), [

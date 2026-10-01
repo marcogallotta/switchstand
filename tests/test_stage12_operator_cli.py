@@ -1,10 +1,11 @@
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from switchstand import stage12_operator_cli as cli
-from switchstand.edge_maintenance import FASTMCP_STATE, LOCK, Config
+from switchstand.edge_maintenance import FASTMCP_STATE, LOCK, Config, Unknown
 
 SHA = "a" * 40
 
@@ -79,3 +80,27 @@ def test_existing_attempt_flag_cannot_change_other_actions(tmp_path: Path):
 ])
 def test_exit_preserves_unknown(result: str, expected: int):
     assert cli._exit(result) == expected
+
+
+def test_observation_failure_is_unknown_inside_shared_lock(monkeypatch, capsys):
+    values = SimpleNamespace(
+        action="status", approved_worksheet_digest=None, existing_attempt=False,
+        target="disposable:proof",
+    )
+    monkeypatch.setattr(cli, "_parser", lambda: SimpleNamespace(parse_args=lambda _argv: values))
+    monkeypatch.setattr(cli, "_target_lock", lambda _target: Path("/lock"))
+    events: list[str] = []
+
+    @contextmanager
+    def locked(_path):
+        events.append("locked")
+        try:
+            yield
+        finally:
+            events.append("released")
+
+    monkeypatch.setattr(cli, "_exclusive_lock", locked)
+    monkeypatch.setattr(cli, "_run", lambda _args: (_ for _ in ()).throw(Unknown("lost")))
+    assert cli.main([]) == 2
+    assert capsys.readouterr().out == "UNKNOWN\n"
+    assert events == ["locked", "released"]

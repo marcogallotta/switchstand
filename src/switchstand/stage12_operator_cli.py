@@ -14,10 +14,11 @@ from .edge_maintenance import (
     Config,
     HostOperations,
     Interrupted,
+    Unknown,
     _exclusive_lock,
     _validate_target,
 )
-from .rehearsal_target import load_ready
+from .rehearsal_target import load_ready, operator_lock
 from .stage12_cutover import (
     ConcreteCommands,
     Evidence,
@@ -83,6 +84,14 @@ def _config(args: argparse.Namespace) -> Config:
     return config
 
 
+def _target_lock(target: str) -> Path:
+    if target == "production":
+        return LOCK
+    if target.startswith("disposable:") and target.count(":") == 1:
+        return operator_lock(target.split(":", 1)[1])
+    raise SystemExit("--target must be exactly production or disposable:NAME")
+
+
 def _evidence(args: argparse.Namespace) -> tuple[ReviewEvidence, Evidence | None]:
     if len(args.manifest) != 2:
         raise SystemExit("exactly two --manifest values are required")
@@ -112,41 +121,45 @@ def _exit(result: str) -> int:
     return 2 if result == "UNKNOWN" or result.endswith("_UNKNOWN") else 1 if result == "FAIL" else 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    if args.action in {"prepare", "abort"} and args.approved_worksheet_digest:
-        raise SystemExit("approved worksheet evidence is valid only for status or resume")
-    if args.action == "status" and args.existing_attempt:
-        raise SystemExit("--existing-attempt is valid only with prepare")
+def _run(args: argparse.Namespace) -> str:
     config = _config(args)
     review_evidence, evidence = _evidence(args)
     commands = ConcreteCommands(config, review_evidence)
     review = ReviewCheckpoint(config.attempt_dir, review_evidence, commands)
     if args.action == "status":
         offline = Stage12Cutover(config.attempt_dir, evidence, ConcreteCommands(config, evidence)) if evidence else None
-        result = status_window(config, review, offline)
-    else:
-        _attempt(args, config)
-        with _exclusive_lock(config.lock_path):
-            def interrupted(number: int, _frame: object) -> None:
-                raise Interrupted(f"operator interrupted by signal {number}")
+        return status_window(config, review, offline)
+    _attempt(args, config)
 
-            previous = {item: signal.signal(item, interrupted) for item in (signal.SIGINT, signal.SIGTERM)}
-            try:
-                operations = HostOperations(config)
-                if args.action == "prepare":
-                    result = prepare_window(config, operations, review)
-                elif args.action == "abort":
-                    result = abort_window(config, operations, review)
-                elif evidence is None:
-                    raise SystemExit("resume requires --approved-worksheet-digest")
-                else:
-                    result = resume_window(
-                        config, operations, review, evidence, args.approved_worksheet_digest,
-                    )
-            finally:
-                for item, handler in previous.items():
-                    signal.signal(item, handler)
+    def interrupted(number: int, _frame: object) -> None:
+        raise Interrupted(f"operator interrupted by signal {number}")
+
+    previous = {item: signal.signal(item, interrupted) for item in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        operations = HostOperations(config)
+        if args.action == "prepare":
+            return prepare_window(config, operations, review)
+        if args.action == "abort":
+            return abort_window(config, operations, review)
+        if evidence is None:
+            raise SystemExit("resume requires --approved-worksheet-digest")
+        return resume_window(config, operations, review, evidence, args.approved_worksheet_digest)
+    finally:
+        for item, handler in previous.items():
+            signal.signal(item, handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.action in {"prepare", "abort"} and args.approved_worksheet_digest:
+        raise SystemExit("approved worksheet evidence is valid only for status or resume")
+    if args.action == "status" and args.existing_attempt:
+        raise SystemExit("--existing-attempt is valid only with prepare")
+    try:
+        with _exclusive_lock(_target_lock(args.target)):
+            result = _run(args)
+    except Unknown:
+        result = "UNKNOWN"
     print(result)
     return _exit(result)
 
