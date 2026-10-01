@@ -46,7 +46,7 @@ def test_development_surface_is_closed():
     server = development.build_server()
     assert set(server._tool_manager._tools) == {
         "check",
-        "quality",
+        "diagnostic_full_suite",
         "commit_all_current_worktree",
         "run_status",
     }
@@ -288,7 +288,9 @@ async def test_focused_check_rejects_stale_dependency_manifest(monkeypatch, tmp_
     assert "relaunch required" in result.output
 
 
-async def test_quality_uses_exact_owned_container_and_full_bound(monkeypatch, tmp_path):
+async def test_diagnostic_full_suite_is_labeled_and_uses_existing_bound_runner(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(development, "_bound_repo", lambda: (tmp_path, "owned", "a" * 40))
     monkeypatch.setattr(development, "_manifest", lambda repo: "manifest")
     monkeypatch.setattr(development, "_run_owner", lambda repo, branch: "run-id")
@@ -309,9 +311,10 @@ async def test_quality_uses_exact_owned_container_and_full_bound(monkeypatch, tm
         return completed(arguments)
 
     monkeypatch.setattr(development, "_run_owned_workload", fake_run)
-    result = await tool("quality")("a" * 40)
+    result = await tool("diagnostic_full_suite")("a" * 40)
     command = captured["arguments"]
     assert result.status == "ok"
+    assert result.output.startswith(development.DIAGNOSTIC_NOTICE)
     assert captured["role"] == "quality" and captured["timeout"] == development.QUALITY_SECONDS
     assert command[:3] == ["create", "--name", "switchstand-quality-run-id"]
     assert "sha256:fixed" in command and f"{tmp_path}:/workspace:ro" in command

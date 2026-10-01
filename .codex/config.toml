@@ -76,4 +76,4 @@ env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMO
             "SWITCHSTAND_DATABASE_CONTAINER", "SWITCHSTAND_MANIFEST_SHA256",
             "SWITCHSTAND_MANAGED"]
 required = false
-enabled_tools = ["check", "commit_all_current_worktree", "quality", "run_status"]
+enabled_tools = ["check", "commit_all_current_worktree", "diagnostic_full_suite", "run_status"]

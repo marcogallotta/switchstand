@@ -155,7 +155,12 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     assert switchstand_managed["default_tools_approval_mode"] == "approve"
     assert "tools" not in switchstand_managed
 
-    development = {"check", "commit_all_current_worktree", "quality", "run_status"}
+    development = {
+        "check",
+        "commit_all_current_worktree",
+        "diagnostic_full_suite",
+        "run_status",
+    }
     switchstand_development = servers["switchstand_development"]
     assert switchstand_development["required"] is False
     assert set(switchstand_development["enabled_tools"]) == development
