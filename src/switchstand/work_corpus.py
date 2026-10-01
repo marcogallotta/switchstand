@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError, ProviderWork
 from .discovery import ProviderSearchItem, ProviderSearchPage
-from .provider import AsanaProvider
+from .provider import AsanaProvider, ProviderWorkDecodeError, WorkDecodeReason
+from .secure_file import create_new_private_bytes
 from .state import work_handles
 
 
@@ -52,6 +53,15 @@ class CorpusException:
     provider_work_id: str
     work_id: str
     reason: str
+
+
+class CorpusCaptureDecodeError(ProviderError):
+    """A bound provider item failed strict decoding during corpus capture."""
+
+    def __init__(self, provider_work_id: str, reason: WorkDecodeReason):
+        super().__init__("provider response invalid")
+        self.provider_work_id = provider_work_id
+        self.reason = reason
 
 
 def _row(
@@ -134,7 +144,10 @@ async def capture_manifest(
     included = dict(broad)
     exceptions: list[CorpusException] = []
     for provider_id in sorted(set(bound) - set(broad)):
-        work = await provider.get(provider_id)
+        try:
+            work = await provider.get(provider_id)
+        except ProviderWorkDecodeError as error:
+            raise CorpusCaptureDecodeError(provider_id, error.reason) from None
         if work is None:
             exceptions.append(CorpusException(provider_id, bound[provider_id], "missing"))
         elif not work.canonical:
@@ -202,6 +215,32 @@ def manifest_exception_digest(manifest: dict[str, object]) -> str:
     return hashlib.sha256(_canonical(cast(list[object], exceptions))).hexdigest()
 
 
+def failure_receipt_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(f"{manifest_path.name}.failure.json")
+
+
+async def capture_to_path(
+    engine: AsyncEngine,
+    provider: CorpusProvider,
+    path: Path,
+    source_candidate: str,
+) -> str:
+    try:
+        manifest = await capture_manifest(engine, provider, source_candidate)
+    except CorpusCaptureDecodeError as error:
+        receipt = {
+            "provider_work_id": error.provider_work_id,
+            "reason": error.reason,
+        }
+        create_new_private_bytes(
+            failure_receipt_path(path),
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode() + b"\n",
+        )
+        raise
+    write_manifest(path, manifest)
+    return str(manifest["sha256"])
+
+
 async def _capture(path: Path, source_candidate: str) -> str:
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
     client = httpx.AsyncClient(
@@ -211,9 +250,7 @@ async def _capture(path: Path, source_candidate: str) -> str:
     )
     try:
         provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
-        manifest = await capture_manifest(engine, provider, source_candidate)
-        write_manifest(path, manifest)
-        return str(manifest["sha256"])
+        return await capture_to_path(engine, provider, path, source_candidate)
     finally:
         await client.aclose()
         await engine.dispose()
