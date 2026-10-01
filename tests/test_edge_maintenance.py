@@ -167,6 +167,8 @@ class FakeOffline:
         self.receipt_path.chmod(0o600)
 
     def run(self, advance) -> None:
+        if self.fail_after == "PENDING":
+            raise Failed("offline failed before its first receipt")
         for boundary in ("PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"):
             self.events.append("offline_" + boundary.lower())
             if not self.resumed:
@@ -233,10 +235,11 @@ def test_offline_step_accepts_replayed_callbacks_from_advanced_receipt(tmp_path:
     assert deploy(subject, operations, offline) == "PASS" and "offline_abort" not in operations.events
 
 
-def test_definite_pre_marker_failure_aborts_and_restores_old_runtime(tmp_path: Path):
+@pytest.mark.parametrize("failure", ["PENDING", "PRE_MARKER"])
+def test_definite_pre_marker_failure_aborts_and_restores_old_runtime(tmp_path: Path, failure: str):
     subject = config(tmp_path)
     operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, fail_after="PRE_MARKER")
+    offline = FakeOffline(subject, operations.events, fail_after=failure)
 
     assert deploy(subject, operations, offline) == "FAIL"
 

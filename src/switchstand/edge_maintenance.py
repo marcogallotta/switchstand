@@ -717,7 +717,10 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
             return "UNKNOWN"
         try:
             if phase in {"OFFLINE_PENDING", "OFFLINE_PRE_MARKER"}:
-                if offline is None or _offline_boundary(offline, config) != "PRE_MARKER":
+                if offline is None or (
+                    offline.receipt_path.exists()
+                    and _offline_boundary(offline, config) != "PRE_MARKER"
+                ):
                     raise Unknown("pre-authority boundary is not proven")
                 offline.abort_pre_authority()
                 operations.start()
