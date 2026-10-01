@@ -49,15 +49,16 @@ Use the existing service-wide maintenance transaction to install and publicly ve
 `503 Retry-After` gate, then stop the MCP edge. With all other database clients stopped:
 
 ```sh
-switchstand-work-index-migrate --confirm-offline
+switchstand-work-index-migrate prepare --confirm-offline
+switchstand-work-index-migrate activate --confirm-offline --expected-manifest-digest APPROVED_SHA256 --receipt stage1-attempt.json
 ```
 
 The command verifies database quiescence, completes the final provider scan without persisting
-partial progress, verifies quiescence again, and commits the corpus plus authority marker
-atomically. Start and verify the candidate edge before removing the maintenance gate.
+partial progress, verifies quiescence again, freezes missing WorkId bindings, and prints the canonical digest for review. Activation rescans and fails before the marker on mismatch. It commits corpus and marker atomically, then reads back both generations and the digest; verify the edge before removing maintenance.
 
 Before the authority transaction commits, discard the failed attempt and restart the old service.
 After it commits, never restore the old title/completion/search runtime: retain the gate and repair forward.
+An error once COMMIT may have been sent is `UNKNOWN` until a fresh connection reconciles both markers, their generation, and the exact corpus digest. Unreadable or inconsistent evidence stays gated and forbids blind rerun, downgrade, or snapshot restore. Exact absence plus unchanged pre-activation corpus proves nonapplication; exact committed readback selects forward-only recovery. After exit status 2 or process loss, run `switchstand-work-index-migrate reconcile --confirm-offline --receipt stage1-attempt.json`; do not activate again.
 The Alembic downgrade refuses whenever the durable marker exists, even if `work_index` rows were
 later removed. Direct reverse authority states are rejected by schema constraints.
 Runtime reads observe both the active authority row and durable marker in one snapshot and fail

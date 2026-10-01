@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, insert, select, update
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
 from .contracts import Routing, WorkContext
 from .state import (
@@ -18,6 +20,15 @@ from .state import (
     work_index,
     work_metadata_authority,
     work_metadata_cutovers,
+)
+from .work_index import (
+    ActivationNotCommitted,
+    ActivationReceipt,
+    ActivationUnknown,
+    WorkIndex,
+    canonical_digest,
+    corpus_digest,
+    corpus_digest_from_connection,
 )
 
 SCOPE = "workspace"
@@ -222,22 +233,77 @@ async def validate_worksheet(
             raise ValueError("lifecycle TERMINAL must exactly match Stage 1 completion")
 
 
+async def _edge_digest(connection: AsyncConnection) -> str:
+    rows = (await connection.execute(select(
+        work_edges.c.work_id, work_edges.c.depends_on_work_id,
+    ).order_by(work_edges.c.work_id, work_edges.c.depends_on_work_id))).all()
+    return canonical_digest([[str(row[0]), str(row[1])] for row in rows])
+
+
+async def edge_digest(engine: AsyncEngine) -> str:
+    async with engine.connect() as connection:
+        return await _edge_digest(connection)
+
+
+async def _stage2_markers(engine: AsyncEngine) -> tuple[object, object]:
+    async with engine.connect() as connection:
+        authority = (await connection.execute(select(
+            work_metadata_authority.c.state, work_metadata_authority.c.generation,
+        ).where(work_metadata_authority.c.scope == SCOPE))).one_or_none()
+        cutover = (await connection.execute(select(
+            work_metadata_cutovers.c.generation,
+        ).where(work_metadata_cutovers.c.scope == SCOPE))).one_or_none()
+    return authority, cutover
+
+
+async def _commit(transaction: AsyncTransaction) -> None:
+    await transaction.commit()
+
+
+async def reconcile_metadata_activation(
+    engine: AsyncEngine, receipt: ActivationReceipt,
+) -> ActivationReceipt:
+    try:
+        authority, cutover = await _stage2_markers(engine)
+        observed_corpus, observed_edges = await corpus_digest(engine), await edge_digest(engine)
+    except BaseException as error:
+        raise ActivationUnknown("Stage 2 activation outcome UNKNOWN; keep the maintenance gate") from error
+    if (
+        authority == (AUTHORITY, receipt.generation) and cutover == (receipt.generation,)
+        and observed_corpus == receipt.corpus_digest and observed_edges == receipt.edge_digest
+    ):
+        return replace(receipt, recovered_after_commit_error=True)
+    if (
+        authority is None and cutover is None
+        and observed_corpus == receipt.pre_corpus_digest
+        and observed_edges == receipt.pre_edge_digest
+    ):
+        raise ActivationNotCommitted("Stage 2 readback proves authority was not activated")
+    raise ActivationUnknown("Stage 2 activation outcome UNKNOWN; repair forward")
+
+
 async def activate_metadata(
     engine: AsyncEngine,
     worksheet: ImportWorksheet,
     snapshots: tuple[ProviderMetadataSnapshot, ...],
-) -> int:
+    before_commit: Callable[[ActivationReceipt], None] | None = None,
+) -> ActivationReceipt:
     """Validate the frozen provider snapshot and atomically flip all Stage 2 authority."""
-    from .work_index import WorkIndex
-
     validate_snapshots(worksheet, snapshots)
     by_provider = {snapshot.provider_work_id: snapshot for snapshot in snapshots}
 
     ordered = sorted(worksheet.rows, key=lambda row: row.work_id.int)
-    async with engine.begin() as connection:
+    pre_corpus, pre_edges = await corpus_digest(engine), await edge_digest(engine)
+    connection = await engine.connect()
+    transaction = await connection.begin()
+    commit_started = False
+    expected_corpus = expected_edges = ""
+    receipt = ActivationReceipt(len(ordered), 1, "", pre_corpus_digest=pre_corpus, pre_edge_digest=pre_edges)
+    try:
         await connection.execute(select(func.pg_advisory_xact_lock(0x53544732)))
-        if (await connection.execute(select(work_metadata_cutovers.c.scope))).first() is not None:
-            raise RuntimeError("Stage 2 POSTGRES_AUTHORITY is already active")
+        if (await connection.execute(select(work_metadata_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_metadata_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 2 authority already exists; reconcile its receipt")
         authority = (await connection.execute(select(
             work_authority.c.generation, work_authority.c.state,
         ).where(work_authority.c.scope == SCOPE).with_for_update())).one_or_none()
@@ -298,4 +364,32 @@ async def activate_metadata(
         await connection.execute(insert(work_metadata_cutovers).values(
             scope=SCOPE, generation=1,
         ))
-    return len(ordered)
+        expected_corpus = await corpus_digest_from_connection(connection)
+        expected_edges = await _edge_digest(connection)
+        receipt = ActivationReceipt(
+            len(ordered), 1, expected_corpus, expected_edges,
+            pre_corpus_digest=pre_corpus, pre_edge_digest=pre_edges,
+        )
+        if before_commit is not None:
+            before_commit(receipt)
+        commit_started = True
+        await _commit(transaction)
+    except BaseException:
+        if not commit_started:
+            with suppress(BaseException):
+                await transaction.rollback()
+            raise
+        with suppress(BaseException):
+            await connection.close()
+        return await reconcile_metadata_activation(engine, receipt)
+    finally:
+        with suppress(BaseException):
+            await connection.close()
+    authority, cutover = await _stage2_markers(engine)
+    observed_corpus, observed_edges = await corpus_digest(engine), await edge_digest(engine)
+    if (
+        authority != (AUTHORITY, 1) or cutover != (1,)
+        or observed_corpus != expected_corpus or observed_edges != expected_edges
+    ):
+        raise ActivationUnknown("Stage 2 committed readback is inconsistent; repair forward")
+    return receipt

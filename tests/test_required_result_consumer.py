@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from chatgpt_fixture import Provider
+from conftest import activate_stage1
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -22,7 +23,6 @@ from switchstand.lifecycle import (
 )
 from switchstand.state import PostgresState, metadata
 from switchstand.updates import UpdateGateway
-from switchstand.work_index import activate
 
 
 @pytest.fixture
@@ -120,7 +120,7 @@ async def test_save_uses_post_cutover_completion_and_composite_currentness(
     service, _, grant, provider = await subject(result_engine)
     current = await provider.get("123")
     assert current is not None
-    await activate(result_engine, (ProviderSearchItem(
+    await activate_stage1(result_engine, (ProviderSearchItem(
         provider_work_id="123", title=current.title, completed=False,
         revision=current.revision, routing=current.routing, context=current.context,
     ),))

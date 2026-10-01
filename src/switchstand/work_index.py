@@ -6,8 +6,9 @@ import base64
 import hashlib
 import json
 import unicodedata
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 
@@ -21,7 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
 from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderWork
@@ -506,6 +507,23 @@ class ImportItem(Protocol):
     def context(self) -> WorkContext: ...
 
 
+class ActivationNotCommitted(RuntimeError): """Fresh readback proves activation did not apply."""
+
+
+class ActivationUnknown(RuntimeError): """Activation may have committed; reconcile while gated."""
+
+
+@dataclass(frozen=True)
+class ActivationReceipt:
+    count: int
+    generation: int
+    corpus_digest: str
+    edge_digest: str | None = None
+    pre_corpus_digest: str = ""
+    pre_edge_digest: str | None = None
+    recovered_after_commit_error: bool = False
+
+
 def imported_values(handle: Handle, item: ImportItem) -> dict[str, object]:
     """Build a migration row from a validated ProviderSearchItem-like object."""
     title, routing, context = item.title, item.routing, item.context
@@ -517,15 +535,114 @@ def imported_values(handle: Handle, item: ImportItem) -> dict[str, object]:
     }
 
 
-async def activate(engine: AsyncEngine, items: tuple[ImportItem, ...]) -> int:
-    """Atomically bind the final offline scan and flip all Stage 1 authority."""
+def canonical_digest(rows: object) -> str:
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def manifest_digest(items: tuple[ImportItem, ...], handles: dict[str, Handle]) -> str:
+    rows: list[list[object]] = []
+    for item in sorted(items, key=lambda value: value.provider_work_id):
+        handle = handles[item.provider_work_id]
+        values = imported_values(handle, item)
+        rows.append([
+            str(handle.id), item.provider_work_id, values["title"], values["normalized_title"],
+            values["completed"], values["provider_revision"], values["row_version"],
+            values["routing"], values["context"],
+        ])
+    return canonical_digest(rows)
+
+
+async def corpus_digest_from_connection(connection: AsyncConnection) -> str:
+    rows = (await connection.execute(select(
+        work_index.c.work_id, work_handles.c.provider_work_id, work_index.c.title,
+        work_index.c.normalized_title, work_index.c.completed,
+        work_index.c.provider_revision, work_index.c.row_version,
+        work_index.c.routing, work_index.c.context,
+    ).join(work_handles, work_handles.c.id == work_index.c.work_id).order_by(
+        work_handles.c.provider_work_id
+    ))).all()
+    return canonical_digest([
+        [str(row[0]), row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8]]
+        for row in rows
+    ])
+
+
+async def corpus_digest(engine: AsyncEngine) -> str:
+    async with engine.connect() as connection:
+        return await corpus_digest_from_connection(connection)
+
+
+async def prepare_manifest(engine: AsyncEngine, items: tuple[ImportItem, ...]) -> str:
     provider_ids = [item.provider_work_id for item in items]
     if not provider_ids or len(provider_ids) != len(set(provider_ids)):
         raise ValueError("final scan must be non-empty and contain each provider work exactly once")
     async with engine.begin() as connection:
         await connection.execute(select(func.pg_advisory_xact_lock(0x53544731)))
-        if (await connection.execute(select(work_authority.c.scope))).first() is not None:
-            raise RuntimeError("POSTGRES_AUTHORITY is already active")
+        if (await connection.execute(select(work_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_authority_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 1 authority already exists; reconcile its receipt")
+        rows = (await connection.execute(select(
+            work_handles.c.id, work_handles.c.provider_work_id,
+        ).where((work_handles.c.provider == "asana") & work_handles.c.provider_work_id.in_(provider_ids)))).all()
+        handles = {row[1]: Handle(row[0], "asana", row[1]) for row in rows}
+        for provider_id in provider_ids:
+            if provider_id not in handles:
+                handle = Handle(uuid4(), "asana", provider_id)
+                await connection.execute(insert(work_handles).values(
+                    id=handle.id, provider="asana", provider_work_id=provider_id,
+                ))
+                handles[provider_id] = handle
+        return manifest_digest(items, handles)
+
+
+async def _stage1_markers(engine: AsyncEngine) -> tuple[object, object]:
+    async with engine.connect() as connection:
+        authority = (await connection.execute(select(
+            work_authority.c.state, work_authority.c.generation,
+        ).where(work_authority.c.scope == SCOPE))).one_or_none()
+        cutover = (await connection.execute(select(
+            work_authority_cutovers.c.generation,
+        ).where(work_authority_cutovers.c.scope == SCOPE))).one_or_none()
+    return authority, cutover
+
+
+async def _commit(transaction: AsyncTransaction) -> None:
+    await transaction.commit()
+
+
+async def reconcile_activation(engine: AsyncEngine, receipt: ActivationReceipt) -> ActivationReceipt:
+    try:
+        authority, cutover = await _stage1_markers(engine)
+        observed = await corpus_digest(engine)
+    except BaseException as error:
+        raise ActivationUnknown("Stage 1 activation outcome UNKNOWN; keep the maintenance gate") from error
+    if authority == (STATE, receipt.generation) and cutover == (receipt.generation,) and observed == receipt.corpus_digest:
+        return replace(receipt, recovered_after_commit_error=True)
+    if authority is None and cutover is None and observed == receipt.pre_corpus_digest:
+        raise ActivationNotCommitted("Stage 1 readback proves authority was not activated")
+    raise ActivationUnknown("Stage 1 activation outcome UNKNOWN; repair forward")
+
+
+async def activate(
+    engine: AsyncEngine, items: tuple[ImportItem, ...], *, expected_manifest_digest: str,
+    before_commit: Callable[[ActivationReceipt], None] | None = None,
+) -> ActivationReceipt:
+    """Atomically bind the final offline scan and flip all Stage 1 authority."""
+    provider_ids = [item.provider_work_id for item in items]
+    if not provider_ids or len(provider_ids) != len(set(provider_ids)):
+        raise ValueError("final scan must be non-empty and contain each provider work exactly once")
+    pre_digest = await corpus_digest(engine)
+    connection = await engine.connect()
+    transaction = await connection.begin()
+    commit_started = False
+    actual_digest = ""
+    receipt = ActivationReceipt(len(items), 1, "", pre_corpus_digest=pre_digest)
+    try:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544731)))
+        if (await connection.execute(select(work_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_authority_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 1 authority already exists; reconcile its receipt")
         existing_rows = (await connection.execute(select(
             work_handles.c.id, work_handles.c.provider_work_id,
         ).where(
@@ -533,14 +650,11 @@ async def activate(engine: AsyncEngine, items: tuple[ImportItem, ...]) -> int:
             & work_handles.c.provider_work_id.in_(provider_ids)
         ))).all()
         handles = {row[1]: Handle(row[0], "asana", row[1]) for row in existing_rows}
-        for provider_id in provider_ids:
-            if provider_id not in handles:
-                handle = Handle(uuid4(), "asana", provider_id)
-                await connection.execute(insert(work_handles).values(
-                    id=handle.id, provider=handle.provider,
-                    provider_work_id=handle.provider_work_id,
-                ))
-                handles[provider_id] = handle
+        if set(handles) != set(provider_ids):
+            raise ValueError("manifest bindings are not prepared for this final scan")
+        actual_digest = manifest_digest(items, handles)
+        if actual_digest != expected_manifest_digest:
+            raise ValueError("final scan manifest does not match the approved expected digest")
         await connection.execute(insert(work_index), [
             imported_values(handles[provider_id], item)
             for provider_id, item in zip(provider_ids, items, strict=True)
@@ -551,4 +665,24 @@ async def activate(engine: AsyncEngine, items: tuple[ImportItem, ...]) -> int:
         await connection.execute(insert(work_authority_cutovers).values(
             scope=SCOPE, generation=1,
         ))
-    return len(items)
+        receipt = ActivationReceipt(len(items), 1, actual_digest, pre_corpus_digest=pre_digest)
+        if before_commit is not None:
+            before_commit(receipt)
+        commit_started = True
+        await _commit(transaction)
+    except BaseException:
+        if not commit_started:
+            with suppress(BaseException):
+                await transaction.rollback()
+            raise
+        with suppress(BaseException):
+            await connection.close()
+        return await reconcile_activation(engine, receipt)
+    finally:
+        with suppress(BaseException):
+            await connection.close()
+    authority, cutover = await _stage1_markers(engine)
+    observed_digest = await corpus_digest(engine)
+    if authority != (STATE, 1) or cutover != (1,) or observed_digest != actual_digest:
+        raise ActivationUnknown("Stage 1 committed readback is inconsistent; repair forward")
+    return receipt

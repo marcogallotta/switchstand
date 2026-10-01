@@ -1,10 +1,13 @@
+import asyncio
 import os
+import sys
 from uuid import UUID
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from chatgpt_fixture import PRINCIPAL, grant
+from conftest import activate_stage1
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -30,8 +33,15 @@ from switchstand.core import (
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import GrantState
 from switchstand.state import PostgresState, metadata
-from switchstand.work_index import WorkIndex, activate, normalize_title
-from switchstand.work_index_migration import final_scan
+from switchstand.work_index import (
+    ActivationUnknown,
+    WorkIndex,
+    activate,
+    normalize_title,
+    prepare_manifest,
+    reconcile_activation,
+)
+from switchstand.work_index_migration import final_scan, load_receipt
 from switchstand.work_metadata import (
     UNKNOWN,
     ProviderMetadataSnapshot,
@@ -39,6 +49,7 @@ from switchstand.work_metadata import (
     activate_metadata,
     authority_generation,
     generate_worksheet,
+    reconcile_metadata_activation,
 )
 
 
@@ -91,7 +102,10 @@ async def test_atomic_cutover_reuses_handles_and_excludes_synthetic_or_foreign(i
             "(:foreign, 'asana', 'foreign')"
         ), {"known": known.id, "synthetic": synthetic.id, "foreign": foreign.id})
 
-    assert await activate(index.engine, (item("1", "Alpha"), item("2", "Beta", completed=True))) == 2
+    receipt = await activate_stage1(
+        index.engine, (item("1", "Alpha"), item("2", "Beta", completed=True))
+    )
+    assert receipt.count == 2 and len(receipt.corpus_digest) == 64
     assert (await index.get(known.id)).title == "Alpha"  # type: ignore[union-attr]
     assert await index.get(synthetic.id) is None
     assert await index.get(foreign.id) is None
@@ -101,7 +115,7 @@ async def test_atomic_cutover_reuses_handles_and_excludes_synthetic_or_foreign(i
 
 
 async def test_db_search_filter_pagination_and_cold_reader_need_no_provider(index):
-    await activate(index.engine, (
+    await activate_stage1(index.engine, (
         item("1", "Alpha task"), item("2", "Beta task"),
         item("3", "Gamma", completed=True),
     ))
@@ -122,7 +136,7 @@ async def test_db_search_filter_pagination_and_cold_reader_need_no_provider(inde
 
 
 async def test_service_search_is_db_only_when_provider_search_is_unavailable(index):
-    await activate(index.engine, (item("1", "Offline searchable"),))
+    await activate_stage1(index.engine, (item("1", "Offline searchable"),))
     async with index.engine.connect() as connection:
         work_id = await connection.scalar(text("SELECT work_id FROM work_index"))
     principal = PRINCIPAL.model_copy(update={"subject": str(UUID(int=42))})
@@ -148,11 +162,13 @@ async def test_service_search_is_db_only_when_provider_search_is_unavailable(ind
 
 
 async def test_cutover_marker_without_active_row_fails_closed(index):
-    await activate(index.engine, (item("1", "Never restore provider authority"),))
+    await activate_stage1(index.engine, (item("1", "Never restore provider authority"),))
     async with index.engine.connect() as connection:
         work_id = await connection.scalar(text("SELECT work_id FROM work_index"))
     async with index.engine.begin() as connection:
         await connection.execute(text("DELETE FROM work_authority"))
+    with pytest.raises(ActivationUnknown):
+        await activate(index.engine, (item("1", "Again"),), expected_manifest_digest="")
     with pytest.raises(ValueError, match="inconsistent irreversible"):
         await index.generation()
 
@@ -179,7 +195,7 @@ async def test_cutover_marker_without_active_row_fails_closed(index):
 
 
 async def test_scalar_update_is_db_only_composite_and_stale_safe(index):
-    await activate(index.engine, (item("1", "Provider title"),))
+    await activate_stage1(index.engine, (item("1", "Provider title"),))
     async with index.engine.connect() as connection:
         work_id = await connection.scalar(text(
             "SELECT id FROM work_handles WHERE provider = 'asana' AND provider_work_id = '1'"
@@ -222,7 +238,7 @@ async def test_copied_messy_shape_survives_offline_import(index):
             ),
         ),
     )
-    await activate(index.engine, (copied,))
+    await activate_stage1(index.engine, (copied,))
     result = await index.search(WorkSearchRequest(api_version="1", text="café blocked"))
     assert result is not None and result.items[0].title == copied.title
     assert result.items[0].routing == copied.routing
@@ -231,11 +247,36 @@ async def test_copied_messy_shape_survives_offline_import(index):
 
 async def test_failed_pre_cutover_import_leaves_no_authority(index):
     with pytest.raises(ValueError, match="exactly once"):
-        await activate(index.engine, (item("same", "A"), item("same", "B")))
+        await activate_stage1(index.engine, (item("same", "A"), item("same", "B")))
     assert not await index.active()
     async with index.engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 0
         assert await connection.scalar(text("SELECT count(*) FROM work_authority_cutovers")) == 0
+
+
+async def test_stage1_rejects_unapproved_same_scan_digest_before_marker(index):
+    await prepare_manifest(index.engine, (item("1", "Alpha"),))
+    with pytest.raises(ValueError, match="approved expected digest"):
+        await activate(index.engine, (item("1", "Alpha"),), expected_manifest_digest="0" * 64)
+    assert not await index.active()
+
+
+async def test_stage1_fresh_process_reconciles_death_after_commit(index, tmp_path):
+    receipt = tmp_path / "attempt.json"
+    script = """
+import asyncio, os; from pathlib import Path; from sqlalchemy.ext.asyncio import create_async_engine; import switchstand.work_index as w
+from switchstand.contracts import Routing, WorkContext; from switchstand.discovery import ProviderSearchItem; from switchstand.work_index_migration import write_receipt
+async def main():
+ e=create_async_engine(os.environ['TEST_DATABASE_URL']); i=(ProviderSearchItem(provider_work_id='1',title='Alpha',completed=False,revision='r1',routing=Routing(priority='P0'),context=WorkContext(assignee='Marco')),); d=await w.prepare_manifest(e,i); real=w._commit
+ async def die(t): await real(t); os._exit(91)
+ w._commit=die; await w.activate(e,i,expected_manifest_digest=d,before_commit=lambda r: write_receipt(Path(os.environ['RECEIPT']),r))
+asyncio.run(main())
+"""
+    env = {**os.environ, "RECEIPT": str(receipt)}
+    process = await asyncio.create_subprocess_exec(sys.executable, "-c", script, env=env)
+    assert await process.wait() == 91
+    recovered = await reconcile_activation(index.engine, load_receipt(receipt))
+    assert recovered.recovered_after_commit_error and await index.active()
 
 
 def test_stage2_waiting_requires_operator_supplied_reopen_truth():
@@ -251,7 +292,7 @@ def test_stage2_waiting_requires_operator_supplied_reopen_truth():
 async def test_stage2_worksheet_is_complete_atomic_and_ignores_provider_metadata(index):
     first = item("1", "Alpha")
     second = item("2", "Done", completed=True)
-    await activate(index.engine, (first, second))
+    await activate_stage1(index.engine, (first, second))
     worksheet = await generate_worksheet(index.engine)
     by_provider = {row.provider_work_id: row for row in worksheet.rows}
     alpha = by_provider["1"]
@@ -267,7 +308,9 @@ async def test_stage2_worksheet_is_complete_atomic_and_ignores_provider_metadata
             "2", second.revision, second.routing, "notes", second.context, frozenset()
         ),
     )
-    assert await activate_metadata(index.engine, worksheet, snapshots) == 2
+    attempts = []
+    assert (await activate_metadata(index.engine, worksheet, snapshots, attempts.append)).count == 2
+    assert (await reconcile_metadata_activation(index.engine, attempts[0])).recovered_after_commit_error
     assert await authority_generation(index.engine) == 1
     projected = await index.project(alpha.work_id, ProviderWork(
         "ignored", "provider notes", False, first.revision,
@@ -285,7 +328,7 @@ async def test_stage2_worksheet_is_complete_atomic_and_ignores_provider_metadata
 
 async def test_stage2_stale_or_incomplete_worksheet_leaves_no_marker(index):
     source = item("1", "Alpha")
-    await activate(index.engine, (source,))
+    await activate_stage1(index.engine, (source,))
     worksheet = await generate_worksheet(index.engine)
     stale = ProviderMetadataSnapshot(
         "1", "changed", source.routing, "notes", source.context, frozenset()
@@ -297,7 +340,7 @@ async def test_stage2_stale_or_incomplete_worksheet_leaves_no_marker(index):
 
 async def test_stage2_metadata_and_dependency_updates_share_versioned_db_truth(index):
     first, second = item("1", "Alpha"), item("2", "Beta")
-    await activate(index.engine, (first, second))
+    await activate_stage1(index.engine, (first, second))
     worksheet = await generate_worksheet(index.engine)
     snapshots = tuple(
         ProviderMetadataSnapshot(
@@ -332,7 +375,7 @@ async def test_stage2_metadata_and_dependency_updates_share_versioned_db_truth(i
 
 async def test_stage2_ignored_provider_metadata_does_not_change_currentness(index):
     source = item("1", "Alpha")
-    await activate(index.engine, (source,))
+    await activate_stage1(index.engine, (source,))
     worksheet = await generate_worksheet(index.engine)
     row = worksheet.rows[0]
     snapshots = (ProviderMetadataSnapshot(
@@ -353,7 +396,7 @@ async def test_stage2_ignored_provider_metadata_does_not_change_currentness(inde
 
 async def test_stage2_revision_is_shared_across_get_and_attachments_and_tracks_context(index):
     source = item("1", "Alpha")
-    await activate(index.engine, (source,))
+    await activate_stage1(index.engine, (source,))
     worksheet = await generate_worksheet(index.engine)
     row = worksheet.rows[0]
     snapshots = (ProviderMetadataSnapshot(
@@ -396,7 +439,7 @@ async def test_stage2_revision_is_shared_across_get_and_attachments_and_tracks_c
 
 
 async def test_populated_cutover_marker_refuses_downgrade(index, monkeypatch):
-    await activate(index.engine, (item("1", "Alpha"),))
+    await activate_stage1(index.engine, (item("1", "Alpha"),))
     with pytest.raises(IntegrityError):
         async with index.engine.begin() as connection:
             await connection.execute(text(

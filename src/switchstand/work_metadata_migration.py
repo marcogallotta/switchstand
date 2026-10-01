@@ -14,13 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError
 from .provider import AsanaProvider
-from .work_index_migration import require_offline
+from .work_index import ActivationReceipt, ActivationUnknown
+from .work_index_migration import load_receipt, require_offline, write_receipt
 from .work_metadata import (
     ImportWorksheet,
     ProviderMetadataSnapshot,
     WorksheetRow,
     activate_metadata,
     generate_worksheet,
+    reconcile_metadata_activation,
     validate_worksheet,
 )
 
@@ -93,9 +95,20 @@ async def _resources() -> tuple[AsyncEngine, httpx.AsyncClient, AsanaProvider]:
     return engine, client, AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
 
 
-async def execute(action: str, path: Path, *, confirm_offline: bool) -> int:
+async def execute(
+    action: str, path: Path, *, confirm_offline: bool, receipt_path: Path | None,
+) -> int | ActivationReceipt:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
+    if action == "reconcile":
+        if receipt_path is None:
+            raise ValueError("--receipt is required")
+        engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
+        try:
+            await require_offline(engine)
+            return await reconcile_metadata_activation(engine, load_receipt(receipt_path))
+        finally:
+            await engine.dispose()
     engine, client, provider = await _resources()
     try:
         await require_offline(engine)
@@ -112,7 +125,12 @@ async def execute(action: str, path: Path, *, confirm_offline: bool) -> int:
         if action == "validate":
             await validate_metadata(engine, worksheet, snapshots)
             return len(worksheet.rows)
-        return await activate_metadata(engine, worksheet, snapshots)
+        if receipt_path is None:
+            raise ValueError("activate requires --receipt")
+        return await activate_metadata(
+            engine, worksheet, snapshots,
+            before_commit=lambda receipt: write_receipt(receipt_path, receipt),
+        )
     finally:
         await client.aclose()
         await engine.dispose()
@@ -129,17 +147,29 @@ async def validate_metadata(
 
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("generate", "validate", "activate"))
+    parser.add_argument("action", choices=("generate", "validate", "activate", "reconcile"))
     parser.add_argument("worksheet", type=Path)
     parser.add_argument("--confirm-offline", action="store_true")
+    parser.add_argument("--receipt", type=Path)
     arguments = parser.parse_args(argv)
     try:
-        count = asyncio.run(execute(
+        result = asyncio.run(execute(
             arguments.action, arguments.worksheet, confirm_offline=arguments.confirm_offline
+            , receipt_path=arguments.receipt
         ))
+    except ActivationUnknown as error:
+        parser.exit(2, f"{error}\n")
     except (KeyError, OSError, ProviderError, RuntimeError, SQLAlchemyError, ValidationError, ValueError) as error:
         parser.exit(1, f"Stage 2 {arguments.action} failed before authority flip: {error}\n")
-    print(f"Stage 2 {arguments.action} complete for {count} admitted work items")
+    if isinstance(result, ActivationReceipt):
+        print(
+            f"Stage 2 POSTGRES_AUTHORITY active generation={result.generation} "
+            f"count={result.count} corpus_sha256={result.corpus_digest} "
+            f"edges_sha256={result.edge_digest} "
+            f"recovered_after_commit_error={str(result.recovered_after_commit_error).lower()}"
+        )
+    else:
+        print(f"Stage 2 {arguments.action} complete for {result} admitted work items")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,14 @@ import pytest
 from sqlalchemy.exc import ArgumentError
 
 from switchstand.database import validate_test_database_url
+from switchstand.work_index import activate, prepare_manifest
+
+
+async def activate_stage1(engine, items):
+    digest = await prepare_manifest(engine, items)
+    return await activate(
+        engine, items, expected_manifest_digest=digest
+    )
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
