@@ -401,10 +401,13 @@ class AsanaProvider:
             )
             response.raise_for_status()
             task = response.json()["data"]
-            if not isinstance(task, dict) or self._gid(task) != provider_work_id:
+            if not isinstance(task, dict):
                 raise TypeError
-            revision = cast(JSON, task).get("modified_at")
-            memberships = cast(JSON, task).get("memberships")
+            task_data = cast(JSON, task)
+            if self._gid(task_data) != provider_work_id:
+                raise TypeError
+            revision = task_data.get("modified_at")
+            memberships = task_data.get("memberships")
             if not isinstance(revision, str) or not revision or not isinstance(memberships, list):
                 raise TypeError
             placements: list[ProviderPlacement] = []
@@ -423,7 +426,7 @@ class AsanaProvider:
             return ProviderTaskStructure(
                 provider_work_id,
                 revision,
-                self._parent_gid(cast(JSON, task)),
+                self._parent_gid(task_data),
                 tuple(sorted(placements)),
             )
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
@@ -439,10 +442,13 @@ class AsanaProvider:
             )
             response.raise_for_status()
             project = response.json()["data"]
-            if not isinstance(project, dict) or self._gid(project) != provider_project_id:
+            if not isinstance(project, dict):
+                raise TypeError
+            project_data = cast(JSON, project)
+            if self._gid(project_data) != provider_project_id:
                 raise TypeError
             name, revision, archived = (
-                cast(JSON, project).get(key) for key in ("name", "modified_at", "archived")
+                project_data.get(key) for key in ("name", "modified_at", "archived")
             )
             if (
                 not isinstance(name, str)
@@ -468,9 +474,12 @@ class AsanaProvider:
                 page.raise_for_status()
                 payload = page.json()
                 rows, next_page = payload["data"], payload["next_page"]
-                if not isinstance(rows, list) or len(rows) > 100:
+                if not isinstance(rows, list):
                     raise TypeError
-                for raw in cast(list[object], rows):
+                raw_rows = cast(list[object], rows)
+                if len(raw_rows) > 100:
+                    raise TypeError
+                for raw in raw_rows:
                     section_id = self._gid(raw)
                     section_name = cast(JSON, raw).get("name") if isinstance(raw, dict) else None
                     if (
