@@ -1,15 +1,16 @@
 # Roadmap
 
-Last updated: 2026-09-29
+## Historical snapshot — 2026-09-29
 
-This is a short, near-term snapshot of current priorities and what comes next — not
-strategic direction. It has no fixed owner or update cadence yet; anyone can edit it
-directly, and it should stay short rather than exhaustively maintained. Durable
-strategic direction lives in the North Star document, not here. If an item below turns
-out to represent a strategic shift rather than a near-term step, take it to North Star
-review instead of just editing this file.
+The material below is preserved as a point-in-time planning record. It is not current
+work status, routing, authority, or an implementation queue. Follow `AGENTS.md` and the
+current routed work for those decisions. Durable strategic direction lives in the
+[North Star](north-star.md).
 
-## Current near-term priorities
+This snapshot was originally a short view of then-current priorities and possible next
+steps. Its task states and ordering have not been maintained since 2026-09-29.
+
+### Priorities recorded in that snapshot
 
 0. **MCP live activation** (Asana 1218572464592132) — immediate priority, ahead of the
    Lifecycle sequence below. MCP product implementation was declared done by Marco on
@@ -52,10 +53,9 @@ review instead of just editing this file.
    handoff route, subject to item 0; that is not a standing authorization. Not
    scoped or prioritized yet.
 
-## Notes
+### Notes recorded with the snapshot
 
-- Ordering above (Stateful → Assurance → Wakeful) reflects Marco's explicit
-  2026-09-27 direction on the Stateful root task and should be kept in sync with that
-  task if it changes.
+- Ordering above (Stateful → Assurance → Wakeful) reflected Marco's explicit
+  2026-09-27 direction on the Stateful root task at the time.
 - Handoff/current-workset V1 is design-complete and pilot-ready independently of the
   Stateful/Assurance/Wakeful sequencing above; it is not blocked on that ordering.
