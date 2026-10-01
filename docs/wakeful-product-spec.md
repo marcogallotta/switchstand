@@ -348,3 +348,9 @@ chooses them:
 - **REJECTED — a shared Codex/Claude launcher:** current sources establish different supported
   lifecycle mechanisms, so sharing a launcher would couple the neutral contract to the clients.
   The shared seam ends at event/delivery outcome semantics.
+
+The Codex-only technical precursor (WorkId `95724d3c-f1c3-5585-a2bd-ebbc43bf408e`, approved
+revision `2026-10-01T20:15:32.212Z`) is preliminary, opt-in/default-off qualification in
+`codex_wakeful.py`. Its private projection proves admission rather than task completion and is
+not the product WakeEvent/outbox. It does not complete or reorder the feedback-adapter stage,
+Claude implementation, status/suspend, routing, retention, watcher or Human Input work.
