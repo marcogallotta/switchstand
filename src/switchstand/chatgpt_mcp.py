@@ -8,7 +8,7 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue, model_validator
 
-from . import repository_bundle
+from . import repository_bundle, repository_candidate
 from .agent_mailboxes import AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
@@ -101,6 +101,7 @@ class OrdinaryRelationPatch(ClosedModel):
 
 ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "repository_bundle_get",
+    "repository_candidate_qualification_get",
     "work_get",
     "work_search",
     "work_resolve_reference",
@@ -292,6 +293,19 @@ def build_ordinary_tools(
             ],
             structured_content=structured,
         )
+
+    async def repository_candidate_qualification_get(
+        api_version: Literal["1"],
+        pull_request: Annotated[int, Field(ge=1)],
+        include_failure_detail: bool = False,
+    ) -> repository_candidate.RepositoryCandidateQualification:
+        """Qualify the exact current GitHub PR candidate against code-owned CI gates."""
+        del api_version
+        result = await repository_candidate.qualify_repository_candidate(
+            pull_request, include_failure_detail,
+        )
+        audited("repository_candidate_qualification_get", str(pull_request), result.status)
+        return result
 
     async def agent_project_bootstrap(
         api_version: Literal["1"], role: str, project_name: str, workspace_gid: str,
@@ -1040,6 +1054,7 @@ def build_ordinary_tools(
 
     return (
         ("repository_bundle_get", repository_bundle_get),
+        ("repository_candidate_qualification_get", repository_candidate_qualification_get),
         ("agent_project_bootstrap", agent_project_bootstrap),
         ("work_get", work_get),
         ("work_search", work_search),
