@@ -146,6 +146,24 @@ def test_review_checkpoint_retries_same_attempt_after_lost_output(tmp_path: Path
     assert commands.prepares == 2
 
 
+@pytest.mark.parametrize("artifact", ["stage1-prepare.json", "worksheet"])
+def test_fresh_review_checkpoint_rejects_subordinate_artifact_before_effect(
+    tmp_path: Path, artifact: str,
+):
+    subject, commands = _review(tmp_path)
+    path = (
+        subject.evidence.worksheet
+        if artifact == "worksheet" else subject.attempt_dir / artifact
+    )
+    _private(path, b"unbound evidence\n")
+
+    with pytest.raises(Unknown, match="contains subordinate evidence"):
+        subject.prepare()
+
+    assert commands.prepares == 0
+    assert not subject.receipt_path.exists()
+
+
 def test_review_checkpoint_refuses_changed_preparation_readback(tmp_path: Path):
     subject, commands = _review(tmp_path)
     subject.prepare()

@@ -269,6 +269,10 @@ class ReviewCheckpoint:
                     raise Unknown("review checkpoint no longer reconciles exact evidence")
                 return worksheet
         else:
+            if any(os.path.lexists(path) for path in (
+                self.attempt_dir / "stage1-prepare.json", self.evidence.worksheet,
+            )):
+                raise Unknown("fresh review attempt contains subordinate evidence")
             self._write("ATTEMPTING")
         prepared, worksheet = self.commands.prepare_review(self.evidence)
         prepare_path = self.attempt_dir / "stage1-prepare.json"
