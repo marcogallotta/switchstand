@@ -84,6 +84,12 @@ a task or review handoff.
   worktrees and obtains the pinned uv binary through Docker only when needed.
 - Full clean/container quality runs in CI. Run `docker compose run --build --rm quality` locally only when changing
   Docker, runtime, or development-tool behavior that CI cannot qualify for the host.
+- `scripts/local-quality` runs the exact CI Quality commands for a clean linked-writer head against an owned,
+  disposable PostgreSQL 18 container. It builds the development image, mounts the current writer read-only (so the
+  image's source tree cannot substitute for the candidate), shares only the database container's network namespace,
+  and prints the candidate, image and container identities plus explicit PASS/FAIL/NOT_RUN and cleanup results. It
+  refuses occupied deterministic container names and creates no Docker network. This is local exact-head evidence,
+  not PR-composition, Docker-lifecycle, or live-activation evidence.
 - For focused Docker, runtime, or tooling validation, run the normal image build so Docker validates and reuses its
   cache. Record the resulting immutable image ID together with the candidate SHA and dirty state; a dirty worktree is
   not an immutable candidate. Never reuse an arbitrary tag or an image of unknown provenance. When appropriate, mount
