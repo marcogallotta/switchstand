@@ -176,8 +176,11 @@ action.
   - authenticated ChatGPT uses the HTTP/OAuth edge in `chatgpt_edge.py` with workspace grants and explicit WorkIds;
   - managed task-bound Codex uses the STDIO server from `mcp.py`, with active/reference WorkIds injected only by the
     trusted launcher;
-  - the development MCP in `development.py` is a separate local development boundary for check/commit/quality/run
-    status and does not grant product work authority.
+  - the development MCP in `development.py` is a separate local development boundary for selected-test
+    `check`, commit, non-authoritative `diagnostic_full_suite`, and run status. The diagnostic runs the
+    full suite inside the deliberately constrained managed sandbox; its result does not establish CI
+    equivalence or full qualification. Exact-head/composition GitHub Quality remains authoritative.
+    This surface does not grant product work authority.
   Raw `source_task/source_stories/source_story` remain transitional compatibility reads; prefer WorkId-based APIs for
   new ordinary flows. Provider credentials remain in trusted host/service configuration and are not agent arguments.
 

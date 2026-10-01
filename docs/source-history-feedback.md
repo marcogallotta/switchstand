@@ -94,7 +94,8 @@ current guidance on WorkId-based APIs.
   bounded compatibility cases above.
 - Context-only launches expose only the minimal current-work/history view needed
   by that context contract.
-- The development MCP owns local check, commit, quality, and run-status mechanics;
+- The development MCP owns local selected-test check, commit, explicitly non-authoritative
+  diagnostic full-suite, and run-status mechanics; GitHub Quality owns full qualification;
   it grants no product work authority.
 
 The executable factories, schemas, allowlists, and tests are authoritative for

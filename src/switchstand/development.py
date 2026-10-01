@@ -32,6 +32,10 @@ QUALITY_SECONDS = 600
 WORKLOAD_STOP_SECONDS = 5
 WORKLOAD_OUTPUT_BYTES = 12000
 WORKLOAD_OUTPUT_CHUNK_BYTES = 4096
+DIAGNOSTIC_NOTICE = (
+    "NON-AUTHORITATIVE DIAGNOSTIC: this constrained full-suite run is not "
+    "GitHub Quality and does not establish full qualification.\n"
+)
 
 
 class DevelopmentBoundary(NamedTuple):
@@ -611,8 +615,8 @@ def build_server(bound: bool = True) -> MCPServer:
         state = "ok" if committed.returncode == 0 else "failed"
         return _result(state, before, repo, committed.stdout + committed.stderr)
 
-    async def quality(expected_head: str) -> DevelopmentResult:
-        """Run the fixed full gate against one clean, exact, dependency-pinned candidate."""
+    async def diagnostic_full_suite(expected_head: str) -> DevelopmentResult:
+        """Run the full suite as a constrained, non-authoritative diagnostic only."""
         repo, branch, before = _bound_repo()
         if before != expected_head:
             return _result("stale", before, repo)
@@ -627,17 +631,27 @@ def build_server(bound: bool = True) -> MCPServer:
             )
         except TimeoutError as error:
             return _result(
-                "failed", before, repo, f"full quality exceeded {QUALITY_SECONDS} seconds: {error}"
+                "failed",
+                before,
+                repo,
+                DIAGNOSTIC_NOTICE
+                + f"diagnostic full suite exceeded {QUALITY_SECONDS} seconds: {error}",
             )
         except RuntimeError as error:
-            return _result("failed", before, repo, str(error))
+            return _result("failed", before, repo, DIAGNOSTIC_NOTICE + str(error))
         unchanged = (
             before == _git(repo, "rev-parse", "HEAD").stdout.strip()
             and not _git(repo, "status", "--porcelain").stdout
             and _manifest(repo) == os.environ["SWITCHSTAND_MANIFEST_SHA256"]
         )
         state = "ok" if checked.returncode == 0 and unchanged else "failed"
-        return _result(state, before, repo, checked.stdout + checked.stderr)
+        detail = checked.stdout + checked.stderr
+        return _result(
+            state,
+            before,
+            repo,
+            DIAGNOSTIC_NOTICE + detail[-(WORKLOAD_OUTPUT_BYTES - len(DIAGNOSTIC_NOTICE)) :],
+        )
 
     async def run_status() -> RunStatus:
         """Report the exact managed run identity and observed process state."""
@@ -649,7 +663,7 @@ def build_server(bound: bool = True) -> MCPServer:
 
     closed_tool(server, "check", check)
     closed_tool(server, "commit_all_current_worktree", commit_all_current_worktree)
-    closed_tool(server, "quality", quality)
+    closed_tool(server, "diagnostic_full_suite", diagnostic_full_suite)
     closed_tool(server, "run_status", run_status)
     return server
 

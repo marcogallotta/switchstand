@@ -127,7 +127,9 @@ state, but their authority and inventories are intentionally not interchangeable
 
 `development.py` owns development-environment preparation and cleanup invoked by `launch.py`, plus
 the development-only MCP and its exact linked-writer/run boundary. The MCP exposes four tools:
-`check`, `commit_all_current_worktree`, `quality`, and `run_status`. Preparation and cleanup are
+`check`, `commit_all_current_worktree`, `diagnostic_full_suite`, and `run_status`. The diagnostic
+full-suite tool is explicitly non-authoritative; exact-head/composition GitHub Quality owns full
+qualification. Preparation and cleanup are
 module functions used by launch, not MCP tools. This surface is separate from product work authority.
 
 ## Durable state, identity, and currentness
