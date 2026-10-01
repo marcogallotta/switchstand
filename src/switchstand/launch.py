@@ -217,7 +217,7 @@ def provision(
         ):
             upgrade_env.pop(name, None)
     upgrade = subprocess.run(
-        [str(control / "scripts/switchstand-upgrade-state")],
+        [str(control / "scripts/switchstand-upgrade-state"), "--target", "production"],
         cwd=control, env=upgrade_env, text=True, capture_output=True, check=False,
     )
     if upgrade.returncode:

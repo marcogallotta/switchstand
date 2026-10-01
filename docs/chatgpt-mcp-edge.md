@@ -156,6 +156,12 @@ evidence layer validates the exact candidate, full corpus and reviewed-exception
 digest, private file identity, and free space, then fsyncs immutable attempt-local copies before any
 effect. Its inert resumable state machine validates Stage 2 first and never repeats proven effects.
 Host command binding and the operator CLI remain separate, so these contracts run no database work.
+The host operations boundary also distinguishes an exact production identity from
+an explicitly supplied disposable identity. Disposable maintenance requires a
+private canonical rehearsals root, namespaced rehearsal service, and three distinct loopback
+endpoints; any production service, state path, lock, Caddy endpoint, or public/local
+URL is rejected before host effects. This is an inert seam for copied-state
+qualification, not a disposable service provisioner or activation path.
 While the edge is stopped, that separately reviewed adapter will run the final scan and atomic
 authority flip described in
 [Database-first Stage 1](database-first-stage1.md). Before that transaction commits, recovery may

@@ -101,13 +101,21 @@ creates a private custom-format dump under
 `~/.local/state/switchstand/backups`; restores and upgrades that dump in a
 disposable PostgreSQL instance; and only then upgrades shared state. `rehearse`
 proves an upgrade/downgrade/re-upgrade cycle without touching shared state;
-`apply` (also the no-argument compatibility default) upgrades shared state but
+`apply` upgrades shared state but
 never activates database authority. Both create a private, fsynced JSON-lines
 receipt bound to exact source revision `0007`, runtime SHA, Alembic head, dump,
 counts, and deterministic schema/data digests. An `apply` attempt is durable
 before mutation and the same receipt reconciles to `APPLIED`, `ABORTED`, or
 `UNKNOWN`. Keep the reported dump and receipt until the upgraded
 service has been exercised successfully.
+
+Every invocation names its target explicitly. `--target production` binds the
+canonical Compose project, volume, network, and receipt directory. A copied-state
+qualification instead uses `--target disposable:NAME`, which derives a distinct
+`switchstand-rehearsal-NAME` Compose namespace under the pre-created, private,
+non-symlink `~/.local/state/switchstand/rehearsals/NAME` root. Receipts bind that
+exact target, project, volume, and network, so resume or abort cannot cross targets.
+Selecting a target does not create or populate it.
 
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
