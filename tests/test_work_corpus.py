@@ -124,7 +124,7 @@ async def test_stable_union_includes_readable_bound_continuity_targets(index):
 
     rows = {row["provider_work_id"]: row for row in manifest["rows"]}
     assert set(rows) == {"broad", "grant-target", "unknown-target", "dependency-target"}
-    assert rows["broad"]["dependencies"] == ("dependency-target",)
+    assert rows["broad"]["dependencies"] == ["dependency-target"]
     assert rows["grant-target"]["work_id"] == str(grant.id)
     assert "Coordinator" not in str(manifest)
     assert manifest["counts"] == {"broad": 1, "bound": 3, "included": 4, "exceptions": 0}

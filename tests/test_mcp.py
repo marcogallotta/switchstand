@@ -280,6 +280,7 @@ async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
                 "next_page": {"offset": "next"},
             })
         return httpx.Response(200, json={"data": {
+            "gid": "1218431511675555",
             "name": "Task", "notes": "Notes", "completed": False, "modified_at": "r1",
             "assignee": {"gid": "hidden-user", "name": "Ada"},
             "memberships": [{"project": {"gid": PROJECT, "name": "Engineering"},
