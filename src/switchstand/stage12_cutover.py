@@ -56,6 +56,7 @@ class CutoverCommands(Protocol):
     def validate_stage2_pre_authority(self, evidence: FrozenEvidence) -> str: ...
     def prepare_stage1(self, evidence: FrozenEvidence) -> str: ...
     def capture_final_corpus(self, evidence: FrozenEvidence, destination: Path) -> str: ...
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None: ...
     def stage1_state(self, receipt: Path) -> Reconciled: ...
     def activate_stage1(self, prepared_digest: str, receipt: Path) -> None: ...
     def stage2_state(self, receipt: Path) -> Reconciled: ...
@@ -95,7 +96,7 @@ def _binding_digest(before: Path, after: Path) -> str:
     return cast(str, result)
 
 
-def _read_private(path: Path, label: str) -> bytes:
+def read_private(path: Path, label: str) -> bytes:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     except OSError as error:
@@ -114,7 +115,7 @@ def _publish_or_match(path: Path, data: bytes, label: str) -> None:
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
-        if _read_private(path, label) != data:
+        if read_private(path, label) != data:
             raise Failed(f"existing {label} does not match this attempt") from None
         return
     except OSError as error:
@@ -156,7 +157,7 @@ def freeze_evidence(evidence: Evidence, attempt_dir: Path) -> FrozenEvidence:
         (evidence.worksheet, attempt_dir / "stage2-worksheet.json", "Stage 2 worksheet"),
     )
     for source, destination, label in sources:
-        _publish_or_match(destination, _read_private(source, label), label)
+        _publish_or_match(destination, read_private(source, label), label)
     directory = os.open(attempt_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(directory)
@@ -178,7 +179,7 @@ def freeze_evidence(evidence: Evidence, attempt_dir: Path) -> FrozenEvidence:
         raise Failed("corpus evidence is invalid") from error
     frozen_worksheet = sources[2][1]
     worksheet_digest = hashlib.sha256(
-        _read_private(frozen_worksheet, "frozen Stage 2 worksheet")
+        read_private(frozen_worksheet, "frozen Stage 2 worksheet")
     ).hexdigest()
     if worksheet_digest != evidence.worksheet_digest:
         raise Failed("Stage 2 worksheet digest does not match")
@@ -213,7 +214,7 @@ class Stage12Cutover:
         if not self.receipt_path.exists():
             return None
         try:
-            raw = json.loads(_read_private(self.receipt_path, "cutover receipt"))
+            raw = json.loads(read_private(self.receipt_path, "cutover receipt"))
         except (Failed, TypeError, ValueError) as error:
             raise Unknown("cutover receipt is invalid") from error
         if not isinstance(raw, dict):
@@ -393,6 +394,7 @@ class Stage12Cutover:
             raise Unknown("authority boundary crossed; abort is forbidden")
         if self._commands.stage1_state(self._stage1).state != "ABSENT":
             raise Unknown("Stage 1 absence is not proven; abort is forbidden")
+        self._commands.cleanup_stage1(frozen)
         schema = self._commands.schema_state(self._schema)
         if schema.state == "APPLIED":
             self._commands.abort_schema(self._schema)
@@ -421,7 +423,7 @@ class ConcreteCommands:
         )
 
     def _environment(self) -> dict[str, str]:
-        raw = _read_private(self.c.env_file, "migration environment").decode()
+        raw = read_private(self.c.env_file, "migration environment").decode()
         supplied = {
             key.strip(): value.strip().strip("'\"")
             for line in raw.splitlines()
@@ -523,7 +525,7 @@ class ConcreteCommands:
 
     @staticmethod
     def _receipt(path: Path) -> str:
-        return hashlib.sha256(_read_private(path, "subordinate receipt")).hexdigest()
+        return hashlib.sha256(read_private(path, "subordinate receipt")).hexdigest()
 
     def _frozen(self) -> FrozenEvidence:
         root = self.c.attempt_dir
@@ -546,10 +548,10 @@ class ConcreteCommands:
         try:
             records = [
                 json.loads(line)
-                for line in _read_private(receipt, "schema receipt").splitlines()
+                for line in read_private(receipt, "schema receipt").splitlines()
             ]
             terminal = records[-1]
-            backup = _read_private(Path(cast(str, terminal["backup"])), "schema backup")
+            backup = read_private(Path(cast(str, terminal["backup"])), "schema backup")
         except (AttributeError, IndexError, KeyError, TypeError, ValueError, UnicodeError, Failed):
             return Reconciled("UNKNOWN")
         if terminal.get("outcome") != "APPLIED":
@@ -563,11 +565,18 @@ class ConcreteCommands:
         self._schema(receipt, "abort-pre-authority")
 
     def validate_stage2_pre_authority(self, evidence: FrozenEvidence) -> str:
+        prepare_receipt = self.c.attempt_dir / "stage1-prepare.json"
         result = self._module(
             "switchstand.work_metadata_migration",
-            "validate",
+            "validate-prepared",
             evidence.worksheet,
             "--confirm-offline",
+            "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--expected-worksheet-digest", evidence.worksheet_digest,
+            "--receipt", prepare_receipt,
             check=False,
         )
         if result.returncode:
@@ -575,6 +584,8 @@ class ConcreteCommands:
         return hashlib.sha256((evidence.worksheet_digest + result.stdout).encode()).hexdigest()
 
     def prepare_stage1(self, evidence: FrozenEvidence) -> str:
+        receipt = self.c.attempt_dir / "stage1-prepare.json"
+        read_private(receipt, "Stage 1 preparation receipt")
         result = self._module(
             "switchstand.work_index_migration",
             "prepare",
@@ -587,21 +598,40 @@ class ConcreteCommands:
             evidence.corpus_digest,
             "--expected-exception-digest",
             evidence.exception_digest,
+            "--receipt",
+            receipt,
         )
-        match = re.fullmatch(r"prepared_import_sha256=([0-9a-f]{64})\n?", result.stdout)
+        match = re.search(r"(?:^|\s)prepared_import_sha256=([0-9a-f]{64})(?:\s|$)", result.stdout)
         if match is None:
             raise Failed("Stage 1 prepare output is invalid")
         return match.group(1)
 
     def capture_final_corpus(self, evidence: FrozenEvidence, destination: Path) -> str:
-        self._module(
-            "switchstand.work_corpus",
-            "capture",
-            destination,
-            "--source-candidate",
-            evidence.candidate_sha,
+        descriptor, name = tempfile.mkstemp(prefix=".corpus-final.", dir=self.c.attempt_dir)
+        os.close(descriptor)
+        fresh = Path(name)
+        fresh.unlink()
+        try:
+            self._module(
+                "switchstand.work_corpus", "capture", fresh,
+                "--source-candidate", evidence.candidate_sha,
+            )
+            digest = _binding_digest(evidence.manifests[0], fresh)
+            _publish_or_match(destination, read_private(fresh, "final corpus"), "final corpus")
+            return digest
+        finally:
+            fresh.unlink(missing_ok=True)
+
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None:
+        result = self._module(
+            "switchstand.work_index_migration", "prepare-cleanup", "--confirm-offline",
+            "--manifest", evidence.manifests[0], "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--receipt", self.c.attempt_dir / "stage1-prepare.json", check=False,
         )
-        return _binding_digest(evidence.manifests[0], destination)
+        if result.returncode:
+            raise Unknown(result.stderr.strip() or "Stage 1 preparation cleanup is unknown")
 
     def _activation_state(self, module: str, receipt: Path, worksheet: bool = False) -> Reconciled:
         if not receipt.exists():

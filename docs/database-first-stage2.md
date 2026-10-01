@@ -9,7 +9,28 @@ incremental catch-up, lease, claim, Asana projection, or reverse-authority path.
 
 ## Import worksheet
 
-The operator stops the MCP service and every other database client, then generates a JSON worksheet:
+For the combined Stage 1+2 cutover, keep the maintenance gate installed and the MCP service and
+every other database client stopped after the reviewed Stage 1 `prepare` receipt exists. Generate
+the exact pre-authority worksheet from that receipt and the two reviewed corpus manifests:
+
+```console
+switchstand-work-metadata-migrate generate-prepared stage2.json --confirm-offline \
+  --manifest corpus-a.json --manifest corpus-b.json \
+  --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256 \
+  --receipt stage1-prepare.json
+```
+
+The create-new private worksheet and reported SHA-256 bind the random WorkIds already made durable
+by that exact preparation receipt. Pause here for Human Review and approval of that exact worksheet;
+neither generation nor validation writes an authority marker. After approval, repeat the same
+evidence arguments with `validate-prepared` in place of `generate-prepared`. It re-reads every
+provider revision, structured value, and dependency; pass the approved SHA-256 back as
+`--expected-worksheet-digest`. Validation rechecks database quiescence and reconciles
+the exact Stage 1 preparation before returning success. Any drift refuses validation and keeps
+maintenance active; an ambiguous receipt/binding outcome is `UNKNOWN`. Do not activate Stage 1.
+
+The standalone post-Stage-1 procedure can instead generate a JSON worksheet with:
 
 ```console
 switchstand-work-metadata-migrate generate stage2.json --confirm-offline
@@ -26,7 +47,7 @@ The operator may replace `UNKNOWN` values with known values. `WAITING` and `DEFE
 exact wait kind and reopen condition. `CURRENT` and `TERMINAL` require `NONE` wait values. A root is
 `UNKNOWN`, `NONE`, or an admitted WorkId. `TERMINAL` is exactly equivalent to Stage 1 completion.
 
-Validate without writing:
+Validate the standalone worksheet without writing:
 
 ```console
 switchstand-work-metadata-migrate validate stage2.json --confirm-offline

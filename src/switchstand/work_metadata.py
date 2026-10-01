@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
 from .contracts import Routing, WorkContext
+from .discovery import ProviderSearchItem
 from .state import (
     work_authority,
     work_edges,
@@ -25,10 +26,12 @@ from .work_index import (
     ActivationNotCommitted,
     ActivationReceipt,
     ActivationUnknown,
+    PrepareReceipt,
     WorkIndex,
     canonical_digest,
     corpus_digest,
     corpus_digest_from_connection,
+    validate_prepare_receipt,
 )
 
 SCOPE = "workspace"
@@ -111,6 +114,7 @@ class WorksheetRow(_Closed):
 class ImportWorksheet(_Closed):
     format_version: Literal[1] = 1
     stage1_generation: int = Field(ge=1)
+    prepare_receipt_digest: str | None = None
     rows: tuple[WorksheetRow, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -181,6 +185,37 @@ async def generate_worksheet(engine: AsyncEngine) -> ImportWorksheet:
     return ImportWorksheet(stage1_generation=authority[0], rows=tuple(generated))
 
 
+def prepare_receipt_digest(receipt: PrepareReceipt) -> str:
+    return canonical_digest(asdict(receipt))
+
+
+def generate_prepared_worksheet(
+    items: tuple[ProviderSearchItem, ...], receipt: PrepareReceipt,
+    expected_before: tuple[tuple[str, str], ...],
+    expected_corpus_digest: str,
+) -> ImportWorksheet:
+    """Generate Stage 2 input from exact prepared identities before Stage 1 authority."""
+    if receipt.corpus_digest != expected_corpus_digest:
+        raise ValueError("preparation receipt does not bind the reviewed corpus")
+    handles = validate_prepare_receipt(receipt, items, expected_before)
+    rows = tuple(sorted((WorksheetRow(
+        work_id=handles[item.provider_work_id].id,
+        provider_work_id=item.provider_work_id, provider_revision=item.revision,
+        priority=item.routing.priority, work_type=item.routing.work_type,
+        lifecycle_state="TERMINAL" if item.completed else "UNKNOWN",
+        canonical_root=UNKNOWN, owner_key=UNKNOWN,
+        wait_kind=NONE if item.completed else UNKNOWN,
+        unblock_condition=NONE if item.completed else UNKNOWN,
+        next_due=NONE if item.completed else UNKNOWN,
+        next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
+        review_next_action=item.routing.review_next_action,
+        horizon=item.routing.horizon, stage3_gate=item.routing.stage3_gate,
+    ) for item in items), key=lambda row: row.work_id.int))
+    return ImportWorksheet(
+        stage1_generation=1, prepare_receipt_digest=prepare_receipt_digest(receipt), rows=rows,
+    )
+
+
 def validate_snapshots(
     worksheet: ImportWorksheet,
     snapshots: tuple[ProviderMetadataSnapshot, ...],
@@ -200,6 +235,39 @@ def validate_snapshots(
         expected_dependencies = frozenset(work_to_provider[value] for value in row.depends_on)
         if snapshot.dependency_provider_ids != expected_dependencies:
             raise ValueError("provider dependencies do not match the worksheet")
+
+
+def validate_prepared_worksheet(
+    worksheet: ImportWorksheet, snapshots: tuple[ProviderMetadataSnapshot, ...],
+    items: tuple[ProviderSearchItem, ...], receipt: PrepareReceipt,
+    expected_before: tuple[tuple[str, str], ...],
+    expected_corpus_digest: str,
+    expected_dependencies: dict[str, frozenset[str]],
+) -> None:
+    """Validate exact Stage 2 evidence without requiring Stage 1 authority."""
+    if receipt.corpus_digest != expected_corpus_digest:
+        raise ValueError("preparation receipt does not bind the reviewed corpus")
+    handles = validate_prepare_receipt(receipt, items, expected_before)
+    if worksheet.stage1_generation != 1 or (
+        worksheet.prepare_receipt_digest != prepare_receipt_digest(receipt)
+    ):
+        raise ValueError("worksheet does not bind the exact Stage 1 preparation receipt")
+    by_provider = {item.provider_work_id: item for item in items}
+    if {(row.provider_work_id, row.work_id) for row in worksheet.rows} != {
+        (provider, handle.id) for provider, handle in handles.items() if provider in by_provider
+    }:
+        raise ValueError("worksheet identities do not match the prepared Stage 1 corpus")
+    for row in worksheet.rows:
+        item = by_provider[row.provider_work_id]
+        if row.provider_revision != item.revision:
+            raise ValueError("worksheet revision does not match the reviewed Stage 1 corpus")
+        if (row.lifecycle_state == "TERMINAL") != item.completed:
+            raise ValueError("worksheet terminal state does not match the reviewed Stage 1 corpus")
+    if {
+        snapshot.provider_work_id: snapshot.dependency_provider_ids for snapshot in snapshots
+    } != expected_dependencies:
+        raise ValueError("provider dependencies changed from the reviewed Stage 1 corpus")
+    validate_snapshots(worksheet, snapshots)
 
 
 async def validate_worksheet(

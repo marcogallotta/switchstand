@@ -89,6 +89,9 @@ class Commands:
         _private(destination, evidence.manifests[0].read_bytes())
         return evidence.corpus_digest
 
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None:
+        self.calls.append("stage1-cleanup")
+
     def stage1_state(self, receipt: Path) -> Reconciled:
         self.calls.append("stage1-state")
         return self._state(self.stage1, "stage1")

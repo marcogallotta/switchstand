@@ -174,6 +174,36 @@ def test_disposable_database_rejects_live_project_identity(
         subject._env()  # pyright: ignore[reportPrivateUsage]
 
 
+def test_adapter_uses_exact_prepared_evidence_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    evidence, attempt = _inputs(tmp_path)
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    _private(attempt / "stage1-prepare.json", b"{}")
+    calls: list[tuple[object, ...]] = []
+
+    def module(*arguments, **_kwargs):
+        calls.append(arguments)
+        stdout = (
+            f"prepared_import_sha256={'d' * 64} inserted_count=1\n"
+            if arguments[1] == "prepare" else "validated\n"
+        )
+        return subprocess.CompletedProcess([], 0, stdout, "")
+
+    monkeypatch.setattr(subject, "_module", module)
+    frozen = subject._frozen()  # pyright: ignore[reportPrivateUsage]
+    subject.validate_stage2_pre_authority(frozen)
+    assert subject.prepare_stage1(frozen) == "d" * 64
+    subject.cleanup_stage1(frozen)
+
+    rendered = [tuple(str(value) for value in call) for call in calls]
+    assert rendered[0][1] == "validate-prepared"
+    assert "--expected-worksheet-digest" in rendered[0]
+    assert str(attempt / "stage1-prepare.json") in rendered[0]
+    assert rendered[1][1] == "prepare" and "--receipt" in rendered[1]
+    assert rendered[2][1] == "prepare-cleanup"
+
+
 @pytest.mark.parametrize(("status", "state"), [(0, "APPLIED"), (3, "ABSENT"), (1, "UNKNOWN"), (2, "UNKNOWN")])
 def test_stage1_resume_classifies_exact_reconcile_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, state: str
