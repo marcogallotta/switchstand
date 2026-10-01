@@ -159,6 +159,9 @@ messaging, and required continuation:
   the exact Stage 1 preparation receipt and generated worksheet across the explicit Human Review
   pause. This checkpoint has no host-gate, service, or authority effect; those remain separate
   operator layers. See [Database-first Stage 2](database-first-stage2.md).
+  `stage12_operator.py` is the inert composition core: it stops at review, adopts only the approved
+  worksheet into the existing host receipt, then delegates authority/recovery to reviewed owners.
+  The explicit production/disposable CLI and C2d0 descriptor binding remain a separate layer.
 - `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
   inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
   its authority marker remains absent. It activates no runtime reads, writes, or content authority
