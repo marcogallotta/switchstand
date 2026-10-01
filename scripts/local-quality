@@ -4,6 +4,8 @@ set -Eeuo pipefail
 outcome=NOT_RUN
 postgres_id=
 quality_id=
+image=
+image_built=false
 
 cleanup() {
     local status=$? cleanup_failed=0 id
@@ -14,6 +16,10 @@ cleanup() {
             ! docker container inspect "$id" >/dev/null 2>&1 || cleanup_failed=1
         fi
     done
+    if [ "$image_built" = true ]; then
+        docker image rm "$image" >/dev/null 2>&1 || cleanup_failed=1
+        ! docker image inspect "$image" >/dev/null 2>&1 || cleanup_failed=1
+    fi
     printf 'QUALITY_RESULT=%s\nCLEANUP_RESULT=%s\n' \
         "$outcome" "$([ "$cleanup_failed" -eq 0 ] && printf PASS || printf FAIL)"
     if [ "$cleanup_failed" -ne 0 ] && [ "$status" -eq 0 ]; then status=1; fi
@@ -46,6 +52,7 @@ done
 printf 'QUALITY_SUBJECT_KIND=exact-head\nQUALITY_SUBJECT_SHA=%s\nQUALITY_SOURCE=%s\n' \
     "$head" "$repo"
 image_id=$(docker build --quiet --target development --tag "$image" "$repo")
+image_built=true
 image_id=$(docker image inspect --format '{{.Id}}' "$image_id")
 printf 'QUALITY_IMAGE_ID=%s\n' "$image_id"
 
@@ -93,6 +100,12 @@ quality_id=$(docker container create \
 printf 'QUALITY_CONTAINER_ID=%s\n' "$quality_id"
 
 if docker container start --attach "$quality_id"; then
+    if [ "$(git -C "$repo" rev-parse --verify HEAD)" != "$head" ] \
+            || [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then
+        outcome=FAIL
+        echo 'candidate changed while local Quality ran; result is not exact-head evidence' >&2
+        exit 1
+    fi
     outcome=PASS
 else
     outcome=FAIL
