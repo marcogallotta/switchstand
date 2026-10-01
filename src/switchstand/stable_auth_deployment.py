@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import text
@@ -36,6 +38,7 @@ from .edge_maintenance import (
     _exclusive_lock,
     _run,
 )
+from .edge_monitor_host import ExternalIngressHttp
 from .stable_auth import INTROSPECTION_PATH, IntrospectionContract
 from .stable_auth_host import HostAssets, caddy_routes, read_internal_secret, systemd_units
 from .stable_auth_migration import MigrationFailure, SystemdWriterProbe, copy_with_receipt
@@ -93,6 +96,19 @@ def _env(path: Path) -> dict[str, str]:
     except (OSError, UnicodeError) as exc:
         raise Failed("environment file is unavailable") from exc
     return values
+
+
+def _fastmcp_home(environment: dict[str, str]) -> Path:
+    configured = environment.get("FASTMCP_HOME")
+    if configured:
+        return Path(configured)
+    data_home = environment.get("XDG_DATA_HOME")
+    if data_home:
+        return Path(data_home) / "fastmcp"
+    home = environment.get("HOME")
+    if home:
+        return Path(home) / ".local/share/fastmcp"
+    raise Failed("running service FastMCP state identity is unavailable")
 
 
 def _contains_id(value: object, identifiers: set[str]) -> bool:
@@ -327,6 +343,31 @@ class CaddyRoutes:
             raise Unknown("maintenance gate removal readback mismatch")
 
     def public_gated(self) -> bool:
+        try:
+            parsed = urlparse(self.public_origin)
+            port = parsed.port
+        except ValueError:
+            return False
+        if parsed.scheme == "https" and parsed.hostname and port in (None, 443):
+            probe = ExternalIngressHttp(
+                self.public_origin + "/switchstand/mcp",
+                self.public_origin + "/switchstand/mcp",
+            )
+            try:
+                addresses = probe.public_addresses(parsed.hostname)
+                for address in addresses:
+                    for path in self.paths:
+                        probe_path = (
+                            path[:-1] + "maintenance-probe" if path.endswith("/*") else path
+                        )
+                        status, headers, _body = probe.request(
+                            parsed.hostname, address, "GET", probe_path
+                        )
+                        if status != 503 or headers.get("retry-after") != str(self.retry_after):
+                            return False
+                return True
+            except OSError, ValueError, UnicodeError, http.client.HTTPException:
+                return False
         for path in self.paths:
             probe = path[:-1] + "maintenance-probe" if path.endswith("/*") else path
             try:
@@ -643,7 +684,7 @@ class HostActivationOperations:
         running = self._process_environment(COMBINED_SERVICE)
         if running.get("PYTHONPATH") != str(c.current_runtime / "src"):
             raise Failed("combined service does not execute the exact current runtime")
-        if Path(running.get("FASTMCP_HOME", "")) != c.current_state:
+        if _fastmcp_home(running) != c.current_state:
             raise Failed("combined service does not own the expected OAuth state")
         if running.get("SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET") != auth_values.get(
             "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET"
@@ -877,7 +918,7 @@ class HostActivationOperations:
         running = self._process_environment(COMBINED_SERVICE)
         if (
             running.get("PYTHONPATH") != str(self.c.current_runtime / "src")
-            or Path(running.get("FASTMCP_HOME", "")) != self.c.current_state
+            or _fastmcp_home(running) != self.c.current_state
         ):
             return False
         if not self._doctor(self.c.current_runtime, self.c.current_sha, False):

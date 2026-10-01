@@ -22,6 +22,7 @@ from switchstand.stable_auth_deployment import (
     HostActivationOperations,
     _contains_id,
     _env,
+    _fastmcp_home,
     _service,
     activate,
 )
@@ -255,6 +256,12 @@ def test_environment_parser_requires_owned_mode_0600_file(tmp_path: Path):
     environment.chmod(0o644)
     with pytest.raises(Failed, match="mode-0600"):
         _env(environment)
+
+
+def test_running_fastmcp_home_supports_explicit_and_platform_default():
+    assert _fastmcp_home({"FASTMCP_HOME": "/state"}) == Path("/state")
+    assert _fastmcp_home({"XDG_DATA_HOME": "/data"}) == Path("/data/fastmcp")
+    assert _fastmcp_home({"HOME": "/home/service"}) == Path("/home/service/.local/share/fastmcp")
 
 
 def test_nested_caddy_identifier_detection_is_exact():
