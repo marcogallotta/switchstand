@@ -28,6 +28,7 @@ switchstand-bootstrap-agent-project = "switchstand.durable_agent_project:main"
 switchstand-edge-doctor = "switchstand.edge_doctor:run"
 switchstand-provision = "switchstand.provision:main"
 switchstand-test-grant = "switchstand.test_grant:main"
+switchstand-affected-tests = "switchstand.affected_tests:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
