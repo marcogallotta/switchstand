@@ -251,9 +251,13 @@ class ChatGPTService:
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id, revision=revision,
                     )
-                result = await WorkDiscovery(
-                    handle.provider, cast(DiscoveryProvider, provider), self.state
-                ).structure(request.work_id, handle.provider_work_id, current.revision)
+                worksets = getattr(self.state, "worksets", None)
+                result = None if worksets is None else await worksets.structure(request.work_id)
+                db_authoritative = result is not None
+                if result is None:
+                    result = await WorkDiscovery(
+                        handle.provider, cast(DiscoveryProvider, provider), self.state
+                    ).structure(request.work_id, handle.provider_work_id, current.revision)
                 if result is None:
                     return WorkStructureResult(status="provider_error")
                 latest = await provider.get(handle.provider_work_id)
@@ -271,7 +275,8 @@ class ChatGPTService:
                             provider_notes=latest.notes, provider_context=latest.context,
                         ),
                     )
-                if result.revision != latest.revision or resulting_revision != revision:
+                if ((not db_authoritative and result.revision != latest.revision)
+                        or resulting_revision != revision):
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,
                         revision=resulting_revision,
