@@ -33,7 +33,7 @@ def fake_git(path: Path) -> None:
         """#!/bin/sh
 case "$*" in
   "rev-parse --show-toplevel") echo "$FAKE_REPO" ;;
-  *"rev-parse --path-format=absolute --git-common-dir") echo "$FAKE_REPO/.git" ;;
+  *"rev-parse --path-format=absolute --git-common-dir") echo "${FAKE_COMMON:-$FAKE_REPO/.git}" ;;
   *) exit 91 ;;
 esac
 """,
@@ -363,3 +363,70 @@ done
     assert log.read_text() == previous_checks
     fail.unlink()
     assert run().returncode == 0
+
+
+def test_check_uses_exact_linked_writer_with_common_uv_state(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    primary.mkdir()
+
+    def git(repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True,
+        )
+
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    copy_script("check", primary)
+    copy_script("bootstrap", primary)
+    (primary / "pyproject.toml").write_text("primary manifest\n")
+    (primary / "uv.lock").write_text("primary lock\n")
+    (primary / ".gitignore").write_text(".venv/\n")
+    git(primary, "add", ".")
+    git(primary, "commit", "-m", "base")
+    git(primary, "worktree", "add", "-b", "candidate", str(linked))
+
+    (primary / "pyproject.toml").write_text("new primary manifest\n")
+    git(primary, "add", "pyproject.toml")
+    git(primary, "commit", "-m", "advance primary")
+    (linked / "pyproject.toml").write_text("exact candidate manifest\n")
+    common = Path(
+        subprocess.check_output(
+            ["git", "-C", str(linked), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"], text=True,
+        ).strip()
+    )
+    uv = common / "switchstand-tools" / "uv-0.12.10"
+    executable(
+        uv,
+        """#!/bin/sh
+printf '%s\n%s\n%s\n' "$*" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" > "$FAKE_SYNC"
+mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+for tool in python ruff pyright pytest; do
+    printf '#!/bin/sh\necho %s >> "$FAKE_QUALITY"\n' "$tool" > "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+    chmod +x "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+done
+""",
+    )
+    sync = tmp_path / "sync"
+    quality = tmp_path / "quality"
+    environment = unbound_environment() | {
+        "FAKE_SYNC": str(sync),
+        "FAKE_QUALITY": str(quality),
+    }
+
+    result = subprocess.run(
+        [linked / "scripts/check", "tests/test_check.py"], cwd=linked,
+        env=environment, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (primary / ".venv").exists()
+    assert (linked / ".venv/bin/python").is_file()
+    assert sync.read_text().splitlines() == [
+        f"sync --project {linked} --locked --all-groups --no-install-project",
+        str(common / "uv-cache"),
+        str(common / "uv-python"),
+    ]
+    assert quality.read_text().splitlines() == ["ruff", "pyright", "pytest"]

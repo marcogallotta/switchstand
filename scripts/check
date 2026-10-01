@@ -29,18 +29,26 @@ run() {
         *) return "$status" ;;
     esac
 }
+sync_candidate() {
+    venv=$repo/.venv
+    run env UV_CACHE_DIR="$common/uv-cache" UV_PYTHON_INSTALL_DIR="$common/uv-python" \
+        UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
+        --no-install-project
+}
 bound=false
 if [ "${SWITCHSTAND_CHECK_UV+x}" != "" ]; then
     uv=$SWITCHSTAND_CHECK_UV
     [ -x "$uv" ] || { echo "CONTROL pinned uv is missing; relaunch through scripts/switchstand" >&2; exit 1; }
-    venv=$repo/.venv
-    run env UV_CACHE_DIR="$repo/.git/uv-cache" UV_PYTHON_INSTALL_DIR="$repo/.git/uv-python" \
-        UV_PROJECT_ENVIRONMENT="$venv" "$uv" sync --project "$repo" --locked --all-groups \
-        --no-install-project || exit $?
+    sync_candidate || exit $?
     bound=true
 elif [ "${SWITCHSTAND_CHECK_VENV+x}${SWITCHSTAND_CHECK_MANIFEST+x}" != "" ]; then
     echo "old shared environment binding; relaunch through scripts/switchstand for CONTROL pinned uv" >&2
     exit 1
+elif [ "$repo" != "$primary" ]; then
+    uv=$(run "$repo/scripts/bootstrap" --print-uv) || exit $?
+    [ -x "$uv" ] || { echo "pinned uv is missing; run scripts/bootstrap in the primary checkout" >&2; exit 1; }
+    sync_candidate || exit $?
+    bound=true
 elif [ -x "$bootstrap" ]; then
     run "$bootstrap" || {
         status=$?
