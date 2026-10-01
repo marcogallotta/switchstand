@@ -351,6 +351,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
 | Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change shared private byte-file durability mechanics | `secure_file.py` | edge maintenance, Stage 1/2 cutover, and rehearsal callers; keep schemas, state machines, path policy, and domain errors local |
 | Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
 | Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |

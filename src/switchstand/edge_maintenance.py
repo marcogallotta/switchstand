@@ -14,7 +14,6 @@ import signal
 import socket
 import stat
 import subprocess
-import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -24,6 +23,7 @@ from typing import Literal, Protocol, TextIO, cast
 from urllib.parse import urlparse
 
 from .edge_monitor_host import ExternalIngressHttp
+from .secure_file import atomic_replace_bytes
 
 SERVICE = "switchstand-chatgpt-mcp.service"
 CADDY = "http://127.0.0.1:2019"
@@ -873,23 +873,7 @@ class Receipt:
         else:
             self.value.pop("error", None)
         payload = (json.dumps(self.value, sort_keys=True) + "\n").encode()
-        descriptor, name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
-        temporary = Path(name)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb", closefd=False) as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            os.close(descriptor)
-            temporary.unlink(missing_ok=True)
-        directory = os.open(self.path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        atomic_replace_bytes(self.path, payload)
 
 
 def retain_gate(operations: Operations) -> None:
