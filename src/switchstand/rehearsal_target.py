@@ -265,7 +265,7 @@ def teardown(name: str, *, run: Runner = _run) -> None:
     project = cast(str, value["project"])
     try:
         ids = run([
-            "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"
+            "docker", "ps", "-aq", "--no-trunc", "--filter", f"label=com.docker.compose.project={project}"
         ]).stdout.split()
         if ids != [value["container"]]:
             raise Failed("descriptor does not bind the exact READY container")

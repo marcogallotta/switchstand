@@ -19,6 +19,7 @@ class Docker:
         self.fault = fault
         self.commands: list[list[str]] = []
         self.project = "switchstand-rehearsal-proof"
+        self.container = "c" * 64
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
@@ -26,7 +27,7 @@ class Docker:
         if command[:4] == ["git", "-C", str(self.runtime), "rev-parse"]:
             output = SHA + "\n"
         elif command[-3:] == ["ps", "-q", "postgres"]:
-            output = "copied-postgres\n"
+            output = self.container + "\n"
         elif command[:2] == ["docker", "inspect"]:
             networks = {f"{self.project}_default": {}}
             mounts = [{"Type": "volume", "Name": f"{self.project}_postgres-data",
@@ -43,7 +44,7 @@ class Docker:
                 "NetworkSettings": {"Networks": networks}, "Mounts": mounts,
             }])
         elif command[:3] == ["docker", "ps", "-aq"]:
-            output = "copied-postgres\n"
+            output = (self.container if "--no-trunc" in command else self.container[:12]) + "\n"
         elif command[:3] in (["docker", "volume", "inspect"], ["docker", "network", "inspect"]):
             suffix = "postgres-data" if command[1] == "volume" else "default"
             label = "production" if self.fault == "label" else suffix
@@ -83,6 +84,7 @@ def test_provision_binds_and_populates_only_namespaced_target(tmp_path, monkeypa
 
     assert stat.S_IMODE(descriptor.stat().st_mode) == 0o600
     assert value["status"] == "READY" and value["candidate_sha"] == SHA
+    assert len(value["container"]) == 64
     assert value["project"] == "switchstand-rehearsal-proof"
     assert value["volume"] == "switchstand-rehearsal-proof_postgres-data"
     assert value["network"] == "switchstand-rehearsal-proof_default"
