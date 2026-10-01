@@ -36,12 +36,13 @@ do not establish that an external effect occurred.
 
 ## Durable messaging and feedback
 
-Durable message tools are the current agent-to-agent messaging surface. The
-work-addressed family sends to an admitted recipient work route and provides
-pending, receive/recover, correlated result, and disposition operations. The
-registered-agent family provides the equivalent lifecycle for an immutable
-registered agent name when that route is appropriate. Delivery, receipt,
-disposition, effect, and completion are distinct states.
+Durable message tools are the current agent-to-agent messaging surface.
+Ordinary interactive agents use only the `agent_message_*` family and address
+an immutable registered agent name. Managed task-bound runtimes retain the
+`message_*` family for admitted WorkId routes and the managed review bridge.
+Both use the same durable message state and preserve pending, receive/recover,
+correlated result, and disposition semantics. Delivery, receipt, disposition,
+effect, and completion are distinct states.
 
 On the ordinary HTTP/OAuth surface, `work_append` is only for exceptional
 provenance, investigation, or legacy reconciliation on writable admitted work;

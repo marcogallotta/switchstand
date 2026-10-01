@@ -1,23 +1,15 @@
 import asyncio
 import os
-import time
 from uuid import uuid4
 
-import httpx2
 import pytest
 from chatgpt_fixture import grant
-from fastmcp import Client
-from fastmcp.client.transports import StreamableHttpTransport
-from key_value.aio.stores.memory import MemoryStore
-from mcp.server.auth.provider import AccessToken
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand import chatgpt_edge
 from switchstand.chatgpt import ChatGPTService
-from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.messages import (
@@ -193,48 +185,3 @@ async def test_recipient_selection_accepts_workspace_and_detects_ambiguity(messa
     await service.grants.issue(duplicate, None)
     denied = await service.message_send(send(works[0], 1, works[1]))
     assert denied.status == "denied" and denied.reason == "recipient_route_unavailable"
-
-
-async def test_stdio_schema_call_and_authenticated_http_vertical(messaging, monkeypatch):
-    service, _actor, _principals, works, issued = messaging
-    server = build_chatgpt_server(service)
-    tools = {tool.name: tool for tool in await server.list_tools()}
-    assert {"message_send", "message_pending"} <= tools.keys()
-    schema = tools["message_send"].input_schema
-    assert set(schema["required"]) == {"api_version", "work_id", "message_id", "payload"}
-    assert "grant_version" not in schema["properties"]
-    assert not {"principal", "grant_id", "provider", "projection_target"} & schema["properties"].keys()
-    request = send(works[0], 1, works[1]).model_dump()
-    request.pop("grant_version")
-    assert (await server.call_tool("message_send", request)).structured_content["status"] == "ok"
-    config = chatgpt_edge.MCPAuthConfig("client", "secret", "42", "https://switchstand.example/mcp")
-    async def verified(_self, token):
-        return AccessToken(token=token, client_id="test", scopes=[chatgpt_edge.REQUIRED_SCOPE], subject="42",
-            claims={"iss": config.issuer_url}, resource=config.resource_url,
-            expires_at=int(time.time()) + 60)
-    monkeypatch.setattr(chatgpt_edge.SwitchstandGitHubProvider, "verify_token", verified)
-    authenticated = PrincipalContext(issuer=config.issuer_url, subject="42", client_id="test",
-                                     assurance="authenticated")
-    replacement = grant(principal=authenticated, active=works[0], operations=frozenset({"message"}))
-    await service.grants.issue(replacement, None)
-    app = chatgpt_edge.create_app(service, config, client_storage=MemoryStore())
-    transport = StreamableHttpTransport(config.resource_url, auth="fixed", httpx_client_factory=lambda **kw:
-        httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=config.issuer_url, **kw))
-    async with app.router.lifespan_context(app), Client(transport) as client:
-        request = send(works[0], 1, works[1]).model_dump(mode="json")
-        request.pop("grant_version")
-        sent = (await client.call_tool("message_send", request)).structured_content
-        assert sent["status"] == "ok"
-        replacement = replacement.model_copy(update={"version": 2, "id": uuid4(), "authority": issued[1].authority})
-        await service.grants.issue(replacement, 1)
-        pending = (await client.call_tool("message_pending", {"api_version": "1",
-            "work_id": str(works[1])})).structured_content
-        reply = send(works[1], 2, None, route_ref=None, recipient_work_id=None,
-                     in_reply_to_delivery_id=sent["message"]["delivery_id"]).model_dump(mode="json")
-        reply.pop("grant_version")
-        assert (await client.call_tool("message_send", reply)).structured_content["status"] == "ok"
-        replacement = replacement.model_copy(update={"version": 3, "id": uuid4(), "authority": issued[0].authority})
-        await service.grants.issue(replacement, 2)
-        returned = (await client.call_tool("message_pending", {"api_version": "1",
-            "work_id": str(works[0])})).structured_content
-    assert sent["message"] in pending["messages"] and len(returned["messages"]) == 1

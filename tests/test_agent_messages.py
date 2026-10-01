@@ -37,7 +37,6 @@ async def agent_messaging(database_prerequisite):
     )
     tools = dict(build_ordinary_tools(
         service,
-        session_generation=lambda: "legacy-session",
         agent_identity=lambda: session[0],
     ))
     yield tools, actor, session, owner, other, service
@@ -61,7 +60,6 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     # A fresh tool/server binding models a new MCP transport and process with the same chat metadata.
     restarted = dict(build_ordinary_tools(
         service,
-        session_generation=lambda: "new-legacy-session",
         agent_identity=lambda: session[0],
     ))
     session[0] = "chat-b"
@@ -90,9 +88,7 @@ async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messag
     # Unrelated ordinary tools remain registered and callable through their own admission paths.
     assert "work_get" in tools and "repository_bundle_get" in tools
 
-    legacy_only = dict(build_ordinary_tools(
-        service, session_generation=lambda: "transport-session"
-    ))
+    legacy_only = dict(build_ordinary_tools(service))
     unavailable = await legacy_only["agent_register"]("1", "TransportFallback")
     assert (unavailable.status, unavailable.reason) == (
         "recovery_required", "runtime_identity_unavailable",

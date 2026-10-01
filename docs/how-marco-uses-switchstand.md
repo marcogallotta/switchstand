@@ -98,7 +98,7 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 ## Work, messages, and feedback
 
-Durable message tools and state are the current agent-to-agent surface. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
+Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
 
 Ordinary current intent, progress, findings, verdicts, and results belong in
 notes through `work_update`. `work_append` is only for explicitly purposed

@@ -86,7 +86,7 @@ def test_append_cannot_accept_authority_arguments(field):
 
 async def test_ordinary_facade_preserves_unknown_admission_without_sending(monkeypatch):
     subject = service()
-    tools = dict(build_ordinary_tools(subject, session_generation=lambda: "session-a"))
+    tools = dict(build_ordinary_tools(subject))
 
     async def unavailable():
         return GrantResult(status="unknown", principal=PRINCIPAL)
@@ -101,21 +101,6 @@ async def test_ordinary_facade_preserves_unknown_admission_without_sending(monke
         "unknown", "not_sent", "admission_state_unavailable"
     )
     assert subject.providers["asana"].sends == 0
-
-    pending = await tools["message_pending"]("1", ACTIVE)
-    assert (pending.status, pending.reason) == ("recovery_required", "state_unavailable")
-
-    delivery_id = uuid4()
-    transition = await tools["message_receive"]("1", ACTIVE, delivery_id)
-    assert (transition.status, transition.reason) == (
-        "recovery_required", "state_unavailable"
-    )
-
-    submitted = await tools["message_send"]("1", ACTIVE, uuid4(), {"request": "review"})
-    assert (submitted.status, submitted.reason) == (
-        "recovery_required", "state_unavailable"
-    )
-
 
 async def test_exceptional_work_purpose_is_preserved_in_audit() -> None:
     records: list[tuple[str, str | None, str]] = []
@@ -395,8 +380,6 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
-            "message_send", "message_pending",
-            "message_receive", "message_recover", "message_result_send", "message_disposition",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
             "agent_message_result_send", "agent_message_disposition",
@@ -453,9 +436,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert "canonical current state" in next(
             tool for tool in tools if tool.name == "work_update"
         ).description
-        ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save",
-                            "message_send", "message_pending", "message_receive",
-                            "message_recover", "message_result_send", "message_disposition"}
+        ordinary_effects = {"work_append", "work_create", "work_update", "required_result_save"}
         for tool in tools:
             if tool.name in ordinary_effects:
                 assert "grant_version" not in tool.input_schema["properties"]

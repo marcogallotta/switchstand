@@ -39,21 +39,18 @@ from .grants import (
     EffectRecoveryResult,
     GrantedWorkResult,
     GuardOutcome,
-    PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
     ProtectedRelation,
     ProtectedUpdate,
     RelationPatch,
     ScalarPatch,
-    WorkGrant,
 )
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
     DispositionEvidence,
     MessageDispositionRequest,
     MessagePendingRequest,
-    MessagePendingResult,
     MessageReceiveRequest,
     MessageRoute,
     MessageSendRequest,
@@ -62,7 +59,6 @@ from .messages import (
     MessageTransitionResult,
     RuntimeCurrentness,
     disposition_digest,
-    send_received_result,
 )
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
@@ -109,7 +105,6 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_history",
     "work_attachments",
     "work_event",
-    "message_pending",
     "agent_message_pending",
 })
 
@@ -121,11 +116,6 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "work_relate",
     "effect_reconcile",
     "required_result_save",
-    "message_send",
-    "message_receive",
-    "message_recover",
-    "message_result_send",
-    "message_disposition",
     "agent_register",
     "agent_takeover",
     "agent_message_send",
@@ -159,71 +149,16 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     )
 
 
-def build_message_tools(
-    service: ChatGPTService,
-    audit: Callable[[str, str | None, str], None] | None = None,
-) -> tuple[tuple[str, Callable[..., Any]], ...]:
-    async def message_send(
-        api_version: Literal["1"], work_id: UUID,
-        message_id: UUID, payload: JsonValue,
-        route_ref: Annotated[str | None, Field(min_length=1)] = None,
-        recipient_work_id: UUID | None = None,
-        in_reply_to_delivery_id: UUID | None = None,
-    ) -> MessageSubmitResult:
-        """Durably send one request or exactly correlated result."""
-        grant = await service.grant_get()
-        if grant.status == "unknown":
-            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
-        if grant.status != "ok" or grant.grant is None:
-            return MessageSubmitResult(status="denied", reason="no_current_grant")
-        result = await service.message_send(MessageSendRequest(
-            api_version=api_version, work_id=work_id, grant_version=grant.grant.version,
-            message_id=message_id, route_ref=route_ref, payload=payload,
-            recipient_work_id=recipient_work_id,
-            in_reply_to_delivery_id=in_reply_to_delivery_id,
-        ))
-        if audit is not None:
-            audit("message_send", f"{work_id}:{message_id}", result.status)
-        return result
-
-    async def message_pending(
-        api_version: Literal["1"], work_id: UUID,
-        cursor: UUID | None = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> MessagePendingResult:
-        """Inspect durable pending deliveries under current authenticated admission."""
-        grant = await service.grant_get()
-        if grant.status == "unknown":
-            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
-        if grant.status != "ok" or grant.grant is None:
-            return MessagePendingResult(status="denied", reason="no_current_grant")
-        result = await service.message_pending(work_id, MessagePendingRequest(
-            api_version=api_version, grant_version=grant.grant.version, cursor=cursor, limit=limit,
-        ))
-        if audit is not None:
-            audit("message_pending", str(work_id), result.status)
-        return result
-
-    return (("message_send", message_send), ("message_pending", message_pending))
-
-
 def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
-    session_generation: Callable[[], str] | None = None,
     agent_identity: Callable[[], str] | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
-    generation = session_generation or (lambda: (_ for _ in ()).throw(
-        RuntimeError("MCP session generation unavailable")
-    ))
     chat_identity = agent_identity or (lambda: (_ for _ in ()).throw(
         RuntimeError("ChatGPT runtime identity unavailable")
     ))
-    current_generations: dict[tuple[str, UUID, UUID, int], str] = {}
-    retired_generations: dict[tuple[str, UUID, UUID, int], set[str]] = {}
-    currentness_locks: dict[tuple[str, UUID, UUID, int], asyncio.Lock] = {}
     message_engine = None if service.messages is None else getattr(service.messages, "engine", None)
     mailboxes = None if message_engine is None else AgentMailboxState(message_engine)
 
@@ -505,236 +440,6 @@ def build_ordinary_tools(
             observed_revision=observed_revision, text=text,
         ))
         audited("required_result_save", str(work_id), result.status)
-        return result
-
-    async def message_context(
-        work_id: UUID,
-    ) -> tuple[
-        PrincipalContext, WorkGrant, tuple[str, UUID, UUID, int], str
-    ] | MessageTransitionResult:
-        grant_result = await service.grant_get()
-        if grant_result.status == "unknown":
-            return MessageTransitionResult(status="recovery_required", reason="state_unavailable")
-        if (
-            grant_result.status != "ok"
-            or grant_result.principal is None
-            or grant_result.grant is None
-        ):
-            return MessageTransitionResult(status="denied", reason="no_current_grant")
-        principal, grant = grant_result.principal, grant_result.grant
-        if "message" not in grant.operations:
-            return MessageTransitionResult(status="denied", reason="no_current_grant")
-        if grant.scope == "launch" and grant.authority.active_work_id != work_id:
-            return MessageTransitionResult(status="denied", reason="no_current_grant")
-        try:
-            if await service.state.get(work_id) is None:
-                return MessageTransitionResult(status="denied", reason="delivery_not_for_current_work")
-            session_id = generation()
-        except (KeyError, RuntimeError, ValueError):
-            return MessageTransitionResult(
-                status="recovery_required", reason="runtime_currentness_unavailable"
-            )
-        if not session_id:
-            return MessageTransitionResult(
-                status="recovery_required", reason="runtime_currentness_unavailable"
-            )
-        namespace = (principal.key, work_id, grant.id, grant.version)
-        return principal, grant, namespace, session_id
-
-    def stale_runtime() -> MessageTransitionResult:
-        return MessageTransitionResult(status="stale", reason="runtime_generation_changed")
-
-    def submit_preflight(result: MessageTransitionResult) -> MessageSubmitResult:
-        """Preserve closed admission/currentness semantics on result-send preflight."""
-        if result.reason == "no_current_grant":
-            return MessageSubmitResult(status=result.status, reason="no_current_grant")
-        if result.reason == "delivery_not_for_current_work":
-            return MessageSubmitResult(
-                status=result.status, reason="delivery_not_for_current_work"
-            )
-        if result.reason == "runtime_currentness_unavailable":
-            return MessageSubmitResult(
-                status=result.status, reason="runtime_currentness_unavailable"
-            )
-        if result.reason == "runtime_generation_changed":
-            return MessageSubmitResult(
-                status=result.status, reason="runtime_generation_changed"
-            )
-        return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
-
-    async def message_receive(
-        api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
-    ) -> MessageTransitionResult:
-        """Receive one exact delivery under this server-owned MCP session generation."""
-        context = await message_context(work_id)
-        if isinstance(context, MessageTransitionResult):
-            audited("message_receive", str(work_id), context.status)
-            return context
-        principal, grant, namespace, session_id = context
-        if service.messages is None:
-            result = MessageTransitionResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-            audited("message_receive", str(work_id), result.status)
-            return result
-        lock = currentness_locks.setdefault(namespace, asyncio.Lock())
-        async with lock:
-            retired = retired_generations.setdefault(namespace, set())
-            current = current_generations.get(namespace)
-            if session_id in retired or (current is not None and current != session_id):
-                result = stale_runtime()
-            else:
-                result = await service.messages.receive(
-                    principal,
-                    RuntimeCurrentness(
-                        generation=session_id,
-                        current_generation=session_id,
-                    ),
-                    MessageReceiveRequest(
-                        api_version=api_version,
-                        delivery_id=delivery_id,
-                        grant_version=grant.version,
-                    ),
-                    work_id=work_id,
-                )
-                if result.status == "ok" and current is None:
-                    current_generations[namespace] = session_id
-        audited("message_receive", str(work_id), result.status)
-        return result
-
-    async def message_recover(
-        api_version: Literal["1"], work_id: UUID, delivery_id: UUID,
-    ) -> MessageTransitionResult:
-        """Explicitly transfer one received delivery to this replacement MCP session."""
-        context = await message_context(work_id)
-        if isinstance(context, MessageTransitionResult):
-            audited("message_recover", str(work_id), context.status)
-            return context
-        principal, grant, namespace, session_id = context
-        if service.messages is None:
-            result = MessageTransitionResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-            audited("message_recover", str(work_id), result.status)
-            return result
-        lock = currentness_locks.setdefault(namespace, asyncio.Lock())
-        async with lock:
-            retired = retired_generations.setdefault(namespace, set())
-            previous = current_generations.get(namespace)
-            if session_id in retired:
-                result = stale_runtime()
-            else:
-                result = await service.messages.recover(
-                    principal,
-                    RuntimeCurrentness(
-                        generation=session_id,
-                        current_generation=session_id,
-                    ),
-                    MessageReceiveRequest(
-                        api_version=api_version,
-                        delivery_id=delivery_id,
-                        grant_version=grant.version,
-                    ),
-                    work_id=work_id,
-                )
-                if result.status == "ok":
-                    if previous is not None and previous != session_id:
-                        retired.add(previous)
-                    current_generations[namespace] = session_id
-        audited("message_recover", str(work_id), result.status)
-        return result
-
-    async def message_result_send(
-        api_version: Literal["1"], work_id: UUID,
-        in_reply_to_delivery_id: UUID, message_id: UUID, payload: JsonValue,
-    ) -> MessageSubmitResult:
-        """Send a result only from the current MCP session bound to the received delivery."""
-        context = await message_context(work_id)
-        if isinstance(context, MessageTransitionResult):
-            result = submit_preflight(context)
-            audited("message_result_send", str(work_id), result.status)
-            return result
-        principal, grant, namespace, session_id = context
-        if service.messages is None:
-            result = MessageSubmitResult(status="recovery_required", reason="state_unavailable")
-            audited("message_result_send", str(work_id), result.status)
-            return result
-        lock = currentness_locks.setdefault(namespace, asyncio.Lock())
-        async with lock:
-            retired = retired_generations.setdefault(namespace, set())
-            current = current_generations.get(namespace)
-            if session_id in retired or current != session_id:
-                result = MessageSubmitResult(
-                    status="stale", reason="runtime_generation_changed"
-                )
-            else:
-                result = await send_received_result(
-                    service.state,
-                    service.grants,
-                    service.messages,
-                    principal,
-                    MessageSendRequest(
-                        api_version=api_version,
-                        work_id=work_id,
-                        grant_version=grant.version,
-                        message_id=message_id,
-                        payload=payload,
-                        in_reply_to_delivery_id=in_reply_to_delivery_id,
-                    ),
-                    RuntimeCurrentness(
-                        generation=session_id,
-                        current_generation=session_id,
-                    ),
-                )
-        audited("message_result_send", str(work_id), result.status)
-        return result
-
-    async def message_disposition(
-        api_version: Literal["1"], work_id: UUID,
-        delivery_id: UUID, result_message_id: UUID,
-    ) -> MessageTransitionResult:
-        """Disposition one received delivery only from its current MCP session."""
-        context = await message_context(work_id)
-        if isinstance(context, MessageTransitionResult):
-            audited("message_disposition", str(work_id), context.status)
-            return context
-        principal, grant, namespace, session_id = context
-        if service.messages is None:
-            result = MessageTransitionResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-            audited("message_disposition", str(work_id), result.status)
-            return result
-        lock = currentness_locks.setdefault(namespace, asyncio.Lock())
-        async with lock:
-            retired = retired_generations.setdefault(namespace, set())
-            current = current_generations.get(namespace)
-            if session_id in retired or current != session_id:
-                result = stale_runtime()
-            else:
-                evidence = DispositionEvidence(
-                    kind="result", result_message_id=result_message_id
-                )
-                result = await service.messages.disposition(
-                    principal,
-                    RuntimeCurrentness(
-                        generation=session_id,
-                        current_generation=session_id,
-                    ),
-                    MessageDispositionRequest(
-                        api_version=api_version,
-                        delivery_id=delivery_id,
-                        grant_version=grant.version,
-                        disposition_digest=disposition_digest(evidence),
-                        evidence=evidence,
-                    ),
-                    work_id=work_id,
-                )
-                if result.status == "ok" and result.state == "DISPOSITIONED":
-                    has_received = await service.messages.has_received(work_id, grant.version)
-                    if has_received is False:
-                        current_generations.pop(namespace, None)
-        audited("message_disposition", str(work_id), result.status)
         return result
 
     async def agent_context() -> AgentMessageContext | tuple[
@@ -1069,11 +774,6 @@ def build_ordinary_tools(
         ("work_relate", work_relate),
         ("effect_reconcile", effect_reconcile),
         ("required_result_save", required_result_save),
-        *build_message_tools(service, audit),
-        ("message_receive", message_receive),
-        ("message_recover", message_recover),
-        ("message_result_send", message_result_send),
-        ("message_disposition", message_disposition),
         ("agent_register", agent_register),
         ("agent_takeover", agent_takeover),
         ("agent_message_send", agent_message_send),

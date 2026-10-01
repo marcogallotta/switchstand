@@ -233,7 +233,6 @@ def _create_resource_app(
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for name, tool in build_ordinary_tools(
         service, _audit,
-        session_generation=lambda: get_context().session_id,
         agent_identity=_runtime_identity,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
