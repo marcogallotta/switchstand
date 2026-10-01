@@ -155,17 +155,19 @@ messaging, and required continuation:
   checks. Provider projection is optional and does not replace the durable message record.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
-  endpoint UUID and generation. Endpoint UUIDs are message addresses; they are not WorkIds and are
-  not rows in `work_handles`. `agent_messages.py` supplies public name-based views over the existing
-  `MessageState` records.
+  endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
+  endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
+  unreferenced legacy residue. `agent_messages.py` supplies public name-based views over the
+  existing `MessageState` records.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
 the final identity model. It reuses the UUID-shaped sender and recipient columns in `MessageState`
-without asserting WorkId identity or creating provider bindings. The HTTP edge reads exactly one
-hidden host identity—ChatGPT `openai/session` unchanged or Codex `threadId` namespaced as
-`codex:<id>`—and fails closed on missing, invalid, or ambiguous metadata; the mailbox stores its hash
-and binds one visible name per principal-and-chat pair.
+without asserting WorkId identity or requiring or creating provider bindings. Migrated installations
+can retain the legacy handle residue described above. The HTTP edge reads exactly one hidden host
+identity—ChatGPT `openai/session` unchanged or Codex `threadId` namespaced as `codex:<id>`—and fails
+closed on missing, invalid, or ambiguous metadata; the mailbox stores its hash and binds one visible
+name per principal-and-chat pair.
 Principal, chat identity, visible name, mailbox
 generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
