@@ -38,7 +38,7 @@ def test_executor_uses_exact_lease_limits_and_sandbox(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
-    receipt = Executor(broker).run("leaf", ["python", "-V"], tmp_path)
+    receipt = Executor(broker).run("leaf", ["python", "$AGENT_SECRET"], tmp_path)
     assert receipt["state"] == "completed"
     assert seen[:6] == [
         "systemd-run",
@@ -46,7 +46,7 @@ def test_executor_uses_exact_lease_limits_and_sandbox(
         f"--machine={HOST}",
         "--wait",
         "--pipe",
-        "--collect",
+        "--expand-environment=no",
     ]
     assert "--property=MemoryMax=1024M" in seen
     assert "--property=MemorySwapMax=128M" in seen
@@ -63,7 +63,7 @@ def test_executor_uses_exact_lease_limits_and_sandbox(
         "PATH=/usr/bin:/bin",
         "TMPDIR=/tmp",
         "python",
-        "-V",
+        "$AGENT_SECRET",
     ]
     assert broker.status()["leases"]["leaf"]["state"] == "completed"
     assert (tmp_path / "executions/leaf/status.json").is_file()
@@ -117,7 +117,7 @@ def test_unconfirmed_timeout_preserves_unknown_and_lease(
     monkeypatch.setattr(subprocess, "run", run)
     receipt = Executor(broker).run("leaf", ["sleep", "60"], tmp_path, timeout=1)
     assert receipt["state"] == "unknown"
-    assert broker.status()["leases"]["leaf"]["state"] == "reserved"
+    assert broker.status()["leases"]["leaf"]["state"] == "execution_active"
 
 
 def test_launch_error_is_durable_and_not_retried(
@@ -133,6 +133,48 @@ def test_launch_error_is_durable_and_not_retried(
 
     monkeypatch.setattr(subprocess, "run", run)
     assert Executor(broker).run("leaf", ["true"], tmp_path)["state"] == "not_started"
-    with pytest.raises(FileExistsError):
+    with pytest.raises(RuntimeError, match="claimed"):
         Executor(broker).run("leaf", ["true"], tmp_path)
     assert calls == 1
+
+
+def test_claim_prevents_ledger_cancellation_race(tmp_path: Path) -> None:
+    broker = reserve(tmp_path)
+    broker.claim_execution("leaf", {"state": "starting"})
+    with pytest.raises(RuntimeError, match="confirmed stop"):
+        broker.cancel("leaf")
+    assert broker.status()["leases"]["leaf"]["state"] == "execution_active"
+
+
+def test_nonzero_requires_terminal_unit_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = reserve(tmp_path)
+    replies = iter(
+        [
+            SimpleNamespace(returncode=9),
+            SimpleNamespace(returncode=0, stdout="failed\n"),
+            SimpleNamespace(returncode=0),
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(replies))
+    assert Executor(broker).run("leaf", ["false"], tmp_path)["state"] == "failed"
+    assert broker.status()["leases"]["leaf"]["state"] == "completed"
+
+
+def test_ambiguous_nonzero_preserves_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    broker = reserve(tmp_path)
+    replies = iter([SimpleNamespace(returncode=125), SimpleNamespace(returncode=1, stdout="")])
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(replies))
+    assert Executor(broker).run("leaf", ["false"], tmp_path)["state"] == "unknown"
+    assert broker.status()["leases"]["leaf"]["state"] == "execution_active"
+
+
+@pytest.mark.parametrize("name", ["space name", "colon:name", "percent%name", "back\\slash"])
+def test_systemd_path_syntax_is_rejected_before_claim(tmp_path: Path, name: str) -> None:
+    broker = reserve(tmp_path)
+    workdir = tmp_path / name
+    workdir.mkdir()
+    with pytest.raises(ValueError, match="safely encoded"):
+        Executor(broker).run("leaf", ["true"], workdir)
+    assert not (tmp_path / "executions/leaf/status.json").exists()

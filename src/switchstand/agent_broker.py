@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validato
 
 STATE_ROOT = Path.home() / ".local/state/switchstand/agent-broker"
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
-ACTIVE = {"reserved"}
+ACTIVE = {"reserved", "execution_active"}
 FIELDS = ("memory_high_mib", "memory_max_mib", "swap_max_mib", "cpu_percent", "tasks")
 
 
@@ -187,6 +187,8 @@ class Broker:
         with self._locked():
             state = self._read_state()
             lease = self._active_lease(state, lease_id)
+            if lease["state"] != "reserved":
+                raise RuntimeError("execution completion requires executor proof")
             if any(
                 item["state"] in ACTIVE and item["parent"] == lease_id
                 for item in state["leases"].values()
@@ -199,20 +201,22 @@ class Broker:
         with self._locked():
             state = self._read_state()
             self._active_lease(state, lease_id)
-            cancelled: list[str] = []
+            subtree: list[str] = []
             pending = [lease_id]
             while pending:
                 current = pending.pop()
+                subtree.append(current)
                 pending.extend(
                     key
                     for key, item in state["leases"].items()
                     if item["parent"] == current and item["state"] in ACTIVE
                 )
-                if state["leases"][current]["state"] in ACTIVE:
-                    state["leases"][current]["state"] = "cancelled"
-                    cancelled.append(current)
+            if any(state["leases"][item]["state"] == "execution_active" for item in subtree):
+                raise RuntimeError("active execution requires confirmed stop")
+            for item in subtree:
+                state["leases"][item]["state"] = "cancelled"
             self._atomic_json(self.state_path, state)
-            return cancelled
+            return subtree
 
     def status(self) -> dict[str, Any]:
         with self._locked():
@@ -237,7 +241,12 @@ class Broker:
 
     def claim_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
         with self._locked():
-            self._active_lease(self._read_state(), lease_id)
+            state = self._read_state()
+            lease = self._active_lease(state, lease_id)
+            if lease["state"] != "reserved":
+                raise RuntimeError("lease execution is already claimed")
+            lease["state"] = "execution_active"
+            self._atomic_json(self.state_path, state)
             path = self.execution_dir(lease_id) / "status.json"
             descriptor = os.open(
                 path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
@@ -248,6 +257,17 @@ class Broker:
                 handle.flush()
                 os.fsync(handle.fileno())
             self._fsync_dir(path.parent)
+
+    def finish_execution(self, lease_id: str, state_name: str) -> None:
+        if state_name not in {"completed", "cancelled"}:
+            raise ValueError("invalid terminal execution state")
+        with self._locked():
+            state = self._read_state()
+            lease = self._active_lease(state, lease_id)
+            if lease["state"] != "execution_active":
+                raise RuntimeError("lease has no active execution")
+            lease["state"] = state_name
+            self._atomic_json(self.state_path, state)
 
     def _reserve(self, state: dict[str, Any], request: LeaseRequest) -> dict[str, Any]:
         if request.worker == "root" or request.worker in state["leases"]:

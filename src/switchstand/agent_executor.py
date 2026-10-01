@@ -51,6 +51,8 @@ class Executor:
         workdir = working_directory.resolve(strict=True)
         if not workdir.is_dir():
             raise ValueError("working directory is not a directory")
+        if any(character.isspace() or character in ":\\%" for character in str(workdir)):
+            raise ValueError("working directory cannot be safely encoded for systemd")
         unit = self._unit(lease_id)
         execution = self.broker.execution_dir(lease_id)
         receipt: dict[str, Any] = {"lease_id": lease_id, "unit": unit, "state": "starting"}
@@ -75,12 +77,15 @@ class Executor:
             except OSError as error:
                 receipt = {**receipt, "state": "not_started", "error": type(error).__name__}
             else:
-                receipt = {
-                    **receipt,
-                    "state": "completed" if result.returncode == 0 else "failed",
-                    "returncode": result.returncode,
-                }
-                self.broker.complete(lease_id)
+                if result.returncode == 0 or self._terminal_and_collect(unit):
+                    receipt = {
+                        **receipt,
+                        "state": "completed" if result.returncode == 0 else "failed",
+                        "returncode": result.returncode,
+                    }
+                    self.broker.finish_execution(lease_id, "completed")
+                else:
+                    receipt = {**receipt, "state": "unknown", "returncode": result.returncode}
         self.broker.record_execution(lease_id, receipt)
         return receipt
 
@@ -108,8 +113,43 @@ class Executor:
                 "state": "unknown",
                 "stop_returncode": stopped.returncode,
             }
-        self.broker.cancel(lease_id)
+        self.broker.finish_execution(lease_id, "cancelled")
         return {"lease_id": lease_id, "unit": unit, "state": "timed_out"}
+
+    @staticmethod
+    def _terminal_and_collect(unit: str) -> bool:
+        command = [
+            "systemctl",
+            "--user",
+            f"--machine={HOST}",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            unit,
+        ]
+        try:
+            status = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=STOP_TIMEOUT_SECONDS,
+                text=True,
+            )
+            if status.returncode or status.stdout.strip() not in {"inactive", "failed"}:
+                return False
+            cleanup = subprocess.run(
+                ["systemctl", "--user", f"--machine={HOST}", "reset-failed", unit],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=STOP_TIMEOUT_SECONDS,
+            )
+            return cleanup.returncode == 0
+        except OSError, subprocess.TimeoutExpired:
+            return False
 
     @staticmethod
     def _start_command(
@@ -133,7 +173,7 @@ class Executor:
             f"--machine={HOST}",
             "--wait",
             "--pipe",
-            "--collect",
+            "--expand-environment=no",
             "--service-type=exec",
             f"--unit={unit}",
             "--slice=switchstand-agents.slice",
