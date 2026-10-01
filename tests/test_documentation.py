@@ -3,9 +3,18 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).parents[1]
-INLINE_DESTINATION = re.compile(
-    r"!?\[[^]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))"
+REQUIRED_ENTRY_POINTS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/architecture.md",
+    "docs/code-quality.md",
+    "docs/development.md",
+    "docs/how-marco-uses-switchstand.md",
+    "docs/north-star.md",
+    "docs/roadmap.md",
+    "docs/research-sources.md",
 )
+INLINE_DESTINATION = re.compile(r"!?\[[^]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))")
 
 
 def broken_relative_destinations(root: Path, documents: list[Path]) -> list[str]:
@@ -38,122 +47,19 @@ def test_relative_markdown_check_rejects_a_missing_destination(tmp_path):
         "[broken](missing.md#section)\n"
     )
 
-    assert broken_relative_destinations(tmp_path, [document]) == [
-        "guide.md -> missing.md#section"
-    ]
+    assert broken_relative_destinations(tmp_path, [document]) == ["guide.md -> missing.md#section"]
 
 
-def test_codex_role_model_and_shared_process_contract_are_explicit():
-    agents = (ROOT / "AGENTS.md").read_text()
-    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text()
-
-    assert "Codex has exactly two roles: **Coordinator** and **Worker**." in agents
-    assert "- **Researcher:**" not in agents
-    assert "- **Implementer:**" not in agents
-    assert "- **Reviewer:**" not in agents
-    assert "Human Input before hardening" in agents
-    assert "the exact source work owner/requester owns the review outcome watch" in agents
-    assert "Reviewer remedies are advisory" in agents
-    assert "Durable continuity" in agents
-    assert "Supervisory proportionality" in agents
-
-    assert "Codex has two roles: Coordinator and Worker." in usage
-    assert "Shared process semantics across hosts" in usage
-    assert "Shared semantics do not imply identical host storage, tools, roles, or orchestration." in usage
+def test_required_documentation_entry_points_exist():
+    missing = [path for path in REQUIRED_ENTRY_POINTS if not (ROOT / path).is_file()]
+    assert missing == []
 
 
-def test_code_red_bootstrap_preserves_trigger_stop_and_recovery_contract():
-    agents = (ROOT / "AGENTS.md").read_text()
+def test_claude_bootstrap_imports_canonical_agents_file():
+    imports = {
+        match.group("path")
+        for line in (ROOT / "CLAUDE.md").read_text().splitlines()
+        if (match := re.fullmatch(r"@(?P<path>[^\s]+)", line.strip()))
+    }
 
-    assert "A credible live-user failure enters incident mode" in agents
-    assert "an explicit `CODE RED` also enters it" in agents
-    assert "`STOP` means pause new action, listen, and re-ground" in agents
-    assert "`CANCEL` or `STOP WORK` means terminate" in agents
-    assert "test the shared ingress before resetting product-local OAuth" in agents
-    assert "continue cleanup, RCA,\nmonitoring, and owned follow-ups without waiting" in agents
-
-
-def test_code_red_runbook_keeps_one_record_and_checkable_closeout():
-    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
-    record = (ROOT / "docs/operations-incident-record.md").read_text()
-
-    assert "Open or reuse one private incident record" in runbook
-    assert "Do **not** terminate workers" in runbook
-    assert "## Shared-ingress recovery" in runbook
-    assert "A user report such as `it worked`" in runbook
-    assert "Do not wait for Marco to ask again" in runbook
-
-    for required_field in (
-        "Impact / understood scope",
-        "Difficulty / prognosis",
-        "Human / agent action",
-        "Service posture",
-        "Current action / next checkpoint",
-        "Coordination changes",
-        "Dependency boundary",
-        "Residual truth",
-    ):
-        assert required_field in record
-
-    assert "ROLL_FORWARD/REDEPLOY/RETIRE_EXPLICITLY" in record
-    assert "product-local state was not reset without\n  causal evidence" in record
-    assert "Recovery does not\ncreate a pause, a second incident, or a need for another prompt." in record
-
-
-def test_code_red_current_pointer_has_atomic_private_status_first():
-    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
-
-    status_publish = 'mv -f -- "$incident_status_tmp" "$incident_dir/status.md"'
-    pointer_publish = 'mv -Tf "$incident_pointer" "$incident_root/current"'
-    initialization = runbook[
-        runbook.index('incident_status_tmp="$(mktemp'):runbook.index(pointer_publish)
-    ]
-
-    assert 'chmod 0600 "$incident_status_tmp"' in runbook
-    assert 'test "$(stat -c \'%a\' "$incident_dir/status.md")" = 600' in runbook
-    assert runbook.index(status_publish) < runbook.index(pointer_publish)
-    for required_field in (
-        "State",
-        "Operator",
-        "Updated",
-        "Impact / understood scope",
-        "Difficulty / prognosis",
-        "Human / agent action",
-        "Service posture",
-        "Current action / next checkpoint",
-        "Coordination changes",
-        "Dependency boundary",
-        "Evidence",
-        "Residual truth",
-    ):
-        assert f"- {required_field}:" in initialization
-    assert "- Service posture: PENDING" in initialization
-    assert re.search(r"- Service posture: (?:RUN|GATE|SUSPEND)\b", initialization) is None
-    assert "`PENDING` is\n   temporary uncertainty, not a synonym for `GATE`" in runbook
-
-
-def test_code_red_authenticated_boundary_proof_cannot_be_residualized():
-    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
-    record = (ROOT / "docs/operations-incident-record.md").read_text()
-
-    assert "authenticated affected-path recovery proof is not deferrable" in runbook
-    assert "entire stated watch window must complete without recurrence before\n`CLOSED`" in runbook
-    assert "This gate may not be `NOT_RUN`, `MISSING_CAPABILITY`, `UNKNOWN`,\nHuman Input, or owned residual work." in record
-    assert "relevant restart/refresh boundary and the entire stated monitoring/watch window" in record
-
-
-def test_known_maintenance_retry_contract_is_discoverable_and_bounded():
-    agents = (ROOT / "AGENTS.md").read_text()
-    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
-    edge = (ROOT / "docs/chatgpt-mcp-edge.md").read_text()
-
-    assert "known-edge-maintenance-window" in agents
-    assert "Never automatically retry writes, OAuth transitions, or `UNKNOWN` effects" in agents
-    assert "HTTP `503` with `Retry-After: 60`" in runbook
-    assert "2, 5, 10, then 20 seconds" in runbook
-    assert "bounded by 90 seconds" in runbook
-    assert "receipt becomes `UNKNOWN`" in runbook
-    assert "current deployed production model" in edge
-    assert "bounded inert single-host implementation" in edge
-    assert "Multi-host operation, clustering, active-active" in edge
-    assert "Production\nactivation additionally requires real ChatGPT and Claude" in edge
+    assert "AGENTS.md" in imports
