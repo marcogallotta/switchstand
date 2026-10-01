@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+from dataclasses import asdict
+from pathlib import Path
 
 import httpx
 from sqlalchemy import text
@@ -14,7 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from .core import ProviderError
 from .discovery import DiscoveryProvider, ProviderSearchItem
 from .provider import AsanaProvider
-from .work_index import ActivationReceipt, ActivationUnknown, activate
+from .work_index import (
+    ActivationReceipt,
+    ActivationUnknown,
+    activate,
+    prepare_manifest,
+    reconcile_activation,
+)
 
 
 async def final_scan(provider: DiscoveryProvider) -> tuple[ProviderSearchItem, ...]:
@@ -52,21 +61,47 @@ async def require_offline(engine: AsyncEngine) -> None:
         raise RuntimeError("Stage 1 requires the MCP service and every other DB client stopped")
 
 
-async def migrate(*, confirm_offline: bool, expected_manifest_digest: str) -> ActivationReceipt:
+def write_receipt(path: Path, receipt: ActivationReceipt) -> None:
+    """Durably publish the exact attempted post/pre state before COMMIT starts."""
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(asdict(receipt), stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def load_receipt(path: Path) -> ActivationReceipt:
+    return ActivationReceipt(**json.loads(path.read_text(encoding="utf-8")))
+
+
+async def migrate(
+    action: str, *, confirm_offline: bool, expected_manifest_digest: str | None,
+    receipt_path: Path | None,
+) -> str | ActivationReceipt:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
-    client = httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0", trust_env=False,
-        headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
-    )
+    if action == "reconcile":
+        try:
+            if receipt_path is None:
+                raise ValueError("--receipt is required")
+            return await reconcile_activation(engine, load_receipt(receipt_path))
+        finally:
+            await engine.dispose()
+    client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
+                               headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
     try:
         await require_offline(engine)
         provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
         items = await final_scan(provider)
         await require_offline(engine)
+        if action == "prepare":
+            return await prepare_manifest(engine, items)
+        if expected_manifest_digest is None or receipt_path is None:
+            raise ValueError("activate requires --expected-manifest-digest and --receipt")
         return await activate(
-            engine, items, expected_manifest_digest=expected_manifest_digest
+            engine, items, expected_manifest_digest=expected_manifest_digest,
+            before_commit=lambda receipt: write_receipt(receipt_path, receipt),
         )
     finally:
         await client.aclose()
@@ -75,18 +110,25 @@ async def migrate(*, confirm_offline: bool, expected_manifest_digest: str) -> Ac
 
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("prepare", "activate", "reconcile"))
     parser.add_argument("--confirm-offline", action="store_true")
-    parser.add_argument("--expected-manifest-digest", required=True)
+    parser.add_argument("--expected-manifest-digest")
+    parser.add_argument("--receipt", type=Path)
     arguments = parser.parse_args(argv)
     try:
         receipt = asyncio.run(migrate(
+            arguments.action,
             confirm_offline=arguments.confirm_offline,
             expected_manifest_digest=arguments.expected_manifest_digest,
+            receipt_path=arguments.receipt,
         ))
     except ActivationUnknown as error:
         parser.exit(2, f"{error}\n")
     except (KeyError, ProviderError, RuntimeError, SQLAlchemyError, ValueError) as error:
         parser.exit(1, f"Stage 1 migration failed before authority flip: {error}\n")
+    if isinstance(receipt, str):
+        print(f"prepared_manifest_sha256={receipt}")
+        return
     print(
         f"POSTGRES_AUTHORITY active generation={receipt.generation} count={receipt.count} "
         f"corpus_sha256={receipt.corpus_digest} "

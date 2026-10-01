@@ -1,4 +1,6 @@
+import asyncio
 import os
+import sys
 from uuid import UUID
 
 import pytest
@@ -11,8 +13,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import switchstand.work_index as work_index_module
-import switchstand.work_metadata as work_metadata_module
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     LaunchAuthority,
@@ -34,13 +34,14 @@ from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import GrantState
 from switchstand.state import PostgresState, metadata
 from switchstand.work_index import (
-    ActivationNotCommitted,
     ActivationUnknown,
     WorkIndex,
     activate,
     normalize_title,
+    prepare_manifest,
+    reconcile_activation,
 )
-from switchstand.work_index_migration import final_scan
+from switchstand.work_index_migration import final_scan, load_receipt
 from switchstand.work_metadata import (
     UNKNOWN,
     ProviderMetadataSnapshot,
@@ -48,6 +49,7 @@ from switchstand.work_metadata import (
     activate_metadata,
     authority_generation,
     generate_worksheet,
+    reconcile_metadata_activation,
 )
 
 
@@ -165,6 +167,8 @@ async def test_cutover_marker_without_active_row_fails_closed(index):
         work_id = await connection.scalar(text("SELECT work_id FROM work_index"))
     async with index.engine.begin() as connection:
         await connection.execute(text("DELETE FROM work_authority"))
+    with pytest.raises(ActivationUnknown):
+        await activate(index.engine, (item("1", "Again"),), expected_manifest_digest="")
     with pytest.raises(ValueError, match="inconsistent irreversible"):
         await index.generation()
 
@@ -251,34 +255,28 @@ async def test_failed_pre_cutover_import_leaves_no_authority(index):
 
 
 async def test_stage1_rejects_unapproved_same_scan_digest_before_marker(index):
+    await prepare_manifest(index.engine, (item("1", "Alpha"),))
     with pytest.raises(ValueError, match="approved expected digest"):
         await activate(index.engine, (item("1", "Alpha"),), expected_manifest_digest="0" * 64)
     assert not await index.active()
 
 
-@pytest.mark.parametrize("outcome", ["not_committed", "committed", "unknown"])
-async def test_stage1_reconciles_lost_commit_response(index, monkeypatch, outcome):
-    real_commit = work_index_module._commit
-
-    async def lost_response(transaction):
-        if outcome != "not_committed":
-            await real_commit(transaction)
-        raise ConnectionError("injected COMMIT response loss")
-
-    monkeypatch.setattr(work_index_module, "_commit", lost_response)
-    if outcome == "unknown":
-        async def unreadable(_engine):
-            raise ConnectionError("injected readback loss")
-        monkeypatch.setattr(work_index_module, "_stage1_markers", unreadable)
-        with pytest.raises(ActivationUnknown):
-            await activate_stage1(index.engine, (item("1", "Alpha"),))
-    elif outcome == "committed":
-        receipt = await activate_stage1(index.engine, (item("1", "Alpha"),))
-        assert receipt.recovered_after_commit_error and await index.active()
-    else:
-        with pytest.raises(ActivationNotCommitted):
-            await activate_stage1(index.engine, (item("1", "Alpha"),))
-        assert not await index.active()
+async def test_stage1_fresh_process_reconciles_death_after_commit(index, tmp_path):
+    receipt = tmp_path / "attempt.json"
+    script = """
+import asyncio, os; from pathlib import Path; from sqlalchemy.ext.asyncio import create_async_engine; import switchstand.work_index as w
+from switchstand.contracts import Routing, WorkContext; from switchstand.discovery import ProviderSearchItem; from switchstand.work_index_migration import write_receipt
+async def main():
+ e=create_async_engine(os.environ['TEST_DATABASE_URL']); i=(ProviderSearchItem(provider_work_id='1',title='Alpha',completed=False,revision='r1',routing=Routing(priority='P0'),context=WorkContext(assignee='Marco')),); d=await w.prepare_manifest(e,i); real=w._commit
+ async def die(t): await real(t); os._exit(91)
+ w._commit=die; await w.activate(e,i,expected_manifest_digest=d,before_commit=lambda r: write_receipt(Path(os.environ['RECEIPT']),r))
+asyncio.run(main())
+"""
+    env = {**os.environ, "RECEIPT": str(receipt)}
+    process = await asyncio.create_subprocess_exec(sys.executable, "-c", script, env=env)
+    assert await process.wait() == 91
+    recovered = await reconcile_activation(index.engine, load_receipt(receipt))
+    assert recovered.recovered_after_commit_error and await index.active()
 
 
 def test_stage2_waiting_requires_operator_supplied_reopen_truth():
@@ -310,7 +308,9 @@ async def test_stage2_worksheet_is_complete_atomic_and_ignores_provider_metadata
             "2", second.revision, second.routing, "notes", second.context, frozenset()
         ),
     )
-    assert (await activate_metadata(index.engine, worksheet, snapshots)).count == 2
+    attempts = []
+    assert (await activate_metadata(index.engine, worksheet, snapshots, attempts.append)).count == 2
+    assert (await reconcile_metadata_activation(index.engine, attempts[0])).recovered_after_commit_error
     assert await authority_generation(index.engine) == 1
     projected = await index.project(alpha.work_id, ProviderWork(
         "ignored", "provider notes", False, first.revision,
@@ -336,31 +336,6 @@ async def test_stage2_stale_or_incomplete_worksheet_leaves_no_marker(index):
     with pytest.raises(ValueError, match="revision changed"):
         await activate_metadata(index.engine, worksheet, (stale,))
     assert await authority_generation(index.engine) is None
-
-
-@pytest.mark.parametrize("commit_applied", [False, True])
-async def test_stage2_reconciles_lost_commit_response(index, monkeypatch, commit_applied):
-    source = item("1", "Alpha")
-    await activate_stage1(index.engine, (source,))
-    worksheet = await generate_worksheet(index.engine)
-    snapshots = (ProviderMetadataSnapshot(
-        "1", source.revision, source.routing, "notes", source.context, frozenset()
-    ),)
-    real_commit = work_metadata_module._commit
-
-    async def lost_response(transaction):
-        if commit_applied:
-            await real_commit(transaction)
-        raise ConnectionError("injected COMMIT response loss")
-
-    monkeypatch.setattr(work_metadata_module, "_commit", lost_response)
-    if commit_applied:
-        receipt = await activate_metadata(index.engine, worksheet, snapshots)
-        assert receipt.recovered_after_commit_error and await authority_generation(index.engine) == 1
-    else:
-        with pytest.raises(ActivationNotCommitted):
-            await activate_metadata(index.engine, worksheet, snapshots)
-        assert await authority_generation(index.engine) is None
 
 
 async def test_stage2_metadata_and_dependency_updates_share_versioned_db_truth(index):

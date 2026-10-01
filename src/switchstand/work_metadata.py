@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 from uuid import UUID
 
@@ -259,10 +260,33 @@ async def _commit(transaction: AsyncTransaction) -> None:
     await transaction.commit()
 
 
+async def reconcile_metadata_activation(
+    engine: AsyncEngine, receipt: ActivationReceipt,
+) -> ActivationReceipt:
+    try:
+        authority, cutover = await _stage2_markers(engine)
+        observed_corpus, observed_edges = await corpus_digest(engine), await edge_digest(engine)
+    except BaseException as error:
+        raise ActivationUnknown("Stage 2 activation outcome UNKNOWN; keep the maintenance gate") from error
+    if (
+        authority == (AUTHORITY, receipt.generation) and cutover == (receipt.generation,)
+        and observed_corpus == receipt.corpus_digest and observed_edges == receipt.edge_digest
+    ):
+        return replace(receipt, recovered_after_commit_error=True)
+    if (
+        authority is None and cutover is None
+        and observed_corpus == receipt.pre_corpus_digest
+        and observed_edges == receipt.pre_edge_digest
+    ):
+        raise ActivationNotCommitted("Stage 2 readback proves authority was not activated")
+    raise ActivationUnknown("Stage 2 activation outcome UNKNOWN; repair forward")
+
+
 async def activate_metadata(
     engine: AsyncEngine,
     worksheet: ImportWorksheet,
     snapshots: tuple[ProviderMetadataSnapshot, ...],
+    before_commit: Callable[[ActivationReceipt], None] | None = None,
 ) -> ActivationReceipt:
     """Validate the frozen provider snapshot and atomically flip all Stage 2 authority."""
     validate_snapshots(worksheet, snapshots)
@@ -274,10 +298,12 @@ async def activate_metadata(
     transaction = await connection.begin()
     commit_started = False
     expected_corpus = expected_edges = ""
+    receipt = ActivationReceipt(len(ordered), 1, "", pre_corpus_digest=pre_corpus, pre_edge_digest=pre_edges)
     try:
         await connection.execute(select(func.pg_advisory_xact_lock(0x53544732)))
-        if (await connection.execute(select(work_metadata_cutovers.c.scope))).first() is not None:
-            raise RuntimeError("Stage 2 POSTGRES_AUTHORITY is already active")
+        if (await connection.execute(select(work_metadata_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_metadata_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 2 authority already exists; reconcile its receipt")
         authority = (await connection.execute(select(
             work_authority.c.generation, work_authority.c.state,
         ).where(work_authority.c.scope == SCOPE).with_for_update())).one_or_none()
@@ -340,41 +366,22 @@ async def activate_metadata(
         ))
         expected_corpus = await corpus_digest_from_connection(connection)
         expected_edges = await _edge_digest(connection)
+        receipt = ActivationReceipt(
+            len(ordered), 1, expected_corpus, expected_edges,
+            pre_corpus_digest=pre_corpus, pre_edge_digest=pre_edges,
+        )
+        if before_commit is not None:
+            before_commit(receipt)
         commit_started = True
         await _commit(transaction)
-    except BaseException as error:
+    except BaseException:
         if not commit_started:
             with suppress(BaseException):
                 await transaction.rollback()
             raise
         with suppress(BaseException):
             await connection.close()
-        try:
-            authority, cutover = await _stage2_markers(engine)
-            observed_corpus = await corpus_digest(engine)
-            observed_edges = await edge_digest(engine)
-        except BaseException as readback_error:
-            raise ActivationUnknown(
-                "Stage 2 activation outcome UNKNOWN; keep the maintenance gate and diagnose"
-            ) from readback_error
-        if (
-            authority == (AUTHORITY, 1) and cutover == (1,)
-            and observed_corpus == expected_corpus and observed_edges == expected_edges
-        ):
-            return ActivationReceipt(
-                len(ordered), 1, expected_corpus, expected_edges,
-                recovered_after_commit_error=True,
-            )
-        if (
-            authority is None and cutover is None
-            and observed_corpus == pre_corpus and observed_edges == pre_edges
-        ):
-            raise ActivationNotCommitted(
-                "Stage 2 COMMIT failed and readback proves authority was not activated"
-            ) from error
-        raise ActivationUnknown(
-            "Stage 2 activation outcome UNKNOWN; keep the maintenance gate and repair forward"
-        ) from error
+        return await reconcile_metadata_activation(engine, receipt)
     finally:
         with suppress(BaseException):
             await connection.close()
@@ -385,4 +392,4 @@ async def activate_metadata(
         or observed_corpus != expected_corpus or observed_edges != expected_edges
     ):
         raise ActivationUnknown("Stage 2 committed readback is inconsistent; repair forward")
-    return ActivationReceipt(len(ordered), 1, expected_corpus, expected_edges)
+    return receipt

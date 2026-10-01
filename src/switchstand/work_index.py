@@ -6,9 +6,9 @@ import base64
 import hashlib
 import json
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 
@@ -507,12 +507,10 @@ class ImportItem(Protocol):
     def context(self) -> WorkContext: ...
 
 
-class ActivationNotCommitted(RuntimeError):
-    """COMMIT failed and fresh readback proves that activation did not apply."""
+class ActivationNotCommitted(RuntimeError): """Fresh readback proves activation did not apply."""
 
 
-class ActivationUnknown(RuntimeError):
-    """Activation may have committed and must be reconciled while gated."""
+class ActivationUnknown(RuntimeError): """Activation may have committed; reconcile while gated."""
 
 
 @dataclass(frozen=True)
@@ -521,6 +519,8 @@ class ActivationReceipt:
     generation: int
     corpus_digest: str
     edge_digest: str | None = None
+    pre_corpus_digest: str = ""
+    pre_edge_digest: str | None = None
     recovered_after_commit_error: bool = False
 
 
@@ -573,6 +573,29 @@ async def corpus_digest(engine: AsyncEngine) -> str:
         return await corpus_digest_from_connection(connection)
 
 
+async def prepare_manifest(engine: AsyncEngine, items: tuple[ImportItem, ...]) -> str:
+    provider_ids = [item.provider_work_id for item in items]
+    if not provider_ids or len(provider_ids) != len(set(provider_ids)):
+        raise ValueError("final scan must be non-empty and contain each provider work exactly once")
+    async with engine.begin() as connection:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544731)))
+        if (await connection.execute(select(work_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_authority_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 1 authority already exists; reconcile its receipt")
+        rows = (await connection.execute(select(
+            work_handles.c.id, work_handles.c.provider_work_id,
+        ).where((work_handles.c.provider == "asana") & work_handles.c.provider_work_id.in_(provider_ids)))).all()
+        handles = {row[1]: Handle(row[0], "asana", row[1]) for row in rows}
+        for provider_id in provider_ids:
+            if provider_id not in handles:
+                handle = Handle(uuid4(), "asana", provider_id)
+                await connection.execute(insert(work_handles).values(
+                    id=handle.id, provider="asana", provider_work_id=provider_id,
+                ))
+                handles[provider_id] = handle
+        return manifest_digest(items, handles)
+
+
 async def _stage1_markers(engine: AsyncEngine) -> tuple[object, object]:
     async with engine.connect() as connection:
         authority = (await connection.execute(select(
@@ -588,8 +611,22 @@ async def _commit(transaction: AsyncTransaction) -> None:
     await transaction.commit()
 
 
+async def reconcile_activation(engine: AsyncEngine, receipt: ActivationReceipt) -> ActivationReceipt:
+    try:
+        authority, cutover = await _stage1_markers(engine)
+        observed = await corpus_digest(engine)
+    except BaseException as error:
+        raise ActivationUnknown("Stage 1 activation outcome UNKNOWN; keep the maintenance gate") from error
+    if authority == (STATE, receipt.generation) and cutover == (receipt.generation,) and observed == receipt.corpus_digest:
+        return replace(receipt, recovered_after_commit_error=True)
+    if authority is None and cutover is None and observed == receipt.pre_corpus_digest:
+        raise ActivationNotCommitted("Stage 1 readback proves authority was not activated")
+    raise ActivationUnknown("Stage 1 activation outcome UNKNOWN; repair forward")
+
+
 async def activate(
     engine: AsyncEngine, items: tuple[ImportItem, ...], *, expected_manifest_digest: str,
+    before_commit: Callable[[ActivationReceipt], None] | None = None,
 ) -> ActivationReceipt:
     """Atomically bind the final offline scan and flip all Stage 1 authority."""
     provider_ids = [item.provider_work_id for item in items]
@@ -600,10 +637,12 @@ async def activate(
     transaction = await connection.begin()
     commit_started = False
     actual_digest = ""
+    receipt = ActivationReceipt(len(items), 1, "", pre_corpus_digest=pre_digest)
     try:
         await connection.execute(select(func.pg_advisory_xact_lock(0x53544731)))
-        if (await connection.execute(select(work_authority.c.scope))).first() is not None:
-            raise RuntimeError("POSTGRES_AUTHORITY is already active")
+        if (await connection.execute(select(work_authority.c.scope))).first() is not None or (
+            await connection.execute(select(work_authority_cutovers.c.scope))).first() is not None:
+            raise ActivationUnknown("Stage 1 authority already exists; reconcile its receipt")
         existing_rows = (await connection.execute(select(
             work_handles.c.id, work_handles.c.provider_work_id,
         ).where(
@@ -611,14 +650,8 @@ async def activate(
             & work_handles.c.provider_work_id.in_(provider_ids)
         ))).all()
         handles = {row[1]: Handle(row[0], "asana", row[1]) for row in existing_rows}
-        for provider_id in provider_ids:
-            if provider_id not in handles:
-                handle = Handle(uuid4(), "asana", provider_id)
-                await connection.execute(insert(work_handles).values(
-                    id=handle.id, provider=handle.provider,
-                    provider_work_id=handle.provider_work_id,
-                ))
-                handles[provider_id] = handle
+        if set(handles) != set(provider_ids):
+            raise ValueError("manifest bindings are not prepared for this final scan")
         actual_digest = manifest_digest(items, handles)
         if actual_digest != expected_manifest_digest:
             raise ValueError("final scan manifest does not match the approved expected digest")
@@ -632,31 +665,19 @@ async def activate(
         await connection.execute(insert(work_authority_cutovers).values(
             scope=SCOPE, generation=1,
         ))
+        receipt = ActivationReceipt(len(items), 1, actual_digest, pre_corpus_digest=pre_digest)
+        if before_commit is not None:
+            before_commit(receipt)
         commit_started = True
         await _commit(transaction)
-    except BaseException as error:
+    except BaseException:
         if not commit_started:
             with suppress(BaseException):
                 await transaction.rollback()
             raise
         with suppress(BaseException):
             await connection.close()
-        try:
-            authority, cutover = await _stage1_markers(engine)
-            observed_digest = await corpus_digest(engine)
-        except BaseException as readback_error:
-            raise ActivationUnknown(
-                "Stage 1 activation outcome UNKNOWN; keep the maintenance gate and diagnose"
-            ) from readback_error
-        if authority == (STATE, 1) and cutover == (1,) and observed_digest == actual_digest:
-            return ActivationReceipt(len(items), 1, actual_digest, recovered_after_commit_error=True)
-        if authority is None and cutover is None and observed_digest == pre_digest:
-            raise ActivationNotCommitted(
-                "Stage 1 COMMIT failed and readback proves authority was not activated"
-            ) from error
-        raise ActivationUnknown(
-            "Stage 1 activation outcome UNKNOWN; keep the maintenance gate and repair forward"
-        ) from error
+        return await reconcile_activation(engine, receipt)
     finally:
         with suppress(BaseException):
             await connection.close()
@@ -664,4 +685,4 @@ async def activate(
     observed_digest = await corpus_digest(engine)
     if authority != (STATE, 1) or cutover != (1,) or observed_digest != actual_digest:
         raise ActivationUnknown("Stage 1 committed readback is inconsistent; repair forward")
-    return ActivationReceipt(len(items), 1, actual_digest)
+    return receipt
