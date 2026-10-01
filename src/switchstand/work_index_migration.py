@@ -33,17 +33,19 @@ class FrozenCorpus:
     items: tuple[ProviderSearchItem, ...]
     work_ids: dict[str, UUID | None]
     exceptions: dict[str, UUID]
-    manifest_digest: str
-    exception_digest: str
 
 
 def _stable_corpus(
     paths: tuple[Path, Path],
+    expected_corpus_digest: str,
     expected_exception_digest: str,
 ) -> FrozenCorpus:
     first, second = (load_manifest(path) for path in paths)
     if first != second:
         raise ValueError("the two complete corpus manifests do not match")
+    manifest_digest = first.get("sha256")
+    if not isinstance(manifest_digest, str) or manifest_digest != expected_corpus_digest:
+        raise ValueError("corpus manifest digest is not the reviewed digest")
     if first.get("schema_version") != 1 or not isinstance(first.get("rows"), list):
         raise ValueError("unsupported corpus manifest")
     source_candidate = first.get("source_candidate")
@@ -150,8 +152,6 @@ def _stable_corpus(
         tuple(items),
         work_ids,
         exceptions,
-        cast(str, first["sha256"]),
-        exception_digest,
     )
 
 
@@ -171,14 +171,11 @@ async def _validate_bindings(
             )
         ).all()
     actual = {provider_id: work_id for provider_id, work_id in rows}
-    expected_ids = (
-        set(corpus.work_ids)
-        if prepared
-        else {
-            provider_id for provider_id, work_id in corpus.work_ids.items() if work_id is not None
-        }
-    ) | set(corpus.exceptions)
-    if set(actual) != expected_ids:
+    required_ids = {
+        provider_id for provider_id, work_id in corpus.work_ids.items() if work_id is not None
+    } | set(corpus.exceptions)
+    allowed_ids = set(corpus.work_ids) | set(corpus.exceptions)
+    if (prepared and set(actual) != allowed_ids) or not required_ids <= set(actual) <= allowed_ids:
         raise ValueError("Asana bindings changed after corpus capture")
     for provider_id, expected in corpus.work_ids.items():
         if expected is not None and actual.get(provider_id) != expected:
@@ -219,7 +216,8 @@ async def migrate(
     action: str,
     *,
     confirm_offline: bool,
-    expected_manifest_digest: str | None,
+    expected_corpus_digest: str | None,
+    expected_prepared_digest: str | None,
     receipt_path: Path | None,
     manifest_paths: tuple[Path, Path] | None,
     expected_exception_digest: str | None,
@@ -236,19 +234,23 @@ async def migrate(
             await engine.dispose()
     try:
         await require_offline(engine)
-        if manifest_paths is None or expected_exception_digest is None:
-            raise ValueError("prepare/activate require two manifests and an exception digest")
-        corpus = _stable_corpus(manifest_paths, expected_exception_digest)
+        if (
+            manifest_paths is None
+            or expected_corpus_digest is None
+            or expected_exception_digest is None
+        ):
+            raise ValueError("prepare/activate require two manifests and both reviewed digests")
+        corpus = _stable_corpus(manifest_paths, expected_corpus_digest, expected_exception_digest)
         await _validate_bindings(engine, corpus, prepared=action == "activate")
         await require_offline(engine)
         if action == "prepare":
             return await prepare_manifest(engine, corpus.items)
-        if expected_manifest_digest is None or receipt_path is None:
-            raise ValueError("activate requires --expected-manifest-digest and --receipt")
+        if expected_prepared_digest is None or receipt_path is None:
+            raise ValueError("activate requires --expected-prepared-digest and --receipt")
         return await activate(
             engine,
             corpus.items,
-            expected_manifest_digest=expected_manifest_digest,
+            expected_manifest_digest=expected_prepared_digest,
             before_commit=lambda receipt: write_receipt(receipt_path, receipt),
         )
     finally:
@@ -259,7 +261,8 @@ def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("prepare", "activate", "reconcile"))
     parser.add_argument("--confirm-offline", action="store_true")
-    parser.add_argument("--expected-manifest-digest")
+    parser.add_argument("--expected-corpus-digest")
+    parser.add_argument("--expected-prepared-digest")
     parser.add_argument("--manifest", action="append", type=Path, default=[])
     parser.add_argument("--expected-exception-digest")
     parser.add_argument("--receipt", type=Path)
@@ -269,7 +272,8 @@ def run(argv: list[str] | None = None) -> None:
             migrate(
                 arguments.action,
                 confirm_offline=arguments.confirm_offline,
-                expected_manifest_digest=arguments.expected_manifest_digest,
+                expected_corpus_digest=arguments.expected_corpus_digest,
+                expected_prepared_digest=arguments.expected_prepared_digest,
                 receipt_path=arguments.receipt,
                 manifest_paths=tuple(arguments.manifest) if len(arguments.manifest) == 2 else None,
                 expected_exception_digest=arguments.expected_exception_digest,
@@ -280,11 +284,11 @@ def run(argv: list[str] | None = None) -> None:
     except (KeyError, OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as error:
         parser.exit(1, f"Stage 1 migration failed before authority flip: {error}\n")
     if isinstance(receipt, str):
-        print(f"prepared_manifest_sha256={receipt}")
+        print(f"prepared_import_sha256={receipt}")
         return
     print(
         f"POSTGRES_AUTHORITY active generation={receipt.generation} count={receipt.count} "
-        f"corpus_sha256={receipt.corpus_digest} "
+        f"prepared_import_sha256={receipt.corpus_digest} "
         f"recovered_after_commit_error={str(receipt.recovered_after_commit_error).lower()}"
     )
 

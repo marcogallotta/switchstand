@@ -53,16 +53,19 @@ switchstand-stage1-corpus capture corpus-a.json --source-candidate RUNTIME_SHA
 switchstand-stage1-corpus capture corpus-b.json --source-candidate RUNTIME_SHA
 switchstand-stage1-corpus compare corpus-a.json corpus-b.json
 switchstand-work-index-migrate prepare --confirm-offline --manifest corpus-a.json \
-  --manifest corpus-b.json --expected-exception-digest REVIEWED_EXCEPTION_SHA256
+  --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256
 switchstand-work-index-migrate activate --confirm-offline --manifest corpus-a.json \
-  --manifest corpus-b.json --expected-exception-digest REVIEWED_EXCEPTION_SHA256 \
-  --expected-manifest-digest PREPARED_SHA256 --receipt stage1-attempt.json
+  --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256 \
+  --expected-prepared-digest PREPARED_IMPORT_SHA256 --receipt stage1-attempt.json
 ```
 
 The read-only corpus command captures the deterministic union of admitted search and exact-readable
 bound Asana work twice. The migration command verifies database quiescence and both matching,
-reviewed manifests, including their explicit missing/noncanonical exception digest, then freezes
-missing WorkId bindings and prints the canonical prepared digest. Activation rereads the same
+reviewed manifests, including both the full corpus and explicit missing/noncanonical exception
+digests, then freezes or reuses missing WorkId bindings and prints the canonical prepared import
+digest. Activation rereads the same
 manifests and bindings and fails before the marker on mismatch. It commits corpus and marker
 atomically, then reads back both generations and the digest; verify the edge before removing
 maintenance.

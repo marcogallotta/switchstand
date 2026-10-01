@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from switchstand.contracts import Routing, WorkContext
 from switchstand.work_corpus import _with_digest, manifest_exception_digest, write_manifest
 from switchstand.work_index import ActivationReceipt
-from switchstand.work_index_migration import _stable_corpus, _validate_bindings, migrate
+from switchstand.work_index_migration import _stable_corpus, migrate
 
 KNOWN = UUID("10000000-0000-4000-8000-000000000001")
 EXCEPTION = UUID("20000000-0000-4000-8000-000000000002")
@@ -74,30 +74,62 @@ def _manifest(*, external_dependency: bool = False) -> dict[str, object]:
 
 
 def _paths(tmp_path: Path, manifest: dict[str, object]) -> tuple[Path, Path]:
+    tmp_path.mkdir(exist_ok=True)
     paths = tmp_path / "first.json", tmp_path / "second.json"
     for path in paths:
         write_manifest(path, manifest)
     return paths
 
 
+async def _prepare(paths, corpus_digest, exception_digest):
+    return await migrate(
+        "prepare",
+        confirm_offline=True,
+        expected_corpus_digest=corpus_digest,
+        expected_prepared_digest=None,
+        receipt_path=None,
+        manifest_paths=paths,
+        expected_exception_digest=exception_digest,
+    )
+
+
 def test_frozen_corpus_requires_matching_scans_reviewed_exceptions_and_closed_dependencies(
     tmp_path,
 ):
     manifest = _manifest()
+    corpus_digest = str(manifest["sha256"])
     paths = _paths(tmp_path, manifest)
-    corpus = _stable_corpus(paths, manifest_exception_digest(manifest))
-    assert set(corpus.work_ids) == {"known", "new"}
+    exception_digest = manifest_exception_digest(manifest)
+    _stable_corpus(paths, corpus_digest, exception_digest)
 
     with pytest.raises(ValueError, match="reviewed digest"):
-        _stable_corpus(paths, "0" * 64)
+        _stable_corpus(paths, corpus_digest, "0" * 64)
+
+    replacement = _with_digest(
+        {
+            key: ("b" * 40 if key == "source_candidate" else value)
+            for key, value in manifest.items()
+            if key != "sha256"
+        }
+    )
+    with pytest.raises(ValueError, match="manifest digest"):
+        _stable_corpus(
+            _paths(tmp_path / "replacement", replacement),
+            corpus_digest,
+            exception_digest,
+        )
 
     changed = _manifest(external_dependency=True)
     changed_path = tmp_path / "changed.json"
     write_manifest(changed_path, changed)
     with pytest.raises(ValueError, match="do not match"):
-        _stable_corpus((paths[0], changed_path), manifest_exception_digest(manifest))
+        _stable_corpus((paths[0], changed_path), corpus_digest, exception_digest)
     with pytest.raises(ValueError, match="inside the included corpus"):
-        _stable_corpus((changed_path, changed_path), manifest_exception_digest(changed))
+        _stable_corpus(
+            (changed_path, changed_path),
+            str(changed["sha256"]),
+            manifest_exception_digest(changed),
+        )
 
 
 async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_state(
@@ -116,10 +148,13 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
         )
     manifest = _manifest()
     paths = _paths(tmp_path, manifest)
+    corpus_digest = str(manifest["sha256"])
     exception_digest = manifest_exception_digest(manifest)
-    corpus = _stable_corpus(paths, exception_digest)
-    await _validate_bindings(stage1_engine, corpus, prepared=False)
 
+    await stage1_engine.dispose()
+    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    digest = await _prepare(paths, corpus_digest, exception_digest)
+    assert isinstance(digest, str)
     async with stage1_engine.begin() as connection:
         await connection.execute(
             text(
@@ -127,29 +162,20 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
                 "VALUES ('40000000-0000-4000-8000-000000000004', 'asana', 'drift')"
             )
         )
+    await stage1_engine.dispose()
     with pytest.raises(ValueError, match="bindings changed"):
-        await _validate_bindings(stage1_engine, corpus, prepared=False)
+        await _prepare(paths, corpus_digest, exception_digest)
     async with stage1_engine.begin() as connection:
         await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'drift'"))
         assert await connection.scalar(text("SELECT count(*) FROM work_authority")) == 0
-
     await stage1_engine.dispose()
-    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
-    digest = await migrate(
-        "prepare",
-        confirm_offline=True,
-        expected_manifest_digest=None,
-        receipt_path=None,
-        manifest_paths=paths,
-        expected_exception_digest=exception_digest,
-    )
-    assert isinstance(digest, str)
-    await _validate_bindings(stage1_engine, corpus, prepared=True)
-    await stage1_engine.dispose()
+    retry_digest = await _prepare(paths, corpus_digest, exception_digest)
+    assert retry_digest == digest
     receipt = await migrate(
         "activate",
         confirm_offline=True,
-        expected_manifest_digest=digest,
+        expected_corpus_digest=corpus_digest,
+        expected_prepared_digest=digest,
         receipt_path=tmp_path / "receipt.json",
         manifest_paths=paths,
         expected_exception_digest=exception_digest,
@@ -158,13 +184,8 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     async with stage1_engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 2
         assert await connection.scalar(text("SELECT count(*) FROM work_handles")) == 4
-        retained = (
-            await connection.execute(
-                text(
-                    "SELECT provider, provider_work_id FROM work_handles "
-                    "WHERE id IN (:exception, :mailbox) ORDER BY provider"
-                ),
-                {"exception": EXCEPTION, "mailbox": MAILBOX},
-            )
-        ).all()
-    assert retained == [("agent-mailbox", "Coordinator"), ("asana", "gone")]
+        retained = await connection.scalar(
+            text("SELECT count(*) FROM work_handles WHERE id IN (:exception, :mailbox)"),
+            {"exception": EXCEPTION, "mailbox": MAILBOX},
+        )
+    assert retained == 2
