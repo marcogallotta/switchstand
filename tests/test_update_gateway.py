@@ -18,10 +18,18 @@ from switchstand.core import Controller
 from switchstand.discovery import ProviderSearchItem
 from switchstand.effect_recovery import EffectRecovery
 from switchstand.grant_state import GrantState, effect_intents
-from switchstand.grants import PrincipalContext, ProtectedUpdate, ScalarPatch, WorkGrant
+from switchstand.grants import (
+    PrincipalContext,
+    ProtectedRelation,
+    ProtectedUpdate,
+    RelationPatch,
+    ScalarPatch,
+    WorkGrant,
+)
 from switchstand.managed_identity import managed_principal, rotate_managed_grant
 from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
+from switchstand.relations import RelationGateway
 from switchstand.state import PostgresState, metadata
 from switchstand.updates import UpdateGateway
 from switchstand.work_index import activate
@@ -125,9 +133,10 @@ async def subject(database_prerequisite):
                                  assurance="test")
     grant = WorkGrant(id=uuid4(), version=1, principal=principal,
                       authority=LaunchAuthority(active_work_id=handle.id), scope="workspace",
-                      operations=frozenset({"work_update"}), issuer="fixture",
+                      operations=frozenset({"work_update", "work_relate"}), issuer="fixture",
                       provenance="disposable", expires_at=datetime.now(UTC) + timedelta(hours=1),
-                      update_qualification="test:hermetic-asana")
+                      update_qualification="test:hermetic-asana",
+                      relation_qualification="test:hermetic-asana")
     await grants.issue(grant, None)
     boundary = AsanaBoundary(engine)
     client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", transport=boundary)
@@ -230,6 +239,29 @@ async def test_review_next_action_is_inert_before_stage2_and_reconciles_after(su
     current = await gateway.providers["asana"].get("123")
     assert current is not None
     projected = await activate_stage2(gateway, current)
+    invalid = request(grant, projected.revision, lifecycle_state="CURRENT")
+    rejected = await gateway.update(principal, invalid)
+    assert (rejected.status, rejected.effect, rejected.reason) == (
+        "denied", "not_sent", "invalid_database_metadata",
+    )
+    assert await grants.exact(invalid.operation_id) is None
+
+    relation = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+        grant_version=grant.version, observed_revision=projected.revision,
+        patch=RelationPatch(
+            kind="dependency", action="add",
+            target_work_id=grant.authority.active_work_id,
+        ),
+    )
+    invalid_relation = await RelationGateway(
+        gateway.state, grants, gateway.providers
+    ).update(principal, relation)
+    assert (invalid_relation.status, invalid_relation.effect, invalid_relation.reason) == (
+        "denied", "not_sent", "invalid_database_dependency",
+    )
+    assert await grants.exact(relation.operation_id) is None
+
     provider = gateway.providers["asana"]
     original_get = provider.get
     reads = 0

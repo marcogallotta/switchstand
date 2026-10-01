@@ -21,7 +21,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderWork
@@ -199,6 +199,67 @@ class WorkIndex:
                 )
         return current
 
+    @staticmethod
+    def _check_field_types(fields: dict[str, object], allowed: set[str]) -> None:
+        if not fields or not fields.keys() <= allowed:
+            raise ValueError("invalid DB-authoritative work fields")
+        if (title := fields.get("title")) is not None and not isinstance(title, str):
+            raise TypeError("title must be a string")
+        if (completed := fields.get("completed")) is not None and not isinstance(completed, bool):
+            raise TypeError("completed must be a boolean")
+
+    async def _field_values(
+        self, connection: AsyncConnection, current: IndexedWork,
+        fields: dict[str, object], *, metadata_active: bool,
+    ) -> tuple[dict[str, object], Routing]:
+        from .work_metadata import MUTABLE_FIELDS
+
+        title, completed = fields.get("title"), fields.get("completed")
+        values: dict[str, object] = {}
+        if title is not None and current.title != title:
+            values.update(title=title, normalized_title=normalize_title(cast(str, title)))
+        if completed is not None and current.completed != completed:
+            values["completed"] = completed
+        routing = current.routing
+        updates = {field: fields[field] for field in fields.keys() & MUTABLE_FIELDS}
+        if metadata_active and completed is not None and "lifecycle_state" not in updates:
+            updates["lifecycle_state"] = "TERMINAL" if completed else "CURRENT"
+            if completed:
+                updates.update(wait_kind="NONE", unblock_condition="NONE", next_due="NONE")
+        if metadata_active and "lifecycle_state" in updates and completed is None:
+            completed = updates["lifecycle_state"] == "TERMINAL"
+            values["completed"] = completed
+        if updates:
+            routing = Routing.model_validate(current.routing.model_dump(mode="json") | updates)
+            if routing.canonical_root not in {None, "NONE", "UNKNOWN"}:
+                root = UUID(cast(str, routing.canonical_root))
+                if (await connection.execute(select(work_index.c.work_id).where(
+                    work_index.c.work_id == root
+                ))).first() is None:
+                    raise ValueError("canonical root is not admitted")
+            effective_completed = cast(bool, values.get("completed", current.completed))
+            if effective_completed != (routing.lifecycle_state == "TERMINAL"):
+                raise ValueError("lifecycle TERMINAL must exactly match completion")
+            values["routing"] = routing.model_dump(mode="json")
+        return values, routing
+
+    async def validate_update_fields(self, work_id: UUID, fields: dict[str, object]) -> None:
+        """Reject deterministic Stage 2 request faults before journaling an effect."""
+        from .work_metadata import MUTABLE_FIELDS, authority_generation
+
+        metadata_active = await authority_generation(self.engine) is not None
+        allowed: set[str] = {"title", "completed"}
+        if metadata_active:
+            allowed.update(MUTABLE_FIELDS)
+        self._check_field_types(fields, allowed)
+        async with self.engine.connect() as connection:
+            current = _indexed((await connection.execute(select(*INDEX_COLUMNS).where(
+                work_index.c.work_id == work_id
+            ))).one_or_none())
+            if current is None:
+                raise PermissionError("work is not admitted to the authoritative corpus")
+            await self._field_values(connection, current, fields, metadata_active=metadata_active)
+
     async def update_fields(
         self, work_id: UUID, observed: str, provider: ProviderWork,
         fields: dict[str, object],
@@ -212,14 +273,9 @@ class WorkIndex:
         allowed: set[str] = {"title", "completed"}
         if metadata_active:
             allowed.update(MUTABLE_FIELDS)
-        if not fields or not fields.keys() <= allowed:
-            raise ValueError("invalid DB-authoritative work fields")
-        title = fields.get("title", None)
-        completed = fields.get("completed", None)
-        if title is not None and not isinstance(title, str):
-            raise TypeError("title must be a string")
-        if completed is not None and not isinstance(completed, bool):
-            raise TypeError("completed must be a boolean")
+        self._check_field_types(fields, allowed)
+        title = cast(str | None, fields.get("title"))
+        completed = cast(bool | None, fields.get("completed"))
         async with self.engine.begin() as connection:
             current = _indexed((await connection.execute(
                 select(*INDEX_COLUMNS).where(work_index.c.work_id == work_id).with_for_update()
@@ -232,39 +288,9 @@ class WorkIndex:
             )
             if observed != self._revision(generation, current, content_revision):
                 return self._revision(generation, current, content_revision), False
-            values: dict[str, object] = {}
-            if title is not None and current.title != title:
-                values.update(title=title, normalized_title=normalize_title(title))
-            if completed is not None and current.completed != completed:
-                values["completed"] = completed
-            routing = current.routing
-            metadata_fields = fields.keys() & MUTABLE_FIELDS
-            if metadata_active:
-                updates = {field: fields[field] for field in metadata_fields}
-                if completed is not None and "lifecycle_state" not in updates:
-                    updates["lifecycle_state"] = "TERMINAL" if completed else "CURRENT"
-                    if completed:
-                        updates.update(
-                            wait_kind="NONE", unblock_condition="NONE", next_due="NONE"
-                        )
-                if "lifecycle_state" in updates and completed is None:
-                    terminal = updates["lifecycle_state"] == "TERMINAL"
-                    values["completed"] = terminal
-                    completed = terminal
-                if updates:
-                    routing = Routing.model_validate(
-                        current.routing.model_dump(mode="json") | updates
-                    )
-                    if routing.canonical_root not in {None, "NONE", "UNKNOWN"}:
-                        root = UUID(cast(str, routing.canonical_root))
-                        if (await connection.execute(select(work_index.c.work_id).where(
-                            work_index.c.work_id == root
-                        ))).first() is None:
-                            raise ValueError("canonical root is not admitted")
-                    effective_completed = cast(bool, values.get("completed", current.completed))
-                    if effective_completed != (routing.lifecycle_state == "TERMINAL"):
-                        raise ValueError("lifecycle TERMINAL must exactly match completion")
-                    values["routing"] = routing.model_dump(mode="json")
+            values, routing = await self._field_values(
+                connection, current, fields, metadata_active=metadata_active
+            )
             if values:
                 await connection.execute(update(work_index).where(
                     work_index.c.work_id == work_id
@@ -360,6 +386,17 @@ class WorkIndex:
                 current.row_version + 1, current.routing, current.context,
             )
         return self._revision(generation, current, content_revision), True
+
+    async def validate_dependency(self, work_id: UUID, target_work_id: UUID) -> None:
+        """Reject deterministic dependency faults before journaling an effect."""
+        if work_id == target_work_id:
+            raise ValueError("work cannot depend on itself")
+        async with self.engine.connect() as connection:
+            admitted = set((await connection.execute(select(work_index.c.work_id).where(
+                work_index.c.work_id.in_((work_id, target_work_id))
+            ))).scalars())
+        if admitted != {work_id, target_work_id}:
+            raise ValueError("dependency work is not admitted")
 
     async def dependency_matches(
         self, work_id: UUID, target_work_id: UUID, *, add: bool,

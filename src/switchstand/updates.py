@@ -115,6 +115,12 @@ class UpdateGateway:
             request.patch.model_fields_set <= database_fields
             and index is not None and await index.active()
         ):
+            try:
+                await index.validate_update_fields(
+                    request.work_id, request.patch.model_dump(exclude_unset=True)
+                )
+            except (PermissionError, TypeError, ValueError):
+                return self.guard(request, "denied", "invalid_database_metadata")
             return PreparedMutation(
                 intent={
                     "request": request.model_dump(mode="json"), "authority": "postgres",

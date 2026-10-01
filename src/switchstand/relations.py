@@ -133,6 +133,12 @@ class RelationGateway:
         if postgres_dependency:
             if request.patch.target_work_id is None or request.patch.action not in {"add", "remove"}:
                 return self.guard(request, "denied", "invalid_database_dependency")
+            try:
+                await cast(WorkIndex, index).validate_dependency(
+                    request.work_id, request.patch.target_work_id
+                )
+            except ValueError:
+                return self.guard(request, "denied", "invalid_database_dependency")
             return PreparedMutation(
                 intent={
                     "request": request.model_dump(mode="json"),
