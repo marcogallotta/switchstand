@@ -154,8 +154,8 @@ runtime before ungating. An unreadable receipt, ambiguous result, or any post-ma
 gated for forward repair; the FastMCP snapshot is still never restored automatically. The Stage 1+2
 evidence layer validates the exact candidate, full corpus and reviewed-exception digests, worksheet
 digest, private file identity, and free space, then fsyncs immutable attempt-local copies before any
-effect. The resumable state machine, host command binding, and operator CLI remain separate layers,
-so landing evidence capture alone runs no database operation.
+effect. Its inert resumable state machine validates Stage 2 first and never repeats proven effects.
+Host command binding and the operator CLI remain separate, so these contracts run no database work.
 While the edge is stopped, that separately reviewed adapter will run the final scan and atomic
 authority flip described in
 [Database-first Stage 1](database-first-stage1.md). Before that transaction commits, recovery may
