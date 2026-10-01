@@ -38,6 +38,10 @@ class API:
     def __call__(self, request):
         self.requests.append(request); response = self.responses.pop(0)
         if isinstance(response, Exception): raise response
+        data = response[1].get("data")
+        if (isinstance(data, dict) and "gid" not in data
+                and request.url.path.count("/") == 4 and "/tasks/" in request.url.path):
+            data["gid"] = request.url.path.rsplit("/", 1)[-1]
         return httpx.Response(response[0], json=response[1])
 def provider(*responses, test_project_gid=None):
     api = API(*responses)
@@ -88,6 +92,12 @@ async def test_work_context_uses_exact_task_read_and_hides_provider_ids():
     assert all(secret not in serialized for secret in (
         "user-secret", "task-secret", "section-secret", "outside-secret", "outside-section",
     ))
+
+async def test_get_rejects_response_for_a_different_provider_identity():
+    payload = task(project=PROJECT); payload["data"]["gid"] = "different-task"
+    subject, _ = provider((200, payload))
+    with pytest.raises(ProviderError, match="identity mismatch"):
+        await subject.get("requested-task")
 
 
 async def test_task_read_retries_transient_provider_failure(monkeypatch, caplog):
