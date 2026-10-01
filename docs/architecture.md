@@ -171,6 +171,10 @@ messaging, and required continuation:
   current-workset discovery is deferred until a runtime identity source and contract are selected;
   this foundation makes no handoff-readiness claim, activates no writes or content authority, and
   migrates no provider notes, comments, attachments, or history.
+  `workset_capture.py` and the structure-only provider reads form the separate inert input
+  boundary: they capture an exact, twice-stable, digestible inventory of projects, sections,
+  task memberships, parents, and revisions with strictly bounded pagination. They do not map or
+  stage WorkIds; the Stage 1 receipt-bound Human Review worksheet remains a later package.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
