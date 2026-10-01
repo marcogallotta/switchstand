@@ -491,7 +491,9 @@ def build_ordinary_tools(
             generation=durable_generation, current_generation=durable_generation,
         )
 
-    async def agent_submit_view(result: MessageSubmitResult) -> AgentMessageSubmitResult:
+    async def agent_submit_view(
+        result: MessageSubmitResult, *, request: bool = False,
+    ) -> AgentMessageSubmitResult:
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         assert mailboxes is not None
@@ -500,7 +502,24 @@ def build_ordinary_tools(
             return AgentMessageSubmitResult(
                 status="recovery_required", reason="state_unavailable"
             )
-        return AgentMessageSubmitResult(status="ok", message=view)
+        next_action = None
+        if request and view.state in ("AVAILABLE", "RECEIVED"):
+            next_action = (
+                "SENT is not a reply or completion. If this request needs a response, "
+                "keep its watch active while this chat can run: read pending results, "
+                "use a bounded wait, and reread. An empty read does not end the watch. "
+                "Do not substitute an hourly Scheduled watch. If the chat stops, "
+                "preserve the exact request for re-entry."
+            )
+        elif request and view.state == "DISPOSITIONED":
+            next_action = (
+                "The recipient completed this request. Check and act on its pending result; "
+                "if already handled, continue your assigned work. Do not wait for the "
+                "original delivery."
+            )
+        return AgentMessageSubmitResult(
+            status="ok", message=view, next_action=next_action,
+        )
 
     async def agent_register(
         api_version: Literal["1"],
@@ -602,7 +621,7 @@ def build_ordinary_tools(
             agent_binding=sender,
         )
         if replay is not None:
-            return await agent_submit_view(replay)
+            return await agent_submit_view(replay, request=True)
         route = MessageRoute(
             recipient_work_id=recipient.mailbox.endpoint_id,
             recipient_grant_version=recipient.mailbox.generation,
@@ -618,7 +637,7 @@ def build_ordinary_tools(
         result = await service.messages.submit_admitted(
             sender.endpoint_id, route, submitted, agent_binding=sender,
         )
-        return await agent_submit_view(result)
+        return await agent_submit_view(result, request=True)
 
     async def agent_message_pending(
         api_version: Literal["1"], cursor: UUID | None = None,

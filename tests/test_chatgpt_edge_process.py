@@ -483,6 +483,7 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
             "api_version": "1", "recipient_name": beta,
             "message_id": str(uuid4()), "payload": {"request": "review"},
         })
+        assert "bounded wait" in sent["next_action"]
         delivery = sent["message"]["delivery_id"]
 
     # Every operation below uses a fresh HTTP/MCP transport after a server restart.
@@ -501,6 +502,7 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
             "message_id": result_id, "payload": {"result": "pass"},
         })
         assert replied["status"] == "ok"
+        assert replied.get("next_action") is None
         disposed = await _agent_call(endpoint, "chat-b", "agent_message_disposition", {
             "api_version": "1", "delivery_id": delivery, "result_message_id": result_id,
         })

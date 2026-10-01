@@ -55,6 +55,9 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     session[0] = "chat-a"
     sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "review"})
     assert sent.status == "ok" and sent.message is not None
+    assert sent.next_action is not None
+    assert "bounded wait" in sent.next_action
+    assert "hourly Scheduled watch" in sent.next_action
     delivery = sent.message.delivery_id
 
     # A fresh tool/server binding models a new MCP transport and process with the same chat metadata.
@@ -69,6 +72,7 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
         "1", delivery, result_id, {"result": "pass"}
     )
     assert reply.status == "ok"
+    assert reply.next_action is None
     assert (await restarted["agent_message_disposition"]("1", delivery, result_id)).state \
         == "DISPOSITIONED"
 
@@ -76,6 +80,47 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     returned = await tools["agent_message_pending"]("1")
     assert [item.message_id for item in returned.messages] == [result_id]
     assert actor[0] == owner
+
+
+async def test_request_replay_watch_follows_current_delivery_state(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    session[0] = "chat-a"
+    request_id = uuid4()
+    payload = {"request": "review"}
+    sent = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert sent.status == "ok" and sent.message.state == "AVAILABLE"
+    assert sent.next_action is not None
+    delivery = sent.message.delivery_id
+
+    session[0] = "chat-b"
+    assert (await tools["agent_message_receive"]("1", delivery)).state == "RECEIVED"
+    session[0] = "chat-a"
+    received_replay = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert received_replay.status == "ok"
+    assert received_replay.message.state == "RECEIVED"
+    assert received_replay.next_action is not None
+
+    session[0] = "chat-b"
+    result_id = uuid4()
+    assert (await tools["agent_message_result_send"](
+        "1", delivery, result_id, {"result": "pass"}
+    )).status == "ok"
+    assert (await tools["agent_message_disposition"](
+        "1", delivery, result_id
+    )).state == "DISPOSITIONED"
+
+    session[0] = "chat-a"
+    completed_replay = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert completed_replay.status == "ok"
+    assert completed_replay.message.state == "DISPOSITIONED"
+    assert "pending result" in completed_replay.next_action
+    assert "bounded wait" not in completed_replay.next_action
+    pending = await tools["agent_message_pending"]("1")
+    assert [item.message_id for item in pending.messages] == [result_id]
 
 
 async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messaging):
@@ -128,6 +173,7 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     session[0] = "chat-b"
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
+    assert stale.next_action is None
 
 
 async def test_takeover_atomically_fences_every_inflight_message_operation(
