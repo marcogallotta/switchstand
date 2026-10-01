@@ -776,7 +776,7 @@ def build_ordinary_tools(
                 "use a bounded wait, and reread. An empty read does not end the watch. "
                 "Do not substitute an hourly Scheduled watch. If the chat stops, "
                 "preserve the exact request for re-entry."
-            ) if request else None,
+            ) if request and view.state in ("AVAILABLE", "RECEIVED") else None,
         )
 
     async def agent_register(
