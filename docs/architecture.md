@@ -306,7 +306,12 @@ The materialized host launcher installed by `scripts/install-codex-shim` owns gl
 routing. Outside the canonical Switchstand Git common directory it directly launches the real Codex
 binary, even when the checkout is missing or broken; inside that Git common directory it delegates
 to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
-mutable checkout. The repository dispatcher launches Codex with a separate Coordinator home,
+mutable checkout. The installer also materializes a private repair installer/source under
+`~/.local/state/switchstand/codex/shim` and enables a user-systemd path watch on the visible
+command plus a five-minute timer on the same idempotent repair service. The watch repairs
+updater replacements promptly; the timer catches replacements missed during service execution
+and watch rearm without depending on the checkout. Healthy checks preserve launcher identity.
+The repository dispatcher launches Codex with a separate Coordinator home,
 shared authentication, a durable per-launch starting-commit file named in developer context, and
 the repository's fixed Coordinator runtime policy. That policy retains
 promptless host development access while making the shared primary checkout read-only except for `friction.md` and the Git
