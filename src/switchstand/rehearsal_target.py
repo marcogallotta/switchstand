@@ -19,6 +19,7 @@ from typing import Any, cast
 
 from .development import development_subnet
 from .edge_maintenance import Failed, Unknown, exclusive_lock
+from .secure_file import create_new_private_bytes
 from .stage12_cutover import read_private
 
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
@@ -86,17 +87,6 @@ def _write(path: Path, value: dict[str, Any], *, replace: bool = False) -> None:
             os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _write_bytes(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        os.close(descriptor)
 
 
 def _identity(name: str) -> dict[str, str]:
@@ -245,8 +235,8 @@ def provision(
     path = root / "target.json"
     _write(path, descriptor)
     sources.mkdir(mode=0o700)
-    _write_bytes(frozen_backup, backup_data)
-    _write_bytes(frozen_snapshot, snapshot_data)
+    create_new_private_bytes(frozen_backup, backup_data)
+    create_new_private_bytes(frozen_snapshot, snapshot_data)
     _extract(frozen_snapshot, root / "copied-state")
     descriptor["fastmcp_tree_sha256"] = _tree_digest(root / "copied-state" / "fastmcp")
     compose = [

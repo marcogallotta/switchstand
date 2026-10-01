@@ -18,6 +18,12 @@ from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from .edge_maintenance import Config, Failed, Unknown
+from .secure_file import (
+    PrivateFileOpenError,
+    atomic_replace_bytes,
+    create_new_private_bytes,
+    read_private_bytes,
+)
 from .work_corpus import load_manifest, manifest_exception_digest
 
 
@@ -119,35 +125,22 @@ def _binding_digest(before: Path, after: Path) -> str:
 
 def read_private(path: Path, label: str) -> bytes:
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except OSError as error:
+        return read_private_bytes(path)
+    except PrivateFileOpenError as error:
         raise Failed(f"{label} is unavailable") from error
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
-            raise Failed(f"{label} is not an exact mode-0600 regular file")
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            return stream.read()
-    finally:
-        os.close(descriptor)
+    except ValueError as error:
+        raise Failed(f"{label} is not an exact mode-0600 regular file") from error
 
 
 def _publish_or_match(path: Path, data: bytes, label: str) -> None:
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        create_new_private_bytes(path, data)
     except FileExistsError:
         if read_private(path, label) != data:
             raise Failed(f"existing {label} does not match this attempt") from None
         return
     except OSError as error:
         raise Failed(f"cannot freeze {label}") from error
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        os.close(descriptor)
 
 
 class ReviewCheckpoint:
@@ -232,25 +225,7 @@ class ReviewCheckpoint:
             "status": status,
         }
         encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{self.receipt_path.name}.", dir=self.attempt_dir
-        )
-        temporary = Path(name)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.receipt_path)
-        finally:
-            os.close(descriptor)
-            temporary.unlink(missing_ok=True)
-        directory = os.open(self.attempt_dir, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        atomic_replace_bytes(self.receipt_path, encoded)
 
     def begin(self) -> None:
         """Persist intent before host effects without adopting subordinate artifacts."""
