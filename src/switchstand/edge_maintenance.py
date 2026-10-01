@@ -459,7 +459,11 @@ class HostOperations:
         if phase not in phases:
             raise Unknown("host phase is unknown")
         self._resume_trust()
-        gate, service = self._gate_state(), self._service_state()
+        try:
+            gate = self._gate_state()
+        except Failed as exc:
+            raise Unknown("maintenance gate readback failed") from exc
+        service = self._service_state()
         launcher = self._artifact_digest(self.c.launcher, 0o700)
         if phase in {"PREFLIGHT", "GATED", "STOPPED"} and (
             launcher != self.c.current_launcher_sha or os.path.lexists(self.backup)

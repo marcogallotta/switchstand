@@ -285,6 +285,20 @@ def test_reconcile_preserves_ungated_phase_when_safety_gate_was_retained(
     assert proof == {"gate_retained": "true"}
 
 
+def test_reconcile_normalizes_caddy_gate_http_500_to_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+
+    def unavailable(*_args, **_kwargs):
+        raise urllib.error.HTTPError("http://caddy/id/gate", 500, "error", None, None)
+
+    monkeypatch.setattr(maintenance.urllib.request, "urlopen", unavailable)
+
+    with pytest.raises(Unknown, match="gate readback failed"):
+        operations.reconcile_phase("PREFLIGHT", {}, offline=True)
+
+
 @pytest.mark.parametrize(
     "fault",
     [
