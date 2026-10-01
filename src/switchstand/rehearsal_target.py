@@ -122,6 +122,11 @@ def _extract(snapshot: Path, destination: Path) -> None:
             ):
                 raise Failed("FastMCP snapshot is not a bounded regular tree")
             archive.extractall(destination, filter="data")
+        copied = destination / "fastmcp"
+        info = copied.lstat()
+        if not stat.S_ISDIR(info.st_mode) or copied.is_symlink() or info.st_uid != os.getuid():
+            raise Failed("copied FastMCP state is not an exact private directory")
+        copied.chmod(0o700)
     except (OSError, tarfile.TarError) as error:
         raise Failed("FastMCP snapshot cannot be copied") from error
 
@@ -143,11 +148,15 @@ def _docker_identity(value: dict[str, Any], expected: dict[str, str]) -> None:
     if (
         exact_labels.get("com.docker.compose.project") != expected["project"]
         or exact_labels.get("com.docker.compose.service") != "postgres"
-        or expected["network"] not in exact_networks
-        or not any(
-            isinstance(item, dict)
-            and cast(dict[str, object], item).get("Name") == expected["volume"]
-            for item in exact_mounts
+        or set(exact_networks) != {expected["network"]}
+        or len(exact_mounts) != 1
+        or not isinstance(exact_mounts[0], dict)
+        or any(
+            cast(dict[str, object], exact_mounts[0]).get(key) != expected_value
+            for key, expected_value in {
+                "Type": "volume", "Name": expected["volume"],
+                "Destination": "/var/lib/postgresql",
+            }.items()
         )
     ):
         raise Failed("provisioned PostgreSQL identity is not exact")
@@ -245,6 +254,8 @@ def _load(name: str) -> tuple[Path, dict[str, Any]]:
         raise Failed("disposable target descriptor owns a foreign identity")
     if value.get("root") != str(root) or value.get("descriptor") != str(path):
         raise Failed("disposable target descriptor escapes its root")
+    if value.get("status") != "READY" or not isinstance(value.get("container"), str):
+        raise Failed("disposable target descriptor is not exactly READY")
     return root, value
 
 
@@ -256,21 +267,24 @@ def teardown(name: str, *, run: Runner = _run) -> None:
         ids = run([
             "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"
         ]).stdout.split()
-        for container in ids:
-            inspected = json.loads(run(["docker", "inspect", container]).stdout)[0]
-            _docker_identity(inspected, cast(dict[str, str], value))
-        if ids:
-            run(["docker", "rm", "-f", *ids])
+        if ids != [value["container"]]:
+            raise Failed("descriptor does not bind the exact READY container")
+        inspected = json.loads(run(["docker", "inspect", ids[0]]).stdout)[0]
+        _docker_identity(inspected, cast(dict[str, str], value))
         resources: list[tuple[str, str]] = []
         for kind in ("volume", "network"):
             resource = cast(str, value[kind])
-            names = run([
-                "docker", kind, "ls", "-q", "--filter",
-                f"label=com.docker.compose.project={project}",
-            ]).stdout.split()
-            if any(item != resource for item in names):
-                raise Failed(f"descriptor does not own every {kind} in its namespace")
-            resources += [(kind, item) for item in names]
+            item = json.loads(run(["docker", kind, "inspect", resource]).stdout)[0]
+            labels = cast(dict[str, object], item).get("Labels") if isinstance(item, dict) else None
+            exact = cast(dict[str, object], labels) if isinstance(labels, dict) else {}
+            if (
+                cast(dict[str, object], item).get("Name") != resource
+                or exact.get("com.docker.compose.project") != project
+                or exact.get(f"com.docker.compose.{kind}") != resource.removeprefix(f"{project}_")
+            ):
+                raise Failed(f"descriptor does not own {kind} {resource}")
+            resources.append((kind, resource))
+        run(["docker", "rm", "-f", ids[0]])
         for kind, resource in resources:
             run(["docker", kind, "rm", resource])
     except (IndexError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
