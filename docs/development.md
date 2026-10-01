@@ -268,3 +268,29 @@ The current development path is operational but still has explicit ownership/tra
 
 Canonical cumulative handwritten Python LOC is counted with
 `git ls-files src tests | rg '\.py$' | xargs wc -l`; generated files and dependencies are excluded.
+
+## Codex shim updater recurrence (2026-10-01 RCA)
+
+The standalone updater runs the published installer, whose `update_visible_command`
+(observed at `https://chatgpt.com/codex/install.sh` on 2026-10-01)
+atomically replaces `${CODEX_INSTALL_DIR:-$HOME/.local/bin}/codex` with a symlink to
+`~/.codex/packages/standalone/current/bin/codex`. The observed October 1 launcher
+was exactly that symlink. A one-time shim installation did not own subsequent writes.
+The replacement cause is established; the reported hang downstream of bypassing
+Coordinator dispatch remains a separate symptom, not a demonstrated binary defect.
+
+Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
+`switchstand-codex-shim.path` recovery watch. It requires a working user manager;
+installation errors are fatal and must not be reported as protected installation.
+The service runs a materialized private installer with `--repair-only`, using the
+materialized shim beside it, so recovery works without the repository. It leaves
+real binaries and their updater unchanged. Existing routing still selects dispatch
+only inside the canonical Git common directory and real Codex everywhere else.
+
+Recovery is asynchronous: a launch in the brief replacement window can bypass dispatch.
+Protection applies while the user manager/watch is running; it is not an immutable-file
+lock. Check `systemctl --user is-active switchstand-codex-shim.path` and verify that
+`~/.local/bin/codex` is a regular executable matching `scripts/codex-shim`.
+For a manual upstream reinstall, verify recovery afterward. Remove protection with
+`systemctl --user disable --now switchstand-codex-shim.path` before intentionally
+replacing the launcher. Do not modify the real standalone binary to repair routing.

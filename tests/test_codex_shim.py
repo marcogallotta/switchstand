@@ -17,6 +17,13 @@ def executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+@pytest.fixture(autouse=True)
+def fake_systemctl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tools = tmp_path / "tools"
+    executable(tools / "systemctl", "#!/bin/sh\nexit 0\n")
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+
+
 def install(home: Path) -> Path:
     result = subprocess.run(
         [INSTALLER], env=os.environ | {"HOME": str(home)},
@@ -175,3 +182,36 @@ def test_installer_replaces_checkout_symlink_and_is_idempotent(tmp_path: Path) -
     second = launcher.stat()
     assert second.st_ino == first.st_ino
     assert launcher.read_bytes() == first_content
+
+
+def test_materialized_repair_recovers_updater_overwrite_without_checkout(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    launcher = install(home)
+    original = launcher.read_bytes()
+    real = home / ".codex/packages/standalone/current/bin/codex"
+    executable(real, "#!/bin/sh\nexit 0\n")
+    # Actual updater boundary: replace the visible command with a real-binary symlink.
+    launcher.unlink()
+    launcher.symlink_to(real)
+    repair = home / ".local/state/switchstand/codex/shim/install-codex-shim"
+    subprocess.run(
+        [repair, "--repair-only"], env=os.environ | {"HOME": str(home)}, check=True,
+    )
+    assert not launcher.is_symlink()
+    assert launcher.read_bytes() == original
+    assert real.read_text() == "#!/bin/sh\nexit 0\n"
+    units = home / ".config/systemd/user"
+    assert "PathChanged=%h/.local/bin/codex" in (units / "switchstand-codex-shim.path").read_text()
+    assert str(ROOT) not in (units / "switchstand-codex-shim.service").read_text()
+
+
+def test_installer_reports_unavailable_recovery_manager(tmp_path: Path) -> None:
+    tools = tmp_path / "tools"
+    executable(tools / "systemctl", "#!/bin/sh\nexit 1\n")
+    home = tmp_path / "home"
+    result = subprocess.run(
+        [INSTALLER], env=os.environ | {"HOME": str(home)}, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    # Restored routing is not proof of active recurrence protection.
+    assert (home / ".local/bin/codex").read_bytes() == (ROOT / "scripts/codex-shim").read_bytes()

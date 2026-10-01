@@ -24,8 +24,43 @@ chmod 755 "$temporary"
 
 if [ -f "$destination" ] && [ ! -L "$destination" ] \
         && [ -x "$destination" ] && cmp -s "$temporary" "$destination"; then
+    rm -f "$temporary"
+else
+    mv -fT "$temporary" "$destination"
+fi
+trap - EXIT HUP INT TERM
+
+# Repair uses only materialized host files, including when the checkout is gone.
+if [ "${1:-}" = "--repair-only" ]; then
     exit 0
 fi
-
-mv -fT "$temporary" "$destination"
-trap - EXIT HUP INT TERM
+state_dir="$HOME/.local/state/switchstand/codex/shim"
+unit_dir="$HOME/.config/systemd/user"
+mkdir -p "$state_dir" "$unit_dir"
+chmod 700 "$state_dir"
+for name in codex-shim install-codex-shim; do
+    host_tmp=$(mktemp "$state_dir/.install.XXXXXX")
+    cp "$script_dir/$name" "$host_tmp"
+    chmod 755 "$host_tmp"
+    mv -fT "$host_tmp" "$state_dir/$name"
+done
+cat > "$unit_dir/switchstand-codex-shim.path" <<'EOF'
+[Unit]
+Description=Recover Switchstand Codex shim after updater replacement
+[Path]
+PathChanged=%h/.local/bin/codex
+Unit=switchstand-codex-shim.service
+[Install]
+WantedBy=default.target
+EOF
+cat > "$unit_dir/switchstand-codex-shim.service" <<'EOF'
+[Unit]
+Description=Restore materialized Switchstand Codex shim
+[Service]
+Type=oneshot
+ExecStart="%h/.local/state/switchstand/codex/shim/install-codex-shim" --repair-only
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now switchstand-codex-shim.path
+# Close the installation window before returning.
+"$state_dir/install-codex-shim" --repair-only
