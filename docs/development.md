@@ -198,6 +198,21 @@ keeps maintenance active and forbids schema rollback or old-runtime restart.
   process group are outside this bounded guarantee.
   The canonical task-private clone is resumed automatically. Dirty progress survives;
   normal Git, network, tests, review and landing remain available; MCP commands and hooks come from clean CONTROL.
+- Cross-repository ordinary prototype (ai-tools only):
+  `scripts/switchstand --active <task> --target-repo <absolute canonical ai-tools checkout> -- <assignment>`.
+  Trusted CONTROL remains Switchstand. Before any target writer effect, provisioning binds the WorkId
+  and reads current work through `Controller.get`; notes must contain exactly one
+  `SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools` marker. No candidate/base markers are required.
+  TARGET is an identity anchor and may be dirty; its exact GitHub origin must match admission.
+  WRITER is an independent repo-scoped clone from freshly fetched target `origin/main`, never
+  CONTROL or dirty target contents. Repo-bound writer and CODEX_HOME identities reject same-task
+  cross-target/mode reuse. Dirty files and local commits resume exactly; only an untouched writer
+  follows newer target main. Omitting `--target-repo` preserves legacy paths and behavior.
+  Dish owns its native environment: `cd dish`, `python3 -m venv --clear .venv`, then
+  `.venv/bin/python -m pip install -r requirements-test.txt` and task-relevant focused pytest.
+  Switchstand's pinned uv remains launcher-only. Credential stripping and CONTROL context MCP
+  remain active. Publication and live Dish proof are unproved here; the latter requires the separately
+  authorized ai-tools bootstrap bridge. This prototype does not generalize isolated qualification.
 - Managed exact-candidate Codex qualification uses the isolated CONTROL route below; there is no
   candidate-local trusted launcher. The candidate remains writable work input only, while CONTROL owns launcher Python,
   Codex project configuration and managed/development MCP wrappers. Live use remains fail-closed until the separately
@@ -279,3 +294,38 @@ absence after an attempted send is insufficient to retry. Unsupported binding/hi
 Focused fake/private-file tests qualify local semantics only. TUI/backend identity, real runtime
 admission/steering, reconnect and natural-restart qualification are NOT_RUN until separately
 approved exact-host proof; Claude resume/concurrency/settings/MCP behavior remains UNKNOWN.
+
+## Codex shim updater recurrence (2026-10-01 RCA)
+
+The standalone updater runs the published installer, whose `update_visible_command`
+(observed at `https://chatgpt.com/codex/install.sh` on 2026-10-01)
+atomically replaces `${CODEX_INSTALL_DIR:-$HOME/.local/bin}/codex` with a symlink to
+`~/.codex/packages/standalone/current/bin/codex`. The observed October 1 launcher
+was exactly that symlink. A one-time shim installation did not own subsequent writes.
+The launcher replacement is separate from the post-dispatch hang. Marco confirmed
+on 2026-10-02 that a stuck keyring caused the in-repository hang and is now fixed.
+Prior controlled evidence supports OAuth credential lookup blocking: disabling all
+MCP completed in 4.9 seconds; canonical HTTP MCP alone timed out, as did runs with
+plugins or hooks disabled. Shim overwrite did not cause that post-dispatch hang.
+The recurrence candidate addresses launcher replacement only.
+
+Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
+`switchstand-codex-shim.path` recovery watch and `switchstand-codex-shim.timer` safety net.
+It requires a working user manager;
+installation errors are fatal and must not be reported as protected installation.
+The service runs a materialized private installer with `--repair-only`, using the
+materialized shim beside it, so recovery works without the repository. It leaves
+real binaries and their updater unchanged. Existing routing still selects dispatch
+only inside the canonical Git common directory and real Codex everywhere else.
+
+Recovery is asynchronous: a launch in the brief replacement window can bypass dispatch.
+The path watch can miss a replacement during repair execution/watch rearm. The timer
+checks five minutes after manager startup and five minutes after service completion;
+a healthy check does not rewrite the launcher. Eventual recovery requires the user
+manager and timer to keep running and the repair service to succeed.
+Protection applies while the user manager/watch/timer is running; it is not an immutable-file
+lock. Check `systemctl --user is-active switchstand-codex-shim.path switchstand-codex-shim.timer` and verify that
+`~/.local/bin/codex` is a regular executable matching `scripts/codex-shim`.
+For a manual upstream reinstall, verify recovery afterward. Remove protection with
+`systemctl --user disable --now switchstand-codex-shim.path switchstand-codex-shim.timer` before intentionally
+replacing the launcher. Do not modify the real standalone binary to repair routing.

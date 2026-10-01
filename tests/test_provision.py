@@ -71,3 +71,42 @@ async def test_provisioner_rejects_invalid_trusted_test_project(monkeypatch):
     monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
     with pytest.raises(ValueError, match="invalid test project GID"):
         await provision.run("123", ())
+
+
+@pytest.mark.parametrize("status,notes", [("denied", ""), ("ok", ""),
+    ("ok", "SWITCHSTAND_REPOSITORY=other/repo"),
+    ("ok", "SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools")])
+async def test_repository_admission_reads_current_work_before_grant(monkeypatch, capsys, status, notes):
+    from types import SimpleNamespace
+    from uuid import UUID
+    active = UUID("00000000-0000-0000-0000-000000000001")
+    authority = SimpleNamespace(active_work_id=active, reference_work_ids=())
+    events = []
+    async def admit(*args):
+        events.append("provision")
+        return authority
+    class Current:
+        def __init__(self, bound, state, providers):
+            assert bound is authority
+        async def get(self, request):
+            assert request.work_id == active and request.api_version == "1"
+            events.append("current")
+            return SimpleNamespace(status=status, item=SimpleNamespace(notes=notes))
+    async def rotate(*args):
+        events.append("grant")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
+    monkeypatch.setenv("ASANA_TOKEN", "unused")
+    monkeypatch.delenv("SWITCHSTAND_TEST_PROJECT_GID", raising=False)
+    monkeypatch.setattr(provision, "provision_launch", admit)
+    monkeypatch.setattr(provision, "Controller", Current)
+    monkeypatch.setattr(provision, "rotate_managed_grant", rotate)
+    valid = status == "ok" and notes.endswith("marcogallotta/ai-tools")
+    if valid:
+        await provision.run("123", (), managed_agent=True, repository=True)
+        assert events == ["provision", "current", "grant"]
+        assert f"ACTIVE_WORK_ID={active}" in capsys.readouterr().out
+    else:
+        with pytest.raises(ValueError):
+            await provision.run("123", (), managed_agent=True, repository=True)
+        assert events == ["provision", "current"]
+        assert "ACTIVE_WORK_ID=" not in capsys.readouterr().out
