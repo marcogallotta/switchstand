@@ -145,11 +145,13 @@ def _sha(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_host_command(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run one bounded host command for a maintenance operation."""
     return subprocess.run(command, check=check, capture_output=True, text=True, timeout=45)
 
 
-def _validate_target(config: Config) -> None:
+def validate_target(config: Config) -> None:
+    """Reject any maintenance target whose host identity is not exact."""
     if config.target == "production":
         if config.target_root is not None or (
             config.service, config.fastmcp_state, config.local_url,
@@ -206,7 +208,8 @@ def _validate_target(config: Config) -> None:
         raise Failed("disposable target resolves a live or non-isolated identity")
 
 
-def _atomic_copy(source: Path, target: Path, mode: int) -> None:
+def atomic_copy(source: Path, target: Path, mode: int) -> None:
+    """Durably replace one host file with explicit permissions."""
     temporary = target.with_name(f".{target.name}.maintenance.tmp")
     shutil.copy2(source, temporary, follow_symlinks=False)
     os.chmod(temporary, mode)
@@ -230,7 +233,8 @@ def _validate_launch_mapping(config: Config) -> None:
         raise Failed("candidate launcher is not the exact runtime retarget")
 
 
-def _exclusive_lock(path: Path = LOCK) -> TextIO:
+def exclusive_lock(path: Path = LOCK) -> TextIO:
+    """Acquire the non-blocking host-maintenance lock."""
     try:
         fd = os.open(
             path,
@@ -283,7 +287,7 @@ class HostOperations:
 
     def preflight(self) -> None:
         c = self.c
-        _validate_target(c)
+        validate_target(c)
         for path in (
             c.attempt_dir,
             c.current_runtime,
@@ -316,13 +320,13 @@ class HostOperations:
             (c.current_runtime, c.current_sha),
             (c.candidate_runtime, c.candidate_sha),
         ):
-            head = _run(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
-            dirty = _run(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
+            head = run_host_command(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
+            dirty = run_host_command(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
             if head != expected or dirty:
                 raise Failed("runtime checkout is not the exact clean SHA")
             if '"fastmcp-slim[server]==4.0.3"' not in (runtime / "pyproject.toml").read_text():
                 raise Failed("runtime does not pin the approved FastMCP version")
-        unit = _run(
+        unit = run_host_command(
             [
                 "systemctl",
                 "--user",
@@ -335,7 +339,7 @@ class HostOperations:
         if str(c.launcher) not in unit:
             raise Failed("edge unit does not execute the selected launcher")
         if (
-            _run(["systemctl", "--user", "is-active", c.service], check=False).stdout.strip()
+            run_host_command(["systemctl", "--user", "is-active", c.service], check=False).stdout.strip()
             != "active"
         ):
             raise Failed("edge service is not active")
@@ -419,7 +423,7 @@ class HostOperations:
         command: list[str], *, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         try:
-            return _run(command, check=check)
+            return run_host_command(command, check=check)
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unknown("host state readback failed") from exc
 
@@ -617,8 +621,8 @@ class HostOperations:
         return True
 
     def _service(self, action: str, wanted: str) -> None:
-        _run(["systemctl", "--user", action, self.c.service], check=False)
-        state = _run(
+        run_host_command(["systemctl", "--user", action, self.c.service], check=False)
+        state = run_host_command(
             ["systemctl", "--user", "is-active", self.c.service], check=False
         ).stdout.strip()
         if (wanted == "active") != (state == "active"):
@@ -627,7 +631,7 @@ class HostOperations:
     def _running_process_exact(self) -> bool:
         try:
             pid = int(
-                _run(
+                run_host_command(
                     [
                         "systemctl",
                         "--user",
@@ -672,7 +676,7 @@ class HostOperations:
 
     def start(self) -> None:
         self._service("start", "active")
-        restarts = _run(
+        restarts = run_host_command(
             [
                 "systemctl",
                 "--user",
@@ -688,7 +692,7 @@ class HostOperations:
     def snapshot(self) -> None:
         temporary = self.snapshot_file.with_suffix(".tmp")
         try:
-            _run(
+            run_host_command(
                 [
                     "tar",
                     "-C",
@@ -715,9 +719,9 @@ class HostOperations:
         return self._artifact_digest(self.snapshot_file, 0o600)
 
     def swap(self) -> None:
-        _atomic_copy(self.c.launcher, self.backup, 0o600)
+        atomic_copy(self.c.launcher, self.backup, 0o600)
         try:
-            _atomic_copy(self.c.candidate_launcher, self.c.launcher, 0o700)
+            atomic_copy(self.c.candidate_launcher, self.c.launcher, 0o700)
         except OSError as exc:
             if _sha(self.c.launcher) != self.c.candidate_launcher_sha:
                 raise Unknown("launcher replacement state is ambiguous") from exc
@@ -736,7 +740,7 @@ class HostOperations:
         ]
         if not public:
             command += ["--local-url", self.c.local_url, "--public-url", self.c.local_url]
-        return _run(command, check=False).returncode == 0
+        return run_host_command(command, check=False).returncode == 0
 
     def local_ready(self) -> bool:
         return (
@@ -777,7 +781,7 @@ class HostOperations:
 
     def restore_launcher(self) -> None:
         if _sha(self.c.launcher) != self.c.current_launcher_sha:
-            _atomic_copy(self.backup, self.c.launcher, 0o700)
+            atomic_copy(self.backup, self.c.launcher, 0o700)
 
 
 class Receipt:
@@ -888,7 +892,8 @@ class Receipt:
             os.close(directory)
 
 
-def _retain_gate(operations: Operations) -> None:
+def retain_gate(operations: Operations) -> None:
+    """Retain and verify the public maintenance gate or report UNKNOWN."""
     try:
         if not operations.gate_exact():
             operations.gate()
@@ -900,14 +905,14 @@ def _retain_gate(operations: Operations) -> None:
 
 def deploy(config: Config, operations: Operations, offline: OfflineStep | None = None) -> str:
     try:
-        _validate_target(config)
+        validate_target(config)
     except (Failed, OSError):
         return "FAIL"
     try:
         receipt = Receipt(config, offline)
     except Unknown:
         try:
-            _retain_gate(operations)
+            retain_gate(operations)
         except GateRetentionUnknown:
             pass
         return "UNKNOWN"
@@ -1023,7 +1028,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         error = type(exc).__name__
         try:
             if gate_attempted:
-                _retain_gate(operations)
+                retain_gate(operations)
         except GateRetentionUnknown:
             error = "GateRetentionUnknown"
         receipt.write(phase, "UNKNOWN", error)
@@ -1034,7 +1039,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
             and offline is not None and offline.receipt_path.exists()
         ):
             try:
-                _retain_gate(operations)
+                retain_gate(operations)
             except GateRetentionUnknown:
                 receipt.write(phase, "UNKNOWN", "GateRetentionUnknown")
                 return "UNKNOWN"
@@ -1042,7 +1047,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
             return "UNKNOWN"
         if authority_crossed:
             try:
-                _retain_gate(operations)
+                retain_gate(operations)
             except GateRetentionUnknown:
                 receipt.write(phase, "UNKNOWN", "GateRetentionUnknown")
                 return "UNKNOWN"
@@ -1074,7 +1079,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         except Failed, Unknown, OSError, subprocess.SubprocessError:
             error = "RollbackUnknown"
             try:
-                _retain_gate(operations)
+                retain_gate(operations)
             except GateRetentionUnknown:
                 error = "GateRetentionUnknown"
             receipt.write(phase, "UNKNOWN", error)
@@ -1111,9 +1116,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("candidate SHA or retry interval is invalid")
     config = Config(**vars(args), target="production")
-    _validate_target(config)
+    validate_target(config)
     args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-    with _exclusive_lock(config.lock_path):
+    with exclusive_lock(config.lock_path):
 
         def interrupted(signum: int, _frame: object) -> None:
             raise Interrupted(f"maintenance interrupted by signal {signum}")

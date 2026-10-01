@@ -1,5 +1,4 @@
 """Explicit target-bound CLI for the inert Stage 1+2 operator core."""
-# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -15,8 +14,8 @@ from .edge_maintenance import (
     HostOperations,
     Interrupted,
     Unknown,
-    _exclusive_lock,
-    _validate_target,
+    exclusive_lock,
+    validate_target,
 )
 from .rehearsal_target import load_ready, operator_lock
 from .stage12_cutover import (
@@ -80,7 +79,7 @@ def _config(args: argparse.Namespace) -> Config:
         args.launcher, args.current_launcher_sha, state, args.env_file, target,
         lock_path=lock, **common,
     )
-    _validate_target(config)
+    validate_target(config)
     return config
 
 
@@ -156,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "status" and args.existing_attempt:
         raise SystemExit("--existing-attempt is valid only with prepare")
     try:
-        with _exclusive_lock(_target_lock(args.target)):
+        with exclusive_lock(_target_lock(args.target)):
             result = _run(args)
     except Unknown:
         result = "UNKNOWN"
