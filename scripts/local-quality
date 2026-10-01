@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+outcome=NOT_RUN
+postgres_id=
+quality_id=
+image=
+image_built=false
+
+cleanup() {
+    local status=$? cleanup_failed=0 id
+    trap - EXIT INT TERM
+    for id in "$quality_id" "$postgres_id"; do
+        if test -n "$id"; then
+            docker container rm --force "$id" >/dev/null 2>&1 || cleanup_failed=1
+            ! docker container inspect "$id" >/dev/null 2>&1 || cleanup_failed=1
+        fi
+    done
+    if [ "$image_built" = true ]; then
+        docker image rm "$image" >/dev/null 2>&1 || cleanup_failed=1
+        ! docker image inspect "$image" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    printf 'QUALITY_RESULT=%s\nCLEANUP_RESULT=%s\n' \
+        "$outcome" "$([ "$cleanup_failed" -eq 0 ] && printf PASS || printf FAIL)"
+    if [ "$cleanup_failed" -ne 0 ] && [ "$status" -eq 0 ]; then status=1; fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+repo=$(git rev-parse --show-toplevel)
+if ! tree_status=$(git -C "$repo" status --porcelain --untracked-files=all); then
+    echo 'cannot verify the candidate tree; local Quality NOT_RUN' >&2
+    exit 1
+fi
+test -z "$tree_status" || {
+    echo 'local Quality requires a clean immutable candidate' >&2
+    exit 2
+}
+head=$(git -C "$repo" rev-parse --verify HEAD)
+common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+fingerprint=$(printf '%s\n' "$common_dir" | sha256sum | cut -c1-12)
+owner="$fingerprint-${head:0:12}"
+postgres_name="switchstand-local-quality-pg-$owner"
+quality_name="switchstand-local-quality-run-$owner"
+image="switchstand-local-quality:$owner"
+
+for name in "$postgres_name" "$quality_name"; do
+    if docker container inspect "$name" >/dev/null 2>&1; then
+        echo "refusing occupied deterministic container name: $name" >&2
+        exit 1
+    fi
+done
+
+printf 'QUALITY_SUBJECT_KIND=exact-head\nQUALITY_SUBJECT_SHA=%s\nQUALITY_SOURCE=%s\n' \
+    "$head" "$repo"
+image_id=$(docker build --quiet --target development --tag "$image" "$repo")
+image_built=true
+image_id=$(docker image inspect --format '{{.Id}}' "$image_id")
+printf 'QUALITY_IMAGE_ID=%s\n' "$image_id"
+
+password=$(tr -d '-' </proc/sys/kernel/random/uuid)
+postgres_id=$(docker container create \
+    --name "$postgres_name" \
+    --label "com.switchstand.local-quality=$owner" \
+    --tmpfs /var/lib/postgresql:rw,nosuid,nodev \
+    --env POSTGRES_PASSWORD="$password" \
+    --env POSTGRES_DB=switchstand_test \
+    postgres:18-alpine)
+printf 'QUALITY_POSTGRES_ID=%s\n' "$postgres_id"
+docker container start "$postgres_id" >/dev/null
+
+ready=false
+for _ in $(seq 1 30); do
+    if docker container exec "$postgres_id" pg_isready \
+        --username postgres --dbname switchstand_test >/dev/null 2>&1; then
+        ready=true
+        break
+    fi
+    sleep 2
+done
+if [ "$ready" != true ]; then
+    echo 'owned PostgreSQL 18 target did not become ready; Quality NOT_RUN' >&2
+    exit 1
+fi
+
+test_url="postgresql+psycopg://postgres:$password@localhost:5432/switchstand_test"
+quality_id=$(docker container create \
+    --name "$quality_name" \
+    --label "com.switchstand.local-quality=$owner" \
+    --network "container:$postgres_id" \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev \
+    --env "DATABASE_URL=postgresql+psycopg://postgres:$password@localhost:5432/not_switchstand_test" \
+    --env "TEST_DATABASE_URL=$test_url" \
+    --volume "$repo:/workspace:ro" \
+    --volume "$common_dir:$common_dir:ro" \
+    --workdir /workspace \
+    "$image_id" sh -c \
+    'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
+     PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
+     PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider')
+printf 'QUALITY_CONTAINER_ID=%s\n' "$quality_id"
+
+if docker container start --attach "$quality_id"; then
+    outcome=FAIL
+    if ! final_head=$(git -C "$repo" rev-parse --verify HEAD); then
+        echo 'cannot reverify candidate HEAD; result is not exact-head evidence' >&2
+        exit 1
+    fi
+    if ! final_status=$(git -C "$repo" status --porcelain --untracked-files=all); then
+        echo 'cannot reverify candidate tree; result is not exact-head evidence' >&2
+        exit 1
+    fi
+    if [ "$final_head" != "$head" ] || [ -n "$final_status" ]; then
+        echo 'candidate changed while local Quality ran; result is not exact-head evidence' >&2
+        exit 1
+    fi
+    outcome=PASS
+else
+    outcome=FAIL
+    exit 1
+fi
