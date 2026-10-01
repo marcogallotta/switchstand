@@ -83,8 +83,9 @@ Link to the applicable qualification document rather than copying its procedure 
 a task or review handoff.
 
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
-- Stable host tools: run `scripts/bootstrap`. The script reuses a lockfile-fingerprinted `.venv` shared by linked
-  worktrees and obtains the pinned uv binary through Docker only when needed.
+- Stable host tools: run `scripts/bootstrap`. The primary checkout uses the bootstrap-owned primary `.venv`; each
+  linked writer uses its own `.venv`. They share only the pinned `uv` binary and its Git common-directory cache and
+  Python-install directories. Bootstrap obtains the pinned binary through Docker only when needed.
 - Full clean/container quality runs in CI. Run `docker compose run --build --rm quality` locally only when changing
   Docker, runtime, or development-tool behavior that CI cannot qualify for the host.
 - For focused Docker, runtime, or tooling validation, run the normal image build so Docker validates and reuses its
@@ -155,8 +156,8 @@ keeps maintenance active and forbids schema rollback or old-runtime restart.
   active WorkId is launcher-bound and is not a tool argument.
   CONTROL supplies its existing pinned `uv` using `scripts/bootstrap --print-uv`.
   `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses the Git common-directory cache and existing
-  environment on re-entry. No primary `.venv` or separate freshness receipt is needed for checks. This development
-  convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
+  writer environment on re-entry. The writer does not use the primary `.venv` or its freshness receipt for checks.
+  This development convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
   A launcher supervisor now retains ownership of a fresh child process group. On
   child exit or supervisor HUP/INT/QUIT/TERM, it sends TERM, waits one second,
   escalates to KILL if needed, and verifies no live group members remain before
