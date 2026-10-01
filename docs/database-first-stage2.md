@@ -36,7 +36,7 @@ bytes in a private durable `REVIEW_PENDING` receipt. Re-entry accepts only those
 receipts. Its abort path delegates to the receipt-bound Stage 1 preparation cleanup; ambiguity
 remains `UNKNOWN`. Host gate/stop/snapshot orchestration and the operator CLI remain a later layer,
 so landing this core neither starts an attempt nor changes authority.
-The inert operator core composes prepare, status, approved resume, and abort; its target-bound CLI remains a separate layer.
+The `switchstand-stage12-cutover` CLI exposes prepare, status, approved resume, and pre-review abort. Targets are explicit; disposable runs require their exact C2d0 READY descriptor.
 
 The standalone post-Stage-1 procedure can instead generate a JSON worksheet with:
 
