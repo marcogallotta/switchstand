@@ -64,6 +64,8 @@ class UpdateGateway:
         metadata_active = (
             index is not None and await authority_generation(index.engine) is not None
         )
+        if "review_next_action" in fields and "notes" not in fields and not metadata_active:
+            return self.guard(request, "denied", "review_next_action_requires_notes")
         new_metadata_fields = set(MUTABLE_FIELDS) - {
             "priority", "work_type", "review_next_action"
         }
@@ -197,9 +199,28 @@ class UpdateGateway:
             index = cast(Stage1State, self.state).work_index
             indexed = await index.get(request.work_id)
             requested = request.patch.model_dump(exclude_unset=True)
-            if indexed is None or any(
-                getattr(indexed, field) != value for field, value in requested.items()
-            ):
+            scalar = {"title", "completed"}
+            if indexed is None:
+                return self.guard(
+                    request, "unknown", "effect_readback_unconfirmed", possible_send=True
+                )
+            matches = not any(
+                (
+                    getattr(indexed, field) if field in scalar
+                    else getattr(indexed.routing, field)
+                ) != value
+                for field, value in requested.items()
+            )
+            if matches and await authority_generation(index.engine) is not None:
+                if "lifecycle_state" in requested:
+                    matches = indexed.completed == (
+                        requested["lifecycle_state"] == "TERMINAL"
+                    )
+                if matches and "completed" in requested:
+                    matches = indexed.routing.lifecycle_state == (
+                        "TERMINAL" if requested["completed"] else "CURRENT"
+                    )
+            if not matches:
                 return self.guard(
                     request, "unknown", "effect_readback_unconfirmed", possible_send=True
                 )

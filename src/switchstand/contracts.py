@@ -104,7 +104,7 @@ class WorkPatch(ClosedModel):
             raise ValueError("patch must not be empty")
         if any(getattr(self, field) is None for field in changed):
             raise ValueError("patch values must not be null")
-        if changed & {"horizon", "stage3_gate"} and "notes" not in changed:
+        if changed & {"horizon", "review_next_action", "stage3_gate"} and "notes" not in changed:
             raise ValueError("legacy routing changes require notes")
         return self
 

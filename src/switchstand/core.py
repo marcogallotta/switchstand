@@ -110,6 +110,7 @@ class ProviderSourceTask:
     notes: str
     completed: bool
     revision: str
+    context: WorkContext
     canonical: bool
 
 
@@ -329,7 +330,8 @@ class Controller:
             if not before.canonical:
                 return WorkAttachmentsResult(status="denied")
             current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
             )
             if current_revision != request.observed_revision:
                 return WorkAttachmentsResult(
@@ -347,7 +349,8 @@ class Controller:
                 return WorkAttachmentsResult(
                     status="stale", work_id=request.work_id,
                     revision=await authoritative_revision(
-                        self.state, request.work_id, after.revision
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
                     ),
                 )
             projected = await authoritative_work(self.state, request.work_id, after)
@@ -377,7 +380,8 @@ class Controller:
             if not before.canonical:
                 return WorkHistoryResult(status="denied")
             current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
             )
             if current_revision != request.observed_revision:
                 return WorkHistoryResult(
@@ -397,7 +401,8 @@ class Controller:
                 return WorkHistoryResult(
                     status="stale", work_id=request.work_id,
                     revision=await authoritative_revision(
-                        self.state, request.work_id, page.revision
+                        self.state, request.work_id, page.revision,
+                        provider_notes=before.notes, provider_context=before.context,
                     ),
                 )
             after = await provider.source_task(handle.provider_work_id)
@@ -409,7 +414,8 @@ class Controller:
                 return WorkHistoryResult(
                     status="stale", work_id=request.work_id,
                     revision=await authoritative_revision(
-                        self.state, request.work_id, after.revision
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
                     ),
                 )
             event_state = cast(EventState, self.state)
@@ -423,7 +429,8 @@ class Controller:
                 status="ok",
                 work_id=request.work_id,
                 revision=await authoritative_revision(
-                    self.state, request.work_id, after.revision
+                    self.state, request.work_id, after.revision,
+                    provider_notes=after.notes, provider_context=after.context,
                 ),
                 events=tuple(events),
                 next_cursor=page.next_offset,
@@ -455,7 +462,8 @@ class Controller:
             if not before.canonical:
                 return WorkEventResult(status="denied")
             current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision
+                self.state, request.work_id, before.revision,
+                provider_notes=before.notes, provider_context=before.context,
             )
             if current_revision != request.observed_revision:
                 return WorkEventResult(
@@ -476,14 +484,16 @@ class Controller:
                 return WorkEventResult(
                     status="stale", work_id=request.work_id,
                     revision=await authoritative_revision(
-                        self.state, request.work_id, after.revision
+                        self.state, request.work_id, after.revision,
+                        provider_notes=after.notes, provider_context=after.context,
                     ),
                 )
             return WorkEventResult(
                 status="ok",
                 work_id=request.work_id,
                 revision=await authoritative_revision(
-                    self.state, request.work_id, after.revision
+                    self.state, request.work_id, after.revision,
+                    provider_notes=after.notes, provider_context=after.context,
                 ),
                 item=self._work_event(request.work_id, request.event_id, story),
             )

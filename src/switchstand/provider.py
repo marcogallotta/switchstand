@@ -558,7 +558,8 @@ class AsanaProvider:
                     or not isinstance(completed, bool) or not isinstance(revision, str)):
                 raise TypeError
             return ProviderSourceTask(
-                title, notes, completed, revision, await self._canonical(task)
+                title, notes, completed, revision, self._work_context(task),
+                await self._canonical(task),
             )
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None

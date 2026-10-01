@@ -11,8 +11,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt import ChatGPTService
-from switchstand.contracts import Routing, WorkContext, WorkPlacement, WorkSearchRequest
-from switchstand.core import Handle, ProviderWork
+from switchstand.contracts import (
+    LaunchAuthority,
+    Routing,
+    WorkAttachmentsRequest,
+    WorkContext,
+    WorkGetRequest,
+    WorkPlacement,
+    WorkSearchRequest,
+)
+from switchstand.core import (
+    AttachmentPage,
+    Controller,
+    Handle,
+    ProviderAttachment,
+    ProviderWork,
+)
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.grant_state import GrantState
 from switchstand.state import PostgresState, metadata
@@ -335,6 +349,50 @@ async def test_stage2_ignored_provider_metadata_does_not_change_currentness(inde
     ))
     assert after.revision == before.revision
     assert (after.title, after.completed, after.routing.priority) == ("Alpha", False, "P0")
+
+
+async def test_stage2_revision_is_shared_across_get_and_attachments_and_tracks_context(index):
+    source = item("1", "Alpha")
+    await activate(index.engine, (source,))
+    worksheet = await generate_worksheet(index.engine)
+    row = worksheet.rows[0]
+    snapshots = (ProviderMetadataSnapshot(
+        "1", source.revision, source.routing, "notes", source.context, frozenset()
+    ),)
+    await activate_metadata(index.engine, worksheet, snapshots)
+
+    class Provider:
+        work = ProviderWork(
+            source.title, "notes", False, "provider-r1",
+            source.routing, source.context, True,
+        )
+
+        async def get(self, _provider_work_id):
+            return self.work
+
+        async def list_attachments(self, _provider_work_id, _cursor, _limit):
+            return AttachmentPage((ProviderAttachment("proof.txt"),), None)
+
+    provider = Provider()
+    controller = Controller(
+        LaunchAuthority(active_work_id=row.work_id), PostgresState(index.engine),
+        {"asana": provider},
+    )
+    read = await controller.get(WorkGetRequest(api_version="1", work_id=row.work_id))
+    assert read.status == "ok" and read.item is not None
+    attachments = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=row.work_id, observed_revision=read.item.revision,
+    ))
+    assert attachments.status == "ok" and attachments.revision == read.item.revision
+
+    provider.work = ProviderWork(
+        source.title, "notes", False, "provider-r2", source.routing,
+        WorkContext(assignee="New owner"), True,
+    )
+    stale = await controller.attachments(WorkAttachmentsRequest(
+        api_version="1", work_id=row.work_id, observed_revision=read.item.revision,
+    ))
+    assert stale.status == "stale" and stale.revision != read.item.revision
 
 
 async def test_populated_cutover_marker_refuses_downgrade(index, monkeypatch):
