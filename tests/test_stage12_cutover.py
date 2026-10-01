@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from switchstand.edge_maintenance import Config, Failed
-from switchstand.stage12_cutover import ConcreteCommands, Evidence, freeze_evidence
+from switchstand.stage12_cutover import (
+    ConcreteCommands,
+    Evidence,
+    _binding_digest,
+    freeze_evidence,
+)
 
 SHA = "a" * 40
 
@@ -124,9 +129,15 @@ def test_disposable_database_is_derived_from_exact_namespaced_container(
     evidence, attempt = _inputs(tmp_path)
     subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
     calls: list[list[str]] = []
+    working: list[Path | None] = []
 
-    def run(command: list[str], _environment=None, *, check=True):
+    for key in ("PYTHONPATH", "DATABASE_URL", "SWITCHSTAND_BACKUP_DIR"):
+        monkeypatch.setenv(key, "/attacker")
+    monkeypatch.chdir(tmp_path)
+
+    def run(command: list[str], _environment=None, *, check=True, cwd=None):
         calls.append(command)
+        working.append(cwd)
         if command[:2] == ["docker", "inspect"]:
             value = [{"Config": {"Labels": {
                 "com.docker.compose.project": "switchstand-rehearsal-proof",
@@ -135,11 +146,17 @@ def test_disposable_database_is_derived_from_exact_namespaced_container(
                 "switchstand-rehearsal-proof_default": {"IPAddress": "172.30.0.9"}
             }}}]
             return subprocess.CompletedProcess(command, 0, json.dumps(value), "")
-        return subprocess.CompletedProcess(command, 0, "/git/common\n" if command[0] == "git" else "cid\n", "")
+        output = f"{SHA}\n/git/common\n" if command[0] == "git" else "cid\n"
+        return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(subject, "_run", run)
     environment = subject._env()  # pyright: ignore[reportPrivateUsage]
     assert environment["DATABASE_URL"].endswith("@172.30.0.9/switchstand")
+    assert environment["PYTHONPATH"] == str(subject.c.candidate_runtime / "src")
+    assert "SWITCHSTAND_BACKUP_DIR" not in environment
+    subject._module("switchstand.work_corpus", "compare")  # pyright: ignore[reportPrivateUsage]
+    assert calls[-1][:3] == ["/git/.venv/bin/python", "-m", "switchstand.work_corpus"]
+    assert working[-1] == subject.c.candidate_runtime
     assert any("switchstand-rehearsal-proof" in command for command in calls)
 
 
@@ -157,7 +174,7 @@ def test_disposable_database_rejects_live_project_identity(
         subject._env()  # pyright: ignore[reportPrivateUsage]
 
 
-@pytest.mark.parametrize(("status", "state"), [(0, "APPLIED"), (1, "ABSENT"), (2, "UNKNOWN")])
+@pytest.mark.parametrize(("status", "state"), [(0, "APPLIED"), (3, "ABSENT"), (1, "UNKNOWN"), (2, "UNKNOWN")])
 def test_stage1_resume_classifies_exact_reconcile_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, state: str
 ):
@@ -168,3 +185,30 @@ def test_stage1_resume_classifies_exact_reconcile_exit(
     monkeypatch.setattr(subject, "_module", lambda *args, **kwargs:
         subprocess.CompletedProcess([], status, "", ""))
     assert subject.stage1_state(receipt).state == state
+
+
+def test_final_corpus_allows_only_null_to_exact_binding(tmp_path: Path):
+    def manifest(path: Path, work_id=None, title="same"):
+        value = {"schema_version": 1, "rows": [{"work_id": work_id, "title": title}],
+                 "counts": {"bound": int(work_id is not None)}}
+        value["sha256"] = hashlib.sha256(_canonical(value)).hexdigest()
+        _private(path, json.dumps(value).encode())
+
+    before, after = tmp_path / "before", tmp_path / "after"
+    manifest(before)
+    manifest(after, "10000000-0000-4000-8000-000000000001")
+    assert _binding_digest(before, after) == json.loads(after.read_text())["sha256"]
+    manifest(after, "10000000-0000-4000-8000-000000000001", "changed")
+    with pytest.raises(Failed, match="outside Stage 1"):
+        _binding_digest(before, after)
+
+
+@pytest.mark.parametrize("payload", [b"", b"{", b"[]"])
+def test_malformed_schema_receipt_is_unknown(tmp_path: Path, monkeypatch, payload: bytes):
+    evidence, attempt = _inputs(tmp_path)
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    receipt = attempt / "schema.json"
+    _private(receipt, payload)
+    monkeypatch.setattr(subject, "_revision", lambda: "0010_work_metadata_authority")
+    monkeypatch.setattr(subject, "_schema", lambda *_args: None)
+    assert subject.schema_state(receipt).state == "UNKNOWN"

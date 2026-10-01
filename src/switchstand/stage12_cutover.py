@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from uuid import UUID
 
 from .edge_maintenance import Config, Failed, Unknown
 from .work_corpus import load_manifest, manifest_exception_digest
@@ -63,6 +64,35 @@ class CutoverCommands(Protocol):
 
 def _digest(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and not set(value) - set("0123456789abcdef")
+
+
+def _binding_digest(before: Path, after: Path) -> str:
+    """Accept only Stage 1's expected null-to-assigned WorkId transition."""
+    left, right = load_manifest(before), load_manifest(after)
+    result = right.pop("sha256", None)
+    try:
+        rows = zip(cast(list[dict[str, object]], left["rows"]),
+                   cast(list[dict[str, object]], right["rows"]), strict=True)
+        added = 0
+        for old, new in rows:
+            old_id, new_id = old["work_id"], new["work_id"]
+            if old_id is None:
+                if new_id is None or str(UUID(str(new_id))) != new_id:
+                    raise ValueError
+                added += 1
+            elif new_id != old_id:
+                raise ValueError
+            new["work_id"] = old_id
+        left_counts, right_counts = cast(dict[str, int], left["counts"]), cast(dict[str, int], right["counts"])
+        if right_counts["bound"] != left_counts["bound"] + added:
+            raise ValueError
+        right_counts["bound"] = left_counts["bound"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise Failed("final corpus is missing an exact Stage 1 binding") from error
+    left.pop("sha256", None)
+    if left != right or not _digest(result):
+        raise Failed("final corpus changed outside Stage 1 bindings")
+    return cast(str, result)
 
 
 def _read_private(path: Path, label: str) -> bytes:
@@ -206,7 +236,7 @@ class Stage12Cutover:
         if boundary == "COMPLETE":
             required.append("stage2_receipt")
         if not all(_digest(value.get(name)) for name in required) or (
-            boundary != "PRE_MARKER" and value.get("final_manifest") != frozen.corpus_digest
+            boundary != "PRE_MARKER" and not _digest(value.get("final_manifest"))
         ):
             raise Unknown("cutover receipt proof is incomplete or malformed")
         preproof = ("stage2_validation", "prepared_import", "final_manifest")
@@ -215,10 +245,16 @@ class Stage12Cutover:
             and any(name in value for name in preproof)
             and (
                 not all(_digest(value.get(name)) for name in preproof[:2])
-                or value.get("final_manifest") != frozen.corpus_digest
+                or not _digest(value.get("final_manifest"))
             )
         ):
             raise Unknown("cutover receipt pre-authority proof is malformed")
+        if "final_manifest" in value:
+            try:
+                if load_manifest(self._final)["sha256"] != value["final_manifest"]:
+                    raise ValueError
+            except (KeyError, OSError, TypeError, ValueError) as error:
+                raise Unknown("final corpus proof does not match the cutover receipt") from error
         return value
 
     def _write(self, frozen: FrozenEvidence, boundary: str, **proof: str) -> dict[str, object]:
@@ -287,7 +323,7 @@ class Stage12Cutover:
             valid_preproof = (
                 _digest(prepared)
                 and _digest(validation)
-                and (top.get("final_manifest") == frozen.corpus_digest)
+                and _digest(top.get("final_manifest"))
             )
             if stage1.state == "APPLIED" and not valid_preproof:
                 raise Unknown("Stage 1 applied without durable pre-authority proof")
@@ -299,18 +335,16 @@ class Stage12Cutover:
                     prepared = self._commands.prepare_stage1(frozen)
                     if not _digest(validation) or not _digest(prepared):
                         raise Failed("Stage 2 validation or Stage 1 prepare proof is invalid")
-                    if (
-                        self._commands.capture_final_corpus(frozen, self._final)
-                        != frozen.corpus_digest
-                    ):
-                        raise Failed("final corpus changed after review")
+                    final = self._commands.capture_final_corpus(frozen, self._final)
+                    if not _digest(final):
+                        raise Failed("final corpus binding proof is invalid")
                     top = self._write(
                         frozen,
                         "PRE_MARKER",
                         schema_receipt=schema.receipt_digest,
                         stage2_validation=validation,
                         prepared_import=prepared,
-                        final_manifest=frozen.corpus_digest,
+                        final_manifest=final,
                     )
                 self._commands.activate_stage1(cast(str, prepared), self._stage1)
                 stage1 = self._commands.stage1_state(self._stage1)
@@ -322,7 +356,7 @@ class Stage12Cutover:
                 stage1_receipt=stage1.receipt_digest,
                 stage2_validation=cast(str, validation),
                 prepared_import=cast(str, prepared),
-                final_manifest=frozen.corpus_digest,
+                final_manifest=cast(str, top["final_manifest"]),
             )
         else:
             stage1 = self._applied(self._commands.stage1_state(self._stage1), "Stage 1 authority")
@@ -373,46 +407,33 @@ class ConcreteCommands:
 
     def __init__(self, config: Config, evidence: Evidence):
         self.c, self.source = config, evidence
-        self.target = (
-            "production"
-            if config.target == "production"
-            else f"disposable:{cast(Path, config.target_root).name}"
-        )
+        self.target = "production" if config.target == "production" else f"disposable:{cast(Path, config.target_root).name}"
         self._environment_cache: dict[str, str] | None = None
         self._container = ""
+        self._python = Path()
 
     @staticmethod
-    def _run(
-        command: list[str], environment: dict[str, str] | None = None, *, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
+    def _run(command: list[str], environment: dict[str, str] | None = None, *,
+             check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            command, env=environment, text=True, capture_output=True, check=check, timeout=300
+            command, cwd=cwd, env=environment, text=True, capture_output=True, check=check,
+            timeout=300,
         )
 
     def _environment(self) -> dict[str, str]:
         raw = _read_private(self.c.env_file, "migration environment").decode()
-        values = {
+        supplied = {
             key.strip(): value.strip().strip("'\"")
             for line in raw.splitlines()
             if line.strip() and not line.lstrip().startswith("#") and "=" in line
             for key, value in [line.split("=", 1)]
         }
-        if not values.get("ASANA_TOKEN"):
+        if not supplied.get("ASANA_TOKEN"):
             raise Failed("migration environment lacks ASANA_TOKEN")
-        project = (
-            "switchstand"
-            if self.target == "production"
-            else f"switchstand-rehearsal-{self.target.split(':', 1)[1]}"
-        )
+        project = "switchstand" if self.target == "production" else f"switchstand-rehearsal-{self.target.split(':', 1)[1]}"
         compose = [
-            "docker",
-            "compose",
-            "-p",
-            project,
-            "--project-directory",
-            str(self.c.candidate_runtime),
-            "-f",
-            str(self.c.candidate_runtime / "compose.state.yaml"),
+            "docker", "compose", "-p", project, "--project-directory",
+            str(self.c.candidate_runtime), "-f", str(self.c.candidate_runtime / "compose.state.yaml"),
         ]
         try:
             container = self._run([*compose, "ps", "-q", "postgres"]).stdout.strip()
@@ -428,25 +449,33 @@ class ConcreteCommands:
             self._container = container
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise Failed("migration database target is not exact") from error
-        values["DATABASE_URL"] = (
-            f"postgresql+psycopg://switchstand:switchstand@{address}/switchstand"
+        values = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+            "ASANA_TOKEN": supplied["ASANA_TOKEN"],
+            "DATABASE_URL": f"postgresql+psycopg://switchstand:switchstand@{address}/switchstand",
+        }
+        optional = (
+            "SWITCHSTAND_BACKUP_DIR" if self.target == "production"
+            else "SWITCHSTAND_TEST_PROJECT_GID"
         )
-        common = self._run(
-            [
-                "git",
-                "-C",
-                str(self.c.candidate_runtime),
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            ]
-        ).stdout.strip()
+        if supplied.get(optional):
+            values[optional] = supplied[optional]
+        identity = self._run([
+            "git", "-C", str(self.c.candidate_runtime), "rev-parse", "HEAD",
+            "--path-format=absolute", "--git-common-dir",
+        ]).stdout.splitlines()
+        if len(identity) != 2 or identity[0] != self.c.candidate_sha:
+            raise Failed("migration module runtime does not match the exact candidate")
+        common = Path(identity[1])
+        self._python = common.parent / ".venv/bin/python"
         values |= {
+            "PYTHONPATH": str(self.c.candidate_runtime / "src"),
             "SWITCHSTAND_CONTROL_PATH": str(self.c.candidate_runtime),
             "SWITCHSTAND_CONTROL_SHA": self.c.candidate_sha,
-            "SWITCHSTAND_CONTROL_COMMON": common,
+            "SWITCHSTAND_CONTROL_COMMON": str(common),
         }
-        return os.environ.copy() | values
+        return values
 
     def _env(self) -> dict[str, str]:
         if self._environment_cache is None:
@@ -457,9 +486,10 @@ class ConcreteCommands:
         self, module: str, *arguments: object, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         return self._run(
-            [sys.executable, "-m", module, *(str(value) for value in arguments)],
+            [str(self._python), "-m", module, *(str(value) for value in arguments)],
             self._env(),
             check=check,
+            cwd=self.c.candidate_runtime,
         )
 
     def _schema(self, receipt: Path, operation: str = "apply") -> None:
@@ -513,13 +543,14 @@ class ConcreteCommands:
         if not receipt.exists():
             return Reconciled("UNKNOWN")
         self._schema(receipt)
-        records = [
-            json.loads(line) for line in _read_private(receipt, "schema receipt").splitlines()
-        ]
-        terminal = records[-1]
         try:
+            records = [
+                json.loads(line)
+                for line in _read_private(receipt, "schema receipt").splitlines()
+            ]
+            terminal = records[-1]
             backup = _read_private(Path(cast(str, terminal["backup"])), "schema backup")
-        except KeyError, TypeError, Failed:
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, UnicodeError, Failed):
             return Reconciled("UNKNOWN")
         if terminal.get("outcome") != "APPLIED":
             return Reconciled("UNKNOWN")
@@ -570,7 +601,7 @@ class ConcreteCommands:
             "--source-candidate",
             evidence.candidate_sha,
         )
-        return str(load_manifest(destination)["sha256"])
+        return _binding_digest(evidence.manifests[0], destination)
 
     def _activation_state(self, module: str, receipt: Path, worksheet: bool = False) -> Reconciled:
         if not receipt.exists():
@@ -580,10 +611,10 @@ class ConcreteCommands:
             arguments.append(self._frozen().worksheet)
         arguments += ["--confirm-offline", "--receipt", receipt]
         result = self._module(module, *arguments, check=False)
-        if result.returncode == 2:
-            return Reconciled("UNKNOWN")
-        if result.returncode:
+        if result.returncode == 3:
             return Reconciled("ABSENT")
+        if result.returncode:
+            return Reconciled("UNKNOWN")
         return Reconciled("APPLIED", self._receipt(receipt))
 
     def stage1_state(self, receipt: Path) -> Reconciled:
