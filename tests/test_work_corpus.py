@@ -13,6 +13,7 @@ from switchstand.core import Handle, ProviderError, ProviderWork
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.state import metadata
 from switchstand.work_corpus import (
+    _capture,
     capture_manifest,
     compare_manifests,
     load_manifest,
@@ -223,3 +224,19 @@ def test_manifest_rejects_tampering(tmp_path: Path):
     path.write_text('{"schema_version":1,"sha256":"bad"}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="digest"):
         load_manifest(path)
+
+
+async def test_cli_capture_passes_test_project_to_provider(monkeypatch, tmp_path: Path):
+    import switchstand.work_corpus as module
+
+    async def fake_capture(*_args):
+        return {"sha256": "digest"}
+
+    seen = []
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused")
+    monkeypatch.setenv("ASANA_TOKEN", "unused")
+    monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "9999999999999999")
+    monkeypatch.setattr(module, "AsanaProvider", lambda _client, project: seen.append(project))
+    monkeypatch.setattr(module, "capture_manifest", fake_capture)
+    assert await _capture(tmp_path / "manifest", SHA) == "digest"
+    assert seen == ["9999999999999999"]

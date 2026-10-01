@@ -87,7 +87,8 @@ def _canonical(value: object) -> bytes:
 
 
 def _with_digest(document: dict[str, object]) -> dict[str, object]:
-    return document | {"sha256": hashlib.sha256(_canonical(document)).hexdigest()}
+    normalized = cast(dict[str, object], json.loads(_canonical(document)))
+    return normalized | {"sha256": hashlib.sha256(_canonical(normalized)).hexdigest()}
 
 
 async def capture_manifest(
@@ -202,7 +203,8 @@ async def _capture(path: Path, source_candidate: str) -> str:
         headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
     )
     try:
-        manifest = await capture_manifest(engine, AsanaProvider(client), source_candidate)
+        provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
+        manifest = await capture_manifest(engine, provider, source_candidate)
         write_manifest(path, manifest)
         return str(manifest["sha256"])
     finally:
