@@ -397,6 +397,8 @@ class AsanaProvider:
     async def get(self, provider_work_id: str) -> ProviderWork | None:
         task = await self._task(provider_work_id)
         if task is None: return None
+        if self._gid(task) != provider_work_id:
+            raise ProviderError("provider response identity mismatch")
         fields = self._custom_fields(task)
         values = {name: next((f.get("display_value") for f in fields
                   if f.get("gid") == gid), None) for name, gid in FIELDS.items()}
