@@ -40,6 +40,7 @@ scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
 ```
 
 Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in [AGENTS.md](AGENTS.md): accept only `current`, verify the advertised SHA-256, and materialize a normal repository. Existing Codex/Claude checkouts stay on normal Git.
+For candidate diagnostics, `repository_candidate_qualification_get` is the preferred compact read of the exact current PR base, head, composition, and code-owned Quality gates. It is provisional: direct public GitHub reads remain an allowed fallback when the semantic read is unavailable, `UNKNOWN`, or lacks needed detail.
 
 ## Documentation map
 

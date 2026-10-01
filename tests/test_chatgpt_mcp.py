@@ -28,6 +28,7 @@ from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferen
 from switchstand.core import ProviderError
 from switchstand.discovery import ProviderSearchItem, ProviderStructure
 from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
+from switchstand.repository_candidate import RepositoryCandidateQualification
 
 
 def test_ordinary_annotation_policy_is_exhaustive():
@@ -36,6 +37,27 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_candidate_qualification_adapter_is_read_only_and_audited(monkeypatch):
+    observed = []
+    expected = RepositoryCandidateQualification(
+        status="NOT_READY", pull_request=7, gates=[], reason="gates_not_ready",
+    )
+
+    async def qualify(pull_request, include_failure_detail):
+        assert (pull_request, include_failure_detail) == (7, True)
+        return expected
+
+    monkeypatch.setattr(
+        "switchstand.chatgpt_mcp.repository_candidate.qualify_repository_candidate", qualify,
+    )
+    tool = dict(build_ordinary_tools(
+        service(), audit=lambda name, target, status: observed.append((name, target, status)),
+    ))["repository_candidate_qualification_get"]
+    assert await tool("1", 7, True) == expected
+    assert observed == [("repository_candidate_qualification_get", "7", "NOT_READY")]
+    assert "repository_candidate_qualification_get" in ORDINARY_GENUINE_READ_TOOLS
 
 
 def test_ordinary_relation_patch_converts_only_work_ids():
@@ -370,7 +392,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
+            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
             "message_send", "message_pending",
@@ -393,6 +415,9 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 assert_public(tool.model_dump(mode="json"))
             if tool.name == "work_attachments":
                 assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
+            if tool.name == "repository_candidate_qualification_get":
+                assert tool.input_schema["properties"]["pull_request"]["minimum"] == 1
+                assert tool.input_schema["properties"]["include_failure_detail"]["default"] is False
             assert tool.input_schema.get("additionalProperties") is False
             forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
             if tool.name != "agent_project_bootstrap":
