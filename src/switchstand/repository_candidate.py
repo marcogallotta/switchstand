@@ -40,6 +40,7 @@ class QualificationGate(BaseModel):
     age_ms: int | None = None
     failed_steps: list[str] = Field(default_factory=list)
     failure_excerpt: str | None = None
+    detail_reason: str | None = None
 
 
 class RepositoryCandidateQualification(BaseModel):
@@ -117,6 +118,44 @@ def _excerpt(output: Any) -> str | None:
     return text[:1000] + ("…" if len(text) > 1000 else "")
 
 
+def _run_matches(
+    run: dict[str, Any], check: dict[str, Any], kind: str, pull_request: int,
+    base: str, head: str, run_id: int | None, job_id: int | None,
+) -> bool:
+    suite = check.get("check_suite")
+    app = check.get("app")
+    if not isinstance(suite, dict) or not isinstance(app, dict):
+        return False
+    suite = cast(dict[str, Any], suite)
+    app = cast(dict[str, Any], app)
+    expected_event = "push" if kind == "exact_head" else "pull_request"
+    expected_name = "Quality / exact-head" if kind == "exact_head" else "Quality / composition"
+    valid = (
+        app.get("slug") == "github-actions" and check.get("id") == job_id
+        and run.get("id") == run_id
+        and run.get("check_suite_id") == suite.get("id")
+        and run.get("path") == ".github/workflows/quality.yml"
+        and run.get("event") == expected_event and run.get("name") == expected_name
+        and run.get("head_sha") == head
+    )
+    if kind == "exact_head" or not valid:
+        return valid
+    prs = run.get("pull_requests")
+    if not isinstance(prs, list):
+        return False
+    for value in cast(list[Any], prs):
+        if not isinstance(value, dict):
+            continue
+        item = cast(dict[str, Any], value)
+        pr_base, pr_head = item.get("base"), item.get("head")
+        if (item.get("number") == pull_request and isinstance(pr_base, dict)
+                and isinstance(pr_head, dict)
+                and cast(dict[str, Any], pr_base).get("sha") == base
+                and cast(dict[str, Any], pr_head).get("sha") == head):
+            return True
+    return False
+
+
 async def qualify_repository_candidate(
     pull_request: int, include_failure_detail: bool = False,
     client: httpx.AsyncClient | None = None,
@@ -138,18 +177,21 @@ async def qualify_repository_candidate(
         parents = [str(parent["sha"]) for parent in commit["parents"]]
         composition_reason = _composition_reason(parents, base, head)
         now = datetime.now(UTC)
-        run_attempts: dict[int, int | None] = {}
+        checks_payload = await _json(
+            http, f"/commits/{head}/check-runs", filter="latest", per_page=100,
+        )
+        raw_checks = checks_payload.get("check_runs")
+        if not isinstance(raw_checks, list):
+            raise TypeError("GitHub check_runs must be a list of objects")
+        raw_list = cast(list[Any], raw_checks)
+        checks = [cast(dict[str, Any], item) for item in raw_list if isinstance(item, dict)]
+        if len(checks) != len(raw_list):
+            raise TypeError("GitHub check_runs must be a list of objects")
+        runs: dict[int, dict[str, Any]] = {}
         gates: list[QualificationGate] = []
         for name, kind in GATES:
             subject = head if kind == "exact_head" else composition
-            if kind == "composition" and composition_reason is not None:
-                gates.append(QualificationGate(
-                    name=name, subject_kind="composition", subject_sha=subject,
-                    state="completed", reason=composition_reason,
-                ))
-                continue
-            checks = await _json(http, f"/commits/{subject}/check-runs", filter="latest")
-            matches = [item for item in checks.get("check_runs", []) if item.get("name") == name]
+            matches = [item for item in checks if item.get("name") == name]
             if len(matches) != 1:
                 gates.append(QualificationGate(
                     name=name, subject_kind=cast(Literal["exact_head", "composition"], kind),
@@ -157,7 +199,7 @@ async def qualify_repository_candidate(
                     reason="missing" if not matches else "conflicting",
                 ))
                 continue
-            check = cast(dict[str, Any], matches[0])
+            check = matches[0]
             actual_subject = str(check.get("head_sha") or "")
             status = str(check.get("status") or "")
             conclusion = check.get("conclusion")
@@ -166,28 +208,38 @@ async def qualify_repository_candidate(
             identity = DETAILS_RE.search(details)
             run_id = int(identity.group("run")) if identity else None
             job_id = int(identity.group("job")) if identity and identity.group("job") else None
-            if run_id is not None and run_id not in run_attempts:
-                run = await _json(http, f"/actions/runs/{run_id}")
-                attempt = run.get("run_attempt")
-                run_attempts[run_id] = int(attempt) if isinstance(attempt, int) else None
+            run: dict[str, Any] = {}
+            if run_id is not None:
+                if run_id not in runs:
+                    runs[run_id] = await _json(http, f"/actions/runs/{run_id}")
+                run = runs[run_id]
+            attempt = run.get("run_attempt")
             started = _timestamp(check.get("started_at"))
             completed = _timestamp(check.get("completed_at"))
             reason = _closed_reason(status, conclusion)
-            if actual_subject != subject:
-                reason = "wrong-head" if kind == "exact_head" else "wrong-composition"
+            if actual_subject != head:
+                reason = "wrong-head"
+            elif not _run_matches(run, check, kind, pull_request, base, head, run_id, job_id):
+                reason = "conflicting"
+            elif kind == "composition" and composition_reason is not None:
+                reason = composition_reason
             failed_steps: list[str] = []
             failure_excerpt = None
+            detail_reason = None
             if include_failure_detail and reason in {"failed", "cancelled", "skipped"}:
                 if job_id is not None:
-                    job = await _json(http, f"/actions/jobs/{job_id}")
-                    failed_steps = [str(step["name"]) for step in job.get("steps", [])
-                                    if step.get("conclusion") not in {None, "success"}][:20]
+                    try:
+                        job = await _json(http, f"/actions/jobs/{job_id}")
+                        failed_steps = [str(step["name"]) for step in job.get("steps", [])
+                                        if step.get("conclusion") not in {None, "success"}][:20]
+                    except (httpx.HTTPError, AttributeError, KeyError, TypeError, ValueError):
+                        detail_reason = "provider-unavailable"
                 failure_excerpt = _excerpt(check.get("output"))
             gates.append(QualificationGate(
                 name=name, subject_kind=cast(Literal["exact_head", "composition"], kind),
                 subject_sha=subject, state=status or "unknown", conclusion=conclusion,
                 reason=reason, run_id=run_id, job_id=job_id,
-                attempt=run_attempts.get(run_id) if run_id is not None else None,
+                attempt=int(attempt) if isinstance(attempt, int) else None,
                 provider_url=details or None,
                 started_at=started.isoformat() if started else None,
                 completed_at=completed.isoformat() if completed else None,
@@ -195,15 +247,27 @@ async def qualify_repository_candidate(
                 running_for_ms=_elapsed(started, now) if status == "in_progress" else None,
                 age_ms=_elapsed(started, now) if status == "queued" else None,
                 failed_steps=failed_steps, failure_excerpt=failure_excerpt,
+                detail_reason=detail_reason,
             ))
         ready = composition_reason is None and all(g.reason is None for g in gates)
+        result_reason = None if ready else (
+            "composition_mismatch" if composition_reason is not None else "gates_not_ready"
+        )
+        if ready:
+            current = await _json(http, f"/pulls/{pull_request}")
+            current_identity = (
+                str(current["base"]["sha"]), str(current["head"]["sha"]),
+                str(current["merge_commit_sha"]),
+            )
+            if current_identity != (base, head, composition):
+                ready, result_reason = False, "candidate_changed"
+                for gate in gates:
+                    gate.reason = "stale"
         return RepositoryCandidateQualification(
             status="READY" if ready else "NOT_READY", pull_request=pull_request,
             base_sha=base, head_sha=head, composition_sha=composition,
             composition_parents=parents, gates=gates,
-            reason=None if ready else (
-                "composition_mismatch" if composition_reason is not None else "gates_not_ready"
-            ),
+            reason=result_reason,
         )
     except (httpx.HTTPError, AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return RepositoryCandidateQualification(
