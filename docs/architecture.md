@@ -143,8 +143,11 @@ messaging, and required continuation:
 - `work_index.py` owns the default-off Stage 1 title, completion, and admitted-work corpus. Once its single
   durable `POSTGRES_AUTHORITY` marker is committed, ordinary broad search is DB-only, exact
   provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
-  the provider revision. `work_index_migration.py` owns the one-shot offline final scan and atomic
-  flip; see [Database-first Stage 1](database-first-stage1.md).
+  the provider revision. `work_index_migration.py` owns the offline final scan, durable exact
+  preparation receipt, and atomic flip. Preparation binds its before/final/inserted handle set
+  before mutation; before authority, exact readback can reconcile or remove only those inserted
+  handles. Any marker, binding drift, or ambiguous readback forbids cleanup; see
+  [Database-first Stage 1](database-first-stage1.md).
 - `work_metadata.py` owns the inert Stage 2 metadata authority marker, WorkId-keyed import
   worksheet contract, frozen-corpus validation, canonical dependency edges, and atomic authority
   flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata

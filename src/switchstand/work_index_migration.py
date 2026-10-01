@@ -24,9 +24,13 @@ from .work_index import (
     ActivationNotCommitted,
     ActivationReceipt,
     ActivationUnknown,
+    PrepareReceipt,
     activate,
-    prepare_manifest,
+    canonical_digest,
+    cleanup_preparation,
+    prepare_manifest_exact,
     reconcile_activation,
+    reconcile_preparation,
 )
 
 
@@ -201,7 +205,7 @@ async def require_offline(engine: AsyncEngine) -> None:
         raise RuntimeError("Stage 1 requires the MCP service and every other DB client stopped")
 
 
-def write_receipt(path: Path, receipt: ActivationReceipt) -> None:
+def write_receipt(path: Path, receipt: ActivationReceipt | PrepareReceipt) -> None:
     """Durably publish the exact attempted post/pre state before COMMIT starts."""
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(name)
@@ -228,6 +232,60 @@ def load_receipt(path: Path) -> ActivationReceipt:
     return ActivationReceipt(**json.loads(path.read_text(encoding="utf-8")))
 
 
+def load_prepare_receipt(path: Path) -> PrepareReceipt:
+    parsed: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise TypeError("prepare receipt is malformed")
+    raw = cast(dict[str, object], parsed)
+    if set(raw) != {
+        "corpus_digest", "prepared_digest", "inserted_digest", "before_bindings", "final_bindings",
+        "inserted_bindings",
+    }:
+        raise ValueError("prepare receipt is malformed")
+    bindings: dict[str, tuple[tuple[str, str], ...]] = {}
+    for name in ("before_bindings", "final_bindings", "inserted_bindings"):
+        value = raw[name]
+        if not isinstance(value, list):
+            raise TypeError("prepare receipt bindings are malformed")
+        raw_rows = cast(list[object], value)
+        if any(
+            not isinstance(row, list) or len(cast(list[object], row)) != 2
+            or not isinstance(row[0], str) or not row[0] or not isinstance(row[1], str)
+            for row in raw_rows
+        ):
+            raise ValueError("prepare receipt bindings are malformed")
+        rows = tuple(
+            (cast(str, cast(list[object], row)[0]), cast(str, cast(list[object], row)[1]))
+            for row in raw_rows
+        )
+        if any(str(UUID(identity)) != identity for _provider, identity in rows):
+            raise ValueError("prepare receipt binding UUID is not canonical")
+        if (
+            rows != tuple(sorted(rows))
+            or len(rows) != len({row[0] for row in rows})
+            or len(rows) != len({row[1] for row in rows})
+        ):
+            raise ValueError("prepare receipt bindings are not canonical")
+        bindings[name] = rows
+    before, final, inserted = (
+        bindings["before_bindings"], bindings["final_bindings"], bindings["inserted_bindings"]
+    )
+    if not set(inserted) <= set(final) or set(final) != set(before) | set(inserted):
+        raise ValueError("prepare receipt binding transition is invalid")
+    digests: dict[str, str] = {}
+    for name in ("corpus_digest", "prepared_digest", "inserted_digest"):
+        value = raw[name]
+        if not isinstance(value, str) or len(value) != 64 or set(value) - set("0123456789abcdef"):
+            raise ValueError("prepare receipt digest is malformed")
+        digests[name] = value
+    if digests["inserted_digest"] != canonical_digest(inserted):
+        raise ValueError("prepare receipt inserted binding digest is inconsistent")
+    return PrepareReceipt(
+        digests["corpus_digest"], digests["prepared_digest"], digests["inserted_digest"],
+        before, final, inserted,
+    )
+
+
 async def migrate(
     action: str,
     *,
@@ -237,15 +295,19 @@ async def migrate(
     receipt_path: Path | None,
     manifest_paths: tuple[Path, Path] | None,
     expected_exception_digest: str | None,
-) -> str | ActivationReceipt:
+) -> str | ActivationReceipt | PrepareReceipt:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
-    if action == "reconcile":
+    if action in {"reconcile", "prepare-reconcile"}:
         try:
             if receipt_path is None:
                 raise ValueError("--receipt is required")
-            return await reconcile_activation(engine, load_receipt(receipt_path))
+            return await (
+                reconcile_activation(engine, load_receipt(receipt_path))
+                if action == "reconcile"
+                else reconcile_preparation(engine, load_prepare_receipt(receipt_path))
+            )
         finally:
             await engine.dispose()
     try:
@@ -257,10 +319,37 @@ async def migrate(
         ):
             raise ValueError("prepare/activate require two manifests and both reviewed digests")
         corpus = _stable_corpus(manifest_paths, expected_corpus_digest, expected_exception_digest)
-        await _validate_bindings(engine, corpus, prepared=action == "activate")
+        existing_prepare = (
+            load_prepare_receipt(receipt_path)
+            if action == "prepare" and receipt_path is not None and receipt_path.exists()
+            else None
+        )
+        if existing_prepare is None:
+            await _validate_bindings(engine, corpus, prepared=action == "activate")
         await require_offline(engine)
         if action == "prepare":
-            return await prepare_manifest(engine, corpus.items)
+            if receipt_path is None:
+                raise ValueError("prepare requires --receipt")
+            return await prepare_manifest_exact(
+                engine, corpus.items, corpus_digest=expected_corpus_digest,
+                receipt=existing_prepare,
+                before_commit=(
+                    None if existing_prepare else lambda value: write_receipt(receipt_path, value)
+                ),
+            )
+        if action == "prepare-cleanup":
+            if receipt_path is None:
+                raise ValueError("prepare cleanup requires --receipt")
+            prepared = load_prepare_receipt(receipt_path)
+            if prepared.corpus_digest != expected_corpus_digest:
+                raise ValueError("prepare receipt does not bind the reviewed corpus")
+            expected_before = tuple(sorted(
+                (provider, str(identity))
+                for provider, identity in (corpus.work_ids | corpus.exceptions).items()
+                if identity is not None
+            ))
+            await cleanup_preparation(engine, prepared, corpus.items, expected_before)
+            return prepared
         if expected_prepared_digest is None or receipt_path is None:
             raise ValueError("activate requires --expected-prepared-digest and --receipt")
         return await activate(
@@ -275,7 +364,9 @@ async def migrate(
 
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "reconcile"))
+    parser.add_argument("action", choices=(
+        "prepare", "prepare-reconcile", "prepare-cleanup", "activate", "reconcile",
+    ))
     parser.add_argument("--confirm-offline", action="store_true")
     parser.add_argument("--expected-corpus-digest")
     parser.add_argument("--expected-prepared-digest")
@@ -300,11 +391,18 @@ def run(argv: list[str] | None = None) -> None:
     except ActivationUnknown as error:
         parser.exit(2, f"{error}\n")
     except (KeyError, OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as error:
-        if arguments.action == "reconcile":
-            parser.exit(2, f"UNKNOWN: reconciliation failed: {error}\n")
+        if arguments.action.endswith("reconcile") or arguments.action == "prepare-cleanup":
+            parser.exit(2, f"UNKNOWN: recovery failed: {error}\n")
         parser.exit(1, f"Stage 1 migration failed before authority flip: {error}\n")
     if isinstance(receipt, str):
         print(f"prepared_import_sha256={receipt}")
+        return
+    if isinstance(receipt, PrepareReceipt):
+        print(
+            f"prepared_import_sha256={receipt.prepared_digest} "
+            f"inserted_bindings_sha256={receipt.inserted_digest} "
+            f"inserted_count={len(receipt.inserted_bindings)}"
+        )
         return
     print(
         f"POSTGRES_AUTHORITY active generation={receipt.generation} count={receipt.count} "
