@@ -12,7 +12,7 @@ operation=${1:-apply}
 case "$operation" in rehearse|apply|abort-pre-authority) ;; *) echo "unknown state-upgrade operation: $operation" >&2; exit 2;; esac
 receipt=${2:-}
 prior_receipt=
-EXPECTED_NEW=0010_work_metadata_authority
+EXPECTED_NEW=0011_workset_authority
 case "$target_identity" in
     production) PROJECT=switchstand; target_name=production ;;
     disposable:*)
@@ -223,7 +223,7 @@ volume_identity=$(docker volume inspect --format \
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
-    0010_work_metadata_authority)
+    0011_workset_authority)
         [ "$operation" = abort-pre-authority ] || [ "$resume_attempt" = true ] \
             || { echo "schema is already $EXPECTED_NEW without an exact reconcilable receipt; outcome UNKNOWN" >&2; exit 1; }
         [ "$EXPECTED_OLD" = 0007_agent_chat_identity ] \
@@ -387,7 +387,8 @@ if [ "$operation" = abort-pre-authority ]; then
         || { echo "shared state no longer matches exact applied receipt; outcome UNKNOWN" >&2; exit 1; }
     stage1=$(marker_state "$container" work_authority) || { echo "Stage 1 marker unreadable; outcome UNKNOWN" >&2; exit 1; }
     stage2=$(marker_state "$container" work_metadata_authority) || { echo "Stage 2 marker unreadable; outcome UNKNOWN" >&2; exit 1; }
-    [ "$stage1|$stage2" = absent\|absent ] \
+    stage3=$(marker_state "$container" workset_authority) || { echo "Stage 3 marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    [ "$stage1|$stage2|$stage3" = absent\|absent\|absent ] \
         || { echo "POSTGRES_AUTHORITY present; downgrade forbidden; forward-fix only" >&2; exit 1; }
     original_counts=$before_counts original_schema=$before_schema original_data=$before_data
     before_counts=$expected_counts before_schema=$expected_schema before_data=$expected_data
@@ -407,11 +408,12 @@ shared_migration_attempted=true
 migrate "$container" || {
     stage1=$(marker_state "$container" work_authority) || { echo "authority marker unreadable; outcome UNKNOWN" >&2; exit 1; }
     stage2=$(marker_state "$container" work_metadata_authority) || { echo "authority marker unreadable; outcome UNKNOWN" >&2; exit 1; }
-    [ "$stage1|$stage2" = absent\|absent ] || { echo "POSTGRES_AUTHORITY present; outcome UNKNOWN; forward-fix only" >&2; exit 1; }
+    stage3=$(marker_state "$container" workset_authority) || { echo "authority marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    [ "$stage1|$stage2|$stage3" = absent\|absent\|absent ] || { echo "POSTGRES_AUTHORITY present; outcome UNKNOWN; forward-fix only" >&2; exit 1; }
     failed_revision=$(sql 'SELECT version_num FROM alembic_version') \
         || { echo "Alembic revision unreadable; outcome UNKNOWN" >&2; exit 1; }
     case "$failed_revision" in
-        "$EXPECTED_OLD"|0008_work_index_authority|0009_human_trajectory|"$EXPECTED_NEW") ;;
+        "$EXPECTED_OLD"|0008_work_index_authority|0009_human_trajectory|0010_work_metadata_authority|"$EXPECTED_NEW") ;;
         *) echo "ambiguous Alembic revision $failed_revision; outcome UNKNOWN" >&2; exit 1;;
     esac
     migrate "$container" "$EXPECTED_OLD" || { echo "pre-authority abort failed; outcome UNKNOWN" >&2; exit 1; }

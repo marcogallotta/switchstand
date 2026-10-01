@@ -113,6 +113,56 @@ work_edges = Table(
     ),
     CheckConstraint("work_id <> depends_on_work_id", name="ck_work_edge_not_self"),
 )
+workset_authority = Table(
+    "workset_authority", metadata, Column("scope", Text, primary_key=True),
+    Column("state", Text, nullable=False), Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_workset_authority_scope"),
+    CheckConstraint("state = 'POSTGRES_AUTHORITY'", name="ck_workset_authority_state"),
+    CheckConstraint("generation >= 1", name="ck_workset_authority_generation"),
+)
+workset_cutovers = Table(
+    "workset_cutovers", metadata, Column("scope", Text, primary_key=True),
+    Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_workset_cutover_scope"),
+    CheckConstraint("generation >= 1", name="ck_workset_cutover_generation"),
+)
+worksets = Table(
+    "worksets", metadata, Column("workset_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("workset_key", Text, nullable=False, unique=True), Column("name", Text, nullable=False),
+    Column("kind", Text, nullable=False), Column("role_identity", Text, unique=True),
+    Column("state", Text, nullable=False), Column("row_version", BigInteger, nullable=False),
+    CheckConstraint("workset_key <> ''", name="ck_workset_key"),
+    CheckConstraint("name <> ''", name="ck_workset_name"),
+    CheckConstraint("kind <> ''", name="ck_workset_kind"),
+    CheckConstraint("role_identity IS NULL OR role_identity <> ''", name="ck_workset_role"),
+    CheckConstraint("state IN ('ACTIVE', 'RETIRED')", name="ck_workset_state"),
+    CheckConstraint("row_version >= 1", name="ck_workset_version"),
+)
+workset_memberships = Table(
+    "workset_memberships", metadata,
+    Column("workset_id", PGUUID(as_uuid=True), ForeignKey("worksets.workset_id", ondelete="RESTRICT"), primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True), ForeignKey("work_index.work_id", ondelete="RESTRICT"), primary_key=True),
+    Column("semantics", Text, nullable=False), Column("member_role", Text, nullable=False),
+    Column("row_version", BigInteger, nullable=False),
+    CheckConstraint("semantics IN ('AUTHORITATIVE', 'RELATED')", name="ck_workset_membership_semantics"),
+    CheckConstraint("member_role IN ('MASTER', 'MEMBER')", name="ck_workset_membership_role"),
+    CheckConstraint("member_role <> 'MASTER' OR semantics = 'AUTHORITATIVE'", name="ck_workset_master_authoritative"),
+    CheckConstraint("row_version >= 1", name="ck_workset_membership_version"),
+)
+Index("uq_workset_authoritative_work", workset_memberships.c.work_id, unique=True,
+      postgresql_where=workset_memberships.c.semantics == "AUTHORITATIVE")
+Index("uq_workset_master", workset_memberships.c.workset_id, unique=True,
+      postgresql_where=workset_memberships.c.member_role == "MASTER")
+work_parent_edges = Table(
+    "work_parent_edges", metadata,
+    Column("child_work_id", PGUUID(as_uuid=True), ForeignKey("work_index.work_id", ondelete="RESTRICT"), primary_key=True),
+    Column("parent_work_id", PGUUID(as_uuid=True), ForeignKey("work_index.work_id", ondelete="RESTRICT"), nullable=False),
+    Column("row_version", BigInteger, nullable=False),
+    CheckConstraint("child_work_id <> parent_work_id", name="ck_work_parent_not_self"),
+    CheckConstraint("row_version >= 1", name="ck_work_parent_version"),
+)
 human_trajectory_revisions = Table(
     "human_trajectory_revisions", metadata,
     Column("trajectory_id", PGUUID(as_uuid=True), primary_key=True),
