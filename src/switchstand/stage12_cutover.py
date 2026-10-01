@@ -252,6 +252,25 @@ class ReviewCheckpoint:
         finally:
             os.close(directory)
 
+    def begin(self) -> None:
+        """Persist intent before host effects without adopting subordinate artifacts."""
+        self._validate_attempt()
+        existing = self._load()
+        if existing is not None:
+            if existing["status"] not in {"ATTEMPTING", "REVIEW_PENDING"}:
+                raise Unknown("review attempt is terminal")
+            return
+        if any(os.path.lexists(path) for path in (
+            self.attempt_dir / "stage1-prepare.json", self.evidence.worksheet,
+        )):
+            raise Unknown("fresh review attempt contains subordinate evidence")
+        self._write("ATTEMPTING")
+
+    def status(self) -> str:
+        self._validate_attempt()
+        value = self._load()
+        return "ABSENT" if value is None else cast(str, value["status"])
+
     def prepare(self) -> str:
         self._validate_attempt()
         existing = self._load()
@@ -382,7 +401,9 @@ class Stage12Cutover:
         self._final = attempt_dir / "corpus-final.json"
         self.candidate_sha = evidence.candidate_sha
         self.database_backup = "PENDING"
-        self.corpus_manifests = (evidence.expected_corpus_digest,) * 2
+        self.corpus_manifests: tuple[str, str] = (
+            evidence.expected_corpus_digest, evidence.expected_corpus_digest,
+        )
         self.worksheet = evidence.worksheet_digest
 
     def _load(self, frozen: FrozenEvidence) -> dict[str, object] | None:
