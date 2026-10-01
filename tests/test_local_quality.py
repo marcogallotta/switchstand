@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -59,6 +60,7 @@ case "$1 $2" in
           head) git -C "$CANDIDATE_REPO" -c user.name=Test -c user.email=test@example.invalid \
                   commit --allow-empty -qm concurrent ;;
         esac
+        test "${STATUS_ERROR_AFTER_RUN:-0}" != 1 || : >"$GIT_FAIL_MARKER"
         exit "${QUALITY_EXIT:-0}" ;;
       *) exit 0 ;;
     esac ;;
@@ -69,11 +71,25 @@ esac
 """
     )
     docker.chmod(0o755)
+    git = fake_bin / "git"
+    git.write_text(
+        """#!/bin/sh
+case " $* " in
+  *' status '*) test ! -e "$GIT_FAIL_MARKER" || exit 73 ;;
+esac
+exec "$REAL_GIT" "$@"
+"""
+    )
+    git.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git is not None
     env = os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_LOG": str(log),
         "IMAGE_REMOVED": str(tmp_path / "image-removed"),
         "CANDIDATE_REPO": str(repo),
+        "GIT_FAIL_MARKER": str(tmp_path / "git-status-fails"),
+        "REAL_GIT": real_git,
     }
     return repo, env, log
 
@@ -207,3 +223,40 @@ def test_image_cleanup_failure_is_truthful(tmp_path: Path):
     assert result.returncode == 1
     assert "QUALITY_RESULT=PASS" in result.stdout
     assert "CLEANUP_RESULT=FAIL" in result.stdout
+
+
+def test_post_run_git_status_error_cannot_pass(tmp_path: Path):
+    repo, env, _ = _candidate(tmp_path)
+    env["STATUS_ERROR_AFTER_RUN"] = "1"
+
+    result = subprocess.run(
+        [repo / "scripts" / "local-quality"],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "QUALITY_RESULT=FAIL" in result.stdout
+    assert "cannot reverify candidate tree" in result.stderr
+
+
+def test_preflight_git_status_error_is_not_run(tmp_path: Path):
+    repo, env, log = _candidate(tmp_path)
+    Path(env["GIT_FAIL_MARKER"]).touch()
+
+    result = subprocess.run(
+        [repo / "scripts" / "local-quality"],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "QUALITY_RESULT=NOT_RUN" in result.stdout
+    assert "cannot verify the candidate tree" in result.stderr
+    assert not log.exists()

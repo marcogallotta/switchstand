@@ -30,7 +30,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 repo=$(git rev-parse --show-toplevel)
-test -z "$(git -C "$repo" status --porcelain --untracked-files=all)" || {
+if ! tree_status=$(git -C "$repo" status --porcelain --untracked-files=all); then
+    echo 'cannot verify the candidate tree; local Quality NOT_RUN' >&2
+    exit 1
+fi
+test -z "$tree_status" || {
     echo 'local Quality requires a clean immutable candidate' >&2
     exit 2
 }
@@ -100,9 +104,16 @@ quality_id=$(docker container create \
 printf 'QUALITY_CONTAINER_ID=%s\n' "$quality_id"
 
 if docker container start --attach "$quality_id"; then
-    if [ "$(git -C "$repo" rev-parse --verify HEAD)" != "$head" ] \
-            || [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then
-        outcome=FAIL
+    outcome=FAIL
+    if ! final_head=$(git -C "$repo" rev-parse --verify HEAD); then
+        echo 'cannot reverify candidate HEAD; result is not exact-head evidence' >&2
+        exit 1
+    fi
+    if ! final_status=$(git -C "$repo" status --porcelain --untracked-files=all); then
+        echo 'cannot reverify candidate tree; result is not exact-head evidence' >&2
+        exit 1
+    fi
+    if [ "$final_head" != "$head" ] || [ -n "$final_status" ]; then
         echo 'candidate changed while local Quality ran; result is not exact-head evidence' >&2
         exit 1
     fi
