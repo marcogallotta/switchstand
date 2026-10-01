@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import urllib.error
 import urllib.request
@@ -358,6 +359,161 @@ class HostOperations:
             ):
                 raise Failed("Switchstand Caddy proxy set is not exact")
 
+    @staticmethod
+    def _artifact_digest(path: Path, mode: int) -> str:
+        descriptor = -1
+        try:
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise OSError
+            descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or metadata.st_mode & 0o777 != mode
+            ):
+                raise OSError
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest()
+        except OSError as exc:
+            raise Unknown(f"host artifact is not exact: {path.name}") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _resume_trust(self) -> None:
+        c = self.c
+        try:
+            attempt = c.attempt_dir.lstat()
+            if (
+                not c.attempt_dir.is_absolute() or c.attempt_dir.is_symlink()
+                or not c.attempt_dir.is_dir() or attempt.st_uid != os.getuid()
+                or attempt.st_mode & 0o777 != 0o700
+                or c.attempt_dir.resolve(strict=True) != c.attempt_dir
+            ):
+                raise OSError
+        except OSError as exc:
+            raise Unknown("attempt directory is not exact") from exc
+        for runtime, expected in (
+            (c.current_runtime, c.current_sha), (c.candidate_runtime, c.candidate_sha),
+        ):
+            if (
+                not runtime.is_absolute() or runtime.is_symlink() or not runtime.is_dir()
+                or runtime.resolve(strict=True) != runtime
+            ):
+                raise Unknown("runtime path is not exact")
+            head = _run(["git", "-C", str(runtime), "rev-parse", "HEAD"]).stdout.strip()
+            dirty = _run(["git", "-C", str(runtime), "status", "--porcelain"]).stdout
+            if head != expected or dirty:
+                raise Unknown("runtime checkout is not the exact clean SHA")
+        if self._artifact_digest(c.candidate_launcher, 0o700) != c.candidate_launcher_sha:
+            raise Unknown("candidate launcher changed")
+        self._artifact_digest(c.env_file, 0o600)
+        unit = _run([
+            "systemctl", "--user", "show", c.service, "--property=ExecStart", "--value",
+        ]).stdout
+        if str(c.launcher) not in unit:
+            raise Unknown("edge unit does not execute the selected launcher")
+
+    def _service_state(self) -> Literal["ACTIVE", "INACTIVE", "UNKNOWN"]:
+        state = _run(
+            ["systemctl", "--user", "is-active", self.c.service], check=False
+        ).stdout.strip()
+        if state == "active" and self._running_process_exact():
+            return "ACTIVE"
+        if state != "inactive":
+            return "UNKNOWN"
+        endpoint = urlparse(self.c.local_url)
+        try:
+            with socket.create_connection(
+                (cast(str, endpoint.hostname), cast(int, endpoint.port)), timeout=1
+            ):
+                return "UNKNOWN"
+        except OSError:
+            return "INACTIVE"
+
+    def reconcile_phase(
+        self, phase: str, proof: dict[str, object], *, offline: bool
+    ) -> tuple[str, dict[str, str]]:
+        """Classify a durable host phase or its one proven next state without effects."""
+        phases = (
+            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING",
+            "OFFLINE_PRE_MARKER", "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE",
+            "SWAPPED", "STARTED", "UNGATED", "COMPLETE",
+        )
+        if phase not in phases:
+            raise Unknown("host phase is unknown")
+        self._resume_trust()
+        gate, service = self._gate_state(), self._service_state()
+        launcher = self._artifact_digest(self.c.launcher, 0o700)
+        if phase in {"PREFLIGHT", "GATED", "STOPPED"} and (
+            launcher != self.c.current_launcher_sha or os.path.lexists(self.backup)
+        ):
+            raise Unknown("launcher state does not match the durable phase")
+        if phase == "PREFLIGHT":
+            if os.path.lexists(self.snapshot_file):
+                raise Unknown("preflight contains an unexpected snapshot")
+            if gate == "ABSENT" and service == "ACTIVE":
+                return phase, {}
+            if gate == "APPLIED" and service == "ACTIVE" and self.public_gated():
+                return "GATED", {}
+            raise Unknown("gate outcome is ambiguous")
+        if phase not in {"STARTED", "UNGATED", "COMPLETE"} and (
+            gate != "APPLIED" or not self.public_gated()
+        ):
+            raise Unknown("exact maintenance gate is not proven")
+        if phase == "GATED":
+            if service == "ACTIVE":
+                return phase, {}
+            if service == "INACTIVE":
+                return "STOPPED", {}
+            raise Unknown("stop outcome is ambiguous")
+        if phase not in {"SWAPPED", "STARTED", "UNGATED", "COMPLETE"} and service != "INACTIVE":
+            raise Unknown("service is not proven stopped")
+        snapshot = proof.get("fastmcp_snapshot")
+        if phase == "STOPPED":
+            if not os.path.lexists(self.snapshot_file):
+                return phase, {}
+            digest = self._artifact_digest(self.snapshot_file, 0o600)
+            return "SNAPSHOTTED", {"fastmcp_snapshot": digest}
+        if phase in phases[3:] and (
+            not isinstance(snapshot, str)
+            or snapshot != self._artifact_digest(self.snapshot_file, 0o600)
+        ):
+            raise Unknown("FastMCP snapshot does not match the durable proof")
+        if phase in phases[3:8]:
+            swapped = phase in {"SNAPSHOTTED", "OFFLINE_COMPLETE"} and not (
+                phase == "SNAPSHOTTED" and offline
+            )
+            if swapped and launcher == self.c.candidate_launcher_sha and (
+                self._artifact_digest(self.backup, 0o600) == self.c.current_launcher_sha
+            ):
+                return "SWAPPED", {}
+            if launcher != self.c.current_launcher_sha or os.path.lexists(self.backup):
+                raise Unknown("launcher state does not match the durable phase")
+            return phase, {}
+        if launcher != self.c.candidate_launcher_sha or (
+            self._artifact_digest(self.backup, 0o600) != self.c.current_launcher_sha
+        ):
+            raise Unknown("candidate launcher state is not exact")
+        if phase == "SWAPPED":
+            if service == "INACTIVE":
+                return phase, {}
+            if service == "ACTIVE" and self.local_ready():
+                return "STARTED", {}
+            raise Unknown("start outcome is ambiguous")
+        if service != "ACTIVE" or not self.local_ready():
+            raise Unknown("candidate runtime is not exact")
+        if phase == "STARTED" and gate == "ABSENT" and self.public_ready():
+            return "UNGATED", {}
+        if phase == "UNGATED" and gate == "APPLIED":
+            return "STARTED", {}
+        if phase in {"UNGATED", "COMPLETE"} and gate == "ABSENT":
+            return phase, {}
+        if phase == "STARTED" and gate == "APPLIED":
+            return phase, {}
+        raise Unknown("ungate outcome is ambiguous")
+
     def gate(self) -> None:
         route = {
             "@id": GATE_ID,
@@ -382,11 +538,16 @@ class HostOperations:
             raise Unknown("maintenance gate readback mismatch")
 
     def gate_exact(self) -> bool:
+        return self._gate_state() == "APPLIED"
+
+    def _gate_state(self) -> Literal["ABSENT", "APPLIED", "UNKNOWN"]:
         value = self._api("GET", f"/id/{GATE_ID}")
+        if value is None:
+            return "ABSENT"
         if not isinstance(value, dict):
-            return False
+            return "UNKNOWN"
         route = cast(dict[str, object], value)
-        return (
+        exact = (
             route.get("terminal") is True
             and route.get("match") == [{"path": list(EDGE_PATHS)}]
             and route.get("handle")
@@ -398,6 +559,7 @@ class HostOperations:
                 }
             ]
         )
+        return "APPLIED" if exact else "UNKNOWN"
 
     def public_gated(self) -> bool:
         try:
