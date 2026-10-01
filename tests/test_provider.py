@@ -16,6 +16,9 @@ from switchstand.provider import (
     PROJECT,
     PROJECTS,
     WORK_TYPE,
+    WORKSET_PROJECT_FIELDS,
+    WORKSET_SECTION_FIELDS,
+    WORKSET_TASK_FIELDS,
     AsanaProvider,
 )
 
@@ -98,6 +101,104 @@ async def test_get_rejects_response_for_a_different_provider_identity():
     subject, _ = provider((200, payload))
     with pytest.raises(ProviderError, match="identity mismatch"):
         await subject.get("requested-task")
+
+
+async def test_workset_task_reads_structure_without_content_fields():
+    payload = {
+        "data": {
+            "gid": "task-1",
+            "modified_at": "r1",
+            "parent": {"gid": "parent-1"},
+            "memberships": [
+                {"project": {"gid": "project-1"}, "section": {"gid": "section-1"}}
+            ],
+        }
+    }
+    subject, api = provider((200, payload))
+
+    result = await subject.workset_task("task-1")
+
+    assert result.provider_work_id == "task-1"
+    assert result.parent_provider_work_id == "parent-1"
+    assert result.placements[0].provider_section_id == "section-1"
+    assert dict(api.requests[0].url.params) == {"opt_fields": WORKSET_TASK_FIELDS}
+    assert "name" not in WORKSET_TASK_FIELDS and "notes" not in WORKSET_TASK_FIELDS
+
+
+async def test_workset_project_captures_all_section_pages_in_canonical_order():
+    project = {
+        "data": {
+            "gid": "project-1",
+            "name": "Role",
+            "modified_at": "p1",
+            "archived": False,
+        }
+    }
+    subject, api = provider(
+        (200, project),
+        (200, {"data": [{"gid": "section-2", "name": "Later"}],
+               "next_page": {"offset": "next"}}),
+        (200, {"data": [{"gid": "section-1", "name": "Earlier"}], "next_page": None}),
+    )
+
+    result = await subject.workset_project("project-1")
+
+    assert [row.provider_section_id for row in result.sections] == ["section-1", "section-2"]
+    assert dict(api.requests[0].url.params) == {"opt_fields": WORKSET_PROJECT_FIELDS}
+    assert dict(api.requests[1].url.params) == {
+        "limit": "100", "opt_fields": WORKSET_SECTION_FIELDS,
+    }
+    assert api.requests[2].url.params["offset"] == "next"
+
+
+@pytest.mark.parametrize("page", [
+    {"data": []},
+    {"data": [], "next_page": "next"},
+    {"data": [], "next_page": {}},
+    {"data": [], "next_page": {"offset": ""}},
+])
+async def test_workset_section_page_requires_explicit_valid_next_page(page):
+    project = {
+        "data": {
+            "gid": "project-1", "name": "Role", "modified_at": "p1", "archived": False,
+        }
+    }
+    subject, _ = provider((200, project), (200, page))
+
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.workset_project("project-1")
+
+
+async def test_workset_section_page_rejects_repeated_offset():
+    project = {
+        "data": {
+            "gid": "project-1", "name": "Role", "modified_at": "p1", "archived": False,
+        }
+    }
+    repeated = {"data": [], "next_page": {"offset": "same"}}
+    subject, api = provider((200, project), (200, repeated), (200, repeated))
+
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.workset_project("project-1")
+
+    assert len(api.requests) == 3
+
+
+async def test_workset_section_pagination_has_a_hard_page_bound(monkeypatch):
+    monkeypatch.setattr(provider_module, "WORKSET_SECTION_PAGE_LIMIT", 1)
+    project = {
+        "data": {
+            "gid": "project-1", "name": "Role", "modified_at": "p1", "archived": False,
+        }
+    }
+    subject, api = provider(
+        (200, project), (200, {"data": [], "next_page": {"offset": "more"}})
+    )
+
+    with pytest.raises(ProviderError, match="provider request failed"):
+        await subject.workset_project("project-1")
+
+    assert len(api.requests) == 2
 
 
 async def test_task_read_retries_transient_provider_failure(monkeypatch, caplog):
