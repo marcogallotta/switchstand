@@ -276,7 +276,9 @@ async def test_new_authorizations_replace_canonical_not_multiply_local_credentia
     ).access_token == "good-11"
 
 
-async def put_refresh(subject, client_id, *, mapping_ttl=3600):
+async def put_refresh(
+    subject, client_id, *, mapping_ttl=3600, token_id=CANONICAL_UPSTREAM_TOKEN_ID
+):
     refresh_jti = f"refresh-jti-{client_id}"
     refresh_token = subject.jwt_issuer.issue_refresh_token(
         client_id=client_id,
@@ -288,7 +290,7 @@ async def put_refresh(subject, client_id, *, mapping_ttl=3600):
         key=refresh_jti,
         value=JTIMapping(
             jti=refresh_jti,
-            upstream_token_id=CANONICAL_UPSTREAM_TOKEN_ID,
+            upstream_token_id=token_id,
             created_at=time.time(),
         ),
         ttl=mapping_ttl,
@@ -445,3 +447,246 @@ async def test_distinct_client_refreshes_serialize_one_canonical_rotation_at_a_t
 
     assert len(results) == 2 and max_active == 1
     assert upstream_inputs == ["upstream-refresh", "rotated-upstream-1"]
+
+
+async def test_legacy_refresh_recovery_repairs_canonical_for_waiting_clients():
+    subject = provider(MemoryStore())
+    valid_access = {"legacy-good"}
+
+    async def verify(token):
+        if token not in valid_access:
+            return None
+        return AccessToken(
+            token=token,
+            client_id="github",
+            scopes=[SCOPE],
+            subject=USER_ID,
+        )
+
+    subject._token_validator.verify_token = verify
+    expired = time.time() - 1
+    poisoned = upstream(
+        CANONICAL_UPSTREAM_TOKEN_ID,
+        access="revoked",
+        refresh="poisoned-refresh",
+    ).model_copy(update={"expires_at": expired})
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID, value=poisoned, ttl=3600
+    )
+
+    client_ids = ("chatgpt-a", "chatgpt-b", "chatgpt-c")
+    tokens = {}
+    for client_id in client_ids:
+        token_id = f"legacy-{client_id}"
+        await subject._upstream_token_store.put(
+            key=token_id,
+            value=upstream(
+                token_id,
+                access="legacy-good",
+                refresh=f"legacy-refresh-{client_id}",
+            ),
+            ttl=3600,
+        )
+        tokens[client_id] = await put_refresh(
+            subject, client_id, token_id=token_id
+        )
+
+    upstream_inputs = []
+
+    class OAuthClient:
+        async def refresh_token(self, **kwargs):
+            refresh_token = kwargs["refresh_token"]
+            upstream_inputs.append(refresh_token)
+            await anyio.sleep(0.01)
+            if refresh_token == "poisoned-refresh":
+                raise TokenError("invalid_grant", "bad_refresh_token")
+            sequence = len(upstream_inputs)
+            access = f"recovered-{sequence}"
+            valid_access.add(access)
+            return {
+                "access_token": access,
+                "refresh_token": f"rotated-{sequence}",
+                "expires_in": 1800,
+                "refresh_expires_in": 3600,
+                "scope": SCOPE,
+            }
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    results = {}
+
+    async def exchange(client_id):
+        loaded = RefreshToken(
+            token=tokens[client_id],
+            client_id=client_id,
+            scopes=[SCOPE],
+            expires_at=int(time.time()) + 3600,
+        )
+        results[client_id] = await subject.exchange_refresh_token(
+            client(client_id), loaded, [SCOPE]
+        )
+
+    async with anyio.create_task_group() as group:
+        for client_id in client_ids:
+            group.start_soon(exchange, client_id)
+
+    assert len(results) == 3
+    assert upstream_inputs[0] == "poisoned-refresh"
+    assert upstream_inputs[1].startswith("legacy-refresh-")
+    assert upstream_inputs[2:] == ["rotated-2", "rotated-3"]
+    for client_id, result in results.items():
+        access_jti, _ = subject._jti_and_ttl(result.access_token)
+        refresh_jti, _ = subject._jti_and_ttl(result.refresh_token, refresh=True)
+        for jti in (access_jti, refresh_jti):
+            mapping = await subject._jti_mapping_store.get(key=jti)
+            assert mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID
+        loaded = RefreshToken(
+            token=tokens[client_id],
+            client_id=client_id,
+            scopes=[SCOPE],
+            expires_at=int(time.time()) + 3600,
+        )
+        try:
+            await subject.exchange_refresh_token(client(client_id), loaded, [SCOPE])
+        except TokenError as error:
+            assert error.error == "invalid_grant"
+        else:
+            raise AssertionError("rotated refresh token was accepted twice")
+
+
+async def test_all_invalid_refresh_credentials_fail_once_without_consuming_client_token():
+    subject = provider(MemoryStore())
+    verifier(subject)
+    poisoned = upstream(
+        CANONICAL_UPSTREAM_TOKEN_ID,
+        access="revoked",
+        refresh="poisoned-refresh",
+    ).model_copy(update={"expires_at": time.time() - 1})
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID, value=poisoned, ttl=3600
+    )
+    await subject._upstream_token_store.put(
+        key="legacy",
+        value=upstream("legacy", access="revoked", refresh="legacy-invalid"),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "stranded", token_id="legacy")
+    upstream_inputs = []
+
+    class OAuthClient:
+        async def refresh_token(self, **kwargs):
+            upstream_inputs.append(kwargs["refresh_token"])
+            raise TokenError("invalid_grant", "bad_refresh_token")
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    downstream = client("stranded")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    assert loaded is not None
+
+    try:
+        await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    except TokenError as error:
+        assert error.error == "invalid_grant"
+    else:
+        raise AssertionError("invalid upstream credentials were accepted")
+
+    assert upstream_inputs == ["poisoned-refresh", "legacy-invalid"]
+    assert await subject.load_refresh_token(downstream, refresh_token) is not None
+    mapping = await subject._jti_mapping_store.get(key="refresh-jti-stranded")
+    assert mapping.upstream_token_id == "legacy"
+
+
+async def test_failed_legacy_refresh_retries_once_after_canonical_recovery():
+    subject = provider(MemoryStore())
+    valid_access = {"recovered"}
+    verifier(subject, valid=frozenset(valid_access))
+    await subject._upstream_token_store.put(
+        key="legacy",
+        value=upstream("legacy", access="revoked", refresh="legacy-stale"),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "waiting", token_id="legacy")
+    upstream_inputs = []
+
+    class OAuthClient:
+        async def refresh_token(self, **kwargs):
+            upstream_inputs.append(kwargs["refresh_token"])
+            if kwargs["refresh_token"] == "legacy-stale":
+                await subject._upstream_token_store.put(
+                    key=CANONICAL_UPSTREAM_TOKEN_ID,
+                    value=upstream(
+                        CANONICAL_UPSTREAM_TOKEN_ID,
+                        access="recovered",
+                        refresh="canonical-current",
+                    ),
+                    ttl=3600,
+                )
+                raise TokenError("invalid_grant", "bad_refresh_token")
+            return {
+                "access_token": "recovered",
+                "refresh_token": "canonical-next",
+                "expires_in": 1800,
+                "refresh_expires_in": 3600,
+                "scope": SCOPE,
+            }
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    downstream = client("waiting")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    result = await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+
+    assert upstream_inputs == ["legacy-stale", "canonical-current"]
+    refresh_jti, _ = subject._jti_and_ttl(result.refresh_token, refresh=True)
+    mapping = await subject._jti_mapping_store.get(key=refresh_jti)
+    assert mapping.upstream_token_id == CANONICAL_UPSTREAM_TOKEN_ID
+
+
+async def test_live_canonical_access_with_dead_refresh_is_not_retried():
+    subject = provider(MemoryStore())
+    verifier(subject)
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(
+            CANONICAL_UPSTREAM_TOKEN_ID,
+            access="good",
+            refresh="dead-refresh",
+        ),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "stranded")
+    upstream_inputs = []
+
+    class OAuthClient:
+        async def refresh_token(self, **kwargs):
+            upstream_inputs.append(kwargs["refresh_token"])
+            raise TokenError("invalid_grant", "bad_refresh_token")
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    downstream = client("stranded")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    assert loaded is not None
+
+    try:
+        await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    except TokenError as error:
+        assert error.error == "invalid_grant"
+    else:
+        raise AssertionError("dead canonical refresh token was accepted")
+
+    assert upstream_inputs == ["dead-refresh"]
+    assert await subject.load_refresh_token(downstream, refresh_token) is not None
