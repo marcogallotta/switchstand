@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,7 @@ from .discovery import ProviderSearchItem
 from .state import work_handles
 from .work_corpus import load_manifest, manifest_exception_digest
 from .work_index import (
+    ActivationNotCommitted,
     ActivationReceipt,
     ActivationUnknown,
     activate,
@@ -201,11 +203,25 @@ async def require_offline(engine: AsyncEngine) -> None:
 
 def write_receipt(path: Path, receipt: ActivationReceipt) -> None:
     """Durably publish the exact attempted post/pre state before COMMIT starts."""
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(asdict(receipt), stream, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
+            json.dump(asdict(receipt), stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        temporary.unlink()
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def load_receipt(path: Path) -> ActivationReceipt:
@@ -279,9 +295,13 @@ def run(argv: list[str] | None = None) -> None:
                 expected_exception_digest=arguments.expected_exception_digest,
             )
         )
+    except ActivationNotCommitted as error:
+        parser.exit(3, f"NOT_COMMITTED: {error}\n")
     except ActivationUnknown as error:
         parser.exit(2, f"{error}\n")
     except (KeyError, OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as error:
+        if arguments.action == "reconcile":
+            parser.exit(2, f"UNKNOWN: reconciliation failed: {error}\n")
         parser.exit(1, f"Stage 1 migration failed before authority flip: {error}\n")
     if isinstance(receipt, str):
         print(f"prepared_import_sha256={receipt}")
