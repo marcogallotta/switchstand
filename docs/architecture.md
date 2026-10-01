@@ -153,6 +153,10 @@ messaging, and required continuation:
   flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata
   truth. `work_metadata_migration.py` owns the one-time offline operator command; see
   [Database-first Stage 2](database-first-stage2.md).
+- `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
+  inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
+  its authority marker remains absent. It activates no runtime reads, writes, or content authority
+  and migrates no provider notes, comments, attachments, or history.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
