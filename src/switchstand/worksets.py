@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .contracts import Routing, WorkContext, WorkSearchItem
+from .discovery import DiscoveredStructure
 from .state import (
+    work_edges,
     work_index,
     work_parent_edges,
     workset_authority,
@@ -16,7 +21,16 @@ from .state import (
     workset_memberships,
     worksets,
 )
-from .work_index import ActivationUnknown, canonical_digest
+from .work_index import (
+    INDEX_COLUMNS,
+    ActivationUnknown,
+    IndexedWork,
+    WorkIndex,
+    canonical_digest,
+)
+
+SCOPE = "workspace"
+AUTHORITY = "POSTGRES_AUTHORITY"
 
 
 def _row(*values: object) -> list[object]:
@@ -89,6 +103,152 @@ class WorksetSnapshot:
             str(row.parent_work_id), row.row_version) for row in sorted(
                 self.parent_edges, key=lambda item: item.child_work_id.int)]
         return sets + members + parents
+
+
+@dataclass(frozen=True)
+class WorksetMember:
+    item: WorkSearchItem
+    semantics: str
+    member_role: str
+    depends_on: tuple[UUID, ...]
+
+
+@dataclass(frozen=True)
+class WorksetView:
+    workset: Workset
+    members: tuple[WorksetMember, ...]
+
+
+class WorksetReader:
+    """Default-off Stage 3 reads; inconsistent irreversible state fails closed."""
+
+    def __init__(self, engine: AsyncEngine):
+        self.engine, self.index = engine, WorkIndex(engine)
+
+    async def generation(self) -> int | None:
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(
+                select(workset_authority.c.state).where(
+                    workset_authority.c.scope == SCOPE).scalar_subquery(),
+                select(workset_authority.c.generation).where(
+                    workset_authority.c.scope == SCOPE).scalar_subquery(),
+                select(workset_cutovers.c.generation).where(
+                    workset_cutovers.c.scope == SCOPE).scalar_subquery(),
+            ))).one()
+        if row == (None, None, None):
+            return None
+        if (row[0] != AUTHORITY or row[1] != row[2]
+                or not isinstance(row[1], int) or row[1] < 1):
+            raise ValueError("inconsistent irreversible workset authority state")
+        from .work_metadata import authority_generation
+        if await self.index.generation() is None or await authority_generation(self.engine) is None:
+            raise ValueError("Stage 3 authority requires Stage 1 and Stage 2 authority")
+        return row[1]
+
+    @staticmethod
+    def _workset(row: Sequence[object]) -> Workset:
+        return Workset(
+            cast(UUID, row[0]), cast(str, row[1]), cast(str, row[2]), cast(str, row[3]),
+            cast(str | None, row[4]), cast(str, row[5]), cast(int, row[6]),
+        )
+
+    def _item(self, row: Sequence[object], generation: int) -> WorkSearchItem:
+        indexed = IndexedWork(
+            cast(UUID, row[0]), cast(str, row[1]), cast(bool, row[2]),
+            cast(str, row[3]), cast(int, row[4]), Routing.model_validate(row[5]),
+            WorkContext.model_validate(row[6]),
+        )
+        return WorkSearchItem(
+            id=indexed.work_id, title=indexed.title, completed=indexed.completed,
+            revision=self.index.item_revision(generation, indexed),
+            routing=indexed.routing, context=indexed.context,
+        )
+
+    async def enumerate(self, workset_id: UUID) -> WorksetView | None:
+        """Return every nonterminal member and its Stage 2 dependency truth."""
+        if await self.generation() is None:
+            return None
+        index_generation = await self.index.generation()
+        if index_generation is None:
+            raise ValueError("Stage 3 authority requires Stage 1 authority")
+        async with self.engine.connect() as connection:
+            set_row = (await connection.execute(select(
+                worksets.c.workset_id, worksets.c.workset_key, worksets.c.name,
+                worksets.c.kind, worksets.c.role_identity, worksets.c.state,
+                worksets.c.row_version,
+            ).where(worksets.c.workset_id == workset_id))).one_or_none()
+            if set_row is None:
+                raise PermissionError("workset is not admitted")
+            rows = (await connection.execute(select(
+                *INDEX_COLUMNS, workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+            ).join(workset_memberships,
+                   workset_memberships.c.work_id == work_index.c.work_id).where(
+                workset_memberships.c.workset_id == workset_id,
+                work_index.c.completed.is_(False),
+            ).order_by(work_index.c.normalized_title, work_index.c.work_id))).all()
+            member_ids = tuple(row[0] for row in rows)
+            edges = (await connection.execute(select(
+                work_edges.c.work_id, work_edges.c.depends_on_work_id,
+            ).where(work_edges.c.work_id.in_(member_ids)).order_by(
+                work_edges.c.work_id, work_edges.c.depends_on_work_id,
+            ))).all() if member_ids else ()
+        dependencies: dict[UUID, list[UUID]] = {}
+        for owner, dependency in edges:
+            dependencies.setdefault(owner, []).append(dependency)
+        return WorksetView(self._workset(set_row), tuple(
+            WorksetMember(
+                self._item(row[:7], index_generation), row[7], row[8],
+                tuple(dependencies.get(row[0], ())),
+            ) for row in rows
+        ))
+
+    async def current(self, work_id: UUID) -> WorksetView | None:
+        """Resolve an item's authoritative workset without provider discovery."""
+        if await self.generation() is None:
+            return None
+        async with self.engine.connect() as connection:
+            workset_id = await connection.scalar(select(
+                workset_memberships.c.workset_id).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))
+        if workset_id is None:
+            raise ValueError("admitted work lacks an authoritative workset")
+        return await self.enumerate(workset_id)
+
+    async def structure(self, work_id: UUID) -> DiscoveredStructure | None:
+        """Read parent/children from Postgres only after Stage 3 authority."""
+        if await self.generation() is None:
+            return None
+        index_generation = await self.index.generation()
+        if index_generation is None:
+            raise ValueError("Stage 3 authority requires Stage 1 authority")
+        async with self.engine.connect() as connection:
+            admitted = await connection.scalar(select(workset_memberships.c.work_id).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))
+            if admitted is None:
+                raise ValueError("admitted work lacks an authoritative workset")
+            parent_id = await connection.scalar(select(
+                work_parent_edges.c.parent_work_id).where(
+                work_parent_edges.c.child_work_id == work_id))
+            parent = None
+            if parent_id is not None:
+                row = (await connection.execute(select(*INDEX_COLUMNS).where(
+                    work_index.c.work_id == parent_id))).one()
+                parent = self._item(row, index_generation)
+            child_rows = (await connection.execute(select(*INDEX_COLUMNS).join(
+                work_parent_edges,
+                work_parent_edges.c.child_work_id == work_index.c.work_id,
+            ).where(work_parent_edges.c.parent_work_id == work_id).order_by(
+                work_index.c.normalized_title, work_index.c.work_id,
+            ))).all()
+        return DiscoveredStructure(
+            status="ok", revision=str(await self.generation()), parent=parent,
+            children=tuple(self._item(row, index_generation) for row in child_rows),
+        )
 
 
 async def _stored_rows(connection: AsyncConnection) -> list[list[object]]:

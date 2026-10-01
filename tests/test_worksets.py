@@ -8,9 +8,26 @@ from sqlalchemy import create_engine, insert, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.state import work_handles, work_index, workset_authority
+from switchstand.state import (
+    work_authority,
+    work_authority_cutovers,
+    work_edges,
+    work_handles,
+    work_index,
+    work_metadata_authority,
+    work_metadata_cutovers,
+    workset_authority,
+    workset_cutovers,
+)
 from switchstand.work_index import ActivationUnknown
-from switchstand.worksets import Membership, ParentEdge, Workset, WorksetSnapshot, stage_snapshot
+from switchstand.worksets import (
+    Membership,
+    ParentEdge,
+    Workset,
+    WorksetReader,
+    WorksetSnapshot,
+    stage_snapshot,
+)
 
 
 def database_url() -> str:
@@ -23,8 +40,11 @@ def database_url() -> str:
 @pytest.fixture(autouse=True)
 def clean_worksets(database_prerequisite):
     engine = create_engine(database_url())
-    statement = text("TRUNCATE work_parent_edges, workset_memberships, worksets, "
-                     "workset_cutovers, workset_authority, work_index, work_handles CASCADE")
+    statement = text(
+        "TRUNCATE work_parent_edges, workset_memberships, worksets, workset_cutovers, "
+        "workset_authority, work_metadata_cutovers, work_metadata_authority, work_edges, "
+        "work_authority_cutovers, work_authority, work_index, work_handles CASCADE"
+    )
     try:
         with engine.begin() as connection:
             connection.execute(statement)
@@ -49,6 +69,16 @@ async def admit(engine, *work_ids):
                     provider_revision="1", row_version=1, routing={}, context={},
                 )
             )
+
+
+async def activate_read_authority(engine):
+    async with engine.begin() as connection:
+        for table in (work_authority, work_metadata_authority, workset_authority):
+            await connection.execute(table.insert().values(
+                scope="workspace", state="POSTGRES_AUTHORITY", generation=1,
+            ))
+        for table in (work_authority_cutovers, work_metadata_cutovers, workset_cutovers):
+            await connection.execute(table.insert().values(scope="workspace", generation=1))
 
 
 @pytest.mark.asyncio
@@ -92,6 +122,66 @@ async def test_stage_snapshot_is_complete_atomic_and_idempotent(database_prerequ
         ))
     with pytest.raises(ActivationUnknown, match="authority already exists"):
         await stage_snapshot(engine, snapshot)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reader_enumerates_current_workset_and_structure_from_db(database_prerequisite):
+    engine = create_async_engine(database_url())
+    master, child, terminal, role_set = uuid4(), uuid4(), uuid4(), uuid4()
+    await admit(engine, master, child, terminal)
+    async with engine.begin() as connection:
+        await connection.execute(work_index.update().where(
+            work_index.c.work_id == master).values(routing={
+            "lifecycle_state": "CURRENT", "canonical_root": "NONE", "owner_key": "role",
+            "wait_kind": "NONE", "unblock_condition": "NONE", "next_due": "NONE",
+            "next_action_class": "IMPLEMENT", "next_action_ref": "next",
+        }))
+        await connection.execute(work_index.update().where(
+            work_index.c.work_id == child).values(routing={
+            "priority": "P1", "work_type": "Review", "lifecycle_state": "WAITING",
+            "canonical_root": str(master), "owner_key": "reviewer", "wait_kind": "REVIEW",
+            "unblock_condition": "terminal verdict", "next_due": "UNKNOWN",
+            "next_action_class": "POLL", "next_action_ref": "review-1",
+        }))
+        await connection.execute(work_index.update().where(
+            work_index.c.work_id == terminal).values(completed=True))
+        await connection.execute(work_edges.insert().values(
+            work_id=child, depends_on_work_id=master,
+        ))
+    await stage_snapshot(engine, WorksetSnapshot(
+        worksets=(Workset(role_set, "agent.coordinator", "Coordinator", "DURABLE_ROLE",
+                          "Coordinator"),),
+        memberships=(
+            Membership(role_set, master, "AUTHORITATIVE", "MASTER"),
+            Membership(role_set, child, "AUTHORITATIVE"),
+            Membership(role_set, terminal, "AUTHORITATIVE"),
+        ), parent_edges=(ParentEdge(child, master),),
+    ))
+    reader = WorksetReader(engine)
+    assert await reader.current(child) is None
+    await activate_read_authority(engine)
+    view = await reader.current(child)
+    assert view is not None and view.workset.workset_key == "agent.coordinator"
+    assert {member.item.id for member in view.members} == {master, child}
+    waiting = next(member for member in view.members if member.item.id == child)
+    assert waiting.depends_on == (master,)
+    assert waiting.item.routing.unblock_condition == "terminal verdict"
+    structure = await reader.structure(master)
+    assert structure is not None and [item.id for item in structure.children] == [child]
+    child_structure = await WorksetReader(engine).structure(child)
+    assert child_structure is not None and child_structure.parent is not None
+    assert child_structure.parent.id == master
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reader_fails_closed_on_partial_authority_marker(database_prerequisite):
+    engine = create_async_engine(database_url())
+    async with engine.begin() as connection:
+        await connection.execute(workset_cutovers.insert().values(scope="workspace", generation=1))
+    with pytest.raises(ValueError, match="inconsistent irreversible"):
+        await WorksetReader(engine).generation()
     await engine.dispose()
 
 

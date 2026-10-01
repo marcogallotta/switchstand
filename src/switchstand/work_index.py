@@ -115,6 +115,11 @@ class WorkIndex:
         payload = f"{generation}\0{row.work_id}\0{row.row_version}\0{provider_revision}"
         return "s1_" + hashlib.sha256(payload.encode()).hexdigest()
 
+    @classmethod
+    def item_revision(cls, generation: int, row: IndexedWork) -> str:
+        """Project a stored index row through the canonical opaque revision contract."""
+        return cls._revision(generation, row, row.provider_revision)
+
     @staticmethod
     def content_revision(notes: str, context: WorkContext) -> str:
         payload = json.dumps(

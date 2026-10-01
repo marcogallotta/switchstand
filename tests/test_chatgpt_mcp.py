@@ -24,9 +24,14 @@ from switchstand.chatgpt_mcp import (
     build_chatgpt_server,
     build_ordinary_tools,
 )
-from switchstand.contracts import Routing, SourceTaskRequest, WorkResolveReferenceRequest
+from switchstand.contracts import (
+    Routing,
+    SourceTaskRequest,
+    WorkResolveReferenceRequest,
+    WorkSearchItem,
+)
 from switchstand.core import ProviderError
-from switchstand.discovery import ProviderSearchItem, ProviderStructure
+from switchstand.discovery import DiscoveredStructure, ProviderSearchItem, ProviderStructure
 from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
 from switchstand.repository_candidate import RepositoryCandidateQualification
 
@@ -242,6 +247,40 @@ async def test_structure_requires_workspace_read_and_discovery_and_projects_atom
     })
     assert failed.structured_content["status"] == "provider_error"
     assert "private detail" not in str(failed)
+
+
+async def test_structure_uses_db_reader_only_when_authoritative(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    subject = service()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get", "work_search"}),
+    )
+
+    class AuthoritativeReader:
+        async def structure(self, work_id):
+            assert work_id == ACTIVE
+            return DiscoveredStructure(
+                status="ok", revision="postgres",
+                parent=WorkSearchItem(
+                    id=REFERENCE, title="DB parent", completed=False, revision="db-r1",
+                    routing=Routing(priority="P1"), context=CONTEXT,
+                ),
+            )
+
+    subject.state.worksets = AuthoritativeReader()
+    provider_structure = AsyncMock(
+        side_effect=AssertionError("provider structure is forbidden after Stage 3 authority")
+    )
+    monkeypatch.setattr(
+        subject.providers["asana"], "structure_work", provider_structure, raising=False,
+    )
+    result = await build_chatgpt_server(subject).call_tool("work_structure", {
+        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+    })
+    assert result.structured_content["status"] == "ok"
+    assert result.structured_content["parent"]["title"] == "DB parent"
+    provider_structure.assert_not_awaited()
 
 
 @pytest.mark.parametrize("parent_id, child_id", [

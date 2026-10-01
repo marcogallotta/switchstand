@@ -222,9 +222,11 @@ def _handle(row: Row[tuple[UUID, str, str]] | None) -> Handle | None:
 class PostgresState:
     def __init__(self, engine: AsyncEngine):
         from .work_index import WorkIndex
+        from .worksets import WorksetReader
 
         self.engine = engine
         self.work_index = WorkIndex(engine)
+        self.worksets = WorksetReader(engine)
     async def get(self, work_id: UUID) -> Handle | None:
         async with self.engine.connect() as connection:
             query = select(*columns).where(work_handles.c.id == work_id)
