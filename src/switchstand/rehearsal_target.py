@@ -413,11 +413,13 @@ def teardown(name: str, *, run: Runner = _run) -> None:
 def _owned_resource(
     kind: str, resource: str, project: str, *, subnet: str | None = None, run: Runner,
 ) -> bool:
+    list_output = ["--format", "{{.Name}}"] if kind == "network" else ["-q"]
     project_names = run([
-        "docker", kind, "ls", "-q", "--filter", f"label=com.docker.compose.project={project}",
+        "docker", kind, "ls", *list_output, "--filter",
+        f"label=com.docker.compose.project={project}",
     ]).stdout.split()
     exact_names = run([
-        "docker", kind, "ls", "-q", "--filter", f"name=^{re.escape(resource)}$",
+        "docker", kind, "ls", *list_output, "--filter", f"name=^{re.escape(resource)}$",
     ]).stdout.split()
     if project_names not in ([], [resource]) or exact_names not in ([], [resource]) or (
         project_names != exact_names

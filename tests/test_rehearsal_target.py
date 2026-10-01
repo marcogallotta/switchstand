@@ -62,7 +62,9 @@ class Docker:
             if self.fault != "absent" and self.container_present:
                 output = (self.container if "--no-trunc" in command else self.container[:12]) + "\n"
         elif command[:3] in (["docker", "volume", "ls"], ["docker", "network", "ls"]):
-            if self.fault == "network_collision" and command[1] == "network":
+            if command[1] == "network" and "-q" in command:
+                output = "n" * 64 + "\n"
+            elif self.fault == "network_collision" and command[1] == "network":
                 if command[-1].startswith("name="):
                     output = f"{self.project}_default\n"
             elif self.fault != "absent":
