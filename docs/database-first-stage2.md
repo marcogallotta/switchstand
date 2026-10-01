@@ -30,6 +30,13 @@ provider revision, structured value, and dependency; pass the approved SHA-256 b
 the exact Stage 1 preparation before returning success. Any drift refuses validation and keeps
 maintenance active; an ambiguous receipt/binding outcome is `UNKNOWN`. Do not activate Stage 1.
 
+The inert `ReviewCheckpoint` core makes this outage pause resumable. It binds the exact corpus,
+exception decision, Stage 1 preparation receipt, prepared-import digest, and generated worksheet
+bytes in a private durable `REVIEW_PENDING` receipt. Re-entry accepts only those same bytes and
+receipts. Its abort path delegates to the receipt-bound Stage 1 preparation cleanup; ambiguity
+remains `UNKNOWN`. Host gate/stop/snapshot orchestration and the operator CLI remain a later layer,
+so landing this core neither starts an attempt nor changes authority.
+
 The standalone post-Stage-1 procedure can instead generate a JSON worksheet with:
 
 ```console

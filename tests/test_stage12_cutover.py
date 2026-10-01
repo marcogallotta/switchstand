@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from switchstand.edge_maintenance import Config, Failed, _offline_boundary
+from switchstand.edge_maintenance import Config, Failed, Unknown, _offline_boundary
 from switchstand.stage12_cutover import (
     ConcreteCommands,
     Evidence,
+    ReviewCheckpoint,
+    ReviewEvidence,
     Stage12Cutover,
     _binding_digest,
     freeze_evidence,
@@ -54,6 +56,139 @@ def _inputs(tmp_path: Path) -> tuple[Evidence, Path]:
         1,
     )
     return evidence, attempt
+
+
+class ReviewCommandsFake:
+    def __init__(self, attempt: Path):
+        self.attempt, self.prepares, self.cleanups = attempt, 0, 0
+        self.prepared, self.worksheet = "d" * 64, "e" * 64
+        self.reconciles = 0
+        self.crash = False
+
+    def prepare_review(self, evidence: ReviewEvidence) -> tuple[str, str]:
+        self.prepares += 1
+        _private(self.attempt / "stage1-prepare.json", b"exact preparation\n")
+        _private(evidence.worksheet, b"review worksheet\n")
+        self.worksheet = hashlib.sha256(evidence.worksheet.read_bytes()).hexdigest()
+        if self.crash:
+            self.crash = False
+            raise Unknown("lost preparation output")
+        return self.prepared, self.worksheet
+
+    def reconcile_review(
+        self, _evidence: ReviewEvidence, _worksheet_digest: str
+    ) -> tuple[str, str]:
+        self.reconciles += 1
+        return self.prepared, self.worksheet
+
+    def cleanup_review(self, _evidence: ReviewEvidence) -> None:
+        self.cleanups += 1
+
+
+def _review(tmp_path: Path) -> tuple[ReviewCheckpoint, ReviewCommandsFake]:
+    evidence, attempt = _inputs(tmp_path)
+    evidence.worksheet.unlink()
+    review = ReviewEvidence(
+        evidence.candidate_sha,
+        evidence.manifests,
+        evidence.expected_corpus_digest,
+        evidence.exception_digest,
+        evidence.worksheet,
+    )
+    commands = ReviewCommandsFake(attempt)
+    return ReviewCheckpoint(attempt, review, commands), commands
+
+
+def test_review_checkpoint_durably_binds_prepare_receipt_and_worksheet(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+
+    digest = subject.prepare()
+    receipt = json.loads(subject.receipt_path.read_text())
+
+    assert receipt["status"] == "REVIEW_PENDING"
+    assert receipt["worksheet_digest"] == digest
+    assert receipt["prepare_receipt"] == hashlib.sha256(
+        (subject.attempt_dir / "stage1-prepare.json").read_bytes()
+    ).hexdigest()
+    assert subject.receipt_path.stat().st_mode & 0o777 == 0o600
+    assert subject.prepare() == digest
+    assert commands.prepares == 1
+    assert commands.reconciles == 1
+
+
+def test_review_checkpoint_rejects_replaced_worksheet_before_resume(tmp_path: Path):
+    subject, _commands = _review(tmp_path)
+    subject.prepare()
+    _private(subject.evidence.worksheet, b"substituted\n")
+
+    with pytest.raises(Unknown, match="evidence changed"):
+        subject.prepare()
+
+
+def test_review_checkpoint_requires_exact_subordinate_proofs(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    commands.prepared = "bad"
+
+    with pytest.raises(Unknown, match="proof is malformed"):
+        subject.prepare()
+    assert json.loads(subject.receipt_path.read_text())["status"] == "ATTEMPTING"
+
+
+def test_review_checkpoint_retries_same_attempt_after_lost_output(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    commands.crash = True
+
+    with pytest.raises(Unknown, match="lost preparation output"):
+        subject.prepare()
+    assert json.loads(subject.receipt_path.read_text())["status"] == "ATTEMPTING"
+
+    assert subject.prepare() == commands.worksheet
+    assert commands.prepares == 2
+
+
+def test_review_checkpoint_refuses_changed_preparation_readback(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    subject.prepare()
+    commands.prepared = "f" * 64
+
+    with pytest.raises(Unknown, match="no longer reconciles"):
+        subject.prepare()
+
+
+def test_review_checkpoint_abort_is_durable_and_idempotent(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    subject.prepare()
+
+    subject.abort()
+    subject.abort()
+
+    assert json.loads(subject.receipt_path.read_text())["status"] == "ABORTED"
+    assert commands.cleanups == 1
+    with pytest.raises(Failed, match="already aborted"):
+        subject.prepare()
+
+
+def test_review_checkpoint_can_abort_an_interrupted_prepare(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    commands.crash = True
+    with pytest.raises(Unknown):
+        subject.prepare()
+
+    subject.abort()
+
+    receipt = json.loads(subject.receipt_path.read_text())
+    assert receipt["status"] == "ABORTED"
+    assert commands.cleanups == 1
+
+
+def test_review_checkpoint_rejects_nonprivate_attempt_before_effect(tmp_path: Path):
+    subject, commands = _review(tmp_path)
+    subject.attempt_dir.chmod(0o755)
+
+    with pytest.raises(Failed, match="not exact"):
+        subject.prepare()
+    assert commands.prepares == 0
+    assert not subject.receipt_path.exists()
 
 
 def test_freezes_exact_evidence_before_effects(tmp_path: Path):
@@ -226,6 +361,61 @@ def test_adapter_uses_exact_prepared_evidence_and_cleanup(
     assert str(attempt / "stage1-prepare.json") in rendered[0]
     assert rendered[1][1] == "prepare" and "--receipt" in rendered[1]
     assert rendered[2][1] == "prepare-cleanup"
+
+
+def test_review_adapter_prepares_before_generating_and_reuses_exact_worksheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    evidence, attempt = _inputs(tmp_path)
+    evidence.worksheet.unlink()
+    review = ReviewEvidence(
+        evidence.candidate_sha, evidence.manifests, evidence.expected_corpus_digest,
+        evidence.exception_digest, evidence.worksheet,
+    )
+    subject = ConcreteCommands(_config(tmp_path, attempt), review)
+    calls: list[tuple[object, ...]] = []
+
+    def module(*arguments, **_kwargs):
+        calls.append(arguments)
+        if arguments[0] == "switchstand.work_index_migration":
+            _private(attempt / "stage1-prepare.json", b"prepare\n")
+            return subprocess.CompletedProcess(
+                [], 0, f"prepared_import_sha256={'d' * 64}\n", ""
+            )
+        if arguments[1] == "generate-prepared":
+            _private(evidence.worksheet, b"worksheet\n")
+        digest = hashlib.sha256(evidence.worksheet.read_bytes()).hexdigest()
+        return subprocess.CompletedProcess([], 0, f"worksheet_sha256={digest}\n", "")
+
+    monkeypatch.setattr(subject, "_module", module)
+    first = subject.prepare_review(review)
+    second = subject.prepare_review(review)
+
+    assert first == second
+    assert [call[1] for call in calls] == [
+        "prepare", "generate-prepared", "prepare", "validate-prepared",
+    ]
+    assert all(str(attempt / "stage1-prepare.json") in map(str, call) for call in calls)
+
+
+def test_review_adapter_cleanup_uses_same_receipt_and_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    evidence, attempt = _inputs(tmp_path)
+    review = ReviewEvidence(
+        evidence.candidate_sha, evidence.manifests, evidence.expected_corpus_digest,
+        evidence.exception_digest, evidence.worksheet,
+    )
+    subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(subject, "_module", lambda *args, **_kwargs: (
+        calls.append(args) or subprocess.CompletedProcess([], 0, "", "")
+    ))
+
+    subject.cleanup_review(review)
+
+    assert calls[0][:2] == ("switchstand.work_index_migration", "prepare-cleanup")
+    assert str(attempt / "stage1-prepare.json") in map(str, calls[0])
 
 
 @pytest.mark.parametrize(("status", "state"), [(0, "APPLIED"), (3, "ABSENT"), (1, "UNKNOWN"), (2, "UNKNOWN")])
