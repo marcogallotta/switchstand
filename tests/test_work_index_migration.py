@@ -1,3 +1,4 @@
+import asyncio
 import os
 import stat
 from pathlib import Path
@@ -18,7 +19,9 @@ from switchstand.work_index import (
     ActivationReceipt,
     ActivationUnknown,
     PrepareReceipt,
+    canonical_digest,
     cleanup_preparation,
+    reconcile_preparation,
 )
 from switchstand.work_index_migration import (
     _stable_corpus,
@@ -269,22 +272,47 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     assert retry_digest == digest
     prepare_receipt = load_prepare_receipt(tmp_path / "prepare.json")
     inserted = dict(prepare_receipt.inserted_bindings)
+    expected_before = (("gone", str(EXCEPTION)), ("known", str(KNOWN)))
+    forged_inserted = tuple(sorted(prepare_receipt.inserted_bindings + (("known", str(KNOWN)),)))
+    forged = PrepareReceipt(
+        corpus_digest, digest, canonical_digest(forged_inserted),
+        (("gone", str(EXCEPTION)),), prepare_receipt.final_bindings, forged_inserted,
+    )
+    with pytest.raises(ActivationUnknown, match="reviewed manifests"):
+        await cleanup_preparation(stage1_engine, forged, prepare_receipt_items := tuple(
+            _stable_corpus(paths, corpus_digest, exception_digest).items
+        ), expected_before)
+    async with stage1_engine.connect() as blocker:
+        transaction = await blocker.begin()
+        await blocker.execute(text("SELECT pg_advisory_xact_lock(1398032177)"))
+        reconciliation = asyncio.create_task(reconcile_preparation(stage1_engine, prepare_receipt))
+        await asyncio.sleep(0.05)
+        assert not reconciliation.done()
+        await blocker.execute(text(
+            "INSERT INTO work_authority (scope, state, generation) "
+            "VALUES ('workspace', 'POSTGRES_AUTHORITY', 1)"
+        ))
+        await transaction.commit()
+    with pytest.raises(ActivationUnknown, match="authority boundary"):
+        await reconciliation
+    async with stage1_engine.begin() as connection:
+        await connection.execute(text("DELETE FROM work_authority"))
     async with stage1_engine.begin() as connection:
         await connection.execute(text(
             "INSERT INTO work_handles (id, provider, provider_work_id) VALUES "
             "('40000000-0000-4000-8000-000000000004', 'asana', 'drift')"
         ))
     with pytest.raises(ActivationUnknown, match="bindings changed"):
-        await cleanup_preparation(stage1_engine, prepare_receipt)
+        await cleanup_preparation(stage1_engine, prepare_receipt, prepare_receipt_items, expected_before)
     async with stage1_engine.begin() as connection:
         assert await connection.scalar(text(
             "SELECT count(*) FROM work_handles WHERE provider_work_id IN ('new', 'other')"
         )) == 2
         await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'drift'"))
     monkeypatch.setattr(work_index, "_commit", commit_then_lose_output)
-    await cleanup_preparation(stage1_engine, prepare_receipt)
+    await cleanup_preparation(stage1_engine, prepare_receipt, prepare_receipt_items, expected_before)
     monkeypatch.setattr(work_index, "_commit", real_commit)
-    await cleanup_preparation(stage1_engine, prepare_receipt)
+    await cleanup_preparation(stage1_engine, prepare_receipt, prepare_receipt_items, expected_before)
     async with stage1_engine.connect() as connection:
         rows = (await connection.execute(text(
             "SELECT provider_work_id, id FROM work_handles WHERE provider = 'asana'"
@@ -310,7 +338,7 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
     )
     assert isinstance(activation, ActivationReceipt) and activation.count == 3
     with pytest.raises(ActivationUnknown, match="authority exists"):
-        await cleanup_preparation(stage1_engine, prepare_receipt)
+        await cleanup_preparation(stage1_engine, prepare_receipt, prepare_receipt_items, expected_before)
     async with stage1_engine.connect() as connection:
         assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 3
         assert await connection.scalar(text("SELECT count(*) FROM work_handles")) == 5

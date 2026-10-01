@@ -615,13 +615,21 @@ async def _asana_bindings(connection: AsyncConnection) -> tuple[tuple[str, str],
     return tuple((row[0], str(row[1])) for row in rows)
 
 
+async def _locked_preparation_state(
+    engine: AsyncEngine,
+) -> tuple[object, object, tuple[tuple[str, str], ...]]:
+    async with engine.begin() as connection:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544731)))
+        authority = (await connection.execute(select(work_authority.c.scope))).first()
+        cutover = (await connection.execute(select(work_authority_cutovers.c.scope))).first()
+        return authority, cutover, await _asana_bindings(connection)
+
+
 async def reconcile_preparation(
     engine: AsyncEngine, receipt: PrepareReceipt,
 ) -> PrepareReceipt:
     try:
-        authority, cutover = await _stage1_markers(engine)
-        async with engine.connect() as connection:
-            bindings = await _asana_bindings(connection)
+        authority, cutover, bindings = await _locked_preparation_state(engine)
     except BaseException as error:
         raise ActivationUnknown("Stage 1 preparation outcome UNKNOWN; keep maintenance") from error
     if authority is not None or cutover is not None:
@@ -715,8 +723,27 @@ async def prepare_manifest_exact(
     return await reconcile_preparation(engine, prepared)
 
 
-async def cleanup_preparation(engine: AsyncEngine, receipt: PrepareReceipt) -> None:
+async def cleanup_preparation(
+    engine: AsyncEngine,
+    receipt: PrepareReceipt,
+    items: tuple[ImportItem, ...],
+    expected_before: tuple[tuple[str, str], ...],
+) -> None:
     """Remove only receipt-owned handles while authority is proven absent."""
+    providers = {item.provider_work_id for item in items}
+    final_handles = {
+        provider: Handle(UUID(value), "asana", provider)
+        for provider, value in receipt.final_bindings
+    }
+    if (
+        receipt.before_bindings != expected_before
+        or {row[0] for row in receipt.inserted_bindings} != providers - {row[0] for row in expected_before}
+        or set(receipt.final_bindings) != set(expected_before) | set(receipt.inserted_bindings)
+        or receipt.inserted_digest != canonical_digest(receipt.inserted_bindings)
+        or set(final_handles) != providers | {row[0] for row in expected_before}
+        or manifest_digest(items, final_handles) != receipt.prepared_digest
+    ):
+        raise ActivationUnknown("prepare receipt does not match the reviewed manifests")
     connection = await engine.connect()
     transaction = await connection.begin()
     commit_started = False
@@ -752,9 +779,7 @@ async def cleanup_preparation(engine: AsyncEngine, receipt: PrepareReceipt) -> N
         with suppress(BaseException):
             await connection.close()
         try:
-            authority, cutover = await _stage1_markers(engine)
-            async with engine.connect() as readback:
-                bindings = await _asana_bindings(readback)
+            authority, cutover, bindings = await _locked_preparation_state(engine)
         except BaseException as readback_error:
             raise ActivationUnknown("prepare cleanup outcome UNKNOWN") from readback_error
         if authority is None and cutover is None and bindings == receipt.before_bindings:

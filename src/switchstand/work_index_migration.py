@@ -343,7 +343,12 @@ async def migrate(
             prepared = load_prepare_receipt(receipt_path)
             if prepared.corpus_digest != expected_corpus_digest:
                 raise ValueError("prepare receipt does not bind the reviewed corpus")
-            await cleanup_preparation(engine, prepared)
+            expected_before = tuple(sorted(
+                (provider, str(identity))
+                for provider, identity in (corpus.work_ids | corpus.exceptions).items()
+                if identity is not None
+            ))
+            await cleanup_preparation(engine, prepared, corpus.items, expected_before)
             return prepared
         if expected_prepared_digest is None or receipt_path is None:
             raise ValueError("activate requires --expected-prepared-digest and --receipt")

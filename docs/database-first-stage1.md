@@ -54,7 +54,7 @@ switchstand-stage1-corpus capture corpus-b.json --source-candidate RUNTIME_SHA
 switchstand-stage1-corpus compare corpus-a.json corpus-b.json
 switchstand-work-index-migrate prepare --confirm-offline --manifest corpus-a.json \
   --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
-  --expected-exception-digest REVIEWED_EXCEPTION_SHA256
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256 --receipt stage1-prepare.json
 switchstand-work-index-migrate activate --confirm-offline --manifest corpus-a.json \
   --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
   --expected-exception-digest REVIEWED_EXCEPTION_SHA256 \
@@ -64,11 +64,21 @@ switchstand-work-index-migrate activate --confirm-offline --manifest corpus-a.js
 The read-only corpus command captures the deterministic union of admitted search and exact-readable
 bound Asana work twice. The migration command verifies database quiescence and both matching,
 reviewed manifests, including both the full corpus and explicit missing/noncanonical exception
-digests, then freezes or reuses missing WorkId bindings and prints the canonical prepared import
-digest. Activation rereads the same
+digests, then writes a distinct create-new preparation receipt before freezing missing WorkId
+bindings. That receipt binds the exact before/final/inserted handles and prepared digest; activation
+uses its own distinct receipt. Activation rereads the same
 manifests and bindings and fails before the marker on mismatch. It commits corpus and marker
 atomically, then reads back both generations and the digest; verify the edge before removing
 maintenance.
+
+After ambiguous prepare output, use `prepare-reconcile --receipt stage1-prepare.json`.
+Before authority, `prepare-cleanup` requires the same two reviewed manifests/digests and preparation
+receipt, proves their exact binding partition under the Stage 1 lock, and removes only the recorded
+inserted handles. Recovery reports exact applied state, `NOT_COMMITTED`, or `UNKNOWN`.
+`NOT_COMMITTED` permits the same receipt-bound retry. `UNKNOWN` retains maintenance and forbids old
+runtime restart, schema abort, or a fresh attempt until exact readback resolves it.
+Pass `--confirm-offline`, both `--manifest` arguments, both reviewed digest arguments, and
+`--receipt stage1-prepare.json` to `prepare-cleanup`; it accepts no weaker evidence set.
 
 Before the authority transaction commits, discard the failed attempt and restart the old service.
 After it commits, never restore the old title/completion/search runtime: retain the gate and repair forward.
