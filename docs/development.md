@@ -284,7 +284,8 @@ plugins or hooks disabled. Shim overwrite did not cause that post-dispatch hang.
 The recurrence candidate addresses launcher replacement only.
 
 Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
-`switchstand-codex-shim.path` recovery watch. It requires a working user manager;
+`switchstand-codex-shim.path` recovery watch and `switchstand-codex-shim.timer` safety net.
+It requires a working user manager;
 installation errors are fatal and must not be reported as protected installation.
 The service runs a materialized private installer with `--repair-only`, using the
 materialized shim beside it, so recovery works without the repository. It leaves
@@ -292,9 +293,13 @@ real binaries and their updater unchanged. Existing routing still selects dispat
 only inside the canonical Git common directory and real Codex everywhere else.
 
 Recovery is asynchronous: a launch in the brief replacement window can bypass dispatch.
-Protection applies while the user manager/watch is running; it is not an immutable-file
-lock. Check `systemctl --user is-active switchstand-codex-shim.path` and verify that
+The path watch can miss a replacement during repair execution/watch rearm. The timer
+checks five minutes after manager startup and five minutes after service completion;
+a healthy check does not rewrite the launcher. Eventual recovery requires the user
+manager and timer to keep running and the repair service to succeed.
+Protection applies while the user manager/watch/timer is running; it is not an immutable-file
+lock. Check `systemctl --user is-active switchstand-codex-shim.path switchstand-codex-shim.timer` and verify that
 `~/.local/bin/codex` is a regular executable matching `scripts/codex-shim`.
 For a manual upstream reinstall, verify recovery afterward. Remove protection with
-`systemctl --user disable --now switchstand-codex-shim.path` before intentionally
+`systemctl --user disable --now switchstand-codex-shim.path switchstand-codex-shim.timer` before intentionally
 replacing the launcher. Do not modify the real standalone binary to repair routing.

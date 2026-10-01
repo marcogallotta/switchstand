@@ -60,7 +60,19 @@ Description=Restore materialized Switchstand Codex shim
 Type=oneshot
 ExecStart="%h/.local/state/switchstand/codex/shim/install-codex-shim" --repair-only
 EOF
+# Path watches can miss replacement while the oneshot service is running.
+# A bounded periodic check closes that gap without rewriting a healthy launcher.
+cat > "$unit_dir/switchstand-codex-shim.timer" <<'EOF'
+[Unit]
+Description=Periodically recover missed Switchstand Codex shim replacements
+[Timer]
+OnStartupSec=5min
+OnUnitInactiveSec=5min
+Unit=switchstand-codex-shim.service
+[Install]
+WantedBy=timers.target
+EOF
 systemctl --user daemon-reload
-systemctl --user enable --now switchstand-codex-shim.path
+systemctl --user enable --now switchstand-codex-shim.path switchstand-codex-shim.timer
 # Close the installation window before returning.
 "$state_dir/install-codex-shim" --repair-only
