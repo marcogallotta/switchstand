@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from .core import ProviderError
 from .discovery import DiscoveryProvider, ProviderSearchItem
 from .provider import AsanaProvider
-from .work_index import activate
+from .work_index import ActivationReceipt, ActivationUnknown, activate
 
 
 async def final_scan(provider: DiscoveryProvider) -> tuple[ProviderSearchItem, ...]:
@@ -52,7 +52,7 @@ async def require_offline(engine: AsyncEngine) -> None:
         raise RuntimeError("Stage 1 requires the MCP service and every other DB client stopped")
 
 
-async def migrate(*, confirm_offline: bool) -> int:
+async def migrate(*, confirm_offline: bool, expected_manifest_digest: str) -> ActivationReceipt:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
@@ -65,7 +65,9 @@ async def migrate(*, confirm_offline: bool) -> int:
         provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
         items = await final_scan(provider)
         await require_offline(engine)
-        return await activate(engine, items)
+        return await activate(
+            engine, items, expected_manifest_digest=expected_manifest_digest
+        )
     finally:
         await client.aclose()
         await engine.dispose()
@@ -74,12 +76,22 @@ async def migrate(*, confirm_offline: bool) -> int:
 def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confirm-offline", action="store_true")
+    parser.add_argument("--expected-manifest-digest", required=True)
     arguments = parser.parse_args(argv)
     try:
-        count = asyncio.run(migrate(confirm_offline=arguments.confirm_offline))
+        receipt = asyncio.run(migrate(
+            confirm_offline=arguments.confirm_offline,
+            expected_manifest_digest=arguments.expected_manifest_digest,
+        ))
+    except ActivationUnknown as error:
+        parser.exit(2, f"{error}\n")
     except (KeyError, ProviderError, RuntimeError, SQLAlchemyError, ValueError) as error:
         parser.exit(1, f"Stage 1 migration failed before authority flip: {error}\n")
-    print(f"POSTGRES_AUTHORITY active for {count} admitted work items")
+    print(
+        f"POSTGRES_AUTHORITY active generation={receipt.generation} count={receipt.count} "
+        f"corpus_sha256={receipt.corpus_digest} "
+        f"recovered_after_commit_error={str(receipt.recovered_after_commit_error).lower()}"
+    )
 
 
 if __name__ == "__main__":

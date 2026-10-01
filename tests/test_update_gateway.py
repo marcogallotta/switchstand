@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from conftest import activate_stage1
 from mcp import Client
 from pydantic import ValidationError
 from sqlalchemy import delete, select, text, update
@@ -32,7 +33,6 @@ from switchstand.provider import AsanaProvider
 from switchstand.relations import RelationGateway
 from switchstand.state import PostgresState, metadata
 from switchstand.updates import UpdateGateway
-from switchstand.work_index import activate
 from switchstand.work_metadata import (
     ProviderMetadataSnapshot,
     activate_metadata,
@@ -102,7 +102,7 @@ def request(grant, revision, **patch):
 
 
 async def activate_stage2(gateway, current):
-    await activate(gateway.state.engine, (ProviderSearchItem(
+    await activate_stage1(gateway.state.engine, (ProviderSearchItem(
         provider_work_id="123", title=current.title, completed=current.completed,
         revision=current.revision, routing=current.routing, context=current.context,
     ),))
@@ -193,7 +193,7 @@ async def test_post_cutover_scalars_are_db_only_and_mixed_patch_is_inert(subject
     gateway, _grants, principal, grant, boundary = subject
     current = await gateway.providers["asana"].get("123")
     assert current is not None
-    await activate(gateway.state.engine, (ProviderSearchItem(
+    await activate_stage1(gateway.state.engine, (ProviderSearchItem(
         provider_work_id="123", title=current.title, completed=current.completed,
         revision=current.revision, routing=current.routing, context=current.context,
     ),))
@@ -313,7 +313,7 @@ async def test_post_cutover_db_write_reports_unknown_on_provider_revision_race(
     gateway, _grants, principal, grant, boundary = subject
     current = await gateway.providers["asana"].get("123")
     assert current is not None
-    await activate(gateway.state.engine, (ProviderSearchItem(
+    await activate_stage1(gateway.state.engine, (ProviderSearchItem(
         provider_work_id="123", title=current.title, completed=current.completed,
         revision=current.revision, routing=current.routing, context=current.context,
     ),))

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError
 from .provider import AsanaProvider
+from .work_index import ActivationReceipt, ActivationUnknown
 from .work_index_migration import require_offline
 from .work_metadata import (
     ImportWorksheet,
@@ -93,7 +94,7 @@ async def _resources() -> tuple[AsyncEngine, httpx.AsyncClient, AsanaProvider]:
     return engine, client, AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
 
 
-async def execute(action: str, path: Path, *, confirm_offline: bool) -> int:
+async def execute(action: str, path: Path, *, confirm_offline: bool) -> int | ActivationReceipt:
     if not confirm_offline:
         raise ValueError("explicit --confirm-offline is required")
     engine, client, provider = await _resources()
@@ -134,12 +135,22 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--confirm-offline", action="store_true")
     arguments = parser.parse_args(argv)
     try:
-        count = asyncio.run(execute(
+        result = asyncio.run(execute(
             arguments.action, arguments.worksheet, confirm_offline=arguments.confirm_offline
         ))
+    except ActivationUnknown as error:
+        parser.exit(2, f"{error}\n")
     except (KeyError, OSError, ProviderError, RuntimeError, SQLAlchemyError, ValidationError, ValueError) as error:
         parser.exit(1, f"Stage 2 {arguments.action} failed before authority flip: {error}\n")
-    print(f"Stage 2 {arguments.action} complete for {count} admitted work items")
+    if isinstance(result, ActivationReceipt):
+        print(
+            f"Stage 2 POSTGRES_AUTHORITY active generation={result.generation} "
+            f"count={result.count} corpus_sha256={result.corpus_digest} "
+            f"edges_sha256={result.edge_digest} "
+            f"recovered_after_commit_error={str(result.recovered_after_commit_error).lower()}"
+        )
+    else:
+        print(f"Stage 2 {arguments.action} complete for {result} admitted work items")
 
 
 if __name__ == "__main__":

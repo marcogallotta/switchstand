@@ -107,6 +107,9 @@ The command deliberately does not downgrade or auto-restore after an ambiguous
 failure. Stop Switchstand writers, preserve the dump and command output, and
 diagnose before any recovery attempt. A restore is a separate reviewed operator
 action.
+Stage 1 and Stage 2 authority commands use exit status 2 for an unresolved COMMIT outcome. Keep
+the maintenance gate and use their marker/generation/digest readback; never interpret that status
+as safe rollback or permission to rerun.
 - Writer worktree: from the ordinary checkout, run
   `scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>`, then work from the printed path. The
   helper creates a new linked worktree when the target is absent. If the target and branch already exist, reuse succeeds

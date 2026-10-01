@@ -47,7 +47,8 @@ switchstand-work-metadata-migrate activate stage2.json --confirm-offline
 The command repeats provider validation, locks and revalidates the complete Stage 1 corpus, updates
 the existing versioned `work_index.routing` rows, inserts canonical `DEPENDS_ON` edges, and writes
 the durable Stage 2 `POSTGRES_AUTHORITY` marker in one PostgreSQL transaction. `BLOCKS` is the
-inverse query, never duplicate stored truth.
+inverse query, never duplicate stored truth. Its receipt reads back both Stage 2 markers and their
+generation, the complete metadata projection digest, and the dependency-edge digest.
 
 Before the marker, ordinary behavior remains provider-backed. After it, migrated metadata and
 dependency writes use PostgreSQL, mixed metadata-plus-provider-content patches reject before effect,
@@ -58,3 +59,8 @@ Pre-cutover failure leaves no Stage 2 authority and the worksheet can be regener
 marker commits, downgrade refuses and recovery is forward-fix only. Activating the client-visible
 metadata fields also requires the documented ChatGPT connection reinstall and fresh-chat schema
 verification.
+
+An error after COMMIT may have been sent is `UNKNOWN`, not a pre-flip failure. Keep maintenance in
+place until a fresh connection proves either the exact committed markers and digests or exact marker
+absence with unchanged pre-activation metadata and edges. Every unreadable or inconsistent result
+forbids blind rerun, rollback, or snapshot restore and requires gated forward repair.
