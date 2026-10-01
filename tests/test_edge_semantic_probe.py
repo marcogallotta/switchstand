@@ -1,7 +1,6 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import ClassVar
 from uuid import uuid4
 
 import httpx
@@ -11,10 +10,6 @@ import switchstand.edge_semantic_probe as probe
 
 
 class FakeMCP:
-    related: ClassVar[list[object]] = []
-    relation_outcome: ClassVar[str] = "ok"
-    relation_calls: ClassVar[int] = 0
-
     def __init__(self, endpoint, token):
         self.endpoint, self.token, self.requests = endpoint, token, []
         self.client = object()
@@ -51,22 +46,10 @@ class FakeMCP:
                 "revision": "r1", "completed": False, "routing": {}, "context": {}}]}
         if name == "work_structure":
             return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
-        if name == "work_relate":
-            type(self).relation_calls += 1
-            if self.relation_outcome == "raise":
-                raise httpx.ReadTimeout("ambiguous")
-            if self.relation_outcome == "denied":
-                return {"status": "denied", "effect": "not_sent"}
-            receipt = {"operation_id": arguments["operation_id"],
-                "qualification": "test:disposable-c2d2",
-                "principal": {"issuer": "issuer", "subject": "subject", "client_id": "client"}}
-            result = {"status": "ok", "effect": "applied", "receipt": receipt}
-            self.related.append(result)
-            return result
         raise AssertionError(name)
 
 
-IDS = {name: str(uuid4()) for name in ("work", "foreign", "dependency", "operation")}
+IDS = {name: str(uuid4()) for name in ("work", "foreign", "dependency")}
 TOOLS = [{"name": "work_get", "inputSchema": {"type": "object"}}]
 
 
@@ -78,11 +61,9 @@ def private(path: Path, value: str) -> Path:
 
 @pytest.fixture
 def grounded(monkeypatch):
-    FakeMCP.related, FakeMCP.relation_outcome, FakeMCP.relation_calls = [], "ok", 0
-    run_ids = iter(("run-1", "run-2", "run-3"))
     monkeypatch.setattr(probe, "MCP", FakeMCP)
     monkeypatch.setattr(probe, "_runtime", lambda _client, _endpoint, sha:
-                        {"runtime_sha": sha, "run_id": next(run_ids)})
+                        {"runtime_sha": sha, "run_id": "run-1"})
     monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs:
                         subprocess.CompletedProcess(args[0], 0, stdout="a" * 40 + "\n"))
 
@@ -103,51 +84,19 @@ def test_read_only_probe_records_exact_schema_and_denials(tmp_path, grounded):
 
     value = json.loads(receipt.read_text())
     assert value["result"] == "PASS" and value["tools"] == TOOLS
-    assert value["mutation"] is None and value["principal_proof"] == "NOT_RUN"
+    assert value["production_mutation"] == "NOT_RUN"
+    assert value["principal_proof"] == "NOT_RUN"
     assert value["results_sha256"] == probe._digest(value["results"])
     assert value["results"]["get"]["item"]["id"] == IDS["work"]
     assert value["results"]["dependency"]["item"]["id"] == IDS["dependency"]
     assert receipt.stat().st_mode & 0o777 == 0o600
-    assert not FakeMCP.related
 
 
-def test_disposable_replay_and_cold_restart_are_exact(tmp_path, grounded):
-    first, second = tmp_path / "first.json", tmp_path / "second.json"
-    mutation = ["--allow-disposable-mutation", "--operation-id", IDS["operation"],
-        "--expected-qualification", "test:disposable-c2d2"]
-    assert probe.run(arguments(tmp_path) + ["--receipt", str(first)] + mutation) == 0
-    assert probe.run(arguments(tmp_path) + ["--receipt", str(second),
-        "--restart-of", str(first)] + mutation) == 0
-
-    assert len(FakeMCP.related) == 4
-    assert all(item == FakeMCP.related[0] for item in FakeMCP.related)
-    value = json.loads(second.read_text())
-    assert value["restart_of"] == probe._digest(json.loads(first.read_text()))
-    assert value["runtime"]["run_id"] == "run-2"
-    assert value["mutation"]["arguments"]["patch"] == {
-        "kind": "dependency", "action": "add", "target_work_id": IDS["dependency"]}
-
-
-def test_production_mutation_is_hard_disabled(tmp_path, grounded):
-    with pytest.raises(probe.ProbeFailure, match="requires loopback"):
-        probe.run(arguments(tmp_path, "https://public.example/mcp") + [
-            "--receipt", str(tmp_path / "never.json"), "--allow-disposable-mutation",
-            "--operation-id", IDS["operation"],
-            "--expected-qualification", "test:disposable-c2d2"])
+def test_effect_options_are_not_part_of_read_only_probe(tmp_path, grounded):
+    with pytest.raises(SystemExit):
+        probe.run(arguments(tmp_path) + ["--receipt", str(tmp_path / "never.json"),
+            "--allow-disposable-mutation"])
     assert not (tmp_path / "never.json").exists()
-
-
-@pytest.mark.parametrize(("outcome", "status"), [("raise", "UNKNOWN"), ("denied", "FAIL")])
-def test_failed_first_effect_is_recorded_without_replay(tmp_path, grounded, outcome, status):
-    FakeMCP.relation_outcome = outcome
-    receipt = tmp_path / "failed.json"
-    with pytest.raises(probe.ProbeFailure):
-        probe.run(arguments(tmp_path) + ["--receipt", str(receipt),
-            "--allow-disposable-mutation", "--operation-id", IDS["operation"],
-            "--expected-qualification", "test:disposable-c2d2"])
-    value = json.loads(receipt.read_text())
-    assert value["result"] == status and value["operation_id"] == IDS["operation"]
-    assert FakeMCP.relation_calls == 1 and value["transcript"]
 
 
 def test_rejects_non_private_token_before_network(tmp_path, grounded):

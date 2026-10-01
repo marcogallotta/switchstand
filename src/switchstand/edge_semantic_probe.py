@@ -123,11 +123,6 @@ def _publish(path: Path, value: object) -> None:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
-
-def _replace(path: Path, value: object) -> None:
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    _publish(temporary, value)
-    os.replace(temporary, path)
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(directory)
@@ -170,10 +165,6 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-principal", required=True, help="issuer|subject|client_id")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--receipt", required=True, type=Path)
-    parser.add_argument("--allow-disposable-mutation", action="store_true")
-    parser.add_argument("--operation-id", type=UUID)
-    parser.add_argument("--expected-qualification")
-    parser.add_argument("--restart-of", type=Path)
     args = parser.parse_args(argv)
     endpoint = str(args.endpoint)
     parsed = urlparse(endpoint)
@@ -190,41 +181,14 @@ def run(argv: list[str] | None = None) -> int:
     ).stdout.strip()
     if actual_sha != args.expected_sha:
         raise ProbeFailure("checkout does not match expected candidate")
-    if args.restart_of is not None and not args.allow_disposable_mutation:
-        raise ProbeFailure("--restart-of requires explicitly enabled disposable mutation")
-    if args.allow_disposable_mutation and (
-        parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-        or args.operation_id is None
-        or not (args.expected_qualification or "").startswith("test:disposable")
-    ):
-        raise ProbeFailure("mutation requires loopback, OperationId, and disposable qualification")
 
     token, wrong = _private(args.token_file), _private(args.wrong_token_file)
     if not token or not wrong or token == wrong:
         raise ProbeFailure("distinct non-empty token files are required")
-    prior = None if args.restart_of is None else json.loads(_private(args.restart_of))
-    record: dict[str, object] = {
-        "schema": 1, "result": "UNKNOWN" if args.allow_disposable_mutation else "FAIL",
-        "candidate_sha": args.expected_sha, "endpoint": endpoint,
-        "expected_principal": args.expected_principal, "principal_proof": "NOT_RUN",
-        "operation_id": None if args.operation_id is None else str(args.operation_id),
-        "work_id": str(args.work_id), "dependency_work_id": str(args.dependency_work_id),
-        "foreign_work_id": str(args.foreign_work_id), "transcript": [],
-        "production_mutation": "NOT_RUN",
-    }
-    _replace(args.receipt, record)
     client = MCP(endpoint, token)
     results: dict[str, object] = {}
-    terminal = "FAIL"
     try:
         runtime = _runtime(client.client, endpoint, str(args.expected_sha))
-        if prior is not None:
-            old_runtime = cast(dict[str, object], prior.get("runtime", {}))
-            if (prior.get("candidate_sha") != args.expected_sha
-                    or prior.get("endpoint") != endpoint
-                    or old_runtime.get("runtime_sha") != runtime.get("runtime_sha")
-                    or not old_runtime.get("run_id") or old_runtime.get("run_id") == runtime.get("run_id")):
-                raise ProbeFailure("cold restart requires same runtime SHA and a different run_id")
         client.initialize()
         tools = cast(dict[str, object], client.call("tools/list", {}, 2))["tools"]
         if _digest(tools) != args.expected_tools_sha256:
@@ -259,57 +223,19 @@ def run(argv: list[str] | None = None) -> int:
         results = {"get": got, "search": found, "dependency": dependency,
                    "dependency_search": dependency_search,
                    "stale": stale, "foreign": foreign}
-        mutation = None
-        if args.allow_disposable_mutation:
-            arguments = {"api_version": "1", "operation_id": str(args.operation_id),
-                "work_id": str(args.work_id), "observed_revision": revision,
-                "patch": {"kind": "dependency", "action": "add",
-                          "target_work_id": str(args.dependency_work_id)}}
-            terminal = "UNKNOWN"
-            first_raw = client.call("tools/call", {"name": "work_relate",
-                "arguments": arguments}, 9)
-            first_value = cast(dict[str, object], first_raw) if isinstance(first_raw, dict) else {}
-            if first_value.get("status") != "ok":
-                terminal = ("UNKNOWN" if first_value.get("status") == "unknown"
-                            or first_value.get("effect") == "unknown" else "FAIL")
-                raise ProbeFailure("dependency mutation was not conclusively applied")
-            terminal = "FAIL"
-            first = _status(first_value, "ok", "dependency mutation")
-            mutation = {"arguments": arguments, "first": first}
-            replay = _status(client.call("tools/call", {"name": "work_relate",
-                "arguments": arguments}, 10), "ok", "OperationId replay")
-            if first != replay:
-                raise ProbeFailure("same OperationId replay changed receipt")
-            receipt = cast(dict[str, object], first["receipt"])
-            principal = receipt.get("principal", {})
-            observed_principal = "|".join(str(cast(dict[str, object], principal).get(key, ""))
-                for key in ("issuer", "subject", "client_id"))
-            if (receipt.get("qualification") != args.expected_qualification
-                    or observed_principal != args.expected_principal):
-                raise ProbeFailure("mutation receipt principal or qualification mismatch")
-            mutation = {"arguments": arguments, "first": first, "replay": replay}
-            record["principal_proof"] = receipt["principal"]
-            if (prior is not None and (
-                prior.get("candidate_sha") != args.expected_sha or prior.get("mutation") != mutation
-            )):
-                raise ProbeFailure("cold-restart replay differs from prior receipt")
-        record.update({"result": "PASS",
+        record = {"schema": 1, "result": "PASS", "candidate_sha": args.expected_sha,
+            "endpoint": endpoint, "expected_principal": args.expected_principal,
+            "principal_proof": "NOT_RUN",
             "runtime": runtime, "tools": tools, "tools_sha256": _digest(tools),
             "work_id": str(args.work_id), "dependency_work_id": str(args.dependency_work_id),
             "foreign_work_id": str(args.foreign_work_id), "revision": revision,
             "results": results, "results_sha256": _digest(results),
             "wrong_token_http_status": wrong_token_status,
-            "mutation": mutation,
-            "restart_of": None if prior is None else _digest(prior),
-            "transcript": client.requests})
-        _replace(args.receipt, record)
+            "production_mutation": "NOT_RUN", "transcript": client.requests}
+        _publish(args.receipt, record)
         print("PASS authenticated semantic probe")
         return 0
-    except Exception as error:
-        record.update({"result": terminal, "failure": str(error), "transcript": client.requests})
-        _replace(args.receipt, record)
-        if isinstance(error, ProbeFailure):
-            raise
+    except (KeyError, OSError, TypeError, ValueError, httpx.HTTPError) as error:
         raise ProbeFailure(type(error).__name__) from error
     finally:
         client.close()
