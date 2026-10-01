@@ -128,6 +128,10 @@ non-symlink `~/.local/state/switchstand/rehearsals/NAME` root. Receipts bind tha
 exact target, project, volume, and network, so resume or abort cannot cross targets.
 Selecting a target does not create or populate it.
 
+`stage12_cutover.ConcreteCommands` binds the offline state machine to reviewed migration
+commands. Disposable runs derive `DATABASE_URL` from their namespaced PostgreSQL container.
+A later host CLI must reconcile process loss; this adapter grants no activation authority.
+
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
 downgrade and verify the original revision and digests. Either marker, unreadable

@@ -89,6 +89,9 @@ class Commands:
         _private(destination, evidence.manifests[0].read_bytes())
         return evidence.corpus_digest
 
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None:
+        self.calls.append("stage1-cleanup")
+
     def stage1_state(self, receipt: Path) -> Reconciled:
         self.calls.append("stage1-state")
         return self._state(self.stage1, "stage1")
@@ -158,8 +161,10 @@ def test_existing_unapplied_subordinate_receipt_forbids_blind_retry(tmp_path: Pa
 
     with pytest.raises(Unknown, match="Stage 1 authority"):
         subject.run(lambda _boundary: None)
+    subject.abort_pre_authority()
 
     assert "stage1-activate" not in commands.calls
+    assert commands.schema == "ABSENT"
 
 
 @pytest.mark.parametrize("proof", ["validation", "prepared", "backup"])

@@ -5,15 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
+import re
 import shutil
 import stat
+import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from uuid import UUID
 
-from .edge_maintenance import Failed, Unknown
+from .edge_maintenance import Config, Failed, Unknown
 from .work_corpus import load_manifest, manifest_exception_digest
 
 
@@ -52,6 +56,7 @@ class CutoverCommands(Protocol):
     def validate_stage2_pre_authority(self, evidence: FrozenEvidence) -> str: ...
     def prepare_stage1(self, evidence: FrozenEvidence) -> str: ...
     def capture_final_corpus(self, evidence: FrozenEvidence, destination: Path) -> str: ...
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None: ...
     def stage1_state(self, receipt: Path) -> Reconciled: ...
     def activate_stage1(self, prepared_digest: str, receipt: Path) -> None: ...
     def stage2_state(self, receipt: Path) -> Reconciled: ...
@@ -60,6 +65,39 @@ class CutoverCommands(Protocol):
 
 def _digest(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and not set(value) - set("0123456789abcdef")
+
+
+def _binding_digest(before: Path, after: Path) -> str:
+    """Accept only Stage 1's expected null-to-assigned WorkId transition."""
+    left, right = load_manifest(before), load_manifest(after)
+    result = right.pop("sha256", None)
+    try:
+        rows = zip(
+            cast(list[dict[str, object]], left["rows"]),
+            cast(list[dict[str, object]], right["rows"]), strict=True,
+        )
+        added = 0
+        for old, new in rows:
+            old_id, new_id = old["work_id"], new["work_id"]
+            if old_id is None:
+                if new_id is None or str(UUID(str(new_id))) != new_id:
+                    raise ValueError
+                added += 1
+            elif new_id != old_id:
+                raise ValueError
+            new["work_id"] = old_id
+        left_counts, right_counts = (
+            cast(dict[str, int], item["counts"]) for item in (left, right)
+        )
+        if right_counts["bound"] != left_counts["bound"] + added:
+            raise ValueError
+        right_counts["bound"] = left_counts["bound"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise Failed("final corpus is missing an exact Stage 1 binding") from error
+    left.pop("sha256", None)
+    if left != right or not _digest(result):
+        raise Failed("final corpus changed outside Stage 1 bindings")
+    return cast(str, result)
 
 
 def read_private(path: Path, label: str) -> bytes:
@@ -200,7 +238,7 @@ class Stage12Cutover:
         if boundary == "COMPLETE":
             required.append("stage2_receipt")
         if not all(_digest(value.get(name)) for name in required) or (
-            boundary != "PRE_MARKER" and value.get("final_manifest") != frozen.corpus_digest
+            boundary != "PRE_MARKER" and not _digest(value.get("final_manifest"))
         ):
             raise Unknown("cutover receipt proof is incomplete or malformed")
         preproof = ("stage2_validation", "prepared_import", "final_manifest")
@@ -209,10 +247,16 @@ class Stage12Cutover:
             and any(name in value for name in preproof)
             and (
                 not all(_digest(value.get(name)) for name in preproof[:2])
-                or value.get("final_manifest") != frozen.corpus_digest
+                or not _digest(value.get("final_manifest"))
             )
         ):
             raise Unknown("cutover receipt pre-authority proof is malformed")
+        if "final_manifest" in value:
+            try:
+                if load_manifest(self._final)["sha256"] != value["final_manifest"]:
+                    raise ValueError
+            except (KeyError, OSError, TypeError, ValueError) as error:
+                raise Unknown("final corpus proof does not match the cutover receipt") from error
         return value
 
     def _write(self, frozen: FrozenEvidence, boundary: str, **proof: str) -> dict[str, object]:
@@ -278,8 +322,8 @@ class Stage12Cutover:
             stage1 = self._commands.stage1_state(self._stage1)
             names = ("prepared_import", "stage2_validation", "final_manifest")
             has_preproof = any(name in top for name in names)
-            valid_preproof = _digest(prepared) and _digest(validation) and (
-                top.get("final_manifest") == frozen.corpus_digest
+            valid_preproof = all(
+                _digest(value) for value in (prepared, validation, top.get("final_manifest"))
             )
             if stage1.state == "APPLIED" and not valid_preproof:
                 raise Unknown("Stage 1 applied without durable pre-authority proof")
@@ -291,18 +335,16 @@ class Stage12Cutover:
                     prepared = self._commands.prepare_stage1(frozen)
                     if not _digest(validation) or not _digest(prepared):
                         raise Failed("Stage 2 validation or Stage 1 prepare proof is invalid")
-                    if (
-                        self._commands.capture_final_corpus(frozen, self._final)
-                        != frozen.corpus_digest
-                    ):
-                        raise Failed("final corpus changed after review")
+                    final = self._commands.capture_final_corpus(frozen, self._final)
+                    if not _digest(final):
+                        raise Failed("final corpus binding proof is invalid")
                     top = self._write(
                         frozen,
                         "PRE_MARKER",
                         schema_receipt=schema.receipt_digest,
                         stage2_validation=validation,
                         prepared_import=prepared,
-                        final_manifest=frozen.corpus_digest,
+                        final_manifest=final,
                     )
                 self._commands.activate_stage1(cast(str, prepared), self._stage1)
                 stage1 = self._commands.stage1_state(self._stage1)
@@ -314,7 +356,7 @@ class Stage12Cutover:
                 stage1_receipt=stage1.receipt_digest,
                 stage2_validation=cast(str, validation),
                 prepared_import=cast(str, prepared),
-                final_manifest=frozen.corpus_digest,
+                final_manifest=cast(str, top["final_manifest"]),
             )
         else:
             stage1 = self._applied(self._commands.stage1_state(self._stage1), "Stage 1 authority")
@@ -349,8 +391,282 @@ class Stage12Cutover:
         top = self._load(frozen)
         if top is not None and top["terminal_boundary"] != "PRE_MARKER":
             raise Unknown("authority boundary crossed; abort is forbidden")
-        if self._commands.stage1_state(self._stage1).state != "ABSENT" or self._stage1.exists():
+        if self._commands.stage1_state(self._stage1).state != "ABSENT":
             raise Unknown("Stage 1 absence is not proven; abort is forbidden")
-        self._commands.abort_schema(self._schema)
+        self._commands.cleanup_stage1(frozen)
+        schema = self._commands.schema_state(self._schema)
+        if schema.state == "APPLIED":
+            self._commands.abort_schema(self._schema)
+        elif schema.state != "ABSENT":
+            raise Unknown("schema state is not proven; abort is forbidden")
         if self._commands.schema_state(self._schema).state != "ABSENT":
             raise Unknown("pre-authority schema abort was not proven")
+
+
+class ConcreteCommands:
+    """Target-bound adapters for the reviewed schema, Stage 1, and Stage 2 CLIs."""
+
+    def __init__(self, config: Config, evidence: Evidence):
+        self.c, self.source = config, evidence
+        self.target = "production" if config.target == "production" else f"disposable:{cast(Path, config.target_root).name}"
+        self._environment_cache: dict[str, str] | None = None
+        self._container = ""
+        self._python = Path()
+
+    @staticmethod
+    def _run(command: list[str], environment: dict[str, str] | None = None, *,
+             check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command, cwd=cwd, env=environment, text=True, capture_output=True, check=check,
+            timeout=300,
+        )
+
+    def _environment(self) -> dict[str, str]:
+        raw = read_private(self.c.env_file, "migration environment").decode()
+        supplied = {
+            key.strip(): value.strip().strip("'\"")
+            for line in raw.splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+            for key, value in [line.split("=", 1)]
+        }
+        if not supplied.get("ASANA_TOKEN"):
+            raise Failed("migration environment lacks ASANA_TOKEN")
+        name = self.target.split(":", 1)[-1]
+        project = "switchstand" if self.target == "production" else f"switchstand-rehearsal-{name}"
+        compose = [
+            "docker", "compose", "-p", project, "--project-directory",
+            str(self.c.candidate_runtime), "-f", str(self.c.candidate_runtime / "compose.state.yaml"),
+        ]
+        try:
+            container = self._run([*compose, "ps", "-q", "postgres"]).stdout.strip()
+            item = json.loads(self._run(["docker", "inspect", container]).stdout)[0]
+            labels, network = item["Config"]["Labels"], f"{project}_default"
+            address = item["NetworkSettings"]["Networks"][network]["IPAddress"]
+            if (
+                labels.get("com.docker.compose.project") != project
+                or labels.get("com.docker.compose.service") != "postgres"
+                or not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", address)
+            ):
+                raise ValueError
+            self._container = container
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise Failed("migration database target is not exact") from error
+        values = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+            "ASANA_TOKEN": supplied["ASANA_TOKEN"],
+            "DATABASE_URL": f"postgresql+psycopg://switchstand:switchstand@{address}/switchstand",
+        }
+        optional = (
+            "SWITCHSTAND_BACKUP_DIR" if self.target == "production"
+            else "SWITCHSTAND_TEST_PROJECT_GID"
+        )
+        if supplied.get(optional):
+            values[optional] = supplied[optional]
+        identity = self._run([
+            "git", "-C", str(self.c.candidate_runtime), "rev-parse", "HEAD",
+            "--path-format=absolute", "--git-common-dir",
+        ]).stdout.splitlines()
+        if len(identity) != 2 or identity[0] != self.c.candidate_sha:
+            raise Failed("migration module runtime does not match the exact candidate")
+        common = Path(identity[1])
+        self._python = common.parent / ".venv/bin/python"
+        values |= {
+            "PYTHONPATH": str(self.c.candidate_runtime / "src"),
+            "SWITCHSTAND_CONTROL_PATH": str(self.c.candidate_runtime),
+            "SWITCHSTAND_CONTROL_SHA": self.c.candidate_sha,
+            "SWITCHSTAND_CONTROL_COMMON": str(common),
+        }
+        return values
+
+    def _env(self) -> dict[str, str]:
+        if self._environment_cache is None:
+            self._environment_cache = self._environment()
+        return self._environment_cache
+
+    def _module(
+        self, module: str, *arguments: object, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        return self._run(
+            [str(self._python), "-m", module, *(str(value) for value in arguments)],
+            self._env(),
+            check=check,
+            cwd=self.c.candidate_runtime,
+        )
+
+    def _schema(self, receipt: Path, operation: str = "apply") -> None:
+        command = self.c.candidate_runtime / "scripts/switchstand-upgrade-state"
+        result = self._run(
+            [str(command), "--target", self.target, operation, str(receipt)],
+            self._env(), check=False,
+        )
+        if result.returncode:
+            raise Unknown(result.stderr.strip() or "schema operation failed")
+
+    def _revision(self) -> str:
+        try:
+            self._env()
+            revision = self._run([
+                "docker", "exec", self._container, "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "switchstand", "-d", "switchstand", "-At", "-c",
+                "SELECT version_num FROM alembic_version",
+            ]).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            raise Unknown("schema revision is unreadable") from error
+        if revision not in {"0007_agent_chat_identity", "0010_work_metadata_authority"}:
+            raise Unknown("schema revision is unsupported")
+        return revision
+
+    @staticmethod
+    def _receipt(path: Path) -> str:
+        return hashlib.sha256(read_private(path, "subordinate receipt")).hexdigest()
+
+    def _frozen(self) -> FrozenEvidence:
+        root = self.c.attempt_dir
+        return FrozenEvidence(
+            self.source.candidate_sha,
+            (root / "corpus-a.json", root / "corpus-b.json"),
+            self.source.expected_corpus_digest,
+            self.source.exception_digest,
+            root / "stage2-worksheet.json",
+            self.source.worksheet_digest,
+        )
+
+    def schema_state(self, receipt: Path) -> Reconciled:
+        revision = self._revision()
+        if revision == "0007_agent_chat_identity":
+            return Reconciled("ABSENT")
+        if not receipt.exists():
+            return Reconciled("UNKNOWN")
+        self._schema(receipt)
+        try:
+            records = [
+                json.loads(line)
+                for line in read_private(receipt, "schema receipt").splitlines()
+            ]
+            terminal = records[-1]
+            backup = read_private(Path(cast(str, terminal["backup"])), "schema backup")
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, UnicodeError, Failed):
+            return Reconciled("UNKNOWN")
+        if terminal.get("outcome") != "APPLIED":
+            return Reconciled("UNKNOWN")
+        return Reconciled("APPLIED", self._receipt(receipt), hashlib.sha256(backup).hexdigest())
+
+    def apply_schema(self, receipt: Path) -> None:
+        self._schema(receipt)
+
+    def abort_schema(self, receipt: Path) -> None:
+        self._schema(receipt, "abort-pre-authority")
+
+    def validate_stage2_pre_authority(self, evidence: FrozenEvidence) -> str:
+        prepare_receipt = self.c.attempt_dir / "stage1-prepare.json"
+        result = self._module(
+            "switchstand.work_metadata_migration",
+            "validate-prepared",
+            evidence.worksheet,
+            "--confirm-offline",
+            "--manifest", evidence.manifests[0], "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--expected-worksheet-digest", evidence.worksheet_digest, "--receipt", prepare_receipt,
+            check=False,
+        )
+        if result.returncode:
+            raise Failed(result.stderr.strip() or "Stage 2 validation failed")
+        return hashlib.sha256((evidence.worksheet_digest + result.stdout).encode()).hexdigest()
+
+    def prepare_stage1(self, evidence: FrozenEvidence) -> str:
+        receipt = self.c.attempt_dir / "stage1-prepare.json"
+        read_private(receipt, "Stage 1 preparation receipt")
+        result = self._module(
+            "switchstand.work_index_migration",
+            "prepare",
+            "--confirm-offline", "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest, "--receipt", receipt,
+        )
+        match = re.search(r"(?:^|\s)prepared_import_sha256=([0-9a-f]{64})(?:\s|$)", result.stdout)
+        if match is None:
+            raise Failed("Stage 1 prepare output is invalid")
+        return match.group(1)
+
+    def capture_final_corpus(self, evidence: FrozenEvidence, destination: Path) -> str:
+        descriptor, name = tempfile.mkstemp(prefix=".corpus-final.", dir=self.c.attempt_dir)
+        os.close(descriptor)
+        fresh = Path(name)
+        fresh.unlink()
+        try:
+            self._module(
+                "switchstand.work_corpus", "capture", fresh,
+                "--source-candidate", evidence.candidate_sha,
+            )
+            digest = _binding_digest(evidence.manifests[0], fresh)
+            _publish_or_match(destination, read_private(fresh, "final corpus"), "final corpus")
+            return digest
+        finally:
+            fresh.unlink(missing_ok=True)
+
+    def cleanup_stage1(self, evidence: FrozenEvidence) -> None:
+        result = self._module(
+            "switchstand.work_index_migration", "prepare-cleanup", "--confirm-offline",
+            "--manifest", evidence.manifests[0], "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--receipt", self.c.attempt_dir / "stage1-prepare.json", check=False,
+        )
+        if result.returncode:
+            raise Unknown(result.stderr.strip() or "Stage 1 preparation cleanup is unknown")
+
+    def _activation_state(self, module: str, receipt: Path, worksheet: bool = False) -> Reconciled:
+        if not receipt.exists():
+            return Reconciled("ABSENT")
+        arguments: list[object] = ["reconcile"]
+        if worksheet:
+            arguments.append(self._frozen().worksheet)
+        arguments += ["--confirm-offline", "--receipt", receipt]
+        result = self._module(module, *arguments, check=False)
+        if result.returncode == 3:
+            return Reconciled("ABSENT")
+        if result.returncode:
+            return Reconciled("UNKNOWN")
+        return Reconciled("APPLIED", self._receipt(receipt))
+
+    def stage1_state(self, receipt: Path) -> Reconciled:
+        return self._activation_state("switchstand.work_index_migration", receipt)
+
+    def activate_stage1(self, prepared_digest: str, receipt: Path) -> None:
+        evidence = self._frozen()
+        result = self._module(
+            "switchstand.work_index_migration",
+            "activate",
+            "--confirm-offline", "--manifest", evidence.manifests[0],
+            "--manifest", evidence.manifests[1],
+            "--expected-corpus-digest", evidence.corpus_digest,
+            "--expected-exception-digest", evidence.exception_digest,
+            "--expected-prepared-digest", prepared_digest, "--receipt", receipt,
+            check=False,
+        )
+        if result.returncode:
+            error = result.stderr.strip() or "Stage 1 activation failed"
+            if result.returncode == 1:
+                raise Failed(error)
+            raise Unknown(error)
+    def stage2_state(self, receipt: Path) -> Reconciled:
+        return self._activation_state("switchstand.work_metadata_migration", receipt, True)
+
+    def activate_stage2(self, receipt: Path) -> None:
+        result = self._module(
+            "switchstand.work_metadata_migration",
+            "activate",
+            self._frozen().worksheet,
+            "--confirm-offline",
+            "--receipt",
+            receipt,
+            check=False,
+        )
+        if result.returncode:
+            error = result.stderr.strip() or "Stage 2 activation failed"
+            if result.returncode == 1:
+                raise Failed(error)
+            raise Unknown(error)
