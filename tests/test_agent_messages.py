@@ -84,6 +84,44 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     assert actor[0] == owner
 
 
+async def test_request_replay_watch_follows_current_delivery_state(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    session[0] = "chat-a"
+    request_id = uuid4()
+    payload = {"request": "review"}
+    sent = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert sent.status == "ok" and sent.message.state == "AVAILABLE"
+    assert sent.next_action is not None
+    delivery = sent.message.delivery_id
+
+    session[0] = "chat-b"
+    assert (await tools["agent_message_receive"]("1", delivery)).state == "RECEIVED"
+    session[0] = "chat-a"
+    received_replay = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert received_replay.status == "ok"
+    assert received_replay.message.state == "RECEIVED"
+    assert received_replay.next_action is not None
+
+    session[0] = "chat-b"
+    result_id = uuid4()
+    assert (await tools["agent_message_result_send"](
+        "1", delivery, result_id, {"result": "pass"}
+    )).status == "ok"
+    assert (await tools["agent_message_disposition"](
+        "1", delivery, result_id
+    )).state == "DISPOSITIONED"
+
+    session[0] = "chat-a"
+    completed_replay = await tools["agent_message_send"]("1", "Beta", request_id, payload)
+    assert completed_replay.status == "ok"
+    assert completed_replay.message.state == "DISPOSITIONED"
+    assert completed_replay.next_action is None
+
+
 async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messaging):
     tools, _actor, session, _owner, _other, service = agent_messaging
     session[0] = ""
