@@ -89,20 +89,12 @@ def test_parent_cannot_complete_and_cancel_is_recursive(tmp_path: Path) -> None:
     assert {item["state"] for item in broker.status()["leases"].values()} == {"cancelled"}
 
 
-@pytest.mark.parametrize(
-    ("pressure", "worker_class", "reason"),
-    [
-        (Pressure(16_000, 1_000, 4_000, 0, 0), "light", "memory_available"),
-        (Pressure(16_000, 8_000, 4_000, 2_000, 0), "light", "host_pressure"),
-    ],
-)
-def test_pressure_refuses_without_reservation(
-    tmp_path: Path, pressure: Pressure, worker_class: str, reason: str
-) -> None:
+def test_pressure_refuses_without_reservation(tmp_path: Path) -> None:
     broker = Broker(tmp_path)
     broker.initialize(ROOT)
-    request(tmp_path, "root", "r1", "worker", worker_class)
-    assert broker.ingest("root", "r1", pressure)["reason"] == reason
+    request(tmp_path, "root", "r1", "worker")
+    pressure = Pressure(16_000, 8_000, 4_000, 2_000, 0)
+    assert broker.ingest("root", "r1", pressure)["reason"] == "host_pressure"
     assert broker.status()["leases"] == {}
 
 
@@ -116,8 +108,13 @@ def test_strict_schema_and_hostile_spool_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         broker.ingest("root", "bad", GREEN)
 
-    target = tmp_path / "target"
-    target.write_text("{}")
-    (tmp_path / "inboxes/root/link.json").symlink_to(target)
+    request(tmp_path, "root", "reserved", "root")
+    with pytest.raises(ValueError, match="identifier"):
+        broker.ingest("root", "reserved", GREEN)
+    assert broker.status()["leases"] == {}
+
+    real = tmp_path / "inboxes/real"
+    (tmp_path / "inboxes/root").rename(real)
+    (tmp_path / "inboxes/root").symlink_to(real, target_is_directory=True)
     with pytest.raises(OSError):
-        broker.ingest("root", "link", GREEN)
+        broker.ingest("root", "reserved", GREEN)

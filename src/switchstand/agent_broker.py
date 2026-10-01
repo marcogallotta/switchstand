@@ -10,7 +10,7 @@ import re
 import stat
 import tempfile
 from collections.abc import Generator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -135,8 +135,6 @@ class Pressure:
 
 
 class Broker:
-    """Serializes all lease accounting under one canonical state and lock."""
-
     def __init__(self, root: Path = STATE_ROOT) -> None:
         self.root = root
         self.state_path = root / "state.json"
@@ -144,18 +142,20 @@ class Broker:
 
     def initialize(self, budget: Budget) -> None:
         self._secure_dir(self.root)
+        self._secure_dir(self.root / "inboxes")
         self._secure_dir(self.root / "inboxes" / "root")
         self._secure_dir(self.root / "results")
         with self._locked():
             if self.state_path.exists():
                 raise RuntimeError("broker is already initialized")
-            self._write_state({"version": 1, "root": asdict(budget), "leases": {}, "requests": {}})
+            state = {"version": 1, "root": asdict(budget), "leases": {}, "requests": {}}
+            self._atomic_json(self.state_path, state)
 
     def ingest(
         self, parent: str, request_id: str, pressure: Pressure | None = None
     ) -> dict[str, Any]:
-        self._identifier(parent)
-        self._identifier(request_id)
+        if not ID.fullmatch(parent) or not ID.fullmatch(request_id):
+            raise ValueError("invalid identifier")
         request = LeaseRequest.model_validate_json(self._read_request(parent, request_id))
         if request.parent != parent or request.request_id != request_id:
             raise ValueError("request identity does not match its inbox")
@@ -165,7 +165,7 @@ class Broker:
             if prior is not None:
                 if prior["parent"] != parent:
                     raise ValueError("request identifier collision")
-                self._write_result(request_id, prior)
+                self._atomic_json(self.root / "results" / f"{request_id}.json", prior)
                 return prior
             refusal = (pressure or Pressure.current()).refusal(request.worker_class)
             if refusal:
@@ -178,8 +178,8 @@ class Broker:
             else:
                 result = self._reserve(state, request)
             state["requests"][request_id] = result
-            self._write_state(state)
-            self._write_result(request_id, result)
+            self._atomic_json(self.state_path, state)
+            self._atomic_json(self.root / "results" / f"{request_id}.json", result)
             return result
 
     def complete(self, lease_id: str) -> None:
@@ -192,7 +192,7 @@ class Broker:
             ):
                 raise RuntimeError("lease has active children")
             lease["state"] = "completed"
-            self._write_state(state)
+            self._atomic_json(self.state_path, state)
 
     def cancel(self, lease_id: str) -> list[str]:
         with self._locked():
@@ -210,7 +210,7 @@ class Broker:
                 if state["leases"][current]["state"] in ACTIVE:
                     state["leases"][current]["state"] = "cancelled"
                     cancelled.append(current)
-            self._write_state(state)
+            self._atomic_json(self.state_path, state)
             return cancelled
 
     def status(self) -> dict[str, Any]:
@@ -218,7 +218,7 @@ class Broker:
             return self._read_state()
 
     def _reserve(self, state: dict[str, Any], request: LeaseRequest) -> dict[str, Any]:
-        if request.worker in state["leases"]:
+        if request.worker == "root" or request.worker in state["leases"]:
             raise ValueError("worker identifier already exists")
         own = CLASSES[request.worker_class]
         children = request.children.budget()
@@ -259,17 +259,27 @@ class Broker:
         }
 
     def _read_request(self, parent: str, request_id: str) -> bytes:
-        path = self.root / "inboxes" / parent / f"{request_id}.json"
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        with ExitStack() as opened:
+            directory: int | None = None
+            for component in (self.root, Path("inboxes"), Path(parent)):
+                directory = os.open(component, directory_flags, dir_fd=directory)
+                opened.callback(os.close, directory)
+                info = os.fstat(directory)
+                if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                    raise PermissionError("unsafe inbox directory")
+            descriptor = os.open(
+                f"{request_id}.json",
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            opened.callback(os.close, descriptor)
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
                 raise PermissionError("unsafe request file")
             if info.st_mode & 0o022 or info.st_size > 16_384:
                 raise PermissionError("unsafe request permissions or size")
             return os.read(descriptor, 16_385)
-        finally:
-            os.close(descriptor)
 
     @contextmanager
     def _locked(self) -> Generator[None]:
@@ -289,12 +299,6 @@ class Broker:
             return json.loads(os.read(descriptor, 4_000_000))
         finally:
             os.close(descriptor)
-
-    def _write_state(self, state: Mapping[str, Any]) -> None:
-        self._atomic_json(self.state_path, state)
-
-    def _write_result(self, request_id: str, result: Mapping[str, Any]) -> None:
-        self._atomic_json(self.root / "results" / f"{request_id}.json", result)
 
     @staticmethod
     def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -326,11 +330,6 @@ class Broker:
         info = path.stat(follow_symlinks=False)
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise PermissionError(f"unsafe broker directory: {path}")
-
-    @staticmethod
-    def _identifier(value: str) -> None:
-        if not ID.fullmatch(value):
-            raise ValueError("invalid identifier")
 
     @staticmethod
     def _active_lease(state: dict[str, Any], lease_id: str) -> dict[str, Any]:
