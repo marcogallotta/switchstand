@@ -21,7 +21,10 @@ sh scripts/check tests/test_example.py -k relevant_case
 arguments to pytest. Use `sh scripts/check tests/test_example.py` for one test module or
 `sh scripts/check tests/test_example.py -k relevant_case` for one behavior. With no
 pytest arguments it runs the full pytest suite. The command prepares or verifies the
-locked environment automatically. When `TEST_DATABASE_URL` is absent, it also creates
+locked environment automatically. In a linked writer it syncs that writer's exact
+locked manifests into its own `.venv`, independently of later primary-checkout changes,
+while reusing the pinned `uv` and download cache from the Git common directory. When
+`TEST_DATABASE_URL` is absent, it also creates
 the repository's owned disposable PostgreSQL instance and runs migrations before the
 checks. An explicitly supplied URL bypasses automatic provisioning and must itself
 identify an isolated `switchstand_test` database. The command does not make a dirty
@@ -151,7 +154,7 @@ keeps maintenance active and forbids schema rollback or old-runtime restart.
   reconciled without exposing arbitrary source-task reads. Both context tools are read-only and approval-free; the
   active WorkId is launcher-bound and is not a tool argument.
   CONTROL supplies its existing pinned `uv` using `scripts/bootstrap --print-uv`.
-  `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses its normal local cache and existing
+  `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses the Git common-directory cache and existing
   environment on re-entry. No primary `.venv` or separate freshness receipt is needed for checks. This development
   convenience is not immutable qualification evidence; exact-head CI and real canaries remain required.
   A launcher supervisor now retains ownership of a fresh child process group. On
