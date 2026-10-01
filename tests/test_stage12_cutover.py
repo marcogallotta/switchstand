@@ -471,6 +471,6 @@ def test_malformed_schema_receipt_is_unknown(tmp_path: Path, monkeypatch, payloa
     subject = ConcreteCommands(_config(tmp_path, attempt), evidence)
     receipt = attempt / "schema.json"
     _private(receipt, payload)
-    monkeypatch.setattr(subject, "_revision", lambda: "0011_workset_authority")
+    monkeypatch.setattr(subject, "_revision", lambda: "0012_outcome_state")
     monkeypatch.setattr(subject, "_schema", lambda *_args: None)
     assert subject.schema_state(receipt).state == "UNKNOWN"

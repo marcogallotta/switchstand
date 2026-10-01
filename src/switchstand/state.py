@@ -195,6 +195,30 @@ human_trajectory_revisions = Table(
     ),
     CheckConstraint("length(content_digest) = 64", name="ck_human_trajectory_digest"),
 )
+outcome_state_revisions = Table(
+    "outcome_state_revisions", metadata,
+    Column("state_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("operation_id", PGUUID(as_uuid=True), nullable=False, unique=True),
+    Column(
+        "owner_work_id", PGUUID(as_uuid=True),
+        ForeignKey("work_handles.id", ondelete="RESTRICT"), nullable=False,
+    ),
+    Column("generation", BigInteger, nullable=False),
+    Column(
+        "predecessor_id", PGUUID(as_uuid=True),
+        ForeignKey("outcome_state_revisions.state_id", ondelete="RESTRICT"),
+    ),
+    Column("schema_version", BigInteger, nullable=False),
+    Column("items", JSONB, nullable=False),
+    Column("owner_currentness_token", Text, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    UniqueConstraint("owner_work_id", "generation"),
+    CheckConstraint("generation >= 1", name="ck_outcome_state_generation"),
+    CheckConstraint("schema_version = 1", name="ck_outcome_state_schema"),
+    CheckConstraint("owner_currentness_token <> ''", name="ck_outcome_state_currentness"),
+    CheckConstraint("length(content_digest) = 64", name="ck_outcome_state_digest"),
+)
 Index(
     "ix_work_index_title_search", text("to_tsvector('simple', normalized_title)"),
     postgresql_using="gin",
@@ -221,10 +245,12 @@ def _handle(row: Row[tuple[UUID, str, str]] | None) -> Handle | None:
 
 class PostgresState:
     def __init__(self, engine: AsyncEngine):
+        from .outcome_state import OutcomeStateStore
         from .work_index import WorkIndex
         from .worksets import WorksetReader
 
         self.engine = engine
+        self.outcomes = OutcomeStateStore(engine)
         self.work_index = WorkIndex(engine)
         self.worksets = WorksetReader(engine)
     async def get(self, work_id: UUID) -> Handle | None:
