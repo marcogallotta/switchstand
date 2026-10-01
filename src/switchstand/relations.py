@@ -11,6 +11,7 @@ from .core import (
     ProviderRelation,
     State,
     UnknownEffect,
+    observed_revision_matches,
     provider_rejection_reason,
 )
 from .grant_state import EffectRecord, GrantState
@@ -107,7 +108,9 @@ class RelationGateway:
         current = await provider.get(handle.provider_work_id)
         if current is None or not current.canonical:
             return self.guard(request, "not_applied", "source_read_unavailable")
-        if current.revision != request.observed_revision:
+        if not await observed_revision_matches(
+            self.state, request.work_id, request.observed_revision, current.revision
+        ):
             return self.guard(request, "stale", "source_revision_changed")
         resolved = await self._resolved(grant, handle.provider, request)
         if resolved is None:

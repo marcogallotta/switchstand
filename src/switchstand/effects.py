@@ -5,7 +5,14 @@ import json
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .core import Provider, ProviderError, State, UnknownEffect, provider_rejection_reason
+from .core import (
+    Provider,
+    ProviderError,
+    State,
+    UnknownEffect,
+    observed_revision_matches,
+    provider_rejection_reason,
+)
 from .grant_state import GrantState
 from .grants import (
     EffectBlocker,
@@ -96,7 +103,9 @@ class AppendGateway:
                     return self.guard(request, "denied", "source_not_canonical")
                 if current.completed:
                     return self.guard(request, "denied", "work_is_terminal")
-                if current.revision != request.observed_revision:
+                if not await observed_revision_matches(
+                    self.state, request.work_id, request.observed_revision, current.revision
+                ):
                     return self.guard(request, "stale", "source_revision_changed")
                 unknown = self.guard(request, "unknown", "prepared_or_unconfirmed_send",
                                      possible_send=True)

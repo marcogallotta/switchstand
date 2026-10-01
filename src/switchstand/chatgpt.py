@@ -30,7 +30,7 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
-from .core import Controller, Provider, ProviderError, State
+from .core import Controller, Provider, ProviderError, State, authoritative_work
 from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
 from .effect_recovery import EffectRecovery
@@ -185,6 +185,9 @@ class ChatGPTService:
                 return None, "explicit_work_id_required"
             if await self.state.get(work_id) is None:
                 return None, "work_not_granted"
+            index = getattr(self.state, "work_index", None)
+            if index is not None and await index.active() and await index.get(work_id) is None:
+                return None, "work_not_granted"
             return LaunchAuthority(active_work_id=work_id), None
         if grant.can_read(work_id, explicit_target=explicit_target):
             return grant.authority, None
@@ -204,6 +207,11 @@ class ChatGPTService:
                 )
                 if authority is None:
                     return WorkSearchResult(status="denied")
+                index = getattr(self.state, "work_index", None)
+                if index is not None:
+                    indexed = await index.search(request)
+                    if indexed is not None:
+                        return indexed
                 provider = self.providers.get("asana")
                 if provider is None:
                     return WorkSearchResult(status="provider_error")
@@ -231,17 +239,40 @@ class ChatGPTService:
                 provider = self.providers.get(handle.provider)
                 if provider is None:
                     return WorkStructureResult(status="provider_error")
+                current = await provider.get(handle.provider_work_id)
+                if current is None or not current.canonical:
+                    return WorkStructureResult(status="provider_error")
+                from .core import authoritative_revision
+                revision = await authoritative_revision(
+                    self.state, request.work_id, current.revision
+                )
+                if revision != request.observed_revision:
+                    return WorkStructureResult(
+                        status="stale", work_id=request.work_id, revision=revision,
+                    )
                 result = await WorkDiscovery(
                     handle.provider, cast(DiscoveryProvider, provider), self.state
-                ).structure(handle.provider_work_id, request.observed_revision)
+                ).structure(request.work_id, handle.provider_work_id, current.revision)
                 if result is None:
                     return WorkStructureResult(status="provider_error")
                 if result.status == "stale":
                     return WorkStructureResult(
-                        status="stale", work_id=request.work_id, revision=result.revision,
+                        status="stale", work_id=request.work_id,
+                        revision=await authoritative_revision(
+                            self.state, request.work_id, result.revision
+                        ),
+                    )
+                resulting_revision = await authoritative_revision(
+                    self.state, request.work_id, result.revision
+                )
+                if resulting_revision != revision:
+                    return WorkStructureResult(
+                        status="stale", work_id=request.work_id,
+                        revision=resulting_revision,
                     )
                 return WorkStructureResult(
-                    status="ok", work_id=request.work_id, revision=result.revision,
+                    status="ok", work_id=request.work_id,
+                    revision=resulting_revision,
                     parent=result.parent, children=result.children,
                 )
         except (SQLAlchemyError, ValueError, KeyError):
@@ -280,6 +311,9 @@ class ChatGPTService:
                     if authority is None:
                         return self._reference_denied(reason or "work_not_granted")
                 elif handle is None:
+                    index = getattr(self.state, "work_index", None)
+                    if index is not None and await index.active():
+                        return self._reference_denied("reference_not_admitted")
                     provider = self.providers.get(parsed.provider)
                     if provider is None:
                         return GrantedWorkResult(status="provider_error")
@@ -522,6 +556,9 @@ class ChatGPTService:
                     return self._result_guard(
                         request, "unknown", "source_read_unavailable", operation_id
                     )
+                current_work = await authoritative_work(
+                    self.state, request.work_id, current_work
+                )
                 if current_work.completed:
                     return self._result_guard(request, "denied", "work_is_terminal", operation_id)
                 if current_work.revision != request.observed_revision:

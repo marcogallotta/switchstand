@@ -137,6 +137,11 @@ messaging, and required continuation:
 
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
+- `work_index.py` owns the default-off Stage 1 title, completion, and admitted-work corpus. Once its single
+  durable `POSTGRES_AUTHORITY` marker is committed, ordinary broad search is DB-only, exact
+  provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
+  the provider revision. `work_index_migration.py` owns the one-shot offline final scan and atomic
+  flip; see [Database-first Stage 1](database-first-stage1.md).
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and `message_projection`, including the
@@ -289,6 +294,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
+| Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |

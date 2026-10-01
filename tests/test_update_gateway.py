@@ -7,7 +7,7 @@ import httpx
 import pytest
 from mcp import Client
 from pydantic import ValidationError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -15,6 +15,7 @@ from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import Controller
+from switchstand.discovery import ProviderSearchItem
 from switchstand.effect_recovery import EffectRecovery
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedUpdate, ScalarPatch, WorkGrant
@@ -23,6 +24,7 @@ from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
 from switchstand.state import PostgresState, metadata
 from switchstand.updates import UpdateGateway
+from switchstand.work_index import activate
 
 PROJECT = "9999999999999999"
 PRIORITY = "1217653169990249"
@@ -154,6 +156,101 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
     boundary.mode = "ok"
     reopened = await restarted.update(principal, request(grant, "r3", completed=False))
     assert reopened.effect == "applied" and boundary.puts[-1] == {"completed": False}
+
+
+async def test_post_cutover_scalars_are_db_only_and_mixed_patch_is_inert(subject):
+    gateway, _grants, principal, grant, boundary = subject
+    current = await gateway.providers["asana"].get("123")
+    assert current is not None
+    await activate(gateway.state.engine, (ProviderSearchItem(
+        provider_work_id="123", title=current.title, completed=current.completed,
+        revision=current.revision, routing=current.routing, context=current.context,
+    ),))
+    try:
+        projected = await gateway.state.work_index.project(grant.authority.active_work_id, current)
+        changed = request(
+            grant, projected.revision, title="Database title", completed=True,
+        )
+        result = await gateway.update(principal, changed)
+        assert result.status == "ok" and result.receipt.patch.completed is True
+        assert boundary.puts == []
+        assert (boundary.task["name"], boundary.task["completed"]) == ("Initial", False)
+        indexed = await gateway.state.work_index.get(grant.authority.active_work_id)
+        assert indexed is not None
+        assert (indexed.title, indexed.completed) == ("Database title", True)
+
+        mixed = request(
+            grant, result.receipt.resulting_revision,
+            completed=False, notes="provider field",
+        )
+        denied = await gateway.update(principal, mixed)
+        assert denied.status == "denied" and denied.reason == "patch_spans_authority_domains"
+        assert boundary.puts == []
+        indexed = await gateway.state.work_index.get(grant.authority.active_work_id)
+        assert indexed is not None
+        assert (indexed.title, indexed.completed) == ("Database title", True)
+    finally:
+        async with gateway.state.engine.begin() as connection:
+            await connection.execute(text(
+                "TRUNCATE work_authority_cutovers, work_authority, work_index CASCADE"
+            ))
+
+
+@pytest.mark.parametrize("invalid_title", [" \t ", "before\0after"])
+async def test_unindexable_title_is_rejected_before_effect_preparation(
+    subject, invalid_title,
+):
+    gateway, grants, principal, grant, boundary = subject
+    invalid = request(grant, "r1", title=invalid_title)
+
+    outcome = await gateway.update(principal, invalid)
+
+    assert outcome.status == "denied" and outcome.reason == "title_not_indexable"
+    assert boundary.puts == []
+    assert await grants.exact(invalid.operation_id) is None
+
+
+async def test_post_cutover_db_write_reports_unknown_on_provider_revision_race(
+    subject, monkeypatch,
+):
+    gateway, _grants, principal, grant, boundary = subject
+    current = await gateway.providers["asana"].get("123")
+    assert current is not None
+    await activate(gateway.state.engine, (ProviderSearchItem(
+        provider_work_id="123", title=current.title, completed=current.completed,
+        revision=current.revision, routing=current.routing, context=current.context,
+    ),))
+    try:
+        projected = await gateway.state.work_index.project(
+            grant.authority.active_work_id, current
+        )
+        provider = gateway.providers["asana"]
+        original_get = provider.get
+        reads = 0
+
+        async def racing_get(provider_work_id):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                boundary.task["modified_at"] = "r2"
+            return await original_get(provider_work_id)
+
+        monkeypatch.setattr(provider, "get", racing_get)
+        changed = request(grant, projected.revision, completed=True)
+        unknown = await gateway.update(principal, changed)
+        assert (unknown.status, unknown.effect) == ("unknown", "unknown")
+        assert boundary.puts == []
+        indexed = await gateway.state.work_index.get(grant.authority.active_work_id)
+        assert indexed is not None and indexed.completed is True
+
+        reconciled = await gateway.update(principal, changed)
+        assert reconciled.status == "ok" and reconciled.effect == "applied"
+        assert boundary.puts == []
+    finally:
+        async with gateway.state.engine.begin() as connection:
+            await connection.execute(text(
+                "TRUNCATE work_authority_cutovers, work_authority, work_index CASCADE"
+            ))
 
 
 async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resends(subject):
