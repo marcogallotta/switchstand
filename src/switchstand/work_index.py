@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     and_,
+    delete,
     func,
     insert,
     or_,
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderWork
-from .state import work_authority, work_authority_cutovers, work_handles, work_index
+from .state import work_authority, work_authority_cutovers, work_edges, work_handles, work_index
 
 SCOPE = "workspace"
 STATE = "POSTGRES_AUTHORITY"
@@ -113,17 +114,39 @@ class WorkIndex:
         payload = f"{generation}\0{row.work_id}\0{row.row_version}\0{provider_revision}"
         return "s1_" + hashlib.sha256(payload.encode()).hexdigest()
 
-    async def revision(self, work_id: UUID, provider_revision: str) -> str:
+    @staticmethod
+    def content_revision(notes: str, context: WorkContext) -> str:
+        payload = json.dumps(
+            [notes, context.model_dump(mode="json")], sort_keys=True, separators=(",", ":")
+        )
+        return "content_" + hashlib.sha256(payload.encode()).hexdigest()
+
+    async def revision(
+        self, work_id: UUID, provider_revision: str, *, provider_notes: str | None = None,
+        provider_context: WorkContext | None = None,
+    ) -> str:
         generation = await self.generation()
         if generation is None:
             return provider_revision
         row = await self.get(work_id)
         if row is None:
             raise PermissionError("work is not admitted to the authoritative corpus")
+        from .work_metadata import authority_generation
+
+        if await authority_generation(self.engine) is not None and provider_notes is not None:
+            provider_revision = self.content_revision(
+                provider_notes, provider_context or row.context
+            )
         return self._revision(generation, row, provider_revision)
 
-    async def matches(self, work_id: UUID, observed: str, provider_revision: str) -> bool:
-        return observed == await self.revision(work_id, provider_revision)
+    async def matches(
+        self, work_id: UUID, observed: str, provider_revision: str, *,
+        provider_notes: str | None = None, provider_context: WorkContext | None = None,
+    ) -> bool:
+        return observed == await self.revision(
+            work_id, provider_revision, provider_notes=provider_notes,
+            provider_context=provider_context,
+        )
 
     async def project(self, work_id: UUID, provider: ProviderWork) -> ProviderWork:
         generation = await self.generation()
@@ -132,17 +155,25 @@ class WorkIndex:
         row = await self._refresh(work_id, provider)
         return ProviderWork(
             title=row.title, notes=provider.notes, completed=row.completed,
-            revision=self._revision(generation, row, provider.revision),
-            routing=provider.routing, context=provider.context, canonical=provider.canonical,
+            revision=self._revision(generation, row, row.provider_revision),
+            routing=row.routing, context=provider.context, canonical=provider.canonical,
         )
 
     async def _refresh(self, work_id: UUID, provider: ProviderWork) -> IndexedWork:
         """Refresh still-provider-owned facts without accepting title or completion."""
+        from .work_metadata import authority_generation
+
+        metadata_active = await authority_generation(self.engine) is not None
+        provider_revision = (
+            self.content_revision(provider.notes, provider.context)
+            if metadata_active else provider.revision
+        )
         values = {
-            "provider_revision": provider.revision,
-            "routing": provider.routing.model_dump(mode="json"),
+            "provider_revision": provider_revision,
             "context": provider.context.model_dump(mode="json"),
         }
+        if not metadata_active:
+            values["routing"] = provider.routing.model_dump(mode="json")
         async with self.engine.begin() as connection:
             current = _indexed((await connection.execute(
                 select(*INDEX_COLUMNS).where(work_index.c.work_id == work_id).with_for_update()
@@ -150,16 +181,21 @@ class WorkIndex:
             if current is None:
                 raise PermissionError("work is not admitted to the authoritative corpus")
             if (
-                current.provider_revision != provider.revision
-                or current.routing != provider.routing
+                current.provider_revision != provider_revision
+                or (not metadata_active and current.routing != provider.routing)
                 or current.context != provider.context
             ):
                 await connection.execute(update(work_index).where(
                     work_index.c.work_id == work_id
-                ).values(**values, row_version=current.row_version + 1))
+                ).values(
+                    **values,
+                    row_version=current.row_version if metadata_active else current.row_version + 1,
+                ))
                 current = IndexedWork(
-                    work_id, current.title, current.completed, provider.revision,
-                    current.row_version + 1, provider.routing, provider.context,
+                    work_id, current.title, current.completed, provider_revision,
+                    current.row_version if metadata_active else current.row_version + 1,
+                    current.routing if metadata_active else provider.routing,
+                    provider.context,
                 )
         return current
 
@@ -170,7 +206,13 @@ class WorkIndex:
         generation = await self.generation()
         if generation is None:
             raise RuntimeError("work authority is not active")
-        if not fields or not fields.keys() <= {"title", "completed"}:
+        from .work_metadata import MUTABLE_FIELDS, authority_generation
+
+        metadata_active = await authority_generation(self.engine) is not None
+        allowed: set[str] = {"title", "completed"}
+        if metadata_active:
+            allowed.update(MUTABLE_FIELDS)
+        if not fields or not fields.keys() <= allowed:
             raise ValueError("invalid DB-authoritative work fields")
         title = fields.get("title", None)
         completed = fields.get("completed", None)
@@ -184,13 +226,45 @@ class WorkIndex:
             )).one_or_none())
             if current is None:
                 raise PermissionError("work is not admitted to the authoritative corpus")
-            if observed != self._revision(generation, current, provider.revision):
-                return self._revision(generation, current, provider.revision), False
+            content_revision = (
+                self.content_revision(provider.notes, provider.context)
+                if metadata_active else provider.revision
+            )
+            if observed != self._revision(generation, current, content_revision):
+                return self._revision(generation, current, content_revision), False
             values: dict[str, object] = {}
             if title is not None and current.title != title:
                 values.update(title=title, normalized_title=normalize_title(title))
             if completed is not None and current.completed != completed:
                 values["completed"] = completed
+            routing = current.routing
+            metadata_fields = fields.keys() & MUTABLE_FIELDS
+            if metadata_active:
+                updates = {field: fields[field] for field in metadata_fields}
+                if completed is not None and "lifecycle_state" not in updates:
+                    updates["lifecycle_state"] = "TERMINAL" if completed else "CURRENT"
+                    if completed:
+                        updates.update(
+                            wait_kind="NONE", unblock_condition="NONE", next_due="NONE"
+                        )
+                if "lifecycle_state" in updates and completed is None:
+                    terminal = updates["lifecycle_state"] == "TERMINAL"
+                    values["completed"] = terminal
+                    completed = terminal
+                if updates:
+                    routing = Routing.model_validate(
+                        current.routing.model_dump(mode="json") | updates
+                    )
+                    if routing.canonical_root not in {None, "NONE", "UNKNOWN"}:
+                        root = UUID(cast(str, routing.canonical_root))
+                        if (await connection.execute(select(work_index.c.work_id).where(
+                            work_index.c.work_id == root
+                        ))).first() is None:
+                            raise ValueError("canonical root is not admitted")
+                    effective_completed = cast(bool, values.get("completed", current.completed))
+                    if effective_completed != (routing.lifecycle_state == "TERMINAL"):
+                        raise ValueError("lifecycle TERMINAL must exactly match completion")
+                    values["routing"] = routing.model_dump(mode="json")
             if values:
                 await connection.execute(update(work_index).where(
                     work_index.c.work_id == work_id
@@ -199,17 +273,30 @@ class WorkIndex:
                     work_id, title if title is not None else current.title,
                     completed if completed is not None else current.completed,
                     current.provider_revision,
-                    current.row_version + 1, current.routing, current.context,
+                    current.row_version + 1, routing, current.context,
                 )
-        return self._revision(generation, current, provider.revision), True
+        return self._revision(generation, current, content_revision), True
 
     async def admit_created(self, work_id: UUID, title: str, provider: ProviderWork) -> None:
         if not await self.active():
             return
+        from .work_metadata import NONE, UNKNOWN, authority_generation
+
+        routing = provider.routing
+        if await authority_generation(self.engine) is not None:
+            terminal = provider.completed
+            routing = Routing(
+                lifecycle_state="TERMINAL" if terminal else "UNKNOWN",
+                canonical_root=UNKNOWN, owner_key=UNKNOWN,
+                wait_kind=NONE if terminal else UNKNOWN,
+                unblock_condition=NONE if terminal else UNKNOWN,
+                next_due=NONE if terminal else UNKNOWN,
+                next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
+            )
         values = {
             "work_id": work_id, "title": title, "normalized_title": normalize_title(title),
             "completed": provider.completed, "provider_revision": provider.revision,
-            "row_version": 1, "routing": provider.routing.model_dump(mode="json"),
+            "row_version": 1, "routing": routing.model_dump(mode="json"),
             "context": provider.context.model_dump(mode="json"),
         }
         async with self.engine.begin() as connection:
@@ -222,6 +309,86 @@ class WorkIndex:
                 )).one())
                 if current is None or current.title != title:
                     raise ValueError("created work admission conflict")
+
+    async def update_dependency(
+        self, work_id: UUID, target_work_id: UUID, observed: str,
+        provider: ProviderWork, *, add: bool,
+    ) -> tuple[str, bool]:
+        from .work_metadata import authority_generation
+
+        if await authority_generation(self.engine) is None:
+            raise RuntimeError("work metadata authority is not active")
+        generation = await self.generation()
+        if generation is None:
+            raise RuntimeError("work authority is not active")
+        if work_id == target_work_id:
+            raise ValueError("work cannot depend on itself")
+        ordered = sorted((work_id, target_work_id), key=lambda value: value.int)
+        async with self.engine.begin() as connection:
+            locked = (await connection.execute(select(*INDEX_COLUMNS).where(
+                work_index.c.work_id.in_(ordered)
+            ).order_by(work_index.c.work_id).with_for_update())).all()
+            if len(locked) != 2:
+                raise PermissionError("dependency target is not admitted")
+            by_id = {row[0]: _indexed(row) for row in locked}
+            current = by_id[work_id]
+            if current is None:
+                raise PermissionError("work is not admitted")
+            content_revision = self.content_revision(provider.notes, provider.context)
+            if observed != self._revision(generation, current, content_revision):
+                return self._revision(generation, current, content_revision), False
+            predicate = (
+                (work_edges.c.work_id == work_id)
+                & (work_edges.c.depends_on_work_id == target_work_id)
+            )
+            exists = (await connection.execute(select(work_edges.c.work_id).where(
+                predicate
+            ))).first() is not None
+            if add and not exists:
+                await connection.execute(insert(work_edges).values(
+                    work_id=work_id, depends_on_work_id=target_work_id
+                ))
+            elif not add and exists:
+                await connection.execute(delete(work_edges).where(predicate))
+            else:
+                return self._revision(generation, current, content_revision), True
+            await connection.execute(update(work_index).where(
+                work_index.c.work_id == work_id
+            ).values(row_version=current.row_version + 1))
+            current = IndexedWork(
+                current.work_id, current.title, current.completed, current.provider_revision,
+                current.row_version + 1, current.routing, current.context,
+            )
+        return self._revision(generation, current, content_revision), True
+
+    async def dependency_matches(
+        self, work_id: UUID, target_work_id: UUID, *, add: bool,
+    ) -> bool:
+        async with self.engine.connect() as connection:
+            exists = (await connection.execute(select(work_edges.c.work_id).where(
+                (work_edges.c.work_id == work_id)
+                & (work_edges.c.depends_on_work_id == target_work_id)
+            ))).first() is not None
+        return exists == add
+
+    async def dependencies(self, work_id: UUID) -> tuple[UUID, ...]:
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(select(
+                work_edges.c.depends_on_work_id
+            ).where(work_edges.c.work_id == work_id).order_by(
+                work_edges.c.depends_on_work_id
+            ))).scalars().all()
+        return tuple(rows)
+
+    async def blocks(self, work_id: UUID) -> tuple[UUID, ...]:
+        """Compute inverse BLOCKS truth; never persist a duplicate edge."""
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(select(
+                work_edges.c.work_id
+            ).where(work_edges.c.depends_on_work_id == work_id).order_by(
+                work_edges.c.work_id
+            ))).scalars().all()
+        return tuple(rows)
 
     @staticmethod
     def _cursor(criteria: str, title: str, work_id: UUID) -> str:

@@ -509,7 +509,7 @@ async def test_unknown_task_and_routing_projection():
     subject, _ = provider((404, {})); assert await subject.get("missing") is None
     fields = [field(gid, option=name, display=name) for name, gid in FIELDS.items()]
     subject, _ = provider((200, task(project=PROJECT, fields=fields)))
-    result = await subject.get("t"); assert result and result.routing.model_dump() == ({name: name for name in FIELDS} | {"work_type": None})
+    result = await subject.get("t"); assert result and result.routing.model_dump(exclude_none=True) == {name: name for name in FIELDS}
 def test_project_registry_does_not_expand_writable_routing_fields():
     assert FIELDS == {
         "priority": "1217653169990249",

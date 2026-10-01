@@ -436,9 +436,8 @@ def test_public_update_patch_rejects_explicit_null(field):
     with pytest.raises(ValidationError):
         ScalarPatch.model_validate({field: None})
 
-def test_review_next_action_requires_coupled_notes():
-    with pytest.raises(ValidationError, match="requires notes"):
-        ScalarPatch(review_next_action="Code Review")
+def test_review_next_action_is_decoupled_from_provider_notes():
+    assert ScalarPatch(review_next_action="Code Review").review_next_action == "Code Review"
 
 
 async def test_managed_update_derives_active_identity_and_current_grant(subject):

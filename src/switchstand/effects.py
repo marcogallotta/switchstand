@@ -104,7 +104,8 @@ class AppendGateway:
                 if current.completed:
                     return self.guard(request, "denied", "work_is_terminal")
                 if not await observed_revision_matches(
-                    self.state, request.work_id, request.observed_revision, current.revision
+                    self.state, request.work_id, request.observed_revision, current.revision,
+                    provider_notes=current.notes,
                 ):
                     return self.guard(request, "stale", "source_revision_changed")
                 unknown = self.guard(request, "unknown", "prepared_or_unconfirmed_send",

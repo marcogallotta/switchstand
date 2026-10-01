@@ -40,7 +40,8 @@ async def store(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, human_trajectory_revisions, work_index, "
+            "DROP TABLE IF EXISTS alembic_version, work_edges, work_metadata_cutovers, "
+            "work_metadata_authority, human_trajectory_revisions, work_index, "
             "work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
@@ -166,7 +167,7 @@ async def test_populated_migration_refuses_to_discard_trajectory(store):
     async with store.engine.connect() as connection:
         assert await connection.scalar(text(
             "SELECT version_num FROM alembic_version"
-        )) == "0009_human_trajectory"
+        )) == "0010_work_metadata_authority"
         assert await connection.scalar(text(
             "SELECT count(*) FROM human_trajectory_revisions"
         )) == 1

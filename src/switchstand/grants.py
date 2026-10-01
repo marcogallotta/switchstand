@@ -88,6 +88,16 @@ class ScalarPatch(ClosedModel):
     priority: str | None = Field(default=None, min_length=1)
     work_type: str | None = Field(default=None, min_length=1)
     review_next_action: str | None = Field(default=None, min_length=1)
+    lifecycle_state: Literal[
+        "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+    ] | None = None
+    canonical_root: str | None = Field(default=None, min_length=1)
+    owner_key: str | None = Field(default=None, min_length=1)
+    wait_kind: str | None = Field(default=None, min_length=1)
+    unblock_condition: str | None = Field(default=None, min_length=1)
+    next_due: str | None = Field(default=None, min_length=1)
+    next_action_class: str | None = Field(default=None, min_length=1)
+    next_action_ref: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def nonempty(self) -> Self:
@@ -95,8 +105,6 @@ class ScalarPatch(ClosedModel):
             raise ValueError("patch must not be empty")
         if any(getattr(self, field) is None for field in self.model_fields_set):
             raise ValueError("patch values must not be null")
-        if "review_next_action" in self.model_fields_set and "notes" not in self.model_fields_set:
-            raise ValueError("review_next_action requires notes")
         return self
 
 

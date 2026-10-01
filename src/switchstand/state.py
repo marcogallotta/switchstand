@@ -81,6 +81,38 @@ work_index = Table(
     CheckConstraint("provider_revision <> ''", name="ck_work_index_provider_revision"),
     CheckConstraint("row_version >= 1", name="ck_work_index_row_version"),
 )
+work_metadata_authority = Table(
+    "work_metadata_authority", metadata,
+    Column("scope", Text, primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_work_metadata_authority_scope"),
+    CheckConstraint(
+        "state = 'POSTGRES_AUTHORITY'", name="ck_work_metadata_authority_state"
+    ),
+    CheckConstraint("generation >= 1", name="ck_work_metadata_authority_generation"),
+)
+work_metadata_cutovers = Table(
+    "work_metadata_cutovers", metadata,
+    Column("scope", Text, primary_key=True),
+    Column("generation", BigInteger, nullable=False),
+    Column("cutover_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("scope = 'workspace'", name="ck_work_metadata_cutover_scope"),
+    CheckConstraint("generation >= 1", name="ck_work_metadata_cutover_generation"),
+)
+work_edges = Table(
+    "work_edges", metadata,
+    Column(
+        "work_id", PGUUID(as_uuid=True), ForeignKey("work_index.work_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column(
+        "depends_on_work_id", PGUUID(as_uuid=True),
+        ForeignKey("work_index.work_id", ondelete="RESTRICT"), primary_key=True,
+    ),
+    CheckConstraint("work_id <> depends_on_work_id", name="ck_work_edge_not_self"),
+)
 human_trajectory_revisions = Table(
     "human_trajectory_revisions", metadata,
     Column("trajectory_id", PGUUID(as_uuid=True), primary_key=True),

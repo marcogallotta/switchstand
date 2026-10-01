@@ -178,18 +178,26 @@ class Provider(Protocol):
 
 
 async def authoritative_revision(
-    state: object, work_id: UUID, provider_revision: str,
+    state: object, work_id: UUID, provider_revision: str, *,
+    provider_notes: str | None = None, provider_context: WorkContext | None = None,
 ) -> str:
     index = getattr(state, "work_index", None)
     if index is None:
         return provider_revision
-    return await index.revision(work_id, provider_revision)
+    return await index.revision(
+        work_id, provider_revision, provider_notes=provider_notes,
+        provider_context=provider_context,
+    )
 
 
 async def observed_revision_matches(
-    state: object, work_id: UUID, observed: str, provider_revision: str,
+    state: object, work_id: UUID, observed: str, provider_revision: str, *,
+    provider_notes: str | None = None, provider_context: WorkContext | None = None,
 ) -> bool:
-    return observed == await authoritative_revision(state, work_id, provider_revision)
+    return observed == await authoritative_revision(
+        state, work_id, provider_revision, provider_notes=provider_notes,
+        provider_context=provider_context,
+    )
 
 
 async def authoritative_work(
