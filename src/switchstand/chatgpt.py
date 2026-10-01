@@ -502,20 +502,6 @@ class ChatGPTService:
                         return self._result_guard(
                             request, "stale", "lifecycle_currentness_changed", operation_id
                         )
-            if obligation.state is ProfileState.PENDING_RESULT:
-                try:
-                    obligation = await self.required_results.transition(
-                        operation_id, currentness, LifecycleEvent.RESULT_READY,
-                        destination_ref=destination, result_correlation=correlation,
-                    )
-                except ValueError:
-                    obligation = await repository.get(operation_id)
-                    if obligation is None:
-                        raise
-            if (obligation.destination_ref, obligation.result_correlation) != (destination, correlation):
-                return self._result_guard(
-                    request, "denied", "lifecycle_result_identity_conflict", operation_id
-                )
             if obligation.state is ProfileState.TERMINAL:
                 return GuardOutcome(
                     status="ok", operation="required_result_save", work_id=request.work_id,
@@ -582,6 +568,24 @@ class ChatGPTService:
                     return self._result_guard(
                         request, "denied", "lifecycle_effect_identity_conflict", operation_id
                     )
+
+            # Do not bind one immutable result identity until its exact notes update
+            # has passed every no-effect current-work and capacity check. A caller may
+            # then correct a rejected result without inheriting an unusable obligation.
+            if obligation.state is ProfileState.PENDING_RESULT:
+                try:
+                    obligation = await self.required_results.transition(
+                        operation_id, currentness, LifecycleEvent.RESULT_READY,
+                        destination_ref=destination, result_correlation=correlation,
+                    )
+                except ValueError:
+                    obligation = await repository.get(operation_id)
+                    if obligation is None:
+                        raise
+            if (obligation.destination_ref, obligation.result_correlation) != (destination, correlation):
+                return self._result_guard(
+                    request, "denied", "lifecycle_result_identity_conflict", operation_id
+                )
 
             outcome = await self.update_gateway.update(principal, update_request)
             possible_send = outcome.effect != "not_sent"

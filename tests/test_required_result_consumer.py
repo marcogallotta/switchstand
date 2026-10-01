@@ -113,16 +113,47 @@ async def test_save_closes_and_restart_replays_without_duplicate(
 
 
 async def test_save_refuses_to_replace_notes_when_promoted_result_will_not_fit(
-    result_engine: AsyncEngine,
+    result_engine: AsyncEngine, monkeypatch,
 ) -> None:
     service, _, grant, provider = await subject(result_engine)
-    provider.notes = "x" * 7990
+    provider.notes = ""
+    original_update = provider.update
+    updates = 0
 
-    outcome = await service.required_result_save(request(grant))
+    async def update(task_gid, patch):
+        nonlocal updates
+        updates += 1
+        await original_update(task_gid, patch)
+
+    monkeypatch.setattr(provider, "update", update)
+
+    outcome = await service.required_result_save(request(grant, "x" * 8000))
 
     assert outcome.status == "not_applied" and outcome.effect == "not_sent"
     assert outcome.reason == "required_result_exceeds_notes_capacity"
-    assert provider.notes == "x" * 7990 and provider.revision == "r1"
+    assert provider.notes == "" and provider.revision == "r1" and updates == 0
+    stored = await service.required_results.repository.get(outcome.operation_id)  # type: ignore[union-attr]
+    assert stored is not None and stored.state is ProfileState.PENDING_RESULT
+
+    retry = await service.required_result_save(request(grant, "short result"))
+
+    assert retry.status == "ok" and retry.effect == "applied" and updates == 1
+    assert provider.notes == "## Current required result\n\nshort result"
+
+
+async def test_blank_notes_accept_exactly_8000_promoted_characters(
+    result_engine: AsyncEngine,
+) -> None:
+    service, _, grant, provider = await subject(result_engine)
+    provider.notes = ""
+    prefix = "## Current required result\n\n"
+
+    outcome = await service.required_result_save(
+        request(grant, "x" * (8000 - len(prefix)))
+    )
+
+    assert outcome.status == "ok" and outcome.effect == "applied"
+    assert len(provider.notes) == 8000 and provider.notes.startswith(prefix)
 
 
 async def test_ambiguous_notes_readback_reconciles_without_second_update(
