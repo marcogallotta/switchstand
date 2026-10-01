@@ -49,6 +49,28 @@ SPLIT_PROXIES = {
     "switchstand_split_oauth_proxy",
     "switchstand_split_issuer_metadata_proxy",
 }
+PROXY_TRANSITIONS = {
+    "switchstand_mcp_proxy": {
+        "@id": "switchstand_split_mcp_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8790"}],
+    },
+    "switchstand_mcp_metadata_proxy": {
+        "@id": "switchstand_split_resource_metadata_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8790"}],
+    },
+    "switchstand_mcp_oauth_proxy": {
+        "@id": "switchstand_split_oauth_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8791"}],
+    },
+    "switchstand_mcp_oauth_metadata_proxy": {
+        "@id": "switchstand_split_issuer_metadata_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8791"}],
+    },
+}
 ROUTES_PATH = "/config/apps/http/servers/dish_action_router/routes"
 
 
@@ -84,6 +106,18 @@ def _contains_id(value: object, identifiers: set[str]) -> bool:
     return False
 
 
+def _replace_proxy_nodes(value: object) -> object:
+    if isinstance(value, dict):
+        candidate = cast(dict[str, object], value)
+        identifier = candidate.get("@id")
+        if isinstance(identifier, str) and identifier in PROXY_TRANSITIONS:
+            return PROXY_TRANSITIONS[identifier]
+        return {key: _replace_proxy_nodes(item) for key, item in candidate.items()}
+    if isinstance(value, list):
+        return [_replace_proxy_nodes(item) for item in cast(list[object], value)]
+    return value
+
+
 def _unit_state(service: str) -> tuple[str, int, int]:
     completed = _run(
         [
@@ -109,10 +143,35 @@ def _unit_state(service: str) -> tuple[str, int, int]:
 def _service(service: str, action: str, wanted: Literal["active", "inactive"]) -> None:
     _run(["systemctl", "--user", action, service], check=False)
     state, pid, _restarts = _unit_state(service)
-    if (wanted == "active") != (state == "active" and pid > 0):
-        if wanted == "inactive" and state in {"inactive", "failed", "unknown"} and pid == 0:
-            return
-        raise Unknown(f"{service} did not become {wanted}")
+    if wanted == "active" and state == "active" and pid > 0:
+        return
+    if wanted == "inactive" and _inactive_exact(service, state, pid):
+        return
+    raise Unknown(f"{service} did not become {wanted}")
+
+
+def _inactive_exact(service: str, state: str, pid: int) -> bool:
+    if state in {"inactive", "failed"} and pid == 0:
+        return True
+    return state == "unknown" and pid == 0 and _enablement_state(service) == "not-found"
+
+
+def _enablement_state(service: str) -> str:
+    completed = _run(["systemctl", "--user", "is-enabled", service], check=False)
+    state = completed.stdout.strip()
+    if state not in {"enabled", "disabled", "not-found"}:
+        raise Unknown(f"{service} startup state is unreadable")
+    return state
+
+
+def _enabled(service: str) -> bool:
+    return _enablement_state(service) == "enabled"
+
+
+def _set_enabled(service: str, wanted: bool) -> None:
+    _run(["systemctl", "--user", "enable" if wanted else "disable", service], check=False)
+    if _enabled(service) != wanted:
+        raise Failed(f"{service} startup state did not change")
 
 
 def _atomic_json(path: Path, value: object, *, indent: int | None = None) -> None:
@@ -202,49 +261,70 @@ class CaddyRoutes:
     def gate_exact(self) -> bool:
         return self.api("GET", f"/id/{self.gate_id}") == self.gate_route
 
-    def _replace(self, expected: list[object], desired: list[object], label: str) -> None:
+    def gate(self) -> None:
+        if self.gate_exact():
+            return
         try:
-            self.api("PATCH", ROUTES_PATH, desired)
+            self.api("PUT", ROUTES_PATH + "/0", self.gate_route)
         except Interrupted:
             raise
         except Failed, Unknown:
-            observed = self.routes()
-            if observed == desired:
+            if self.gate_exact():
                 return
-            if observed == expected:
-                raise Failed(f"Caddy {label} did not take effect") from None
-            raise Unknown(f"Caddy {label} state is ambiguous") from None
-        observed = self.routes()
-        if observed == desired:
-            return
-        if observed == expected:
-            raise Failed(f"Caddy {label} did not take effect")
-        raise Unknown(f"Caddy {label} readback mismatch")
-
-    def gate(self, expected: list[object]) -> None:
-        current = self.routes()
-        if current != expected:
-            raise Failed("Caddy routes changed before maintenance gate")
-        desired = [self.gate_route, *expected]
-        self._replace(expected, desired, "maintenance gate insertion")
+            raise Unknown("maintenance gate insertion is ambiguous") from None
         if not self.gate_exact():
             raise Unknown("maintenance gate readback mismatch")
 
-    def replace_under_gate(self, expected: list[object], routes: list[object]) -> None:
-        current = self.routes()
-        original = [self.gate_route, *expected]
-        desired = [self.gate_route, *routes]
-        if current != original:
-            raise Unknown("Caddy routes changed under maintenance gate")
-        self._replace(original, desired, "route replacement")
+    def transition_proxies(self, *, reverse: bool = False) -> None:
+        for old_identifier, split in PROXY_TRANSITIONS.items():
+            split_identifier = cast(str, split["@id"])
+            old = {
+                "@id": old_identifier,
+                "handler": "reverse_proxy",
+                "upstreams": [{"dial": "127.0.0.1:8790"}],
+            }
+            source_id, source, target_id, target = (
+                (split_identifier, split, old_identifier, old)
+                if reverse
+                else (old_identifier, old, split_identifier, split)
+            )
+            observed_source = self.api("GET", f"/id/{source_id}")
+            observed_target = self.api("GET", f"/id/{target_id}")
+            if observed_source is None and observed_target == target:
+                continue
+            if observed_source != source or observed_target is not None:
+                raise Unknown("Caddy proxy transition subject is ambiguous")
+            try:
+                self.api("PATCH", f"/id/{source_id}", target)
+            except Interrupted:
+                raise
+            except Failed, Unknown:
+                reconciled_source = self.api("GET", f"/id/{source_id}")
+                reconciled_target = self.api("GET", f"/id/{target_id}")
+                if reconciled_source is None and reconciled_target == target:
+                    continue
+                if reconciled_source == source and reconciled_target is None:
+                    raise Failed("Caddy proxy transition did not take effect") from None
+                raise Unknown("Caddy proxy transition is ambiguous") from None
+            if (
+                self.api("GET", f"/id/{source_id}") is not None
+                or self.api("GET", f"/id/{target_id}") != target
+            ):
+                raise Unknown("Caddy proxy transition readback mismatch")
 
-    def ungate(self, expected: list[object]) -> None:
-        original = [self.gate_route, *expected]
-        if self.routes() != original:
-            raise Unknown("Caddy routes changed before ungating")
-        self._replace(original, expected, "maintenance gate removal")
+    def ungate(self) -> None:
+        if not self.gate_exact():
+            raise Unknown("maintenance gate changed before removal")
+        try:
+            self.api("DELETE", f"/id/{self.gate_id}")
+        except Interrupted:
+            raise
+        except Failed, Unknown:
+            if not self.gate_exact():
+                return
+            raise Unknown("maintenance gate removal is ambiguous") from None
         if self.gate_exact():
-            raise Unknown("maintenance gate removal is ambiguous")
+            raise Unknown("maintenance gate removal readback mismatch")
 
     def public_gated(self) -> bool:
         for path in self.paths:
@@ -572,8 +652,12 @@ class HostActivationOperations:
         self.database_url = running.get("DATABASE_URL")
         if not self.database_url:
             raise Failed("running edge database identity is unavailable")
-        if _unit_state(AUTH_SERVICE)[0] == "active" or _unit_state(EDGE_SERVICE)[0] == "active":
-            raise Failed("split services are already active")
+        for service in (AUTH_SERVICE, EDGE_SERVICE):
+            state, pid, _restarts = _unit_state(service)
+            if not _inactive_exact(service, state, pid):
+                raise Failed("split services are not affirmatively inactive")
+        if not _enabled(COMBINED_SERVICE) or _enabled(AUTH_SERVICE) or _enabled(EDGE_SERVICE):
+            raise Failed("service startup ownership is not the combined unit")
         routes = self.caddy.routes()
         if self.caddy.gate_exact():
             raise Failed("maintenance gate already exists")
@@ -589,6 +673,11 @@ class HostActivationOperations:
                 raise Failed("combined Caddy proxy target is not exact")
         if any(_contains_id(route, SPLIT_PROXIES) for route in routes):
             raise Failed("split Caddy routes already exist")
+        transformed = [
+            _replace_proxy_nodes(route) for route in routes if _contains_id(route, PROXIES)
+        ]
+        if transformed != self.split_routes:
+            raise Failed("combined Caddy routes do not match the generated split candidate")
         self.routes_before = routes
         backup = c.attempt_dir / "caddy.before.json"
         _atomic_json(backup, routes, indent=2)
@@ -596,13 +685,7 @@ class HostActivationOperations:
     def gate(self) -> None:
         if self.routes_before is None:
             raise Failed("activation preflight was not completed")
-        current = self.caddy.routes()
-        if current == self.routes_before:
-            self.caddy.gate(self.routes_before)
-        elif current == self._routed():
-            self.caddy.gate(self._routed())
-        elif not self.caddy.gate_exact():
-            raise Unknown("Caddy gate subject is ambiguous")
+        self.caddy.gate()
 
     def gate_exact(self) -> bool:
         return self.caddy.gate_exact()
@@ -668,6 +751,9 @@ class HostActivationOperations:
         for name in (AUTH_SERVICE, EDGE_SERVICE):
             _atomic_copy(self.c.assets_dir / name, self.c.unit_dir / name, 0o600)
         _run(["systemctl", "--user", "daemon-reload"])
+        _set_enabled(COMBINED_SERVICE, False)
+        _set_enabled(AUTH_SERVICE, True)
+        _set_enabled(EDGE_SERVICE, True)
 
     def start_auth(self) -> None:
         _service(AUTH_SERVICE, "start", "active")
@@ -719,6 +805,7 @@ class HostActivationOperations:
             raise Failed("delegated edge process identity is not exact")
 
     def _doctor(self, runtime: Path, expected_sha: str, public: bool) -> bool:
+        local_url = "http://127.0.0.1:8790/mcp"
         command = [
             str(runtime / "scripts/switchstand-edge-doctor"),
             "--env-file",
@@ -727,37 +814,31 @@ class HostActivationOperations:
             str(runtime),
             "--expected-sha",
             expected_sha,
+            "--local-url",
+            local_url,
+            "--public-url",
+            self.c.public_origin.rstrip("/") + "/switchstand/mcp" if public else local_url,
         ]
-        if not public:
-            command += [
-                "--local-url",
-                "http://127.0.0.1:8790/mcp",
-                "--public-url",
-                "http://127.0.0.1:8790/mcp",
-            ]
         return _run(command, check=False).returncode == 0
 
     def edge_ready(self) -> bool:
         return self._doctor(self.c.candidate_runtime, self.c.candidate_sha, False)
 
-    def _routed(self) -> list[object]:
-        if self.routes_before is None:
-            raise Failed("activation route backup is unavailable")
-        remaining = [route for route in self.routes_before if not _contains_id(route, PROXIES)]
-        return [*self.split_routes, *remaining]
-
     def route_split(self) -> None:
         if self.routes_before is None:
             raise Failed("activation route backup is unavailable")
-        self.caddy.replace_under_gate(self.routes_before, self._routed())
+        self.caddy.transition_proxies()
 
     def ungate(self) -> None:
-        self.caddy.ungate(self._routed())
+        self.caddy.ungate()
 
     def public_ready(self) -> bool:
         if (
             _unit_state(AUTH_SERVICE)[2] != 0
             or _unit_state(EDGE_SERVICE)[2] != 0
+            or _enabled(COMBINED_SERVICE)
+            or not _enabled(AUTH_SERVICE)
+            or not _enabled(EDGE_SERVICE)
             or not self._running_split_exact(AUTH_SERVICE, "auth")
             or not self._running_split_exact(EDGE_SERVICE, "edge")
         ):
@@ -785,15 +866,10 @@ class HostActivationOperations:
             return False
         for service in (EDGE_SERVICE, AUTH_SERVICE):
             _service(service, "stop", "inactive")
-        current = self.caddy.routes()
-        expected_candidates = (
-            [self.caddy.gate_route, *self._routed()],
-            [self.caddy.gate_route, *self.routes_before],
-        )
-        if current == expected_candidates[0]:
-            self.caddy.replace_under_gate(self._routed(), self.routes_before)
-        elif current != expected_candidates[1]:
-            raise Unknown("Caddy rollback subject is ambiguous")
+        self.caddy.transition_proxies(reverse=True)
+        _set_enabled(EDGE_SERVICE, False)
+        _set_enabled(AUTH_SERVICE, False)
+        _set_enabled(COMBINED_SERVICE, True)
         for name in (AUTH_SERVICE, EDGE_SERVICE):
             (self.c.unit_dir / name).unlink(missing_ok=True)
         _run(["systemctl", "--user", "daemon-reload"])
@@ -806,7 +882,7 @@ class HostActivationOperations:
             return False
         if not self._doctor(self.c.current_runtime, self.c.current_sha, False):
             return False
-        self.caddy.ungate(self.routes_before)
+        self.caddy.ungate()
         return _unit_state(COMBINED_SERVICE)[0] == "active" and self._doctor(
             self.c.current_runtime, self.c.current_sha, True
         )

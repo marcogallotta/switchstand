@@ -72,7 +72,9 @@ controls services or automatically restores OAuth state.
 `stable_auth_deployment.py` owns the inert, first combined-to-split activation transaction. It
 serializes with ordinary edge maintenance, retains a publicly verified Caddy gate across the
 service/state/route transition, binds both split processes to one exact candidate source tree, and
-automatically restores the combined service only while public exposure is still disproved. Any
+transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
+the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
+combined service only while public exposure is still disproved. Any
 ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
 future split edge-only replacement transaction, candidate preparation, live qualification, or
 activation authority.

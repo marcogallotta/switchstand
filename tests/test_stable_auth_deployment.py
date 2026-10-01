@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from switchstand.stable_auth_deployment import (
     HostActivationOperations,
     _contains_id,
     _env,
+    _service,
     activate,
 )
 
@@ -261,8 +263,51 @@ def test_nested_caddy_identifier_detection_is_exact():
     assert not _contains_id(route, {"want"})
 
 
+@pytest.mark.parametrize(
+    ("state", "pid"),
+    (("deactivating", 42), ("activating", 42), ("unknown", 0), ("inactive", 42)),
+)
+def test_stop_requires_affirmative_inactive_zero_pid(
+    state: str, pid: int, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        deployment,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(deployment, "_unit_state", lambda _service: (state, pid, 0))
+
+    with pytest.raises(Unknown):
+        _service("example.service", "stop", "inactive")
+
+
+@pytest.mark.parametrize("state", ("inactive", "failed"))
+def test_stop_accepts_only_terminal_zero_pid(state: str, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        deployment,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(deployment, "_unit_state", lambda _service: (state, 0, 0))
+
+    _service("example.service", "stop", "inactive")
+
+
+def test_stop_accepts_unknown_state_only_when_unit_absence_is_proved(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        deployment,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "not-found\n", ""),
+    )
+    monkeypatch.setattr(deployment, "_unit_state", lambda _service: ("unknown", 0, 0))
+
+    _service("missing.service", "stop", "inactive")
+
+
 @pytest.mark.parametrize("result", ("desired", "expected", "other"))
-def test_caddy_mutation_reconciles_failed_request_by_exact_full_route_readback(
+def test_caddy_proxy_mutation_reconciles_failed_request_by_exact_id_readback(
     result: str, monkeypatch: pytest.MonkeyPatch
 ):
     routes = CaddyRoutes(
@@ -272,24 +317,40 @@ def test_caddy_mutation_reconciles_failed_request_by_exact_full_route_readback(
         paths=("/mcp",),
         retry_after=17,
     )
-    expected: list[object] = [{"@id": "old"}]
-    desired: list[object] = [{"@id": "new"}]
+    expected = {
+        "@id": "old",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8790"}],
+    }
+    desired = {
+        "@id": "new",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8791"}],
+    }
+    monkeypatch.setattr(deployment, "PROXY_TRANSITIONS", {"old": desired})
+    state: dict[str, object] = {"old": expected}
 
-    def api(method: str, _path: str, body: object | None = None):
+    def api(method: str, path: str, body: object | None = None):
         if method == "PATCH":
+            assert body == desired
+            if result == "desired":
+                state.clear()
+                state["new"] = desired
+            elif result == "other":
+                state.clear()
             raise Unknown("lost response")
         assert body is None
-        return {"desired": desired, "expected": expected, "other": []}[result]
+        return state.get(path.removeprefix("/id/"))
 
     monkeypatch.setattr(routes, "api", api)
     if result == "desired":
-        routes._replace(expected, desired, "test")
+        routes.transition_proxies()
     elif result == "expected":
         with pytest.raises(Failed, match="did not take effect"):
-            routes._replace(expected, desired, "test")
+            routes.transition_proxies()
     else:
         with pytest.raises(Unknown, match="ambiguous"):
-            routes._replace(expected, desired, "test")
+            routes.transition_proxies()
 
 
 def test_running_split_identity_binds_python_module_to_candidate_source(
@@ -326,33 +387,147 @@ def test_running_split_identity_binds_python_module_to_candidate_source(
     assert not operations._running_split_exact("auth.service", "auth")
 
 
+def test_public_doctor_overrides_optional_environment_url_with_activation_subject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    subject = config(tmp_path)
+    subject = replace(subject, public_origin="https://activation.example")
+    operations = HostActivationOperations(subject)
+    observed: list[str] = []
+
+    def run(command: list[str], *, check: bool = True):
+        del check
+        observed.extend(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(deployment, "_run", run)
+
+    assert operations._doctor(subject.candidate_runtime, subject.candidate_sha, True)
+    public_index = observed.index("--public-url")
+    assert observed[public_index + 1] == "https://activation.example/switchstand/mcp"
+
+
+def test_install_transfers_boot_ownership_from_combined_to_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    subject = config(tmp_path)
+    operations = HostActivationOperations(subject)
+    changes: list[tuple[str, bool]] = []
+    monkeypatch.setattr(deployment, "_atomic_copy", lambda *_args: None)
+    monkeypatch.setattr(
+        deployment,
+        "_run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        deployment, "_set_enabled", lambda service, wanted: changes.append((service, wanted))
+    )
+
+    operations.install_split()
+
+    assert changes == [
+        (deployment.COMBINED_SERVICE, False),
+        (deployment.AUTH_SERVICE, True),
+        (deployment.EDGE_SERVICE, True),
+    ]
+
+
+def test_pre_exposure_rollback_restores_boot_owner_before_ungating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    subject = config(tmp_path)
+    operations = HostActivationOperations(subject)
+    operations.routes_before = []
+    events: list[object] = []
+
+    class RollbackCaddy:
+        def gate_exact(self):
+            return True
+
+        def transition_proxies(self, *, reverse: bool = False):
+            events.append(("routes", reverse))
+
+        def ungate(self):
+            events.append("ungate")
+
+    operations.caddy = RollbackCaddy()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        deployment,
+        "_service",
+        lambda service, action, wanted: events.append((service, action, wanted)),
+    )
+    monkeypatch.setattr(
+        deployment,
+        "_set_enabled",
+        lambda service, wanted: events.append((service, "enabled", wanted)),
+    )
+    monkeypatch.setattr(
+        deployment,
+        "_run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    monkeypatch.setattr(deployment, "_unit_state", lambda _service: ("active", 42, 0))
+    monkeypatch.setattr(
+        operations,
+        "_process_environment",
+        lambda _service: {
+            "PYTHONPATH": str(subject.current_runtime / "src"),
+            "FASTMCP_HOME": str(subject.current_state),
+        },
+    )
+    monkeypatch.setattr(operations, "_doctor", lambda *_args: True)
+
+    assert operations.rollback_pre_exposure()
+    assert events.index((deployment.EDGE_SERVICE, "enabled", False)) < events.index(
+        (deployment.COMBINED_SERVICE, "enabled", True)
+    )
+    assert events.index((deployment.COMBINED_SERVICE, "start", "active")) < events.index("ungate")
+
+
 def _unused_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
 
 
-def test_real_caddy_route_replacement_remains_behind_exact_gate(tmp_path: Path):
+def test_real_caddy_proxy_transition_preserves_intervening_unrelated_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     caddy = shutil.which("caddy")
     if caddy is None:
         pytest.skip("Caddy is not installed")
     admin_port, public_port = _unused_port(), _unused_port()
-    original = [
+    old_proxy = {
+        "@id": "old_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8790"}],
+    }
+    split_proxy = {
+        "@id": "split_proxy",
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": "127.0.0.1:8791"}],
+    }
+    monkeypatch.setattr(deployment, "PROXY_TRANSITIONS", {"old_proxy": split_proxy})
+    original: list[object] = [
         {
-            "@id": "original",
             "match": [{"path": ["/switchstand/mcp"]}],
-            "handle": [{"handler": "static_response", "status_code": "418"}],
+            "handle": [old_proxy],
             "terminal": True,
         }
     ]
-    replacement = [
+    replacement: list[object] = [
         {
-            "@id": "replacement",
             "match": [{"path": ["/switchstand/mcp"]}],
-            "handle": [{"handler": "static_response", "status_code": "204"}],
+            "handle": [split_proxy],
             "terminal": True,
         }
     ]
+    intervening = {
+        "@id": "intervening",
+        "match": [{"path": ["/unrelated"]}],
+        "handle": [{"handler": "static_response", "status_code": "204"}],
+        "terminal": True,
+    }
     config_file = tmp_path / "caddy.json"
     config_file.write_text(
         json.dumps(
@@ -399,13 +574,14 @@ def test_real_caddy_route_replacement_remains_behind_exact_gate(tmp_path: Path):
                 time.sleep(0.05)
         else:
             pytest.fail("Caddy did not start")
-        routes.gate(original)
+        routes.gate()
         assert routes.gate_exact()
         assert routes.public_gated()
-        routes.replace_under_gate(original, replacement)
-        assert routes.routes() == [routes.gate_route, *replacement]
-        routes.ungate(replacement)
-        assert routes.routes() == replacement
+        routes.api("PUT", deployment.ROUTES_PATH + "/1", intervening)
+        routes.transition_proxies()
+        assert routes.routes() == [routes.gate_route, intervening, *replacement]
+        routes.ungate()
+        assert routes.routes() == [intervening, *replacement]
     finally:
         process.terminate()
         process.wait(timeout=5)

@@ -288,15 +288,18 @@ state/database identities, and the exact combined Caddy proxy set. It then:
 
 1. installs and publicly proves a maintenance gate before stopping the combined process;
 2. proves there are no durable effects with an `unknown` outcome, makes immutable backup and
-   relocated OAuth-state copies while both possible state writers are stopped, and installs the
-   generated split units;
+   relocated OAuth-state copies while both possible state writers are stopped, installs the
+   generated split units, and transfers reboot ownership from the combined unit to both split
+   units with exact `is-enabled` readback;
 3. starts stable auth first, proves the exact candidate process identity and a legacy bearer's
    full introspection identity, then starts and locally verifies the delegated edge;
-4. atomically replaces the complete Caddy route list under the retained gate, ungates only after
-   exact readback, and runs public candidate and private-route non-exposure checks.
+4. replaces only the four exact Switchstand proxy handlers by stable Caddy IDs under the retained
+   gate, preserving unrelated concurrent route additions, ungates only after exact readback, and
+   runs an explicitly bound public candidate probe plus private-route non-exposure checks.
 
 A definite failure before public exposure stops/removes the split units, restores the exact prior
-route list, restarts and verifies the combined service, and only then removes the gate. An
+proxy handlers and combined-unit reboot ownership, restarts and verifies the combined service, and
+only then removes the gate. An
 ambiguous mutation, rollback, interrupt, or post-exposure verification result returns `UNKNOWN`
 and retains or reinstalls the gate for operator reconciliation. It never automatically restores
 OAuth state; the old source remains untouched during this first cutover, and any possible
