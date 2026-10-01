@@ -53,7 +53,6 @@ from .messages import (
     DispositionEvidence,
     MessageDispositionRequest,
     MessagePendingRequest,
-    MessagePendingResult,
     MessageReceiveRequest,
     MessageRoute,
     MessageSendRequest,
@@ -109,7 +108,6 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_history",
     "work_attachments",
     "work_event",
-    "message_pending",
     "agent_message_pending",
 })
 
@@ -121,11 +119,6 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "work_relate",
     "effect_reconcile",
     "required_result_save",
-    "message_send",
-    "message_receive",
-    "message_recover",
-    "message_result_send",
-    "message_disposition",
     "agent_register",
     "agent_takeover",
     "agent_message_send",
@@ -157,54 +150,6 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
     )
-
-
-def build_message_tools(
-    service: ChatGPTService,
-    audit: Callable[[str, str | None, str], None] | None = None,
-) -> tuple[tuple[str, Callable[..., Any]], ...]:
-    async def message_send(
-        api_version: Literal["1"], work_id: UUID,
-        message_id: UUID, payload: JsonValue,
-        route_ref: Annotated[str | None, Field(min_length=1)] = None,
-        recipient_work_id: UUID | None = None,
-        in_reply_to_delivery_id: UUID | None = None,
-    ) -> MessageSubmitResult:
-        """Durably send one request or exactly correlated result."""
-        grant = await service.grant_get()
-        if grant.status == "unknown":
-            return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
-        if grant.status != "ok" or grant.grant is None:
-            return MessageSubmitResult(status="denied", reason="no_current_grant")
-        result = await service.message_send(MessageSendRequest(
-            api_version=api_version, work_id=work_id, grant_version=grant.grant.version,
-            message_id=message_id, route_ref=route_ref, payload=payload,
-            recipient_work_id=recipient_work_id,
-            in_reply_to_delivery_id=in_reply_to_delivery_id,
-        ))
-        if audit is not None:
-            audit("message_send", f"{work_id}:{message_id}", result.status)
-        return result
-
-    async def message_pending(
-        api_version: Literal["1"], work_id: UUID,
-        cursor: UUID | None = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> MessagePendingResult:
-        """Inspect durable pending deliveries under current authenticated admission."""
-        grant = await service.grant_get()
-        if grant.status == "unknown":
-            return MessagePendingResult(status="recovery_required", reason="state_unavailable")
-        if grant.status != "ok" or grant.grant is None:
-            return MessagePendingResult(status="denied", reason="no_current_grant")
-        result = await service.message_pending(work_id, MessagePendingRequest(
-            api_version=api_version, grant_version=grant.grant.version, cursor=cursor, limit=limit,
-        ))
-        if audit is not None:
-            audit("message_pending", str(work_id), result.status)
-        return result
-
-    return (("message_send", message_send), ("message_pending", message_pending))
 
 
 def build_ordinary_tools(
@@ -737,6 +682,13 @@ def build_ordinary_tools(
         audited("message_disposition", str(work_id), result.status)
         return result
 
+    # Work-addressed transition implementations are deliberately unregistered on
+    # the ordinary surface. Keep their shared lifecycle code intact while managed
+    # runtimes and the managed bridge remain WorkId-addressed.
+    _work_message_transitions = (
+        message_receive, message_recover, message_result_send, message_disposition,
+    )
+
     async def agent_context() -> AgentMessageContext | tuple[
         Literal["denied", "recovery_required"],
         Literal[
@@ -1069,11 +1021,6 @@ def build_ordinary_tools(
         ("work_relate", work_relate),
         ("effect_reconcile", effect_reconcile),
         ("required_result_save", required_result_save),
-        *build_message_tools(service, audit),
-        ("message_receive", message_receive),
-        ("message_recover", message_recover),
-        ("message_result_send", message_result_send),
-        ("message_disposition", message_disposition),
         ("agent_register", agent_register),
         ("agent_takeover", agent_takeover),
         ("agent_message_send", agent_message_send),
