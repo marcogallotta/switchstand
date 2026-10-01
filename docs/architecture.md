@@ -30,8 +30,9 @@ does not own ordinary HTTP authentication or grant issuance.
 
 `chatgpt_mcp.py::build_ordinary_tools` is the canonical definition of the ordinary tool inventory
 and behavior. It includes provider-neutral work discovery, structure, history, attachments and
-events; protected append/create/update/relation operations; durable work-addressed and agent-name
-messaging; required-result persistence; and repository bundle transport.
+events; protected append/create/update/relation operations; registered-name `agent_message_*`
+messaging; required-result persistence; and repository bundle transport. Managed task-bound
+runtimes separately retain the WorkId-addressed `message_*` family.
 
 `chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. Its
 `oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one

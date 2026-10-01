@@ -17,7 +17,8 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 - work discovery, exact legacy-reference resolution, reads, structure, history,
   attachments, and events;
 - grant-checked work creation, update, relation, and append operations;
-- durable work-addressed and registered-agent messaging; and
+- registered-name `agent_message_*` messaging (managed task-bound runtimes separately retain
+  WorkId-addressed `message_*` tools); and
 - required-result persistence.
 
 The executable inventory and client policy are owned by
