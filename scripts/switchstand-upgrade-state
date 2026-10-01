@@ -1,10 +1,14 @@
 #!/bin/sh
 set -eu
 
-[ "$#" -eq 0 ] || { echo "usage: scripts/switchstand-upgrade-state" >&2; exit 2; }
+[ "$#" -le 2 ] || { echo "usage: scripts/switchstand-upgrade-state [rehearse|apply|abort-pre-authority [receipt]]" >&2; exit 2; }
 umask 077
 
-EXPECTED_NEW=0008_work_index_authority
+operation=${1:-apply}
+case "$operation" in rehearse|apply|abort-pre-authority) ;; *) echo "unknown state-upgrade operation: $operation" >&2; exit 2;; esac
+receipt=${2:-}
+prior_receipt=
+EXPECTED_NEW=0010_work_metadata_authority
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data
@@ -13,6 +17,9 @@ backup=
 backup_ready=false
 rehearsal=
 shared_migration_attempted=false
+outcome=NOT_RUN
+terminal_written=false
+resume_attempt=false
 
 control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 head=$(git -C "$control" rev-parse HEAD)
@@ -35,6 +42,76 @@ else
 fi
 
 state_dir=$HOME/.local/state/switchstand
+if [ "$operation" = abort-pre-authority ]; then
+    prior_receipt=$receipt
+    [ -n "$prior_receipt" ] && [ -f "$prior_receipt" ] \
+        || { echo "abort-pre-authority requires the exact apply receipt" >&2; exit 2; }
+    receipt=
+    receipt_values=$(python - "$prior_receipt" "$head" "$EXPECTED_NEW" <<'PY'
+import json, sys
+records = [json.loads(line) for line in open(sys.argv[1])]
+data, terminal = records[0], records[-1]
+if data.get("outcome") != "ATTEMPTING" or data.get("sha") != sys.argv[2] or data.get("new") != sys.argv[3] or terminal.get("sha") != sys.argv[2] or terminal.get("new") != sys.argv[3] or terminal.get("outcome") != "APPLIED":
+    raise SystemExit("stale or mismatched apply receipt")
+print(data["old"], data["before_counts"], data["before_schema"], data["before_data"],
+      data["after_counts"], data["after_schema"], data["after_data"], sep=";")
+PY
+    ) || { echo "stale or mismatched apply receipt" >&2; exit 1; }
+    IFS=';' read -r EXPECTED_OLD before_counts before_schema before_data expected_counts expected_schema expected_data <<EOF
+$receipt_values
+EOF
+fi
+if [ -z "$receipt" ]; then
+    receipt="$state_dir/state-upgrade-$operation-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+fi
+case "$receipt" in /*) ;; *) echo "receipt path must be absolute" >&2; exit 2;; esac
+if [ -e "$receipt" ]; then
+    [ "$operation" = apply ] || { echo "receipt already exists: $receipt" >&2; exit 1; }
+    receipt_values=$(python - "$receipt" "$head" "$EXPECTED_NEW" <<'PY'
+import json, sys
+records = [json.loads(line) for line in open(sys.argv[1])]
+data, terminal = records[0], records[-1]
+if data.get("outcome") != "ATTEMPTING" or data.get("sha") != sys.argv[2] or data.get("new") != sys.argv[3] or terminal.get("sha") != sys.argv[2] or terminal.get("new") != sys.argv[3] or terminal.get("outcome") not in ("ATTEMPTING", "UNKNOWN"):
+    raise SystemExit("stale or terminal apply receipt")
+print(data["old"], data["before_counts"], data["before_schema"], data["before_data"],
+      data["after_counts"], data["after_schema"], data["after_data"], sep=";")
+PY
+    ) || { echo "stale or terminal apply receipt" >&2; exit 1; }
+    IFS=';' read -r EXPECTED_OLD before_counts before_schema before_data expected_counts expected_schema expected_data <<EOF
+$receipt_values
+EOF
+    resume_attempt=true
+fi
+
+write_receipt() {
+    receipt_mode=$1
+    RECEIPT_MODE=$receipt_mode RECEIPT_PATH=$receipt RECEIPT_OPERATION=$operation RECEIPT_OUTCOME=$outcome \
+    RECEIPT_SHA=$head RECEIPT_OLD=${EXPECTED_OLD:-UNKNOWN} RECEIPT_NEW=$EXPECTED_NEW \
+    RECEIPT_BEFORE_COUNTS=${before_counts:-UNKNOWN} RECEIPT_AFTER_COUNTS=${after_counts:-UNKNOWN} \
+    RECEIPT_BEFORE_SCHEMA=${before_schema:-UNKNOWN} RECEIPT_AFTER_SCHEMA=${after_schema:-UNKNOWN} \
+    RECEIPT_BEFORE_DATA=${before_data:-UNKNOWN} RECEIPT_AFTER_DATA=${after_data:-UNKNOWN} \
+    RECEIPT_BACKUP=${backup:-NONE} python - <<'PY'
+import json, os
+from pathlib import Path
+p = Path(os.environ["RECEIPT_PATH"])
+p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+names = ("PATH", "OPERATION", "OUTCOME", "SHA", "OLD", "NEW", "BEFORE_COUNTS",
+         "AFTER_COUNTS", "BEFORE_SCHEMA", "AFTER_SCHEMA", "BEFORE_DATA",
+         "AFTER_DATA", "BACKUP")
+payload = {name.lower(): os.environ[f"RECEIPT_{name}"] for name in names if name != "PATH"}
+flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if os.environ["RECEIPT_MODE"] == "create" else os.O_APPEND)
+fd = os.open(p, flags, 0o600)
+with os.fdopen(fd, "w") as stream:
+    json.dump(payload, stream, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+directory = os.open(p.parent, os.O_RDONLY)
+try: os.fsync(directory)
+finally: os.close(directory)
+PY
+}
+
 lock_dir=$state_dir/state-upgrade.lock
 mkdir -p "$state_dir"
 mkdir "$lock_dir" 2>/dev/null \
@@ -42,14 +119,23 @@ mkdir "$lock_dir" 2>/dev/null \
 cleanup() {
     status=$?
     [ -z "$rehearsal" ] || docker rm -f "$rehearsal" >/dev/null 2>&1 || true
+    if [ "$status" -ne 0 ] && [ "$shared_migration_attempted" = true ] \
+        && [ "$terminal_written" = false ] && [ -f "$receipt" ]; then
+        outcome=UNKNOWN
+        after_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
+        after_schema=$(dump_digest "$container" schema 2>/dev/null || printf UNAVAILABLE)
+        after_data=$(dump_digest "$container" data 2>/dev/null || printf UNAVAILABLE)
+        write_receipt append 2>/dev/null || true
+        terminal_written=true
+    fi
     if [ "$status" -ne 0 ] && [ "$backup_ready" = true ]; then
         observed_revision=$(sql 'SELECT version_num FROM alembic_version' 2>/dev/null || printf UNAVAILABLE)
         observed_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
-        outcome="shared migration NOT_RUN; operation aborted"
+        message="shared migration NOT_RUN; operation aborted"
         [ "$shared_migration_attempted" = false ] \
-            || outcome="shared migration outcome UNKNOWN"
+            || message="shared migration outcome UNKNOWN"
         printf 'state upgrade %s; backup %s; observed revision %s; observed counts %s; no retry or rollback attempted\n' \
-            "$outcome" "$backup" "$observed_revision" "$observed_counts" >&2
+            "$message" "$backup" "$observed_revision" "$observed_counts" >&2
     fi
     rmdir "$lock_dir" >/dev/null 2>&1 || true
     exit "$status"
@@ -82,32 +168,45 @@ volume_identity=$(docker volume inspect --format \
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
-    0008_work_index_authority)
-        printf 'state upgrade passed: already at %s; no migration required\n' "$EXPECTED_NEW"
-        exit 0
-        ;;
-    0002_grants_and_effects)
-        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)"
-        ;;
-    0004_required_result_persistence)
-        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)"
-        ;;
-    0005_work_event_handles)
-        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)"
-        ;;
-    0006_agent_mailboxes)
+    0010_work_metadata_authority)
+        [ "$operation" = abort-pre-authority ] || [ "$resume_attempt" = true ] \
+            || { echo "schema is already $EXPECTED_NEW without an exact reconcilable receipt; outcome UNKNOWN" >&2; exit 1; }
+        [ "$EXPECTED_OLD" = 0007_agent_chat_identity ] \
+            || { echo "abort receipt has unsupported original revision: $EXPECTED_OLD" >&2; exit 1; }
         counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)"
         ;;
     0007_agent_chat_identity)
         counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)"
         ;;
     *)
-        echo "unsupported shared schema: expected one of 0002_grants_and_effects, 0004_required_result_persistence, 0005_work_event_handles, 0006_agent_mailboxes, 0007_agent_chat_identity, $EXPECTED_NEW; actual ${revision:-<none>}" >&2
+        echo "unsupported shared schema: expected exact source 0007_agent_chat_identity or $EXPECTED_NEW; actual ${revision:-<none>}" >&2
         exit 1
         ;;
 esac
-EXPECTED_OLD=$revision
-before_counts=$(sql "$counts_sql")
+if [ "$operation" != abort-pre-authority ] && [ "$resume_attempt" = false ]; then
+    EXPECTED_OLD=$revision
+    before_counts=$(sql "$counts_sql")
+fi
+dump_digest() {
+    target=$1 kind=$2
+    digest_file=$state_dir/state-upgrade-$kind-$$.sql
+    docker exec "$target" pg_dump -U switchstand -d switchstand \
+        "--$kind-only" --no-owner --no-privileges \
+        --restrict-key=SWITCHSTANDSTATEDIGEST >"$digest_file" \
+        || { rm -f "$digest_file"; return 1; }
+    digest=$(sha256sum "$digest_file" | cut -d' ' -f1)
+    rm -f "$digest_file"
+    printf %s "$digest"
+}
+marker_state() {
+    target=$1 table=$2
+    exists=$(docker exec "$target" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At \
+        -c "SELECT to_regclass('public.$table') IS NOT NULL") || return 1
+    [ "$exists" = f ] && { printf absent; return; }
+    rows=$(docker exec "$target" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At \
+        -c "SELECT count(*) FROM $table") || return 1
+    [ "$rows" = 0 ] && printf absent || printf active
+}
 quiescence_sql="SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'"
 assert_quiescent() {
     clients=$(sql "$quiescence_sql")
@@ -120,11 +219,32 @@ assert_quiescent() {
         || { echo "shared state network has an attached application container; stop Switchstand writers before upgrading" >&2; exit 1; }
 }
 assert_quiescent
+if [ "$resume_attempt" = true ]; then
+    current_schema=$(dump_digest "$container" schema)
+    current_data=$(dump_digest "$container" data)
+    current_counts=$(sql "$counts_sql")
+    if [ "$revision|$current_counts|$current_schema|$current_data" = "$EXPECTED_NEW|$expected_counts|$expected_schema|$expected_data" ]; then
+        outcome=APPLIED after_counts=$current_counts after_schema=$current_schema after_data=$current_data
+        write_receipt append
+        printf 'state upgrade APPLIED reconciled from exact receipt %s\n' "$receipt"
+        exit 0
+    fi
+    if [ "$revision|$current_counts|$current_schema|$current_data" != "$EXPECTED_OLD|$before_counts|$before_schema|$before_data" ]; then
+        outcome=UNKNOWN after_counts=$current_counts after_schema=$current_schema after_data=$current_data
+        write_receipt append
+        echo "shared state does not match receipt before or after identity; outcome UNKNOWN" >&2
+        exit 1
+    fi
+fi
+if [ "$operation" != abort-pre-authority ] && [ "$resume_attempt" = false ]; then
+    before_schema=$(dump_digest "$container" schema)
+    before_data=$(dump_digest "$container" data)
+fi
 
 backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
 mkdir -p "$backup_dir"
 chmod 700 "$backup_dir"
-backup="$backup_dir/state-$EXPECTED_OLD-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
+backup="$backup_dir/state-$revision-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
 set -C
 docker exec "$container" pg_dump -U switchstand -d switchstand -Fc >"$backup"
 set +C
@@ -133,6 +253,10 @@ backup_ready=true
 
 rehearsal="switchstand-upgrade-rehearsal-$(printf '%.12s' "$head")-$$"
 migration_image="switchstand-upgrade:$head"
+if [ "$operation" = abort-pre-authority ]; then
+    rehearsal=
+fi
+if [ "$operation" != abort-pre-authority ]; then
 docker run -d --rm --name "$rehearsal" --tmpfs /var/lib/postgresql \
     -e POSTGRES_DB=switchstand -e POSTGRES_USER=switchstand \
     -e POSTGRES_PASSWORD=switchstand "$IMAGE" >/dev/null
@@ -147,29 +271,113 @@ docker exec "$rehearsal" pg_restore --exit-on-error --no-owner --no-privileges \
 rehearsal_sql() { docker exec "$rehearsal" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ]
 [ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+fi
 
 docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
+heads=$(docker run --rm "$migration_image" uv run --no-sync alembic -c /app/alembic.ini heads 2>/dev/null)
+[ "$heads" = "$EXPECTED_NEW (head)" ] \
+    || { echo "candidate migration head mismatch: expected $EXPECTED_NEW (head); actual ${heads:-<none>}" >&2; exit 1; }
 migrate() {
-    target=$1
+    target=$1 destination=${2:-$EXPECTED_NEW}
     docker run --rm --network "container:$target" \
         -e DATABASE_URL=postgresql+psycopg://switchstand:switchstand@127.0.0.1/switchstand \
-        "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
+        "$migration_image" uv run --no-sync alembic -c /app/alembic.ini \
+        "$([ "$destination" = "$EXPECTED_NEW" ] && printf upgrade || printf downgrade)" "$destination"
 }
+if [ "$operation" != abort-pre-authority ]; then
 migrate "$rehearsal"
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
+new_schema=$(dump_digest "$rehearsal" schema)
+new_data=$(dump_digest "$rehearsal" data)
+migrate "$rehearsal" "$EXPECTED_OLD"
+[ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ]
 [ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+[ "$(dump_digest "$rehearsal" schema)" = "$before_schema" ]
+[ "$(dump_digest "$rehearsal" data)" = "$before_data" ]
+migrate "$rehearsal"
+[ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
+[ "$(dump_digest "$rehearsal" schema)" = "$new_schema" ]
+[ "$(dump_digest "$rehearsal" data)" = "$new_data" ]
+
+if [ "$operation" = rehearse ]; then
+    after_counts=$before_counts after_schema=$new_schema after_data=$new_data outcome=REHEARSED
+    write_receipt create
+    printf 'state upgrade rehearsal passed: %s -> %s -> %s -> %s; receipt %s\n' \
+        "$EXPECTED_OLD" "$EXPECTED_NEW" "$EXPECTED_OLD" "$EXPECTED_NEW" "$receipt"
+    exit 0
+fi
+fi
 
 assert_quiescent
 revision=$(sql 'SELECT version_num FROM alembic_version')
 current_counts=$(sql "$counts_sql")
-[ "$revision" = "$EXPECTED_OLD" ] && [ "$current_counts" = "$before_counts" ] \
+[ "$revision" = "$([ "$operation" = abort-pre-authority ] && printf %s "$EXPECTED_NEW" || printf %s "$EXPECTED_OLD")" ] \
     || { echo "shared state changed after rehearsal; refusing migration" >&2; exit 1; }
+if [ "$operation" = abort-pre-authority ]; then
+    current_schema=$(dump_digest "$container" schema)
+    current_data=$(dump_digest "$container" data)
+    [ "$current_counts|$current_schema|$current_data" = "$expected_counts|$expected_schema|$expected_data" ] \
+        || { echo "shared state no longer matches exact applied receipt; outcome UNKNOWN" >&2; exit 1; }
+    stage1=$(marker_state "$container" work_authority) || { echo "Stage 1 marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    stage2=$(marker_state "$container" work_metadata_authority) || { echo "Stage 2 marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    [ "$stage1|$stage2" = absent\|absent ] \
+        || { echo "POSTGRES_AUTHORITY present; downgrade forbidden; forward-fix only" >&2; exit 1; }
+    original_counts=$before_counts original_schema=$before_schema original_data=$before_data
+    before_counts=$expected_counts before_schema=$expected_schema before_data=$expected_data
+    after_counts=$original_counts after_schema=$original_schema after_data=$original_data outcome=ATTEMPTING
+    write_receipt create
+    shared_migration_attempted=true
+    migrate "$container" "$EXPECTED_OLD"
+else
+if [ "$current_counts" != "$before_counts" ]; then
+    echo "shared state changed after rehearsal; refusing migration" >&2; exit 1
+fi
+if [ "$resume_attempt" = false ]; then
+    after_counts=$before_counts after_schema=$new_schema after_data=$new_data outcome=ATTEMPTING
+    write_receipt create
+fi
 shared_migration_attempted=true
-migrate "$container"
+migrate "$container" || {
+    stage1=$(marker_state "$container" work_authority) || { echo "authority marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    stage2=$(marker_state "$container" work_metadata_authority) || { echo "authority marker unreadable; outcome UNKNOWN" >&2; exit 1; }
+    [ "$stage1|$stage2" = absent\|absent ] || { echo "POSTGRES_AUTHORITY present; outcome UNKNOWN; forward-fix only" >&2; exit 1; }
+    failed_revision=$(sql 'SELECT version_num FROM alembic_version') \
+        || { echo "Alembic revision unreadable; outcome UNKNOWN" >&2; exit 1; }
+    case "$failed_revision" in
+        "$EXPECTED_OLD"|0008_work_index_authority|0009_human_trajectory|"$EXPECTED_NEW") ;;
+        *) echo "ambiguous Alembic revision $failed_revision; outcome UNKNOWN" >&2; exit 1;;
+    esac
+    migrate "$container" "$EXPECTED_OLD" || { echo "pre-authority abort failed; outcome UNKNOWN" >&2; exit 1; }
+    shared_migration_attempted=false
+    [ "$(sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ] \
+        && [ "$(sql "$counts_sql")" = "$before_counts" ] \
+        && [ "$(dump_digest "$container" schema)" = "$before_schema" ] \
+        && [ "$(dump_digest "$container" data)" = "$before_data" ] \
+        || { echo "pre-authority abort verification failed; outcome UNKNOWN" >&2; exit 1; }
+    outcome=ABORTED after_counts=$before_counts after_schema=$before_schema after_data=$before_data
+    write_receipt append
+    terminal_written=true
+    echo "migration failed; pre-authority downgrade completed and original state verified" >&2
+    exit 1
+}
+fi
 revision=$(sql 'SELECT version_num FROM alembic_version')
 after_counts=$(sql "$counts_sql")
-[ "$revision" = "$EXPECTED_NEW" ] && [ "$after_counts" = "$before_counts" ] \
+[ "$revision" = "$([ "$operation" = abort-pre-authority ] && printf %s "$EXPECTED_OLD" || printf %s "$EXPECTED_NEW")" ] \
     || { echo "shared state upgrade readback failed; preserve backup $backup" >&2; exit 1; }
+after_schema=$(dump_digest "$container" schema)
+after_data=$(dump_digest "$container" data)
+if [ "$operation" = abort-pre-authority ]; then
+    [ "$after_counts|$after_schema|$after_data" = "$original_counts|$original_schema|$original_data" ] \
+        || { echo "pre-authority abort digest mismatch; outcome UNKNOWN" >&2; exit 1; }
+    outcome=ABORTED_PRE_AUTHORITY
+else
+    [ "$after_schema|$after_data" = "$new_schema|$new_data" ] \
+        || { echo "shared state digest mismatch; outcome UNKNOWN" >&2; exit 1; }
+    outcome=APPLIED
+fi
+write_receipt append
+terminal_written=true
 
-printf 'state upgrade passed: %s -> %s; preserved counts %s; backup %s\n' \
-    "$EXPECTED_OLD" "$EXPECTED_NEW" "$after_counts" "$backup"
+printf 'state upgrade %s: %s -> %s; preserved counts %s; backup %s; receipt %s\n' \
+    "$outcome" "$EXPECTED_OLD" "$revision" "$after_counts" "$backup" "$receipt"
