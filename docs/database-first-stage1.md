@@ -49,12 +49,26 @@ Use the existing service-wide maintenance transaction to install and publicly ve
 `503 Retry-After` gate, then stop the MCP edge. With all other database clients stopped:
 
 ```sh
-switchstand-work-index-migrate prepare --confirm-offline
-switchstand-work-index-migrate activate --confirm-offline --expected-manifest-digest APPROVED_SHA256 --receipt stage1-attempt.json
+switchstand-stage1-corpus capture corpus-a.json --source-candidate RUNTIME_SHA
+switchstand-stage1-corpus capture corpus-b.json --source-candidate RUNTIME_SHA
+switchstand-stage1-corpus compare corpus-a.json corpus-b.json
+switchstand-work-index-migrate prepare --confirm-offline --manifest corpus-a.json \
+  --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256
+switchstand-work-index-migrate activate --confirm-offline --manifest corpus-a.json \
+  --manifest corpus-b.json --expected-corpus-digest REVIEWED_CORPUS_SHA256 \
+  --expected-exception-digest REVIEWED_EXCEPTION_SHA256 \
+  --expected-prepared-digest PREPARED_IMPORT_SHA256 --receipt stage1-attempt.json
 ```
 
-The command verifies database quiescence, completes the final provider scan without persisting
-partial progress, verifies quiescence again, freezes missing WorkId bindings, and prints the canonical digest for review. Activation rescans and fails before the marker on mismatch. It commits corpus and marker atomically, then reads back both generations and the digest; verify the edge before removing maintenance.
+The read-only corpus command captures the deterministic union of admitted search and exact-readable
+bound Asana work twice. The migration command verifies database quiescence and both matching,
+reviewed manifests, including both the full corpus and explicit missing/noncanonical exception
+digests, then freezes or reuses missing WorkId bindings and prints the canonical prepared import
+digest. Activation rereads the same
+manifests and bindings and fails before the marker on mismatch. It commits corpus and marker
+atomically, then reads back both generations and the digest; verify the edge before removing
+maintenance.
 
 Before the authority transaction commits, discard the failed attempt and restart the old service.
 After it commits, never restore the old title/completion/search runtime: retain the gate and repair forward.
