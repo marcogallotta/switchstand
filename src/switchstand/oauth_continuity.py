@@ -128,11 +128,55 @@ class SwitchstandGitHubProvider(GitHubProvider):
         await self._rebind(jti, ttl)
         return True
 
+    async def _rebind_to_repaired_canonical(
+        self,
+        jti: str,
+        ttl: float,
+        failed_identity: tuple[str, str, str | None],
+    ) -> bool:
+        """Rebind only to a valid credential distinct from the failed source."""
+        canonical = await self._upstream_token_store.get(
+            key=CANONICAL_UPSTREAM_TOKEN_ID
+        )
+        canonical_identity = (
+            CANONICAL_UPSTREAM_TOKEN_ID,
+            canonical.access_token,
+            canonical.refresh_token,
+        ) if canonical is not None else None
+        if (
+            canonical is None
+            or canonical_identity == failed_identity
+            or await self._valid_upstream(canonical) is None
+        ):
+            return False
+        await self._rebind(jti, ttl)
+        return True
+
     def _jti_and_ttl(self, token: str, *, refresh: bool = False) -> tuple[str, float]:
         payload = self.jwt_issuer.verify_token(
             token, expected_token_use="refresh" if refresh else "access"
         )
         return str(payload["jti"]), max(float(payload["exp"]) - time.time(), 1)
+
+    async def _converge_issued_tokens(self, issued: OAuthToken) -> None:
+        """Make a successful exchange the shared credential for every client."""
+        access_jti, access_ttl = self._jti_and_ttl(issued.access_token)
+        mapping = await self._jti_mapping_store.get(key=access_jti)
+        if mapping is None:
+            raise RuntimeError("new access token mapping is missing")
+        source_id = mapping.upstream_token_id
+        source, source_ttl = await self._upstream_token_store.ttl(key=source_id)
+        if source is None:
+            raise RuntimeError("new upstream token is missing")
+        await self._put_canonical(source, source_ttl)
+        await self._rebind(access_jti, access_ttl)
+        if issued.refresh_token:
+            refresh_jti, refresh_ttl = self._jti_and_ttl(
+                issued.refresh_token, refresh=True
+            )
+            await self._rebind(refresh_jti, refresh_ttl)
+        if source_id != CANONICAL_UPSTREAM_TOKEN_ID:
+            await self._upstream_token_store.delete(key=source_id)
 
     async def exchange_authorization_code(
         self,
@@ -156,19 +200,7 @@ class SwitchstandGitHubProvider(GitHubProvider):
         lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
         async with lock:
             issued = await super().exchange_authorization_code(client, authorization_code)
-            access_jti, access_ttl = self._jti_and_ttl(issued.access_token)
-            mapping = await self._jti_mapping_store.get(key=access_jti)
-            if mapping is None:
-                raise RuntimeError("new access token mapping is missing")
-            source, source_ttl = await self._upstream_token_store.ttl(key=mapping.upstream_token_id)
-            if source is None:
-                raise RuntimeError("new upstream token is missing")
-            await self._put_canonical(source, source_ttl)
-            await self._rebind(access_jti, access_ttl)
-            if issued.refresh_token:
-                refresh_jti, refresh_ttl = self._jti_and_ttl(issued.refresh_token, refresh=True)
-                await self._rebind(refresh_jti, refresh_ttl)
-            await self._upstream_token_store.delete(key=mapping.upstream_token_id)
+            await self._converge_issued_tokens(issued)
             return issued
 
     async def load_access_token(self, token: str) -> MCPAccessToken | None:
@@ -224,4 +256,35 @@ class SwitchstandGitHubProvider(GitHubProvider):
                     await self._rebind_to_valid_canonical(refresh_jti, refresh_ttl)
             elif mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID:
                 await self._rebind_to_valid_canonical(refresh_jti, refresh_ttl)
-            return await super().exchange_refresh_token(client, refresh_token, scopes)
+            mapping = await self._jti_mapping_store.get(key=refresh_jti)
+            failed_source = (
+                await self._upstream_token_store.get(key=mapping.upstream_token_id)
+                if mapping is not None
+                else None
+            )
+            failed_identity = (
+                mapping.upstream_token_id,
+                failed_source.access_token,
+                failed_source.refresh_token,
+            ) if mapping is not None and failed_source is not None else None
+            try:
+                issued = await super().exchange_refresh_token(
+                    client, refresh_token, scopes
+                )
+            except TokenError:
+                current = await super().load_refresh_token(
+                    client, refresh_token.token
+                )
+                if (
+                    current is None
+                    or failed_identity is None
+                    or not await self._rebind_to_repaired_canonical(
+                        refresh_jti, refresh_ttl, failed_identity
+                    )
+                ):
+                    raise
+                issued = await super().exchange_refresh_token(
+                    client, refresh_token, scopes
+                )
+            await self._converge_issued_tokens(issued)
+            return issued
