@@ -97,6 +97,8 @@ def test_provision_binds_and_populates_only_namespaced_target(tmp_path, monkeypa
     assert value["database_backup_sha256"] != value["fastmcp_snapshot_sha256"]
     assert any(command[:2] == ["docker", "cp"] for command in docker.commands)
     assert not any("switchstand_postgres-data" in part for command in docker.commands for part in command)
+    root, ready = target.load_ready("proof", SHA, runtime, run=docker)
+    assert root == descriptor.parent and ready["container"] == docker.container
 
     target.teardown("proof", run=docker)
     assert not descriptor.parent.exists()
@@ -112,6 +114,41 @@ def test_provision_refuses_production_identity_before_effects(tmp_path, monkeypa
         target.provision("production", SHA, runtime, backup, snapshot, run=docker)
 
     assert docker.commands == []
+
+
+@pytest.mark.parametrize("key", ["candidate_sha", "copied_database_backup"])
+def test_load_ready_refuses_candidate_or_copied_state_drift(tmp_path, monkeypatch, key):
+    runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
+    docker = Docker(runtime)
+    descriptor = target.provision("proof", SHA, runtime, backup, snapshot, run=docker)
+    value = json.loads(descriptor.read_text())
+    value[key] = "0" * 40 if key == "candidate_sha" else str(tmp_path / "foreign")
+    descriptor.write_text(json.dumps(value))
+    descriptor.chmod(0o600)
+    docker.commands.clear()
+
+    with pytest.raises(Failed, match="candidate or copied state"):
+        target.load_ready("proof", SHA, runtime, run=docker)
+
+    assert docker.commands == []
+
+
+@pytest.mark.parametrize("fault", ["endpoints", "container"])
+def test_load_ready_refuses_descriptor_or_live_container_drift(tmp_path, monkeypatch, fault):
+    runtime, backup, snapshot = artifacts(tmp_path, monkeypatch)
+    setup = Docker(runtime)
+    descriptor = target.provision("proof", SHA, runtime, backup, snapshot, run=setup)
+    if fault == "endpoints":
+        value = json.loads(descriptor.read_text())
+        value["endpoints"]["public"] = value["endpoints"]["caddy"]
+        descriptor.write_text(json.dumps(value))
+        descriptor.chmod(0o600)
+    observed = Docker(runtime)
+    if fault == "container":
+        observed.container = "d" * 64
+
+    with pytest.raises(Failed):
+        target.load_ready("proof", SHA, runtime, run=observed)
 
 
 @pytest.mark.parametrize(("key", "changed"), [

@@ -259,6 +259,46 @@ def _load(name: str) -> tuple[Path, dict[str, Any]]:
     return root, value
 
 
+def load_ready(
+    name: str, candidate_sha: str, runtime: Path, *, run: Runner = _run,
+) -> tuple[Path, dict[str, Any]]:
+    """Read and prove the exact READY copied-state target without mutating it."""
+    root, value = _load(name)
+    expected = {
+        "candidate_sha": candidate_sha,
+        "runtime": str(runtime.resolve(strict=True)),
+        "fastmcp_state": str(root / "copied-state" / "fastmcp"),
+        "copied_database_backup": str(root / "sources" / "database.dump"),
+        "copied_fastmcp_snapshot": str(root / "sources" / "fastmcp.tar"),
+    }
+    endpoints = value.get("endpoints")
+    if any(value.get(key) != item for key, item in expected.items()) or not isinstance(
+        endpoints, dict
+    ):
+        raise Failed("disposable target does not bind the exact candidate or copied state")
+    exact_endpoints = cast(dict[str, object], endpoints)
+    if set(exact_endpoints) != {"caddy", "local", "public"} or len(set(exact_endpoints.values())) != 3:
+        raise Failed("disposable target endpoints are not exact")
+    for path_key, digest_key in (
+        ("copied_database_backup", "database_backup_sha256"),
+        ("copied_fastmcp_snapshot", "fastmcp_snapshot_sha256"),
+    ):
+        data = read_private(Path(cast(str, value[path_key])), path_key)
+        if hashlib.sha256(data).hexdigest() != value.get(digest_key):
+            raise Failed("disposable copied-state digest changed")
+    ids = run([
+        "docker", "ps", "-aq", "--no-trunc", "--filter",
+        f"label=com.docker.compose.project={value['project']}",
+    ]).stdout.split()
+    if ids != [value["container"]]:
+        raise Failed("descriptor does not bind the exact READY container")
+    inspected = json.loads(run(["docker", "inspect", ids[0]]).stdout)
+    if len(inspected) != 1:
+        raise Failed("descriptor container identity is unavailable")
+    _docker_identity(inspected[0], cast(dict[str, str], value))
+    return root, value
+
+
 def teardown(name: str, *, run: Runner = _run) -> None:
     """Remove only resources whose exact namespace is owned by the descriptor."""
     root, value = _load(name)
