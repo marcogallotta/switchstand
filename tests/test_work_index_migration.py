@@ -55,6 +55,7 @@ def _manifest(*, external_dependency: bool = False) -> dict[str, object]:
     rows = [
         _row("known", KNOWN, ["missing" if external_dependency else "new"]),
         _row("new", None, []),
+        _row("other", None, []),
     ]
     return _with_digest(
         {
@@ -68,7 +69,7 @@ def _manifest(*, external_dependency: bool = False) -> dict[str, object]:
                     "reason": "missing",
                 }
             ],
-            "counts": {"broad": 2, "bound": 2, "included": 2, "exceptions": 1},
+            "counts": {"broad": 3, "bound": 2, "included": 3, "exceptions": 1},
         }
     )
 
@@ -100,24 +101,17 @@ def test_frozen_corpus_requires_matching_scans_reviewed_exceptions_and_closed_de
     corpus_digest = str(manifest["sha256"])
     paths = _paths(tmp_path, manifest)
     exception_digest = manifest_exception_digest(manifest)
-    _stable_corpus(paths, corpus_digest, exception_digest)
 
     with pytest.raises(ValueError, match="reviewed digest"):
         _stable_corpus(paths, corpus_digest, "0" * 64)
 
-    replacement = _with_digest(
-        {
-            key: ("b" * 40 if key == "source_candidate" else value)
-            for key, value in manifest.items()
-            if key != "sha256"
-        }
-    )
+    replacement = dict(manifest)
+    replacement["source_candidate"] = "b" * 40
+    replacement.pop("sha256")
+    replacement = _with_digest(replacement)
+    replacement_paths = _paths(tmp_path / "replacement", replacement)
     with pytest.raises(ValueError, match="manifest digest"):
-        _stable_corpus(
-            _paths(tmp_path / "replacement", replacement),
-            corpus_digest,
-            exception_digest,
-        )
+        _stable_corpus(replacement_paths, corpus_digest, exception_digest)
 
     changed = _manifest(external_dependency=True)
     changed_path = tmp_path / "changed.json"
@@ -142,7 +136,8 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
             text(
                 "INSERT INTO work_handles (id, provider, provider_work_id) VALUES "
                 "(:known, 'asana', 'known'), (:exception, 'asana', 'gone'), "
-                "(:mailbox, 'agent-mailbox', 'Coordinator')"
+                "(:mailbox, 'agent-mailbox', 'Coordinator'), "
+                "('40000000-0000-4000-8000-000000000004', 'asana', 'new')"
             ),
             {"known": KNOWN, "exception": EXCEPTION, "mailbox": MAILBOX},
         )
@@ -153,6 +148,11 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
 
     await stage1_engine.dispose()
     monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    with pytest.raises(ValueError, match="bindings changed"):
+        await _prepare(paths, corpus_digest, exception_digest)
+    async with stage1_engine.begin() as connection:
+        await connection.execute(text("DELETE FROM work_handles WHERE provider_work_id = 'new'"))
+    await stage1_engine.dispose()
     digest = await _prepare(paths, corpus_digest, exception_digest)
     assert isinstance(digest, str)
     async with stage1_engine.begin() as connection:
@@ -180,10 +180,10 @@ async def test_frozen_corpus_prepares_exact_bindings_without_replacing_other_sta
         manifest_paths=paths,
         expected_exception_digest=exception_digest,
     )
-    assert isinstance(receipt, ActivationReceipt) and receipt.count == 2
+    assert isinstance(receipt, ActivationReceipt) and receipt.count == 3
     async with stage1_engine.connect() as connection:
-        assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 2
-        assert await connection.scalar(text("SELECT count(*) FROM work_handles")) == 4
+        assert await connection.scalar(text("SELECT count(*) FROM work_index")) == 3
+        assert await connection.scalar(text("SELECT count(*) FROM work_handles")) == 5
         retained = await connection.scalar(
             text("SELECT count(*) FROM work_handles WHERE id IN (:exception, :mailbox)"),
             {"exception": EXCEPTION, "mailbox": MAILBOX},

@@ -175,7 +175,7 @@ async def _validate_bindings(
         provider_id for provider_id, work_id in corpus.work_ids.items() if work_id is not None
     } | set(corpus.exceptions)
     allowed_ids = set(corpus.work_ids) | set(corpus.exceptions)
-    if (prepared and set(actual) != allowed_ids) or not required_ids <= set(actual) <= allowed_ids:
+    if set(actual) != allowed_ids and (prepared or set(actual) != required_ids):
         raise ValueError("Asana bindings changed after corpus capture")
     for provider_id, expected in corpus.work_ids.items():
         if expected is not None and actual.get(provider_id) != expected:
