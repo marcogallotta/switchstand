@@ -12,6 +12,7 @@ from chatgpt_fixture import service as chatgpt_service
 
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.codex_runtime import PROFILE
+from switchstand.context import provision_target
 from switchstand.development import DevelopmentBoundary
 from switchstand.launch import (
     clean_environment,
@@ -251,8 +252,9 @@ def test_parse_authority_requires_exact_complete_response():
         parse_authority(f"ACTIVE_WORK_ID={ACTIVE}\n")
 
 
+@pytest.mark.parametrize("repository", [False, True])
 def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
-    monkeypatch, capsys
+    monkeypatch, capsys, repository
 ):
     captured = []
 
@@ -275,12 +277,19 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS={REFERENCE}\n",
+            stdout=(f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS={REFERENCE}\n"
+                    + ("SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools\n" if repository else "")),
             stderr="",
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
+    if repository:
+        authority, admitted = provision_target(
+            Path("/repo"), "123", ("456",), {"HOME": "/home/test"}
+        )
+        assert admitted == "marcogallotta/ai-tools"
+    else:
+        authority = provision(Path("/repo"), "123", ("456",), {"HOME": "/home/test"})
     assert authority.active == ACTIVE
     assert capsys.readouterr().out.endswith("backup /private/state.dump\n")
     state, _identity, upgrade, controller = captured
@@ -288,7 +297,10 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
         "docker", "compose", "--project-directory", "/repo", "-f",
         "/repo/compose.state.yaml", "up", "-d", "--wait", "postgres",
     ]
-    assert controller[0][-5:] == ["--active", "123", "--managed-agent", "--reference", "456"]
+    assert controller[0][controller[0].index("--active"):] == [
+        "--active", "123", "--managed-agent",
+        *(["--repository"] if repository else []), "--reference", "456",
+    ]
     assert controller[0][2:6] == [
         "--project-directory", "/repo", "-f", "/repo/compose.yaml"
     ]
@@ -337,7 +349,8 @@ def test_provision_does_not_pass_partial_selector_to_attached_control(monkeypatc
     assert upgrade[1]["env"] == {"HOME": "/home/test"}
 
 
-def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch):
+@pytest.mark.parametrize("provisioner", [provision, provision_target])
+def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch, provisioner):
     calls = []
 
     def fake_run(command, **kwargs):
@@ -354,7 +367,7 @@ def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="unsupported shared schema: actual unexpected"):
-        provision(Path("/repo"), "123", (), {"HOME": "/home/test"})
+        provisioner(Path("/repo"), "123", (), {"HOME": "/home/test"})
 
     assert not any("switchstand-provision" in command for command in calls)
 
@@ -502,3 +515,18 @@ def test_supervised_child_inherits_unblocked_forwarded_signals(monkeypatch, tmp_
     ) == 0
     blocked = {int(item) for item in output.read_text().split(",") if item}
     assert not blocked.intersection({signal.SIGINT, signal.SIGQUIT, signal.SIGTERM})
+
+
+@pytest.mark.parametrize("provisioner", [provision, provision_target])
+def test_provision_propagates_managed_provisioning_failure(monkeypatch, provisioner):
+    def fake_run(command, **kwargs):
+        if "switchstand-provision" in command:
+            raise subprocess.CalledProcessError(17, command, stderr="admission denied")
+        output = "a" * 40 + "\n/repo/.git\nHEAD\n" if command[0] == "git" else ""
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        provisioner(Path("/repo"), "123", (), {})
+    assert failure.value.returncode == 17
+    assert failure.value.stderr == "admission denied"

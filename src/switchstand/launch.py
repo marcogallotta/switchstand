@@ -191,6 +191,14 @@ def parse_authority(output: str) -> Authority:
 def provision(
     control: Path, active: str, references: tuple[str, ...], env: dict[str, str]
 ) -> Authority:
+    return parse_authority(provision_output(control, active, references, env))
+
+
+def provision_output(
+    control: Path, active: str, references: tuple[str, ...], env: dict[str, str],
+    *, repository: bool = False,
+) -> str:
+    """Run trusted provisioning, optionally requesting repository admission."""
     state_file = str(control / "compose.state.yaml")
     control_file = str(control / "compose.yaml")
     subprocess.run(
@@ -247,12 +255,14 @@ def provision(
         asana_task_id(active),
         "--managed-agent",
     ]
+    if repository:
+        command.append("--repository")
     for reference in references:
         command.extend(("--reference", asana_task_id(reference)))
     completed = subprocess.run(
         command, cwd=control, env=env, check=True, text=True, capture_output=True
     )
-    return parse_authority(completed.stdout)
+    return completed.stdout
 
 
 def prepare_managed_run(

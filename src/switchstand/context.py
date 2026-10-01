@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .launch import Authority, clean_environment, parse_authority, provision
+from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
 from .session import supervise
 from .task_ref import asana_task_id
@@ -110,68 +110,8 @@ def _provider_origin(control: Path, env: dict[str, str]) -> str:
 def provision_target(
     control: Path, active: str, references: tuple[str, ...], env: dict[str, str]
 ) -> tuple[Authority, str]:
-    state_file = str(control / "compose.state.yaml")
-    control_file = str(control / "compose.yaml")
-    subprocess.run(
-        ["docker", "compose", "--project-directory", str(control), "-f", state_file,
-         "up", "-d", "--wait", "postgres"],
-        cwd=control, env=env, check=True, capture_output=True,
-    )
-    identity = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "HEAD", "--git-common-dir",
-         "--abbrev-ref", "HEAD"],
-        cwd=control, env=env, check=True, text=True, capture_output=True,
-    ).stdout.splitlines()
-    upgrade_env = dict(env)
-    if identity[2] == "HEAD":
-        upgrade_env.update({
-            "SWITCHSTAND_CONTROL_PATH": str(control.resolve()),
-            "SWITCHSTAND_CONTROL_SHA": identity[0],
-            "SWITCHSTAND_CONTROL_COMMON": identity[1],
-        })
-    else:
-        for name in (
-            "SWITCHSTAND_CONTROL_PATH", "SWITCHSTAND_CONTROL_SHA",
-            "SWITCHSTAND_CONTROL_COMMON",
-        ):
-            upgrade_env.pop(name, None)
-    upgrade = subprocess.run(
-        [str(control / "scripts/switchstand-upgrade-state"), "--target", "production"],
-        cwd=control, env=upgrade_env, text=True, capture_output=True, check=False,
-    )
-    if upgrade.returncode:
-        raise RuntimeError(upgrade.stderr.strip() or "shared state upgrade failed")
-    if upgrade.stdout and "; backup " in upgrade.stdout:
-        # The backup path is the recovery receipt. Do not swallow it merely
-        # because the automatic upgrade succeeded.
-        print(upgrade.stdout, end="")
-    command = [
-        "docker",
-        "compose",
-        "--project-directory",
-        str(control),
-        "-f",
-        control_file,
-        "run",
-        "--build",
-        "--rm",
-        "--no-deps",
-        "controller",
-        "uv",
-        "run",
-        "--no-sync",
-        "switchstand-provision",
-        "--active",
-        asana_task_id(active),
-        "--managed-agent",
-        "--repository",
-    ]
-    for reference in references:
-        command.extend(("--reference", asana_task_id(reference)))
-    completed = subprocess.run(
-        command, cwd=control, env=env, check=True, text=True, capture_output=True
-    )
-    return parse_authority(completed.stdout), repository_marker(completed.stdout)
+    output = provision_output(control, active, references, env, repository=True)
+    return parse_authority(output), repository_marker(output)
 
 
 @dataclass(frozen=True)
