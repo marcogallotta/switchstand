@@ -1,0 +1,145 @@
+import json
+import subprocess
+from pathlib import Path
+from typing import ClassVar
+from uuid import uuid4
+
+import httpx
+import pytest
+
+import switchstand.edge_semantic_probe as probe
+
+
+class FakeMCP:
+    related: ClassVar[list[object]] = []
+
+    def __init__(self, endpoint, token):
+        self.endpoint, self.token, self.requests = endpoint, token, []
+        self.client = object()
+
+    def close(self):
+        pass
+
+    def initialize(self):
+        if self.token != "right":
+            raise AssertionError("wrong token must use raw initialization")
+
+    def _post(self, body, *, session=True):
+        del body, session
+        return httpx.Response(401)
+
+    def unauthorized_initialize(self):
+        return 401
+
+    def call(self, method, params, request_id):
+        self.requests.append({"method": method, "params": params, "id": request_id})
+        if method == "tools/list":
+            return {"tools": [{"name": "work_get", "inputSchema": {"type": "object"}}]}
+        name, arguments = params["name"], params["arguments"]
+        if name == "work_get":
+            if arguments["work_id"] == IDS["foreign"]:
+                return {"status": "denied", "item": None}
+            return {"status": "ok", "item": {"id": arguments["work_id"],
+                "title": "Representative", "revision": "r1"}}
+        if name == "work_search":
+            return {"status": "ok", "items": [{"id": IDS["work"]}]}
+        if name == "work_structure":
+            return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
+        if name == "work_relate":
+            receipt = {"operation_id": arguments["operation_id"],
+                "qualification": "test:disposable-c2d2",
+                "principal": {"issuer": "issuer", "subject": "subject", "client_id": "client"}}
+            result = {"status": "ok", "effect": "applied", "receipt": receipt}
+            self.related.append(result)
+            return result
+        raise AssertionError(name)
+
+
+IDS = {name: str(uuid4()) for name in ("work", "foreign", "dependency", "operation")}
+TOOLS = [{"name": "work_get", "inputSchema": {"type": "object"}}]
+
+
+def private(path: Path, value: str) -> Path:
+    path.write_text(value)
+    path.chmod(0o600)
+    return path
+
+
+@pytest.fixture
+def grounded(monkeypatch):
+    FakeMCP.related = []
+    monkeypatch.setattr(probe, "MCP", FakeMCP)
+    monkeypatch.setattr(probe, "_runtime", lambda _client, _endpoint, sha:
+                        {"runtime_sha": sha, "run_id": "run-1"})
+    monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args[0], 0, stdout="a" * 40 + "\n"))
+
+
+def arguments(tmp_path: Path, endpoint="http://127.0.0.1:8790/mcp") -> list[str]:
+    return ["--endpoint", endpoint,
+        "--token-file", str(private(tmp_path / "token", "right")),
+        "--wrong-token-file", str(private(tmp_path / "wrong", "wrong")),
+        "--work-id", IDS["work"], "--foreign-work-id", IDS["foreign"],
+        "--dependency-work-id", IDS["dependency"], "--expected-sha", "a" * 40,
+        "--expected-tools-sha256", probe._digest(TOOLS),
+        "--expected-principal", "issuer|subject|client", "--repo", str(tmp_path)]
+
+
+def test_read_only_probe_records_exact_schema_and_denials(tmp_path, grounded):
+    receipt = tmp_path / "read.json"
+    assert probe.run(arguments(tmp_path) + ["--receipt", str(receipt)]) == 0
+
+    value = json.loads(receipt.read_text())
+    assert value["result"] == "PASS" and value["tools"] == TOOLS
+    assert value["mutation"] is None
+    assert value["results_sha256"] == probe._digest({
+        "get": {"status": "ok", "item": {"id": IDS["work"],
+            "title": "Representative", "revision": "r1"}},
+        "search": {"status": "ok", "items": [{"id": IDS["work"]}]},
+        "dependency": {"status": "ok", "item": {"id": IDS["dependency"],
+            "title": "Representative", "revision": "r1"}},
+        "stale": {"status": "stale", "work_id": IDS["work"], "revision": "r1"},
+        "foreign": {"status": "denied", "item": None},
+    })
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    assert not FakeMCP.related
+
+
+def test_disposable_replay_and_cold_restart_are_exact(tmp_path, grounded):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    mutation = ["--allow-disposable-mutation", "--operation-id", IDS["operation"],
+        "--expected-qualification", "test:disposable-c2d2"]
+    assert probe.run(arguments(tmp_path) + ["--receipt", str(first)] + mutation) == 0
+    assert probe.run(arguments(tmp_path) + ["--receipt", str(second),
+        "--restart-of", str(first)] + mutation) == 0
+
+    assert len(FakeMCP.related) == 4
+    assert all(item == FakeMCP.related[0] for item in FakeMCP.related)
+    value = json.loads(second.read_text())
+    assert value["restart_of"] == probe._digest(json.loads(first.read_text()))
+    assert value["mutation"]["arguments"]["patch"] == {
+        "kind": "dependency", "action": "add", "target_work_id": IDS["dependency"]}
+
+
+def test_production_mutation_is_hard_disabled(tmp_path, grounded):
+    with pytest.raises(probe.ProbeFailure, match="hard-disabled"):
+        probe.run(arguments(tmp_path, "https://public.example/mcp") + [
+            "--receipt", str(tmp_path / "never.json"), "--allow-disposable-mutation",
+            "--operation-id", IDS["operation"],
+            "--expected-qualification", "test:disposable-c2d2"])
+    assert not (tmp_path / "never.json").exists()
+
+
+def test_rejects_non_private_token_before_network(tmp_path, grounded):
+    args = arguments(tmp_path)
+    Path(args[3]).chmod(0o644)
+    with pytest.raises(probe.ProbeFailure, match="mode-0600"):
+        probe.run(args + ["--receipt", str(tmp_path / "never.json")])
+
+
+def test_rejects_symlink_token(tmp_path, grounded):
+    args = arguments(tmp_path)
+    Path(args[3]).unlink()
+    Path(args[3]).symlink_to(private(tmp_path / "actual-token", "right"))
+    with pytest.raises(OSError):
+        probe.run(args + ["--receipt", str(tmp_path / "never.json")])

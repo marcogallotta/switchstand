@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+primary=$(dirname "$common")
+python="$primary/.venv/bin/python"
+[ -x "$python" ] || { echo "semantic probe environment is missing" >&2; exit 1; }
+exec env PYTHONPATH="$repo/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$python" -m switchstand.edge_semantic_probe "$@"

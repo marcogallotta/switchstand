@@ -100,6 +100,13 @@ scripts/switchstand-edge-doctor --env-file /path/to/edge-doctor.env \
   --expected-sha "$EXPECTED_SHA" --repo /path/to/switchstand
 ```
 
+After startup, `switchstand-edge-semantic-probe` is the separate authenticated semantic check.
+Its default path is read-only and writes a mode-0600 receipt binding the runtime candidate,
+endpoint, expected principal, exact `tools/list`, representative WorkIds/revisions, denials, and
+transcript. Its optional dependency mutation is hard-disabled except on loopback and requires an
+explicit disposable qualification and OperationId; rerun with `--restart-of` only after a cold
+restart to prove the same durable receipt. Production mutation remains `NOT_RUN`.
+
 Command-line resource, local, and public URL options remain available for
 one-off checks and override values in the file. An explicit local probe URL
 must be credential-free loopback HTTP at exact path `/mcp`.
