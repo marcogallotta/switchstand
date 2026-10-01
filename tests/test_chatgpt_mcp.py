@@ -86,7 +86,7 @@ def test_append_cannot_accept_authority_arguments(field):
 
 async def test_ordinary_facade_preserves_unknown_admission_without_sending(monkeypatch):
     subject = service()
-    tools = dict(build_ordinary_tools(subject, session_generation=lambda: "session-a"))
+    tools = dict(build_ordinary_tools(subject))
 
     async def unavailable():
         return GrantResult(status="unknown", principal=PRINCIPAL)
