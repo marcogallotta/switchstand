@@ -187,6 +187,210 @@ def receipt(subject: Config) -> dict[str, object]:
     return json.loads((subject.attempt_dir / "receipt.json").read_text())
 
 
+def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    subject = config(tmp_path)
+    subject.attempt_dir.chmod(0o700)
+    subject.current_runtime.mkdir()
+    subject.candidate_runtime.mkdir()
+    candidate, current = b"candidate launcher", b"current launcher"
+    for path, data, mode in (
+        (subject.candidate_launcher, candidate, 0o700),
+        (subject.launcher, current, 0o700),
+        (subject.env_file, b"ASANA_TOKEN=test\n", 0o600),
+    ):
+        path.write_bytes(data)
+        path.chmod(mode)
+    subject = replace(
+        subject,
+        candidate_launcher_sha=hashlib.sha256(candidate).hexdigest(),
+        current_launcher_sha=hashlib.sha256(current).hexdigest(),
+    )
+    state = {"dirty": False}
+
+    def run(command, **_kwargs):
+        if command[0] == "git":
+            runtime = Path(command[2])
+            if command[3] == "status":
+                output = "dirty\n" if state["dirty"] else ""
+            else:
+                sha = subject.current_sha if runtime == subject.current_runtime else subject.candidate_sha
+                output = sha + "\n"
+        else:
+            output = str(subject.launcher) + "\n"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "_run", run)
+    return subject, HostOperations(subject), state
+
+
+@pytest.mark.parametrize(
+    ("phase", "gate", "service", "expected"),
+    [
+        ("PREFLIGHT", "APPLIED", "ACTIVE", "GATED"),
+        ("GATED", "APPLIED", "INACTIVE", "STOPPED"),
+        ("STOPPED", "APPLIED", "INACTIVE", "SNAPSHOTTED"),
+        ("OFFLINE_COMPLETE", "APPLIED", "INACTIVE", "SWAPPED"),
+        ("SWAPPED", "APPLIED", "ACTIVE", "STARTED"),
+        ("STARTED", "ABSENT", "ACTIVE", "UNGATED"),
+    ],
+)
+def test_reconcile_classifies_effect_completed_before_phase_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    phase: str, gate: str, service: str, expected: str,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_gate_state", lambda: gate)
+    monkeypatch.setattr(operations, "_service_state", lambda: service)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(operations, "local_ready", lambda: True)
+    monkeypatch.setattr(operations, "public_ready", lambda: True)
+    proof: dict[str, object] = {}
+    if phase in {"STOPPED", "OFFLINE_COMPLETE", "SWAPPED", "STARTED"}:
+        operations.snapshot_file.write_bytes(b"snapshot")
+        operations.snapshot_file.chmod(0o600)
+        if phase != "STOPPED":
+            proof["fastmcp_snapshot"] = hashlib.sha256(b"snapshot").hexdigest()
+    if phase in {"OFFLINE_COMPLETE", "SWAPPED", "STARTED"}:
+        operations.backup.write_bytes(b"current launcher")
+        operations.backup.chmod(0o600)
+        subject.launcher.write_bytes(b"candidate launcher")
+
+    observed, added = operations.reconcile_phase(phase, proof, offline=True)
+
+    assert observed == expected
+    if phase == "STOPPED":
+        assert added["fastmcp_snapshot"] == hashlib.sha256(b"snapshot").hexdigest()
+
+
+def test_reconcile_preserves_ungated_phase_when_safety_gate_was_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "APPLIED")
+    monkeypatch.setattr(operations, "_service_state", lambda: "ACTIVE")
+    monkeypatch.setattr(operations, "local_ready", lambda: True)
+    operations.snapshot_file.write_bytes(b"snapshot")
+    operations.snapshot_file.chmod(0o600)
+    operations.backup.write_bytes(b"current launcher")
+    operations.backup.chmod(0o600)
+    subject.launcher.write_bytes(b"candidate launcher")
+
+    phase, proof = operations.reconcile_phase(
+        "UNGATED",
+        {"fastmcp_snapshot": hashlib.sha256(b"snapshot").hexdigest()},
+        offline=True,
+    )
+
+    assert phase == "UNGATED"
+    assert proof == {"gate_retained": "true"}
+
+
+def test_reconcile_normalizes_caddy_gate_http_500_to_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+
+    def unavailable(*_args, **_kwargs):
+        raise urllib.error.HTTPError("http://caddy/id/gate", 500, "error", None, None)
+
+    monkeypatch.setattr(maintenance.urllib.request, "urlopen", unavailable)
+
+    with pytest.raises(Unknown, match="gate readback failed"):
+        operations.reconcile_phase("PREFLIGHT", {}, offline=True)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "attempt-mode", "attempt-link", "relative", "wrong-owner",
+        "launcher-link", "launcher-loop", "launcher-digest", "dirty", "git-read",
+    ],
+)
+def test_resume_trust_rejects_host_identity_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
+):
+    subject, operations, state = resume_subject(tmp_path, monkeypatch)
+    if fault == "attempt-mode":
+        subject.attempt_dir.chmod(0o755)
+    elif fault == "attempt-link":
+        target = tmp_path / "real-attempt"
+        subject.attempt_dir.replace(target)
+        subject.attempt_dir.symlink_to(target, target_is_directory=True)
+    elif fault == "relative":
+        subject = replace(subject, attempt_dir=Path("attempt"))
+        operations = HostOperations(subject)
+    elif fault == "wrong-owner":
+        uid = os.getuid()
+        monkeypatch.setattr(maintenance.os, "getuid", lambda: uid + 1)
+    elif fault == "launcher-link":
+        subject.candidate_launcher.unlink()
+        subject.candidate_launcher.symlink_to(subject.launcher)
+    elif fault == "launcher-loop":
+        subject.candidate_launcher.unlink()
+        subject.candidate_launcher.symlink_to(subject.candidate_launcher)
+    elif fault == "launcher-digest":
+        subject.candidate_launcher.write_bytes(b"changed")
+    elif fault == "git-read":
+        monkeypatch.setattr(
+            maintenance,
+            "_run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, ["git"])
+            ),
+        )
+    else:
+        state["dirty"] = True
+    with pytest.raises(Unknown):
+        operations.reconcile_phase("PREFLIGHT", {}, offline=True)
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "selected-launcher", "selected-digest", "snapshot", "snapshot-link",
+        "snapshot-digest", "backup", "backup-link", "backup-digest",
+    ],
+)
+def test_resume_trust_rejects_changed_phase_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "APPLIED")
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    operations.snapshot_file.write_bytes(b"snapshot")
+    operations.snapshot_file.chmod(0o600)
+    proof = {"fastmcp_snapshot": hashlib.sha256(b"snapshot").hexdigest()}
+    phase = "SNAPSHOTTED"
+    if artifact == "selected-launcher":
+        subject.launcher.chmod(0o755)
+    elif artifact == "selected-digest":
+        subject.launcher.write_bytes(b"changed")
+    elif artifact == "snapshot":
+        operations.snapshot_file.chmod(0o644)
+    elif artifact == "snapshot-link":
+        target = tmp_path / "other-snapshot"
+        operations.snapshot_file.replace(target)
+        operations.snapshot_file.symlink_to(target)
+    elif artifact == "snapshot-digest":
+        proof["fastmcp_snapshot"] = "0" * 64
+    else:
+        phase = "OFFLINE_COMPLETE"
+        operations.backup.write_bytes(b"current launcher")
+        operations.backup.chmod(
+            0o600 if artifact in {"backup-link", "backup-digest"} else 0o644
+        )
+        if artifact == "backup-link":
+            target = tmp_path / "other-backup"
+            operations.backup.replace(target)
+            operations.backup.symlink_to(target)
+        elif artifact == "backup-digest":
+            operations.backup.write_bytes(b"changed")
+        subject.launcher.write_bytes(b"candidate launcher")
+    with pytest.raises(Unknown):
+        operations.reconcile_phase(phase, proof, offline=True)
+
+
 def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations()
