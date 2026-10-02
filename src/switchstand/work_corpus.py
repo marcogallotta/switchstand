@@ -9,8 +9,10 @@ import json
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from uuid import UUID
 
 import httpx
 from sqlalchemy import func, select, text
@@ -68,6 +70,17 @@ class HandleClassification:
 class ParityResult:
     records: int
     digest: str
+
+
+def parity_value(value: object) -> object:
+    """Return the stable JSON representation shared by parity exporters."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("parity timestamps must include a timezone")
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    return value
 
 
 def _populated_fields(rows: list[dict[str, object]], attribute: str) -> list[str]:
