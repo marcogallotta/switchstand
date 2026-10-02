@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -61,6 +62,12 @@ class HandleClassification:
     work_id: str
     state: Literal["current", "historical-missing", "unresolved"]
     reason: str | None
+
+
+@dataclass(frozen=True)
+class ParityResult:
+    records: int
+    digest: str
 
 
 def _populated_fields(rows: list[dict[str, object]], attribute: str) -> list[str]:
@@ -336,6 +343,55 @@ def compare_manifests(first: Path, second: Path) -> str:
     return str(left["sha256"])
 
 
+def parity_manifest(records: Sequence[object]) -> dict[str, object]:
+    """Build the small common artifact consumed by full source/target parity."""
+    document: dict[str, object] = {"schema_version": 1, "records": records}
+    result = _with_digest(document)
+    _parity_records(result)
+    return result
+
+
+def _parity_records(document: dict[str, object]) -> dict[tuple[str, str], object]:
+    if set(document) != {"schema_version", "records", "sha256"}:
+        raise ValueError("parity export has unexpected top-level fields")
+    if document["schema_version"] != 1 or not isinstance(document["records"], list):
+        raise ValueError("parity export schema is invalid")
+    indexed: dict[tuple[str, str], object] = {}
+    for raw in cast(list[object], document["records"]):
+        if not isinstance(raw, dict):
+            raise TypeError("parity record must be an object")
+        mapping = cast(dict[object, object], raw)
+        if set(mapping) != {"kind", "id", "fields"}:
+            raise ValueError("parity record schema is invalid")
+        record = cast(dict[str, object], mapping)
+        kind, identity = record["kind"], record["id"]
+        if not isinstance(kind, str) or not kind or not isinstance(identity, str) or not identity:
+            raise ValueError("parity record identity is invalid")
+        if not isinstance(record["fields"], dict):
+            raise TypeError("parity record fields must be an object")
+        key = kind, identity
+        if key in indexed:
+            raise ValueError(f"duplicate parity record: {kind}:{identity}")
+        indexed[key] = record["fields"]
+    return indexed
+
+
+def compare_parity_exports(source: Path, target: Path) -> ParityResult:
+    """Compare every field of every keyed record in two frozen exports."""
+    left = _parity_records(load_manifest(source))
+    right = _parity_records(load_manifest(target))
+    if left.keys() != right.keys():
+        missing, extra = left.keys() - right.keys(), right.keys() - left.keys()
+        raise ValueError(
+            f"parity record identities differ: missing={len(missing)} extra={len(extra)}"
+        )
+    for key in sorted(left):
+        if _canonical(left[key]) != _canonical(right[key]):
+            raise ValueError(f"parity fields differ for {key[0]}:{key[1]}")
+    rows = [{"kind": key[0], "id": key[1], "fields": left[key]} for key in sorted(left)]
+    return ParityResult(len(rows), hashlib.sha256(_canonical(rows)).hexdigest())
+
+
 def manifest_exception_digest(manifest: dict[str, object]) -> str:
     exceptions = manifest.get("exceptions")
     if not isinstance(exceptions, list):
@@ -417,6 +473,9 @@ def run(argv: list[str] | None = None) -> None:
     compare = subparsers.add_parser("compare")
     compare.add_argument("first", type=Path)
     compare.add_argument("second", type=Path)
+    parity = subparsers.add_parser("parity")
+    parity.add_argument("source", type=Path)
+    parity.add_argument("target", type=Path)
     arguments = parser.parse_args(argv)
     try:
         if arguments.action in {"capture", "preflight"}:
@@ -424,10 +483,14 @@ def run(argv: list[str] | None = None) -> None:
                 arguments.path, arguments.source_candidate,
                 preflight=arguments.action == "preflight",
             ))
-        else:
+        elif arguments.action == "compare":
             digest = compare_manifests(arguments.first, arguments.second)
-    except (KeyError, OSError, ProviderError, ValueError) as error:
-        parser.exit(1, f"Stage 1 corpus capture failed: {error}\n")
+        else:
+            result = compare_parity_exports(arguments.source, arguments.target)
+            print(f"parity_records={result.records} parity_sha256={result.digest}")
+            return
+    except (KeyError, OSError, ProviderError, TypeError, ValueError) as error:
+        parser.exit(1, f"Work corpus command failed: {error}\n")
     manifest = load_manifest(
         arguments.path if arguments.action in {"capture", "preflight"} else arguments.first
     )
