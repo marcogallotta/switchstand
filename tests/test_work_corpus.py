@@ -22,8 +22,11 @@ from switchstand.work_corpus import (
     capture_preflight_manifest,
     capture_to_path,
     compare_manifests,
+    compare_parity_exports,
     failure_receipt_path,
     load_manifest,
+    parity_manifest,
+    run,
     write_manifest,
 )
 
@@ -408,6 +411,80 @@ def test_manifest_rejects_tampering(tmp_path: Path):
     path.write_text('{"schema_version":1,"sha256":"bad"}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="digest"):
         load_manifest(path)
+
+
+def test_parity_compares_every_record_and_field_without_order_dependence(tmp_path: Path):
+    work = {
+        "kind": "work", "id": "work-1",
+        "fields": {"title": "Exact title", "completed": False, "metadata": {"priority": "P1"}},
+    }
+    event = {
+        "kind": "event", "id": "event-1",
+        "fields": {"sequence": 1, "text": "Exact text", "actor": None},
+    }
+    source, target = tmp_path / "source.json", tmp_path / "target.json"
+    write_manifest(source, parity_manifest([work, event]))
+    write_manifest(target, parity_manifest([event, work]))
+
+    result = compare_parity_exports(source, target)
+
+    assert result.records == 2
+    assert len(result.digest) == 64
+
+
+@pytest.mark.parametrize(
+    ("target_records", "message"),
+    [
+        ([{"kind": "work", "id": "work-2", "fields": {"title": "same"}}], "identities"),
+        ([{"kind": "work", "id": "work-1", "fields": {"title": "changed"}}], "fields"),
+    ],
+)
+def test_parity_rejects_missing_extra_or_changed_data(
+    tmp_path: Path, target_records: list[dict[str, object]], message: str,
+):
+    source, target = tmp_path / "source.json", tmp_path / "target.json"
+    write_manifest(source, parity_manifest([
+        {"kind": "work", "id": "work-1", "fields": {"title": "same"}},
+    ]))
+    write_manifest(target, parity_manifest(target_records))
+
+    with pytest.raises(ValueError, match=message):
+        compare_parity_exports(source, target)
+
+
+@pytest.mark.parametrize(("source_value", "target_value"), [(True, 1), (1, 1.0)])
+def test_parity_preserves_json_scalar_types(
+    tmp_path: Path, source_value: object, target_value: object,
+):
+    source, target = tmp_path / "source.json", tmp_path / "target.json"
+    write_manifest(source, parity_manifest([
+        {"kind": "work", "id": "work-1", "fields": {"value": source_value}},
+    ]))
+    write_manifest(target, parity_manifest([
+        {"kind": "work", "id": "work-1", "fields": {"value": target_value}},
+    ]))
+
+    with pytest.raises(ValueError, match="fields differ"):
+        compare_parity_exports(source, target)
+
+
+def test_parity_rejects_duplicate_identity_and_non_object_fields():
+    row: dict[str, object] = {"kind": "work", "id": "work-1", "fields": {}}
+    with pytest.raises(ValueError, match="duplicate"):
+        parity_manifest([row, row])
+    with pytest.raises(TypeError, match="fields"):
+        parity_manifest([{"kind": "work", "id": "work-1", "fields": []}])
+
+
+def test_cli_reports_verified_parity_count_and_digest(tmp_path: Path, capsys):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    document = parity_manifest([{"kind": "work", "id": "work-1", "fields": {}}])
+    write_manifest(first, document)
+    write_manifest(second, document)
+
+    run(["parity", str(first), str(second)])
+
+    assert capsys.readouterr().out.startswith("parity_records=1 parity_sha256=")
 
 
 async def test_cli_capture_passes_test_project_to_provider(monkeypatch, tmp_path: Path):
