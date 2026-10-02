@@ -36,13 +36,16 @@ jobs:
         run: |
           execution_sha="$(git rev-parse HEAD)"
           if test "$EVENT_KIND" = pull_request; then
-            planner_base_sha="$PR_BASE_SHA"
-            planner_head_sha="$PR_HEAD_SHA"
+            candidate_base_sha="$PR_BASE_SHA"
+            candidate_head_sha="$PR_HEAD_SHA"
+            candidate_composition_sha="$execution_sha"
+            planner_base_sha="$candidate_base_sha"
+            planner_head_sha="$candidate_composition_sha"
             execution_kind=composition
             mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
             if test "${#parents[@]}" -eq 2 \
-              && test "${parents[0]}" = "$planner_base_sha" \
-              && test "${parents[1]}" = "$planner_head_sha"; then
+              && test "${parents[0]}" = "$candidate_base_sha" \
+              && test "${parents[1]}" = "$candidate_head_sha"; then
               subject_verified=true
               identity_mode=VERIFIED
               parent_check=ordered-base-head-match
@@ -54,6 +57,9 @@ jobs:
           else
             planner_base_sha="$PUSH_BASE_SHA"
             planner_head_sha="$EVENT_SHA"
+            candidate_base_sha="$planner_base_sha"
+            candidate_head_sha="$planner_head_sha"
+            candidate_composition_sha=""
             execution_kind=exact-head
             if test "$execution_sha" != "$planner_head_sha"; then
               subject_verified=false
@@ -79,6 +85,9 @@ jobs:
           {
             printf 'execution_sha=%s\n' "$execution_sha"
             printf 'execution_kind=%s\n' "$execution_kind"
+            printf 'candidate_base_sha=%s\n' "$candidate_base_sha"
+            printf 'candidate_head_sha=%s\n' "$candidate_head_sha"
+            printf 'candidate_composition_sha=%s\n' "$candidate_composition_sha"
             printf 'planner_base_sha=%s\n' "$planner_base_sha"
             printf 'planner_head_sha=%s\n' "$planner_head_sha"
             printf 'subject_verified=%s\n' "$subject_verified"
@@ -121,16 +130,45 @@ jobs:
               print(f'execute_selected={str(execute_selected).lower()}', file=output)
           PY
 
-      - name: Report non-authoritative decision
+      - name: Run planner-emitted tests only
+        id: selected
+        if: steps.plan.outputs.execute_selected == 'true'
+        run: |
+          mapfile -t selected_tests < <(
+            python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["selected_tests"]))' \
+              "$RUNNER_TEMP/affected-test-plan.json"
+          )
+          test "${#selected_tests[@]}" -gt 0
+          started="$(date +%s%N)"
+          set +e
+          docker run --rm --network host \
+            -e TEST_DATABASE_URL -e PYTHONPATH=/workspace/src \
+            -v "$PWD:/workspace:ro" -w /workspace \
+            switchstand-affected-test-shadow \
+            /app/.venv/bin/python -m pytest -ra -p no:cacheprovider "${selected_tests[@]}"
+          status="$?"
+          set -e
+          duration_ms="$(( ($(date +%s%N) - started) / 1000000 ))"
+          test "$status" -eq 0 && result=PASS || result=FAIL
+          printf 'result=%s\nduration_ms=%s\n' "$result" "$duration_ms" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Record non-authoritative evidence
+        if: always()
         env:
           EXECUTION_KIND: ${{ steps.identity.outputs.execution_kind }}
           EXECUTION_SHA: ${{ steps.identity.outputs.execution_sha }}
+          CANDIDATE_BASE_SHA: ${{ steps.identity.outputs.candidate_base_sha }}
+          CANDIDATE_HEAD_SHA: ${{ steps.identity.outputs.candidate_head_sha }}
+          CANDIDATE_COMPOSITION_SHA: ${{ steps.identity.outputs.candidate_composition_sha }}
           PLANNER_BASE_SHA: ${{ steps.identity.outputs.planner_base_sha }}
           PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
           PARENT_CHECK: ${{ steps.identity.outputs.parent_check }}
           SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
           IDENTITY_MODE: ${{ steps.identity.outputs.identity_mode }}
           PLANNER_MODE: ${{ steps.plan.outputs.planner_mode }}
+          SELECTED_RESULT: ${{ steps.selected.outputs.result || 'NOT_RUN' }}
+          SELECTED_DURATION_MS: ${{ steps.selected.outputs.duration_ms || '' }}
         run: |
           python3 - "$RUNNER_TEMP/affected-test-plan.json" <<'PY'
           import json
@@ -141,23 +179,31 @@ jobs:
               plan = json.load(source)
           effective_mode = plan["mode"] if os.environ["SUBJECT_VERIFIED"] == "true" else os.environ["IDENTITY_MODE"]
           selected = plan["selected_tests"] if effective_mode == "SELECTED" else []
-          quality = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/commit/{os.environ["PLANNER_HEAD_SHA"]}/checks'
+          quality = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/commit/{os.environ["CANDIDATE_HEAD_SHA"]}/checks'
+          fallback_reasons = plan["fallback_reasons"] if os.environ["SUBJECT_VERIFIED"] == "true" else [os.environ["PARENT_CHECK"]]
           report = {
               "authority": "NON_AUTHORITATIVE_SHADOW",
               "execution_kind": os.environ["EXECUTION_KIND"],
               "execution_sha": os.environ["EXECUTION_SHA"],
+              "planner_revision": plan["planner_revision"],
+              "candidate_base_sha": os.environ["CANDIDATE_BASE_SHA"],
+              "candidate_head_sha": os.environ["CANDIDATE_HEAD_SHA"],
+              "candidate_composition_sha": os.environ["CANDIDATE_COMPOSITION_SHA"] or None,
               "planner_base_sha": os.environ["PLANNER_BASE_SHA"],
-              "planner_head_sha": os.environ["PLANNER_HEAD_SHA"],
+              "planner_subject_sha": os.environ["PLANNER_HEAD_SHA"],
               "parent_check": os.environ["PARENT_CHECK"],
               "planner_mode": os.environ["PLANNER_MODE"],
               "effective_mode": effective_mode,
+              "changed_paths": plan["changed_paths"],
               "selected_tests": selected,
               "selected_count": len(selected),
-              "reasons_by_test": plan["reasons_by_test"],
-              "fallback_reasons": plan["fallback_reasons"],
-              "authoritative_quality": quality,
+              "selected_result": os.environ["SELECTED_RESULT"],
+              "selected_duration_ms": int(os.environ["SELECTED_DURATION_MS"]) if os.environ["SELECTED_DURATION_MS"] else None,
+              "fallback_reasons": fallback_reasons,
           }
           print(json.dumps(report, indent=2, sort_keys=True))
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "affected-test-evidence.json"), "w") as artifact:
+              json.dump(report, artifact, indent=2, sort_keys=True)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write("## Non-authoritative affected-test shadow\n\n")
               summary.write("```json\n" + json.dumps(report, indent=2, sort_keys=True) + "\n```\n")
@@ -167,16 +213,10 @@ jobs:
                   summary.write("\nNo selected-test claim was made; authoritative Quality remains independent.\n")
           PY
 
-      - name: Run planner-emitted tests only
-        if: steps.plan.outputs.execute_selected == 'true'
-        run: |
-          mapfile -t selected_tests < <(
-            python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["selected_tests"]))' \
-              "$RUNNER_TEMP/affected-test-plan.json"
-          )
-          test "${#selected_tests[@]}" -gt 0
-          docker run --rm --network host \
-            -e TEST_DATABASE_URL -e PYTHONPATH=/workspace/src \
-            -v "$PWD:/workspace:ro" -w /workspace \
-            switchstand-affected-test-shadow \
-            /app/.venv/bin/python -m pytest -ra -p no:cacheprovider "${selected_tests[@]}"
+      - name: Retain non-authoritative evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: affected-test-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/affected-test-evidence.json
+          if-no-files-found: warn
