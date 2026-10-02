@@ -1,0 +1,180 @@
+name: Affected-test shadow
+run-name: Affected-test shadow / ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
+on:
+  push:
+  pull_request:
+
+jobs:
+  shadow:
+    name: Non-authoritative affected-test shadow
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: switchstand_test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Bind exact planner and execution identities
+        id: identity
+        env:
+          EVENT_KIND: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_FORCED: ${{ github.event.forced }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          execution_sha="$(git rev-parse HEAD)"
+          if test "$EVENT_KIND" = pull_request; then
+            planner_base_sha="$PR_BASE_SHA"
+            planner_head_sha="$PR_HEAD_SHA"
+            execution_kind=composition
+            mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+            if test "${#parents[@]}" -eq 2 \
+              && test "${parents[0]}" = "$planner_base_sha" \
+              && test "${parents[1]}" = "$planner_head_sha"; then
+              subject_verified=true
+              identity_mode=VERIFIED
+              parent_check=ordered-base-head-match
+            else
+              subject_verified=false
+              identity_mode=STALE
+              parent_check=STALE_OR_UNAVAILABLE_COMPOSITION
+            fi
+          else
+            planner_base_sha="$PUSH_BASE_SHA"
+            planner_head_sha="$EVENT_SHA"
+            execution_kind=exact-head
+            if test "$execution_sha" != "$planner_head_sha"; then
+              subject_verified=false
+              identity_mode=STALE
+              parent_check=STALE_OR_UNAVAILABLE_EXACT_HEAD
+            elif test "$PUSH_FORCED" = true; then
+              subject_verified=false
+              identity_mode=NO_PLAN
+              parent_check=NO_PLAN_FORCED_PUSH
+            elif ! printf '%s' "$planner_base_sha" | grep -Eq '^[0-9a-f]{40}$' \
+              || test "$planner_base_sha" = 0000000000000000000000000000000000000000 \
+              || ! git cat-file -e "$planner_base_sha^{commit}" \
+              || ! git merge-base --is-ancestor "$planner_base_sha" "$planner_head_sha"; then
+              subject_verified=false
+              identity_mode=NO_PLAN
+              parent_check=NO_PLAN_UNAVAILABLE_OR_NON_ANCESTOR_PUSH_BASE
+            else
+              subject_verified=true
+              identity_mode=VERIFIED
+              parent_check=ancestor-base-head-match
+            fi
+          fi
+          {
+            printf 'execution_sha=%s\n' "$execution_sha"
+            printf 'execution_kind=%s\n' "$execution_kind"
+            printf 'planner_base_sha=%s\n' "$planner_base_sha"
+            printf 'planner_head_sha=%s\n' "$planner_head_sha"
+            printf 'subject_verified=%s\n' "$subject_verified"
+            printf 'identity_mode=%s\n' "$identity_mode"
+            printf 'parent_check=%s\n' "$parent_check"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Build planner and selected-test development image
+        run: docker build --target development --tag switchstand-affected-test-shadow .
+
+      - name: Plan affected tests from exact Git objects
+        id: plan
+        env:
+          PLANNER_BASE_SHA: ${{ steps.identity.outputs.planner_base_sha }}
+          PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
+          SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
+        run: |
+          docker run --rm \
+            -e PYTHONPATH=/workspace/src \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/workspace \
+            -v "$PWD:/workspace:ro" -w /workspace \
+            switchstand-affected-test-shadow \
+            /app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()' \
+            --repo /workspace --base "$PLANNER_BASE_SHA" --head "$PLANNER_HEAD_SHA" --json \
+            > "$RUNNER_TEMP/affected-test-plan.json"
+          python3 - "$RUNNER_TEMP/affected-test-plan.json" "$GITHUB_OUTPUT" "$SUBJECT_VERIFIED" <<'PY'
+          import json
+          import sys
+
+          plan_path, output_path, subject_verified = sys.argv[1:]
+          with open(plan_path) as source:
+              plan = json.load(source)
+          execute_selected = plan["mode"] == "SELECTED" and subject_verified == "true"
+          with open(output_path, "a") as output:
+              print(f'planner_mode={plan["mode"]}', file=output)
+              print(f'execute_selected={str(execute_selected).lower()}', file=output)
+          PY
+
+      - name: Report non-authoritative decision
+        env:
+          EXECUTION_KIND: ${{ steps.identity.outputs.execution_kind }}
+          EXECUTION_SHA: ${{ steps.identity.outputs.execution_sha }}
+          PLANNER_BASE_SHA: ${{ steps.identity.outputs.planner_base_sha }}
+          PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
+          PARENT_CHECK: ${{ steps.identity.outputs.parent_check }}
+          SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
+          IDENTITY_MODE: ${{ steps.identity.outputs.identity_mode }}
+          PLANNER_MODE: ${{ steps.plan.outputs.planner_mode }}
+        run: |
+          python3 - "$RUNNER_TEMP/affected-test-plan.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1]) as source:
+              plan = json.load(source)
+          effective_mode = plan["mode"] if os.environ["SUBJECT_VERIFIED"] == "true" else os.environ["IDENTITY_MODE"]
+          selected = plan["selected_tests"] if effective_mode == "SELECTED" else []
+          quality = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/commit/{os.environ["PLANNER_HEAD_SHA"]}/checks'
+          report = {
+              "authority": "NON_AUTHORITATIVE_SHADOW",
+              "execution_kind": os.environ["EXECUTION_KIND"],
+              "execution_sha": os.environ["EXECUTION_SHA"],
+              "planner_base_sha": os.environ["PLANNER_BASE_SHA"],
+              "planner_head_sha": os.environ["PLANNER_HEAD_SHA"],
+              "parent_check": os.environ["PARENT_CHECK"],
+              "planner_mode": os.environ["PLANNER_MODE"],
+              "effective_mode": effective_mode,
+              "selected_tests": selected,
+              "selected_count": len(selected),
+              "reasons_by_test": plan["reasons_by_test"],
+              "fallback_reasons": plan["fallback_reasons"],
+              "authoritative_quality": quality,
+          }
+          print(json.dumps(report, indent=2, sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("## Non-authoritative affected-test shadow\n\n")
+              summary.write("```json\n" + json.dumps(report, indent=2, sort_keys=True) + "\n```\n")
+              if effective_mode == "FULL_FALLBACK":
+                  summary.write(f"\nFALLBACK_TO_AUTHORITATIVE_QUALITY: {quality}\n")
+              elif effective_mode in {"NO_PLAN", "STALE"}:
+                  summary.write("\nNo selected-test claim was made; authoritative Quality remains independent.\n")
+          PY
+
+      - name: Run planner-emitted tests only
+        if: steps.plan.outputs.execute_selected == 'true'
+        run: |
+          mapfile -t selected_tests < <(
+            python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["selected_tests"]))' \
+              "$RUNNER_TEMP/affected-test-plan.json"
+          )
+          test "${#selected_tests[@]}" -gt 0
+          docker run --rm --network host \
+            -e TEST_DATABASE_URL -e PYTHONPATH=/workspace/src \
+            -v "$PWD:/workspace:ro" -w /workspace \
+            switchstand-affected-test-shadow \
+            /app/.venv/bin/python -m pytest -ra -p no:cacheprovider "${selected_tests[@]}"

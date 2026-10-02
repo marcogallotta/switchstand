@@ -155,3 +155,20 @@ def test_cli_json_binds_basis_and_revision(tmp_path: Path, capsys: CaptureFixtur
     missing = plan_exact(repo, base, "0" * 40)
     assert missing.mode == "NO_PLAN"
     assert missing.selected_tests == ()
+
+
+def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
+    workflow = Path(".github/workflows/affected-test-shadow.yml").read_text()
+
+    assert "PUSH_FORCED: ${{ github.event.forced }}" in workflow
+    assert 'test "$PUSH_FORCED" = true' in workflow
+    assert 'git merge-base --is-ancestor "$planner_base_sha" "$planner_head_sha"' in workflow
+    assert "identity_mode=NO_PLAN" in workflow
+    assert "NO_PLAN_FORCED_PUSH" in workflow
+    assert "NO_PLAN_UNAVAILABLE_OR_NON_ANCESTOR_PUSH_BASE" in workflow
+    assert 'else os.environ["IDENTITY_MODE"]' in workflow
+    assert "Build planner and selected-test development image" in workflow
+    assert "/app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()'" in workflow
+    assert "--repo /workspace" in workflow
+    assert "GIT_CONFIG_KEY_0=safe.directory" in workflow
+    assert "GIT_CONFIG_VALUE_0=/workspace" in workflow
