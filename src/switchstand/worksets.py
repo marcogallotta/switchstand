@@ -435,6 +435,201 @@ class WorksetReader:
             ).where(work_parent_edges.c.child_work_id == work_id))
         return current == parent_id
 
+    async def update_workset(
+        self, workset_id: UUID, expected_row_version: int, *,
+        name: str | None = None, state: str | None = None,
+    ) -> bool:
+        """Rename or change lifecycle state under Stage 3 optimistic currentness."""
+        if name is None and state is None:
+            raise ValueError("workset update must change name or state")
+        if name is not None and not name.strip():
+            raise ValueError("workset name must contain non-whitespace text")
+        if state is not None and state not in {"ACTIVE", "RETIRED"}:
+            raise ValueError("invalid workset state")
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            row = (await connection.execute(select(
+                worksets.c.name, worksets.c.state, worksets.c.row_version,
+            ).where(worksets.c.workset_id == workset_id).with_for_update())).one_or_none()
+            if row is None:
+                raise ValueError("workset is not admitted")
+            if row[2] != expected_row_version:
+                return False
+            values = {
+                "name": row[0] if name is None else name,
+                "state": row[1] if state is None else state,
+            }
+            if (values["name"], values["state"]) == row[:2]:
+                return True
+            await connection.execute(update(worksets).where(
+                worksets.c.workset_id == workset_id,
+                worksets.c.row_version == expected_row_version,
+            ).values(**values, row_version=expected_row_version + 1))
+        return True
+
+    async def move_authoritative_membership(
+        self, work_id: UUID, from_workset_id: UUID, to_workset_id: UUID,
+        expected_from_version: int, expected_to_version: int | None,
+    ) -> bool:
+        """Atomically demote the old home and promote the new active workset."""
+        if from_workset_id == to_workset_id:
+            raise ValueError("authoritative membership move requires distinct worksets")
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            set_rows = (await connection.execute(select(
+                worksets.c.workset_id, worksets.c.state,
+            ).where(worksets.c.workset_id.in_({from_workset_id, to_workset_id})).order_by(
+                worksets.c.workset_id,
+            ).with_for_update())).all()
+            states = {cast(UUID, row[0]): cast(str, row[1]) for row in set_rows}
+            if len(set_rows) != 2 or states.get(to_workset_id) != "ACTIVE":
+                raise ValueError("membership target workset is not active and admitted")
+            memberships = (await connection.execute(select(
+                workset_memberships.c.workset_id,
+                workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+                workset_memberships.c.row_version,
+            ).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.workset_id.in_({from_workset_id, to_workset_id}),
+            ).order_by(workset_memberships.c.workset_id).with_for_update())).all()
+            by_set = {row[0]: row for row in memberships}
+            source, target = by_set.get(from_workset_id), by_set.get(to_workset_id)
+            if (
+                source is not None and target is not None
+                and source[1:3] == ("RELATED", "MEMBER")
+                and target[1:3] == ("AUTHORITATIVE", "MEMBER")
+                and source[3] == expected_from_version + 1
+                and expected_to_version is not None
+                and target[3] == expected_to_version + 1
+            ):
+                return True
+            if source is None or source[1:3] != ("AUTHORITATIVE", "MEMBER"):
+                raise ValueError("source is not a movable authoritative membership")
+            if source[3] != expected_from_version:
+                return False
+            if target is None:
+                if expected_to_version is not None:
+                    return False
+            elif target[1:3] != ("RELATED", "MEMBER"):
+                raise ValueError("target membership is not promotable")
+            elif target[3] != expected_to_version:
+                return False
+            await connection.execute(update(workset_memberships).where(
+                workset_memberships.c.workset_id == from_workset_id,
+                workset_memberships.c.work_id == work_id,
+            ).values(semantics="RELATED", row_version=expected_from_version + 1))
+            if target is None:
+                await connection.execute(insert(workset_memberships).values(
+                    workset_id=to_workset_id, work_id=work_id,
+                    semantics="AUTHORITATIVE", member_role="MEMBER", row_version=1,
+                ))
+            else:
+                assert expected_to_version is not None
+                await connection.execute(update(workset_memberships).where(
+                    workset_memberships.c.workset_id == to_workset_id,
+                    workset_memberships.c.work_id == work_id,
+                ).values(semantics="AUTHORITATIVE", row_version=expected_to_version + 1))
+        return True
+
+    async def update_related_membership(
+        self, work_id: UUID, workset_id: UUID, *, add: bool,
+        expected_row_version: int | None,
+    ) -> bool:
+        """Add or remove one non-authoritative membership without moving authority."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            state = await connection.scalar(select(worksets.c.state).where(
+                worksets.c.workset_id == workset_id,
+            ).with_for_update())
+            if state is None or add and state != "ACTIVE":
+                raise ValueError("related membership workset is not active and admitted")
+            admitted = await connection.scalar(select(work_index.c.work_id).where(
+                work_index.c.work_id == work_id,
+            ).with_for_update())
+            if admitted is None:
+                raise ValueError("related work is not admitted")
+            row = (await connection.execute(select(
+                workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+                workset_memberships.c.row_version,
+            ).where(
+                workset_memberships.c.workset_id == workset_id,
+                workset_memberships.c.work_id == work_id,
+            ).with_for_update())).one_or_none()
+            if add:
+                if row is not None:
+                    if row[:2] != ("RELATED", "MEMBER"):
+                        raise ValueError("membership is not a related member")
+                    return row[2] == expected_row_version
+                if expected_row_version is not None:
+                    return False
+                await connection.execute(insert(workset_memberships).values(
+                    workset_id=workset_id, work_id=work_id,
+                    semantics="RELATED", member_role="MEMBER", row_version=1,
+                ))
+                return True
+            if row is None:
+                return expected_row_version is None
+            if row[:2] != ("RELATED", "MEMBER"):
+                raise ValueError("authoritative membership cannot be removed as related")
+            if row[2] != expected_row_version:
+                return False
+            await connection.execute(delete(workset_memberships).where(
+                workset_memberships.c.workset_id == workset_id,
+                workset_memberships.c.work_id == work_id,
+            ))
+        return True
+
+    async def transfer_master(
+        self, workset_id: UUID, from_work_id: UUID, to_work_id: UUID,
+        expected_from_version: int, expected_to_version: int,
+    ) -> bool:
+        """Atomically transfer one durable role's MASTER designation."""
+        if from_work_id == to_work_id:
+            raise ValueError("MASTER transfer requires distinct work")
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            role = (await connection.execute(select(
+                worksets.c.role_identity, worksets.c.state,
+            ).where(worksets.c.workset_id == workset_id).with_for_update())).one_or_none()
+            if role is None or role[0] is None or role[1] != "ACTIVE":
+                raise ValueError("MASTER transfer requires an active durable role workset")
+            rows = (await connection.execute(select(
+                workset_memberships.c.work_id,
+                workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+                workset_memberships.c.row_version,
+            ).where(
+                workset_memberships.c.workset_id == workset_id,
+                workset_memberships.c.work_id.in_({from_work_id, to_work_id}),
+            ).order_by(workset_memberships.c.work_id).with_for_update())).all()
+            by_work = {row[0]: row for row in rows}
+            source, target = by_work.get(from_work_id), by_work.get(to_work_id)
+            if source is None or source[1:3] != ("AUTHORITATIVE", "MASTER"):
+                raise ValueError("source is not the current MASTER")
+            if target is None or target[1:3] != ("AUTHORITATIVE", "MEMBER"):
+                raise ValueError("target is not an authoritative role member")
+            if source[3] != expected_from_version or target[3] != expected_to_version:
+                return False
+            await connection.execute(update(workset_memberships).where(
+                workset_memberships.c.workset_id == workset_id,
+                workset_memberships.c.work_id == from_work_id,
+            ).values(member_role="MEMBER", row_version=expected_from_version + 1))
+            await connection.execute(update(workset_memberships).where(
+                workset_memberships.c.workset_id == workset_id,
+                workset_memberships.c.work_id == to_work_id,
+            ).values(member_role="MASTER", row_version=expected_to_version + 1))
+        return True
+
     async def admit_created_under_parent(
         self, work_id: UUID, parent_id: UUID, title: str, provider: ProviderWork,
     ) -> None:

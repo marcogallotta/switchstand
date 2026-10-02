@@ -34,6 +34,7 @@ from switchstand.state import (
     workset_authority,
     workset_cutovers,
     workset_memberships,
+    worksets,
 )
 from switchstand.work_index import ActivationUnknown
 from switchstand.worksets import (
@@ -281,6 +282,102 @@ async def test_parent_mutation_advances_revision_and_rejects_cycles(database_pre
 
     assert await reader.update_parent(third, None, 2)
     assert await reader.parent_matches(third, None)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_general_workset_and_membership_mutations_preserve_invariants(
+    database_prerequisite,
+):
+    engine = create_async_engine(database_url())
+    master, successor, moving = uuid4(), uuid4(), uuid4()
+    role_set, first_set, second_set = uuid4(), uuid4(), uuid4()
+    await admit(engine, master, successor, moving)
+    await stage_snapshot(engine, WorksetSnapshot(
+        worksets=(
+            Workset(role_set, "agent.coordinator", "Coordinator", "DURABLE_ROLE",
+                    "Coordinator"),
+            Workset(first_set, "project.first", "First", "PROJECT"),
+            Workset(second_set, "project.second", "Second", "PROJECT"),
+        ),
+        memberships=(
+            Membership(role_set, master, "AUTHORITATIVE", "MASTER"),
+            Membership(role_set, successor, "AUTHORITATIVE"),
+            Membership(first_set, moving, "AUTHORITATIVE"),
+        ),
+        parent_edges=(),
+    ))
+    await activate_read_authority(engine)
+    reader = WorksetReader(engine)
+
+    first_revision = (await reader.enumerate(workset_id=first_set)).revision
+    assert await reader.update_workset(first_set, 1, name="Renamed")
+    assert not await reader.update_workset(first_set, 1, state="RETIRED")
+    assert await reader.update_workset(first_set, 2, state="RETIRED")
+    with pytest.raises(ValueError, match="not active"):
+        await reader.update_related_membership(
+            successor, first_set, add=True, expected_row_version=None,
+        )
+    assert await reader.update_workset(first_set, 3, state="ACTIVE")
+    current = await reader.enumerate(workset_key="project.first")
+    assert current is not None and current.workset.name == "Renamed"
+    assert current.revision != first_revision
+
+    before_move = await reader.content_authorization(moving)
+    assert await reader.update_related_membership(
+        moving, second_set, add=True, expected_row_version=None,
+    )
+    assert await reader.update_related_membership(
+        moving, second_set, add=True, expected_row_version=1,
+    )
+    assert await reader.move_authoritative_membership(
+        moving, first_set, second_set, 1, 1,
+    )
+    assert await reader.content_authorization(moving) != before_move
+    async with engine.connect() as connection:
+        moved = (await connection.execute(select(
+            workset_memberships.c.workset_id,
+            workset_memberships.c.semantics,
+            workset_memberships.c.row_version,
+        ).where(workset_memberships.c.work_id == moving).order_by(
+            workset_memberships.c.workset_id,
+        ))).all()
+    assert {(row[0], row[1], row[2]) for row in moved} == {
+        (first_set, "RELATED", 2), (second_set, "AUTHORITATIVE", 2),
+    }
+    assert await reader.move_authoritative_membership(
+        moving, first_set, second_set, 1, 1,
+    )
+    assert await reader.update_related_membership(
+        moving, first_set, add=False, expected_row_version=2,
+    )
+    with pytest.raises(ValueError, match="authoritative"):
+        await reader.update_related_membership(
+            moving, second_set, add=False, expected_row_version=2,
+        )
+
+    before_master = await reader.content_authorization(master)
+    before_successor = await reader.content_authorization(successor)
+    assert await reader.transfer_master(role_set, master, successor, 1, 1)
+    assert await reader.content_authorization(master) != before_master
+    assert await reader.content_authorization(successor) != before_successor
+    async with engine.connect() as connection:
+        roles = dict((await connection.execute(select(
+            workset_memberships.c.work_id, workset_memberships.c.member_role,
+        ).where(workset_memberships.c.workset_id == role_set))).all())
+    assert roles == {master: "MEMBER", successor: "MASTER"}
+    assert not await reader.transfer_master(role_set, successor, master, 1, 1)
+    with pytest.raises(ValueError, match="movable"):
+        await reader.move_authoritative_membership(
+            successor, role_set, first_set, 2, None,
+        )
+    with pytest.raises(ValueError, match="change name or state"):
+        await reader.update_workset(first_set, 4)
+
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(worksets.c.row_version).where(
+            worksets.c.workset_id == first_set,
+        )) == 4
     await engine.dispose()
 
 
