@@ -126,6 +126,7 @@ class WorksetMember:
 
 @dataclass(frozen=True)
 class WorksetView:
+    revision: str
     workset: Workset
     members: tuple[WorksetMember, ...]
 
@@ -136,25 +137,43 @@ class WorksetReader:
     def __init__(self, engine: AsyncEngine):
         self.engine, self.index = engine, WorkIndex(engine)
 
+    @staticmethod
+    async def _generation(connection: AsyncConnection) -> tuple[int, int] | None:
+        row = (await connection.execute(select(
+            select(work_authority.c.state).where(
+                work_authority.c.scope == SCOPE).scalar_subquery(),
+            select(work_authority.c.generation).where(
+                work_authority.c.scope == SCOPE).scalar_subquery(),
+            select(work_authority_cutovers.c.generation).where(
+                work_authority_cutovers.c.scope == SCOPE).scalar_subquery(),
+            select(work_metadata_authority.c.state).where(
+                work_metadata_authority.c.scope == SCOPE).scalar_subquery(),
+            select(work_metadata_authority.c.generation).where(
+                work_metadata_authority.c.scope == SCOPE).scalar_subquery(),
+            select(work_metadata_cutovers.c.generation).where(
+                work_metadata_cutovers.c.scope == SCOPE).scalar_subquery(),
+            select(workset_authority.c.state).where(
+                workset_authority.c.scope == SCOPE).scalar_subquery(),
+            select(workset_authority.c.generation).where(
+                workset_authority.c.scope == SCOPE).scalar_subquery(),
+            select(workset_cutovers.c.generation).where(
+                workset_cutovers.c.scope == SCOPE).scalar_subquery(),
+        ))).one()
+        if row[6:] == (None, None, None):
+            return None
+        triples = (row[0:3], row[3:6], row[6:9])
+        if any(
+            state != AUTHORITY or generation != receipt
+            or not isinstance(generation, int) or generation < 1
+            for state, generation, receipt in triples
+        ):
+            raise ValueError("inconsistent irreversible workset authority state")
+        return cast(int, row[7]), cast(int, row[1])
+
     async def generation(self) -> int | None:
         async with self.engine.connect() as connection:
-            row = (await connection.execute(select(
-                select(workset_authority.c.state).where(
-                    workset_authority.c.scope == SCOPE).scalar_subquery(),
-                select(workset_authority.c.generation).where(
-                    workset_authority.c.scope == SCOPE).scalar_subquery(),
-                select(workset_cutovers.c.generation).where(
-                    workset_cutovers.c.scope == SCOPE).scalar_subquery(),
-            ))).one()
-        if row == (None, None, None):
-            return None
-        if (row[0] != AUTHORITY or row[1] != row[2]
-                or not isinstance(row[1], int) or row[1] < 1):
-            raise ValueError("inconsistent irreversible workset authority state")
-        from .work_metadata import authority_generation
-        if await self.index.generation() is None or await authority_generation(self.engine) is None:
-            raise ValueError("Stage 3 authority requires Stage 1 and Stage 2 authority")
-        return row[1]
+            generations = await self._generation(connection)
+        return None if generations is None else generations[0]
 
     @staticmethod
     def _workset(row: Sequence[object]) -> Workset:
@@ -175,39 +194,69 @@ class WorksetReader:
             routing=indexed.routing, context=indexed.context,
         )
 
-    async def enumerate(self, workset_id: UUID) -> WorksetView | None:
-        """Return every nonterminal member and its Stage 2 dependency truth."""
-        if await self.generation() is None:
-            return None
-        index_generation = await self.index.generation()
-        if index_generation is None:
-            raise ValueError("Stage 3 authority requires Stage 1 authority")
-        async with self.engine.connect() as connection:
-            set_row = (await connection.execute(select(
-                worksets.c.workset_id, worksets.c.workset_key, worksets.c.name,
-                worksets.c.kind, worksets.c.role_identity, worksets.c.state,
-                worksets.c.row_version,
-            ).where(worksets.c.workset_id == workset_id))).one_or_none()
-            if set_row is None:
-                raise PermissionError("workset is not admitted")
-            rows = (await connection.execute(select(
-                *INDEX_COLUMNS, workset_memberships.c.semantics,
-                workset_memberships.c.member_role,
-            ).join(workset_memberships,
-                   workset_memberships.c.work_id == work_index.c.work_id).where(
-                workset_memberships.c.workset_id == workset_id,
-                work_index.c.completed.is_(False),
-            ).order_by(work_index.c.normalized_title, work_index.c.work_id))).all()
-            member_ids = tuple(row[0] for row in rows)
-            edges = (await connection.execute(select(
-                work_edges.c.work_id, work_edges.c.depends_on_work_id,
-            ).where(work_edges.c.work_id.in_(member_ids)).order_by(
-                work_edges.c.work_id, work_edges.c.depends_on_work_id,
-            ))).all() if member_ids else ()
+    async def enumerate(
+        self, workset_id: UUID | None = None, *, workset_key: str | None = None,
+    ) -> WorksetView | None:
+        """Return one explicit workset from a stable PostgreSQL snapshot."""
+        if (workset_id is None) == (workset_key is None):
+            raise ValueError("workset query requires exactly one ID or key")
+        async with self.engine.connect() as raw_connection:
+            connection = await raw_connection.execution_options(
+                isolation_level="REPEATABLE READ"
+            )
+            async with connection.begin():
+                generations = await self._generation(connection)
+                if generations is None:
+                    return None
+                generation, index_generation = generations
+                identity = (
+                    worksets.c.workset_id == workset_id
+                    if workset_id is not None else worksets.c.workset_key == workset_key
+                )
+                set_row = (await connection.execute(select(
+                    worksets.c.workset_id, worksets.c.workset_key, worksets.c.name,
+                    worksets.c.kind, worksets.c.role_identity, worksets.c.state,
+                    worksets.c.row_version,
+                ).where(identity))).one_or_none()
+                if set_row is None:
+                    raise PermissionError("workset is not admitted")
+                selected_id = cast(UUID, set_row[0])
+                rows = (await connection.execute(select(
+                    *INDEX_COLUMNS, workset_memberships.c.semantics,
+                    workset_memberships.c.member_role, workset_memberships.c.row_version,
+                ).join(workset_memberships,
+                       workset_memberships.c.work_id == work_index.c.work_id).where(
+                    workset_memberships.c.workset_id == selected_id,
+                    work_index.c.completed.is_(False),
+                ).order_by(work_index.c.normalized_title, work_index.c.work_id))).all()
+                membership_versions = (await connection.execute(select(
+                    workset_memberships.c.work_id,
+                    workset_memberships.c.semantics,
+                    workset_memberships.c.member_role,
+                    workset_memberships.c.row_version,
+                ).where(
+                    workset_memberships.c.workset_id == selected_id,
+                ).order_by(workset_memberships.c.work_id))).all()
+                member_ids = tuple(row[0] for row in rows)
+                edges = (await connection.execute(select(
+                    work_edges.c.work_id, work_edges.c.depends_on_work_id,
+                ).where(work_edges.c.work_id.in_(member_ids)).order_by(
+                    work_edges.c.work_id, work_edges.c.depends_on_work_id,
+                ))).all() if member_ids else ()
+                revision = "s3w_" + canonical_digest([
+                    [generation, *[str(value) if isinstance(value, UUID) else value
+                                    for value in set_row]],
+                    *[[str(value) if isinstance(value, UUID) else value for value in row]
+                      for row in rows],
+                    *[[str(value) if isinstance(value, UUID) else value for value in row]
+                      for row in membership_versions],
+                    *[[str(value) if isinstance(value, UUID) else value for value in edge]
+                      for edge in edges],
+                ])
         dependencies: dict[UUID, list[UUID]] = {}
         for owner, dependency in edges:
             dependencies.setdefault(owner, []).append(dependency)
-        return WorksetView(self._workset(set_row), tuple(
+        return WorksetView(revision, self._workset(set_row), tuple(
             WorksetMember(
                 self._item(row[:7], index_generation), row[7], row[8],
                 tuple(dependencies.get(row[0], ())),
@@ -226,7 +275,7 @@ class WorksetReader:
             ))
         if workset_id is None:
             raise ValueError("admitted work lacks an authoritative workset")
-        return await self.enumerate(workset_id)
+        return await self.enumerate(workset_id=workset_id)
 
     async def content_authorization(self, work_id: UUID) -> str | None:
         """Return the opaque Stage 3 authorization token, or pre-authority ``None``."""

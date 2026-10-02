@@ -29,11 +29,13 @@ from switchstand.contracts import (
     SourceTaskRequest,
     WorkResolveReferenceRequest,
     WorkSearchItem,
+    WorksetRequest,
 )
 from switchstand.core import ProviderError
 from switchstand.discovery import DiscoveredStructure, ProviderSearchItem, ProviderStructure
 from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
 from switchstand.repository_candidate import RepositoryCandidateQualification
+from switchstand.worksets import Workset, WorksetMember, WorksetView
 
 
 def test_ordinary_annotation_policy_is_exhaustive():
@@ -42,6 +44,63 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_workset_tool_requires_explicit_identity_and_is_audited(monkeypatch):
+    subject = service()
+    records: list[tuple[str, str | None, str]] = []
+
+    async def denied(_request: WorksetRequest):
+        from switchstand.contracts import WorksetResult
+        return WorksetResult(status="denied")
+
+    monkeypatch.setattr(subject, "workset", denied)
+    tool = dict(build_ordinary_tools(subject, lambda *record: records.append(record)))[
+        "workset_get"
+    ]
+    identity = uuid4()
+    result = await tool("1", identity, None)
+    assert result.status == "denied"
+    assert records == [("workset_get", str(identity), "denied")]
+    assert "workset_get" in ORDINARY_GENUINE_READ_TOOLS
+    with pytest.raises(ValidationError, match="exactly one"):
+        await tool("1", None, None)
+
+
+async def test_workset_service_projects_db_view_for_workspace_grant():
+    subject = service()
+    workset_id, member_id = uuid4(), uuid4()
+    subject.grants.grant = grant(
+        scope="workspace", operations=frozenset({"work_get", "work_search"}),
+    )
+
+    class Reader:
+        async def enumerate(self, selected_id, *, workset_key):
+            assert selected_id is None and workset_key == "agent.coordinator"
+            return WorksetView(
+                "s3w_revision",
+                Workset(workset_id, workset_key, "Coordinator", "DURABLE_ROLE",
+                        "Coordinator"),
+                (WorksetMember(
+                    WorkSearchItem(
+                        id=member_id, title="Current work", completed=False,
+                        revision="s1_revision", routing=Routing(), context=CONTEXT,
+                    ),
+                    "AUTHORITATIVE", "MASTER", (),
+                ),),
+            )
+
+    subject.state.worksets = Reader()
+    result = await subject.workset(WorksetRequest(
+        api_version="1", workset_key="agent.coordinator",
+    ))
+    assert result.status == "ok" and result.revision == "s3w_revision"
+    assert result.workset is not None
+    assert (result.workset.workset_id, result.workset.workset_key) == (
+        workset_id, "agent.coordinator",
+    )
+    assert result.members[0].item.id == member_id
+    assert result.members[0].member_role == "MASTER"
 
 
 async def test_candidate_qualification_adapter_is_read_only_and_audited(monkeypatch):
@@ -419,7 +478,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
+            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "workset_get", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",

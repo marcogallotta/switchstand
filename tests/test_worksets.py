@@ -18,6 +18,7 @@ from switchstand.contracts import (
     WorkContext,
     WorkGetRequest,
     WorkHistoryRequest,
+    WorksetRequest,
 )
 from switchstand.core import Controller, authoritative_revision
 from switchstand.provider import PROJECT, AsanaProvider
@@ -222,6 +223,8 @@ async def test_reader_enumerates_current_workset_and_structure_from_db(database_
     await activate_read_authority(engine)
     view = await reader.current(child)
     assert view is not None and view.workset.workset_key == "agent.coordinator"
+    assert view.revision.startswith("s3w_")
+    assert await reader.enumerate(workset_key="agent.coordinator") == view
     assert {member.item.id for member in view.members} == {master, child}
     waiting = next(member for member in view.members if member.item.id == child)
     assert waiting.depends_on == (master,)
@@ -231,6 +234,18 @@ async def test_reader_enumerates_current_workset_and_structure_from_db(database_
     child_structure = await WorksetReader(engine).structure(child)
     assert child_structure is not None and child_structure.parent is not None
     assert child_structure.parent.id == master
+    before = view.revision
+    async with engine.begin() as connection:
+        await connection.execute(update(workset_memberships).where(
+            workset_memberships.c.work_id == terminal,
+        ).values(row_version=2))
+    revised = await reader.enumerate(workset_id=role_set)
+    assert revised is not None and revised.revision != before
+    with pytest.raises(ValueError, match="exactly one"):
+        await reader.enumerate()
+    with pytest.raises(ValueError, match="exactly one"):
+        WorksetRequest(api_version="1", workset_id=role_set,
+                       workset_key="agent.coordinator")
     await engine.dispose()
 
 
