@@ -174,7 +174,8 @@ class Provider(Protocol):
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None: ...
     async def source_stories(
-        self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int
+        self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int,
+        *, require_canonical: bool = True,
     ) -> ProviderStoriesPage | None: ...
     async def source_story(
         self, provider_task_id: str, provider_story_id: str
@@ -461,7 +462,8 @@ class Controller:
                     status="stale", work_id=request.work_id, revision=current_revision
                 )
             page = await provider.source_stories(
-                handle.provider_work_id, before.revision, request.cursor, request.limit
+                handle.provider_work_id, before.revision, request.cursor, request.limit,
+                require_canonical=authorization is None,
             )
             if page is None:
                 return WorkHistoryResult(status="unknown")
@@ -629,7 +631,8 @@ class Controller:
         try:
             authorization = await self._source_authorization(request.task_gid)
             page = await provider.source_stories(
-                request.task_gid, request.observed_revision, request.offset, request.limit
+                request.task_gid, request.observed_revision, request.offset, request.limit,
+                require_canonical=authorization is None,
             )
             if page is None:
                 return SourceStoriesResult(status="unknown")

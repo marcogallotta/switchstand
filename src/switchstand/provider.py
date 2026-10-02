@@ -746,17 +746,17 @@ class AsanaProvider:
 
     async def source_stories(
         self, provider_task_id: str, observed_revision: str,
-        offset: str | None, limit: int,
+        offset: str | None, limit: int, *, require_canonical: bool = True,
     ) -> ProviderStoriesPage | None:
         before = await self.source_task(provider_task_id)
         if before is None: return None
-        if not before.canonical:
+        if require_canonical and not before.canonical:
             return ProviderStoriesPage(
                 provider_task_id, before.revision, (), None, False
             )
         if before.revision != observed_revision:
             return ProviderStoriesPage(
-                provider_task_id, before.revision, (), None, True, True
+                provider_task_id, before.revision, (), None, before.canonical, True
             )
         try:
             params: dict[str, str | int] = {"opt_fields": STORY_FIELDS, "limit": limit}
@@ -787,7 +787,7 @@ class AsanaProvider:
             raise ProviderError("provider request failed") from None
         after = await self.source_task(provider_task_id)
         if after is None: return None
-        if not after.canonical:
+        if require_canonical and not after.canonical:
             return ProviderStoriesPage(
                 provider_task_id, after.revision, (), None, False
             )
@@ -796,7 +796,7 @@ class AsanaProvider:
                 provider_task_id, after.revision, (), None, True, True
             )
         return ProviderStoriesPage(
-            provider_task_id, after.revision, stories, next_offset, True
+            provider_task_id, after.revision, stories, next_offset, after.canonical
         )
 
     async def source_story(

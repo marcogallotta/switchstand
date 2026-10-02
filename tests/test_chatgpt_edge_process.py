@@ -86,14 +86,16 @@ class CountingProvider(Provider):
         self._count("list_attachments")
         return await super().list_attachments(task_gid, cursor, limit)
 
-    async def source_stories(self, task_gid, revision, offset, limit):
+    async def source_stories(self, task_gid, revision, offset, limit, *, require_canonical=True):
         if not self.stories:
             from switchstand.core import ProviderStoriesPage
             story = ProviderSourceStory("raw-read-event", task_gid, "comment_added", "history", "now", "Marco")
             return ProviderStoriesPage(task_gid, self.revision,
                                        (story,) if revision == self.revision else (), None, True,
                                        stale=revision != self.revision)
-        return await super().source_stories(task_gid, revision, offset, limit)
+        return await super().source_stories(
+            task_gid, revision, offset, limit, require_canonical=require_canonical
+        )
 
     async def source_story(self, task_gid, story_gid):
         if story_gid == "raw-read-event":

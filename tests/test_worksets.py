@@ -1,6 +1,7 @@
 import os
 from uuid import uuid4
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -11,11 +12,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.contracts import (
     LaunchAuthority,
+    SourceStoriesRequest,
     SourceTaskRequest,
     WorkAttachmentsRequest,
+    WorkContext,
     WorkGetRequest,
+    WorkHistoryRequest,
 )
-from switchstand.core import Controller
+from switchstand.core import Controller, authoritative_revision
+from switchstand.provider import PROJECT, AsanaProvider
 from switchstand.state import (
     PostgresState,
     work_authority,
@@ -110,6 +115,29 @@ async def staged_controller(engine, *, activate=True):
     return work_id, provider, Controller(
         LaunchAuthority(active_work_id=work_id), PostgresState(engine), {"asana": provider}
     )
+
+
+def asana_history_provider(*, placement_changes=False):
+    task_reads = 0
+
+    def respond(request):
+        nonlocal task_reads
+        if request.url.path.endswith("/stories"):
+            story = {"gid": "456", "target": {"gid": "123"}, "text": "history",
+                     "created_at": "now", "resource_subtype": "comment_added"}
+            return httpx.Response(200, json={"data": [story], "next_page": None})
+        task_reads += 1
+        canonical = placement_changes and task_reads == 1
+        membership = [{"project": {"gid": PROJECT, "name": "Area"}, "section": None}]
+        task = {"gid": "123", "name": "Task", "notes": "Notes", "completed": False,
+                "modified_at": "r1", "memberships": membership if canonical else [],
+                "assignee": None, "parent": None, "custom_fields": []}
+        return httpx.Response(200, json={"data": task})
+
+    client = httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(respond)
+    )
+    return AsanaProvider(client), client
 
 
 @pytest.mark.asyncio
@@ -234,6 +262,32 @@ async def test_content_authority_replaces_provider_placement_only_after_marker(
     assert attachments.status == "ok" and attachments.attachments[0].name == "brief.txt"
     source = await controller.source_task(SourceTaskRequest(api_version="1", task_gid="123"))
     assert source.status == "ok" and source.item is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_content_authority_controls_real_provider_history(database_prerequisite):
+    engine = create_async_engine(database_url())
+    work_id, _, _ = await staged_controller(engine)
+    state = PostgresState(engine)
+    provider, client = asana_history_provider()
+    controller = Controller(LaunchAuthority(active_work_id=work_id), state, {"asana": provider})
+    revision = await authoritative_revision(
+        state, work_id, "r1", provider_notes="Notes", provider_context=WorkContext()
+    )
+    history = await controller.history(WorkHistoryRequest(
+        api_version="1", work_id=work_id, observed_revision=revision,
+    ))
+    assert history.status == "ok" and history.events[0].text == "history"
+    await client.aclose()
+
+    provider, client = asana_history_provider(placement_changes=True)
+    controller = Controller(LaunchAuthority(active_work_id=work_id), state, {"asana": provider})
+    source = await controller.source_stories(SourceStoriesRequest(
+        api_version="1", task_gid="123", observed_revision="r1",
+    ))
+    assert source.status == "ok" and source.stories[0].text == "history"
+    await client.aclose()
     await engine.dispose()
 
 
