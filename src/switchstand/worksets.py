@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, insert, select, update
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy import Table, delete, func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
 from .contracts import Routing, WorkContext, WorkSearchItem
 from .discovery import DiscoveredStructure
 from .state import (
+    work_authority,
+    work_authority_cutovers,
     work_edges,
     work_index,
+    work_metadata_authority,
+    work_metadata_cutovers,
     work_parent_edges,
     workset_authority,
     workset_cutovers,
@@ -24,6 +29,8 @@ from .state import (
 )
 from .work_index import (
     INDEX_COLUMNS,
+    ActivationNotCommitted,
+    ActivationReceipt,
     ActivationUnknown,
     IndexedWork,
     WorkIndex,
@@ -362,20 +369,29 @@ class WorksetReader:
         return current == parent_id
 
 
-async def _stored_rows(connection: AsyncConnection) -> list[list[object]]:
-    set_rows = (await connection.execute(select(
+async def _stored_rows(
+    connection: AsyncConnection, *, lock: bool = False,
+) -> list[list[object]]:
+    set_query = select(
         worksets.c.workset_id, worksets.c.workset_key, worksets.c.name, worksets.c.kind,
         worksets.c.role_identity, worksets.c.state, worksets.c.row_version,
-    ).order_by(worksets.c.workset_id))).all()
-    membership_rows = (await connection.execute(select(
+    ).order_by(worksets.c.workset_id)
+    membership_query = select(
         workset_memberships.c.workset_id, workset_memberships.c.work_id,
         workset_memberships.c.semantics, workset_memberships.c.member_role,
         workset_memberships.c.row_version,
-    ).order_by(workset_memberships.c.workset_id, workset_memberships.c.work_id))).all()
-    parent_rows = (await connection.execute(select(
+    ).order_by(workset_memberships.c.workset_id, workset_memberships.c.work_id)
+    parent_query = select(
         work_parent_edges.c.child_work_id, work_parent_edges.c.parent_work_id,
         work_parent_edges.c.row_version,
-    ).order_by(work_parent_edges.c.child_work_id))).all()
+    ).order_by(work_parent_edges.c.child_work_id)
+    if lock:
+        set_query = set_query.with_for_update()
+        membership_query = membership_query.with_for_update()
+        parent_query = parent_query.with_for_update()
+    set_rows = (await connection.execute(set_query)).all()
+    membership_rows = (await connection.execute(membership_query)).all()
+    parent_rows = (await connection.execute(parent_query)).all()
     result = [_row('workset', str(row[0]), *row[1:]) for row in set_rows]
     result += [_row('membership', str(row[0]), str(row[1]), *row[2:])
                for row in membership_rows]
@@ -450,3 +466,157 @@ async def reset_staging(engine: AsyncEngine, expected_digest: str) -> None:
         await connection.execute(delete(work_parent_edges))
         await connection.execute(delete(workset_memberships))
         await connection.execute(delete(worksets))
+
+
+async def _authority_pair(
+    connection: AsyncConnection, authority: Table, cutovers: Table, *, lock: bool = True,
+) -> tuple[tuple[str, int] | None, tuple[int] | None]:
+    authority_query = select(
+        authority.c.state, authority.c.generation,
+    ).where(authority.c.scope == SCOPE)
+    cutover_query = select(
+        cutovers.c.generation,
+    ).where(cutovers.c.scope == SCOPE)
+    if lock:
+        authority_query = authority_query.with_for_update()
+        cutover_query = cutover_query.with_for_update()
+    authority_row = cast(
+        tuple[str, int] | None,
+        (await connection.execute(authority_query)).one_or_none(),
+    )
+    cutover_row = cast(
+        tuple[int] | None,
+        (await connection.execute(cutover_query)).one_or_none(),
+    )
+    return authority_row, cutover_row
+
+
+def _paired_authority(
+    pair: tuple[tuple[str, int] | None, tuple[int] | None],
+) -> bool:
+    authority, cutover = pair
+    return (
+        authority is not None and cutover is not None
+        and authority[0] == AUTHORITY and authority[1] == cutover[0]
+    )
+
+
+async def _activation_state(
+    connection: AsyncConnection, *, lock: bool = False,
+) -> tuple[object, object, str]:
+    authority_query = select(
+        workset_authority.c.state, workset_authority.c.generation,
+    ).where(workset_authority.c.scope == SCOPE)
+    cutover_query = select(workset_cutovers.c.generation).where(
+        workset_cutovers.c.scope == SCOPE
+    )
+    if lock:
+        authority_query = authority_query.with_for_update()
+        cutover_query = cutover_query.with_for_update()
+    authority = (await connection.execute(authority_query)).one_or_none()
+    cutover = (await connection.execute(cutover_query)).one_or_none()
+    return authority, cutover, canonical_digest(await _stored_rows(connection, lock=lock))
+
+
+async def _commit(transaction: AsyncTransaction) -> None:
+    await transaction.commit()
+
+
+async def reconcile_activation(
+    engine: AsyncEngine, receipt: ActivationReceipt,
+) -> ActivationReceipt:
+    """Classify one exact Stage 3 marker attempt without repeating the flip."""
+    try:
+        async with engine.connect() as connection:
+            authority, cutover, digest = await _activation_state(connection)
+            prior_valid = all((
+                _paired_authority(await _authority_pair(
+                    connection, work_authority, work_authority_cutovers, lock=False,
+                )),
+                _paired_authority(await _authority_pair(
+                    connection, work_metadata_authority, work_metadata_cutovers, lock=False,
+                )),
+            ))
+    except BaseException as error:
+        raise ActivationUnknown(
+            "Stage 3 activation outcome UNKNOWN; keep the maintenance gate"
+        ) from error
+    if (
+        authority == (AUTHORITY, receipt.generation)
+        and cutover == (receipt.generation,)
+        and digest == receipt.corpus_digest
+        and prior_valid
+    ):
+        return replace(receipt, recovered_after_commit_error=True)
+    if authority is None and cutover is None and digest == receipt.pre_corpus_digest:
+        raise ActivationNotCommitted("Stage 3 readback proves authority was not activated")
+    raise ActivationUnknown("Stage 3 activation outcome UNKNOWN; repair forward")
+
+
+async def activate(
+    engine: AsyncEngine, expected_digest: str,
+    before_commit: Callable[[ActivationReceipt], None] | None = None,
+) -> ActivationReceipt:
+    """Validate exact offline staging and atomically flip Stage 3 authority."""
+    connection = await engine.connect()
+    transaction = await connection.begin()
+    commit_started = False
+    receipt = ActivationReceipt(0, 1, expected_digest, pre_corpus_digest=expected_digest)
+    try:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544733)))
+        stage1 = await _authority_pair(connection, work_authority, work_authority_cutovers)
+        stage2 = await _authority_pair(
+            connection, work_metadata_authority, work_metadata_cutovers,
+        )
+        for label, pair in (("Stage 1", stage1), ("Stage 2", stage2)):
+            if not _paired_authority(pair):
+                raise ValueError(f"{label} paired authority is required")
+        authority, cutover, digest = await _activation_state(connection, lock=True)
+        if authority is not None or cutover is not None:
+            raise ActivationUnknown("Stage 3 authority already exists; reconcile its receipt")
+        admitted = set((await connection.execute(select(
+            work_index.c.work_id,
+        ).with_for_update())).scalars())
+        authoritative = set((await connection.execute(select(
+            workset_memberships.c.work_id,
+        ).where(
+            workset_memberships.c.semantics == "AUTHORITATIVE",
+        ))).scalars())
+        if not admitted or authoritative != admitted:
+            raise ValueError("authoritative memberships must exactly cover the admitted corpus")
+        if digest != expected_digest:
+            raise ValueError("Stage 3 staged snapshot does not match the reviewed worksheet")
+        await connection.execute(insert(workset_authority).values(
+            scope=SCOPE, state=AUTHORITY, generation=1,
+        ))
+        await connection.execute(insert(workset_cutovers).values(
+            scope=SCOPE, generation=1,
+        ))
+        receipt = ActivationReceipt(
+            len(authoritative), 1, digest, pre_corpus_digest=digest,
+        )
+        if before_commit is not None:
+            before_commit(receipt)
+        commit_started = True
+        await _commit(transaction)
+    except BaseException:
+        if not commit_started:
+            with suppress(BaseException):
+                await transaction.rollback()
+            raise
+        with suppress(BaseException):
+            await connection.close()
+        return await reconcile_activation(engine, receipt)
+    finally:
+        with suppress(BaseException):
+            await connection.close()
+    try:
+        async with engine.connect() as readback:
+            authority, cutover, digest = await _activation_state(readback)
+    except BaseException as error:
+        raise ActivationUnknown(
+            "Stage 3 committed readback UNKNOWN; reconcile the durable receipt"
+        ) from error
+    if authority != (AUTHORITY, 1) or cutover != (1,) or digest != expected_digest:
+        raise ActivationUnknown("Stage 3 committed readback is inconsistent; repair forward")
+    return receipt

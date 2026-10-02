@@ -204,7 +204,10 @@ messaging, and required continuation:
   receipt and turns only explicit project, authoritative-membership, role, and MASTER decisions
   into a digestible `HUMAN_REVIEW_REQUIRED` worksheet. `workset_migration.py` consumes only the
   exact Human-Reviewed bytes/digest while offline and owns pre-authority stage, reconcile, and
-  exact reset; it neither flips authority nor writes the provider.
+  exact reset. Its default-off activation path durably publishes a private attempt receipt,
+  atomically commits paired Stage 3 markers only after revalidating the exact staged corpus and
+  complete Stage 1/2 authority, and reconciles a lost commit response without repeating the flip.
+  Repository landing neither runs that path nor authorizes production cutover or provider writes.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.

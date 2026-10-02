@@ -1,12 +1,14 @@
 import os
+import stat
 from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import create_engine, insert, select, text
+from sqlalchemy import create_engine, delete, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import switchstand.worksets as worksets_module
 from switchstand.state import (
     work_authority,
     work_authority_cutovers,
@@ -15,10 +17,12 @@ from switchstand.state import (
     work_metadata_authority,
     work_metadata_cutovers,
     workset_authority,
+    workset_cutovers,
     workset_memberships,
     worksets,
 )
-from switchstand.work_index import ActivationUnknown
+from switchstand.work_index import ActivationNotCommitted, ActivationReceipt, ActivationUnknown
+from switchstand.work_index_migration import load_receipt
 from switchstand.workset_capture import (
     ProviderPlacement,
     ProviderProject,
@@ -27,7 +31,13 @@ from switchstand.workset_capture import (
 )
 from switchstand.workset_migration import execute
 from switchstand.workset_worksheet import WorksetWorksheet
-from switchstand.worksets import Membership, Workset, WorksetSnapshot
+from switchstand.worksets import (
+    Membership,
+    Workset,
+    WorksetSnapshot,
+    activate,
+    reconcile_activation,
+)
 
 FIRST = UUID("10000000-0000-4000-8000-000000000001")
 SECOND = UUID("20000000-0000-4000-8000-000000000002")
@@ -189,3 +199,147 @@ async def test_stage_requires_both_prior_authorities(
     path, digest = reviewed_worksheet(tmp_path)
     with pytest.raises(ValueError, match=missing):
         await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+
+
+async def test_activate_publishes_private_receipt_and_reconciles_idempotently(tmp_path: Path):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    staged = await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    receipt_path = tmp_path / "stage3-attempt.json"
+
+    result = await execute(
+        "activate", path, expected_worksheet_digest=digest, confirm_offline=True,
+        receipt_path=receipt_path,
+    )
+
+    assert isinstance(result, ActivationReceipt)
+    assert (result.count, result.generation, result.corpus_digest) == (2, 1, staged)
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    receipt = load_receipt(receipt_path)
+    recovered = await execute(
+        "reconcile-activation", path, expected_worksheet_digest=digest,
+        confirm_offline=True, receipt_path=receipt_path,
+    )
+    assert isinstance(recovered, ActivationReceipt)
+    assert recovered.recovered_after_commit_error
+    assert recovered.corpus_digest == receipt.corpus_digest
+    engine = create_async_engine(database_url())
+    assert (await reconcile_activation(engine, receipt)).recovered_after_commit_error
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(
+            workset_authority.c.generation,
+        ))).scalars().all() == [1]
+        assert (await connection.execute(select(
+            workset_cutovers.c.generation,
+        ))).scalars().all() == [1]
+    async with engine.begin() as connection:
+        await connection.execute(delete(work_metadata_cutovers))
+    with pytest.raises(ActivationUnknown, match="repair forward"):
+        await execute(
+            "reconcile-activation", path, expected_worksheet_digest=digest,
+            confirm_offline=True, receipt_path=receipt_path,
+        )
+    await engine.dispose()
+
+
+async def test_activate_recovers_lost_commit_response_without_second_flip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    receipt_path = tmp_path / "lost-response.json"
+
+    async def commit_then_lose(transaction):
+        await transaction.commit()
+        raise OSError("lost commit response")
+
+    monkeypatch.setattr("switchstand.worksets._commit", commit_then_lose)
+    result = await execute(
+        "activate", path, expected_worksheet_digest=digest, confirm_offline=True,
+        receipt_path=receipt_path,
+    )
+    assert isinstance(result, ActivationReceipt)
+    assert result.recovered_after_commit_error
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    engine = create_async_engine(database_url())
+    receipt = load_receipt(receipt_path)
+    assert receipt.corpus_digest == result.corpus_digest
+    assert (await reconcile_activation(engine, receipt)).recovered_after_commit_error
+    await engine.dispose()
+
+
+async def test_successful_commit_with_failed_readback_is_unknown_and_reconciles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    receipt_path = tmp_path / "failed-readback.json"
+    original, calls = worksets_module._activation_state, 0
+
+    async def fail_final_readback(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("database restarted after commit")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(worksets_module, "_activation_state", fail_final_readback)
+    with pytest.raises(ActivationUnknown, match="reconcile the durable receipt"):
+        await execute(
+            "activate", path, expected_worksheet_digest=digest, confirm_offline=True,
+            receipt_path=receipt_path,
+        )
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    monkeypatch.setattr(worksets_module, "_activation_state", original)
+    recovered = await execute(
+        "reconcile-activation", path, expected_worksheet_digest=digest,
+        confirm_offline=True, receipt_path=receipt_path,
+    )
+    assert isinstance(recovered, ActivationReceipt) and recovered.recovered_after_commit_error
+
+
+async def test_activation_rejects_incomplete_prerequisite_and_corpus(tmp_path: Path):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    staged = await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    engine = create_async_engine(database_url())
+    async with engine.begin() as connection:
+        await connection.execute(delete(work_metadata_cutovers))
+    with pytest.raises(ValueError, match="Stage 2 paired authority"):
+        await activate(engine, staged)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_metadata_cutovers).values(
+            scope="workspace", generation=1,
+        ))
+        await connection.execute(delete(workset_memberships).where(
+            workset_memberships.c.work_id == SECOND,
+        ))
+    with pytest.raises(ValueError, match="exactly cover"):
+        await activate(engine, staged)
+    await engine.dispose()
+
+
+async def test_reconcile_classifies_absent_corrupt_and_drifted_state(tmp_path: Path):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    staged = await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    receipt = ActivationReceipt(2, 1, staged, pre_corpus_digest=staged)
+    engine = create_async_engine(database_url())
+    with pytest.raises(ActivationNotCommitted):
+        await reconcile_activation(engine, receipt)
+    async with engine.begin() as connection:
+        await connection.execute(insert(workset_authority).values(
+            scope="workspace", state="POSTGRES_AUTHORITY", generation=1,
+        ))
+    with pytest.raises(ActivationUnknown, match="repair forward"):
+        await reconcile_activation(engine, receipt)
+    async with engine.begin() as connection:
+        await connection.execute(delete(workset_authority))
+        await connection.execute(update(worksets).values(name="Drifted"))
+    with pytest.raises(ActivationUnknown, match="repair forward"):
+        await reconcile_activation(engine, receipt)
+    with pytest.raises(ValueError, match="reviewed worksheet"):
+        await activate(engine, "0" * 64)
+    await engine.dispose()
