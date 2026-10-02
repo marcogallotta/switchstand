@@ -38,6 +38,7 @@ from .edge_maintenance import (
     run_host_command,
 )
 from .edge_monitor_host import ExternalIngressHttp
+from .secure_file import atomic_replace_bytes
 from .stable_auth import INTROSPECTION_PATH, IntrospectionContract
 from .stable_auth_host import HostAssets, caddy_routes, read_internal_secret, systemd_units
 from .stable_auth_migration import MigrationFailure, SystemdWriterProbe, copy_with_receipt
@@ -191,26 +192,7 @@ def _set_enabled(service: str, wanted: bool) -> None:
 
 def _atomic_json(path: Path, value: object, *, indent: int | None = None) -> None:
     encoded = (json.dumps(value, indent=indent, sort_keys=True) + "\n").encode()
-    temporary = path.with_name(f".{path.name}.tmp")
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | os.O_NOFOLLOW,
-        0o600,
-    )
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-    finally:
-        os.close(descriptor)
-    os.replace(temporary, path)
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+    atomic_replace_bytes(path, encoded)
 
 
 class CaddyRoutes:

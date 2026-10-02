@@ -5,6 +5,7 @@ from typing import Literal
 
 import pytest
 
+from switchstand import secure_file
 from switchstand.edge_maintenance import Failed, Unknown
 from switchstand.stage12_cutover import (
     Evidence,
@@ -153,6 +154,32 @@ def test_resume_from_durable_preproof_does_not_recompute_it(
     assert [commands.calls.count(name) for name in (
         "stage2-validate", "stage1-prepare", "capture-final"
     )] == [1, 1, 1]
+
+
+def test_parent_fsync_failure_leaves_exact_receipt_for_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, commands = _subject(tmp_path)
+    original = secure_file._fsync_parent  # pyright: ignore[reportPrivateUsage]
+    failed = False
+
+    def fail_once(path: Path) -> None:
+        nonlocal failed
+        original(path)
+        if not failed:
+            failed = True
+            raise OSError("parent fsync outcome unavailable")
+
+    monkeypatch.setattr(secure_file, "_fsync_parent", fail_once)
+    with pytest.raises(OSError, match="parent fsync outcome unavailable"):
+        subject.run(lambda _boundary: None)
+    assert json.loads(subject.receipt_path.read_text())["terminal_boundary"] == "PRE_MARKER"
+
+    monkeypatch.setattr(secure_file, "_fsync_parent", original)
+    subject.run(lambda _boundary: None)
+
+    assert commands.calls.count("schema-apply") == 1
+    assert json.loads(subject.receipt_path.read_text())["terminal_boundary"] == "COMPLETE"
 
 
 def test_existing_unapplied_subordinate_receipt_forbids_blind_retry(tmp_path: Path):
