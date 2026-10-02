@@ -72,8 +72,8 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     assert await repository.get(first_id) == first
     assert await repository.resolve_asana_gid("1218000000000001") == first_id
     assert await repository.resolve_asana_gid("missing") is None
-    assert await repository.search("  ALPHA ") == (first,)
-    assert await repository.search(completed=True) == (second,)
+    assert (await repository.search("  ALPHA ")).items == (first,)
+    assert (await repository.search(completed=True)).items == (second,)
 
     changed = await repository.replace(replace(
         first, title="Gamma Task", notes="changed", completed=True, assignee="Coordinator",
@@ -81,7 +81,7 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     ))
     assert changed.row_version == 2
     assert await CanonicalWorkRepository(repository.engine).get(first_id) == changed
-    assert await repository.search("gamma", completed=True) == (changed,)
+    assert (await repository.search("gamma", completed=True)).items == (changed,)
 
     with pytest.raises(ValueError, match="stale"):
         await repository.replace(replace(first, title="must roll back"))
@@ -90,3 +90,26 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     with pytest.raises(IntegrityError):
         await repository.bind_asana_gid("1218000000000001", second_id)
     assert await repository.resolve_asana_gid("1218000000000001") == first_id
+
+
+async def test_search_pages_by_normalized_title_and_binds_cursor_to_criteria(
+    repository: CanonicalWorkRepository,
+) -> None:
+    first_id, second_id, third_id = sorted((uuid4(), uuid4(), uuid4()))
+    rows = (
+        CurrentWork(first_id, "Alpha", False, "first"),
+        CurrentWork(second_id, "Alpha", False, "second"),
+        CurrentWork(third_id, "Beta", True, "third"),
+    )
+    for row in rows:
+        await repository.create(row)
+
+    first_page = await repository.search(limit=2)
+    assert first_page.items == rows[:2]
+    assert first_page.next_cursor is not None
+    second_page = await repository.search(cursor=first_page.next_cursor, limit=2)
+    assert second_page.items == rows[2:]
+    assert second_page.next_cursor is None
+
+    with pytest.raises(ValueError, match="invalid canonical work cursor"):
+        await repository.search(completed=False, cursor=first_page.next_cursor, limit=2)
