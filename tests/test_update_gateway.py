@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import uuid4
 
 import httpx
@@ -16,7 +18,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import LaunchAuthority
-from switchstand.core import Controller, authoritative_revision
+from switchstand.core import Controller, Provider, authoritative_revision
 from switchstand.discovery import ProviderSearchItem
 from switchstand.effect_recovery import EffectRecovery
 from switchstand.grant_state import GrantState, effect_intents
@@ -100,6 +102,14 @@ class AsanaBoundary(httpx.AsyncBaseTransport):
         if self.mode in {"commit_lost", "lost"}:
             raise httpx.ReadError("response lost", request=request)
         return httpx.Response(200, request=request, json={"data": self.task})
+
+
+class ReadOnlyProvider:
+    def __init__(self, current):
+        self.current = current
+
+    async def get(self, _provider_work_id):
+        return self.current
 
 
 def request(grant, revision, **patch):
@@ -350,10 +360,15 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
     boundary.task["memberships"] = []
     current = await gateway.providers["asana"].get("123")
     assert current is not None
-    observed = await authoritative_revision(
-        gateway.state, grant.authority.active_work_id, current.revision,
-        provider_notes=current.notes, provider_context=current.context,
-    )
+    gateway.providers["asana"] = cast(Provider, ReadOnlyProvider(current))
+
+    async def revision(work_id):
+        return await authoritative_revision(
+            gateway.state, work_id, current.revision,
+            provider_notes=current.notes, provider_context=current.context,
+        )
+
+    observed = await revision(grant.authority.active_work_id)
     relation = RelationGateway(gateway.state, grants, gateway.providers)
     parent_request = ProtectedRelation(
         api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
@@ -379,12 +394,7 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
 
     stale = parent_request.model_copy(update={"operation_id": uuid4()})
     assert (await relation.update(principal, stale)).status == "stale"
-    latest = await gateway.providers["asana"].get("123")
-    assert latest is not None
-    current_revision = await authoritative_revision(
-        gateway.state, grant.authority.active_work_id, latest.revision,
-        provider_notes=latest.notes, provider_context=latest.context,
-    )
+    current_revision = await revision(grant.authority.active_work_id)
     dependency = ProtectedRelation(
         api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
         grant_version=grant.version, observed_revision=current_revision,
@@ -397,6 +407,69 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
             work_edges.c.depends_on_work_id == parent.id,
         ))).one()[0] == grant.authority.active_work_id
     assert boundary.puts == []
+
+    child_revision = await revision(grant.authority.active_work_id)
+    cleared = await relation.update(principal, ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+        grant_version=grant.version, observed_revision=child_revision,
+        patch=RelationPatch(kind="parent", action="clear"),
+    ))
+    assert cleared.status == "ok"
+
+    other_principal = PrincipalContext(
+        issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test",
+    )
+    other_grant = grant.model_copy(update={
+        "id": uuid4(), "principal": other_principal,
+        "authority": LaunchAuthority(active_work_id=parent.id),
+    })
+    await grants.issue(other_grant, None)
+    child_revision = await revision(grant.authority.active_work_id)
+    parent_revision = await revision(parent.id)
+    entered, ready = 0, asyncio.Event()
+    validate = gateway.state.worksets.validate_parent
+
+    async def synchronize_validation(*args):
+        nonlocal entered
+        await validate(*args)
+        entered += 1
+        if entered == 2:
+            ready.set()
+        await ready.wait()
+
+    monkeypatch.setattr(gateway.state.worksets, "validate_parent", synchronize_validation)
+    requests = (
+        (principal, ProtectedRelation(
+            api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+            grant_version=grant.version, observed_revision=child_revision,
+            patch=RelationPatch(kind="parent", action="set", target_work_id=parent.id),
+        )),
+        (other_principal, ProtectedRelation(
+            api_version="1", operation_id=uuid4(), work_id=parent.id,
+            grant_version=other_grant.version, observed_revision=parent_revision,
+            patch=RelationPatch(
+                kind="parent", action="set", target_work_id=grant.authority.active_work_id,
+            ),
+        )),
+    )
+    competing = await asyncio.wait_for(asyncio.gather(*(
+        relation.update(owner, relation_request)
+        for owner, relation_request in requests
+    )), timeout=10)
+    assert entered == 2
+    assert sorted(result.status for result in competing) == ["denied", "ok"]
+    denied = next(result for result in competing if result.status == "denied")
+    assert denied.effect == "not_sent" and denied.reason == "invalid_database_parent"
+    record = await grants.exact(denied.operation_id)
+    assert record is not None and record.outcome == denied
+    assert await grants.previous(uuid4(), denied.work_id) is None
+    fresh_revision = await revision(parent.id)
+    fresh = await relation.update(other_principal, ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=parent.id,
+        grant_version=other_grant.version, observed_revision=fresh_revision,
+        patch=RelationPatch(kind="parent", action="clear"),
+    ))
+    assert fresh.status == "ok" and fresh.effect == "applied"
     async with gateway.state.engine.begin() as connection:
         await connection.execute(text(
             "TRUNCATE workset_cutovers, workset_authority, work_parent_edges, "

@@ -124,19 +124,18 @@ class RelationGateway:
             request.patch.kind == "dependency" and index is not None
             and await authority_generation(index.engine) is not None
         )
-        if (
-            provider is None
-            or (not postgres_dependency and (
-                not hasattr(provider, "update_relation")
-                or not hasattr(provider, "relation_matches")
-            ))
-        ):
+        if provider is None:
             return self.guard(request, "denied", "provider_relation_not_supported")
         current = await provider.get(handle.provider_work_id)
         if current is None:
             return self.guard(request, "not_applied", "source_read_unavailable")
         token = await content_authorization_token(self.state, request.work_id)
         postgres_parent = request.patch.kind == "parent" and token is not None
+        if not (postgres_dependency or postgres_parent) and (
+            not hasattr(provider, "update_relation")
+            or not hasattr(provider, "relation_matches")
+        ):
+            return self.guard(request, "denied", "provider_relation_not_supported")
         if not current.canonical and not (postgres_dependency or postgres_parent):
             return self.guard(request, "not_applied", "source_read_unavailable")
         indexed = await index.get(request.work_id) if index is not None else None
@@ -244,9 +243,12 @@ class RelationGateway:
         provider_name: str, task_gid: str, qualification: str,
         expected_row_version: int, token: str,
     ) -> GuardOutcome:
-        applied = await cast(Stage3State, self.state).worksets.update_parent(
-            request.work_id, request.patch.target_work_id, expected_row_version,
-        )
+        try:
+            applied = await cast(Stage3State, self.state).worksets.update_parent(
+                request.work_id, request.patch.target_work_id, expected_row_version,
+            )
+        except ValueError:
+            return self.guard(request, "denied", "invalid_database_parent")
         if not applied:
             return self.guard(request, "stale", "source_revision_changed")
         if await content_authorization_token(self.state, request.work_id) != token:
