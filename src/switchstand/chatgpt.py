@@ -30,7 +30,16 @@ from .contracts import (
     WorkStructureRequest,
     WorkStructureResult,
 )
-from .core import Controller, Provider, ProviderError, State, authoritative_work
+from .core import (
+    Controller,
+    Provider,
+    ProviderError,
+    State,
+    authoritative_work,
+    authorization_stable,
+    authorize_content,
+    content_authorization_token,
+)
 from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
 from .effect_recovery import EffectRecovery
@@ -180,11 +189,15 @@ class ChatGPTService:
             return None, "work_not_granted"
         if work_id is None:
             return grant.authority, None
+        if await self.state.get(work_id) is None:
+            return None, "work_not_granted"
+        try:
+            await content_authorization_token(self.state, work_id)
+        except PermissionError:
+            return None, "work_not_granted"
         if grant.scope == "workspace":
             if not explicit_target:
                 return None, "explicit_work_id_required"
-            if await self.state.get(work_id) is None:
-                return None, "work_not_granted"
             index = getattr(self.state, "work_index", None)
             if index is not None and await index.active() and await index.get(work_id) is None:
                 return None, "work_not_granted"
@@ -239,9 +252,20 @@ class ChatGPTService:
                 provider = self.providers.get(handle.provider)
                 if provider is None:
                     return WorkStructureResult(status="provider_error")
+                prior_authorization = await content_authorization_token(
+                    self.state, request.work_id
+                )
                 current = await provider.get(handle.provider_work_id)
-                if current is None or not current.canonical:
+                if current is None:
                     return WorkStructureResult(status="provider_error")
+                try:
+                    authorization = await authorize_content(
+                        self.state, request.work_id, current.canonical
+                    )
+                except PermissionError:
+                    return WorkStructureResult(status="denied")
+                if not authorization_stable(prior_authorization, authorization):
+                    return WorkStructureResult(status="stale", work_id=request.work_id)
                 from .core import authoritative_revision
                 revision = await authoritative_revision(
                     self.state, request.work_id, current.revision,
@@ -261,8 +285,14 @@ class ChatGPTService:
                 if result is None:
                     return WorkStructureResult(status="provider_error")
                 latest = await provider.get(handle.provider_work_id)
-                if latest is None or not latest.canonical:
+                if latest is None:
                     return WorkStructureResult(status="provider_error")
+                try:
+                    latest_authorization = await authorize_content(
+                        self.state, request.work_id, latest.canonical
+                    )
+                except PermissionError:
+                    return WorkStructureResult(status="denied")
                 resulting_revision = await authoritative_revision(
                     self.state, request.work_id, latest.revision,
                     provider_notes=latest.notes, provider_context=latest.context,
@@ -275,7 +305,8 @@ class ChatGPTService:
                             provider_notes=latest.notes, provider_context=latest.context,
                         ),
                     )
-                if ((not db_authoritative and result.revision != latest.revision)
+                if (not authorization_stable(authorization, latest_authorization)
+                        or (not db_authoritative and result.revision != latest.revision)
                         or resulting_revision != revision):
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,

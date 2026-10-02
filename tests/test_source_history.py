@@ -100,7 +100,9 @@ class FakeProvider:
             "Task", "Notes", False, self.revision, WorkContext(), self.canonical
         )
 
-    async def source_stories(self, provider_task_id, observed_revision, offset, limit):
+    async def source_stories(
+        self, provider_task_id, observed_revision, offset, limit, *, require_canonical=True,
+    ):
         if self.history_error:
             raise ProviderError("history unavailable")
         if observed_revision != self.revision:

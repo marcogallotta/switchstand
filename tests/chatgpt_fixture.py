@@ -151,7 +151,7 @@ class Provider:
                                         story.created_at, story.created_by)
         return story
 
-    async def source_stories(self, task_gid, revision, offset, limit):
+    async def source_stories(self, task_gid, revision, offset, limit, *, require_canonical=True):
         if revision != self.revision:
             return ProviderStoriesPage(task_gid, self.revision, (), None, True, stale=True)
         start = int(offset or 0)
