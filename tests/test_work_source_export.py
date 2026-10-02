@@ -7,7 +7,7 @@ from typing import cast
 from uuid import UUID
 
 import pytest
-from sqlalchemy import insert, text
+from sqlalchemy import delete, insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.canonical_work import canonical_metadata
@@ -30,10 +30,14 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
         pytest.skip("TEST_DATABASE_URL is required")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
         await connection.run_sync(metadata.create_all)
         await connection.run_sync(canonical_metadata.create_all)
+        await connection.execute(delete(work_event_handles).where(
+            work_event_handles.c.id == EVENT,
+        ))
+        await connection.execute(delete(work_handles).where(
+            work_handles.c.id.in_((PARENT, CHILD)),
+        ))
         await connection.execute(insert(work_handles), [
             {"id": PARENT, "provider": "asana", "provider_work_id": "parent"},
             {"id": CHILD, "provider": "asana", "provider_work_id": "child"},
@@ -42,7 +46,17 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
             id=EVENT, work_id=CHILD, provider="asana",
             provider_work_id="child", provider_event_id="story-1",
         ))
-    yield engine
+    try:
+        yield engine
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(canonical_metadata.drop_all)
+            await connection.execute(delete(work_event_handles).where(
+                work_event_handles.c.id == EVENT,
+            ))
+            await connection.execute(delete(work_handles).where(
+                work_handles.c.id.in_((PARENT, CHILD)),
+            ))
     await engine.dispose()
 
 
