@@ -336,7 +336,8 @@ artifacts retained for 90 days, plus a bounded slow-test job summary. The origin
 Quality exit status remains authoritative even when collection/upload fails. JUnit and
 JSON preserve failed/partial attempts separately from reruns. JSON binds exact subject,
 GitHub run/attempt/job and environment identities (workflow, dependency/config blobs,
-Python and runner image); the source-bearing candidate image is recorded separately
+Python and runner image, plus actual sorted distro/Python package versions and
+Python/uv binary hashes from the built container); the source-bearing candidate image is recorded separately
 so ordinary source changes do not invalidate comparisons. Unknown environment fields yield a null
 comparison key; mismatched/unknown environments require INSUFFICIENT_DATA in future
 trend analysis. GitHub job metadata supplies CI duration; JUnit supplies suite/test

@@ -66,8 +66,14 @@ jobs:
           export MANIFEST_BLOBS="$(git rev-parse HEAD:pyproject.toml HEAD:uv.lock HEAD:Dockerfile)"
           export QUALITY_IMAGE="$(docker image inspect switchstand-quality --format '{{.Id}}' 2>/dev/null || true)"
           export QUALITY_PYTHON="$(docker run --rm switchstand-quality /app/.venv/bin/python --version 2>/dev/null || true)"
+          QUALITY_RUNTIME="$(docker run --rm switchstand-quality sh -ec '
+            dpkg-query -W -f="\${binary:Package}=\${Version}\n"
+            sha256sum /usr/local/bin/python3.14 /bin/uv
+            /app/.venv/bin/python -c "import importlib.metadata as m; print(\"\\n\".join(sorted(d.metadata[\"Name\"] + \"=\" + d.version for d in m.distributions())))"
+          ' 2>/dev/null)" || QUALITY_RUNTIME=""
+          export QUALITY_RUNTIME
           python3 - <<'PY'
-          import json, os
+          import hashlib, json, os
           from pathlib import Path
           e = os.environ
           identity = {
@@ -79,6 +85,7 @@ jobs:
               "candidate_image": e["QUALITY_IMAGE"] or None,
               "environment": {"workflow_blob": e["WORKFLOW_BLOB"], "manifest_blobs": e["MANIFEST_BLOBS"],
                               "python": e["QUALITY_PYTHON"] or None,
+                              "runtime_packages": hashlib.sha256("\n".join(sorted(e["QUALITY_RUNTIME"].splitlines())).encode()).hexdigest() if e["QUALITY_RUNTIME"] else None,
                               "runner_os": e.get("RUNNER_OS"), "runner_arch": e.get("RUNNER_ARCH"),
                               "runner_image": e.get("ImageOS"), "runner_image_version": e.get("ImageVersion")},
           }

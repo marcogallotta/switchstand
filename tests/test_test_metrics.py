@@ -62,12 +62,12 @@ def test_real_cli_planner_identity_and_unknown_environment(tmp_path: Path):
     assert 'METRICS_UNAVAILABLE' in summary.read_text()
 
 
-def test_environment_key_ignores_source_image_but_changes_with_runtime(tmp_path: Path):
+def test_environment_key_ignores_source_image_but_changes_with_runtime_packages(tmp_path: Path):
     identity = tmp_path / 'identity.json'
     output = tmp_path / 'metrics.json'
     keys = []
-    for image, python in [('source-a', '3.14.4'), ('source-b', '3.14.4'), ('source-b', '3.14.5')]:
-        identity.write_text(json.dumps({'candidate_image': image, 'environment': {'python': python}}))
+    for image, runtime in [('source-a', 'packages-a'), ('source-b', 'packages-a'), ('source-b', 'packages-b')]:
+        identity.write_text(json.dumps({'candidate_image': image, 'environment': {'python': '3.14.4', 'runtime_packages': runtime}}))
         subprocess.run([os.sys.executable, ROOT / 'src/switchstand/test_metrics.py',
                         '--identity', identity, '--execution-kind', 'full',
                         '--junit', tmp_path / 'missing', '--output', output], check=True)
