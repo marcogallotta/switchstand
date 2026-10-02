@@ -12,8 +12,9 @@ from .core import (
     ProviderWork,
     State,
     UnknownEffect,
-    observed_revision_matches,
+    content_authorization_token,
     provider_rejection_reason,
+    revision_with_authorization,
 )
 from .grant_state import EffectRecord, GrantState
 from .grants import (
@@ -35,6 +36,18 @@ class RelationProvider(Protocol):
 
 class Stage2State(Protocol):
     work_index: WorkIndex
+
+
+class WorksetMutations(Protocol):
+    async def validate_parent(self, work_id: UUID, parent_id: UUID | None) -> None: ...
+    async def update_parent(
+        self, work_id: UUID, parent_id: UUID | None, expected_row_version: int,
+    ) -> bool: ...
+    async def parent_matches(self, work_id: UUID, parent_id: UUID | None) -> bool: ...
+
+
+class Stage3State(Stage2State, Protocol):
+    worksets: WorksetMutations
 
 
 class RelationGateway:
@@ -111,22 +124,51 @@ class RelationGateway:
             request.patch.kind == "dependency" and index is not None
             and await authority_generation(index.engine) is not None
         )
-        if (
-            provider is None
-            or (not postgres_dependency and (
-                not hasattr(provider, "update_relation")
-                or not hasattr(provider, "relation_matches")
-            ))
-        ):
+        if provider is None:
             return self.guard(request, "denied", "provider_relation_not_supported")
         current = await provider.get(handle.provider_work_id)
-        if current is None or not current.canonical:
+        if current is None:
             return self.guard(request, "not_applied", "source_read_unavailable")
-        if not await observed_revision_matches(
-            self.state, request.work_id, request.observed_revision, current.revision,
-            provider_notes=current.notes, provider_context=current.context,
+        token = await content_authorization_token(self.state, request.work_id)
+        postgres_parent = request.patch.kind == "parent" and token is not None
+        if not (postgres_dependency or postgres_parent) and (
+            not hasattr(provider, "update_relation")
+            or not hasattr(provider, "relation_matches")
         ):
+            return self.guard(request, "denied", "provider_relation_not_supported")
+        if not current.canonical and not (postgres_dependency or postgres_parent):
+            return self.guard(request, "not_applied", "source_read_unavailable")
+        indexed = await index.get(request.work_id) if index is not None else None
+        base_revision = current.revision if index is None else await index.revision(
+            request.work_id, current.revision,
+            provider_notes=current.notes, provider_context=current.context,
+        )
+        if request.observed_revision != revision_with_authorization(base_revision, token):
             return self.guard(request, "stale", "source_revision_changed")
+        if postgres_parent:
+            assert token is not None
+            target = request.patch.target_work_id
+            if target is not None and not grant.can_read(target, explicit_target=True):
+                return self.guard(request, "denied", "relation_target_not_granted")
+            if indexed is None:
+                return self.guard(request, "denied", "invalid_database_parent")
+            worksets = cast(Stage3State, self.state).worksets
+            try:
+                await worksets.validate_parent(request.work_id, target)
+            except ValueError:
+                return self.guard(request, "denied", "invalid_database_parent")
+            return PreparedMutation(
+                intent={
+                    "request": request.model_dump(mode="json"),
+                    "authority": "postgres", "database_relation": "parent",
+                    "authorization": token, "provider": handle.provider,
+                    "task_gid": handle.provider_work_id, "qualification": qualification,
+                },
+                send=lambda: self._send_database_parent(
+                    principal, request, grant, handle.provider,
+                    handle.provider_work_id, qualification, indexed.row_version, token,
+                ),
+            )
         resolved = await self._resolved(grant, handle.provider, request)
         if resolved is None:
             return self.guard(request, "denied", "relation_target_not_granted")
@@ -149,7 +191,7 @@ class RelationGateway:
                 },
                 send=lambda: self._send_database_dependency(
                     principal, request, grant, handle.provider,
-                    handle.provider_work_id, qualification, current,
+                    handle.provider_work_id, qualification, current, base_revision, token,
                 ),
             )
         return PreparedMutation(
@@ -176,16 +218,43 @@ class RelationGateway:
     async def _send_database_dependency(
         self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
         provider_name: str, task_gid: str, qualification: str, current: ProviderWork,
+        base_revision: str, token: str | None,
     ) -> GuardOutcome:
         if request.patch.target_work_id is None:
             return self.guard(request, "denied", "invalid_database_dependency")
         index = cast(Stage2State, self.state).work_index
         _revision, applied = await index.update_dependency(
             request.work_id, request.patch.target_work_id,
-            request.observed_revision, current, add=request.patch.action == "add",
+            base_revision, current, add=request.patch.action == "add",
         )
         if not applied:
             return self.guard(request, "stale", "source_revision_changed")
+        if await content_authorization_token(self.state, request.work_id) != token:
+            return self.guard(
+                request, "unknown", "effect_readback_unconfirmed", possible_send=True
+            )
+        return self._applied(
+            principal, request, grant.id, grant.version,
+            provider_name, task_gid, qualification,
+        )
+
+    async def _send_database_parent(
+        self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
+        provider_name: str, task_gid: str, qualification: str,
+        expected_row_version: int, token: str,
+    ) -> GuardOutcome:
+        try:
+            applied = await cast(Stage3State, self.state).worksets.update_parent(
+                request.work_id, request.patch.target_work_id, expected_row_version,
+            )
+        except ValueError:
+            return self.guard(request, "denied", "invalid_database_parent")
+        if not applied:
+            return self.guard(request, "stale", "source_revision_changed")
+        if await content_authorization_token(self.state, request.work_id) != token:
+            return self.guard(
+                request, "unknown", "effect_readback_unconfirmed", possible_send=True
+            )
         return self._applied(
             principal, request, grant.id, grant.version,
             provider_name, task_gid, qualification,
@@ -219,6 +288,22 @@ class RelationGateway:
         qualification = record.intent.get("qualification")
         raw = record.intent.get("resolved")
         if record.intent.get("authority") == "postgres":
+            if record.intent.get("database_relation") == "parent":
+                if not await cast(Stage3State, self.state).worksets.parent_matches(
+                    request.work_id, request.patch.target_work_id,
+                ):
+                    return self.guard(
+                        request, "unknown", "effect_readback_unconfirmed", possible_send=True
+                    )
+                if not isinstance(provider_name, str) or not isinstance(task_gid, str) \
+                        or not isinstance(qualification, str):
+                    raise TypeError("durable database parent intent invalid")
+                outcome = self._applied(
+                    principal, request, record.grant_id, record.grant_version,
+                    provider_name, task_gid, qualification,
+                )
+                await self.grants.finish(outcome)
+                return outcome
             if request.patch.target_work_id is None:
                 raise TypeError("durable database dependency intent invalid")
             index = getattr(self.state, "work_index", None)

@@ -192,6 +192,11 @@ async def authoritative_revision(
         provider_context=provider_context,
     )
     token = await content_authorization_token(state, work_id)
+    return revision_with_authorization(revision, token)
+
+
+def revision_with_authorization(revision: str, token: str | None) -> str:
+    """Compose the public revision from its DB authority components."""
     if token is None:
         return revision
     return "s3_" + hashlib.sha256(f"{token}\0{revision}".encode()).hexdigest()
