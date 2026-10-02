@@ -413,7 +413,7 @@ migrate "$container" || {
     failed_revision=$(sql 'SELECT version_num FROM alembic_version') \
         || { echo "Alembic revision unreadable; outcome UNKNOWN" >&2; exit 1; }
     case "$failed_revision" in
-        "$EXPECTED_OLD"|0008_work_index_authority|0009_human_trajectory|0010_work_metadata_authority|"$EXPECTED_NEW") ;;
+        "$EXPECTED_OLD"|0008_work_index_authority|0009_human_trajectory|0010_work_metadata_authority|0011_workset_authority|"$EXPECTED_NEW") ;;
         *) echo "ambiguous Alembic revision $failed_revision; outcome UNKNOWN" >&2; exit 1;;
     esac
     migrate "$container" "$EXPECTED_OLD" || { echo "pre-authority abort failed; outcome UNKNOWN" >&2; exit 1; }
