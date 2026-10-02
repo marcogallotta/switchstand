@@ -1,4 +1,5 @@
 {
+  "autoCompactWindow": 300000,
   "claudeMdExcludes": ["**/.claude/CLAUDE.md"],
   "hooks": {
     "PreToolUse": [
