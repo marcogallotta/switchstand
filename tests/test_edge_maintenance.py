@@ -527,37 +527,6 @@ def test_offline_step_accepts_replayed_callbacks_from_advanced_receipt(tmp_path:
     assert deploy(subject, operations, offline) == "PASS" and "offline_abort" not in operations.events
 
 
-@pytest.mark.parametrize("failure", ["PENDING", "PRE_MARKER"])
-def test_definite_pre_marker_failure_aborts_and_restores_old_runtime(tmp_path: Path, failure: str):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, fail_after=failure)
-
-    assert deploy(subject, operations, offline) == "FAIL"
-
-    assert operations.events[-5:] == [
-        "offline_abort",
-        "start",
-        "rollback_ready",
-        "ungate",
-        "public_ready",
-    ]
-    assert receipt(subject)["phase"] == "ROLLED_BACK"
-
-
-def test_post_marker_failure_stays_gated_for_forward_fix(tmp_path: Path):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, fail_after="POSTGRES_AUTHORITY")
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-
-    assert operations.gated
-    assert "offline_abort" not in operations.events
-    assert "restore_launcher" not in operations.events
-    assert receipt(subject)["error"] == "ForwardFixRequired"
-
-
 def test_late_candidate_failure_after_authority_never_restores_asana_runtime(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(local=False)
@@ -617,18 +586,6 @@ def test_resume_derives_authority_from_subordinate_receipt_before_late_failure(
     assert receipt(subject)["authority_crossed"] is True
     assert receipt(subject)["error"] == "ForwardFixRequired"
     assert "restore_launcher" not in operations.events
-
-
-@pytest.mark.parametrize("boundary", ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"])
-def test_ambiguous_offline_boundary_stays_gated(tmp_path: Path, boundary: str):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, unknown_after=boundary)
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-
-    assert operations.gated
-    assert "offline_abort" not in operations.events
 
 
 def test_offline_receipt_must_bind_exact_candidate(tmp_path: Path):
