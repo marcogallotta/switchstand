@@ -21,6 +21,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .canonical_relations import CanonicalRelationsRepository
+from .canonical_work import CanonicalWorkRepository
+from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
@@ -229,6 +232,8 @@ def _create_resource_app(
         service.messages,
         service.required_results,
         ordinary_workspace_admission=True,
+        canonical_work=service.canonical_work,
+        canonical_work_active=service.canonical_work_active,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for name, tool in build_ordinary_tools(
@@ -269,9 +274,13 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
             create_notes_suffix=marker or None,
         )
         grants = GrantState(engine)
+        canonical_work = CanonicalWorkRuntime(
+            CanonicalWorkRepository(engine), CanonicalRelationsRepository(engine)
+        )
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
-        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)))
+        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
+            canonical_work=canonical_work)
         runtime = None
         if marker:
             runtime = (
