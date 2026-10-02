@@ -1,8 +1,9 @@
 # Wakeful product specification
 
-Status: product draft for prototype feedback and Human Input. This document specifies the intended
-full product; it does not authorize implementation, scheduling, credentials, service mutation, or
-agent activation. The existing prototype remains deliberately smaller and inert.
+Status: approved product requirements for a Codex-first, single-host MVP. This document specifies
+the intended full product and staged MVP; it does not authorize implementation, scheduling,
+credential use, service mutation, or agent activation. The existing prototype remains deliberately
+smaller, default-off, and inert.
 
 ## Objective
 
@@ -128,8 +129,14 @@ because an adapter process was invoked.
 
 If Wakeful cannot establish current routing, adapter availability, or a required canonical read, it
 records a truthful pending/failed/unknown state with a bounded reason. It does not silently drop the
-event or invent a new identity to escape ambiguity. Retention, retry limits, dead-letter behavior,
-and escalation thresholds are part of the unresolved Human Input below.
+event or invent a new identity to escape ambiguity.
+
+For the single-host MVP, a provably unaccepted transport failure retries with the same `event_id`
+after 5 seconds, 30 seconds, 2 minutes, and 10 minutes. An ambiguous or `unknown` attempt receives
+adapter-specific readback reconciliation only; it is never blindly resent. After that fast window,
+the event becomes `needs_attention` and remains pending and replayable. Wakeful alerts Marco after
+10 minutes for a direct-human, review, or human-input-required event, and after 60 minutes for other
+sources. `no_current_authority` is an explicit disposition, not an automatic authority request.
 
 ## Agent-neutral adapter contract
 
@@ -148,10 +155,15 @@ inside the adapter. The neutral event does not contain a Codex prompt or Claude 
 bounded wake instruction tells either client to read `canonical_ref`, recover its durable work and
 owned watches, verify current authority, and continue only authorized work.
 
-Current platform evidence shows that the mechanisms need not be identical: OpenAI agent sessions
-can receive follow-up input and expose lifecycle webhooks, while Claude Code can resume a named
-session from its CLI. Those are candidate adapter seams, not a settled credential, hosting, or
-delivery design.
+The Codex MVP runs its adapter in the host execution namespace, connects only to the host-owned
+Codex shared daemon, and uses the host's supported Codex sign-in without reading or copying
+credential material. Wakeful does not start, stop, restart, or own that daemon. Binding and
+projection state remain private mode-0600 host state. A credential-free setup can qualify listener
+and client transport, but cannot qualify a model-turn delivery.
+
+Claude remains a later, separate adapter behind this unchanged neutral contract. Its exact-host
+resume behavior and its own credential boundary must be proved before implementation or activation;
+it does not share a launcher, session store, or credential abstraction with Codex.
 
 ## Authority and safety invariants
 
@@ -182,9 +194,11 @@ new agent system without editing producers. Invalid or unmatched events remain i
 change applies prospectively unless an explicit replay operation identifies the exact pending
 events affected.
 
-Exact fan-out and ownership behavior is deliberately unresolved: some events may notify multiple
-observers, while work-taking events may require a single claimant. The implementation must not
-choose broadcast or claim/ack globally before Human Input.
+The single-host MVP routes one event to one explicitly configured exact target. It has no broadcast,
+claimant election, automatic failover, reassignment, or implicit owner guessing. A missing target
+leaves the event pending and visible. Route changes apply prospectively, and delivery revalidates
+the canonical owner and target binding. A later fan-out requirement must identify the exact event
+class and preserve an independently attributable delivery per target.
 
 ## Operator experience and observability
 
@@ -194,9 +208,11 @@ escalation; and how to suspend, replay, or retire it safely. Aggregate views mus
 failed/unknown delivery, adapter health, deduplication, and queue depth without exposing payloads or
 secrets.
 
-The first prototype-feedback slice may provide this through a bounded command/status document
-rather than a UI. The final choice between CLI, MCP surface, local status page, or another operator
-view remains Human Input. A green process/queue metric is not proof that an agent journey worked.
+The MVP operator surface is a local CLI with structured output. It must list and show exact events,
+explain the matched route, current state and next action, and support explicit suspend/resume,
+reconciliation/replay, and retirement. A UI or MCP status surface is deferred until real-source
+feedback demonstrates a need. A green process/queue metric is not proof that an agent journey
+worked.
 
 ## Reliability and recovery
 
@@ -228,46 +244,69 @@ The landed inert prototype establishes:
   green Funnel; and
 - a fixture/demo path that exposes sanitized pending events without scheduling or delivery.
 
-On current `main` (`243e53963ca7616d3aab5793e033df9cbbeca6ed`), the focused prototype suite
-`tests/test_wakeful.py`, `tests/test_edge_monitor.py`, and `tests/test_edge_monitor_host.py` passes
-29 tests. This is landing evidence for local persistence/classification/host seams. It does **not**
-prove source ingestion, actual Codex or Claude wake, delivery recovery, credentials, operator UX,
-timers, or production activation.
+On `243e53963ca7616d3aab5793e033df9cbbeca6ed`, the focused prototype suite
+`tests/test_wakeful.py`, `tests/test_edge_monitor.py`, and `tests/test_edge_monitor_host.py` passed
+29 tests. This is landing evidence for local persistence/classification/host seams.
+
+Later authenticated disposable exact-host qualification proved more, without targeting the live
+Coordinator or installing a daemon:
+
+- on `87d9d4f6f3f4cffc160252ae9ec89fb4197c1956`, exact Codex thread binding succeeded; an initially
+  ambiguous admission was reconciled to `ADMITTED` from its persisted client identity; duplicate
+  observation remained `ADMITTED`; and exactly one matching client identity was persisted; and
+- on `839bcbbb4c64dc02a0edf9085349bb73e5471162`, a missed child completion was recovered from
+  persisted parent/child state, admitted after readback, and remained one persisted admission under
+  duplicate observation.
+
+At current evidence SHA `93bb9719e1ff53d9904562f1cfdf6ce92251fe6c`, the first-party app-server
+listener and the real Wakeful client completed initialization and `thread/list` in the host
+namespace without credentials. The Coordinator sandbox could see the control-socket symlink but
+could not traverse its target under `/tmp/codex-daemon-1000`, so sandbox-side `Path.is_socket()`
+reported false for the healthy listener. This was a demo-harness namespace defect, not a product
+transport failure.
+
+The separate credential-free current-SHA demonstration did not prove binding, admission, or
+deduplication: its disposable setup turn could not be returned to idle and `turn/interrupt` was
+rejected. Those claims remain `UNKNOWN` / `NOT_RUN` at that SHA. The authenticated evidence above
+does not prove durable Switchstand message ingestion, a product outbox-to-adapter bridge, the CLI,
+Claude delivery, timers, production service operation, or activation.
 
 ## Prototype feedback round
 
-The next product round should exercise one thin end-to-end vertical path without first building the
-whole system:
+The next product round exercises one Codex-only vertical path without first building the whole
+system:
 
 1. Use a synthetic/manual event producer to write one event into a disposable outbox.
-2. Deliver it through one disposable Codex adapter target using no production authority.
+2. Deliver it through one disposable, authenticated Codex adapter target using no production
+   authority and the host-owned daemon/sign-in boundary above.
 3. Demonstrate: idle target receives it; canonical readback is attempted; duplicate delivery does
    not duplicate the workflow; target unavailable remains pending; adapter restart recovers; and an
    explicit suspend prevents delivery without losing the event.
-4. Repeat the identical neutral event and status contract with a disposable Claude target; only the
-   adapter changes.
-5. Run a 15-minute feedback session with Marco using the exact-event status view. Capture: whether
+4. Run a 15-minute feedback session with Marco using the exact-event CLI. Capture: whether
    the wake arrived soon enough, whether the reason/action was understandable, whether duplicate or
    noisy wakes occurred, whether suspend/replay was safe, and which missing state forced transcript
    archaeology.
-6. Only after feedback, select the unresolved policies below and write the implementation
-   specification/activation plan for real sources.
+5. Preserve the neutral producer/adapter contract so a later disposable Claude adapter can run the
+   same conformance journey without changing producers.
 
 The first feedback round is successful when Marco can trigger, observe, understand, suspend, and
-recover the same synthetic event on both agent systems without polling or inspecting raw logs. It
-is not necessary for that round to ingest every source or provide a polished UI.
+recover the synthetic event on Codex without polling or inspecting raw logs. Claude is not a gate
+for this round. It is not necessary to ingest every source or provide a polished UI.
 
 ## Delivery stages
 
-1. **Feedback adapter slice:** synthetic producer, existing outbox, one disposable Codex adapter,
-   one disposable Claude adapter, bounded status, no production source or authority.
-2. **Real-source pilot:** one reversible source selected by explicit post-feedback product choice,
-   with canonical readback and observable delivery lifecycle. The stage ordering does not preselect
-   that source. Do not bundle all six source classes.
-3. **Source expansion:** add message, review, agent, audit, and CI producers individually with
-   source-specific replay/security tests.
-4. **Operational activation:** reviewed credentials, service/scheduler ownership, monitoring,
-   capacity/retention, disable/recovery, and live acceptance for both agent systems.
+1. **Codex feedback adapter slice:** synthetic producer, existing outbox, one disposable Codex
+   adapter, local CLI, and no production source or authority. It remains default-off.
+2. **First real-source pilot:** Codex child completion, with canonical readback and observable
+   delivery lifecycle. This uses the strongest existing real-host evidence and requires no external
+   source credential.
+3. **Source expansion:** add Switchstand inbound delivery, review request/result, CI, and audit-due,
+   in that order and one at a time, with source-specific replay and security evidence.
+4. **Claude adapter conformance:** prove exact-host resume and credentials, then run the unchanged
+   neutral event and status contract through a separate disposable Claude adapter.
+5. **Operational activation:** separately authorize any default-off single-user host service and
+   each live source. Default-on requires sustained single-host evidence, suspend/recovery proof, no
+   unresolved ambiguous delivery, and reviewed monitoring/capacity behavior.
 
 Each stage must be independently useful, reviewable, disableable, and recoverable. Inert landing,
 activation, and reliance are separate claims.
@@ -289,33 +328,18 @@ activation, and reliance are separate claims.
 - Credentials and raw sensitive payloads are absent from the neutral event store and operator view.
 - Real-source and real-agent acceptance evidence is recorded separately from local prototype tests.
 
-## Human Input before implementation hardening
+## Approved single-host MVP decisions
 
-These choices are intentionally open. The feedback slice can remain option-preserving until Marco
-chooses them:
-
-1. **Urgency classes:** which event kinds require immediate wake, and which may be coalesced into a
-   short digest/window?
-2. **Ownership:** which events broadcast to multiple agents, and which require one durable
-   claim/ack owner? What happens when the claimant dies?
-3. **Service levels:** target latency per class; retry/backoff horizon; and when and how failure
-   escalates to Marco.
-4. **Wake without authority:** should the agent only record `no_current_authority`, notify Marco,
-   or be allowed to request authority through an existing bounded process?
-5. **Operator surface:** is a CLI/status document enough initially, or is a live UI/MCP status
-   surface required before real-source activation?
-6. **Delivery and credentials:** which supported Codex and Claude resume/start mechanisms are
-   acceptable, where their target/session bindings live, and how credentials are provisioned,
-   rotated, and revoked?
-7. **Retention:** how long must events, attempts, dispositions, and source classes remain available;
-   which classes require different durations; and what evidence may be compacted while preserving
-   exact identity and outcome truth?
-8. **Dead-letter and retirement:** whether a permanently undeliverable event has a separate
-   dead-letter state; who may retire pending events; after what attempts, age, or explicit decision;
-   and what status/evidence must remain after retirement. Pending events are not silently aged out.
-9. **First real-source pilot:** after the feedback round, which one reversible source should be the
-   first production-facing pilot? The specification does not default to messages, reviews, agent
-   completion, audits, or CI.
+- Routing, source order, retry/escalation, operator surface, delivery/credentials, and activation
+  follow the requirements above.
+- There is no separate dead-letter service in the MVP. Pending and ambiguous events never age out;
+  they become `needs_attention` and remain replayable. Only Marco may explicitly retire one.
+- Pending and ambiguous events retain the evidence needed for reconciliation until disposition or
+  explicit retirement. After that, detailed delivery attempts are retained for 30 days, and the
+  exact event identity and final disposition remain as a payload-free tombstone for 90 days. The
+  canonical source remains responsible for underlying truth and its own retention.
+- These are product requirements only. They do not authorize implementation, host credential use,
+  a service install, a production source mutation, activation, or default-on reliance.
 
 ## Non-goals
 
@@ -326,7 +350,7 @@ chooses them:
 - Exactly-once claims across external agent systems.
 - Automatically remediating outages or deploying changes from a monitoring event.
 - Requiring Codex and Claude to share session storage, launchers, credentials, or host mechanics.
-- Expanding the prototype before the deliberately small feedback round answers the open choices.
+- Expanding the prototype beyond the deliberately small Codex feedback round and approved stages.
 
 ## Research disposition
 
@@ -352,5 +376,5 @@ chooses them:
 The Codex-only technical precursor (WorkId `95724d3c-f1c3-5585-a2bd-ebbc43bf408e`, approved
 revision `2026-10-01T20:15:32.212Z`) is preliminary, opt-in/default-off qualification in
 `codex_wakeful.py`. Its private projection proves admission rather than task completion and is
-not the product WakeEvent/outbox. It does not complete or reorder the feedback-adapter stage,
-Claude implementation, status/suspend, routing, retention, watcher or Human Input work.
+not the product WakeEvent/outbox. It does not complete the product outbox bridge, CLI,
+status/suspend, real-source watcher, Claude adapter, service operation, or activation.
