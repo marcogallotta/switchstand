@@ -456,7 +456,11 @@ class WorksetReader:
             if row is None:
                 raise ValueError("workset is not admitted")
             if row[2] != expected_row_version:
-                return False
+                return (
+                    row[2] == expected_row_version + 1
+                    and (name is None or row[0] == name)
+                    and (state is None or row[1] == state)
+                )
             values = {
                 "name": row[0] if name is None else name,
                 "state": row[1] if state is None else state,
@@ -504,8 +508,9 @@ class WorksetReader:
                 and source[1:3] == ("RELATED", "MEMBER")
                 and target[1:3] == ("AUTHORITATIVE", "MEMBER")
                 and source[3] == expected_from_version + 1
-                and expected_to_version is not None
-                and target[3] == expected_to_version + 1
+                and target[3] == (
+                    1 if expected_to_version is None else expected_to_version + 1
+                )
             ):
                 return True
             if source is None or source[1:3] != ("AUTHORITATIVE", "MEMBER"):
@@ -567,7 +572,9 @@ class WorksetReader:
                 if row is not None:
                     if row[:2] != ("RELATED", "MEMBER"):
                         raise ValueError("membership is not a related member")
-                    return row[2] == expected_row_version
+                    return row[2] == expected_row_version or (
+                        expected_row_version is None and row[2] == 1
+                    )
                 if expected_row_version is not None:
                     return False
                 await connection.execute(insert(workset_memberships).values(
@@ -576,7 +583,7 @@ class WorksetReader:
                 ))
                 return True
             if row is None:
-                return expected_row_version is None
+                return True
             if row[:2] != ("RELATED", "MEMBER"):
                 raise ValueError("authoritative membership cannot be removed as related")
             if row[2] != expected_row_version:
@@ -614,6 +621,14 @@ class WorksetReader:
             ).order_by(workset_memberships.c.work_id).with_for_update())).all()
             by_work = {row[0]: row for row in rows}
             source, target = by_work.get(from_work_id), by_work.get(to_work_id)
+            if (
+                source is not None and target is not None
+                and source[1:3] == ("AUTHORITATIVE", "MEMBER")
+                and target[1:3] == ("AUTHORITATIVE", "MASTER")
+                and source[3] == expected_from_version + 1
+                and target[3] == expected_to_version + 1
+            ):
+                return True
             if source is None or source[1:3] != ("AUTHORITATIVE", "MASTER"):
                 raise ValueError("source is not the current MASTER")
             if target is None or target[1:3] != ("AUTHORITATIVE", "MEMBER"):

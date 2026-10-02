@@ -312,6 +312,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
 
     first_revision = (await reader.enumerate(workset_id=first_set)).revision
     assert await reader.update_workset(first_set, 1, name="Renamed")
+    assert await reader.update_workset(first_set, 1, name="Renamed")
     assert not await reader.update_workset(first_set, 1, state="RETIRED")
     assert await reader.update_workset(first_set, 2, state="RETIRED")
     with pytest.raises(ValueError, match="not active"):
@@ -322,16 +323,22 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
     current = await reader.enumerate(workset_key="project.first")
     assert current is not None and current.workset.name == "Renamed"
     assert current.revision != first_revision
+    assert await reader.update_related_membership(
+        successor, first_set, add=True, expected_row_version=None,
+    )
+    assert await reader.update_related_membership(
+        successor, first_set, add=True, expected_row_version=None,
+    )
+    assert await reader.update_related_membership(
+        successor, first_set, add=False, expected_row_version=1,
+    )
+    assert await reader.update_related_membership(
+        successor, first_set, add=False, expected_row_version=1,
+    )
 
     before_move = await reader.content_authorization(moving)
-    assert await reader.update_related_membership(
-        moving, second_set, add=True, expected_row_version=None,
-    )
-    assert await reader.update_related_membership(
-        moving, second_set, add=True, expected_row_version=1,
-    )
     assert await reader.move_authoritative_membership(
-        moving, first_set, second_set, 1, 1,
+        moving, first_set, second_set, 1, None,
     )
     assert await reader.content_authorization(moving) != before_move
     async with engine.connect() as connection:
@@ -343,10 +350,10 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
             workset_memberships.c.workset_id,
         ))).all()
     assert {(row[0], row[1], row[2]) for row in moved} == {
-        (first_set, "RELATED", 2), (second_set, "AUTHORITATIVE", 2),
+        (first_set, "RELATED", 2), (second_set, "AUTHORITATIVE", 1),
     }
     assert await reader.move_authoritative_membership(
-        moving, first_set, second_set, 1, 1,
+        moving, first_set, second_set, 1, None,
     )
     assert await reader.update_related_membership(
         moving, first_set, add=False, expected_row_version=2,
@@ -358,6 +365,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
 
     before_master = await reader.content_authorization(master)
     before_successor = await reader.content_authorization(successor)
+    assert await reader.transfer_master(role_set, master, successor, 1, 1)
     assert await reader.transfer_master(role_set, master, successor, 1, 1)
     assert await reader.content_authorization(master) != before_master
     assert await reader.content_authorization(successor) != before_successor
