@@ -21,6 +21,7 @@ class StoredWorkEvent:
     id: UUID
     work_id: UUID
     sequence: int
+    result_version: int
     subtype: str
     text: str | None
     created_at: datetime
@@ -59,9 +60,10 @@ class OperationConflictError(ValueError):
 def _event(row: Row[tuple[object, ...]]) -> StoredWorkEvent:
     return StoredWorkEvent(
         id=cast(UUID, row[0]), work_id=cast(UUID, row[1]), sequence=cast(int, row[2]),
-        subtype=cast(str, row[3]), text=cast(str | None, row[4]),
-        created_at=cast(datetime, row[5]), actor=cast(str | None, row[6]),
-        asana_story_gid=cast(str | None, row[7]), operation_id=cast(UUID | None, row[8]),
+        result_version=cast(int, row[3]), subtype=cast(str, row[4]),
+        text=cast(str | None, row[5]), created_at=cast(datetime, row[6]),
+        actor=cast(str | None, row[7]), asana_story_gid=cast(str | None, row[8]),
+        operation_id=cast(UUID | None, row[9]),
     )
 
 
@@ -98,8 +100,9 @@ class WorkEventRepository:
         self.works = canonical_work
         self.columns = (
             work_events.c.id, work_events.c.work_id, work_events.c.sequence,
-            work_events.c.subtype, work_events.c.text, work_events.c.created_at,
-            work_events.c.actor, work_events.c.asana_story_gid, work_events.c.operation_id,
+            work_events.c.result_version, work_events.c.subtype, work_events.c.text,
+            work_events.c.created_at, work_events.c.actor, work_events.c.asana_story_gid,
+            work_events.c.operation_id,
         )
 
     async def page(
@@ -162,7 +165,7 @@ class WorkEventRepository:
                     or event.asana_story_gid != asana_story_gid
                 ):
                     raise OperationConflictError("OperationId was reused with another append")
-                return AppendOutcome(event, cast(int, version), False)
+                return AppendOutcome(event, event.result_version, False)
 
             if version != observed_version:
                 raise StaleWorkVersion(cast(int, version))
@@ -170,15 +173,16 @@ class WorkEventRepository:
                 func.coalesce(func.max(self.events.c.sequence), 0) + 1
             ).where(self.events.c.work_id == work_id)))
             event_id = uuid4()
+            next_version = cast(int, version) + 1
             values = {
                 "id": event_id, "work_id": work_id, "sequence": sequence,
-                "subtype": subtype, "text": text, "created_at": created_at, "actor": actor,
+                "result_version": next_version, "subtype": subtype, "text": text,
+                "created_at": created_at, "actor": actor,
                 "asana_story_gid": asana_story_gid, "operation_id": operation_id,
             }
             row = (await connection.execute(
                 insert(self.events).values(values).returning(*self.columns)
             )).one()
-            next_version = cast(int, version) + 1
             await connection.execute(update(self.works).where(
                 self.works.c.work_id == work_id
             ).values(row_version=next_version))
