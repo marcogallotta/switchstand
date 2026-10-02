@@ -437,14 +437,14 @@ class WorksetReader:
 
     async def membership_move_versions(
         self, work_id: UUID, to_workset_id: UUID,
-    ) -> tuple[UUID, int, int | None]:
+    ) -> tuple[UUID, int, int, int | None]:
         """Capture the exact membership versions needed for one authoritative move."""
         if await self.generation() is None:
             raise RuntimeError("workset authority is not active")
         async with self.engine.connect() as connection:
-            target_state = await connection.scalar(select(worksets.c.state).where(
-                worksets.c.workset_id == to_workset_id,
-            ))
+            set_rows = (await connection.execute(select(
+                worksets.c.workset_id, worksets.c.state, worksets.c.row_version,
+            ))).all()
             rows = (await connection.execute(select(
                 workset_memberships.c.workset_id,
                 workset_memberships.c.semantics,
@@ -452,15 +452,20 @@ class WorksetReader:
                 workset_memberships.c.row_version,
             ).where(workset_memberships.c.work_id == work_id))).all()
         authoritative = [row for row in rows if row[1] == "AUTHORITATIVE"]
-        if target_state != "ACTIVE" or len(authoritative) != 1:
+        sets = {row[0]: row for row in set_rows}
+        target_set = sets.get(to_workset_id)
+        if target_set is None or target_set[1] != "ACTIVE" or len(authoritative) != 1:
             raise ValueError("authoritative move requires one active admitted target")
         source = authoritative[0]
+        source_set = sets.get(source[0])
+        if source_set is None:
+            raise ValueError("authoritative source workset is not admitted")
         if source[0] == to_workset_id or source[2] != "MEMBER":
             raise ValueError("authoritative membership is not movable to this workset")
         target = next((row for row in rows if row[0] == to_workset_id), None)
         if target is not None and target[1:3] != ("RELATED", "MEMBER"):
             raise ValueError("target membership is not promotable")
-        return source[0], source[3], None if target is None else target[3]
+        return source[0], source_set[2], source[3], None if target is None else target[3]
 
     async def authoritative_membership_matches(
         self, work_id: UUID, workset_id: UUID,
@@ -518,7 +523,8 @@ class WorksetReader:
 
     async def move_authoritative_membership(
         self, work_id: UUID, from_workset_id: UUID, to_workset_id: UUID,
-        expected_from_version: int, expected_to_version: int | None,
+        expected_from_workset_version: int, expected_from_version: int,
+        expected_to_version: int | None,
     ) -> bool:
         """Atomically demote the old home and promote the new active workset."""
         if from_workset_id == to_workset_id:
@@ -528,13 +534,16 @@ class WorksetReader:
         async with self.engine.begin() as connection:
             await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
             set_rows = (await connection.execute(select(
-                worksets.c.workset_id, worksets.c.state,
+                worksets.c.workset_id, worksets.c.state, worksets.c.row_version,
             ).where(worksets.c.workset_id.in_({from_workset_id, to_workset_id})).order_by(
                 worksets.c.workset_id,
             ).with_for_update())).all()
             states = {cast(UUID, row[0]): cast(str, row[1]) for row in set_rows}
             if len(set_rows) != 2 or states.get(to_workset_id) != "ACTIVE":
                 raise ValueError("membership target workset is not active and admitted")
+            versions = {cast(UUID, row[0]): cast(int, row[2]) for row in set_rows}
+            if versions.get(from_workset_id) != expected_from_workset_version:
+                return False
             memberships = (await connection.execute(select(
                 workset_memberships.c.workset_id,
                 workset_memberships.c.semantics,

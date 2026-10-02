@@ -46,10 +46,11 @@ class WorksetMutations(Protocol):
     async def parent_matches(self, work_id: UUID, parent_id: UUID | None) -> bool: ...
     async def membership_move_versions(
         self, work_id: UUID, to_workset_id: UUID,
-    ) -> tuple[UUID, int, int | None]: ...
+    ) -> tuple[UUID, int, int, int | None]: ...
     async def move_authoritative_membership(
         self, work_id: UUID, from_workset_id: UUID, to_workset_id: UUID,
-        expected_from_version: int, expected_to_version: int | None,
+        expected_from_workset_version: int, expected_from_version: int,
+        expected_to_version: int | None,
     ) -> bool: ...
     async def authoritative_membership_matches(
         self, work_id: UUID, workset_id: UUID,
@@ -166,18 +167,21 @@ class RelationGateway:
             assert request.patch.workset_id is not None
             worksets = cast(Stage3State, self.state).worksets
             try:
-                source, source_version, target_version = (
+                source, source_workset_version, source_version, target_version = (
                     await worksets.membership_move_versions(
                         request.work_id, request.patch.workset_id,
                     )
                 )
             except ValueError:
                 return self.guard(request, "denied", "invalid_database_workset_move")
+            if await content_authorization_token(self.state, request.work_id) != token:
+                return self.guard(request, "stale", "source_revision_changed")
             return PreparedMutation(
                 intent={
                     "request": request.model_dump(mode="json"),
                     "authority": "postgres", "database_relation": "workset_move",
                     "from_workset_id": str(source),
+                    "expected_from_workset_version": source_workset_version,
                     "expected_from_version": source_version,
                     "expected_to_version": target_version,
                     "provider": handle.provider,
@@ -186,7 +190,7 @@ class RelationGateway:
                 send=lambda: self._send_database_workset_move(
                     principal, request, grant, handle.provider,
                     handle.provider_work_id, qualification, source,
-                    source_version, target_version,
+                    source_workset_version, source_version, target_version,
                 ),
             )
         if postgres_parent:
@@ -307,14 +311,16 @@ class RelationGateway:
     async def _send_database_workset_move(
         self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
         provider_name: str, task_gid: str, qualification: str,
-        from_workset_id: UUID, expected_from_version: int,
+        from_workset_id: UUID, expected_from_workset_version: int,
+        expected_from_version: int,
         expected_to_version: int | None,
     ) -> GuardOutcome:
         assert request.patch.workset_id is not None
         try:
             applied = await cast(Stage3State, self.state).worksets.move_authoritative_membership(
                 request.work_id, from_workset_id, request.patch.workset_id,
-                expected_from_version, expected_to_version,
+                expected_from_workset_version, expected_from_version,
+                expected_to_version,
             )
         except ValueError:
             return self.guard(request, "denied", "invalid_database_workset_move")

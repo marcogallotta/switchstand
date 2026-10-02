@@ -341,10 +341,11 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
         )
         for provider_id in ("123", "456")
     ))
-    project, second_project = uuid4(), uuid4()
+    project, raced_project, second_project = uuid4(), uuid4(), uuid4()
     await stage_snapshot(gateway.state.engine, WorksetSnapshot(
         worksets=(
             Workset(project, "project.test", "Test", "PROJECT"),
+            Workset(raced_project, "project.raced", "Raced", "PROJECT"),
             Workset(second_project, "project.second", "Second", "PROJECT"),
         ),
         memberships=(
@@ -411,7 +412,7 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
         ))).one()[0] == grant.authority.active_work_id
     assert boundary.puts == []
 
-    move_request = ProtectedRelation(
+    stale_race = ProtectedRelation(
         api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
         grant_version=grant.version,
         observed_revision=await revision(grant.authority.active_work_id),
@@ -419,7 +420,72 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
             kind="placement", action="move", workset_id=second_project,
         ),
     )
+    capture_versions = gateway.state.worksets.membership_move_versions
+
+    async def race_after_observed_revision(work_id, target_workset_id):
+        source, source_set_version, source_version, raced_version = await capture_versions(
+            work_id, raced_project,
+        )
+        assert await gateway.state.worksets.move_authoritative_membership(
+            work_id, source, raced_project, source_set_version,
+            source_version, raced_version,
+        )
+        return await capture_versions(work_id, target_workset_id)
+
+    monkeypatch.setattr(
+        gateway.state.worksets, "membership_move_versions", race_after_observed_revision,
+    )
+    rejected_race = await relation.update(principal, stale_race)
+    assert (rejected_race.status, rejected_race.effect) == ("stale", "not_sent")
+    assert await gateway.state.worksets.authoritative_membership_matches(
+        grant.authority.active_work_id, raced_project,
+    )
+    assert not await gateway.state.worksets.authoritative_membership_matches(
+        grant.authority.active_work_id, second_project,
+    )
+    assert await grants.exact(stale_race.operation_id) is None
+    monkeypatch.setattr(
+        gateway.state.worksets, "membership_move_versions", capture_versions,
+    )
+
+    version_race = stale_race.model_copy(update={
+        "operation_id": uuid4(),
+        "observed_revision": await revision(grant.authority.active_work_id),
+    })
     original_move = gateway.state.worksets.move_authoritative_membership
+
+    async def change_source_workset_before_send(
+        work_id, source, target, source_set_version, source_version, target_version,
+    ):
+        assert await gateway.state.worksets.update_workset(
+            source, source_set_version, name="Raced after capture",
+        )
+        return await original_move(
+            work_id, source, target, source_set_version, source_version, target_version,
+        )
+
+    monkeypatch.setattr(
+        gateway.state.worksets, "move_authoritative_membership",
+        change_source_workset_before_send,
+    )
+    rejected_version_race = await relation.update(principal, version_race)
+    assert (rejected_version_race.status, rejected_version_race.effect) == (
+        "stale", "not_sent",
+    )
+    assert await gateway.state.worksets.authoritative_membership_matches(
+        grant.authority.active_work_id, raced_project,
+    )
+    assert not await gateway.state.worksets.authoritative_membership_matches(
+        grant.authority.active_work_id, second_project,
+    )
+    monkeypatch.setattr(
+        gateway.state.worksets, "move_authoritative_membership", original_move,
+    )
+
+    move_request = version_race.model_copy(update={
+        "operation_id": uuid4(),
+        "observed_revision": await revision(grant.authority.active_work_id),
+    })
 
     async def move_then_lose(*args):
         assert await original_move(*args)
