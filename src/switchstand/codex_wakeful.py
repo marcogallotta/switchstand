@@ -154,12 +154,39 @@ def current_state(thread: dict[str, Any]) -> str:
 def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
     calls = [item for turn in thread["turns"] for item in turn["items"]
              if item["type"] == "collabAgentToolCall"]
+    legacy_children = ({child for call in calls for child in call["agentsStates"]}
+                       | {child for call in calls for child in call.get("receiverThreadIds", [])})
     latest = {child: state["status"] for call in calls
               for child, state in call["agentsStates"].items()}
-    return [WakeSourceRef("child_completion", json.dumps([call["id"], child, latest[child]],
-            separators=(",", ":"))) for call in calls if call["tool"] == "spawnAgent"
-            for child in call["receiverThreadIds"]
-            if latest.get(child) in {"completed", "errored", "shutdown"}]
+    candidates: dict[str, set[str]] = {}
+    for call in calls:
+        if call["tool"] != "spawnAgent":
+            continue
+        for child in call["receiverThreadIds"]:
+            if latest.get(child) in {"completed", "errored", "shutdown"}:
+                candidates.setdefault(child, set()).add(json.dumps(
+                    [call["id"], child, latest[child]], separators=(",", ":")))
+
+    activities = [item for turn in thread["turns"] for item in turn["items"]
+                  if item["type"] == "subAgentActivity"]
+    activity_children = {activity["agentThreadId"] for activity in activities}
+    starts: dict[str, set[str]] = {}
+    activity_latest: dict[str, str] = {}
+    for activity in activities:
+        child = activity["agentThreadId"]
+        activity_latest[child] = activity["kind"]
+        if activity["kind"] == "started":
+            starts.setdefault(child, set()).add(activity["id"])
+    for child, start_ids in starts.items():
+        state = activity_latest.get(child)
+        if len(start_ids) == 1 and state in {"completed", "errored", "shutdown"}:
+            candidates.setdefault(child, set()).add(json.dumps(
+                [next(iter(start_ids)), child, state], separators=(",", ":")))
+
+    mixed_children = legacy_children & activity_children
+    return [WakeSourceRef("child_completion", next(iter(identities)))
+            for child, identities in candidates.items()
+            if child not in mixed_children and len(identities) == 1]
 
 
 class Projection:
