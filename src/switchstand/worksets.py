@@ -610,8 +610,13 @@ async def activate(
     finally:
         with suppress(BaseException):
             await connection.close()
-    async with engine.connect() as readback:
-        authority, cutover, digest = await _activation_state(readback)
+    try:
+        async with engine.connect() as readback:
+            authority, cutover, digest = await _activation_state(readback)
+    except BaseException as error:
+        raise ActivationUnknown(
+            "Stage 3 committed readback UNKNOWN; reconcile the durable receipt"
+        ) from error
     if authority != (AUTHORITY, 1) or cutover != (1,) or digest != expected_digest:
         raise ActivationUnknown("Stage 3 committed readback is inconsistent; repair forward")
     return receipt

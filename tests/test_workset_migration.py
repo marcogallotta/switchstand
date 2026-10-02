@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, delete, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import switchstand.worksets as worksets_module
 from switchstand.state import (
     work_authority,
     work_authority_cutovers,
@@ -266,6 +267,37 @@ async def test_activate_recovers_lost_commit_response_without_second_flip(
     assert receipt.corpus_digest == result.corpus_digest
     assert (await reconcile_activation(engine, receipt)).recovered_after_commit_error
     await engine.dispose()
+
+
+async def test_successful_commit_with_failed_readback_is_unknown_and_reconciles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    await prepare_prior_authority()
+    path, digest = reviewed_worksheet(tmp_path)
+    await execute("stage", path, expected_worksheet_digest=digest, confirm_offline=True)
+    receipt_path = tmp_path / "failed-readback.json"
+    original, calls = worksets_module._activation_state, 0
+
+    async def fail_final_readback(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("database restarted after commit")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(worksets_module, "_activation_state", fail_final_readback)
+    with pytest.raises(ActivationUnknown, match="reconcile the durable receipt"):
+        await execute(
+            "activate", path, expected_worksheet_digest=digest, confirm_offline=True,
+            receipt_path=receipt_path,
+        )
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    monkeypatch.setattr(worksets_module, "_activation_state", original)
+    recovered = await execute(
+        "reconcile-activation", path, expected_worksheet_digest=digest,
+        confirm_offline=True, receipt_path=receipt_path,
+    )
+    assert isinstance(recovered, ActivationReceipt) and recovered.recovered_after_commit_error
 
 
 async def test_activation_rejects_incomplete_prerequisite_and_corpus(tmp_path: Path):
