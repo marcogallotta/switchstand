@@ -170,3 +170,5 @@ def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
     assert "Build planner and selected-test development image" in workflow
     assert "/app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()'" in workflow
     assert "--repo /workspace" in workflow
+    assert "GIT_CONFIG_KEY_0=safe.directory" in workflow
+    assert "GIT_CONFIG_VALUE_0=/workspace" in workflow

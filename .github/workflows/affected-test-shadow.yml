@@ -98,6 +98,9 @@ jobs:
         run: |
           docker run --rm \
             -e PYTHONPATH=/workspace/src \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/workspace \
             -v "$PWD:/workspace:ro" -w /workspace \
             switchstand-affected-test-shadow \
             /app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()' \
