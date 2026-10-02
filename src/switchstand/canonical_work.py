@@ -28,7 +28,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 canonical_metadata = MetaData()
 canonical_work = Table(
@@ -133,6 +133,14 @@ class CanonicalWorkRepository:
             ))).one_or_none()
         return None if row is None else _item(row)
 
+    async def get_locked(
+        self, connection: AsyncConnection, work_id: UUID,
+    ) -> CurrentWork | None:
+        row = (await connection.execute(select(*_COLUMNS).where(
+            canonical_work.c.work_id == work_id
+        ).with_for_update())).one_or_none()
+        return None if row is None else _item(row)
+
     async def search(
         self, query: str | None = None, *, completed: bool | None = None,
         cursor: str | None = None, limit: int = 100,
@@ -219,18 +227,20 @@ class CanonicalWorkRepository:
 
     async def replace(self, item: CurrentWork) -> CurrentWork:
         async with self.engine.begin() as connection:
-            current = await connection.scalar(select(canonical_work.c.row_version).where(
-                canonical_work.c.work_id == item.work_id
-            ).with_for_update())
-            if current is None:
-                raise LookupError("canonical work does not exist")
-            if current != item.row_version:
-                raise ValueError("stale canonical work version")
-            next_version = current + 1
-            await connection.execute(update(canonical_work).where(
-                canonical_work.c.work_id == item.work_id
-            ).values(
-                normalized_title=normalize_title(item.title), row_version=next_version,
-                **{name: getattr(item, name) for name in _SCALARS},
-            ))
+            current = await self.get_locked(connection, item.work_id)
+            if current is None or current.row_version != item.row_version:
+                raise (LookupError("canonical work does not exist") if current is None
+                       else ValueError("stale canonical work version"))
+            return await self.replace_locked(connection, item)
+
+    async def replace_locked(
+        self, connection: AsyncConnection, item: CurrentWork,
+    ) -> CurrentWork:
+        next_version = item.row_version + 1
+        await connection.execute(update(canonical_work).where(
+            canonical_work.c.work_id == item.work_id
+        ).values(
+            normalized_title=normalize_title(item.title), row_version=next_version,
+            **{name: getattr(item, name) for name in _SCALARS},
+        ))
         return replace(item, row_version=next_version)

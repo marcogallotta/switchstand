@@ -164,7 +164,8 @@ messaging, and required continuation:
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
   projects DB event storage through the existing public history/event contracts without runtime
   wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
-  existing get, search, and scalar-update contracts; it remains inert until explicitly wired.
+  existing get, search, and scalar-update contracts; the ordinary edge constructs it default-off
+  until explicit activation.
   Migration `0008` materializes the compact tables beside the still-required Stage tables; the
   repositories and runtime projection remain outside shared `state.metadata`, unregistered, and
   inert.
@@ -397,7 +398,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
 | Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
-| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migration `0008`, real-PostgreSQL repository tests, public projection tests, and later runtime wiring |
+| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migration `0008`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected-update atomicity |
 | Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |

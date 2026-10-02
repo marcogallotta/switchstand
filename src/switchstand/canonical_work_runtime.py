@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from typing import Protocol, cast
 from uuid import UUID
+
+from sqlalchemy import insert, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .canonical_relations import CanonicalRelationsRepository, WorkRelations
 from .canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
@@ -20,6 +25,16 @@ from .contracts import (
     WorkSearchResult,
     WorkUpdateRequest,
 )
+from .grant_state import GrantState, effect_intents
+from .grants import (
+    EffectBlocker,
+    EffectOutcomeView,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedUpdate,
+    UpdateReceipt,
+)
+from .mutation_effect import blocked_effect_next_action
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
@@ -140,3 +155,129 @@ class CanonicalWorkRuntime:
         if changed_item is None:
             return WorkResult(status="unknown")
         return WorkResult(status="ok", item=changed_item)
+
+    @staticmethod
+    def _guard(
+        request: ProtectedUpdate, status: str, reason: str, *, possible: bool = False,
+    ) -> GuardOutcome:
+        return GuardOutcome.model_validate({
+            "status": status, "operation": "work_update", "work_id": request.work_id,
+            "operation_id": request.operation_id, "reason": reason,
+            "effect": "unknown" if possible else "not_sent",
+            "retry": "reconcile" if possible else "refresh" if status == "stale" else "none",
+            "next_action": (
+                "Retry this exact work_update OperationId; do not start a new effect."
+                if possible else "Refresh work/grant or ask the trusted issuer."
+            ),
+        })
+
+    @staticmethod
+    def _fingerprint(principal: PrincipalContext, request: ProtectedUpdate) -> str:
+        payload = [principal.key, str(request.work_id), request.grant_version,
+                   request.observed_revision,
+                   request.patch.model_dump(mode="json", exclude_unset=True)]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    async def protected_update(
+        self, grants: GrantState, principal: PrincipalContext, request: ProtectedUpdate,
+    ) -> GuardOutcome:
+        """Apply and journal one canonical scalar update in one transaction."""
+        fingerprint = self._fingerprint(principal, request)
+        for attempt in range(2):
+            try:
+                async with (
+                    grants.locked(principal.key) as grant,
+                    grants.engine.begin() as connection,
+                ):
+                    current = await self.works.get_locked(connection, request.work_id)
+                    exact = (await connection.execute(select(effect_intents).where(
+                        effect_intents.c.operation_id == str(request.operation_id)
+                    ))).mappings().one_or_none()
+                    if exact is not None:
+                        if (exact["principal_key"] != principal.key
+                                or exact["fingerprint"] != fingerprint):
+                            return self._guard(request, "denied", "operation_identity_conflict")
+                        return GuardOutcome.model_validate(exact["outcome"])
+                    if grant is None or grant.principal != principal or not grant.current():
+                        return self._guard(request, "denied", "no_current_grant")
+                    if (not grant.can_write(request.work_id)
+                            or "work_update" not in grant.operations):
+                        return self._guard(
+                            request, "denied", "operation_or_work_not_granted"
+                        )
+                    if request.grant_version != grant.version:
+                        return self._guard(request, "stale", "grant_version_changed")
+                    qualification = grant.update_qualification
+                    if (qualification is None or (principal.assurance == "test")
+                            != qualification.startswith("test:")):
+                        return self._guard(
+                            request, "denied", "update_not_qualified_for_this_surface"
+                        )
+                    blocked = (await connection.execute(select(effect_intents).where(
+                        (effect_intents.c.work_id == str(request.work_id))
+                        & (effect_intents.c.outcome["effect"].astext == "unknown")
+                    ).limit(1))).mappings().one_or_none()
+                    if blocked is not None:
+                        prior = GuardOutcome.model_validate(blocked["outcome"])
+                        assert prior.operation_id is not None and prior.work_id is not None
+                        return self._guard(
+                            request, "unknown", "target_has_unresolved_effect"
+                        ).model_copy(update={
+                            "next_action": blocked_effect_next_action(prior.operation),
+                            "blocked_by": EffectBlocker(
+                                operation=prior.operation, operation_id=prior.operation_id,
+                                work_id=prior.work_id, outcome=EffectOutcomeView(
+                                    status=prior.status, reason=prior.reason,
+                                    effect=prior.effect, retry=prior.retry,
+                                ),
+                            ),
+                        })
+                    if current is None:
+                        return self._guard(request, "denied", "work_not_bound")
+                    if request.observed_revision != canonical_revision(
+                        request.work_id, current.row_version
+                    ):
+                        return self._guard(request, "stale", "source_revision_changed")
+                    fields = request.patch.model_fields_set
+                    if not fields <= _SCALAR_FIELDS:
+                        return self._guard(request, "denied", "invalid_database_metadata")
+                    values = {field: getattr(request.patch, field) for field in fields}
+                    changed = await self.works.replace_locked(
+                        connection, replace(current, **values)
+                    )
+                    receipt = UpdateReceipt(
+                        operation_id=request.operation_id, principal=principal,
+                        grant_id=grant.id, grant_version=grant.version,
+                        work_id=request.work_id, provider="postgres",
+                        task_gid=str(request.work_id),
+                        observed_revision=request.observed_revision,
+                        resulting_revision=canonical_revision(
+                            request.work_id, changed.row_version
+                        ), patch=request.patch, qualification=qualification,
+                    )
+                    outcome = GuardOutcome(
+                        status="ok", operation="work_update", work_id=request.work_id,
+                        operation_id=request.operation_id, reason="scalar_state_converged",
+                        effect="applied", retry="none",
+                        next_action="Use the recorded receipt.", receipt=receipt,
+                    )
+                    await connection.execute(insert(effect_intents).values(
+                        operation_id=str(request.operation_id), fingerprint=fingerprint,
+                        principal_key=principal.key, work_id=str(request.work_id),
+                        grant_id=str(grant.id), grant_version=grant.version,
+                        intent={"request": request.model_dump(mode="json"),
+                                "authority": "postgres"},
+                        outcome=outcome.model_dump(mode="json", exclude_none=True),
+                    ))
+                    return outcome
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                return self._guard(request, "denied", "invalid_database_metadata")
+            except (TypeError, ValueError, KeyError):
+                return self._guard(request, "denied", "invalid_database_metadata")
+            except SQLAlchemyError:
+                return self._guard(
+                    request, "unknown", "state_or_effect_unavailable", possible=True
+                )
+        raise AssertionError("bounded retry exhausted")
