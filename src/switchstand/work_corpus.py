@@ -1,4 +1,4 @@
-"""Read-only capture of the stable Stage 1 Asana work corpus."""
+"""Read-only capture of the stable Asana corpus and zero-Asana preflight."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .core import ProviderError, ProviderWork
 from .discovery import ProviderSearchItem, ProviderSearchPage
 from .provider import AsanaProvider, ProviderWorkDecodeError, WorkDecodeReason
 from .secure_file import create_new_private_bytes
-from .state import work_handles
+from .state import work_event_handles, work_handles
 
 
 class CorpusProvider(Protocol):
@@ -53,6 +53,78 @@ class CorpusException:
     provider_work_id: str
     work_id: str
     reason: str
+
+
+@dataclass(frozen=True)
+class HandleClassification:
+    provider_work_id: str
+    work_id: str
+    state: Literal["current", "historical-missing", "unresolved"]
+
+
+def _populated_fields(rows: list[dict[str, object]], attribute: str) -> list[str]:
+    populated: set[str] = set()
+    for row in rows:
+        values = cast(dict[str, object], row[attribute])
+        populated.update(
+            key for key, value in values.items()
+            if value is not None and value not in ("", [], {})
+        )
+    return sorted(populated)
+
+
+async def _database_preflight(engine: AsyncEngine) -> dict[str, object]:
+    """Read migration blockers and provider-bound residue without mutating state."""
+    async with engine.connect() as connection:
+        event_counts = (await connection.execute(
+            select(work_event_handles.c.provider, func.count())
+            .group_by(work_event_handles.c.provider)
+            .order_by(work_event_handles.c.provider)
+        )).all()
+        unknown_rows = (await connection.execute(
+            text(
+                "SELECT operation_id, work_id, outcome FROM effect_intents "
+                "WHERE outcome->>'effect' = 'unknown' ORDER BY operation_id"
+            )
+        )).all()
+        projection_rows = (await connection.execute(
+            text(
+                "SELECT projection_id, sender_work_id, message_id, operation_id, "
+                "provider, target, state, receipt FROM message_projection "
+                "ORDER BY projection_id"
+            )
+        )).mappings().all()
+
+    unknown_effects: list[dict[str, object]] = []
+    for operation_id, work_id, raw_outcome in unknown_rows:
+        outcome = cast(dict[str, object], raw_outcome)
+        unknown_effects.append({
+            "operation_id": str(operation_id),
+            "work_id": str(work_id),
+            "operation": outcome.get("operation"),
+            "reason": outcome.get("reason"),
+        })
+    projections = [{
+        "projection_id": str(row["projection_id"]),
+        "sender_work_id": str(row["sender_work_id"]),
+        "message_id": str(row["message_id"]),
+        "operation_id": str(row["operation_id"]),
+        "provider": row["provider"],
+        "target": row["target"],
+        "state": row["state"],
+        "receipt": row["receipt"],
+    } for row in projection_rows]
+    return {
+        "event_aliases": {
+            "total": sum(count for _, count in event_counts),
+            "by_provider": [
+                {"provider": provider, "count": count}
+                for provider, count in event_counts
+            ],
+        },
+        "unknown_effects": unknown_effects,
+        "message_projections": projections,
+    }
 
 
 class CorpusCaptureDecodeError(ProviderError):
@@ -174,6 +246,51 @@ async def capture_manifest(
     return _with_digest(document)
 
 
+async def capture_preflight_manifest(
+    engine: AsyncEngine,
+    provider: CorpusProvider,
+    source_candidate: str,
+) -> dict[str, object]:
+    """Capture read-only zero-Asana inventory without changing the Stage 1 artifact."""
+    corpus = await capture_manifest(engine, provider, source_candidate)
+    rows = cast(list[dict[str, object]], corpus["rows"])
+    exceptions = cast(list[dict[str, object]], corpus["exceptions"])
+    classifications = [
+        HandleClassification(
+            cast(str, row["provider_work_id"]), cast(str, row["work_id"]), "current"
+        )
+        for row in rows if row["work_id"] is not None
+    ]
+    classifications.extend(
+        HandleClassification(
+            cast(str, item["provider_work_id"]), cast(str, item["work_id"]),
+            "historical-missing" if item["reason"] == "missing" else "unresolved",
+        )
+        for item in exceptions
+    )
+    classifications.sort(key=lambda item: item.provider_work_id)
+    classification_counts = {
+        state: sum(item.state == state for item in classifications)
+        for state in ("current", "historical-missing", "unresolved")
+    }
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "source_candidate": source_candidate,
+        "corpus_sha256": corpus["sha256"],
+        "handle_classifications": [asdict(item) for item in classifications],
+        "populated_fields": {
+            "routing": _populated_fields(rows, "routing"),
+            "context": _populated_fields(rows, "context"),
+        },
+        **await _database_preflight(engine),
+        "counts": {
+            "task_handles": len(classifications),
+            **classification_counts,
+        },
+    }
+    return _with_digest(document)
+
+
 def write_manifest(path: Path, manifest: dict[str, object]) -> None:
     data = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -241,7 +358,27 @@ async def capture_to_path(
     return str(manifest["sha256"])
 
 
-async def _capture(path: Path, source_candidate: str) -> str:
+async def capture_preflight_to_path(
+    engine: AsyncEngine,
+    provider: CorpusProvider,
+    path: Path,
+    source_candidate: str,
+) -> str:
+    try:
+        manifest = await capture_preflight_manifest(engine, provider, source_candidate)
+    except CorpusCaptureDecodeError as error:
+        create_new_private_bytes(
+            failure_receipt_path(path),
+            json.dumps({
+                "provider_work_id": error.provider_work_id, "reason": error.reason,
+            }, sort_keys=True, separators=(",", ":")).encode() + b"\n",
+        )
+        raise
+    write_manifest(path, manifest)
+    return str(manifest["sha256"])
+
+
+async def _capture(path: Path, source_candidate: str, *, preflight: bool = False) -> str:
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
     client = httpx.AsyncClient(
         base_url="https://app.asana.com/api/1.0",
@@ -250,7 +387,8 @@ async def _capture(path: Path, source_candidate: str) -> str:
     )
     try:
         provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
-        return await capture_to_path(engine, provider, path, source_candidate)
+        capture = capture_preflight_to_path if preflight else capture_to_path
+        return await capture(engine, provider, path, source_candidate)
     finally:
         await client.aclose()
         await engine.dispose()
@@ -262,20 +400,33 @@ def run(argv: list[str] | None = None) -> None:
     capture = subparsers.add_parser("capture")
     capture.add_argument("path", type=Path)
     capture.add_argument("--source-candidate", required=True)
+    preflight = subparsers.add_parser("preflight")
+    preflight.add_argument("path", type=Path)
+    preflight.add_argument("--source-candidate", required=True)
     compare = subparsers.add_parser("compare")
     compare.add_argument("first", type=Path)
     compare.add_argument("second", type=Path)
     arguments = parser.parse_args(argv)
     try:
-        digest = (
-            asyncio.run(_capture(arguments.path, arguments.source_candidate))
-            if arguments.action == "capture"
-            else compare_manifests(arguments.first, arguments.second)
-        )
+        if arguments.action in {"capture", "preflight"}:
+            digest = asyncio.run(_capture(
+                arguments.path, arguments.source_candidate,
+                preflight=arguments.action == "preflight",
+            ))
+        else:
+            digest = compare_manifests(arguments.first, arguments.second)
     except (KeyError, OSError, ProviderError, ValueError) as error:
         parser.exit(1, f"Stage 1 corpus capture failed: {error}\n")
-    manifest = load_manifest(arguments.path if arguments.action == "capture" else arguments.first)
-    print(f"corpus_sha256={digest} exception_sha256={manifest_exception_digest(manifest)}")
+    manifest = load_manifest(
+        arguments.path if arguments.action in {"capture", "preflight"} else arguments.first
+    )
+    if arguments.action == "preflight":
+        print(f"preflight_sha256={digest}")
+    else:
+        print(
+            f"corpus_sha256={digest} "
+            f"exception_sha256={manifest_exception_digest(manifest)}"
+        )
 
 
 if __name__ == "__main__":
