@@ -350,7 +350,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
 
     before_move = await reader.content_authorization(moving)
     assert await reader.move_authoritative_membership(
-        moving, first_set, second_set, 1, None,
+        moving, first_set, second_set, 8, 1, None,
     )
     assert await reader.content_authorization(moving) != before_move
     async with engine.connect() as connection:
@@ -365,7 +365,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
         (first_set, "RELATED", 2), (second_set, "AUTHORITATIVE", 1),
     }
     assert await reader.move_authoritative_membership(
-        moving, first_set, second_set, 1, None,
+        moving, first_set, second_set, 8, 1, None,
     )
     assert await reader.update_related_membership(
         moving, first_set, add=False, expected_workset_version=8,
@@ -389,7 +389,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
     assert not await reader.transfer_master(role_set, successor, master, 1, 1)
     with pytest.raises(ValueError, match="movable"):
         await reader.move_authoritative_membership(
-            successor, role_set, first_set, 2, None,
+            successor, role_set, first_set, 1, 2, None,
         )
     with pytest.raises(ValueError, match="change name or state"):
         await reader.update_workset(first_set, 4)

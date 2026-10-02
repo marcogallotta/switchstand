@@ -124,12 +124,21 @@ async def test_candidate_qualification_adapter_is_read_only_and_audited(monkeypa
     assert "repository_candidate_qualification_get" in ORDINARY_GENUINE_READ_TOOLS
 
 
-def test_ordinary_relation_patch_converts_only_work_ids():
+def test_ordinary_relation_patch_converts_provider_neutral_targets():
     patch = OrdinaryRelationPatch(kind="dependency", action="add", target_work_id=ACTIVE)
     converted = patch.internal()
     assert (converted.kind, converted.action, converted.target_work_id) == (
         "dependency", "add", ACTIVE,
     )
+    target_workset = uuid4()
+    moved = OrdinaryRelationPatch(
+        kind="workset", action="move", workset_id=target_workset,
+    ).internal()
+    assert (moved.kind, moved.action, moved.workset_id) == (
+        "placement", "move", target_workset,
+    )
+    with pytest.raises(ValidationError):
+        OrdinaryRelationPatch(kind="workset", action="add", workset_id=target_workset)
     with pytest.raises(ValidationError):
         OrdinaryRelationPatch.model_validate({
             "kind": "parent", "action": "set", "target_work_id": ACTIVE,
@@ -549,7 +558,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert "project_gid" not in create.input_schema["properties"]
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
-        assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
+        assert relation["properties"]["kind"]["enum"] == [
+            "parent", "dependency", "workset",
+        ]
+        assert "workset_id" in relation["properties"]
         assert "gid" not in str(relation).lower()
         recovery = next(tool for tool in tools if tool.name == "effect_reconcile")
         assert set(recovery.input_schema["properties"]) == {"api_version", "operation_id"}
