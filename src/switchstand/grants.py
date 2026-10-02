@@ -121,6 +121,7 @@ class RelationPatch(ClosedModel):
     kind: Literal["assignee", "placement", "parent", "dependency"]
     action: Literal["set", "clear", "add", "remove", "move"]
     target_work_id: UUID | None = None
+    workset_id: UUID | None = None
     assignee_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     section_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
@@ -133,15 +134,22 @@ class RelationPatch(ClosedModel):
             if (self.action == "set") != (self.assignee_gid is not None):
                 raise ValueError("assignee target does not match action")
             if any(value is not None for value in (
-                self.target_work_id, self.project_gid, self.section_gid
+                self.target_work_id, self.workset_id, self.project_gid, self.section_gid
             )):
                 raise ValueError("assignee relation forbids unrelated fields")
         elif self.kind == "placement":
-            if self.action not in {"add", "move", "remove"} or self.project_gid is None:
-                raise ValueError("placement relation requires project and add/move/remove")
-            if (
-                self.target_work_id is not None or self.assignee_gid is not None
-                or self.action == "remove" and self.section_gid is not None
+            database_move = self.workset_id is not None
+            if database_move and (
+                self.action != "move" or self.project_gid is not None
+                or self.section_gid is not None
+            ):
+                raise ValueError("workset placement requires one move target")
+            if not database_move and (
+                self.action not in {"add", "move", "remove"} or self.project_gid is None
+            ):
+                raise ValueError("provider placement requires project and add/move/remove")
+            if self.target_work_id is not None or self.assignee_gid is not None or (
+                not database_move and self.action == "remove" and self.section_gid is not None
             ):
                 raise ValueError("placement relation fields do not match action")
         elif self.kind == "parent":
@@ -150,14 +158,14 @@ class RelationPatch(ClosedModel):
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
             if any(value is not None for value in (
-                self.assignee_gid, self.project_gid, self.section_gid
+                self.workset_id, self.assignee_gid, self.project_gid, self.section_gid
             )):
                 raise ValueError("parent relation forbids unrelated fields")
         else:
             if self.action not in {"add", "remove"} or self.target_work_id is None:
                 raise ValueError("dependency relation requires target and add/remove")
             if any(value is not None for value in (
-                self.assignee_gid, self.project_gid, self.section_gid
+                self.workset_id, self.assignee_gid, self.project_gid, self.section_gid
             )):
                 raise ValueError("dependency relation forbids unrelated fields")
         return self

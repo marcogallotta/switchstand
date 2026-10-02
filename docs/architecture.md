@@ -196,6 +196,9 @@ messaging, and required continuation:
   authoritative-home moves, related-membership add/remove, and durable-role MASTER transfer.
   They serialize on the Stage 3 advisory lock, require explicit row currentness, preserve exactly
   one authoritative home, and never project structure back to Asana.
+  Ordinary `work_relate` exposes an authoritative-home move as the provider-neutral
+  `{kind: workset, action: move, workset_id}` patch. It uses the existing grant/effect journal,
+  exact OperationId replay, and DB readback; pre-marker provider placement remains unchanged.
   Marker-gated parent `set`/`clear` mutations write only `work_parent_edges`, advance the owning
   work revision transactionally, and recover ambiguous effects by exact DB-edge readback; provider
   parent mutation remains the pre-marker compatibility path. Marker-gated parented creation still

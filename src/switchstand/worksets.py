@@ -435,6 +435,49 @@ class WorksetReader:
             ).where(work_parent_edges.c.child_work_id == work_id))
         return current == parent_id
 
+    async def membership_move_versions(
+        self, work_id: UUID, to_workset_id: UUID,
+    ) -> tuple[UUID, int, int | None]:
+        """Capture the exact membership versions needed for one authoritative move."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.connect() as connection:
+            target_state = await connection.scalar(select(worksets.c.state).where(
+                worksets.c.workset_id == to_workset_id,
+            ))
+            rows = (await connection.execute(select(
+                workset_memberships.c.workset_id,
+                workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+                workset_memberships.c.row_version,
+            ).where(workset_memberships.c.work_id == work_id))).all()
+        authoritative = [row for row in rows if row[1] == "AUTHORITATIVE"]
+        if target_state != "ACTIVE" or len(authoritative) != 1:
+            raise ValueError("authoritative move requires one active admitted target")
+        source = authoritative[0]
+        if source[0] == to_workset_id or source[2] != "MEMBER":
+            raise ValueError("authoritative membership is not movable to this workset")
+        target = next((row for row in rows if row[0] == to_workset_id), None)
+        if target is not None and target[1:3] != ("RELATED", "MEMBER"):
+            raise ValueError("target membership is not promotable")
+        return source[0], source[3], None if target is None else target[3]
+
+    async def authoritative_membership_matches(
+        self, work_id: UUID, workset_id: UUID,
+    ) -> bool:
+        """Read back one authoritative-home effect without repeating it."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(
+                workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+            ).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.workset_id == workset_id,
+            ))).one_or_none()
+        return row == ("AUTHORITATIVE", "MEMBER")
+
     async def update_workset(
         self, workset_id: UUID, expected_row_version: int, *,
         name: str | None = None, state: str | None = None,

@@ -44,6 +44,16 @@ class WorksetMutations(Protocol):
         self, work_id: UUID, parent_id: UUID | None, expected_row_version: int,
     ) -> bool: ...
     async def parent_matches(self, work_id: UUID, parent_id: UUID | None) -> bool: ...
+    async def membership_move_versions(
+        self, work_id: UUID, to_workset_id: UUID,
+    ) -> tuple[UUID, int, int | None]: ...
+    async def move_authoritative_membership(
+        self, work_id: UUID, from_workset_id: UUID, to_workset_id: UUID,
+        expected_from_version: int, expected_to_version: int | None,
+    ) -> bool: ...
+    async def authoritative_membership_matches(
+        self, work_id: UUID, workset_id: UUID,
+    ) -> bool: ...
 
 
 class Stage3State(Stage2State, Protocol):
@@ -131,12 +141,19 @@ class RelationGateway:
             return self.guard(request, "not_applied", "source_read_unavailable")
         token = await content_authorization_token(self.state, request.work_id)
         postgres_parent = request.patch.kind == "parent" and token is not None
-        if not (postgres_dependency or postgres_parent) and (
+        postgres_placement = request.patch.kind == "placement" and token is not None
+        if request.patch.workset_id is not None and not postgres_placement:
+            return self.guard(request, "denied", "workset_authority_not_active")
+        if postgres_placement and request.patch.workset_id is None:
+            return self.guard(request, "denied", "legacy_provider_placement_is_read_only")
+        if not (postgres_dependency or postgres_parent or postgres_placement) and (
             not hasattr(provider, "update_relation")
             or not hasattr(provider, "relation_matches")
         ):
             return self.guard(request, "denied", "provider_relation_not_supported")
-        if not current.canonical and not (postgres_dependency or postgres_parent):
+        if not current.canonical and not (
+            postgres_dependency or postgres_parent or postgres_placement
+        ):
             return self.guard(request, "not_applied", "source_read_unavailable")
         indexed = await index.get(request.work_id) if index is not None else None
         base_revision = current.revision if index is None else await index.revision(
@@ -145,6 +162,33 @@ class RelationGateway:
         )
         if request.observed_revision != revision_with_authorization(base_revision, token):
             return self.guard(request, "stale", "source_revision_changed")
+        if postgres_placement:
+            assert request.patch.workset_id is not None
+            worksets = cast(Stage3State, self.state).worksets
+            try:
+                source, source_version, target_version = (
+                    await worksets.membership_move_versions(
+                        request.work_id, request.patch.workset_id,
+                    )
+                )
+            except ValueError:
+                return self.guard(request, "denied", "invalid_database_workset_move")
+            return PreparedMutation(
+                intent={
+                    "request": request.model_dump(mode="json"),
+                    "authority": "postgres", "database_relation": "workset_move",
+                    "from_workset_id": str(source),
+                    "expected_from_version": source_version,
+                    "expected_to_version": target_version,
+                    "provider": handle.provider,
+                    "task_gid": handle.provider_work_id, "qualification": qualification,
+                },
+                send=lambda: self._send_database_workset_move(
+                    principal, request, grant, handle.provider,
+                    handle.provider_work_id, qualification, source,
+                    source_version, target_version,
+                ),
+            )
         if postgres_parent:
             assert token is not None
             target = request.patch.target_work_id
@@ -260,6 +304,33 @@ class RelationGateway:
             provider_name, task_gid, qualification,
         )
 
+    async def _send_database_workset_move(
+        self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
+        provider_name: str, task_gid: str, qualification: str,
+        from_workset_id: UUID, expected_from_version: int,
+        expected_to_version: int | None,
+    ) -> GuardOutcome:
+        assert request.patch.workset_id is not None
+        try:
+            applied = await cast(Stage3State, self.state).worksets.move_authoritative_membership(
+                request.work_id, from_workset_id, request.patch.workset_id,
+                expected_from_version, expected_to_version,
+            )
+        except ValueError:
+            return self.guard(request, "denied", "invalid_database_workset_move")
+        if not applied:
+            return self.guard(request, "stale", "source_revision_changed")
+        if not await cast(Stage3State, self.state).worksets.authoritative_membership_matches(
+            request.work_id, request.patch.workset_id,
+        ):
+            return self.guard(
+                request, "unknown", "effect_readback_unconfirmed", possible_send=True
+            )
+        return self._applied(
+            principal, request, grant.id, grant.version,
+            provider_name, task_gid, qualification,
+        )
+
     async def _send(
         self, principal: PrincipalContext, request: ProtectedRelation, grant: WorkGrant,
         provider_name: str, task_gid: str, qualification: str, resolved: ProviderRelation,
@@ -288,6 +359,23 @@ class RelationGateway:
         qualification = record.intent.get("qualification")
         raw = record.intent.get("resolved")
         if record.intent.get("authority") == "postgres":
+            if record.intent.get("database_relation") == "workset_move":
+                target = request.patch.workset_id
+                if target is None or not await cast(
+                    Stage3State, self.state,
+                ).worksets.authoritative_membership_matches(request.work_id, target):
+                    return self.guard(
+                        request, "unknown", "effect_readback_unconfirmed", possible_send=True
+                    )
+                if not isinstance(provider_name, str) or not isinstance(task_gid, str) \
+                        or not isinstance(qualification, str):
+                    raise TypeError("durable database workset move intent invalid")
+                outcome = self._applied(
+                    principal, request, record.grant_id, record.grant_version,
+                    provider_name, task_gid, qualification,
+                )
+                await self.grants.finish(outcome)
+                return outcome
             if record.intent.get("database_relation") == "parent":
                 if not await cast(Stage3State, self.state).worksets.parent_matches(
                     request.work_id, request.patch.target_work_id,

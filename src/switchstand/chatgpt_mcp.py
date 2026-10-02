@@ -75,10 +75,11 @@ class OrdinaryWorkResult(ClosedModel):
 
 
 class OrdinaryRelationPatch(ClosedModel):
-    """WorkId-only relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency"]
-    action: Literal["set", "clear", "add", "remove"]
+    """Provider-neutral relation shape for the ordinary surface."""
+    kind: Literal["parent", "dependency", "workset"]
+    action: Literal["set", "clear", "add", "remove", "move"]
     target_work_id: UUID | None = None
+    workset_id: UUID | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
@@ -87,13 +88,25 @@ class OrdinaryRelationPatch(ClosedModel):
                 raise ValueError("parent relation requires set or clear")
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
-        elif self.action not in {"add", "remove"} or self.target_work_id is None:
+            if self.workset_id is not None:
+                raise ValueError("parent relation forbids a workset target")
+        elif self.kind == "dependency" and (
+            self.action not in {"add", "remove"} or self.target_work_id is None
+            or self.workset_id is not None
+        ):
             raise ValueError("dependency relation requires target and add/remove")
+        elif self.kind == "workset" and (
+            self.action != "move" or self.workset_id is None
+            or self.target_work_id is not None
+        ):
+            raise ValueError("workset relation requires one move target")
         return self
 
     def internal(self) -> RelationPatch:
         return RelationPatch(
-            kind=self.kind, action=self.action, target_work_id=self.target_work_id,
+            kind="placement" if self.kind == "workset" else self.kind,
+            action=self.action, target_work_id=self.target_work_id,
+            workset_id=self.workset_id,
         )
 
 

@@ -341,9 +341,12 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
         )
         for provider_id in ("123", "456")
     ))
-    project = uuid4()
+    project, second_project = uuid4(), uuid4()
     await stage_snapshot(gateway.state.engine, WorksetSnapshot(
-        worksets=(Workset(project, "project.test", "Test", "PROJECT"),),
+        worksets=(
+            Workset(project, "project.test", "Test", "PROJECT"),
+            Workset(second_project, "project.second", "Second", "PROJECT"),
+        ),
         memberships=(
             Membership(project, grant.authority.active_work_id, "AUTHORITATIVE"),
             Membership(project, parent.id, "AUTHORITATIVE"),
@@ -406,6 +409,47 @@ async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverabl
             work_edges.c.work_id == grant.authority.active_work_id,
             work_edges.c.depends_on_work_id == parent.id,
         ))).one()[0] == grant.authority.active_work_id
+    assert boundary.puts == []
+
+    move_request = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+        grant_version=grant.version,
+        observed_revision=await revision(grant.authority.active_work_id),
+        patch=RelationPatch(
+            kind="placement", action="move", workset_id=second_project,
+        ),
+    )
+    original_move = gateway.state.worksets.move_authoritative_membership
+
+    async def move_then_lose(*args):
+        assert await original_move(*args)
+        raise SQLAlchemyError("lost after workset move commit")
+
+    monkeypatch.setattr(
+        gateway.state.worksets, "move_authoritative_membership", move_then_lose,
+    )
+    unknown_move = await relation.update(principal, move_request)
+    assert (unknown_move.status, unknown_move.effect) == ("unknown", "unknown")
+    monkeypatch.setattr(
+        gateway.state.worksets, "move_authoritative_membership", original_move,
+    )
+    recovered_move = await relation.update(principal, move_request)
+    assert (recovered_move.status, recovered_move.effect) == ("ok", "applied")
+    assert await gateway.state.worksets.authoritative_membership_matches(
+        grant.authority.active_work_id, second_project,
+    )
+    assert await relation.update(principal, move_request) == recovered_move
+    stale_move = move_request.model_copy(update={"operation_id": uuid4()})
+    assert (await relation.update(principal, stale_move)).status == "stale"
+    legacy_placement = move_request.model_copy(update={
+        "operation_id": uuid4(),
+        "observed_revision": await revision(grant.authority.active_work_id),
+        "patch": RelationPatch(kind="placement", action="move", project_gid=PROJECT),
+    })
+    denied_legacy = await relation.update(principal, legacy_placement)
+    assert (denied_legacy.status, denied_legacy.reason) == (
+        "denied", "legacy_provider_placement_is_read_only",
+    )
     assert boundary.puts == []
 
     child_revision = await revision(grant.authority.active_work_id)
