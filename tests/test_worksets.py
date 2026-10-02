@@ -317,23 +317,35 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
     assert await reader.update_workset(first_set, 2, state="RETIRED")
     with pytest.raises(ValueError, match="not active"):
         await reader.update_related_membership(
-            successor, first_set, add=True, expected_row_version=None,
+            successor, first_set, add=True, expected_workset_version=3,
         )
     assert await reader.update_workset(first_set, 3, state="ACTIVE")
     current = await reader.enumerate(workset_key="project.first")
     assert current is not None and current.workset.name == "Renamed"
     assert current.revision != first_revision
     assert await reader.update_related_membership(
-        successor, first_set, add=True, expected_row_version=None,
+        successor, first_set, add=True, expected_workset_version=4,
     )
     assert await reader.update_related_membership(
-        successor, first_set, add=True, expected_row_version=None,
+        successor, first_set, add=True, expected_workset_version=4,
     )
     assert await reader.update_related_membership(
-        successor, first_set, add=False, expected_row_version=1,
+        successor, first_set, add=False, expected_workset_version=5,
     )
     assert await reader.update_related_membership(
-        successor, first_set, add=False, expected_row_version=1,
+        successor, first_set, add=False, expected_workset_version=5,
+    )
+    assert not await reader.update_related_membership(
+        successor, first_set, add=True, expected_workset_version=4,
+    )
+    assert await reader.update_related_membership(
+        successor, first_set, add=True, expected_workset_version=6,
+    )
+    assert not await reader.update_related_membership(
+        successor, first_set, add=False, expected_workset_version=5,
+    )
+    assert await reader.update_related_membership(
+        successor, first_set, add=False, expected_workset_version=7,
     )
 
     before_move = await reader.content_authorization(moving)
@@ -356,11 +368,11 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
         moving, first_set, second_set, 1, None,
     )
     assert await reader.update_related_membership(
-        moving, first_set, add=False, expected_row_version=2,
+        moving, first_set, add=False, expected_workset_version=8,
     )
     with pytest.raises(ValueError, match="authoritative"):
         await reader.update_related_membership(
-            moving, second_set, add=False, expected_row_version=2,
+            moving, second_set, add=False, expected_workset_version=1,
         )
 
     before_master = await reader.content_authorization(master)
@@ -385,7 +397,7 @@ async def test_general_workset_and_membership_mutations_preserve_invariants(
     async with engine.connect() as connection:
         assert await connection.scalar(select(worksets.c.row_version).where(
             worksets.c.workset_id == first_set,
-        )) == 4
+        )) == 9
     await engine.dispose()
 
 
