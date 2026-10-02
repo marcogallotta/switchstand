@@ -170,7 +170,8 @@ gated for forward repair; the FastMCP snapshot is still never restored automatic
 evidence layer validates the exact candidate, full corpus and reviewed-exception digests, worksheet
 digest, private file identity, and free space, then fsyncs immutable attempt-local copies before any
 effect. Its inert resumable state machine validates Stage 2 first and never repeats proven effects.
-Host command binding and the operator CLI remain separate, so these contracts run no database work.
+The host command binding remains inert, and its former operator CLI is retired; no supported entry
+point runs this database work.
 The host operations boundary also distinguishes an exact production identity from
 an explicitly supplied disposable identity. Disposable maintenance requires a
 private canonical rehearsals root, namespaced rehearsal service, and three distinct loopback

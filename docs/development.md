@@ -151,10 +151,9 @@ identity, and labels it proves. A production, incomplete, or foreign identity
 is rejected before removal. Provisioning and teardown do not change production
 services, state, settings, or routing.
 
-`stage12_cutover.ConcreteCommands` binds the offline state machine to reviewed migration
-commands. Disposable runs derive `DATABASE_URL` from their namespaced PostgreSQL container.
-The landed `switchstand-stage12-cutover` host CLI durably reconciles process loss around this
-adapter; neither the CLI nor this adapter grants activation authority.
+`stage12_cutover.ConcreteCommands` is retained temporarily with the inert state machine while the
+superseded Stage runtime is retired. Its host CLI and packaging entry point are removed; there is
+no supported executable operator path.
 
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
