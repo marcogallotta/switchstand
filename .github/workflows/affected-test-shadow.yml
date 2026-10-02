@@ -86,6 +86,9 @@ jobs:
             printf 'parent_check=%s\n' "$parent_check"
           } | tee -a "$GITHUB_OUTPUT"
 
+      - name: Build planner and selected-test development image
+        run: docker build --target development --tag switchstand-affected-test-shadow .
+
       - name: Plan affected tests from exact Git objects
         id: plan
         env:
@@ -93,8 +96,12 @@ jobs:
           PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
           SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
         run: |
-          PYTHONPATH=src python3 -c 'from switchstand.affected_tests import main; main()' \
-            --repo . --base "$PLANNER_BASE_SHA" --head "$PLANNER_HEAD_SHA" --json \
+          docker run --rm \
+            -e PYTHONPATH=/workspace/src \
+            -v "$PWD:/workspace:ro" -w /workspace \
+            switchstand-affected-test-shadow \
+            /app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()' \
+            --repo /workspace --base "$PLANNER_BASE_SHA" --head "$PLANNER_HEAD_SHA" --json \
             > "$RUNNER_TEMP/affected-test-plan.json"
           python3 - "$RUNNER_TEMP/affected-test-plan.json" "$GITHUB_OUTPUT" "$SUBJECT_VERIFIED" <<'PY'
           import json
@@ -154,10 +161,6 @@ jobs:
               elif effective_mode in {"NO_PLAN", "STALE"}:
                   summary.write("\nNo selected-test claim was made; authoritative Quality remains independent.\n")
           PY
-
-      - name: Build Quality development image for selected tests
-        if: steps.plan.outputs.execute_selected == 'true'
-        run: docker build --target development --tag switchstand-affected-test-shadow .
 
       - name: Run planner-emitted tests only
         if: steps.plan.outputs.execute_selected == 'true'
