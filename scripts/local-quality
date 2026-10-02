@@ -6,6 +6,7 @@ postgres_id=
 quality_id=
 image=
 image_built=false
+docker_work=false
 
 cleanup() {
     local status=$? cleanup_failed=0 id
@@ -19,6 +20,9 @@ cleanup() {
     if [ "$image_built" = true ]; then
         docker image rm "$image" >/dev/null 2>&1 || cleanup_failed=1
         ! docker image inspect "$image" >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    if [ "$docker_work" = true ]; then
+        "$repo/scripts/docker-gc" || cleanup_failed=1
     fi
     printf 'QUALITY_RESULT=%s\nCLEANUP_RESULT=%s\n' \
         "$outcome" "$([ "$cleanup_failed" -eq 0 ] && printf PASS || printf FAIL)"
@@ -55,6 +59,7 @@ done
 
 printf 'QUALITY_SUBJECT_KIND=exact-head\nQUALITY_SUBJECT_SHA=%s\nQUALITY_SOURCE=%s\n' \
     "$head" "$repo"
+docker_work=true
 image_id=$(docker build --quiet --target development --tag "$image" "$repo")
 image_built=true
 image_id=$(docker image inspect --format '{{.Id}}' "$image_id")

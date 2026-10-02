@@ -17,6 +17,9 @@ def _candidate(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     (repo / "scripts").mkdir()
     (repo / "scripts" / "local-quality").write_bytes(SCRIPT.read_bytes())
     (repo / "scripts" / "local-quality").chmod(0o755)
+    gc = Path(__file__).parents[1] / "scripts" / "docker-gc"
+    (repo / "scripts" / "docker-gc").write_bytes(gc.read_bytes())
+    (repo / "scripts" / "docker-gc").chmod(0o755)
     subprocess.run(["git", "init", "-q", repo], check=True)
     subprocess.run(["git", "-C", repo, "add", "."], check=True)
     subprocess.run(
@@ -66,6 +69,7 @@ case "$1 $2" in
     esac ;;
   'container exec') exit 0 ;;
   'container rm') exit 0 ;;
+  'builder prune') echo 'Total reclaimed space: 0B' ;;
   *) echo "unexpected docker command: $*" >&2; exit 97 ;;
 esac
 """
@@ -90,6 +94,7 @@ exec "$REAL_GIT" "$@"
         "CANDIDATE_REPO": str(repo),
         "GIT_FAIL_MARKER": str(tmp_path / "git-status-fails"),
         "REAL_GIT": real_git,
+        "XDG_STATE_HOME": str(tmp_path / "state"),
     }
     return repo, env, log
 
@@ -124,6 +129,7 @@ def test_runs_ci_commands_against_read_only_candidate_and_owned_postgres(
     assert "container rm --force quality-id" in commands
     assert "container rm --force pg-id" in commands
     assert "image rm switchstand-local-quality:" in commands
+    assert "builder prune --all --force --keep-storage 20GB" in commands
     assert "network create" not in commands
 
 

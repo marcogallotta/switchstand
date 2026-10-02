@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+: "${HOME:?HOME is required for Docker cache GC}"
+
+keep_storage=20GB
+state_root=${XDG_STATE_HOME:-$HOME/.local/state}/switchstand
+mkdir -p "$state_root"
+lock=$state_root/docker-build-cache-gc.lock
+output=$(mktemp "$state_root/docker-build-cache-gc.XXXXXXXX")
+trap 'rm -f "$output"' EXIT HUP INT TERM
+
+exec 9>"$lock"
+if ! flock -w 300 9; then
+    echo "Docker cache GC could not acquire its host-wide lock" >&2
+    exit 1
+fi
+
+if ! timeout --kill-after=5 300 docker builder prune --all --force \
+    --keep-storage "$keep_storage" >"$output" 2>&1; then
+    cat "$output" >&2
+    echo "Docker cache GC failed" >&2
+    exit 1
+fi
+
+printf 'DOCKER_GC_RESULT=PASS KEEP_STORAGE=%s\n' "$keep_storage"

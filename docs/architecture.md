@@ -353,7 +353,10 @@ read-only directory, dispatch preserves the ignored `friction.md` content in Swi
 state and binds the repository path to it with a validated symlink. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
-`development.py` owns high-level environment/workload behavior. `docker.py` owns shared low-level
+`development.py` owns high-level environment/workload behavior, including invoking the repository-owned
+`scripts/docker-gc` BuildKit cache cap whenever managed Docker work is reconciled. `scripts/docker-gc` serializes
+host-wide cache reconciliation and bounds only unused build cache; exact resource owners remain responsible for
+their images, containers, networks, and volumes. `docker.py` owns shared low-level
 Docker inspection, naming, labels, and removal primitives. Launch decides when those operations run;
 the remaining overlap is a known lifecycle-policy convergence boundary, not evidence of two equal
 owners.
