@@ -1,9 +1,13 @@
 name: Quality
-run-name: Quality / ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
-on: [push, pull_request]
+run-name: Quality / ${{ github.event_name == 'pull_request' && 'composition' || github.event_name == 'schedule' && 'scheduled exact-head' || 'exact-head' }}
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 2 * * *"
 jobs:
   quality:
-    name: ${{ github.event_name == 'pull_request' && 'PR composition Quality' || 'Exact-head Quality' }}
+    name: ${{ github.event_name == 'pull_request' && 'PR composition Quality' || github.event_name == 'schedule' && 'Scheduled exact-head Quality' || 'Exact-head Quality' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -104,7 +108,7 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
   docker-lifecycle:
-    name: ${{ github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || 'Exact-head Docker lifecycle' }}
+    name: ${{ github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle' || 'Exact-head Docker lifecycle' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

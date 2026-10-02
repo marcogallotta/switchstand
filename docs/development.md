@@ -82,6 +82,12 @@ The governing distinctions and review rules live in
 Link to the applicable qualification document rather than copying its procedure into
 a task or review handoff.
 
+Quality also runs the same authoritative Quality and Docker lifecycle jobs daily against
+the exact default-branch head supplied by GitHub. Scheduled runs are labeled separately
+from push exact-head and pull-request composition runs. GitHub schedules are best-effort:
+until a separate freshness monitor exists, this backstop is **SCHEDULED/BEST-EFFORT**, not
+an operational guarantee. A real scheduled run is required before claiming it is live.
+
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
 - Stable host tools: run `scripts/bootstrap`. The primary checkout uses the bootstrap-owned primary `.venv`; each
   linked writer uses its own `.venv`. They share only the pinned `uv` binary and its Git common-directory cache and

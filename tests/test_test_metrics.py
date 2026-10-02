@@ -78,6 +78,12 @@ def test_environment_key_ignores_source_image_but_changes_with_runtime_packages(
 def test_workflow_preserves_authority_and_attempts():
     text = (ROOT / '.github/workflows/quality.yml').read_text()
     quality, lifecycle = text.split('  docker-lifecycle:')
+    assert 'schedule:\n    - cron:' in text
+    assert "github.event_name == 'schedule' && 'scheduled exact-head'" in text
+    assert "github.event_name == 'schedule' && 'Scheduled exact-head Quality'" in quality
+    assert "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle'" in lifecycle
+    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in quality
+    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in lifecycle
     assert quality.count('if: always()') == quality.count('continue-on-error: true') == 2
     authoritative = quality.split('      - name: Authoritative Quality')[1].split('      - name: Collect')[0]
     assert 'continue-on-error' not in authoritative
