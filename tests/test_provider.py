@@ -376,6 +376,27 @@ async def test_test_only_create_injects_server_owned_cleanup_marker():
     assert json.loads(api.requests[0].content)["data"]["notes"] == "body\n\nmarker"
 
 
+async def test_parent_create_can_defer_placement_authority_to_stage3_caller():
+    parent = task(project="8888888888888888")
+    created = task(parent="parent", project="8888888888888888")
+    created["data"] |= {"gid": "created", "name": "Child", "notes": "body"}
+    api = API((200, parent), (201, {"data": {"gid": "created"}}), (200, created))
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        subject = AsanaProvider(client, TEST_PROJECT, test_only=True)
+        with pytest.raises(ProviderError, match="create parent denied"):
+            await subject.create_work("Child", "body", uuid4(), parent_task_gid="parent")
+    api = API((200, parent), (201, {"data": {"gid": "created"}}), (200, created))
+    async with httpx.AsyncClient(
+        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(api),
+    ) as client:
+        subject = AsanaProvider(client, TEST_PROJECT, test_only=True)
+        assert await subject.create_work(
+            "Child", "body", uuid4(), parent_task_gid="parent", require_canonical=False,
+        ) == "created"
+
+
 async def test_test_only_update_preserves_cleanup_marker_and_denies_project_removal():
     api = API((200, {"data": {}}))
     async with httpx.AsyncClient(

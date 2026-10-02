@@ -309,9 +309,10 @@ class WorkIndex:
                 )
         return self._revision(generation, current, content_revision), True
 
-    async def admit_created(self, work_id: UUID, title: str, provider: ProviderWork) -> None:
-        if not await self.active():
-            return
+    async def created_values(
+        self, work_id: UUID, title: str, provider: ProviderWork,
+    ) -> dict[str, object]:
+        """Build the one canonical Stage 1 row used by create admission owners."""
         from .work_metadata import NONE, UNKNOWN, authority_generation
 
         routing = provider.routing
@@ -325,12 +326,17 @@ class WorkIndex:
                 next_due=NONE if terminal else UNKNOWN,
                 next_action_class=UNKNOWN, next_action_ref=UNKNOWN,
             )
-        values = {
+        return {
             "work_id": work_id, "title": title, "normalized_title": normalize_title(title),
             "completed": provider.completed, "provider_revision": provider.revision,
             "row_version": 1, "routing": routing.model_dump(mode="json"),
             "context": provider.context.model_dump(mode="json"),
         }
+
+    async def admit_created(self, work_id: UUID, title: str, provider: ProviderWork) -> None:
+        if not await self.active():
+            return
+        values = await self.created_values(work_id, title, provider)
         async with self.engine.begin() as connection:
             result = await connection.execute(
                 pg_insert(work_index).values(values).on_conflict_do_nothing()

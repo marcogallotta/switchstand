@@ -1,15 +1,34 @@
+import os
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
+from sqlalchemy import create_engine, insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderError, ProviderSourceTask, ProviderWork, UnknownEffect
 from switchstand.creates import CreateGateway
+from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, ProtectedCreate
+from switchstand.state import (
+    PostgresState,
+    metadata,
+    work_authority,
+    work_authority_cutovers,
+    work_index,
+    work_metadata_authority,
+    work_metadata_cutovers,
+    work_parent_edges,
+    workset_authority,
+    workset_cutovers,
+    workset_memberships,
+    worksets,
+)
+from switchstand.worksets import Membership, Workset, WorksetSnapshot, stage_snapshot
 
 
 class State:
@@ -37,15 +56,21 @@ class Provider:
         self.visible = True
         self.binding = "fixture-recovery-v1"
         self.projects = {"999"}
+        self.canonical = True
+        self.canonical_requirements = []
 
     def recovery_identity(self):
         return self.binding
 
     async def source_task(self, task_gid):
         if task_gid in self.parent_ids:
-            return ProviderSourceTask("Parent", "", False, "r1", WorkContext(), True)
+            return ProviderSourceTask(
+                "Parent", "", False, "r1", WorkContext(), self.canonical
+            )
         if task_gid in self.created.values():
-            return ProviderSourceTask("Created", "notes", False, "r2", WorkContext(), True)
+            return ProviderSourceTask(
+                "Created", "notes", False, "r2", WorkContext(), self.canonical
+            )
         return None
 
     async def get(self, task_gid):
@@ -58,8 +83,12 @@ class Provider:
         )
 
     async def create_work(
-        self, title, notes, operation_id, *, parent_task_gid=None, project_gid=None
+        self, title, notes, operation_id, *, parent_task_gid=None, project_gid=None,
+        require_canonical=True,
     ):
+        self.canonical_requirements.append(require_canonical)
+        if require_canonical and not self.canonical:
+            raise ProviderError("canonical parent required")
         if parent_task_gid is None:
             if project_gid not in self.projects:
                 raise ProviderError("project denied")
@@ -229,8 +258,124 @@ async def test_operation_identity_and_qualification_block_unsafe_create():
     unqualified = selected.model_copy(update={"version": 2, "create_qualification": None})
     service.grants.grant = unqualified
     denied = await service.create(request(unqualified))
-    assert denied.status == "denied" and denied.effect == "not_sent"
+    assert denied.status == "unknown" and denied.reason == "parent_has_unresolved_create"
     assert provider.creates == 1
+
+
+async def test_stage3_create_is_admitted_atomically_and_recovers_from_bound_task(
+    database_prerequisite,
+):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required")
+    sync = create_engine(url)
+    truncate = text(
+        "TRUNCATE effect_intents, work_grants, work_parent_edges, workset_memberships, "
+        "worksets, workset_cutovers, workset_authority, work_metadata_cutovers, "
+        "work_metadata_authority, work_edges, work_authority_cutovers, work_authority, "
+        "work_index, work_handles CASCADE"
+    )
+    with sync.begin() as connection:
+        connection.execute(truncate)
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        state, grants = PostgresState(engine), GrantState(engine)
+        parent = await state.bind("asana", "123")
+        async with engine.begin() as connection:
+            await connection.execute(insert(work_index).values(
+                work_id=parent.id, title="Parent", normalized_title="parent",
+                completed=False, provider_revision="r1", row_version=1,
+                routing={}, context={},
+            ))
+        workset_id = uuid4()
+        await stage_snapshot(engine, WorksetSnapshot(
+            worksets=(Workset(workset_id, "project.test", "Test", "PROJECT"),),
+            memberships=(Membership(workset_id, parent.id, "AUTHORITATIVE"),),
+            parent_edges=(),
+        ))
+        async with engine.begin() as connection:
+            for table in (work_authority, work_metadata_authority, workset_authority):
+                await connection.execute(table.insert().values(
+                    scope="workspace", state="POSTGRES_AUTHORITY", generation=1,
+                ))
+            for table in (work_authority_cutovers, work_metadata_cutovers, workset_cutovers):
+                await connection.execute(table.insert().values(scope="workspace", generation=1))
+        selected = grant(
+            scope="workspace", active=parent.id,
+            operations=frozenset({"work_get", "work_create"}),
+            append_qualification=None, create_qualification="test:create",
+        )
+        await grants.issue(selected, None)
+        provider = Provider()
+        provider.canonical = False
+        gateway = CreateGateway(state, grants, {"asana": provider})
+        async with engine.begin() as connection:
+            await connection.execute(update(worksets).where(
+                worksets.c.workset_id == workset_id
+            ).values(state="RETIRED"))
+        retired = await gateway.create(PRINCIPAL, request(selected, parent_work_id=parent.id))
+        assert retired.status == "denied" and retired.reason == "parent_not_admitted"
+        assert provider.creates == 0
+        async with engine.begin() as connection:
+            await connection.execute(update(worksets).where(
+                worksets.c.workset_id == workset_id
+            ).values(state="ACTIVE"))
+        req = request(selected, parent_work_id=parent.id)
+        created_id = CreateGateway.work_id(req.operation_id)
+        async with engine.begin() as connection:
+            await connection.execute(text("""
+                CREATE FUNCTION fail_created_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'injected membership failure'; END $$
+            """))
+            await connection.execute(text("""
+                CREATE TRIGGER fail_created_membership BEFORE INSERT ON workset_memberships
+                FOR EACH ROW EXECUTE FUNCTION fail_created_membership()
+            """))
+        first = await gateway.create(PRINCIPAL, req)
+        assert first.status == "unknown" and first.effect == "unknown"
+        assert provider.creates == 1 and provider.canonical_requirements == [False]
+        assert await state.get(created_id) is not None
+        assert await state.work_index.get(created_id) is None
+        async with engine.connect() as connection:
+            assert await connection.scalar(select(workset_memberships.c.work_id).where(
+                workset_memberships.c.work_id == created_id
+            )) is None
+            assert await connection.scalar(select(work_parent_edges.c.child_work_id).where(
+                work_parent_edges.c.child_work_id == created_id
+            )) is None
+
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TRIGGER fail_created_membership ON workset_memberships"
+            ))
+            await connection.execute(text("DROP FUNCTION fail_created_membership()"))
+
+        blocked = await gateway.create(PRINCIPAL, request(selected, parent_work_id=parent.id))
+        assert blocked.reason == "parent_has_unresolved_create" and provider.creates == 1
+        recovered = await gateway.create(PRINCIPAL, req)
+        assert recovered.status == "ok" and recovered.effect == "applied"
+        assert provider.creates == 1
+        async with engine.connect() as connection:
+            membership = (await connection.execute(select(
+                workset_memberships.c.workset_id, workset_memberships.c.semantics,
+            ).where(workset_memberships.c.work_id == created_id))).one()
+            parent_edge = await connection.scalar(select(
+                work_parent_edges.c.parent_work_id,
+            ).where(work_parent_edges.c.child_work_id == created_id))
+        assert membership == (workset_id, "AUTHORITATIVE")
+        assert parent_edge == parent.id
+        assert await gateway.create(PRINCIPAL, req) == recovered
+    finally:
+        await engine.dispose()
+        with sync.begin() as connection:
+            connection.execute(text(
+                "DROP TRIGGER IF EXISTS fail_created_membership ON workset_memberships"
+            ))
+            connection.execute(text("DROP FUNCTION IF EXISTS fail_created_membership()"))
+            connection.execute(truncate)
+        sync.dispose()
 
 
 async def test_workspace_scope_can_create_under_explicit_bound_canonical_parent():

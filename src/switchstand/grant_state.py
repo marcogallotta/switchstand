@@ -169,6 +169,23 @@ class GrantState:
             outcome=GuardOutcome.model_validate(row["outcome"]),
         )
 
+    async def unresolved_create(self, parent_work_id: UUID) -> bool:
+        """Fence a second child create while one exact parent effect is unresolved."""
+        async with self.engine.connect() as connection:
+            intents = (await connection.execute(select(effect_intents.c.intent).where(
+                effect_intents.c.outcome["effect"].astext == "unknown"
+            ))).scalars().all()
+        for raw in intents:
+            if not isinstance(raw, dict):
+                continue
+            intent = cast(dict[str, object], raw)
+            request = intent.get("request")
+            if (isinstance(request, dict)
+                    and cast(dict[str, object], request).get("parent_work_id")
+                    == str(parent_work_id)):
+                return True
+        return False
+
     async def created_work_allowed(self, principal_key: str, work_id: UUID) -> bool:
         async with self.engine.connect() as connection:
             values = (await connection.execute(select(effect_intents.c.outcome).where(

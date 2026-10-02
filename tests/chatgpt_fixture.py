@@ -192,6 +192,14 @@ class MemoryGrants:
             grant_version=selected.version, intent=request, outcome=outcome,
         )
 
+    async def unresolved_create(self, parent_work_id):
+        return any(
+            outcome.effect == "unknown"
+            and isinstance((request := self.intent_metadata[operation_id][0]).get("request"), dict)
+            and request["request"].get("parent_work_id") == str(parent_work_id)
+            for operation_id, (_key, _fingerprint, outcome) in self.effects.items()
+        )
+
     async def created_work_allowed(self, principal_key, work_id):
         return any(
             key == principal_key and outcome.work_id == work_id
