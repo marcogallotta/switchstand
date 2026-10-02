@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -67,6 +68,14 @@ def normalize_title(value: str) -> str:
     if not normalized:
         raise ValueError("title must contain non-whitespace text")
     return normalized
+
+
+def canonical_revision(work_id: UUID, row_version: int) -> str:
+    """Return the provider-neutral opaque revision for one canonical work row."""
+    if row_version < 1:
+        raise ValueError("canonical row version must be positive")
+    value = f"{work_id}\0{row_version}".encode()
+    return "pg_" + hashlib.sha256(value).hexdigest()
 
 
 @dataclass(frozen=True)

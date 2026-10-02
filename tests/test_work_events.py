@@ -8,7 +8,14 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_work import canonical_metadata, canonical_work
+from switchstand.canonical_event_reads import CanonicalEventReader
+from switchstand.canonical_work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+)
+from switchstand.contracts import WorkEventRequest, WorkHistoryRequest
 from switchstand.state import metadata as shared_metadata
 from switchstand.work_events import (
     OperationConflictError,
@@ -153,3 +160,27 @@ async def test_history_paging_and_exact_lookup_are_deterministic(repository):
     assert second.events == (events[2],) and second.next_cursor is None
     assert await repository.get(work_id, events[1].id) == events[1]
     assert await repository.get(other_work_id, events[1].id) is None
+
+
+async def test_public_event_reader_uses_canonical_revision_and_db_events(repository):
+    repository, work_id, _ = repository
+    outcome = await repository.append(
+        work_id, observed_version=3, operation_id=uuid4(),
+        subtype="comment_added", text="result", created_at=NOW, actor="Marco",
+    )
+    reader = CanonicalEventReader(
+        CanonicalWorkRepository(repository.engine), repository,
+    )
+    revision = canonical_revision(work_id, outcome.row_version)
+
+    history = await reader.history(WorkHistoryRequest(
+        api_version="1", work_id=work_id, observed_revision=revision,
+    ))
+    exact = await reader.event(WorkEventRequest(
+        api_version="1", work_id=work_id, event_id=outcome.event.id,
+        observed_revision=revision,
+    ))
+
+    assert history.status == "ok" and history.events[0].id == outcome.event.id
+    assert exact.status == "ok" and exact.item is not None
+    assert exact.item.model_dump() == history.events[0].model_dump()
