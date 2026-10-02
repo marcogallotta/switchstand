@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderError, ProviderWork
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
-from switchstand.provider import FIELDS, PROJECT, AsanaProvider
+from switchstand.provider import FIELDS, PROJECT, AsanaProvider, ProviderWorkDecodeError
 from switchstand.work_corpus import (
     CorpusCaptureDecodeError,
     _capture,
@@ -155,10 +155,39 @@ async def test_missing_and_noncanonical_bound_work_are_explicit_exceptions(index
     preflight = await capture_preflight_manifest(index.engine, provider, SHA)
     assert preflight["handle_classifications"] == [
         {"provider_work_id": "missing", "work_id": str(missing.id),
-         "state": "historical-missing"},
+         "state": "historical-missing", "reason": "missing"},
         {"provider_work_id": "moved", "work_id": str(moved.id),
-         "state": "unresolved"},
+         "state": "unresolved", "reason": "noncanonical"},
     ]
+
+
+async def test_preflight_classifies_bound_decode_failure_and_continues(index):
+    provider_work_id = "1218467001205757"
+    bound = Handle(UUID(int=23), "asana", provider_work_id)
+    await insert_handles(index.engine, bound)
+
+    class DecodeFailure(FakeProvider):
+        async def get(self, _provider_work_id):
+            raise ProviderWorkDecodeError("priority_truth")
+
+    manifest = await capture_preflight_manifest(
+        index.engine,
+        DecodeFailure({None: ProviderSearchPage((), None)}, {}),
+        SHA,
+    )
+
+    assert manifest["handle_classifications"] == [{
+        "provider_work_id": provider_work_id,
+        "work_id": str(bound.id),
+        "state": "unresolved",
+        "reason": "decode:priority_truth",
+    }]
+    assert manifest["counts"] == {
+        "task_handles": 1,
+        "current": 0,
+        "historical-missing": 0,
+        "unresolved": 1,
+    }
 
 
 async def test_manifest_reports_db_residue_needed_for_cutover_preflight(index, tmp_path: Path):

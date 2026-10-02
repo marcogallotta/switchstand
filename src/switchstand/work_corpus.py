@@ -60,6 +60,7 @@ class HandleClassification:
     provider_work_id: str
     work_id: str
     state: Literal["current", "historical-missing", "unresolved"]
+    reason: str | None
 
 
 def _populated_fields(rows: list[dict[str, object]], attribute: str) -> list[str]:
@@ -177,6 +178,8 @@ async def capture_manifest(
     engine: AsyncEngine,
     provider: CorpusProvider,
     source_candidate: str,
+    *,
+    classify_decode_errors: bool = False,
 ) -> dict[str, object]:
     """Capture broad admission plus every readable bound Asana work item."""
     if len(source_candidate) != 40 or any(c not in "0123456789abcdef" for c in source_candidate):
@@ -219,7 +222,12 @@ async def capture_manifest(
         try:
             work = await provider.get(provider_id)
         except ProviderWorkDecodeError as error:
-            raise CorpusCaptureDecodeError(provider_id, error.reason) from None
+            if not classify_decode_errors:
+                raise CorpusCaptureDecodeError(provider_id, error.reason) from None
+            exceptions.append(CorpusException(
+                provider_id, bound[provider_id], f"decode:{error.reason}",
+            ))
+            continue
         if work is None:
             exceptions.append(CorpusException(provider_id, bound[provider_id], "missing"))
         elif not work.canonical:
@@ -252,12 +260,14 @@ async def capture_preflight_manifest(
     source_candidate: str,
 ) -> dict[str, object]:
     """Capture read-only zero-Asana inventory without changing the Stage 1 artifact."""
-    corpus = await capture_manifest(engine, provider, source_candidate)
+    corpus = await capture_manifest(
+        engine, provider, source_candidate, classify_decode_errors=True,
+    )
     rows = cast(list[dict[str, object]], corpus["rows"])
     exceptions = cast(list[dict[str, object]], corpus["exceptions"])
     classifications = [
         HandleClassification(
-            cast(str, row["provider_work_id"]), cast(str, row["work_id"]), "current"
+            cast(str, row["provider_work_id"]), cast(str, row["work_id"]), "current", None,
         )
         for row in rows if row["work_id"] is not None
     ]
@@ -265,6 +275,7 @@ async def capture_preflight_manifest(
         HandleClassification(
             cast(str, item["provider_work_id"]), cast(str, item["work_id"]),
             "historical-missing" if item["reason"] == "missing" else "unresolved",
+            cast(str, item["reason"]),
         )
         for item in exceptions
     )
