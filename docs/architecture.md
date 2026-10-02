@@ -191,7 +191,11 @@ messaging, and required continuation:
   current-workset discovery is deferred until a runtime identity source and contract are selected.
   Marker-gated parent `set`/`clear` mutations write only `work_parent_edges`, advance the owning
   work revision transactionally, and recover ambiguous effects by exact DB-edge readback; provider
-  parent mutation remains the pre-marker compatibility path;
+  parent mutation remains the pre-marker compatibility path. Marker-gated parented creation still
+  creates provider content, but provider placement is no longer authority: the exact returned task
+  binding is only recovery state until PostgreSQL atomically admits its index row, inherited
+  authoritative workset membership, and parent edge. Exact-operation replay completes that admission
+  without another provider create, while a different create under the parent remains fenced;
   this foundation makes no handoff-readiness claim, activates no writes or authority marker, and
   migrates no provider notes, comments, attachments, or history content.
   `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and

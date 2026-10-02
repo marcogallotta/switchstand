@@ -836,6 +836,7 @@ class AsanaProvider:
     async def create_work(
         self, title: str, notes: str, operation_id: UUID, *,
         parent_task_gid: str | None = None, project_gid: str | None = None,
+        require_canonical: bool = True,
     ) -> str:
         del operation_id
         if (parent_task_gid is None) == (project_gid is None):
@@ -845,7 +846,7 @@ class AsanaProvider:
         data: JSON = {"workspace": WORKSPACE, "name": title, "notes": notes}
         if parent_task_gid is not None:
             parent = await self._task(parent_task_gid)
-            if parent is None or not await self._canonical(parent):
+            if parent is None or require_canonical and not await self._canonical(parent):
                 raise ProviderError("create parent denied", failure="admission_denied")
             data["parent"] = parent_task_gid
         else:
@@ -860,7 +861,8 @@ class AsanaProvider:
             if task_gid is None:
                 raise UnknownEffect("created task response unknown")
             task = await self._task(task_gid)
-            if task is None or self._gid(task) != task_gid or not await self._canonical(task):
+            if (task is None or self._gid(task) != task_gid
+                    or require_canonical and not await self._canonical(task)):
                 raise UnknownEffect("created task readback unknown")
             if task.get("name") != title or task.get("notes") != notes:
                 raise UnknownEffect("created task readback mismatch")

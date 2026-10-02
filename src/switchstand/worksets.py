@@ -10,14 +10,17 @@ from typing import cast
 from uuid import UUID
 
 from sqlalchemy import Table, delete, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 
 from .contracts import Routing, WorkContext, WorkSearchItem
+from .core import ProviderWork
 from .discovery import DiscoveredStructure
 from .state import (
     work_authority,
     work_authority_cutovers,
     work_edges,
+    work_handles,
     work_index,
     work_metadata_authority,
     work_metadata_cutovers,
@@ -367,6 +370,51 @@ class WorksetReader:
                 work_parent_edges.c.parent_work_id,
             ).where(work_parent_edges.c.child_work_id == work_id))
         return current == parent_id
+
+    async def admit_created_under_parent(
+        self, work_id: UUID, parent_id: UUID, title: str, provider: ProviderWork,
+    ) -> None:
+        """Atomically admit one already-bound create into its parent's workset."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        values = await self.index.created_values(work_id, title, provider)
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            bound = await connection.scalar(select(work_handles.c.id).where(
+                work_handles.c.id == work_id
+            ).with_for_update())
+            parent = (await connection.execute(select(
+                workset_memberships.c.workset_id, worksets.c.state,
+            ).join(worksets, worksets.c.workset_id == workset_memberships.c.workset_id).where(
+                workset_memberships.c.work_id == parent_id,
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ).with_for_update())).one_or_none()
+            if bound is None or parent is None or parent[1] != "ACTIVE":
+                raise ValueError("created work parent is not actively admitted")
+            await connection.execute(pg_insert(work_index).values(values).on_conflict_do_nothing())
+            indexed = (await connection.execute(select(
+                work_index.c.title,
+            ).where(work_index.c.work_id == work_id))).one_or_none()
+            if indexed is None or indexed[0] != title:
+                raise ValueError("created work admission conflict")
+            await connection.execute(pg_insert(workset_memberships).values(
+                workset_id=parent[0], work_id=work_id, semantics="AUTHORITATIVE",
+                member_role="MEMBER", row_version=1,
+            ).on_conflict_do_nothing())
+            membership = (await connection.execute(select(
+                workset_memberships.c.workset_id, workset_memberships.c.semantics,
+                workset_memberships.c.member_role,
+            ).where(workset_memberships.c.work_id == work_id))).one_or_none()
+            if membership != (parent[0], "AUTHORITATIVE", "MEMBER"):
+                raise ValueError("created work membership conflict")
+            await connection.execute(pg_insert(work_parent_edges).values(
+                child_work_id=work_id, parent_work_id=parent_id, row_version=1,
+            ).on_conflict_do_nothing())
+            actual_parent = await connection.scalar(select(
+                work_parent_edges.c.parent_work_id,
+            ).where(work_parent_edges.c.child_work_id == work_id))
+            if actual_parent != parent_id:
+                raise ValueError("created work parent conflict")
 
 
 async def _stored_rows(
