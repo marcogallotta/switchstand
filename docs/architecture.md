@@ -176,9 +176,6 @@ messaging, and required continuation:
   the exact Stage 1 preparation receipt and generated worksheet across the explicit Human Review
   pause. This checkpoint has no host-gate, service, or authority effect; those remain separate
   operator layers. See [Database-first Stage 2](database-first-stage2.md).
-  `stage12_operator.py` is the remaining inert composition core: it stops at review, adopts only
-  the approved worksheet into the existing host receipt, then delegates authority/recovery to
-  reviewed owners. Its obsolete host CLI has been retired and it has no executable entry point.
 - `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
   inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
   its authority marker remains absent. Internal reads enumerate one authoritative workset with
@@ -420,7 +417,7 @@ are removal predicates, not removal decisions:
 | Transition surface | Why keep it now | Evidence required before removal | Durable retirement owner |
 | --- | --- | --- | --- |
 | Stage 1 offline migration (`work_index_migration.py`) | Reconciles the prepared corpus and pre-authority cleanup without guessing after ambiguous output. | Exact Stage 1 and Stage 2 marker/readback evidence is committed, no preparation receipt remains unresolved, and the retained runtime no longer has a Stage 1 recovery or failback obligation. | Stage 1 migration owner (`work_index_migration.py`, `database-first-stage1.md`) |
-| Stage 2 migration and remaining inert operator core (`work_metadata_migration.py`, `stage12_cutover.py`, `stage12_operator.py`) | Preserves the reviewed worksheet/checkpoint while the superseded Stage runtime is retired; the host CLI is gone. | The zero-Asana replacement owns the retained behavior and no live consumer imports these modules. | Zero-Asana retirement owner |
+| Stage 2 migration and checkpoint (`work_metadata_migration.py`, `stage12_cutover.py`) | Preserves the reviewed worksheet/checkpoint while the superseded Stage runtime is retired; the host CLI and its unreferenced composition core are gone. | The zero-Asana replacement owns the retained behavior and no live consumer imports these modules. | Zero-Asana retirement owner |
 | Copied-state rehearsal (`rehearsal_target.py`) | Supplies the supported disposable real boundary for Stage 1+2 qualification and bounded cleanup. | The required composed rehearsal evidence is retained and every READY/FAILED target is either intentionally retained with an owner or has teardown proof; a replacement qualification boundary must cover the same claims before deletion. | Rehearsal owner (`rehearsal_target.py`, `development.md`) |
 | Stable-auth activation-only migration/deployment (`stable_auth_migration.py`, `stable_auth_deployment.py`) | Owns state-copy receipts, the public gate, first split activation, and ambiguous/post-exposure forward repair. | The topology decision and separately authorized activation are terminal, exact live readback has closed every migration/deployment receipt and rollback window, and the retained topology has another owner for every still-required recovery path. | Stable-auth transition owner (`stable_auth_deployment.py`, `chatgpt-mcp-edge.md`) |
 | Resource-worker broker/executor/canary trial | Keeps the inert candidate available for the bounded evidence needed to adopt or retire it. | A separately authorized exact canary is terminal and the explicit decision either assigns an active runtime owner after PASS or records retirement plus disposal of broker state/units after non-adoption; incomplete/UNKNOWN evidence permits neither. | Resource-worker trial owner (`agent_broker.py`, `resource-governed-agent-workers.md`) |
