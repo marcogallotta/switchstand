@@ -84,7 +84,20 @@ async def test_owner_cas_replay_concurrency_corruption_and_projection(store):
     assert [action.action_class for action in summary.actions] == ["NEEDS_MARCO"]
     stale = await store.summary(OWNER, "different")
     assert isinstance(stale, ActionSummary)
-    assert [action.item_key for action in stale.actions] == ["OUTCOME_STATE_STALE"]
+    assert stale.currentness == "STALE" and stale.open_action_count == 1
+    assert [(action.action_class, action.item_key) for action in stale.actions] == [
+        ("NEEDS_MARCO", "rollout")
+    ]
+    head = next(result.state_id for result in (left, right) if result.status == "APPLIED")
+    finished = await store.record(**args(
+        uuid4(), expected_state_id=head, owner_currentness_token="s1_done",
+        items=(item().model_copy(update={"status": "DONE", "what_yes_causes": None}),),
+    ))
+    assert finished.status == "APPLIED"
+    stale_done = await store.summary(OWNER, "later")
+    assert isinstance(stale_done, ActionSummary)
+    assert stale_done.currentness == "STALE" and stale_done.open_action_count == 0
+    assert stale_done.actions == ()
     one, two, collision = uuid4(), uuid4(), uuid4()
     async with store.engine.begin() as connection:
         await connection.execute(text(
