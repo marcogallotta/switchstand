@@ -156,10 +156,32 @@ def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
              if item["type"] == "collabAgentToolCall"]
     latest = {child: state["status"] for call in calls
               for child, state in call["agentsStates"].items()}
-    return [WakeSourceRef("child_completion", json.dumps([call["id"], child, latest[child]],
-            separators=(",", ":"))) for call in calls if call["tool"] == "spawnAgent"
-            for child in call["receiverThreadIds"]
-            if latest.get(child) in {"completed", "errored", "shutdown"}]
+    candidates: dict[str, set[str]] = {}
+    for call in calls:
+        if call["tool"] != "spawnAgent":
+            continue
+        for child in call["receiverThreadIds"]:
+            if latest.get(child) in {"completed", "errored", "shutdown"}:
+                candidates.setdefault(child, set()).add(json.dumps(
+                    [call["id"], child, latest[child]], separators=(",", ":")))
+
+    activities = [item for turn in thread["turns"] for item in turn["items"]
+                  if item["type"] == "subAgentActivity"]
+    starts: dict[str, set[str]] = {}
+    activity_latest: dict[str, str] = {}
+    for activity in activities:
+        child = activity["agentThreadId"]
+        activity_latest[child] = activity["kind"]
+        if activity["kind"] == "started":
+            starts.setdefault(child, set()).add(activity["id"])
+    for child, start_ids in starts.items():
+        state = activity_latest.get(child)
+        if len(start_ids) == 1 and state in {"completed", "errored", "shutdown"}:
+            candidates.setdefault(child, set()).add(json.dumps(
+                [next(iter(start_ids)), child, state], separators=(",", ":")))
+
+    return [WakeSourceRef("child_completion", next(iter(identities)))
+            for identities in candidates.values() if len(identities) == 1]
 
 
 class Projection:
