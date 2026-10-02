@@ -75,6 +75,45 @@ def test_outside_repo_launch_bypasses_missing_or_broken_checkout(
     assert result_file.read_text().splitlines() == ["real", "exec hello"]
 
 
+def test_launch_redirects_updater_visible_command_away_from_shim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    result_file = tmp_path / "result"
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        '#!/bin/sh\n'
+        'case ":$PATH:" in\n'
+        '  *":$CODEX_INSTALL_DIR:"*) ;;\n'
+        '  *) printf "profile-rewrite\\n" > "$PROFILE_RESULT" ;;\n'
+        'esac\n'
+        'printf "%s\\n%s\\n" "$CODEX_INSTALL_DIR" "$PATH" > "$RESULT"\n',
+    )
+    launcher = install(home)
+    outside = home / "outside"
+    outside.mkdir()
+
+    result = subprocess.run(
+        [launcher, "--version"], cwd=outside,
+        env=os.environ | {
+            "HOME": str(home),
+            "RESULT": str(result_file),
+            "PROFILE_RESULT": str(tmp_path / "profile-result"),
+            "CODEX_INSTALL_DIR": str(home / ".local/bin"),
+            "PATH": f"{home / '.local/bin'}:/usr/bin:/bin",
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    updater_bin = home / ".local/state/switchstand/codex/updater-bin"
+    install_dir, child_path = result_file.read_text().splitlines()
+    assert install_dir == str(updater_bin)
+    assert child_path.split(":") == [
+        str(home / ".local/bin"), "/usr/bin", "/bin", str(updater_bin),
+    ]
+    assert not (tmp_path / "profile-result").exists()
+    assert not launcher.is_symlink()
+
+
 def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path) -> None:
     home = tmp_path / "home"
     primary = home / "switchstand"
@@ -96,7 +135,8 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     result_file = tmp_path / "result"
     executable(
         primary / "scripts/codex-dispatch",
-        '#!/bin/sh\nprintf "dispatcher\\n%s\\n" "$*" > "$RESULT"\n',
+        '#!/bin/sh\nprintf "dispatcher\\n%s\\n%s\\n" "$*" '
+        '"$CODEX_INSTALL_DIR" > "$RESULT"\n',
     )
     executable(
         home / ".codex/packages/standalone/current/bin/codex",
@@ -120,6 +160,7 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     assert result.returncode == 0, result.stderr
     assert result_file.read_text().splitlines() == [
         "dispatcher", "resume test-session",
+        str(home / ".local/state/switchstand/codex/updater-bin"),
     ]
 
     writer = home / "writer"
@@ -134,7 +175,10 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     )
 
     assert result.returncode == 0, result.stderr
-    assert result_file.read_text().splitlines() == ["dispatcher", "exec linked"]
+    assert result_file.read_text().splitlines() == [
+        "dispatcher", "exec linked",
+        str(home / ".local/state/switchstand/codex/updater-bin"),
+    ]
 
 
 def test_outside_repo_ignores_ambient_git_repository_selection(tmp_path: Path) -> None:

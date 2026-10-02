@@ -316,6 +316,18 @@ MCP completed in 4.9 seconds; canonical HTTP MCP alone timed out, as did runs wi
 plugins or hooks disabled. Shim overwrite did not cause that post-dispatch hang.
 The recurrence candidate addresses launcher replacement only.
 
+The managed launcher now exports
+`CODEX_INSTALL_DIR=$HOME/.local/state/switchstand/codex/updater-bin` before both direct and
+Coordinator execution. Normal automatic updater subprocesses inherit that value and therefore
+maintain their visible symlink outside `~/.local/bin/codex`; package updates still use Codex's
+normal standalone package cache. The launcher deliberately overrides an ambient value because
+allowing it to point back at `~/.local/bin` would break the routing invariant. Directly running the
+published installer adds its visible-command directory to a shell profile only when that directory
+is absent from `PATH`, so the launcher also appends the private directory after the managed shim.
+This prevents profile rewrites from making the updater command win future resolution. A direct
+installer run from another shell does not inherit either setting and can still replace the shim, so
+the recovery units remain a fallback rather than the primary ownership mechanism.
+
 Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
 `switchstand-codex-shim.path` recovery watch and `switchstand-codex-shim.timer` safety net.
 It requires a working user manager;
@@ -325,7 +337,8 @@ materialized shim beside it, so recovery works without the repository. It leaves
 real binaries and their updater unchanged. Existing routing still selects dispatch
 only inside the canonical Git common directory and real Codex everywhere else.
 
-Recovery is asynchronous: a launch in the brief replacement window can bypass dispatch.
+Fallback recovery is asynchronous: a launch after a manual or non-inheriting replacement can bypass
+dispatch until repair.
 The path watch can miss a replacement during repair execution/watch rearm. The timer
 checks five minutes after manager startup and five minutes after service completion;
 a healthy check does not rewrite the launcher. Eventual recovery requires the user
