@@ -1,4 +1,4 @@
-"""Database-backed message tests used by live shadow-selection qualification."""
+"""Database-backed message tests used by the live shadow-selection proof."""
 
 import asyncio
 import hashlib
