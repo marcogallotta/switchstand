@@ -306,7 +306,7 @@ def run() -> int:
     if tool in EDIT_TOOLS and _inside(target, memory_root):
         parts = Path(os.path.relpath(target, memory_root)).parts
         if len(parts) >= 3 and parts[1] == "memory":
-            print(json.dumps(deny(f"[memory-write] {target} is auto-memory; use Switchstand work state.", event)))
+            print(json.dumps(deny(f"[memory-write] blocked: auto-memory is not allowed ({target}).", event)))
             return 0
     if tool in EDIT_TOOLS and coordinator_primary is not None:
         reason = classify_edit(tool_input, cwd, coordinator_primary)
