@@ -310,3 +310,32 @@ async def stage_snapshot(engine: AsyncEngine, snapshot: WorksetSnapshot) -> str:
         if canonical_digest(await _stored_rows(connection)) != digest:
             raise RuntimeError("Stage 3 snapshot readback mismatch")
     return digest
+
+
+async def reconcile_staging(engine: AsyncEngine, expected_digest: str) -> str:
+    """Prove exact pre-authority staged rows without changing them."""
+    async with engine.connect() as connection:
+        if (await connection.execute(select(workset_authority.c.scope))).first() is not None or (
+            await connection.execute(select(workset_cutovers.c.scope))
+        ).first() is not None:
+            raise ActivationUnknown("Stage 3 authority already exists; reconcile its receipt")
+        rows = await _stored_rows(connection)
+    if not rows or canonical_digest(rows) != expected_digest:
+        raise ValueError("Stage 3 staged snapshot does not match the reviewed worksheet")
+    return expected_digest
+
+
+async def reset_staging(engine: AsyncEngine, expected_digest: str) -> None:
+    """Delete only exact reviewed staging before the irreversible marker exists."""
+    async with engine.begin() as connection:
+        await connection.execute(select(func.pg_advisory_xact_lock(0x53544733)))
+        if (await connection.execute(select(workset_authority.c.scope))).first() is not None or (
+            await connection.execute(select(workset_cutovers.c.scope))
+        ).first() is not None:
+            raise ActivationUnknown("Stage 3 authority already exists; reset is forbidden")
+        rows = await _stored_rows(connection)
+        if not rows or canonical_digest(rows) != expected_digest:
+            raise ValueError("Stage 3 staged snapshot does not match the reviewed worksheet")
+        await connection.execute(delete(work_parent_edges))
+        await connection.execute(delete(workset_memberships))
+        await connection.execute(delete(worksets))

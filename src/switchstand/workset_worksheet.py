@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from typing import cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .core import Handle
@@ -65,6 +66,98 @@ class WorksetWorksheet:
 
     def digest(self) -> str:
         return hashlib.sha256(self.bytes()).hexdigest()
+
+
+def snapshot_from_reviewed_bytes(data: bytes, expected_digest: str) -> WorksetSnapshot:
+    """Parse the snapshot only when the complete reviewed worksheet bytes match."""
+    if hashlib.sha256(data).hexdigest() != expected_digest:
+        raise ValueError("worksheet does not match the Human-Reviewed digest")
+    raw: object = json.loads(data)
+    if not isinstance(raw, dict):
+        raise TypeError("Stage 3 worksheet is malformed")
+    document = cast(dict[str, object], raw)
+    if set(document) != {
+        "format_version", "review_status", "stage1", "provider_capture",
+        "provider_capture_sha256", "worksets", "memberships", "parent_edges",
+        "exceptions",
+    } or document["format_version"] != 1 or document["review_status"] != "HUMAN_REVIEW_REQUIRED":
+        raise ValueError("unsupported Stage 3 worksheet")
+    stage1_value = document["stage1"]
+    capture_value = document["provider_capture"]
+    capture_digest = document["provider_capture_sha256"]
+    exceptions_value = document["exceptions"]
+    if not isinstance(stage1_value, dict) or not isinstance(capture_value, dict):
+        raise TypeError("invalid Stage 3 worksheet evidence")
+    stage1 = cast(dict[object, object], stage1_value)
+    capture = cast(dict[object, object], capture_value)
+    if (
+        set(stage1) != {"corpus_sha256", "exception_sha256", "prepare_receipt_sha256"}
+        or any(not isinstance(value, str) or not value for value in stage1.values())
+        or not isinstance(capture_digest, str)
+        or hashlib.sha256(json.dumps(
+            capture, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        ).encode()).hexdigest() != capture_digest
+        or not isinstance(exceptions_value, list)
+        or any(
+            not _exact_fields(row, {"provider_work_id", "work_id", "reason"})
+            for row in cast(list[object], exceptions_value)
+        )
+    ):
+        raise ValueError("invalid Stage 3 worksheet evidence")
+
+    def rows(name: str, fields: set[str]) -> list[dict[str, object]]:
+        value = document[name]
+        if not isinstance(value, list):
+            raise TypeError(f"invalid Stage 3 worksheet {name}")
+        values = cast(list[object], value)
+        if any(not _exact_fields(row, fields) for row in values):
+            raise ValueError(f"invalid Stage 3 worksheet {name}")
+        return cast(list[dict[str, object]], values)
+
+    def string(row: dict[str, object], field: str) -> str:
+        value = row[field]
+        if not isinstance(value, str):
+            raise TypeError(f"invalid Stage 3 worksheet {field}")
+        return value
+
+    def integer(row: dict[str, object], field: str) -> int:
+        value = row[field]
+        if type(value) is not int:
+            raise TypeError(f"invalid Stage 3 worksheet {field}")
+        return value
+
+    def optional_string(row: dict[str, object], field: str) -> str | None:
+        value = row[field]
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"invalid Stage 3 worksheet {field}")
+        return value
+
+    return WorksetSnapshot(
+        tuple(Workset(
+            UUID(string(row, "workset_id")), string(row, "workset_key"),
+            string(row, "name"), string(row, "kind"), optional_string(row, "role_identity"),
+            string(row, "state"), integer(row, "row_version"),
+        ) for row in rows(
+            "worksets", {"workset_id", "workset_key", "name", "kind", "role_identity",
+                         "state", "row_version"},
+        )),
+        tuple(Membership(
+            UUID(string(row, "workset_id")), UUID(string(row, "work_id")),
+            string(row, "semantics"), string(row, "member_role"), integer(row, "row_version"),
+        ) for row in rows(
+            "memberships", {"workset_id", "work_id", "semantics", "member_role", "row_version"},
+        )),
+        tuple(ParentEdge(
+            UUID(string(row, "child_work_id")), UUID(string(row, "parent_work_id")),
+            integer(row, "row_version"),
+        ) for row in rows(
+            "parent_edges", {"child_work_id", "parent_work_id", "row_version"},
+        )),
+    ).validated()
+
+
+def _exact_fields(value: object, fields: set[str]) -> bool:
+    return isinstance(value, dict) and set(cast(dict[object, object], value)) == fields
 
 
 def _exact_bindings(corpus: FrozenCorpus, receipt: PrepareReceipt) -> dict[str, Handle]:
