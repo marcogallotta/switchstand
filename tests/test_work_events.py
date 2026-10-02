@@ -8,7 +8,8 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.state import canonical_work, metadata, work_events, work_handles
+from switchstand.canonical_work import canonical_metadata, canonical_work
+from switchstand.state import metadata as shared_metadata
 from switchstand.work_events import (
     OperationConflictError,
     StaleWorkVersion,
@@ -16,6 +17,7 @@ from switchstand.work_events import (
     WorkEventRepository,
     _decode_cursor,
     _encode_cursor,
+    work_events,
 )
 
 WORK_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -33,6 +35,13 @@ def test_cursor_is_stable_scoped_and_rejects_malformed_values():
         _decode_cursor("not-a-cursor", WORK_ID)
 
 
+def test_inert_event_schema_does_not_join_current_shared_metadata():
+    assert canonical_work.metadata is canonical_metadata
+    assert work_events.metadata is canonical_metadata
+    assert "canonical_work" not in shared_metadata.tables
+    assert "work_events" not in shared_metadata.tables
+
+
 @pytest.fixture
 async def repository(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")
@@ -44,16 +53,9 @@ async def repository(database_prerequisite):
     engine = create_async_engine(url)
     work_id, other_work_id = uuid4(), uuid4()
     async with engine.begin() as connection:
-        await connection.run_sync(lambda sync: metadata.create_all(
+        await connection.run_sync(lambda sync: canonical_metadata.create_all(
             sync, tables=[canonical_work, work_events], checkfirst=True
         ))
-        await connection.execute(work_handles.insert(), [
-            {"id": work_id, "provider": "asana", "provider_work_id": f"test-{work_id}"},
-            {
-                "id": other_work_id, "provider": "asana",
-                "provider_work_id": f"test-{other_work_id}",
-            },
-        ])
         await connection.execute(canonical_work.insert(), [
             {
                 "work_id": work_id, "title": "First", "normalized_title": "first",
@@ -71,9 +73,6 @@ async def repository(database_prerequisite):
         ))
         await connection.execute(canonical_work.delete().where(
             canonical_work.c.work_id.in_((work_id, other_work_id))
-        ))
-        await connection.execute(work_handles.delete().where(
-            work_handles.c.id.in_((work_id, other_work_id))
         ))
     await engine.dispose()
 

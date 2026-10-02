@@ -9,11 +9,49 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+    insert,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from .state import canonical_work, work_events
+from .canonical_work import canonical_metadata, canonical_work
+
+work_events = Table(
+    "work_events", canonical_metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("result_version", BigInteger, nullable=False),
+    Column("subtype", Text, nullable=False),
+    Column("text", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("actor", Text),
+    Column("asana_story_gid", Text),
+    Column("operation_id", PGUUID(as_uuid=True)),
+    UniqueConstraint("work_id", "sequence"),
+    CheckConstraint("sequence >= 1", name="ck_work_event_sequence"),
+    CheckConstraint("result_version >= 1", name="ck_work_event_result_version"),
+)
+Index("ix_work_events_page", work_events.c.work_id, work_events.c.sequence)
+Index("uq_work_events_story", work_events.c.asana_story_gid, unique=True,
+      postgresql_where=work_events.c.asana_story_gid.is_not(None))
+Index("uq_work_events_operation", work_events.c.operation_id, unique=True,
+      postgresql_where=work_events.c.operation_id.is_not(None))
 
 
 @dataclass(frozen=True)
