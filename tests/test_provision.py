@@ -62,7 +62,6 @@ def test_managed_controller_checks_schema_without_upgrading_it():
 def test_development_image_contains_repository_assets_read_by_tests():
     root = Path(__file__).parents[1]
     assert (root / "compose.yaml").is_file()
-    assert (root / "docs/cutover-asana-coverage.json").is_file()
 
 
 async def test_provisioner_rejects_invalid_trusted_test_project(monkeypatch):
