@@ -235,6 +235,41 @@ async def test_reader_enumerates_current_workset_and_structure_from_db(database_
 
 
 @pytest.mark.asyncio
+async def test_parent_mutation_advances_revision_and_rejects_cycles(database_prerequisite):
+    engine = create_async_engine(database_url())
+    first, second, third, project = uuid4(), uuid4(), uuid4(), uuid4()
+    await admit(engine, first, second, third)
+    await stage_snapshot(engine, WorksetSnapshot(
+        worksets=(Workset(project, "project.test", "Test", "PROJECT"),),
+        memberships=tuple(
+            Membership(project, work_id, "AUTHORITATIVE")
+            for work_id in (first, second, third)
+        ),
+        parent_edges=(ParentEdge(second, first),),
+    ))
+    await activate_read_authority(engine)
+    reader = WorksetReader(engine)
+
+    assert await reader.update_parent(third, second, 1)
+    assert await reader.parent_matches(third, second)
+    async with engine.connect() as connection:
+        version = await connection.scalar(select(work_index.c.row_version).where(
+            work_index.c.work_id == third
+        ))
+    assert version == 2
+    assert not await reader.update_parent(third, first, 1)
+    assert await reader.parent_matches(third, second)
+    with pytest.raises(ValueError, match="cycle"):
+        await reader.validate_parent(first, third)
+    with pytest.raises(ValueError, match="itself"):
+        await reader.validate_parent(first, first)
+
+    assert await reader.update_parent(third, None, 2)
+    assert await reader.parent_matches(third, None)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_reader_fails_closed_on_partial_authority_marker(database_prerequisite):
     engine = create_async_engine(database_url())
     async with engine.begin() as connection:

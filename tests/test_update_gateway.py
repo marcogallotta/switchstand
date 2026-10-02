@@ -10,12 +10,13 @@ from mcp import Client
 from pydantic import ValidationError
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import LaunchAuthority
-from switchstand.core import Controller
+from switchstand.core import Controller, authoritative_revision
 from switchstand.discovery import ProviderSearchItem
 from switchstand.effect_recovery import EffectRecovery
 from switchstand.grant_state import GrantState, effect_intents
@@ -31,13 +32,20 @@ from switchstand.managed_identity import managed_principal, rotate_managed_grant
 from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
 from switchstand.relations import RelationGateway
-from switchstand.state import PostgresState, metadata
+from switchstand.state import (
+    PostgresState,
+    metadata,
+    work_edges,
+    workset_authority,
+    workset_cutovers,
+)
 from switchstand.updates import UpdateGateway
 from switchstand.work_metadata import (
     ProviderMetadataSnapshot,
     activate_metadata,
     generate_worksheet,
 )
+from switchstand.worksets import Membership, Workset, WorksetSnapshot, stage_snapshot
 
 PROJECT = "9999999999999999"
 PRIORITY = "1217653169990249"
@@ -145,6 +153,13 @@ async def subject(database_prerequisite):
     )})
     yield gateway, grants, principal, grant, boundary
     await client.aclose()
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "TRUNCATE workset_cutovers, workset_authority, work_parent_edges, "
+            "workset_memberships, worksets, work_metadata_cutovers, "
+            "work_metadata_authority, work_edges, work_authority_cutovers, "
+            "work_authority, work_index, work_handles CASCADE"
+        ))
     await engine.dispose()
 
 
@@ -290,6 +305,104 @@ async def test_review_next_action_is_inert_before_stage2_and_reconciles_after(su
         await connection.execute(text(
             "TRUNCATE work_metadata_cutovers, work_metadata_authority, work_edges, "
             "work_authority_cutovers, work_authority, work_index CASCADE"
+        ))
+
+
+async def test_stage3_parent_and_dependency_mutations_are_db_only_and_recoverable(
+    subject, monkeypatch,
+):
+    gateway, grants, principal, grant, boundary = subject
+    current = await gateway.providers["asana"].get("123")
+    assert current is not None
+    parent = await gateway.state.bind("asana", "456")
+    items = tuple(
+        ProviderSearchItem(
+            provider_work_id=provider_id, title=title, completed=False,
+            revision=current.revision, routing=current.routing, context=current.context,
+        )
+        for provider_id, title in (("123", "Child"), ("456", "Parent"))
+    )
+    await activate_stage1(gateway.state.engine, items)
+    worksheet = await generate_worksheet(gateway.state.engine)
+    await activate_metadata(gateway.state.engine, worksheet, tuple(
+        ProviderMetadataSnapshot(
+            provider_id, current.revision, current.routing, current.notes,
+            current.context, frozenset(),
+        )
+        for provider_id in ("123", "456")
+    ))
+    project = uuid4()
+    await stage_snapshot(gateway.state.engine, WorksetSnapshot(
+        worksets=(Workset(project, "project.test", "Test", "PROJECT"),),
+        memberships=(
+            Membership(project, grant.authority.active_work_id, "AUTHORITATIVE"),
+            Membership(project, parent.id, "AUTHORITATIVE"),
+        ),
+        parent_edges=(),
+    ))
+    async with gateway.state.engine.begin() as connection:
+        await connection.execute(workset_authority.insert().values(
+            scope="workspace", state="POSTGRES_AUTHORITY", generation=1,
+        ))
+        await connection.execute(workset_cutovers.insert().values(
+            scope="workspace", generation=1,
+        ))
+    boundary.task["memberships"] = []
+    current = await gateway.providers["asana"].get("123")
+    assert current is not None
+    observed = await authoritative_revision(
+        gateway.state, grant.authority.active_work_id, current.revision,
+        provider_notes=current.notes, provider_context=current.context,
+    )
+    relation = RelationGateway(gateway.state, grants, gateway.providers)
+    parent_request = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+        grant_version=grant.version, observed_revision=observed,
+        patch=RelationPatch(kind="parent", action="set", target_work_id=parent.id),
+    )
+    original = gateway.state.worksets.update_parent
+
+    async def commit_then_lose(*args):
+        assert await original(*args)
+        raise SQLAlchemyError("lost after commit")
+
+    monkeypatch.setattr(gateway.state.worksets, "update_parent", commit_then_lose)
+    unknown = await relation.update(principal, parent_request)
+    assert (unknown.status, unknown.effect, boundary.puts) == ("unknown", "unknown", [])
+    monkeypatch.setattr(gateway.state.worksets, "update_parent", original)
+    recovered = await relation.update(principal, parent_request)
+    assert recovered.status == "ok" and recovered.effect == "applied"
+    assert await gateway.state.worksets.parent_matches(
+        grant.authority.active_work_id, parent.id
+    )
+    assert (await relation.update(principal, parent_request)) == recovered
+
+    stale = parent_request.model_copy(update={"operation_id": uuid4()})
+    assert (await relation.update(principal, stale)).status == "stale"
+    latest = await gateway.providers["asana"].get("123")
+    assert latest is not None
+    current_revision = await authoritative_revision(
+        gateway.state, grant.authority.active_work_id, latest.revision,
+        provider_notes=latest.notes, provider_context=latest.context,
+    )
+    dependency = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=grant.authority.active_work_id,
+        grant_version=grant.version, observed_revision=current_revision,
+        patch=RelationPatch(kind="dependency", action="add", target_work_id=parent.id),
+    )
+    assert (await relation.update(principal, dependency)).status == "ok"
+    async with gateway.state.engine.connect() as connection:
+        assert (await connection.execute(select(work_edges.c.work_id).where(
+            work_edges.c.work_id == grant.authority.active_work_id,
+            work_edges.c.depends_on_work_id == parent.id,
+        ))).one()[0] == grant.authority.active_work_id
+    assert boundary.puts == []
+    async with gateway.state.engine.begin() as connection:
+        await connection.execute(text(
+            "TRUNCATE workset_cutovers, workset_authority, work_parent_edges, "
+            "workset_memberships, worksets, work_metadata_cutovers, "
+            "work_metadata_authority, work_edges, work_authority_cutovers, "
+            "work_authority, work_index, work_handles CASCADE"
         ))
 
 

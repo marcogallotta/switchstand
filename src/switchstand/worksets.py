@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .contracts import Routing, WorkContext, WorkSearchItem
@@ -270,6 +270,96 @@ class WorksetReader:
             status="ok", revision=str(await self.generation()), parent=parent,
             children=tuple(self._item(row, index_generation) for row in child_rows),
         )
+
+    async def validate_parent(self, work_id: UUID, parent_id: UUID | None) -> None:
+        """Reject deterministic parent faults before journaling an effect."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        if parent_id == work_id:
+            raise ValueError("work cannot parent itself")
+        async with self.engine.connect() as connection:
+            required = {work_id} if parent_id is None else {work_id, parent_id}
+            admitted = set((await connection.execute(select(
+                workset_memberships.c.work_id,
+            ).where(
+                workset_memberships.c.work_id.in_(required),
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))).scalars())
+            if admitted != required:
+                raise ValueError("parent work is not admitted")
+            edges = (await connection.execute(select(
+                work_parent_edges.c.child_work_id, work_parent_edges.c.parent_work_id,
+            ))).all()
+        self._validate_parent_graph(edges, work_id, parent_id)
+
+    @staticmethod
+    def _validate_parent_graph(
+        edges: Sequence[Sequence[UUID]], work_id: UUID, parent_id: UUID | None,
+    ) -> None:
+        parents = {row[0]: row[1] for row in edges if row[0] != work_id}
+        if parent_id is not None:
+            parents[work_id] = parent_id
+        current, seen = work_id, set[UUID]()
+        while current in parents:
+            if current in seen:
+                raise ValueError("parent structure contains a cycle")
+            seen.add(current)
+            current = parents[current]
+
+    async def update_parent(
+        self, work_id: UUID, parent_id: UUID | None, expected_row_version: int,
+    ) -> bool:
+        """Atomically replace one parent edge and advance the owning work revision."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        required = {work_id} if parent_id is None else {work_id, parent_id}
+        async with self.engine.begin() as connection:
+            await connection.execute(select(func.pg_advisory_xact_lock(0x53503350)))
+            locked = (await connection.execute(select(
+                work_index.c.work_id, work_index.c.row_version,
+            ).where(work_index.c.work_id.in_(required)).order_by(
+                work_index.c.work_id,
+            ).with_for_update())).all()
+            if {row[0] for row in locked} != required:
+                raise ValueError("parent work is not admitted")
+            versions = {row[0]: row[1] for row in locked}
+            if versions[work_id] != expected_row_version:
+                return False
+            admitted = set((await connection.execute(select(
+                workset_memberships.c.work_id,
+            ).where(
+                workset_memberships.c.work_id.in_(required),
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))).scalars())
+            if admitted != required:
+                raise ValueError("parent work is not admitted")
+            edges = (await connection.execute(select(
+                work_parent_edges.c.child_work_id, work_parent_edges.c.parent_work_id,
+            ))).all()
+            self._validate_parent_graph(edges, work_id, parent_id)
+            current = next((row[1] for row in edges if row[0] == work_id), None)
+            if current == parent_id:
+                return True
+            await connection.execute(delete(work_parent_edges).where(
+                work_parent_edges.c.child_work_id == work_id
+            ))
+            if parent_id is not None:
+                await connection.execute(insert(work_parent_edges).values(
+                    child_work_id=work_id, parent_work_id=parent_id, row_version=1,
+                ))
+            await connection.execute(update(work_index).where(
+                work_index.c.work_id == work_id
+            ).values(row_version=expected_row_version + 1))
+        return True
+
+    async def parent_matches(self, work_id: UUID, parent_id: UUID | None) -> bool:
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.connect() as connection:
+            current = await connection.scalar(select(
+                work_parent_edges.c.parent_work_id,
+            ).where(work_parent_edges.c.child_work_id == work_id))
+        return current == parent_id
 
 
 async def _stored_rows(connection: AsyncConnection) -> list[list[object]]:
