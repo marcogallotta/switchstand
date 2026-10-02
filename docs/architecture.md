@@ -192,6 +192,10 @@ messaging, and required continuation:
   launcher/bootstrap-supplied `workset_key`; it returns the nonterminal members, workflow/dependency
   truth, membership roles, and an opaque revision from one PostgreSQL snapshot. It does not infer
   identity from agent names, current work, provider placement, or mailbox state.
+  The same owner provides marker-gated transactional primitives for workset rename/lifecycle,
+  authoritative-home moves, related-membership add/remove, and durable-role MASTER transfer.
+  They serialize on the Stage 3 advisory lock, require explicit row currentness, preserve exactly
+  one authoritative home, and never project structure back to Asana.
   Marker-gated parent `set`/`clear` mutations write only `work_parent_edges`, advance the owning
   work revision transactionally, and recover ambiguous effects by exact DB-edge readback; provider
   parent mutation remains the pre-marker compatibility path. Marker-gated parented creation still
