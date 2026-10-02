@@ -30,8 +30,8 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
         pytest.skip("TEST_DATABASE_URL is required")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE work_handles CASCADE"))
         await connection.run_sync(metadata.create_all)
+        await connection.execute(text("TRUNCATE work_handles CASCADE"))
         await connection.run_sync(canonical_metadata.create_all)
         await connection.execute(insert(work_handles), [
             {"id": PARENT, "provider": "asana", "provider_work_id": "parent"},
