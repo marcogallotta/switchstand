@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -19,7 +21,9 @@ from sqlalchemy import (
     MetaData,
     Table,
     Text,
+    and_,
     insert,
+    or_,
     select,
     update,
 )
@@ -95,6 +99,12 @@ class CurrentWork:
     next_due: str | None = None
 
 
+@dataclass(frozen=True)
+class CurrentWorkPage:
+    items: tuple[CurrentWork, ...]
+    next_cursor: str | None = None
+
+
 _SCALARS = (
     "title", "completed", "notes", "assignee", "priority", "work_type", "lifecycle_state",
     "review_next_action", "wait_kind", "unblock_condition", "next_due",
@@ -124,22 +134,65 @@ class CanonicalWorkRepository:
         return None if row is None else _item(row)
 
     async def search(
-        self, query: str | None = None, *, completed: bool | None = None, limit: int = 100,
-    ) -> tuple[CurrentWork, ...]:
+        self, query: str | None = None, *, completed: bool | None = None,
+        cursor: str | None = None, limit: int = 100,
+    ) -> CurrentWorkPage:
         if limit < 1 or limit > 500:
             raise ValueError("limit must be between 1 and 500")
-        statement = select(*_COLUMNS)
-        if query is not None:
+        normalized = normalize_title(query) if query is not None else None
+        criteria = hashlib.sha256(json.dumps(
+            [normalized, completed], separators=(",", ":")
+        ).encode()).hexdigest()
+        statement = select(*_COLUMNS, canonical_work.c.normalized_title)
+        if normalized is not None:
             statement = statement.where(
-                canonical_work.c.normalized_title.contains(normalize_title(query))
+                canonical_work.c.normalized_title.contains(normalized)
             )
         if completed is not None:
             statement = statement.where(canonical_work.c.completed == completed)
+        if cursor is not None:
+            title, work_id = self._decode_cursor(cursor, criteria)
+            statement = statement.where(or_(
+                canonical_work.c.normalized_title > title,
+                and_(
+                    canonical_work.c.normalized_title == title,
+                    canonical_work.c.work_id > work_id,
+                ),
+            ))
         statement = statement.order_by(
             canonical_work.c.normalized_title, canonical_work.c.work_id
-        ).limit(limit)
+        ).limit(limit + 1)
         async with self.engine.connect() as connection:
-            return tuple(_item(row) for row in (await connection.execute(statement)).all())
+            rows = (await connection.execute(statement)).all()
+        page = rows[:limit]
+        next_cursor = None
+        if len(rows) > limit and page:
+            next_cursor = self._cursor(
+                criteria, cast(str, page[-1][13]), cast(UUID, page[-1][0])
+            )
+        return CurrentWorkPage(tuple(_item(row[:13]) for row in page), next_cursor)
+
+    @staticmethod
+    def _cursor(criteria: str, title: str, work_id: UUID) -> str:
+        value = json.dumps([criteria, title, str(work_id)], separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str, criteria: str) -> tuple[str, UUID]:
+        try:
+            raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            decoded = cast(object, json.loads(raw))
+            if not isinstance(decoded, list):
+                raise TypeError
+            value = cast(list[object], decoded)
+            if (
+                len(value) != 3 or value[0] != criteria
+                or not isinstance(value[1], str) or not isinstance(value[2], str)
+            ):
+                raise ValueError
+            return value[1], UUID(value[2])
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid canonical work cursor") from error
 
     async def resolve_asana_gid(self, gid: str) -> UUID | None:
         async with self.engine.connect() as connection:

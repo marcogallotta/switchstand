@@ -159,7 +159,8 @@ PostgreSQL is the authoritative application state for identities, grants, effect
 messaging, and required continuation:
 
 - `canonical_work.py`, `canonical_relations.py`, and `work_events.py` own the explicit, inert
-  compact zero-Asana schema definitions and repositories for current rows, legacy task aliases,
+  compact zero-Asana schema definitions and repositories for current rows, stable title/completion
+  search pages, legacy task aliases,
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
   projects DB event storage through the existing public history/event contracts without runtime
   wiring. These modules are not in shared `state.metadata`, have no Alembic migration or runtime
