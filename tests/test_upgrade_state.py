@@ -341,9 +341,20 @@ def test_attached_writer_container_refuses_before_backup(tmp_path):
     assert "pg_dump" not in Path(env["FAKE_TRACE"]).read_text()
 
 
-def test_failed_shared_migration_without_marker_downgrades_once(tmp_path):
+@pytest.mark.parametrize(
+    "failed_revision",
+    [
+        "0008_work_index_authority",
+        "0009_human_trajectory",
+        "0010_work_metadata_authority",
+        "0011_workset_authority",
+        "0012_outcome_state",
+    ],
+)
+def test_failed_shared_migration_without_marker_downgrades_once(tmp_path, failed_revision):
     repo, env = _repo(tmp_path)
     env["FAKE_FAIL_SHARED"] = "1"
+    env["FAKE_FAILED_REVISION"] = failed_revision
     receipt = tmp_path / "apply.json"
 
     result = _run(repo, env, "apply", str(receipt))
