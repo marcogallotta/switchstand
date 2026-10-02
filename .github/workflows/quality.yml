@@ -40,14 +40,69 @@ jobs:
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
           fi
       - run: docker build --target development --tag switchstand-quality .
-      - run: >-
+      - name: Prepare observational metrics
+        run: mkdir -p "$RUNNER_TEMP/test-metrics"
+      - name: Authoritative Quality
+        run: >-
           docker run --rm --network host
           -e TEST_DATABASE_URL
+          -v "$RUNNER_TEMP/test-metrics:/metrics"
           -v "$PWD:/workspace:ro" -w /workspace
           switchstand-quality sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
           PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
-          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider'
+          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider --junitxml=/metrics/junit.xml'
+      - name: Collect observational metrics
+        if: always()
+        continue-on-error: true
+        env:
+          SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
+          SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          export METRICS_DIR="$RUNNER_TEMP/test-metrics"
+          export COMPOSITION_SHA="$(git rev-parse HEAD)"
+          export WORKFLOW_BLOB="$(git rev-parse HEAD:.github/workflows/quality.yml)"
+          export MANIFEST_BLOBS="$(git rev-parse HEAD:pyproject.toml HEAD:uv.lock HEAD:Dockerfile)"
+          export QUALITY_IMAGE="$(docker image inspect switchstand-quality --format '{{.Id}}' 2>/dev/null || true)"
+          export QUALITY_PYTHON="$(docker run --rm switchstand-quality /app/.venv/bin/python --version 2>/dev/null || true)"
+          QUALITY_RUNTIME="$(docker run --rm switchstand-quality sh -ec '
+            dpkg-query -W -f="\${binary:Package}=\${Version}\n"
+            sha256sum /usr/local/bin/python3.14 /bin/uv
+            /app/.venv/bin/python -c "import importlib.metadata as m; print(\"\\n\".join(sorted(d.metadata[\"Name\"] + \"=\" + d.version for d in m.distributions())))"
+          ' 2>/dev/null)" || QUALITY_RUNTIME=""
+          export QUALITY_RUNTIME
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          e = os.environ
+          identity = {
+              "subject_kind": e["SUBJECT_KIND"], "subject_sha": e["SUBJECT_SHA"],
+              "base_sha": e["BASE_SHA"] or None,
+              "composition_sha": e["COMPOSITION_SHA"] if e["SUBJECT_KIND"] == "composition" else None,
+              "github": {"run_id": e["GITHUB_RUN_ID"], "run_attempt": e["GITHUB_RUN_ATTEMPT"],
+                         "job": e["GITHUB_JOB"], "workflow": e["GITHUB_WORKFLOW"], "repository": e["GITHUB_REPOSITORY"]},
+              "candidate_image": e["QUALITY_IMAGE"] or None,
+              "environment": {"workflow_blob": e["WORKFLOW_BLOB"], "manifest_blobs": e["MANIFEST_BLOBS"],
+                              "python": e["QUALITY_PYTHON"] or None,
+                              "runtime_packages": hashlib.sha256("\n".join(sorted(e["QUALITY_RUNTIME"].splitlines())).encode()).hexdigest() if e["QUALITY_RUNTIME"] else None,
+                              "runner_os": e.get("RUNNER_OS"), "runner_arch": e.get("RUNNER_ARCH"),
+                              "runner_image": e.get("ImageOS"), "runner_image_version": e.get("ImageVersion")},
+          }
+          Path(e["METRICS_DIR"], "identity.json").write_text(json.dumps(identity))
+          PY
+          python3 src/switchstand/test_metrics.py --execution-kind full \
+            --identity "$METRICS_DIR/identity.json" --junit "$METRICS_DIR/junit.xml" \
+            --output "$METRICS_DIR/metrics.json"
+      - name: Retain original metrics attempt
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-metrics-${{ github.run_id }}-${{ github.run_attempt }}-quality
+          path: ${{ runner.temp }}/test-metrics/
+          retention-days: 90
+          if-no-files-found: warn
   docker-lifecycle:
     name: ${{ github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || 'Exact-head Docker lifecycle' }}
     runs-on: ubuntu-latest
