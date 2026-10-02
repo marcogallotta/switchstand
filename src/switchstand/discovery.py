@@ -1,11 +1,10 @@
 """Provider-neutral work discovery over admitted backend scope."""
 
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
 from .contracts import Routing, WorkContext, WorkSearchItem, WorkSearchRequest, WorkSearchResult
 from .core import Handle, ProviderError
-from .work_index import WorkIndex
 
 
 @dataclass(frozen=True)
@@ -55,7 +54,6 @@ class DiscoveryState(Protocol):
     async def bind_many(
         self, provider: str, provider_work_ids: tuple[str, ...]
     ) -> tuple[Handle, ...]: ...
-    async def get_by_provider(self, provider: str, provider_work_id: str) -> Handle | None: ...
 
 
 class WorkDiscovery:
@@ -95,7 +93,7 @@ class WorkDiscovery:
             return WorkSearchResult(status="provider_error")
 
     async def structure(
-        self, work_id: object, provider_work_id: str, observed_revision: str,
+        self, provider_work_id: str, observed_revision: str,
     ) -> DiscoveredStructure | None:
         """Bind relations only after the provider verifies one complete snapshot."""
         try:
@@ -109,21 +107,9 @@ class WorkDiscovery:
             relation_ids = tuple(candidate.provider_work_id for candidate in relations)
             if provider_work_id in relation_ids or len(set(relation_ids)) != len(relation_ids):
                 return None
-            index = cast(WorkIndex | None, getattr(self.state, "work_index", None))
-            if index is not None and await index.active():
-                handles: list[Handle] = []
-                for provider_id in relation_ids:
-                    handle = await self.state.get_by_provider(
-                        self.provider_name, provider_id
-                    )
-                    if handle is None or await index.get(handle.id) is None:
-                        return None
-                    handles.append(handle)
-                resolved_handles = tuple(handles)
-            else:
-                resolved_handles = await self.state.bind_many(
-                    self.provider_name, relation_ids,
-                )
+            handles = await self.state.bind_many(
+                self.provider_name, relation_ids,
+            )
 
             def project(candidate: ProviderSearchItem, handle: Handle) -> WorkSearchItem:
                 return WorkSearchItem(
@@ -132,18 +118,9 @@ class WorkDiscovery:
                     routing=candidate.routing, context=candidate.context,
                 )
 
-            items_list: list[WorkSearchItem] = []
-            for candidate, handle in zip(relations, resolved_handles, strict=True):
-                item = project(candidate, handle)
-                if index is not None and await index.active():
-                    indexed = await index.get(handle.id)
-                    assert indexed is not None
-                    item = item.model_copy(update={
-                        "title": indexed.title, "completed": indexed.completed,
-                        "revision": await index.revision(handle.id, candidate.revision),
-                    })
-                items_list.append(item)
-            items = tuple(items_list)
+            items = tuple(project(candidate, handle) for candidate, handle in zip(
+                relations, handles, strict=True
+            ))
             parent = items[0] if result.parent is not None else None
             children = items[1:] if result.parent is not None else items
             return DiscoveredStructure(

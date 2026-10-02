@@ -4,7 +4,6 @@ from uuid import uuid4
 
 import pytest
 from chatgpt_fixture import Provider
-from conftest import activate_stage1
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -12,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from switchstand.chatgpt import ChatGPTService, RequiredResultSaveRequest
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderError, ProviderSourceStory
-from switchstand.discovery import ProviderSearchItem
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.lifecycle import (
@@ -112,29 +110,6 @@ async def test_save_closes_and_restart_replays_without_duplicate(
     conflict = await restarted.required_result_save(request(grant, "different result"))
     assert conflict.status == "denied"
     assert conflict.reason == "lifecycle_result_identity_conflict" and provider.revision == "r2"
-
-
-async def test_save_uses_post_cutover_completion_and_composite_currentness(
-    result_engine: AsyncEngine,
-) -> None:
-    service, _, grant, provider = await subject(result_engine)
-    current = await provider.get("123")
-    assert current is not None
-    await activate_stage1(result_engine, (ProviderSearchItem(
-        provider_work_id="123", title=current.title, completed=False,
-        revision=current.revision, routing=current.routing, context=current.context,
-    ),))
-    projected = await service.state.work_index.project(
-        grant.authority.active_work_id, current
-    )
-    provider.completed = True
-
-    outcome = await service.required_result_save(
-        request(grant).model_copy(update={"observed_revision": projected.revision})
-    )
-
-    assert outcome.status == "ok" and outcome.effect == "applied"
-    assert provider.notes.endswith("## Current required result\n\nfinal result")
 
 
 async def test_save_refuses_to_replace_notes_when_promoted_result_will_not_fit(

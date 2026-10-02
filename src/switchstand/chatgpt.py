@@ -28,10 +28,6 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
-    WorksetMemberItem,
-    WorksetRequest,
-    WorksetResult,
-    WorksetSummary,
     WorkStructureRequest,
     WorkStructureResult,
 )
@@ -40,10 +36,6 @@ from .core import (
     Provider,
     ProviderError,
     State,
-    authoritative_work,
-    authorization_stable,
-    authorize_content,
-    content_authorization_token,
 )
 from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
@@ -203,16 +195,9 @@ class ChatGPTService:
             return grant.authority, None
         if await self.state.get(work_id) is None:
             return None, "work_not_granted"
-        try:
-            await content_authorization_token(self.state, work_id)
-        except PermissionError:
-            return None, "work_not_granted"
         if grant.scope == "workspace":
             if not explicit_target:
                 return None, "explicit_work_id_required"
-            index = getattr(self.state, "work_index", None)
-            if index is not None and await index.active() and await index.get(work_id) is None:
-                return None, "work_not_granted"
             return LaunchAuthority(active_work_id=work_id), None
         if grant.can_read(work_id, explicit_target=explicit_target):
             return grant.authority, None
@@ -234,11 +219,6 @@ class ChatGPTService:
                     return WorkSearchResult(status="denied")
                 if self.canonical_work_active and self.canonical_work is not None:
                     return await self.canonical_work.search(request)
-                index = getattr(self.state, "work_index", None)
-                if index is not None:
-                    indexed = await index.search(request)
-                    if indexed is not None:
-                        return indexed
                 provider = self.providers.get("asana")
                 if provider is None:
                     return WorkSearchResult(status="provider_error")
@@ -247,46 +227,6 @@ class ChatGPTService:
                 ).search(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkSearchResult(status="unknown")
-
-    async def workset(self, request: WorksetRequest) -> WorksetResult:
-        """Enumerate one explicit DB-authoritative workset without provider discovery."""
-        principal = await self.principal()
-        if principal is None:
-            return WorksetResult(status="denied")
-        try:
-            async with self.admission_grants.locked(principal.key) as grant:
-                authority, _ = await self._read_authority(
-                    principal, grant, operations=frozenset({"work_get", "work_search"}),
-                    workspace_only=True,
-                )
-                if authority is None:
-                    return WorksetResult(status="denied")
-                reader = getattr(self.state, "worksets", None)
-                if reader is None:
-                    return WorksetResult(status="unknown")
-                view = await reader.enumerate(
-                    request.workset_id, workset_key=request.workset_key,
-                )
-                if view is None:
-                    return WorksetResult(status="unknown")
-                return WorksetResult(
-                    status="ok", revision=view.revision,
-                    workset=WorksetSummary(
-                        workset_id=view.workset.workset_id,
-                        workset_key=view.workset.workset_key,
-                        name=view.workset.name, kind=view.workset.kind,
-                        role_identity=view.workset.role_identity,
-                        state=cast(Literal["ACTIVE", "RETIRED"], view.workset.state),
-                    ),
-                    members=tuple(WorksetMemberItem(
-                        item=member.item, semantics=member.semantics,
-                        member_role=member.member_role, depends_on=member.depends_on,
-                    ) for member in view.members),
-                )
-        except PermissionError:
-            return WorksetResult(status="denied")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorksetResult(status="unknown")
 
     async def structure(self, request: WorkStructureRequest) -> WorkStructureResult:
         principal = await self.principal()
@@ -306,61 +246,33 @@ class ChatGPTService:
                 provider = self.providers.get(handle.provider)
                 if provider is None:
                     return WorkStructureResult(status="provider_error")
-                prior_authorization = await content_authorization_token(
-                    self.state, request.work_id
-                )
                 current = await provider.get(handle.provider_work_id)
                 if current is None:
                     return WorkStructureResult(status="provider_error")
-                try:
-                    authorization = await authorize_content(
-                        self.state, request.work_id, current.canonical
-                    )
-                except PermissionError:
+                if not current.canonical:
                     return WorkStructureResult(status="denied")
-                if not authorization_stable(prior_authorization, authorization):
-                    return WorkStructureResult(status="stale", work_id=request.work_id)
-                from .core import authoritative_revision
-                revision = await authoritative_revision(
-                    self.state, request.work_id, current.revision,
-                    provider_notes=current.notes, provider_context=current.context,
-                )
+                revision = current.revision
                 if revision != request.observed_revision:
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id, revision=revision,
                     )
-                worksets = getattr(self.state, "worksets", None)
-                result = None if worksets is None else await worksets.structure(request.work_id)
-                db_authoritative = result is not None
-                if result is None:
-                    result = await WorkDiscovery(
-                        handle.provider, cast(DiscoveryProvider, provider), self.state
-                    ).structure(request.work_id, handle.provider_work_id, current.revision)
+                result = await WorkDiscovery(
+                    handle.provider, cast(DiscoveryProvider, provider), self.state
+                ).structure(handle.provider_work_id, current.revision)
                 if result is None:
                     return WorkStructureResult(status="provider_error")
                 latest = await provider.get(handle.provider_work_id)
                 if latest is None:
                     return WorkStructureResult(status="provider_error")
-                try:
-                    latest_authorization = await authorize_content(
-                        self.state, request.work_id, latest.canonical
-                    )
-                except PermissionError:
+                if not latest.canonical:
                     return WorkStructureResult(status="denied")
-                resulting_revision = await authoritative_revision(
-                    self.state, request.work_id, latest.revision,
-                    provider_notes=latest.notes, provider_context=latest.context,
-                )
+                resulting_revision = latest.revision
                 if result.status == "stale":
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,
-                        revision=await authoritative_revision(
-                            self.state, request.work_id, result.revision,
-                            provider_notes=latest.notes, provider_context=latest.context,
-                        ),
+                        revision=result.revision,
                     )
-                if (not authorization_stable(authorization, latest_authorization)
-                        or (not db_authoritative and result.revision != latest.revision)
+                if (result.revision != latest.revision
                         or resulting_revision != revision):
                     return WorkStructureResult(
                         status="stale", work_id=request.work_id,
@@ -407,9 +319,6 @@ class ChatGPTService:
                     if authority is None:
                         return self._reference_denied(reason or "work_not_granted")
                 elif handle is None:
-                    index = getattr(self.state, "work_index", None)
-                    if index is not None and await index.active():
-                        return self._reference_denied("reference_not_admitted")
                     provider = self.providers.get(parsed.provider)
                     if provider is None:
                         return GrantedWorkResult(status="provider_error")
@@ -699,9 +608,6 @@ class ChatGPTService:
                     return self._result_guard(
                         request, "unknown", "source_read_unavailable", operation_id
                     )
-                current_work = await authoritative_work(
-                    self.state, request.work_id, current_work
-                )
                 if current_work.completed:
                     return self._result_guard(request, "denied", "work_is_terminal", operation_id)
                 if current_work.revision != request.observed_revision:

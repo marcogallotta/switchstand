@@ -19,12 +19,18 @@ from typing import Any, cast
 
 from .development import development_subnet
 from .edge_maintenance import Failed, Unknown, exclusive_lock
-from .secure_file import create_new_private_bytes
-from .stage12_cutover import read_private
+from .secure_file import PrivateFileOpenError, create_new_private_bytes, read_private_bytes
 
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 FAILURE_DETAIL_LIMIT = 2048
+
+
+def _read_private(path: Path, label: str) -> bytes:
+    try:
+        return read_private_bytes(path)
+    except (PrivateFileOpenError, ValueError) as error:
+        raise Failed(f"{label} is unavailable or not an exact private file") from error
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -50,7 +56,7 @@ def _private_directory(path: Path, *, create: bool = False) -> None:
 
 def _source(path: Path, label: str) -> tuple[Path, bytes, str]:
     path = path.absolute()
-    data = read_private(path, label)
+    data = _read_private(path, label)
     return path, data, hashlib.sha256(data).hexdigest()
 
 
@@ -298,7 +304,7 @@ def _load(name: str, *, failed: bool = False) -> tuple[Path, dict[str, Any]]:
     _private_directory(root)
     path = root / "target.json"
     try:
-        raw: object = json.loads(read_private(path, "disposable target descriptor"))
+        raw: object = json.loads(_read_private(path, "disposable target descriptor"))
     except (json.JSONDecodeError, UnicodeError) as error:
         raise Failed("disposable target descriptor is invalid") from error
     if not isinstance(raw, dict):
@@ -350,7 +356,7 @@ def load_ready(
         ("copied_database_backup", "database_backup_sha256"),
         ("copied_fastmcp_snapshot", "fastmcp_snapshot_sha256"),
     ):
-        data = read_private(Path(cast(str, value[path_key])), path_key)
+        data = _read_private(Path(cast(str, value[path_key])), path_key)
         if hashlib.sha256(data).hexdigest() != value.get(digest_key):
             raise Failed("disposable copied-state digest changed")
     if _tree_digest(Path(cast(str, value["fastmcp_state"]))) != value.get("fastmcp_tree_sha256"):

@@ -1,10 +1,7 @@
-import hashlib
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 from uuid import UUID
-
-from sqlalchemy.exc import SQLAlchemyError
 
 from .contracts import (
     AppendResult,
@@ -174,76 +171,17 @@ class Provider(Protocol):
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None: ...
     async def source_stories(
-        self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int,
-        *, require_canonical: bool = True,
+        self, provider_task_id: str, observed_revision: str, offset: str | None, limit: int
     ) -> ProviderStoriesPage | None: ...
     async def source_story(
         self, provider_task_id: str, provider_story_id: str
     ) -> ProviderSourceStory | None: ...
 
 
-async def authoritative_revision(
-    state: object, work_id: UUID, provider_revision: str, *,
-    provider_notes: str | None = None, provider_context: WorkContext | None = None,
-) -> str:
-    index = getattr(state, "work_index", None)
-    revision = provider_revision if index is None else await index.revision(
-        work_id, provider_revision, provider_notes=provider_notes,
-        provider_context=provider_context,
-    )
-    token = await content_authorization_token(state, work_id)
-    return revision_with_authorization(revision, token)
-
-
-def revision_with_authorization(revision: str, token: str | None) -> str:
-    """Compose the public revision from its DB authority components."""
-    if token is None:
-        return revision
-    return "s3_" + hashlib.sha256(f"{token}\0{revision}".encode()).hexdigest()
-
-
-async def content_authorization_token(state: object, work_id: UUID) -> str | None:
-    """Return DB content authority after Stage 3; ``None`` preserves provider authority."""
-    worksets = getattr(state, "worksets", None)
-    if worksets is None:
-        return None
-    return cast(str | None, await worksets.content_authorization(work_id))
-
-
-async def authorize_content(
-    state: object, work_id: UUID, provider_canonical: bool,
-) -> str | None:
-    """Authorize exact provider content from the current sole authority."""
-    token = await content_authorization_token(state, work_id)
-    if token is None and not provider_canonical:
-        raise PermissionError("provider does not admit content")
-    return token
-
-
-def authorization_stable(before: str | None, after: str | None) -> bool:
-    return before == after
-
-
 async def observed_revision_matches(
-    state: object, work_id: UUID, observed: str, provider_revision: str, *,
-    provider_notes: str | None = None, provider_context: WorkContext | None = None,
+    state: object, work_id: UUID, observed: str, provider_revision: str, **_: object,
 ) -> bool:
-    return observed == await authoritative_revision(
-        state, work_id, provider_revision, provider_notes=provider_notes,
-        provider_context=provider_context,
-    )
-
-
-async def authoritative_work(
-    state: object, work_id: UUID, provider: ProviderWork,
-) -> ProviderWork:
-    index = getattr(state, "work_index", None)
-    projected = provider if index is None else await index.project(work_id, provider)
-    token = await content_authorization_token(state, work_id)
-    if token is None:
-        return projected
-    revision = "s3_" + hashlib.sha256(f"{token}\0{projected.revision}".encode()).hexdigest()
-    return replace(projected, revision=revision)
+    return observed == provider_revision
 
 
 async def apply_scalar(
@@ -305,56 +243,15 @@ class Controller:
         provider = self.providers.get(handle.provider)
         if provider is None:
             return WorkResult(status="provider_error")
-        try:
-            prior_authorization = await content_authorization_token(self.state, work_id)
-        except PermissionError:
-            return WorkResult(status="denied")
         work = await provider.get(handle.provider_work_id)
         if work is None:
             return WorkResult(status="unknown")
-        try:
-            authorization = await authorize_content(self.state, work_id, work.canonical)
-        except PermissionError:
+        if not work.canonical:
             return WorkResult(status="denied")
-        try:
-            projected = await authoritative_work(self.state, work_id, work)
-            if not authorization_stable(prior_authorization, authorization):
-                return WorkResult(status="stale", item=self._item(work_id, projected, handle))
-            index = getattr(self.state, "work_index", None)
-            if index is not None and await index.active():
-                after = await provider.get(handle.provider_work_id)
-                if after is None:
-                    return WorkResult(status="unknown")
-                try:
-                    latest_authorization = await authorize_content(
-                        self.state, work_id, after.canonical
-                    )
-                except PermissionError:
-                    return WorkResult(status="denied")
-                stable = await authoritative_work(self.state, work_id, after)
-                if (not authorization_stable(authorization, latest_authorization)
-                        or after.revision != work.revision
-                        or stable.revision != projected.revision):
-                    return WorkResult(status="stale", item=self._item(work_id, stable, handle))
-                projected = stable
-        except PermissionError:
-            return WorkResult(status="denied")
-        return WorkResult(status="ok", item=self._item(work_id, projected, handle))
+        return WorkResult(status="ok", item=self._item(work_id, work, handle))
 
     def _source_provider(self) -> Provider | None:
         return self.providers.get("asana")
-
-    async def _source_authorization(self, provider_task_id: str) -> tuple[UUID, str] | None:
-        """Resolve legacy provider content through DB membership only after Stage 3."""
-        worksets = getattr(self.state, "worksets", None)
-        if worksets is None or await worksets.generation() is None:
-            return None
-        handle = await self.state.get_by_provider("asana", provider_task_id)
-        if handle is None:
-            raise PermissionError("provider task is not admitted")
-        token = await content_authorization_token(self.state, handle.id)
-        assert token is not None
-        return handle.id, token
 
     async def bind_work(self, provider_name: str, provider_work_id: str) -> Handle:
         provider = self.providers[provider_name]
@@ -375,8 +272,6 @@ class Controller:
             return WorkResult(status="unknown")
         except ProviderError:
             return WorkResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorkResult(status="unknown")
 
     async def attachments(self, request: WorkAttachmentsRequest) -> WorkAttachmentsResult:
         if not self.authority.can_read(request.work_id):
@@ -391,19 +286,11 @@ class Controller:
             before = await provider.get(handle.provider_work_id)
             if before is None:
                 return WorkAttachmentsResult(status="unknown")
-            try:
-                authorization = await authorize_content(
-                    self.state, request.work_id, before.canonical
-                )
-            except PermissionError:
+            if not before.canonical:
                 return WorkAttachmentsResult(status="denied")
-            current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision,
-                provider_notes=before.notes, provider_context=before.context,
-            )
-            if current_revision != request.observed_revision:
+            if before.revision != request.observed_revision:
                 return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id, revision=current_revision
+                    status="stale", work_id=request.work_id, revision=before.revision
                 )
             page = await provider.list_attachments(
                 handle.provider_work_id, request.cursor, request.limit
@@ -411,24 +298,14 @@ class Controller:
             after = await provider.get(handle.provider_work_id)
             if after is None:
                 return WorkAttachmentsResult(status="unknown")
-            try:
-                latest_authorization = await authorize_content(
-                    self.state, request.work_id, after.canonical
-                )
-            except PermissionError:
+            if not after.canonical:
                 return WorkAttachmentsResult(status="denied")
-            resulting_revision = await authoritative_revision(
-                self.state, request.work_id, after.revision,
-                provider_notes=after.notes, provider_context=after.context,
-            )
-            if (not authorization_stable(authorization, latest_authorization)
-                    or resulting_revision != current_revision):
+            if after.revision != before.revision:
                 return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id,
-                    revision=resulting_revision,
+                    status="stale", work_id=request.work_id, revision=after.revision
                 )
             return WorkAttachmentsResult(
-                status="ok", work_id=request.work_id, revision=resulting_revision,
+                status="ok", work_id=request.work_id, revision=after.revision,
                 attachments=tuple(WorkAttachment(name=item.name) for item in page.attachments),
                 next_cursor=page.next_cursor,
             )
@@ -436,8 +313,6 @@ class Controller:
             return WorkAttachmentsResult(status="unknown")
         except ProviderError:
             return WorkAttachmentsResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorkAttachmentsResult(status="unknown")
 
     async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
         if not self.authority.can_read(request.work_id):
@@ -449,60 +324,19 @@ class Controller:
             provider = self.providers.get(handle.provider)
             if provider is None:
                 return WorkHistoryResult(status="provider_error")
-            before = await provider.source_task(handle.provider_work_id)
-            if before is None:
-                return WorkHistoryResult(status="unknown")
-            try:
-                authorization = await authorize_content(
-                    self.state, request.work_id, before.canonical
-                )
-            except PermissionError:
-                return WorkHistoryResult(status="denied")
-            current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision,
-                provider_notes=before.notes, provider_context=before.context,
-            )
-            if current_revision != request.observed_revision:
-                return WorkHistoryResult(
-                    status="stale", work_id=request.work_id, revision=current_revision
-                )
             page = await provider.source_stories(
-                handle.provider_work_id, before.revision, request.cursor, request.limit,
-                require_canonical=authorization is None,
+                handle.provider_work_id, request.observed_revision, request.cursor, request.limit
             )
             if page is None:
                 return WorkHistoryResult(status="unknown")
-            if authorization is None and not page.canonical:
+            if not page.canonical:
                 return WorkHistoryResult(status="denied")
             if (page.task_gid != handle.provider_work_id or len(page.stories) > request.limit
                     or any(story.task_gid != handle.provider_work_id for story in page.stories)):
                 return WorkHistoryResult(status="provider_error")
-            if page.stale or page.revision != before.revision:
+            if page.stale or page.revision != request.observed_revision:
                 return WorkHistoryResult(
-                    status="stale", work_id=request.work_id,
-                    revision=await authoritative_revision(
-                        self.state, request.work_id, page.revision,
-                        provider_notes=before.notes, provider_context=before.context,
-                    ),
-                )
-            after = await provider.source_task(handle.provider_work_id)
-            if after is None:
-                return WorkHistoryResult(status="unknown")
-            try:
-                latest_authorization = await authorize_content(
-                    self.state, request.work_id, after.canonical
-                )
-            except PermissionError:
-                return WorkHistoryResult(status="denied")
-            resulting_revision = await authoritative_revision(
-                self.state, request.work_id, after.revision,
-                provider_notes=after.notes, provider_context=after.context,
-            )
-            if (not authorization_stable(authorization, latest_authorization)
-                    or resulting_revision != current_revision):
-                return WorkHistoryResult(
-                    status="stale", work_id=request.work_id,
-                    revision=resulting_revision,
+                    status="stale", work_id=request.work_id, revision=page.revision
                 )
             event_state = cast(EventState, self.state)
             events: list[WorkEvent] = []
@@ -514,7 +348,7 @@ class Controller:
             return WorkHistoryResult(
                 status="ok",
                 work_id=request.work_id,
-                revision=resulting_revision,
+                revision=page.revision,
                 events=tuple(events),
                 next_cursor=page.next_offset,
             )
@@ -522,8 +356,6 @@ class Controller:
             return WorkHistoryResult(status="unknown")
         except ProviderError:
             return WorkHistoryResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorkHistoryResult(status="unknown")
 
     async def event(self, request: WorkEventRequest) -> WorkEventResult:
         if not self.authority.can_read(request.work_id):
@@ -544,19 +376,11 @@ class Controller:
             before = await provider.source_task(handle.provider_work_id)
             if before is None:
                 return WorkEventResult(status="unknown")
-            try:
-                authorization = await authorize_content(
-                    self.state, request.work_id, before.canonical
-                )
-            except PermissionError:
+            if not before.canonical:
                 return WorkEventResult(status="denied")
-            current_revision = await authoritative_revision(
-                self.state, request.work_id, before.revision,
-                provider_notes=before.notes, provider_context=before.context,
-            )
-            if current_revision != request.observed_revision:
+            if before.revision != request.observed_revision:
                 return WorkEventResult(
-                    status="stale", work_id=request.work_id, revision=current_revision
+                    status="stale", work_id=request.work_id, revision=before.revision
                 )
             story = await provider.source_story(handle.provider_work_id, provider_event_id)
             if story is None:
@@ -567,48 +391,32 @@ class Controller:
             after = await provider.source_task(handle.provider_work_id)
             if after is None:
                 return WorkEventResult(status="unknown")
-            try:
-                latest_authorization = await authorize_content(
-                    self.state, request.work_id, after.canonical
-                )
-            except PermissionError:
+            if not after.canonical:
                 return WorkEventResult(status="denied")
-            resulting_revision = await authoritative_revision(
-                self.state, request.work_id, after.revision,
-                provider_notes=after.notes, provider_context=after.context,
-            )
-            if (not authorization_stable(authorization, latest_authorization)
-                    or resulting_revision != current_revision):
+            if after.revision != before.revision:
                 return WorkEventResult(
-                    status="stale", work_id=request.work_id,
-                    revision=resulting_revision,
+                    status="stale", work_id=request.work_id, revision=after.revision
                 )
             return WorkEventResult(
                 status="ok",
                 work_id=request.work_id,
-                revision=resulting_revision,
+                revision=after.revision,
                 item=self._work_event(request.work_id, request.event_id, story),
             )
         except UnknownEffect:
             return WorkEventResult(status="unknown")
         except ProviderError:
             return WorkEventResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorkEventResult(status="unknown")
 
     async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
         provider = self._source_provider()
         if provider is None:
             return SourceTaskResult(status="provider_error")
         try:
-            authorization = await self._source_authorization(request.task_gid)
             task = await provider.source_task(request.task_gid)
             if task is None:
                 return SourceTaskResult(status="unknown")
-            latest_authorization = await self._source_authorization(request.task_gid)
-            if authorization != latest_authorization:
-                return SourceTaskResult(status="unknown")
-            if authorization is None and not task.canonical:
+            if not task.canonical:
                 return SourceTaskResult(status="denied")
             return SourceTaskResult(
                 status="ok",
@@ -622,31 +430,20 @@ class Controller:
             )
         except UnknownEffect:
             return SourceTaskResult(status="unknown")
-        except PermissionError:
-            return SourceTaskResult(status="denied")
         except ProviderError:
             return SourceTaskResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return SourceTaskResult(status="unknown")
 
     async def source_stories(self, request: SourceStoriesRequest) -> SourceStoriesResult:
         provider = self._source_provider()
         if provider is None:
             return SourceStoriesResult(status="provider_error")
         try:
-            authorization = await self._source_authorization(request.task_gid)
             page = await provider.source_stories(
-                request.task_gid, request.observed_revision, request.offset, request.limit,
-                require_canonical=authorization is None,
+                request.task_gid, request.observed_revision, request.offset, request.limit
             )
             if page is None:
                 return SourceStoriesResult(status="unknown")
-            latest_authorization = await self._source_authorization(request.task_gid)
-            if authorization != latest_authorization:
-                return SourceStoriesResult(
-                    status="stale", task_gid=request.task_gid, revision=page.revision
-                )
-            if authorization is None and not page.canonical:
+            if not page.canonical:
                 return SourceStoriesResult(status="denied")
             if (page.task_gid != request.task_gid or len(page.stories) > request.limit
                     or any(story.task_gid != request.task_gid for story in page.stories)):
@@ -664,23 +461,18 @@ class Controller:
             )
         except UnknownEffect:
             return SourceStoriesResult(status="unknown")
-        except PermissionError:
-            return SourceStoriesResult(status="denied")
         except ProviderError:
             return SourceStoriesResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return SourceStoriesResult(status="unknown")
 
     async def source_story(self, request: SourceStoryRequest) -> SourceStoryResult:
         provider = self._source_provider()
         if provider is None:
             return SourceStoryResult(status="provider_error")
         try:
-            authorization = await self._source_authorization(request.task_gid)
             before = await provider.source_task(request.task_gid)
             if before is None:
                 return SourceStoryResult(status="unknown")
-            if authorization is None and not before.canonical:
+            if not before.canonical:
                 return SourceStoryResult(status="denied")
             if before.revision != request.observed_revision:
                 return SourceStoryResult(
@@ -694,12 +486,7 @@ class Controller:
             after = await provider.source_task(request.task_gid)
             if after is None:
                 return SourceStoryResult(status="unknown")
-            latest_authorization = await self._source_authorization(request.task_gid)
-            if authorization != latest_authorization:
-                return SourceStoryResult(
-                    status="stale", task_gid=request.task_gid, revision=after.revision
-                )
-            if authorization is None and not after.canonical:
+            if not after.canonical:
                 return SourceStoryResult(status="denied")
             if after.revision != before.revision:
                 return SourceStoryResult(
@@ -713,12 +500,8 @@ class Controller:
             )
         except UnknownEffect:
             return SourceStoryResult(status="unknown")
-        except PermissionError:
-            return SourceStoryResult(status="denied")
         except ProviderError:
             return SourceStoryResult(status="provider_error")
-        except (SQLAlchemyError, ValueError, KeyError):
-            return SourceStoryResult(status="unknown")
 
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
         if request.work_id != self.authority.active_work_id:

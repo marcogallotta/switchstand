@@ -166,54 +166,10 @@ messaging, and required continuation:
   wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
   existing get, search, and scalar-update contracts; the ordinary edge constructs it default-off
   until explicit activation.
-  Migration `0008` materializes the compact tables beside the still-required Stage tables; the
-  repositories and runtime projection remain outside shared `state.metadata`, unregistered, and
-  inert.
+  Migration `0008` materializes the compact tables; the repositories and runtime projection remain
+  outside shared `state.metadata`, unregistered, and inert.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
-- `work_index.py` owns the default-off Stage 1 title, completion, and admitted-work corpus. Once its single
-  durable `POSTGRES_AUTHORITY` marker is committed, ordinary broad search is DB-only, exact
-  provider reads supply only still-provider-owned fields, and opaque revisions bind the DB row to
-  the provider revision. `work_index_migration.py` owns the offline final scan, durable exact
-  preparation receipt, and atomic flip. Preparation binds its before/final/inserted handle set
-  before mutation; before authority, exact readback can reconcile or remove only those inserted
-  handles. Any marker, binding drift, or ambiguous readback forbids cleanup; see
-  [Database-first Stage 1](database-first-stage1.md).
-- `work_metadata.py` owns the inert Stage 2 metadata authority marker, WorkId-keyed import
-  worksheet contract, frozen-corpus validation, canonical dependency edges, and atomic authority
-  flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata
-  truth. `work_metadata_migration.py` owns the Stage 2 worksheet and activation primitives.
-  `stage12_cutover.py` temporarily retains only the inert Stage 1+2 cutover evidence state machine;
-  its uncalled host command adapter and pre-authority review-checkpoint seam are retired with the
-  executable operator path. See [Database-first Stage 2](database-first-stage2.md).
-- `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
-  inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
-  its authority marker remains absent. Internal reads enumerate one authoritative workset with
-  Stage 2 workflow/dependency truth and serve `work_structure` from Postgres only after a valid
-  marker/cutover pair. The same marker makes authoritative DB membership the sole authorization
-  source for exact provider-backed notes, attachments, and history: Asana placement is then ignored,
-  foreign/unadmitted provider identities are denied, and the membership token participates in
-  composite read currentness. Before that boundary provider admission remains authoritative. After the
-  boundary, the ordinary `workset_get` read accepts exactly one explicit stable `workset_id` or
-  launcher/bootstrap-supplied `workset_key`; it returns the nonterminal members, workflow/dependency
-  truth, membership roles, and an opaque revision from one PostgreSQL snapshot. It does not infer
-  identity from agent names, current work, provider placement, or mailbox state.
-  The same owner provides marker-gated transactional primitives for workset rename/lifecycle,
-  authoritative-home moves, related-membership add/remove, and durable-role MASTER transfer.
-  They serialize on the Stage 3 advisory lock, require explicit row currentness, preserve exactly
-  one authoritative home, and never project structure back to Asana.
-  Ordinary `work_relate` exposes an authoritative-home move as the provider-neutral
-  `{kind: workset, action: move, workset_id}` patch. It uses the existing grant/effect journal,
-  exact OperationId replay, and DB readback; pre-marker provider placement remains unchanged.
-  Marker-gated parent `set`/`clear` mutations write only `work_parent_edges`, advance the owning
-  work revision transactionally, and recover ambiguous effects by exact DB-edge readback; provider
-  parent mutation remains the pre-marker compatibility path. Marker-gated parented creation still
-  creates provider content, but provider placement is no longer authority: the exact returned task
-  binding is only recovery state until PostgreSQL atomically admits its index row, inherited
-  authoritative workset membership, and parent edge. Exact-operation replay completes that admission
-  without another provider create, while a different create under the parent remains fenced;
-  this foundation makes no handoff-readiness claim, activates no writes or authority marker, and
-  migrates no provider notes, comments, attachments, or history content.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic
   owner/Marco/dispatch action derivation. When `SWITCHSTAND_OUTCOME_STATE_ACTIONS=1`, the ordinary
   authenticated MCP surface admits one explicit target at its exact current revision, permits only
@@ -398,16 +354,13 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
 | Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
-| Change shared private byte-file durability mechanics | `secure_file.py` | edge maintenance, Stage 1/2 cutover, and rehearsal callers; keep schemas, state machines, path policy, and domain errors local |
+| Change shared private byte-file durability mechanics | `secure_file.py` | edge maintenance and rehearsal callers; keep schemas, state machines, path policy, and domain errors local |
 | Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
 | Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
-| Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
 | Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migration `0008`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected-update atomicity |
-| Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
@@ -415,7 +368,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
-| Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, Stage 1/2 cutover identity, and disposable Docker ownership tests |
+| Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, zero-Asana qualification, and disposable Docker ownership tests |
 | Change resource-worker admission, execution, or live proof | `agent_broker.py`, `agent_executor.py`, `agent_canary.py` | [resource-worker architecture](resource-governed-agent-workers.md), owner-local tests, host pressure/sandbox boundaries, and the separate activation decision |
 | Change affected-test selection or repository qualification | `affected_tests.py`, `repository_candidate.py` | their owner-local tests, `scripts/check`, GitHub Quality/composition evidence, and exact-head-versus-local truth |
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
@@ -429,9 +382,7 @@ are removal predicates, not removal decisions:
 
 | Transition surface | Why keep it now | Evidence required before removal | Durable retirement owner |
 | --- | --- | --- | --- |
-| Stage 1 offline migration (`work_index_migration.py`) | Reconciles the prepared corpus and pre-authority cleanup without guessing after ambiguous output. | Exact Stage 1 and Stage 2 marker/readback evidence is committed, no preparation receipt remains unresolved, and the retained runtime no longer has a Stage 1 recovery or failback obligation. | Stage 1 migration owner (`work_index_migration.py`, `database-first-stage1.md`) |
-| Stage 2 migration and checkpoint (`work_metadata_migration.py`, `stage12_cutover.py`) | Preserves the reviewed worksheet/checkpoint while the superseded Stage runtime is retired; the host CLI and its unreferenced composition core are gone. | The zero-Asana replacement owns the retained behavior and no live consumer imports these modules. | Zero-Asana retirement owner |
-| Copied-state rehearsal (`rehearsal_target.py`) | Supplies the supported disposable real boundary for Stage 1+2 qualification and bounded cleanup. | The required composed rehearsal evidence is retained and every READY/FAILED target is either intentionally retained with an owner or has teardown proof; a replacement qualification boundary must cover the same claims before deletion. | Rehearsal owner (`rehearsal_target.py`, `development.md`) |
+| Copied-state rehearsal (`rehearsal_target.py`) | Supplies the disposable real boundary for zero-Asana qualification and bounded cleanup. | The required composed rehearsal evidence is retained and every READY/FAILED target is either intentionally retained with an owner or has teardown proof; a replacement qualification boundary must cover the same claims before deletion. | Rehearsal owner (`rehearsal_target.py`, `development.md`) |
 | Stable-auth activation-only migration/deployment (`stable_auth_migration.py`, `stable_auth_deployment.py`) | Owns state-copy receipts, the public gate, first split activation, and ambiguous/post-exposure forward repair. | The topology decision and separately authorized activation are terminal, exact live readback has closed every migration/deployment receipt and rollback window, and the retained topology has another owner for every still-required recovery path. | Stable-auth transition owner (`stable_auth_deployment.py`, `chatgpt-mcp-edge.md`) |
 | Resource-worker broker/executor/canary trial | Keeps the inert candidate available for the bounded evidence needed to adopt or retire it. | A separately authorized exact canary is terminal and the explicit decision either assigns an active runtime owner after PASS or records retirement plus disposal of broker state/units after non-adoption; incomplete/UNKNOWN evidence permits neither. | Resource-worker trial owner (`agent_broker.py`, `resource-governed-agent-workers.md`) |
 

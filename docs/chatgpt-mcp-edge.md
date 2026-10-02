@@ -159,31 +159,10 @@ This single-runtime maintenance path remains the **current deployed production m
 Agent-visible behavior during the gate is owned by
 [live-incident operations](operations-live-incident.md#known-edge-maintenance-window).
 
-The database-first Stage 1 cutover reuses this gate-and-stop boundary but is not performed by the
-ordinary edge replacement CLI. The maintenance transaction now has one inert injected offline-step
-contract after snapshots and before launcher replacement. It durably records pending, pre-marker,
-Postgres-authority, and complete phases, and accepts only a mode-`0600` subordinate receipt bound to
-the exact candidate, database backup, two corpus manifests, worksheet, and terminal boundary. A
-definite, receipt-proven pre-marker failure invokes the step's exact abort and verifies the old
-runtime before ungating. An unreadable receipt, ambiguous result, or any post-marker failure remains
-gated for forward repair; the FastMCP snapshot is still never restored automatically. The Stage 1+2
-evidence layer validates the exact candidate, full corpus and reviewed-exception digests, worksheet
-digest, private file identity, and free space, then fsyncs immutable attempt-local copies before any
-effect. Its inert resumable state machine validates Stage 2 first and never repeats proven effects.
-The host command binding remains inert, and its former operator CLI is retired; no supported entry
-point runs this database work.
-The host operations boundary also distinguishes an exact production identity from
-an explicitly supplied disposable identity. Disposable maintenance requires a
-private canonical rehearsals root, namespaced rehearsal service, and three distinct loopback
-endpoints; any production service, state path, lock, Caddy endpoint, or public/local
-URL is rejected before host effects. This is an inert seam for copied-state
-qualification, not a disposable service provisioner or activation path.
-While the edge is stopped, that separately reviewed adapter will run the final scan and atomic
-authority flip described in
-[Database-first Stage 1](database-first-stage1.md). Before that transaction commits, recovery may
-restart the old edge; afterward recovery is forward-only and the gate remains until the new runtime
-passes local verification. No agent announcement or acknowledgement protocol is part of this
-single-host maintenance window.
+The retired staged database-authority cutover is not part of the ordinary edge
+replacement CLI. The zero-Asana migration owns its separate stop, backup, import,
+validation, and rollback procedure. No agent announcement or acknowledgement
+protocol is part of that single-host maintenance window.
 
 The earlier deferral of zero-downtime authentication remains part of the decision history, but a
 later explicit decision reopened Option C for **bounded inert single-host implementation** after the

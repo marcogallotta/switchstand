@@ -279,7 +279,7 @@ async def capture_preflight_manifest(
     provider: CorpusProvider,
     source_candidate: str,
 ) -> dict[str, object]:
-    """Capture read-only zero-Asana inventory without changing the Stage 1 artifact."""
+    """Capture the read-only zero-Asana source inventory."""
     corpus = await capture_manifest(
         engine, provider, source_candidate, classify_decode_errors=True,
     )

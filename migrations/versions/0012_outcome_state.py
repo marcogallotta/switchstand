@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0012_outcome_state"
-down_revision = "0011_workset_authority"
+down_revision = "0009_human_trajectory"
 branch_labels = None
 depends_on = None
 
