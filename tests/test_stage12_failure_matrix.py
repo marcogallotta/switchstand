@@ -314,7 +314,10 @@ def test_ambiguous_caddy_readback_stops_before_service_effects(tmp_path: Path):
     assert Receipt(config, offline).value["error"] == "GateRetentionUnknown"
 
 
-@pytest.mark.skip(reason="NOT_RUN: real Docker/service/Caddy/provider boundary requires an authorized disposable rehearsal")
+@pytest.mark.skip(reason=(
+    "NOT_RUN: the existing disposable rehearsal needs a user service-manager bus and "
+    "authorized copied provider/state artifacts"
+))
 def test_real_boundary_failure_matrix_not_run() -> None: ...
 
 

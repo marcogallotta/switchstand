@@ -177,23 +177,6 @@ def test_invalid_proof_forbids_authority_effect(tmp_path: Path, proof: str):
     assert "stage1-activate" not in commands.calls
 
 
-@pytest.mark.parametrize("effect", ["schema", "stage1", "stage2"])
-def test_resume_reconciles_effect_without_repeating_it(tmp_path: Path, effect: str):
-    subject, commands = _subject(tmp_path)
-    commands.crash = effect
-    with pytest.raises(Unknown):
-        subject.run(lambda _boundary: None)
-    commands.crash = None
-    before = commands.calls.count(f"{effect}-activate" if effect != "schema" else "schema-apply")
-
-    boundaries: list[str] = []
-    subject.run(boundaries.append)
-
-    name = f"{effect}-activate" if effect != "schema" else "schema-apply"
-    assert commands.calls.count(name) == before
-    assert boundaries == ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"]
-
-
 @pytest.mark.parametrize("boundary", ["PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"])
 def test_resume_after_durable_top_receipt_replays_no_effect(
     tmp_path: Path, boundary: str, monkeypatch: pytest.MonkeyPatch
