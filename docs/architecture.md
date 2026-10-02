@@ -196,7 +196,9 @@ messaging, and required continuation:
   task memberships, parents, and revisions with strictly bounded pagination. They do not map or
   stage WorkIds. `workset_worksheet.py` binds that capture to the exact validated Stage 1 prepare
   receipt and turns only explicit project, authoritative-membership, role, and MASTER decisions
-  into a digestible `HUMAN_REVIEW_REQUIRED` worksheet; it neither approves nor stages the result.
+  into a digestible `HUMAN_REVIEW_REQUIRED` worksheet. `workset_migration.py` consumes only the
+  exact Human-Reviewed bytes/digest while offline and owns pre-authority stage, reconcile, and
+  exact reset; it neither flips authority nor writes the provider.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
