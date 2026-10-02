@@ -163,6 +163,33 @@ work_parent_edges = Table(
     CheckConstraint("child_work_id <> parent_work_id", name="ck_work_parent_not_self"),
     CheckConstraint("row_version >= 1", name="ck_work_parent_version"),
 )
+canonical_work = Table(
+    "canonical_work", metadata,
+    Column("work_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("title", Text, nullable=False),
+    Column("normalized_title", Text, nullable=False),
+    Column("completed", Boolean, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("priority", Text),
+    Column("work_type", Text),
+    Column("lifecycle_state", Text),
+    Column("review_next_action", Text),
+    Column("wait_kind", Text),
+    Column("unblock_condition", Text),
+    Column("next_due", Text),
+    Column("row_version", BigInteger, nullable=False),
+    CheckConstraint("title <> ''", name="ck_canonical_work_title"),
+    CheckConstraint("normalized_title <> ''", name="ck_canonical_work_normalized_title"),
+    CheckConstraint("row_version >= 1", name="ck_canonical_work_version"),
+)
+legacy_work_aliases = Table(
+    "legacy_work_aliases", metadata,
+    Column("asana_task_gid", Text, primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), nullable=False, index=True),
+    CheckConstraint("asana_task_gid <> ''", name="ck_legacy_work_alias_gid"),
+)
+Index("ix_canonical_work_page", canonical_work.c.normalized_title, canonical_work.c.work_id)
 human_trajectory_revisions = Table(
     "human_trajectory_revisions", metadata,
     Column("trajectory_id", PGUUID(as_uuid=True), primary_key=True),
