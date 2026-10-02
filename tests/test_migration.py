@@ -7,7 +7,15 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
+from switchstand.canonical_relations import (
+    project_memberships,
+    projects,
+    work_dependencies,
+    work_parents,
+)
+from switchstand.canonical_work import canonical_work, legacy_work_aliases
 from switchstand.provision import require_current_schema
+from switchstand.work_events import work_events
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +23,9 @@ def clean_stage2_tables(database_prerequisite):
     engine = create_engine(disposable_url())
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS outcome_state_revisions, work_parent_edges, workset_memberships, worksets, "
+            "DROP TABLE IF EXISTS work_events, project_memberships, projects, work_parents, "
+            "work_dependencies, legacy_work_aliases, canonical_work, "
+            "outcome_state_revisions, work_parent_edges, workset_memberships, worksets, "
             "workset_cutovers, workset_authority, work_edges, work_metadata_cutovers, "
             "work_metadata_authority CASCADE"
         ))
@@ -66,8 +76,20 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
         "work_metadata_authority", "work_metadata_cutovers", "work_edges",
         "workset_authority", "workset_cutovers", "worksets", "workset_memberships",
         "work_parent_edges", "outcome_state_revisions",
+        "canonical_work", "legacy_work_aliases", "work_dependencies", "work_parents",
+        "projects", "project_memberships", "work_events",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
+    database = inspect(engine)
+    for table in (
+        canonical_work, legacy_work_aliases, work_dependencies, work_parents,
+        projects, project_memberships, work_events,
+    ):
+        assert {column["name"] for column in database.get_columns(table.name)} == {
+            column.name for column in table.columns
+        }
+        assert {(index["name"], index["unique"]) for index in database.get_indexes(table.name)} \
+            >= {(index.name, index.unique) for index in table.indexes}
 
 
 def test_agent_identity_migration_preserves_endpoint_and_delivery(
