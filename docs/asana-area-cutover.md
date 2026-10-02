@@ -3,7 +3,8 @@
 > Historical reviewed change request retained for provenance. Its proposed
 > settings bodies and migration steps are not current operating instructions.
 > Current routing comes from the repository bootstrap and its routed area-registry
-> owner. The executable `cutover-asana-coverage.json` remains current input.
+> owner. `cutover-asana-coverage.json` is retained only as historical evidence; it is not current
+> executable or runtime input.
 
 Status: **review candidate only**. This document specifies the exact process/settings edits to make after the task-membership migration is verified. It does not authorize or perform any Asana mutation.
 
