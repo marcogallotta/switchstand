@@ -178,8 +178,8 @@ messaging, and required continuation:
   worksheet contract, frozen-corpus validation, canonical dependency edges, and atomic authority
   flip. It reuses the versioned `work_index.routing` row rather than creating parallel metadata
   truth. `work_metadata_migration.py` owns the Stage 2 worksheet and activation primitives.
-  `stage12_cutover.py` temporarily retains the inert Stage 1+2 cutover state machine and command
-  adapters, but its uncalled pre-authority review-checkpoint seam has been retired with the
+  `stage12_cutover.py` temporarily retains only the inert Stage 1+2 cutover evidence state machine;
+  its uncalled host command adapter and pre-authority review-checkpoint seam are retired with the
   executable operator path. See [Database-first Stage 2](database-first-stage2.md).
 - `state.py` and `worksets.py` own the linear `0011_workset_authority` Stage 3 foundation:
   inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while

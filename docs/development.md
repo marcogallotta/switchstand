@@ -151,9 +151,9 @@ identity, and labels it proves. A production, incomplete, or foreign identity
 is rejected before removal. Provisioning and teardown do not change production
 services, state, settings, or routing.
 
-`stage12_cutover.ConcreteCommands` is retained temporarily with the inert state machine while the
-superseded Stage runtime is retired. Its host CLI and packaging entry point are removed; there is
-no supported executable operator path.
+The inert `stage12_cutover.Stage12Cutover` evidence state machine remains temporarily while the
+superseded Stage runtime is retired. Its host command adapter, CLI, and packaging entry point are
+removed, so there is no supported executable operator path.
 
 Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
 `abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
