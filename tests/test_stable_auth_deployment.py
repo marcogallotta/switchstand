@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 
 import switchstand.stable_auth_deployment as deployment
+from switchstand import secure_file
 from switchstand.edge_maintenance import Failed, Unknown
 from switchstand.stable_auth_deployment import (
     EDGE_PATHS,
     GATE_ID,
     ActivationConfig,
+    ActivationReceipt,
     CaddyRoutes,
     HostActivationOperations,
     _contains_id,
@@ -26,6 +28,26 @@ from switchstand.stable_auth_deployment import (
     _service,
     activate,
 )
+
+
+def test_activation_receipt_parent_fsync_failure_preserves_visible_replace_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject = ActivationReceipt(config(tmp_path))
+    original = secure_file._fsync_parent  # pyright: ignore[reportPrivateUsage]
+
+    def fail_after_sync(path: Path) -> None:
+        original(path)
+        raise OSError("parent fsync outcome unavailable")
+
+    monkeypatch.setattr(secure_file, "_fsync_parent", fail_after_sync)
+    with pytest.raises(OSError, match="parent fsync outcome unavailable"):
+        subject.write("PREFLIGHT")
+    assert json.loads(subject.path.read_text())["phase"] == "PREFLIGHT"
+
+    monkeypatch.setattr(secure_file, "_fsync_parent", original)
+    subject.write("GATED")
+    assert json.loads(subject.path.read_text())["phase"] == "GATED"
 
 
 def config(tmp_path: Path) -> ActivationConfig:

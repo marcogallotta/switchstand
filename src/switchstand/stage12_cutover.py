@@ -441,23 +441,7 @@ class Stage12Cutover:
             **proof,
         }
         encoded = (json.dumps(payload, sort_keys=True) + "\n").encode()
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{self.receipt_path.name}.", dir=self._attempt_dir
-        )
-        temporary = Path(name)
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-        finally:
-            os.close(descriptor)
-        os.replace(temporary, self.receipt_path)
-        directory = os.open(self._attempt_dir, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        atomic_replace_bytes(self.receipt_path, encoded)
         return payload
 
     def reconcile_boundary(self) -> str:
