@@ -130,12 +130,6 @@ def _chain(values: Sequence[Mapping[Any, Any]]) -> tuple[_Revision, ...] | None:
 
 
 def _summary(row: _Revision, token: str) -> ActionSummary:
-    if row.owner_currentness_token != token:
-        stale_actions = (OutcomeAction(
-            action_class="OWNER_CAN_DO", item_key="OUTCOME_STATE_STALE",
-            description="Reconcile the outcome snapshot against current owner work.",
-        ),)
-        return ActionSummary(currentness="STALE", open_action_count=1, actions=stale_actions)
     actions: list[OutcomeAction] = []
     for item in row.items:
         if item.status == "DONE" or (item.who_acts == "MARCO" and item.status == "IN_PROGRESS"):
@@ -152,11 +146,16 @@ def _summary(row: _Revision, token: str) -> ActionSummary:
         ))
     order = {"NEEDS_MARCO": 0, "READY_TO_DISPATCH": 1, "OWNER_CAN_DO": 2}
     actions.sort(key=lambda action: (order[action.action_class], action.item_key))
-    return ActionSummary(currentness="CURRENT", open_action_count=len(actions), actions=tuple(actions))
+    return ActionSummary(
+        currentness=(
+            "CURRENT" if row.owner_currentness_token == token else "STALE"
+        ),
+        open_action_count=len(actions), actions=tuple(actions),
+    )
 
 
 class OutcomeStateStore:
-    """Append/read owner snapshots; exact launch identity is the only V1 writer admission."""
+    """Append/read snapshots after semantic admission supplies the exact active owner."""
 
     def __init__(self, engine: AsyncEngine):
         self.engine = engine

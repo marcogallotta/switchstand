@@ -214,9 +214,14 @@ messaging, and required continuation:
   without another provider create, while a different create under the parent remains fenced;
   this foundation makes no handoff-readiness claim, activates no writes or authority marker, and
   migrates no provider notes, comments, attachments, or history content.
-  `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and
-  deterministic owner/Marco/dispatch action derivation. It does not own Stage 2 waits,
-  dependencies, authorization, scheduling, activation, or MCP result enrichment.
+  `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic
+  owner/Marco/dispatch action derivation. When `SWITCHSTAND_OUTCOME_STATE_ACTIONS=1`, the ordinary
+  authenticated MCP surface admits one explicit target at its exact current revision, permits only
+  AGENT-sourced snapshots, and projects that exact owner's actions on `work_get` and known
+  `work_update` results. Stale summaries retain their stored actions but are not current execution
+  or dispatch authority. The default-off switch removes the tool and result enrichment without
+  deleting persisted revisions. This state does not own Stage 2 waits, dependencies, authorization,
+  scheduling, activation, or implicit owner inference.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.

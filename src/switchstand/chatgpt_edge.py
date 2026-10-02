@@ -234,6 +234,7 @@ def _create_resource_app(
         ordinary_workspace_admission=True,
         canonical_work=service.canonical_work,
         canonical_work_active=service.canonical_work_active,
+        outcome_state_enabled=service.outcome_state_enabled,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     for name, tool in build_ordinary_tools(
@@ -280,7 +281,8 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
         }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
-            canonical_work=canonical_work)
+            canonical_work=canonical_work,
+            outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1")
         runtime = None
         if marker:
             runtime = (

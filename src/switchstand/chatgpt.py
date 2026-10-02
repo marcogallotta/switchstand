@@ -74,6 +74,7 @@ from .messages import (
     pending_messages,
     send_message,
 )
+from .outcome_state import OutcomeItem, OutcomeWrite
 from .relations import RelationGateway
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
@@ -109,6 +110,7 @@ class ChatGPTService:
         ordinary_workspace_admission: bool = False,
         canonical_work: CanonicalWorkRuntime | None = None,
         canonical_work_active: bool = False,
+        outcome_state_enabled: bool = False,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -127,6 +129,7 @@ class ChatGPTService:
         self.required_results = required_results
         self.canonical_work = canonical_work
         self.canonical_work_active = canonical_work_active
+        self.outcome_state_enabled = outcome_state_enabled
         # Only exact source methods use this controller; its dummy authority is
         # never consulted for work reads or writes on the ChatGPT surface.
         self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
@@ -465,6 +468,45 @@ class ChatGPTService:
                 return GrantedWorkResult(status=result.status, item=result.item)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
+
+    async def outcome_state_update(
+        self, *, operation_id: UUID, owner_work_id: UUID,
+        expected_state_id: UUID | None, owner_observed_revision: str,
+        items: tuple[OutcomeItem, ...],
+    ) -> OutcomeWrite:
+        """Record one explicit owner's AGENT snapshot after ordinary semantic admission."""
+        principal = await self.principal()
+        if principal is None:
+            return OutcomeWrite("DENIED")
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=owner_work_id, explicit_target=True,
+                )
+                if authority is None:
+                    return OutcomeWrite("DENIED")
+                current = (
+                    await self.canonical_work.get(owner_work_id)
+                    if self.canonical_work_active and self.canonical_work is not None
+                    else await Controller(authority, self.state, self.providers).get(
+                        WorkGetRequest(api_version="1", work_id=owner_work_id)
+                    )
+                )
+                if current.status != "ok" or current.item is None:
+                    return OutcomeWrite("UNKNOWN")
+                if current.item.revision != owner_observed_revision:
+                    return OutcomeWrite("STALE")
+                outcomes = getattr(self.state, "outcomes", None)
+                if outcomes is None:
+                    return OutcomeWrite("UNKNOWN")
+                return await outcomes.record(
+                    owner_work_id=owner_work_id, active_work_id=owner_work_id,
+                    operation_id=operation_id, expected_state_id=expected_state_id,
+                    owner_currentness_token=current.item.revision, items=items,
+                )
+        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
+            return OutcomeWrite("UNKNOWN")
 
     async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
         principal = await self.principal()

@@ -6,7 +6,8 @@ from uuid import UUID
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, ValidationError, model_validator
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import repository_bundle, repository_candidate
 from .agent_mailboxes import AgentMailboxState
@@ -62,6 +63,7 @@ from .messages import (
     RuntimeCurrentness,
     disposition_digest,
 )
+from .outcome_state import ActionSummary, OutcomeItem
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -72,6 +74,31 @@ class OrdinaryWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
+
+
+class ActionSummaryUnavailable(ClosedModel):
+    state: Literal["UNAVAILABLE"] = "UNAVAILABLE"
+
+
+class StatefulOrdinaryWorkResult(ClosedModel):
+    """Exact ordinary work read enriched with owner-local actionable state."""
+    action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    item: PublicWorkItem | None = None
+    status: Status
+    guard: PublicReadGuard | None = None
+
+
+class OrdinaryUpdateResult(GuardOutcome):
+    action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+
+class OutcomeStateUpdateResult(ClosedModel):
+    status: Literal["APPLIED", "REPLAYED", "STALE", "CONFLICT", "DENIED", "UNKNOWN"]
+    state_id: UUID | None = None
 
 
 class OrdinaryRelationPatch(ClosedModel):
@@ -142,11 +169,12 @@ ORDINARY_EFFECT_TOOLS = frozenset({
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS = frozenset({"agent_project_bootstrap"})
+OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     """Emit private-host approval metadata; reject unreviewed surface growth."""
-    if name not in ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS:
+    if name not in ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS | OUTCOME_STATE_TOOLS:
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
         # ChatGPT prompts for ordinary effects even when this private app allows all tools.
@@ -292,6 +320,30 @@ def build_ordinary_tools(
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
 
+    async def action_summary(
+        owner_work_id: UUID, currentness_token: str,
+    ) -> ActionSummary | ActionSummaryUnavailable | None:
+        outcomes = getattr(service.state, "outcomes", None)
+        if outcomes is None:
+            return ActionSummaryUnavailable()
+        try:
+            summary = await outcomes.summary(owner_work_id, currentness_token)
+        except (SQLAlchemyError, KeyError, TypeError, ValueError, ValidationError):
+            return ActionSummaryUnavailable()
+        return ActionSummaryUnavailable() if summary == "UNKNOWN" else summary
+
+    async def enriched_work_get(
+        api_version: Literal["1"], work_id: UUID | None = None,
+    ) -> StatefulOrdinaryWorkResult:
+        """Read exact work with its owner-local action summary when available."""
+        result = await work_get(api_version, work_id)
+        summary = None
+        if work_id is not None and result.status == "ok" and result.item is not None:
+            summary = await action_summary(work_id, result.item.revision)
+        return StatefulOrdinaryWorkResult(
+            action_summary=summary, item=result.item, status=result.status, guard=result.guard,
+        )
+
     async def work_search(
         api_version: Literal["1"], text: str | None = None,
         completed: bool | None = None, cursor: str | None = None, limit: int = 50,
@@ -428,6 +480,40 @@ def build_ordinary_tools(
         ))
         audited("work_update", str(work_id), result.status)
         return result
+
+    async def enriched_work_update(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_revision: str, patch: ScalarPatch,
+    ) -> OrdinaryUpdateResult:
+        """Write canonical state and enrich known outcomes from one fresh exact read."""
+        result = await work_update(
+            api_version, operation_id, work_id, observed_revision, patch,
+        )
+        summary = None
+        if result.status != "unknown" and result.effect != "unknown":
+            current = await service.get(work_id)
+            if current.status == "ok" and current.item is not None:
+                summary = await action_summary(work_id, current.item.revision)
+        return OrdinaryUpdateResult(
+            **{name: getattr(result, name) for name in GuardOutcome.model_fields},
+            action_summary=summary,
+        )
+
+    async def outcome_state_update(
+        api_version: Literal["1"], operation_id: UUID, owner_work_id: UUID,
+        expected_state_id: UUID | None, owner_observed_revision: Annotated[
+            str, Field(min_length=1)
+        ], items: tuple[OutcomeItem, ...],
+    ) -> OutcomeStateUpdateResult:
+        """Record AGENT outcome state for one explicit admitted owner at its exact revision."""
+        del api_version
+        result = await service.outcome_state_update(
+            operation_id=operation_id, owner_work_id=owner_work_id,
+            expected_state_id=expected_state_id,
+            owner_observed_revision=owner_observed_revision, items=items,
+        )
+        audited("outcome_state_update", str(owner_work_id), result.status)
+        return OutcomeStateUpdateResult(status=result.status, state_id=result.state_id)
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
@@ -811,7 +897,7 @@ def build_ordinary_tools(
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
         ("agent_project_bootstrap", agent_project_bootstrap),
-        ("work_get", work_get),
+        ("work_get", enriched_work_get if service.outcome_state_enabled else work_get),
         ("work_search", work_search),
         ("workset_get", workset_get),
         ("work_resolve_reference", work_resolve_reference),
@@ -821,7 +907,9 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
-        ("work_update", work_update),
+        ("work_update", enriched_work_update if service.outcome_state_enabled else work_update),
+        *((("outcome_state_update", outcome_state_update),)
+          if service.outcome_state_enabled else ()),
         ("work_relate", work_relate),
         ("effect_reconcile", effect_reconcile),
         ("required_result_save", required_result_save),

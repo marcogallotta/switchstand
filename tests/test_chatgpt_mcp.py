@@ -21,6 +21,7 @@ from switchstand.chatgpt_mcp import (
     ORDINARY_GENUINE_READ_TOOLS,
     ORDINARY_NON_IDEMPOTENT_TOOLS,
     OrdinaryRelationPatch,
+    OrdinaryWorkResult,
     build_chatgpt_server,
     build_ordinary_tools,
 )
@@ -33,7 +34,18 @@ from switchstand.contracts import (
 )
 from switchstand.core import ProviderError
 from switchstand.discovery import DiscoveredStructure, ProviderSearchItem, ProviderStructure
-from switchstand.grants import GrantResult, PrincipalContext, ProtectedAppend, ProtectedCreate
+from switchstand.grants import (
+    GrantResult,
+    GuardOutcome,
+    PrincipalContext,
+    ProtectedAppend,
+    ProtectedCreate,
+)
+from switchstand.outcome_state import (
+    ActionSummary,
+    OutcomeAction,
+    OutcomeWrite,
+)
 from switchstand.repository_candidate import RepositoryCandidateQualification
 from switchstand.worksets import Workset, WorksetMember, WorksetView
 
@@ -44,6 +56,112 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
+    subject = service()
+    subject.outcome_state_enabled = True
+    subject.grants.grant = grant(
+        operations=frozenset({"work_get", "work_update"}),
+        update_qualification="test:ordinary-workspace",
+    )
+
+    class Outcomes:
+        def __init__(self):
+            self.owner = None
+            self.items = ()
+
+        async def record(self, **values):
+            self.owner, self.items = values["owner_work_id"], values["items"]
+            if any(item.source_label == "MARCO" for item in self.items):
+                return OutcomeWrite("DENIED")
+            assert values["active_work_id"] == self.owner
+            assert values["owner_currentness_token"] == "r1"
+            return OutcomeWrite("APPLIED", uuid4())
+
+        async def summary(self, owner, token):
+            if owner != self.owner:
+                return None
+            return ActionSummary(
+                currentness="CURRENT" if token == "r1" else "STALE",
+                open_action_count=1,
+                actions=(OutcomeAction(
+                    action_class="NEEDS_MARCO", item_key="rollout",
+                    description="Choose rollout", what_yes_causes="Dispatch implementation",
+                ),),
+            )
+
+    subject.state.outcomes = Outcomes()
+    server = build_chatgpt_server(subject)
+    listed = {tool.name: tool for tool in await server.list_tools()}
+    assert "outcome_state_update" in listed
+    assert next(iter(listed["work_get"].output_schema["properties"])) == "action_summary"
+    operation = uuid4()
+    item = {
+        "item_key": "rollout", "description": "Choose rollout", "kind": "DECISION",
+        "status": "READY", "who_acts": "MARCO",
+        "what_yes_causes": "Dispatch implementation", "source_label": "AGENT",
+    }
+    written = await server.call_tool("outcome_state_update", {
+        "api_version": "1", "operation_id": str(operation),
+        "owner_work_id": str(ACTIVE), "expected_state_id": None,
+        "owner_observed_revision": "r1", "items": [item],
+    })
+    assert written.structured_content["status"] == "APPLIED"
+    got = await server.call_tool("work_get", {
+        "api_version": "1", "work_id": str(ACTIVE),
+    })
+    assert got.structured_content["action_summary"] == {
+        "currentness": "CURRENT", "open_action_count": 1,
+        "actions": [{
+            "action_class": "NEEDS_MARCO", "item_key": "rollout",
+            "description": "Choose rollout", "dispatch_work_id": None,
+            "what_yes_causes": "Dispatch implementation",
+        }],
+    }
+    unrelated = await server.call_tool("work_get", {
+        "api_version": "1", "work_id": str(REFERENCE),
+    })
+    assert "action_summary" not in unrelated.structured_content
+
+    denied = await server.call_tool("outcome_state_update", {
+        "api_version": "1", "operation_id": str(uuid4()),
+        "owner_work_id": str(ACTIVE), "expected_state_id": None,
+        "owner_observed_revision": "r1",
+        "items": [item | {"source_label": "MARCO"}],
+    })
+    assert denied.structured_content["status"] == "DENIED"
+    unadmitted = await server.call_tool("outcome_state_update", {
+        "api_version": "1", "operation_id": str(uuid4()),
+        "owner_work_id": str(uuid4()), "expected_state_id": None,
+        "owner_observed_revision": "r1", "items": [item],
+    })
+    assert unadmitted.structured_content["status"] == "DENIED"
+
+    updated = await server.call_tool("work_update", {
+        "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
+        "observed_revision": "r1", "patch": {"completed": True},
+    })
+    assert updated.structured_content["status"] == "ok"
+    assert updated.structured_content["action_summary"]["currentness"] == "STALE"
+    assert updated.structured_content["action_summary"]["actions"][0][
+        "action_class"
+    ] == "NEEDS_MARCO"
+
+    async def unknown(_request):
+        return GuardOutcome(
+            status="unknown", operation="work_update", work_id=ACTIVE,
+            operation_id=uuid4(), reason="lost_response", effect="unknown",
+            retry="reconcile", next_action="Reconcile the effect.",
+        )
+
+    monkeypatch.setattr(subject, "update", unknown)
+    update = await server.call_tool("work_update", {
+        "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
+        "observed_revision": "r1", "patch": {"completed": True},
+    })
+    assert update.structured_content["status"] == "unknown"
+    assert "action_summary" not in update.structured_content
 
 
 async def test_workset_tool_requires_explicit_identity_and_is_audited(monkeypatch):
@@ -579,9 +697,11 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         )).structured_content
         assert search["status"] == "denied" and search["items"] == []
         get_tool = next(tool for tool in tools if tool.name == "work_get")
+        assert get_tool.output_schema == OrdinaryWorkResult.model_json_schema()
         assert "include_related" not in get_tool.input_schema["properties"]
         assert "related" not in get_tool.output_schema["properties"]
         assert "grouped" not in get_tool.output_schema["properties"]
+        assert "action_summary" not in get_tool.output_schema["properties"]
         bad = await client.call_tool("work_get", {"api_version": "1", "role": "owner"})
         assert bad.is_error
         missing_purpose = await client.call_tool("work_history", {
