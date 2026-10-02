@@ -99,6 +99,10 @@ an operational guarantee. A real scheduled run is required before claiming it is
   image's source tree cannot substitute for the candidate), shares only the database container's network namespace,
   and prints the candidate, image and container identities plus explicit PASS/FAIL/NOT_RUN and cleanup results. Before
   PASS it reverifies the exact head and clean tree; cleanup removes the owned containers and deterministic image tag.
+  That cleanup then runs `scripts/docker-gc`, which serializes host-wide cache reconciliation and caps unused BuildKit
+  cache at 20 GB. Managed agent startup/re-entry and termination use the same progress-triggered GC after exact owned
+  resource cleanup. GC never removes images, containers, networks, or volumes; a GC failure is a visible cleanup
+  failure rather than a silent residue leak.
   It refuses occupied deterministic container names and creates no Docker network. This is local exact-head evidence,
   not PR-composition, Docker-lifecycle, or live-activation evidence.
 - For focused Docker, runtime, or tooling validation, run the normal image build so Docker validates and reuses its

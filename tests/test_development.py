@@ -143,12 +143,14 @@ def test_docker_failure_preserves_the_daemon_diagnostic(monkeypatch, tmp_path):
 
 def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
     removed = []
+    pruned = []
     monkeypatch.setattr(development, "inspect", lambda *args: None)
     monkeypatch.setattr(
         development,
         "remove_owned",
         lambda *args: removed.append(args),
     )
+    monkeypatch.setattr(development, "prune_build_cache", lambda env: pruned.append(env))
     development.cleanup_development(
         development.DevelopmentBoundary(
             "image-id", "network-id", "database-id", "manifest"
@@ -162,10 +164,12 @@ def test_cleanup_removes_only_the_exact_run_resources(monkeypatch, tmp_path):
         ("network", "network-id", str(ACTIVE), "qualification", {}),
         ("image", "image-id", str(ACTIVE), "runner", {}),
     ]
+    assert pruned == [{}]
 
 
 def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatch, tmp_path):
     removed = []
+    monkeypatch.setattr(development, "prune_build_cache", lambda env: None)
 
     def inspect(kind, name, env):
         role = name.split("-")[1] if name.startswith("switchstand-focused-") else None
@@ -192,6 +196,27 @@ def test_cleanup_reconciles_named_resources_when_creation_lost_the_id(monkeypatc
         ("network", str(ACTIVE), "qualification"),
         ("image", str(ACTIVE), "runner"),
     ]
+
+
+def test_cleanup_reports_build_cache_gc_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(development, "inspect", lambda *args: None)
+    monkeypatch.setattr(
+        development,
+        "prune_build_cache",
+        lambda env: (_ for _ in ()).throw(RuntimeError("GC unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="development cleanup failed: GC unavailable"):
+        development.reclaim_development(tmp_path, ACTIVE, {})
+
+
+def test_build_cache_gc_has_a_bounded_runtime(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="exceeded its bounded runtime"):
+        development.prune_build_cache({})
 
 
 def test_development_setup_cleans_up_when_interrupted(monkeypatch, tmp_path):

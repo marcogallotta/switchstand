@@ -32,6 +32,8 @@ QUALITY_SECONDS = 600
 WORKLOAD_STOP_SECONDS = 5
 WORKLOAD_OUTPUT_BYTES = 12000
 WORKLOAD_OUTPUT_CHUNK_BYTES = 4096
+DOCKER_GC_SECONDS = 610
+DOCKER_GC = Path(__file__).parents[2] / "scripts" / "docker-gc"
 DIAGNOSTIC_NOTICE = (
     "NON-AUTHORITATIVE DIAGNOSTIC: this constrained full-suite run is not "
     "GitHub Quality and does not establish full qualification.\n"
@@ -77,6 +79,21 @@ def docker_run(
     raise RuntimeError(f"docker {' '.join(arguments)} failed: {detail}")
 
 
+def prune_build_cache(env: dict[str, str]) -> None:
+    try:
+        result = subprocess.run(
+            [DOCKER_GC], env=env, text=True, capture_output=True, check=False,
+            timeout=DOCKER_GC_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Docker cache GC exceeded its bounded runtime") from error
+    except OSError as error:
+        raise RuntimeError(f"Docker cache GC could not start: {error}") from error
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+        raise RuntimeError(f"Docker cache GC failed: {detail}")
+
+
 def _cleanup_development(
     image: str | None,
     network: str | None,
@@ -106,6 +123,10 @@ def _cleanup_development(
             remove_owned(kind, object_id, owner, role, env)
         except RuntimeError as error:
             failures.append(str(error))
+    try:
+        prune_build_cache(env)
+    except RuntimeError as error:
+        failures.append(str(error))
     if failures and required:
         raise RuntimeError("development cleanup failed: " + "; ".join(failures))
 
