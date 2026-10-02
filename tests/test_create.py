@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
-from sqlalchemy import create_engine, insert, select, text
+from sqlalchemy import create_engine, insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -26,6 +26,7 @@ from switchstand.state import (
     workset_authority,
     workset_cutovers,
     workset_memberships,
+    worksets,
 )
 from switchstand.worksets import Membership, Workset, WorksetSnapshot, stage_snapshot
 
@@ -262,7 +263,7 @@ async def test_operation_identity_and_qualification_block_unsafe_create():
 
 
 async def test_stage3_create_is_admitted_atomically_and_recovers_from_bound_task(
-    database_prerequisite, monkeypatch,
+    database_prerequisite,
 ):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
@@ -310,20 +311,29 @@ async def test_stage3_create_is_admitted_atomically_and_recovers_from_bound_task
         provider = Provider()
         provider.canonical = False
         gateway = CreateGateway(state, grants, {"asana": provider})
+        async with engine.begin() as connection:
+            await connection.execute(update(worksets).where(
+                worksets.c.workset_id == workset_id
+            ).values(state="RETIRED"))
+        retired = await gateway.create(PRINCIPAL, request(selected, parent_work_id=parent.id))
+        assert retired.status == "denied" and retired.reason == "parent_not_admitted"
+        assert provider.creates == 0
+        async with engine.begin() as connection:
+            await connection.execute(update(worksets).where(
+                worksets.c.workset_id == workset_id
+            ).values(state="ACTIVE"))
         req = request(selected, parent_work_id=parent.id)
-        admit = state.worksets.admit_created_under_parent
-        calls = 0
-
-        async def fail_once(*args):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise SQLAlchemyError("lost before database admission")
-            return await admit(*args)
-
-        monkeypatch.setattr(state.worksets, "admit_created_under_parent", fail_once)
-        first = await gateway.create(PRINCIPAL, req)
         created_id = CreateGateway.work_id(req.operation_id)
+        async with engine.begin() as connection:
+            await connection.execute(text("""
+                CREATE FUNCTION fail_created_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'injected membership failure'; END $$
+            """))
+            await connection.execute(text("""
+                CREATE TRIGGER fail_created_membership BEFORE INSERT ON workset_memberships
+                FOR EACH ROW EXECUTE FUNCTION fail_created_membership()
+            """))
+        first = await gateway.create(PRINCIPAL, req)
         assert first.status == "unknown" and first.effect == "unknown"
         assert provider.creates == 1 and provider.canonical_requirements == [False]
         assert await state.get(created_id) is not None
@@ -332,6 +342,15 @@ async def test_stage3_create_is_admitted_atomically_and_recovers_from_bound_task
             assert await connection.scalar(select(workset_memberships.c.work_id).where(
                 workset_memberships.c.work_id == created_id
             )) is None
+            assert await connection.scalar(select(work_parent_edges.c.child_work_id).where(
+                work_parent_edges.c.child_work_id == created_id
+            )) is None
+
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TRIGGER fail_created_membership ON workset_memberships"
+            ))
+            await connection.execute(text("DROP FUNCTION fail_created_membership()"))
 
         blocked = await gateway.create(PRINCIPAL, request(selected, parent_work_id=parent.id))
         assert blocked.reason == "parent_has_unresolved_create" and provider.creates == 1
@@ -351,6 +370,10 @@ async def test_stage3_create_is_admitted_atomically_and_recovers_from_bound_task
     finally:
         await engine.dispose()
         with sync.begin() as connection:
+            connection.execute(text(
+                "DROP TRIGGER IF EXISTS fail_created_membership ON workset_memberships"
+            ))
+            connection.execute(text("DROP FUNCTION IF EXISTS fail_created_membership()"))
             connection.execute(truncate)
         sync.dispose()
 

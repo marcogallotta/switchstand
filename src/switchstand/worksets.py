@@ -302,6 +302,21 @@ class WorksetReader:
             ))).all()
         self._validate_parent_graph(edges, work_id, parent_id)
 
+    async def validate_create_parent(self, work_id: UUID) -> None:
+        """Require an active authoritative workset before a provider child create."""
+        if await self.generation() is None:
+            raise RuntimeError("workset authority is not active")
+        async with self.engine.connect() as connection:
+            state = await connection.scalar(select(worksets.c.state).join(
+                workset_memberships,
+                workset_memberships.c.workset_id == worksets.c.workset_id,
+            ).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))
+        if state != "ACTIVE":
+            raise PermissionError("create parent workset is not active")
+
     @staticmethod
     def _validate_parent_graph(
         edges: Sequence[Sequence[UUID]], work_id: UUID, parent_id: UUID | None,

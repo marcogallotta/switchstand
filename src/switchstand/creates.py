@@ -41,6 +41,7 @@ class CreateState(Protocol):
 
 
 class CreateWorksets(Protocol):
+    async def validate_create_parent(self, work_id: UUID) -> None: ...
     async def admit_created_under_parent(
         self, work_id: UUID, parent_id: UUID, title: str, provider: ProviderWork,
     ) -> None: ...
@@ -155,6 +156,9 @@ class CreateGateway:
                             await content_authorization_token(self.state, request.parent_work_id)
                             is not None
                         )
+                        if database_parent:
+                            await cast(Stage3CreateState, self.state).worksets\
+                                .validate_create_parent(request.parent_work_id)
                     except PermissionError:
                         return self.guard(request, "denied", "parent_not_admitted")
                 provider = self.providers.get(provider_name)
