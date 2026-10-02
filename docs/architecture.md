@@ -211,14 +211,11 @@ messaging, and required continuation:
   `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and
   deterministic owner/Marco/dispatch action derivation. It does not own Stage 2 waits,
   dependencies, authorization, scheduling, activation, or MCP result enrichment.
-  `workset_capture.py` and the structure-only provider reads form the separate inert input
-  boundary: they capture an exact, twice-stable, digestible inventory of projects, sections,
+  `workset_capture.py` and the structure-only provider reads form the remaining inert Stage 3
+  input boundary: they capture an exact, twice-stable, digestible inventory of projects, sections,
   task memberships, parents, and revisions with strictly bounded pagination. They do not map or
-  stage WorkIds. `workset_worksheet.py` binds that capture to the exact validated Stage 1 prepare
-  receipt and turns only explicit project, authoritative-membership, role, and MASTER decisions
-  into a digestible `HUMAN_REVIEW_REQUIRED` worksheet. The former offline Stage 3
-  staging/activation entry point is retired; no retained command consumes that worksheet or can
-  publish the rejected Stage 3 authority markers.
+  stage WorkIds, and no retained worksheet, staging, or activation owner can publish the rejected
+  Stage 3 authority markers.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
@@ -401,7 +398,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
 | Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
 | Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
-| Change Stage 3 provider inventory capture or review worksheet | `workset_capture.py`, `workset_worksheet.py` | structure-only provider reads, Stage 1 prepare binding, bounded pagination/stability tests, and no staging or authority effect |
+| Change inert Stage 3 provider inventory capture | `workset_capture.py` | structure-only provider reads, bounded pagination/stability tests, and no mapping, staging, or authority effect |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
