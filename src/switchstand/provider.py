@@ -796,6 +796,45 @@ class AsanaProvider:
         """Read exact dependency identities for the bounded offline migration."""
         return await self._dependency_gids(provider_work_id)
 
+    async def snapshot_for_import(
+        self, provider_work_id: str,
+    ) -> tuple[ProviderWork, str | None, tuple[tuple[str, str, str | None], ...]] | None:
+        """Read content and raw structure twice for one frozen offline export."""
+        task = await self._task(provider_work_id)
+        if task is None:
+            return None
+        try:
+            if self._gid(task) != provider_work_id:
+                raise TypeError
+            revision = task["modified_at"]
+            if not isinstance(revision, str):
+                raise TypeError
+            parent_gid = self._parent_gid(task)
+            placements: dict[str, tuple[str, str, str | None]] = {}
+            for raw in cast(list[object], task["memberships"]):
+                if not isinstance(raw, dict):
+                    raise TypeError
+                membership = cast(JSON, raw)
+                project, section = membership.get("project"), membership.get("section")
+                project_gid = self._gid(project)
+                if project_gid not in self._admission_projects:
+                    continue
+                name = cast(JSON, project).get("name") if isinstance(project, dict) else None
+                section_name = (
+                    cast(JSON, section).get("name") if isinstance(section, dict) else None
+                )
+                if not isinstance(name, str) or not name or (
+                    section is not None and (not isinstance(section_name, str) or not section_name)
+                ) or project_gid in placements:
+                    raise TypeError
+                placements[project_gid] = (project_gid, name, section_name)
+            work = await self.get(provider_work_id)
+            if work is None or work.revision != revision:
+                raise ProviderError("provider work changed during import snapshot")
+            return work, parent_gid, tuple(sorted(placements.values()))
+        except (KeyError, TypeError, ValueError):
+            raise ProviderError("provider response invalid") from None
+
     def _placement_memberships(self, task: JSON) -> dict[str, str | None]:
         memberships = task.get("memberships")
         if not isinstance(memberships, list):

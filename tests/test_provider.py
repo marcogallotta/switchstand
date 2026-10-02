@@ -818,6 +818,32 @@ async def test_history_page_preserves_exact_cursor_and_revision():
     assert len(api.requests) == 3
 
 
+async def test_import_snapshot_preserves_raw_structure_and_rechecks_revision():
+    snapshot = source_task_payload()
+    snapshot["data"].update(
+        parent={"gid": "789"},
+        memberships=[
+            {"project": {"gid": PROJECT, "name": "Area"},
+             "section": {"gid": "section", "name": "Doing"}},
+            {"project": {"gid": "outside", "name": "Ignored"}, "section": None},
+        ],
+    )
+    subject, api = provider((200, snapshot), (200, snapshot))
+
+    result = await subject.snapshot_for_import("123")
+
+    assert result is not None
+    work, parent, placements = result
+    assert work.notes == "Notes" and parent == "789"
+    assert placements == ((PROJECT, "Area", "Doing"),)
+    assert len(api.requests) == 2
+
+    changed = source_task_payload(revision="r2")
+    subject, _ = provider((200, snapshot), (200, changed))
+    with pytest.raises(ProviderError, match="changed"):
+        await subject.snapshot_for_import("123")
+
+
 @pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])
 async def test_changed_or_noncanonical_history_does_not_fetch_stories(canonical, revision):
     subject, api = provider((200, source_task_payload(canonical=canonical, revision=revision)))
