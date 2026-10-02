@@ -23,12 +23,6 @@ from .core import (
     UnknownEffect,
 )
 from .discovery import ProviderSearchItem, ProviderSearchPage, ProviderStructure
-from .workset_capture import (
-    ProviderPlacement,
-    ProviderProject,
-    ProviderSection,
-    ProviderTaskStructure,
-)
 
 PROJECTS = (
     "1218210259719507",
@@ -80,12 +74,6 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
               "custom_fields.enum_options.enabled")
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
 ATTACHMENT_FIELDS = "name,parent.gid"
-WORKSET_TASK_FIELDS = (
-    "gid,modified_at,parent.gid,memberships.project.gid,memberships.section.gid"
-)
-WORKSET_PROJECT_FIELDS = "gid,name,modified_at,archived"
-WORKSET_SECTION_FIELDS = "gid,name"
-WORKSET_SECTION_PAGE_LIMIT = 100
 JSON = dict[str, Any]
 LOG = logging.getLogger(__name__)
 READ_RETRY_DELAYS = (0.1, 0.25)
@@ -405,131 +393,6 @@ class AsanaProvider:
         if not gid:
             raise TypeError
         return gid
-
-    def workset_project_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._admission_projects))
-
-    async def workset_task(self, provider_work_id: str) -> ProviderTaskStructure:
-        """Read task identity, revision, parent, and placements without content."""
-        try:
-            response = await self._read(
-                "workset_task",
-                f"/tasks/{provider_work_id}",
-                params={"opt_fields": WORKSET_TASK_FIELDS},
-            )
-            response.raise_for_status()
-            task = response.json()["data"]
-            if not isinstance(task, dict):
-                raise TypeError
-            task_data = cast(JSON, task)
-            if self._gid(task_data) != provider_work_id:
-                raise TypeError
-            revision = task_data.get("modified_at")
-            memberships = task_data.get("memberships")
-            if not isinstance(revision, str) or not revision or not isinstance(memberships, list):
-                raise TypeError
-            placements: list[ProviderPlacement] = []
-            for raw in cast(list[object], memberships):
-                if not isinstance(raw, dict):
-                    raise TypeError
-                membership = cast(JSON, raw)
-                project_id = self._gid(membership.get("project"))
-                section = membership.get("section")
-                section_id = None if section is None else self._gid(section)
-                if not project_id or section is not None and not section_id:
-                    raise TypeError
-                placements.append(ProviderPlacement(project_id, section_id))
-            if len(set(placements)) != len(placements):
-                raise TypeError
-            return ProviderTaskStructure(
-                provider_work_id,
-                revision,
-                self._parent_gid(task_data),
-                tuple(sorted(placements)),
-            )
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            raise ProviderError("provider request failed") from None
-
-    async def workset_project(self, provider_project_id: str) -> ProviderProject:
-        """Read one project and every section using a strict bounded page contract."""
-        try:
-            response = await self._read(
-                "workset_project",
-                f"/projects/{provider_project_id}",
-                params={"opt_fields": WORKSET_PROJECT_FIELDS},
-            )
-            response.raise_for_status()
-            project = response.json()["data"]
-            if not isinstance(project, dict):
-                raise TypeError
-            project_data = cast(JSON, project)
-            if self._gid(project_data) != provider_project_id:
-                raise TypeError
-            name, revision, archived = (
-                project_data.get(key) for key in ("name", "modified_at", "archived")
-            )
-            if (
-                not isinstance(name, str)
-                or not name
-                or not isinstance(revision, str)
-                or not revision
-                or not isinstance(archived, bool)
-            ):
-                raise TypeError
-            sections: list[ProviderSection] = []
-            seen_ids: set[str] = set()
-            seen_offsets: set[str] = set()
-            offset: str | None = None
-            while True:
-                params = {"limit": 100, "opt_fields": WORKSET_SECTION_FIELDS}
-                if offset is not None:
-                    params["offset"] = offset
-                page = await self._read(
-                    "workset_sections",
-                    f"/projects/{provider_project_id}/sections",
-                    params=params,
-                )
-                page.raise_for_status()
-                payload = page.json()
-                rows, next_page = payload["data"], payload["next_page"]
-                if not isinstance(rows, list):
-                    raise TypeError
-                raw_rows = cast(list[object], rows)
-                if len(raw_rows) > 100:
-                    raise TypeError
-                for raw in raw_rows:
-                    section_id = self._gid(raw)
-                    section_name = cast(JSON, raw).get("name") if isinstance(raw, dict) else None
-                    if (
-                        not section_id
-                        or not isinstance(section_name, str)
-                        or not section_name
-                        or section_id in seen_ids
-                    ):
-                        raise TypeError
-                    seen_ids.add(section_id)
-                    sections.append(ProviderSection(section_id, section_name))
-                if next_page is None:
-                    break
-                next_offset = (
-                    cast(JSON, next_page).get("offset")
-                    if isinstance(next_page, dict)
-                    else None
-                )
-                if (
-                    not isinstance(next_offset, str)
-                    or not next_offset
-                    or next_offset in seen_offsets
-                    or len(seen_offsets) >= WORKSET_SECTION_PAGE_LIMIT - 1
-                ):
-                    raise TypeError
-                seen_offsets.add(next_offset)
-                offset = next_offset
-            return ProviderProject(
-                provider_project_id, name, revision, archived, tuple(sorted(sections))
-            )
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            raise ProviderError("provider request failed") from None
 
     @staticmethod
     def _story_value(payload: JSON, fallback_task_gid: str | None = None) -> ProviderSourceStory:
