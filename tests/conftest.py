@@ -1,10 +1,24 @@
 import os
 
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.exc import ArgumentError
 
+from switchstand.canonical_relations import (
+    project_memberships,
+    projects,
+    work_dependencies,
+    work_parents,
+)
+from switchstand.canonical_work import canonical_metadata, canonical_work, legacy_work_aliases
 from switchstand.database import validate_test_database_url
+from switchstand.work_events import work_events
 from switchstand.work_index import activate, prepare_manifest
+
+CANONICAL_TABLES = (
+    canonical_work, legacy_work_aliases, work_dependencies, work_parents,
+    projects, project_memberships, work_events,
+)
 
 
 async def activate_stage1(engine, items):
@@ -31,8 +45,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 @pytest.fixture
 def database_prerequisite() -> None:
-    if (
-        os.getenv("SWITCHSTAND_REQUIRE_TEST_DATABASE") == "1"
-        and not os.getenv("TEST_DATABASE_URL")
-    ):
+    url = os.getenv("TEST_DATABASE_URL")
+    if os.getenv("SWITCHSTAND_REQUIRE_TEST_DATABASE") == "1" and not url:
         pytest.fail("selected database test requires TEST_DATABASE_URL", pytrace=False)
+    if url:
+        engine = create_engine(url)
+        try:
+            canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
+        finally:
+            engine.dispose()

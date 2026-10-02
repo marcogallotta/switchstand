@@ -8,12 +8,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import (
-    project_memberships,
-    projects,
-    work_dependencies,
-    work_parents,
-)
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -23,12 +17,6 @@ from switchstand.canonical_work import (
     normalize_title,
 )
 from switchstand.state import metadata as shared_metadata
-from switchstand.work_events import work_events
-
-CANONICAL_TABLES = (
-    canonical_work, legacy_work_aliases, work_dependencies, work_parents,
-    projects, project_memberships, work_events,
-)
 
 
 @pytest.fixture
@@ -41,7 +29,7 @@ async def repository(database_prerequisite: None) -> AsyncGenerator[CanonicalWor
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.run_sync(lambda sync: canonical_metadata.drop_all(
-            sync, tables=CANONICAL_TABLES, checkfirst=True
+            sync, tables=[legacy_work_aliases, canonical_work], checkfirst=True
         ))
         await connection.run_sync(lambda sync: canonical_metadata.create_all(
             sync, tables=[canonical_work, legacy_work_aliases]
@@ -49,7 +37,7 @@ async def repository(database_prerequisite: None) -> AsyncGenerator[CanonicalWor
     yield CanonicalWorkRepository(engine)
     async with engine.begin() as connection:
         await connection.run_sync(lambda sync: canonical_metadata.drop_all(
-            sync, tables=CANONICAL_TABLES
+            sync, tables=[legacy_work_aliases, canonical_work]
         ))
     await engine.dispose()
 
