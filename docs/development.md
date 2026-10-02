@@ -288,7 +288,8 @@ The default-off Wakeful precursor is invoked explicitly with `python -m switchst
 --opt-in --home <isolated-Coordinator-CODEX_HOME> --codex <exact-binary> --start-record <exact-path>`.
 Use only a disposable committed MessageState delivery readback in a mode-0600 JSON file via
 `--synthetic-delivery-file`, or `--recover-child` for the exact bound parent. Never use live provider
-messages for this probe. The probe owns only its proxy; it never starts or restarts the server.
+messages for this probe. The probe owns only its second-client WebSocket; it never starts or
+restarts the server.
 A lost response remains PENDING/UNKNOWN until exact persisted client-ID evidence consumes it;
 absence after an attempted send is insufficient to retry. Unsupported binding/history fails closed.
 Focused fake/private-file tests qualify local semantics only. TUI/backend identity, real runtime
