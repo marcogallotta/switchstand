@@ -22,32 +22,51 @@ from switchstand.canonical_work import (
 )
 from switchstand.state import metadata as shared_metadata
 
-OWNED_TABLES = [
-    canonical_work, work_dependencies, work_parents, projects, project_memberships,
-]
+RELATION_TABLES = [work_dependencies, work_parents, projects, project_memberships]
+REQUIRED_TABLES = [canonical_work, *RELATION_TABLES]
 
 
 @pytest.fixture
 async def repositories(
     database_prerequisite: None,
-) -> AsyncGenerator[tuple[CanonicalWorkRepository, CanonicalRelationsRepository]]:
+) -> AsyncGenerator[
+    tuple[CanonicalWorkRepository, CanonicalRelationsRepository, set[UUID]]
+]:
     del database_prerequisite
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
+    owned_work_ids: set[UUID] = set()
     async with engine.begin() as connection:
-        await connection.run_sync(lambda sync: canonical_metadata.drop_all(
-            sync, tables=list(reversed(OWNED_TABLES)), checkfirst=True,
-        ))
         await connection.run_sync(lambda sync: canonical_metadata.create_all(
-            sync, tables=OWNED_TABLES,
+            sync, tables=REQUIRED_TABLES, checkfirst=True,
         ))
-    yield CanonicalWorkRepository(engine), CanonicalRelationsRepository(engine)
+    yield CanonicalWorkRepository(engine), CanonicalRelationsRepository(engine), owned_work_ids
     async with engine.begin() as connection:
+        project_ids = tuple((await connection.scalars(
+            project_memberships.select().with_only_columns(
+                project_memberships.c.project_id
+            ).where(project_memberships.c.work_id.in_(owned_work_ids))
+        )).all())
+        await connection.execute(project_memberships.delete().where(
+            project_memberships.c.work_id.in_(owned_work_ids)
+        ))
+        await connection.execute(work_dependencies.delete().where(
+            work_dependencies.c.work_id.in_(owned_work_ids)
+            | work_dependencies.c.depends_on_work_id.in_(owned_work_ids)
+        ))
+        await connection.execute(work_parents.delete().where(
+            work_parents.c.child_work_id.in_(owned_work_ids)
+            | work_parents.c.parent_work_id.in_(owned_work_ids)
+        ))
+        await connection.execute(projects.delete().where(projects.c.project_id.in_(project_ids)))
+        await connection.execute(canonical_work.delete().where(
+            canonical_work.c.work_id.in_(owned_work_ids)
+        ))
         await connection.run_sync(lambda sync: canonical_metadata.drop_all(
-            sync, tables=list(reversed(OWNED_TABLES)), checkfirst=True,
+            sync, tables=list(reversed(RELATION_TABLES)), checkfirst=True,
         ))
     await engine.dispose()
 
@@ -72,20 +91,23 @@ def test_compact_relation_schema_is_isolated_and_has_no_workset_domain() -> None
     )
 
 
-async def _create(works: CanonicalWorkRepository, work_id: UUID, title: str) -> None:
+async def _create(
+    works: CanonicalWorkRepository, owned_work_ids: set[UUID], work_id: UUID, title: str,
+) -> None:
     await works.create(CurrentWork(work_id, title, False, f"notes for {title}"))
+    owned_work_ids.add(work_id)
 
 
 async def test_real_postgres_relations_placements_versions_and_rollbacks(
-    repositories: tuple[CanonicalWorkRepository, CanonicalRelationsRepository],
+    repositories: tuple[CanonicalWorkRepository, CanonicalRelationsRepository, set[UUID]],
 ) -> None:
-    works, relations = repositories
+    works, relations, owned_work_ids = repositories
     child, parent, ancestor, dependency = uuid4(), uuid4(), uuid4(), uuid4()
     for work_id, title in (
         (child, "Child"), (parent, "Parent"),
         (ancestor, "Ancestor"), (dependency, "Dependency"),
     ):
-        await _create(works, work_id, title)
+        await _create(works, owned_work_ids, work_id, title)
 
     empty = await relations.get(child)
     assert empty.parent_work_id is None
@@ -142,11 +164,11 @@ async def test_real_postgres_relations_placements_versions_and_rollbacks(
 
 
 async def test_real_postgres_rejects_unknown_and_invalid_targets_without_changes(
-    repositories: tuple[CanonicalWorkRepository, CanonicalRelationsRepository],
+    repositories: tuple[CanonicalWorkRepository, CanonicalRelationsRepository, set[UUID]],
 ) -> None:
-    works, relations = repositories
+    works, relations, owned_work_ids = repositories
     work_id, missing = uuid4(), uuid4()
-    await _create(works, work_id, "Known")
+    await _create(works, owned_work_ids, work_id, "Known")
 
     with pytest.raises(LookupError, match="parent"):
         await relations.set_parent(work_id, missing, 1)

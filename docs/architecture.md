@@ -158,6 +158,10 @@ module functions used by launch, not MCP tools. This surface is separate from pr
 PostgreSQL is the authoritative application state for identities, grants, effect recovery,
 messaging, and required continuation:
 
+- `canonical_work.py` and `canonical_relations.py` own the explicit, inert compact zero-Asana
+  schema definitions and repositories for current rows, legacy task aliases, dependencies,
+  parents, and simple project placements. They are not in shared `state.metadata`, have no Alembic
+  migration or runtime wiring yet, and do not activate or combine storage authorities.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
 - `work_index.py` owns the default-off Stage 1 title, completion, and admitted-work corpus. Once its single
@@ -393,6 +397,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change DB-authoritative title/completion or admitted-corpus search | `work_index.py` | offline migration, exact-read/update/create routing, migrations, and `database-first-stage1.md` |
 | Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
+| Change the inert compact zero-Asana work/relations/project model | `canonical_work.py`, `canonical_relations.py` | explicit canonical metadata, real-PostgreSQL repository tests, later compact migration and runtime wiring |
 | Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
 | Change inert Stage 3 provider inventory capture | `workset_capture.py` | structure-only provider reads, bounded pagination/stability tests, and no mapping, staging, or authority effect |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
