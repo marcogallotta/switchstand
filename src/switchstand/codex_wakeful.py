@@ -7,12 +7,13 @@ import hashlib
 import json
 import os
 import re
-import selectors
-import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from websockets.exceptions import WebSocketException
+from websockets.sync.client import ClientConnection, unix_connect
 
 from switchstand.messages import PendingMessage
 from switchstand.secure_file import atomic_replace_bytes, read_private_bytes
@@ -55,57 +56,49 @@ class SharedClient:
 
     def __init__(self, codex: Path, home: Path):
         endpoint = home / "app-server-control/app-server-control.sock"
-        help_text = subprocess.check_output([str(codex), "app-server", "proxy", "--help"])
-        if b"--sock" not in help_text or not endpoint.is_socket():
+        if not codex.is_file() or not os.access(codex, os.X_OK) or not endpoint.is_socket():
             raise OSError("UNAVAILABLE: unproved shared endpoint")
-        self.process = subprocess.Popen(
-            [str(codex), "app-server", "proxy", "--sock", str(endpoint)],
-            env={**os.environ, "CODEX_HOME": str(home)}, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
+        try:
+            self.connection: ClientConnection = unix_connect(
+                path=str(endpoint.resolve(strict=True)), uri="ws://localhost/", open_timeout=10,
+                legacy=True,
+            )
+        except (OSError, TimeoutError, WebSocketException) as exc:
+            raise OSError("UNAVAILABLE: shared endpoint handshake failed") from exc
         self.sequence = 0
-        self.buffer = b""
         try:
             self.call("initialize", {"clientInfo": {"name": "switchstand-wakeful-probe",
                       "version": "1"}, "capabilities": {"experimentalApi": True}})
             self.write({"method": "initialized", "params": {}})
-        except Exception:
+        except Exception as exc:
             self.close()
-            raise
+            raise OSError("UNAVAILABLE: shared endpoint initialization failed") from exc
 
     def write(self, message: dict[str, Any]) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write((json.dumps(message) + "\n").encode())
-        self.process.stdin.flush()
+        self.connection.send(json.dumps(message, separators=(",", ":")))
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self.sequence += 1
-        self.write({"id": self.sequence, "method": method, "params": params})
-        assert self.process.stdout is not None
-        with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout, selectors.EVENT_READ)
-            deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 10
+        try:
+            self.write({"id": self.sequence, "method": method, "params": params})
             while time.monotonic() < deadline:
-                if b"\n" not in self.buffer:
-                    if not selector.select(max(0, deadline - time.monotonic())):
-                        break
-                    data = os.read(self.process.stdout.fileno(), 65536)
-                    if not data:
-                        break
-                    self.buffer += data
-                    continue
-                line, self.buffer = self.buffer.split(b"\n", 1)
-                response = json.loads(line)
+                frame = self.connection.recv(timeout=max(0, deadline - time.monotonic()))
+                response = json.loads(frame)
                 if response.get("id") == self.sequence:
                     if "error" in response:
                         raise OSError("UNKNOWN: RPC rejected")
                     return response["result"]
+        except (TimeoutError, WebSocketException, json.JSONDecodeError, TypeError) as exc:
+            raise OSError("UNKNOWN: response lost") from exc
         raise OSError("UNKNOWN: response lost")
 
     def close(self) -> None:
-        # This terminates only our proxy, never the Codex-owned server.
-        self.process.terminate()
-        self.process.wait(timeout=5)
+        # This closes only our WebSocket, never the Codex-owned server.
+        try:
+            self.connection.close()
+        except (OSError, WebSocketException):
+            pass
 
 
 def bind(client: SharedClient, home: Path, token: Path) -> CodexBinding | str:

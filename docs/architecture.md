@@ -418,5 +418,5 @@ are removal predicates, not removal decisions:
 `codex_wakeful.py` owns the opt-in Codex technical precursor: exact start-record/generation
 binding, delivery/child source references, client-ID admission and private `codex-wakeful.json`
 projection. Its explicit probe excludes simultaneous probes with a nonblocking generation-token
-lock and connects only through an existing Codex shared-endpoint proxy. `wakeful.py` remains the
+lock and connects only by WebSocket to an existing Codex-owned shared endpoint. `wakeful.py` remains the
 neutral SQLite/outbox owner; ordinary launcher behavior does not invoke the precursor.

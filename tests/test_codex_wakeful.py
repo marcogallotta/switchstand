@@ -1,9 +1,15 @@
 import json
+import shutil
 import subprocess
+import tempfile
+import threading
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from websockets.exceptions import WebSocketException
+from websockets.sync.server import unix_serve
 
 from switchstand.codex_wakeful import (
     CodexBinding,
@@ -171,16 +177,53 @@ def test_claude_conformance_fake_only():
     assert fake("exact", "one", [("newest", "two")]) == "UNKNOWN"
     assert fake("exact", "one", [("exact", "one"), ("exact", "two")]) == "UNKNOWN"
 
-def test_proxy_stream_multiple_buffered_frames():
-    import sys
+def test_shared_client_uses_websocket_control_socket(tmp_path):
+    home = tmp_path / "home"
+    control = home / "app-server-control"
+    control.mkdir(parents=True)
+    endpoint = control / "app-server-control.sock"
+    socket_dir = Path(tempfile.mkdtemp(prefix="cw-", dir="/tmp"))
+    socket = socket_dir / "control.sock"
+    endpoint.symlink_to(socket)
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 99\n")
+    codex.chmod(0o700)
 
-    client = object.__new__(SharedClient)
-    client.sequence, client.buffer = 0, b""
-    client.process = subprocess.Popen([sys.executable, "-c", ("import sys; "
-        "sys.stdin.readline(); sys.stdout.write("
-        "'{\"method\":\"notification\"}\\n{\"id\":1,\"result\":{\"ok\":true}}\\n'); "
-        "sys.stdout.flush(); sys.stdin.read()")], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    def handler(connection):
+        for raw in connection:
+            request = json.loads(raw)
+            if "id" not in request:
+                continue
+            connection.send(json.dumps({"method": "test/notification"}))
+            result = ({"userAgent": "boundary-test"} if request["method"] == "initialize"
+                      else {"ok": True})
+            connection.send(json.dumps({"id": request["id"], "result": result}))
+
+    server = unix_serve(handler, path=socket)
+    thread = threading.Thread(target=server.serve_forever)
+    client = None
     try:
+        thread.start()
+        client = SharedClient(codex, home)
         assert client.call("thread/read", {}) == {"ok": True}
     finally:
-        client.close()
+        try:
+            if client is not None:
+                client.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            shutil.rmtree(socket_dir)
+    assert not thread.is_alive()
+
+
+def test_shared_client_normalizes_send_failure_to_unknown():
+    class ClosedConnection:
+        def send(self, _message):
+            raise WebSocketException("closed")
+
+    client = object.__new__(SharedClient)
+    client.connection = ClosedConnection()
+    client.sequence = 0
+    with pytest.raises(OSError, match="UNKNOWN: response lost"):
+        client.call("thread/read", {})
