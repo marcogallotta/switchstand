@@ -178,6 +178,7 @@ sys.exit(result.returncode)
                               ("NotebookEdit", "notebook_path", "notes.ipynb")):
         denied = launch(tool, field, memory / name)
         assert "memory-write" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "work state" not in denied["hookSpecificOutput"]["permissionDecisionReason"]
     assert launch("Write", "file_path", home / ".claude/projects/p/settings.json") == {}
 
 
