@@ -90,8 +90,8 @@ async def test_structure_binds_complete_provider_snapshot_to_stable_ids():
     state = MemoryState()
     subject = WorkDiscovery("asana", provider, state)
 
-    first = await subject.structure(uuid4(), "target", "r1")
-    second = await subject.structure(uuid4(), "target", "r1")
+    first = await subject.structure("target", "r1")
+    second = await subject.structure("target", "r1")
 
     assert first is not None and second is not None
     assert first.status == second.status == "ok"
@@ -112,7 +112,7 @@ async def test_structure_stale_snapshot_does_not_bind_relations():
 
     state = MemoryState()
     result = await WorkDiscovery("asana", StaleProvider(), state).structure(
-        uuid4(), "target", "r1"
+        "target", "r1"
     )
 
     assert result is not None and result.status == "stale" and result.revision == "r2"
@@ -142,7 +142,7 @@ async def test_structure_invalid_relation_identities_do_not_bind(parent_id, chil
 
     state = NoBindingState()
     result = await WorkDiscovery("asana", InvalidProvider(), state).structure(
-        uuid4(), "target", "r1"
+        "target", "r1"
     )
 
     assert result is None
@@ -163,9 +163,7 @@ async def test_structure_later_batch_failure_leaves_no_bindings():
             return tuple(staged[(provider, item)] for item in provider_work_ids)
 
     state = FailingState()
-    result = await WorkDiscovery("asana", FakeProvider(), state).structure(
-        uuid4(), "target", "r1"
-    )
+    result = await WorkDiscovery("asana", FakeProvider(), state).structure("target", "r1")
 
     assert result is None
     assert state.handles == {}

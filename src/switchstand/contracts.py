@@ -138,50 +138,6 @@ class WorkSearchResult(ClosedModel):
         return self
 
 
-class WorksetRequest(ClosedModel):
-    api_version: ApiVersion
-    workset_id: UUID | None = None
-    workset_key: str | None = Field(default=None, min_length=1, max_length=500)
-
-    @model_validator(mode="after")
-    def exact_identity(self) -> Self:
-        if (self.workset_id is None) == (self.workset_key is None):
-            raise ValueError("workset query requires exactly one workset_id or workset_key")
-        return self
-
-
-class WorksetSummary(ClosedModel):
-    workset_id: UUID
-    workset_key: str
-    name: str
-    kind: str
-    role_identity: str | None = None
-    state: Literal["ACTIVE", "RETIRED"]
-
-
-class WorksetMemberItem(ClosedModel):
-    item: WorkSearchItem
-    semantics: Literal["AUTHORITATIVE", "RELATED"]
-    member_role: Literal["MASTER", "MEMBER"]
-    depends_on: tuple[UUID, ...] = ()
-
-
-class WorksetResult(ClosedModel):
-    status: Literal["ok", "denied", "unknown"]
-    revision: str | None = None
-    workset: WorksetSummary | None = None
-    members: tuple[WorksetMemberItem, ...] = ()
-
-    @model_validator(mode="after")
-    def exact_result(self) -> Self:
-        if self.status == "ok":
-            if self.revision is None or self.workset is None:
-                raise ValueError("successful workset query requires revision and workset")
-        elif self.revision is not None or self.workset is not None or self.members:
-            raise ValueError("failed workset query must not claim result data")
-        return self
-
-
 class WorkStructureRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID

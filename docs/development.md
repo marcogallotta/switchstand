@@ -120,23 +120,11 @@ Shared state upgrades use `scripts/switchstand-upgrade-state` from clean, curren
 execution, other database clients, or an unexpected service, volume, or schema revision;
 creates a private custom-format dump under
 `~/.local/state/switchstand/backups`; restores and upgrades that dump in a
-disposable PostgreSQL instance; and only then upgrades shared state. `rehearse`
-proves an upgrade/downgrade/re-upgrade cycle without touching shared state;
-`apply` upgrades shared state but
-never activates database authority. Both create a private, fsynced JSON-lines
-receipt bound to exact source revision `0007`, runtime SHA, Alembic head, dump,
-counts, and deterministic schema/data digests. An `apply` attempt is durable
-before mutation and the same receipt reconciles to `APPLIED`, `ABORTED`, or
-`UNKNOWN`. Keep the reported dump and receipt until the upgraded
-service has been exercised successfully.
-
-Every invocation names its target explicitly. `--target production` binds the
-canonical Compose project, volume, network, and receipt directory. A copied-state
-qualification instead uses `--target disposable:NAME`, which derives a distinct
-`switchstand-rehearsal-NAME` Compose namespace under the pre-created, private,
-non-symlink `~/.local/state/switchstand/rehearsals/NAME` root. Receipts bind that
-exact target, project, volume, and network, so resume or abort cannot cross targets.
-Selecting a target does not create or populate it.
+disposable PostgreSQL instance; and only then upgrades shared state. Invoke it as
+`scripts/switchstand-upgrade-state --target production`. It does not activate a
+runtime or authority switch. Keep the reported backup until the upgraded service
+has been exercised successfully; a failed or ambiguous shared migration is not
+retried or rolled back automatically.
 
 `switchstand-rehearsal-target provision NAME` is the separate copied-state
 provisioner. It creates only the canonical private rehearsal root, records a
@@ -155,22 +143,6 @@ identity, and labels it proves. A production, incomplete, or foreign identity
 is rejected before removal. Provisioning and teardown do not change production
 services, state, settings, or routing.
 
-The inert `stage12_cutover.Stage12Cutover` evidence state machine remains temporarily while the
-superseded Stage runtime is retired. Its host command adapter, CLI, and packaging entry point are
-removed, so there is no supported executable operator path.
-
-Before either Stage 1 or Stage 2 `POSTGRES_AUTHORITY` marker exists,
-`abort-pre-authority <apply-receipt>` may perform the exact receipt-bound
-downgrade and verify the original revision and digests. Either marker, unreadable
-marker state, an ambiguous migration outcome, or any digest mismatch forbids
-rollback and retains the maintenance gate for forward repair. The command never
-automatically restores a backup.
-
-Stage 1 `prepare` requires a create-new receipt and durably records the exact
-before/final/inserted Asana handle bindings before commit. Use `prepare-reconcile`
-after ambiguous output; `prepare-cleanup` removes only that exact inserted set while
-both authority markers are absent and the full binding map still matches. `UNKNOWN`
-keeps maintenance active and forbids schema rollback or old-runtime restart.
 - Writer worktree: from the ordinary checkout, run
   `scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>`, then work from the printed path. The
   helper creates a new linked worktree when the target is absent. If the target and branch already exist, reuse succeeds

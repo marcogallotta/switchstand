@@ -19,15 +19,13 @@ from switchstand.work_events import work_events
 
 
 @pytest.fixture(autouse=True)
-def clean_stage2_tables(database_prerequisite):
+def clean_postgres_tables(database_prerequisite):
     engine = create_engine(disposable_url())
     with engine.begin() as connection:
         connection.execute(text(
             "DROP TABLE IF EXISTS work_events, project_memberships, projects, work_parents, "
             "work_dependencies, legacy_work_aliases, canonical_work, "
-            "outcome_state_revisions, work_parent_edges, workset_memberships, worksets, "
-            "workset_cutovers, workset_authority, work_edges, work_metadata_cutovers, "
-            "work_metadata_authority CASCADE"
+            "outcome_state_revisions CASCADE"
         ))
     engine.dispose()
 
@@ -47,7 +45,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     with pytest.raises(
@@ -64,18 +62,16 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "head")
     assert set(inspect(engine).get_table_names()) == {
-        "human_trajectory_revisions", "work_index", "work_authority", "work_authority_cutovers", "agent_mailboxes", "work_event_handles", "lifecycle_obligations", "alembic_version", "work_handles",
+        "human_trajectory_revisions", "agent_mailboxes", "work_event_handles", "lifecycle_obligations", "alembic_version", "work_handles",
         "work_grants", "effect_intents", "messages", "message_deliveries", "message_projection",
-        "work_metadata_authority", "work_metadata_cutovers", "work_edges",
-        "workset_authority", "workset_cutovers", "worksets", "workset_memberships",
-        "work_parent_edges", "outcome_state_revisions",
+        "outcome_state_revisions",
         "canonical_work", "legacy_work_aliases", "work_dependencies", "work_parents",
         "projects", "project_memberships", "work_events",
     }
@@ -102,7 +98,7 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -168,7 +164,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -219,7 +215,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, "
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -247,7 +243,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     command.upgrade(config, "head")
@@ -270,7 +266,7 @@ def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -307,7 +303,7 @@ def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema(database_prereq
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
     config = Config("alembic.ini")
@@ -324,7 +320,7 @@ def test_event_identity_downgrade_refuses_to_discard_mapping(database_prerequisi
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, work_index, work_authority_cutovers, work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, message_deliveries, messages, effect_intents, work_grants, "
             "work_handles CASCADE"
         ))

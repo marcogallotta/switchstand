@@ -108,7 +108,7 @@ class FakeOperations:
     def snapshot_digest(self):
         return "a" * 64
 
-    def reconcile_phase(self, phase, proof, *, offline):
+    def reconcile_phase(self, phase, proof):
         self._event("reconcile_" + phase.lower())
         return phase, {}
 
@@ -138,78 +138,12 @@ class FakeOperations:
         self._event("restore_launcher")
 
 
-class FakeOffline:
-    def __init__(
-        self,
-        subject: Config,
-        events: list[str],
-        *,
-        fail_after: str | None = None,
-        unknown_after: str | None = None,
-        candidate_sha: str | None = None,
-        resumed: bool = False,
-    ):
-        self.receipt_path = subject.attempt_dir / "offline.json"
-        self.candidate_sha = candidate_sha or subject.candidate_sha
-        self.database_backup = "/evidence/database.dump"
-        self.corpus_manifests = ("manifest-a", "manifest-b")
-        self.worksheet = "worksheet-digest"
-        self.events = events
-        self.fail_after = fail_after
-        self.unknown_after = unknown_after
-        self.resumed = resumed
-
-    def _write(self, boundary: str) -> None:
-        self.receipt_path.write_text(
-            json.dumps(
-                {
-                    "candidate_sha": self.candidate_sha,
-                    "database_backup": self.database_backup,
-                    "corpus_manifests": list(self.corpus_manifests),
-                    "worksheet": self.worksheet,
-                    "terminal_boundary": boundary,
-                }
-            )
-        )
-        self.receipt_path.chmod(0o600)
-
-    def reconcile_boundary(self) -> str:
-        value = json.loads(self.receipt_path.read_text())
-        if (
-            value.get("candidate_sha") != self.candidate_sha
-            or value.get("corpus_manifests") != list(self.corpus_manifests)
-            or value.get("worksheet") != self.worksheet
-        ):
-            raise Unknown("offline receipt does not bind exact evidence")
-        self.database_backup = value["database_backup"]
-        return value["terminal_boundary"]
-
-    def run(self, advance) -> None:
-        if self.fail_after == "PENDING":
-            raise Failed("offline failed before its first receipt")
-        for boundary in ("PRE_MARKER", "POSTGRES_AUTHORITY", "COMPLETE"):
-            self.events.append("offline_" + boundary.lower())
-            if not self.resumed:
-                self._write(boundary)
-            advance(boundary)
-            if self.fail_after == boundary:
-                raise Failed("offline failed")
-            if self.unknown_after == boundary:
-                raise Unknown("offline unknown")
-
-    def abort_pre_authority(self) -> None:
-        self.events.append("offline_abort")
-
-
 def receipt(subject: Config) -> dict[str, object]:
     return json.loads((subject.attempt_dir / "receipt.json").read_text())
 
 
-def seed_receipt(
-    subject: Config, phase: str, offline: FakeOffline | None = None, *, authority: bool = False,
-) -> None:
-    durable = maintenance.Receipt(subject, offline)
-    durable.value["authority_crossed"] = authority
+def seed_receipt(subject: Config, phase: str) -> None:
+    durable = maintenance.Receipt(subject)
     if phase not in {"PREFLIGHT", "GATED", "STOPPED"}:
         durable.value["fastmcp_snapshot"] = "a" * 64
     durable.write(phase, "UNKNOWN")
@@ -257,7 +191,7 @@ def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ("PREFLIGHT", "APPLIED", "ACTIVE", "GATED"),
         ("GATED", "APPLIED", "INACTIVE", "STOPPED"),
         ("STOPPED", "APPLIED", "INACTIVE", "SNAPSHOTTED"),
-        ("OFFLINE_COMPLETE", "APPLIED", "INACTIVE", "SWAPPED"),
+        ("SNAPSHOTTED", "APPLIED", "INACTIVE", "SWAPPED"),
         ("SWAPPED", "APPLIED", "ACTIVE", "STARTED"),
         ("STARTED", "ABSENT", "ACTIVE", "UNGATED"),
     ],
@@ -273,17 +207,17 @@ def test_reconcile_classifies_effect_completed_before_phase_receipt(
     monkeypatch.setattr(operations, "local_ready", lambda: True)
     monkeypatch.setattr(operations, "public_ready", lambda: True)
     proof: dict[str, object] = {}
-    if phase in {"STOPPED", "OFFLINE_COMPLETE", "SWAPPED", "STARTED"}:
+    if phase in {"STOPPED", "SNAPSHOTTED", "SWAPPED", "STARTED"}:
         operations.snapshot_file.write_bytes(b"snapshot")
         operations.snapshot_file.chmod(0o600)
         if phase != "STOPPED":
             proof["fastmcp_snapshot"] = hashlib.sha256(b"snapshot").hexdigest()
-    if phase in {"OFFLINE_COMPLETE", "SWAPPED", "STARTED"}:
+    if phase in {"SNAPSHOTTED", "SWAPPED", "STARTED"}:
         operations.backup.write_bytes(b"current launcher")
         operations.backup.chmod(0o600)
         subject.launcher.write_bytes(b"candidate launcher")
 
-    observed, added = operations.reconcile_phase(phase, proof, offline=True)
+    observed, added = operations.reconcile_phase(phase, proof)
 
     assert observed == expected
     if phase == "STOPPED":
@@ -306,7 +240,6 @@ def test_reconcile_preserves_ungated_phase_when_safety_gate_was_retained(
     phase, proof = operations.reconcile_phase(
         "UNGATED",
         {"fastmcp_snapshot": hashlib.sha256(b"snapshot").hexdigest()},
-        offline=True,
     )
 
     assert phase == "UNGATED"
@@ -324,7 +257,7 @@ def test_reconcile_normalizes_caddy_gate_http_500_to_unknown(
     monkeypatch.setattr(maintenance.urllib.request, "urlopen", unavailable)
 
     with pytest.raises(Unknown, match="gate readback failed"):
-        operations.reconcile_phase("PREFLIGHT", {}, offline=True)
+        operations.reconcile_phase("PREFLIGHT", {})
 
 
 @pytest.mark.parametrize(
@@ -369,7 +302,7 @@ def test_resume_trust_rejects_host_identity_faults(
     else:
         state["dirty"] = True
     with pytest.raises(Unknown):
-        operations.reconcile_phase("PREFLIGHT", {}, offline=True)
+        operations.reconcile_phase("PREFLIGHT", {})
 
 
 @pytest.mark.parametrize(
@@ -403,7 +336,7 @@ def test_resume_trust_rejects_changed_phase_artifact(
     elif artifact == "snapshot-digest":
         proof["fastmcp_snapshot"] = "0" * 64
     else:
-        phase = "OFFLINE_COMPLETE"
+        phase = "SNAPSHOTTED"
         operations.backup.write_bytes(b"current launcher")
         operations.backup.chmod(
             0o600 if artifact in {"backup-link", "backup-digest"} else 0o644
@@ -416,7 +349,7 @@ def test_resume_trust_rejects_changed_phase_artifact(
             operations.backup.write_bytes(b"changed")
         subject.launcher.write_bytes(b"candidate launcher")
     with pytest.raises(Unknown):
-        operations.reconcile_phase(phase, proof, offline=True)
+        operations.reconcile_phase(phase, proof)
 
 
 def test_success_gates_every_public_path_before_stop(tmp_path: Path):
@@ -500,114 +433,13 @@ def test_gate_retention_reports_its_own_unknown_class():
         maintenance.retain_gate(operations)
 
 
-def test_offline_step_persists_ordered_boundaries_before_launcher_swap(tmp_path: Path):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events)
-
-    assert deploy(subject, operations, offline) == "PASS"
-
-    assert operations.events[4:10] == [
-        "snapshot",
-        "offline_pre_marker",
-        "offline_postgres_authority",
-        "offline_complete",
-        "swap",
-        "start",
-    ]
-    assert receipt(subject)["phase"] == "COMPLETE"
-
-
-def test_offline_step_accepts_replayed_callbacks_from_advanced_receipt(tmp_path: Path):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, resumed=True)
-    offline._write("COMPLETE")
-
-    assert deploy(subject, operations, offline) == "PASS" and "offline_abort" not in operations.events
-
-
-def test_late_candidate_failure_after_authority_never_restores_asana_runtime(tmp_path: Path):
-    subject = config(tmp_path)
-    operations = FakeOperations(local=False)
-    offline = FakeOffline(subject, operations.events)
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-    assert receipt(subject)["authority_crossed"] is True
-    assert receipt(subject)["error"] == "ForwardFixRequired"
-    assert "restore_launcher" not in operations.events
-    assert "offline_abort" not in operations.events
-    assert operations.gated
-
-
-def test_post_authority_resume_keeps_forward_fix_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-):
-    subject = config(tmp_path)
-    offline = FakeOffline(subject, [])
-    offline._write("COMPLETE")
-    seed_receipt(subject, "STARTED", offline, authority=True)
-    operations = FakeOperations(local=False)
-    monkeypatch.setattr(
-        operations, "reconcile_phase", lambda *_args, **_kwargs: ("STARTED", {})
-    )
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-    assert "restore_launcher" not in operations.events
-    assert "offline_abort" not in operations.events
-    assert receipt(subject)["error"] == "ForwardFixRequired"
-
-
-def test_later_host_phase_refuses_trailing_offline_receipt(tmp_path: Path):
-    subject = config(tmp_path)
-    offline = FakeOffline(subject, [])
-    offline._write("POSTGRES_AUTHORITY")
-    seed_receipt(subject, "STARTED", offline, authority=True)
-    operations = FakeOperations()
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-    assert not any(event in operations.events for event in ("start", "ungate", "restore_launcher"))
-    assert operations.gated
-
-
-def test_resume_derives_authority_from_subordinate_receipt_before_late_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-):
-    subject = config(tmp_path)
-    offline = FakeOffline(subject, [], resumed=True)
-    offline._write("COMPLETE")
-    seed_receipt(subject, "OFFLINE_PRE_MARKER", offline)
-    operations = FakeOperations(local=False)
-    monkeypatch.setattr(
-        operations, "reconcile_phase", lambda phase, *_args, **_kwargs: (phase, {})
-    )
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-    assert receipt(subject)["authority_crossed"] is True
-    assert receipt(subject)["error"] == "ForwardFixRequired"
-    assert "restore_launcher" not in operations.events
-
-
-def test_offline_receipt_must_bind_exact_candidate(tmp_path: Path):
-    subject = config(tmp_path)
-    operations = FakeOperations()
-    offline = FakeOffline(subject, operations.events, candidate_sha="f" * 40)
-
-    assert deploy(subject, operations, offline) == "UNKNOWN"
-
-    assert "swap" not in operations.events
-    assert operations.gated
-
-
 def test_unproved_public_gate_is_unknown_and_service_is_not_stopped(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(public_gate=False)
-    offline = FakeOffline(subject, operations.events)
 
-    assert deploy(subject, operations, offline) == "UNKNOWN"
+    assert deploy(subject, operations) == "UNKNOWN"
 
     assert "stop" not in operations.events
-    assert not any(event.startswith("offline_") for event in operations.events)
     assert operations.gated
     assert {key: receipt(subject)[key] for key in ("phase", "status", "error")} == {
         "phase": "GATED",

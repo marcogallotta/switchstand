@@ -16,7 +16,6 @@ import stat
 import subprocess
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TextIO, cast
@@ -107,37 +106,8 @@ class Operations(Protocol):
     def restore_launcher(self) -> None: ...
     def snapshot_digest(self) -> str: ...
     def reconcile_phase(
-        self, phase: str, proof: dict[str, object], *, offline: bool
+        self, phase: str, proof: dict[str, object]
     ) -> tuple[str, dict[str, str]]: ...
-
-
-class OfflineStep(Protocol):
-    receipt_path: Path
-    candidate_sha: str
-    database_backup: str
-    corpus_manifests: tuple[str, str]
-    worksheet: str
-
-    def reconcile_boundary(self) -> str: ...
-    def run(self, advance: Callable[[str], None]) -> None: ...
-    def abort_pre_authority(self) -> None: ...
-
-
-OFFLINE_PHASES = {
-    "PRE_MARKER": "OFFLINE_PRE_MARKER",
-    "POSTGRES_AUTHORITY": "OFFLINE_POSTGRES_AUTHORITY",
-    "COMPLETE": "OFFLINE_COMPLETE",
-}
-
-
-def _offline_boundary(step: OfflineStep, config: Config) -> str:
-    try:
-        boundary = step.reconcile_boundary()
-    except (Failed, OSError, UnicodeError, ValueError) as exc:
-        raise Unknown("offline receipt reconciliation failed") from exc
-    if boundary not in OFFLINE_PHASES or step.candidate_sha != config.candidate_sha:
-        raise Unknown("offline receipt boundary is unknown")
-    return boundary
 
 
 def _sha(path: Path) -> str:
@@ -447,13 +417,12 @@ class HostOperations:
             return "INACTIVE"
 
     def reconcile_phase(
-        self, phase: str, proof: dict[str, object], *, offline: bool
+        self, phase: str, proof: dict[str, object]
     ) -> tuple[str, dict[str, str]]:
         """Classify a durable host phase or its one proven next state without effects."""
         phases = (
-            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING",
-            "OFFLINE_PRE_MARKER", "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE",
-            "SWAPPED", "STARTED", "UNGATED", "COMPLETE",
+            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "SWAPPED",
+            "STARTED", "UNGATED", "COMPLETE",
         )
         if phase not in phases:
             raise Unknown("host phase is unknown")
@@ -499,11 +468,8 @@ class HostOperations:
             or snapshot != self._artifact_digest(self.snapshot_file, 0o600)
         ):
             raise Unknown("FastMCP snapshot does not match the durable proof")
-        if phase in phases[3:8]:
-            swapped = phase in {"SNAPSHOTTED", "OFFLINE_COMPLETE"} and not (
-                phase == "SNAPSHOTTED" and offline
-            )
-            if swapped and launcher == self.c.candidate_launcher_sha and (
+        if phase == "SNAPSHOTTED":
+            if launcher == self.c.candidate_launcher_sha and (
                 self._artifact_digest(self.backup, 0o600) == self.c.current_launcher_sha
             ):
                 return "SWAPPED", {}
@@ -785,7 +751,7 @@ class HostOperations:
 
 
 class Receipt:
-    def __init__(self, config: Config, offline: OfflineStep | None):
+    def __init__(self, config: Config):
         self.path = config.attempt_dir / "receipt.json"
         expected: dict[str, object] = {
             "schema": 1,
@@ -807,11 +773,6 @@ class Receipt:
             "current_launcher_sha": config.current_launcher_sha,
             "candidate_launcher_sha": config.candidate_launcher_sha,
             "retry_after": config.retry_after,
-            "offline_receipt": str(offline.receipt_path) if offline else None,
-            "offline_candidate": offline.candidate_sha if offline else None,
-            "offline_corpus": list(offline.corpus_manifests) if offline else None,
-            "offline_worksheet": offline.worksheet if offline else None,
-            "authority_crossed": False,
             "status": "RUNNING",
             "phase": "PREFLIGHT",
         }
@@ -833,11 +794,10 @@ class Receipt:
             raise Unknown("host receipt is malformed")
         value = cast(dict[str, object], loaded)
         phases = {
-            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "OFFLINE_PENDING",
-            *OFFLINE_PHASES.values(), "SWAPPED", "STARTED", "UNGATED", "COMPLETE",
-            "ROLLED_BACK",
+            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "SWAPPED",
+            "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK",
         }
-        fixed = {"status", "phase", "authority_crossed", "error", "fastmcp_snapshot"}
+        fixed = {"status", "phase", "error", "fastmcp_snapshot"}
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.getuid()
@@ -845,20 +805,14 @@ class Receipt:
             or any(value.get(key) != item for key, item in expected.items() if key not in fixed)
             or value.get("status") not in {"RUNNING", "UNKNOWN", "PASS", "FAIL"}
             or value.get("phase") not in phases
-            or not isinstance(value.get("authority_crossed"), bool)
             or not set(value).issubset(set(expected) | {"error", "fastmcp_snapshot"})
             or ("error" in value and not isinstance(value["error"], str))
         ):
             raise Unknown("host receipt is malformed or belongs to another attempt")
         phase, status = value["phase"], value["status"]
-        crossed = cast(bool, value["authority_crossed"])
-        post_authority = phase in {
-            "OFFLINE_POSTGRES_AUTHORITY", "OFFLINE_COMPLETE", "SWAPPED", "STARTED",
-            "UNGATED", "COMPLETE",
-        }
         if (status == "PASS") != (phase == "COMPLETE") or (
             status == "FAIL"
-        ) != (phase == "ROLLED_BACK") or crossed != (offline is not None and post_authority):
+        ) != (phase == "ROLLED_BACK"):
             raise Unknown("host receipt terminal state is inconsistent")
         if phase not in {"PREFLIGHT", "GATED", "STOPPED"} and not re.fullmatch(
             r"[0-9a-f]{64}", cast(str, value.get("fastmcp_snapshot", ""))
@@ -887,13 +841,13 @@ def retain_gate(operations: Operations) -> None:
         raise GateRetentionUnknown("maintenance gate retention is unknown") from exc
 
 
-def deploy(config: Config, operations: Operations, offline: OfflineStep | None = None) -> str:
+def deploy(config: Config, operations: Operations) -> str:
     try:
         validate_target(config)
     except (Failed, OSError):
         return "FAIL"
     try:
-        receipt = Receipt(config, offline)
+        receipt = Receipt(config)
     except Unknown:
         try:
             retain_gate(operations)
@@ -903,39 +857,11 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
     if receipt.value["status"] in {"PASS", "FAIL"}:
         return cast(str, receipt.value["status"])
     phase = cast(str, receipt.value["phase"])
-    authority_crossed = cast(bool, receipt.value["authority_crossed"])
     gate_retained = False
     gate_attempted = phase != "PREFLIGHT"
     try:
         if receipt.existing:
-            offline_started = phase in {
-                "OFFLINE_PENDING", *OFFLINE_PHASES.values(), "SWAPPED", "STARTED",
-                "UNGATED", "COMPLETE",
-            }
-            if offline is not None and offline_started:
-                if offline.receipt_path.exists():
-                    boundary = _offline_boundary(offline, config)
-                    observed = OFFLINE_PHASES[boundary]
-                    ordered = list(OFFLINE_PHASES.values())
-                    if phase in ordered and ordered.index(observed) < ordered.index(phase):
-                        raise Unknown("offline receipt trails the host receipt")
-                    if phase in {"SWAPPED", "STARTED", "UNGATED", "COMPLETE"} and (
-                        boundary != "COMPLETE"
-                    ):
-                        raise Unknown("offline receipt does not prove host authority phase")
-                    if boundary in {"POSTGRES_AUTHORITY", "COMPLETE"}:
-                        authority_crossed = True
-                    if phase == "OFFLINE_PENDING" or (
-                        phase in ordered and ordered.index(observed) > ordered.index(phase)
-                    ):
-                        phase = observed
-                        receipt.value["authority_crossed"] = authority_crossed
-                        receipt.write(phase)
-                elif phase != "OFFLINE_PENDING":
-                    raise Unknown("offline receipt is missing")
-            observed, proof = operations.reconcile_phase(
-                phase, receipt.value, offline=offline is not None
-            )
+            observed, proof = operations.reconcile_phase(phase, receipt.value)
             gate_retained = proof.pop("gate_retained", None) == "true"
             if observed != phase or proof:
                 phase = observed
@@ -960,37 +886,7 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
             receipt.value["fastmcp_snapshot"] = operations.snapshot_digest()
             phase = "SNAPSHOTTED"
             receipt.write(phase)
-        if offline is not None and phase in {"SNAPSHOTTED", "OFFLINE_PENDING", *OFFLINE_PHASES.values()}:
-            if phase == "SNAPSHOTTED":
-                phase = "OFFLINE_PENDING"
-                receipt.write(phase)
-            expected = iter(OFFLINE_PHASES)
-            advanced: list[str] = []
-
-            def advance(boundary: str) -> None:
-                nonlocal phase, authority_crossed
-                observed = _offline_boundary(offline, config)
-                if (
-                    boundary != next(expected, None)
-                    or list(OFFLINE_PHASES).index(observed)
-                    < list(OFFLINE_PHASES).index(boundary)
-                ):
-                    raise Unknown("offline phase or receipt advanced out of order")
-                advanced.append(boundary)
-                candidate = OFFLINE_PHASES[boundary]
-                if boundary in {"POSTGRES_AUTHORITY", "COMPLETE"}:
-                    authority_crossed = True
-                    receipt.value["authority_crossed"] = True
-                phases = ["OFFLINE_PENDING", *OFFLINE_PHASES.values()]
-                if phases.index(candidate) >= phases.index(phase):
-                    phase = candidate
-                    receipt.write(phase)
-
-            offline.run(advance)
-            if advanced != list(OFFLINE_PHASES):
-                raise Unknown("offline step did not reach its terminal boundary")
-            phase = "OFFLINE_COMPLETE"
-        if phase in {"SNAPSHOTTED", "OFFLINE_COMPLETE"}:
+        if phase == "SNAPSHOTTED":
             operations.swap()
             phase = "SWAPPED"
             receipt.write(phase)
@@ -1018,37 +914,8 @@ def deploy(config: Config, operations: Operations, offline: OfflineStep | None =
         receipt.write(phase, "UNKNOWN", error)
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
-        if (
-            phase == "PREFLIGHT" and not receipt.existing
-            and offline is not None and offline.receipt_path.exists()
-        ):
-            try:
-                retain_gate(operations)
-            except GateRetentionUnknown:
-                receipt.write(phase, "UNKNOWN", "GateRetentionUnknown")
-                return "UNKNOWN"
-            receipt.write(phase, "UNKNOWN", "OfflinePreflightUnknown")
-            return "UNKNOWN"
-        if authority_crossed:
-            try:
-                retain_gate(operations)
-            except GateRetentionUnknown:
-                receipt.write(phase, "UNKNOWN", "GateRetentionUnknown")
-                return "UNKNOWN"
-            receipt.write(phase, "UNKNOWN", "ForwardFixRequired")
-            return "UNKNOWN"
         try:
-            if phase in {"OFFLINE_PENDING", "OFFLINE_PRE_MARKER"}:
-                if offline is None or (
-                    offline.receipt_path.exists()
-                    and _offline_boundary(offline, config) != "PRE_MARKER"
-                ):
-                    raise Unknown("pre-authority boundary is not proven")
-                offline.abort_pre_authority()
-                operations.start()
-                if not operations.rollback_ready():
-                    raise Unknown("pre-authority rollback verification failed")
-            elif phase in {"SWAPPED", "STARTED", "UNGATED"}:
+            if phase in {"SWAPPED", "STARTED", "UNGATED"}:
                 operations.stop()
                 operations.restore_launcher()
                 operations.start()

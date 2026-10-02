@@ -13,20 +13,11 @@ from switchstand.canonical_relations import (
 from switchstand.canonical_work import canonical_metadata, canonical_work, legacy_work_aliases
 from switchstand.database import validate_test_database_url
 from switchstand.work_events import work_events
-from switchstand.work_index import activate, prepare_manifest
 
 CANONICAL_TABLES = (
     canonical_work, legacy_work_aliases, work_dependencies, work_parents,
     projects, project_memberships, work_events,
 )
-
-
-async def activate_stage1(engine, items):
-    digest = await prepare_manifest(engine, items)
-    return await activate(
-        engine, items, expected_manifest_digest=digest
-    )
-
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     del session

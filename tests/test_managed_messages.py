@@ -56,11 +56,8 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
     sync = create_engine(url)
     with sync.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, work_parent_edges, workset_memberships, "
-            "worksets, workset_cutovers, workset_authority, work_edges, work_metadata_cutovers, "
-            "work_metadata_authority, human_trajectory_revisions, work_index, "
-            "work_authority_cutovers, "
-            "work_authority, agent_mailboxes, work_event_handles, lifecycle_obligations, "
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, "
+            "human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, message_deliveries, messages, effect_intents, "
             "work_grants, work_handles CASCADE"
         ))

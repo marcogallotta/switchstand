@@ -29,11 +29,9 @@ from switchstand.contracts import (
     Routing,
     SourceTaskRequest,
     WorkResolveReferenceRequest,
-    WorkSearchItem,
-    WorksetRequest,
 )
 from switchstand.core import ProviderError
-from switchstand.discovery import DiscoveredStructure, ProviderSearchItem, ProviderStructure
+from switchstand.discovery import ProviderSearchItem, ProviderStructure
 from switchstand.grants import (
     GrantResult,
     GuardOutcome,
@@ -41,13 +39,8 @@ from switchstand.grants import (
     ProtectedAppend,
     ProtectedCreate,
 )
-from switchstand.outcome_state import (
-    ActionSummary,
-    OutcomeAction,
-    OutcomeWrite,
-)
+from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
 from switchstand.repository_candidate import RepositoryCandidateQualification
-from switchstand.worksets import Workset, WorksetMember, WorksetView
 
 
 def test_ordinary_annotation_policy_is_exhaustive():
@@ -56,7 +49,6 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
-
 
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()
@@ -164,63 +156,6 @@ async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unkn
     assert "action_summary" not in update.structured_content
 
 
-async def test_workset_tool_requires_explicit_identity_and_is_audited(monkeypatch):
-    subject = service()
-    records: list[tuple[str, str | None, str]] = []
-
-    async def denied(_request: WorksetRequest):
-        from switchstand.contracts import WorksetResult
-        return WorksetResult(status="denied")
-
-    monkeypatch.setattr(subject, "workset", denied)
-    tool = dict(build_ordinary_tools(subject, lambda *record: records.append(record)))[
-        "workset_get"
-    ]
-    identity = uuid4()
-    result = await tool("1", identity, None)
-    assert result.status == "denied"
-    assert records == [("workset_get", str(identity), "denied")]
-    assert "workset_get" in ORDINARY_GENUINE_READ_TOOLS
-    with pytest.raises(ValidationError, match="exactly one"):
-        await tool("1", None, None)
-
-
-async def test_workset_service_projects_db_view_for_workspace_grant():
-    subject = service()
-    workset_id, member_id = uuid4(), uuid4()
-    subject.grants.grant = grant(
-        scope="workspace", operations=frozenset({"work_get", "work_search"}),
-    )
-
-    class Reader:
-        async def enumerate(self, selected_id, *, workset_key):
-            assert selected_id is None and workset_key == "agent.coordinator"
-            return WorksetView(
-                "s3w_revision",
-                Workset(workset_id, workset_key, "Coordinator", "DURABLE_ROLE",
-                        "Coordinator"),
-                (WorksetMember(
-                    WorkSearchItem(
-                        id=member_id, title="Current work", completed=False,
-                        revision="s1_revision", routing=Routing(), context=CONTEXT,
-                    ),
-                    "AUTHORITATIVE", "MASTER", (),
-                ),),
-            )
-
-    subject.state.worksets = Reader()
-    result = await subject.workset(WorksetRequest(
-        api_version="1", workset_key="agent.coordinator",
-    ))
-    assert result.status == "ok" and result.revision == "s3w_revision"
-    assert result.workset is not None
-    assert (result.workset.workset_id, result.workset.workset_key) == (
-        workset_id, "agent.coordinator",
-    )
-    assert result.members[0].item.id == member_id
-    assert result.members[0].member_role == "MASTER"
-
-
 async def test_candidate_qualification_adapter_is_read_only_and_audited(monkeypatch):
     observed = []
     expected = RepositoryCandidateQualification(
@@ -248,15 +183,8 @@ def test_ordinary_relation_patch_converts_provider_neutral_targets():
     assert (converted.kind, converted.action, converted.target_work_id) == (
         "dependency", "add", ACTIVE,
     )
-    target_workset = uuid4()
-    moved = OrdinaryRelationPatch(
-        kind="workset", action="move", workset_id=target_workset,
-    ).internal()
-    assert (moved.kind, moved.action, moved.workset_id) == (
-        "placement", "move", target_workset,
-    )
     with pytest.raises(ValidationError):
-        OrdinaryRelationPatch(kind="workset", action="add", workset_id=target_workset)
+        OrdinaryRelationPatch.model_validate({"kind": "workset", "action": "move"})
     with pytest.raises(ValidationError):
         OrdinaryRelationPatch.model_validate({
             "kind": "parent", "action": "set", "target_work_id": ACTIVE,
@@ -435,43 +363,6 @@ async def test_structure_requires_workspace_read_and_discovery_and_projects_atom
     assert "private detail" not in str(failed)
 
 
-async def test_structure_uses_db_reader_only_when_authoritative(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    subject = service()
-    subject.grants.grant = grant(
-        scope="workspace", operations=frozenset({"work_get", "work_search"}),
-    )
-
-    class AuthoritativeReader:
-        async def content_authorization(self, _work_id):
-            return None
-
-        async def structure(self, work_id):
-            assert work_id == ACTIVE
-            return DiscoveredStructure(
-                status="ok", revision="postgres",
-                parent=WorkSearchItem(
-                    id=REFERENCE, title="DB parent", completed=False, revision="db-r1",
-                    routing=Routing(priority="P1"), context=CONTEXT,
-                ),
-            )
-
-    subject.state.worksets = AuthoritativeReader()
-    provider_structure = AsyncMock(
-        side_effect=AssertionError("provider structure is forbidden after Stage 3 authority")
-    )
-    monkeypatch.setattr(
-        subject.providers["asana"], "structure_work", provider_structure, raising=False,
-    )
-    result = await build_chatgpt_server(subject).call_tool("work_structure", {
-        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-    })
-    assert result.structured_content["status"] == "ok"
-    assert result.structured_content["parent"]["title"] == "DB parent"
-    provider_structure.assert_not_awaited()
-
-
 @pytest.mark.parametrize("parent_id, child_id", [
     ("123", "child"),
     ("same", "same"),
@@ -605,7 +496,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "workset_get", "work_resolve_reference", "work_structure",
+            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
             "work_history", "work_attachments", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
@@ -676,10 +567,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert "project_gid" not in create.input_schema["properties"]
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
-        assert relation["properties"]["kind"]["enum"] == [
-            "parent", "dependency", "workset",
-        ]
-        assert "workset_id" in relation["properties"]
+        assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
         assert "gid" not in str(relation).lower()
         recovery = next(tool for tool in tools if tool.name == "effect_reconcile")
         assert set(recovery.input_schema["properties"]) == {"api_version", "operation_id"}

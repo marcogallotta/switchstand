@@ -32,8 +32,6 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
-    WorksetRequest,
-    WorksetResult,
     WorkStructureRequest,
     WorkStructureResult,
 )
@@ -103,10 +101,9 @@ class OutcomeStateUpdateResult(ClosedModel):
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency", "workset"]
-    action: Literal["set", "clear", "add", "remove", "move"]
+    kind: Literal["parent", "dependency"]
+    action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
-    workset_id: UUID | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
@@ -115,25 +112,15 @@ class OrdinaryRelationPatch(ClosedModel):
                 raise ValueError("parent relation requires set or clear")
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
-            if self.workset_id is not None:
-                raise ValueError("parent relation forbids a workset target")
         elif self.kind == "dependency" and (
             self.action not in {"add", "remove"} or self.target_work_id is None
-            or self.workset_id is not None
         ):
             raise ValueError("dependency relation requires target and add/remove")
-        elif self.kind == "workset" and (
-            self.action != "move" or self.workset_id is None
-            or self.target_work_id is not None
-        ):
-            raise ValueError("workset relation requires one move target")
         return self
 
     def internal(self) -> RelationPatch:
         return RelationPatch(
-            kind="placement" if self.kind == "workset" else self.kind,
-            action=self.action, target_work_id=self.target_work_id,
-            workset_id=self.workset_id,
+            kind=self.kind, action=self.action, target_work_id=self.target_work_id,
         )
 
 
@@ -142,7 +129,6 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "repository_candidate_qualification_get",
     "work_get",
     "work_search",
-    "workset_get",
     "work_resolve_reference",
     "work_structure",
     "work_history",
@@ -354,21 +340,6 @@ def build_ordinary_tools(
             cursor=cursor, limit=limit,
         ))
         audited("work_search", None, result.status)
-        return result
-
-    async def workset_get(
-        api_version: Literal["1"], workset_id: UUID | None = None,
-        workset_key: Annotated[str | None, Field(min_length=1, max_length=500)] = None,
-    ) -> WorksetResult:
-        """Read one explicit DB-authoritative workset and all nonterminal members."""
-        result = await service.workset(WorksetRequest(
-            api_version=api_version, workset_id=workset_id, workset_key=workset_key,
-        ))
-        audited(
-            "workset_get",
-            str(workset_id) if workset_id is not None else workset_key,
-            result.status,
-        )
         return result
 
     async def work_resolve_reference(
@@ -899,7 +870,6 @@ def build_ordinary_tools(
         ("agent_project_bootstrap", agent_project_bootstrap),
         ("work_get", enriched_work_get if service.outcome_state_enabled else work_get),
         ("work_search", work_search),
-        ("workset_get", workset_get),
         ("work_resolve_reference", work_resolve_reference),
         ("work_structure", work_structure),
         ("work_history", work_history),
