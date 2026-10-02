@@ -19,7 +19,7 @@ from switchstand.work_corpus import capture_manifest, compare_parity_exports, wr
 from switchstand.work_import import import_parity, target_parity
 from switchstand.work_source_export import source_parity
 
-PARENT, CHILD, EVENT = UUID(int=1), UUID(int=2), UUID(int=3)
+PARENT, CHILD, EVENT, MISSING_EVENT = UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=4)
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
         await connection.run_sync(metadata.create_all)
         await connection.run_sync(canonical_metadata.create_all)
         await connection.execute(delete(work_event_handles).where(
-            work_event_handles.c.id == EVENT,
+            work_event_handles.c.id.in_((EVENT, MISSING_EVENT)),
         ))
         await connection.execute(delete(work_handles).where(
             work_handles.c.id.in_((PARENT, CHILD)),
@@ -52,7 +52,7 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
         async with engine.begin() as connection:
             await connection.run_sync(canonical_metadata.drop_all)
             await connection.execute(delete(work_event_handles).where(
-                work_event_handles.c.id == EVENT,
+                work_event_handles.c.id.in_((EVENT, MISSING_EVENT)),
             ))
             await connection.execute(delete(work_handles).where(
                 work_handles.c.id.in_((PARENT, CHILD)),
@@ -182,3 +182,12 @@ async def test_source_export_rejects_changed_dependencies_or_incomplete_corpus(
     write_manifest(broken, document)
     with pytest.raises(ValueError, match="without exceptions"):
         await source_parity(engine, Source(), broken)
+
+    provider.dependencies["child"] = frozenset(("parent",))
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_event_handles).values(
+            id=MISSING_EVENT, work_id=CHILD, provider="asana",
+            provider_work_id="child", provider_event_id="missing-story",
+        ))
+    with pytest.raises(ValueError, match="every existing Asana event alias"):
+        await source_parity(engine, provider, source_path)

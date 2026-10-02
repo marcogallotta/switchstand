@@ -113,6 +113,11 @@ async def source_parity(
         raise ValueError("source corpus no longer matches current Asana bindings")
     event_ids = {(work_id, task_gid, story_gid): event_id
                  for event_id, work_id, task_gid, story_gid in event_rows}
+    expected_event_ids = {
+        event_id for (work_id, _, _), event_id in event_ids.items()
+        if work_id in set(expected.values())
+    }
+    consumed_event_ids: set[UUID] = set()
     records: list[dict[str, object]] = []
     projects: dict[str, tuple[UUID, str]] = {}
     used_events: dict[UUID, tuple[UUID, str]] = {}
@@ -167,10 +172,11 @@ async def source_parity(
         ), 1):
             if story.task_gid != gid or not story.subtype:
                 raise ValueError(f"source story is invalid: {gid}")
-            event_id = event_ids.get(
-                (work_id, gid, story.story_gid),
-                uuid5(NAMESPACE_URL, f"switchstand:asana-story:{story.story_gid}"),
-            )
+            event_id = event_ids.get((work_id, gid, story.story_gid))
+            if event_id is not None:
+                consumed_event_ids.add(event_id)
+            else:
+                event_id = uuid5(NAMESPACE_URL, f"switchstand:asana-story:{story.story_gid}")
             if event_id in used_events and used_events[event_id] != (work_id, story.story_gid):
                 raise ValueError("source event UUID collision")
             used_events[event_id] = work_id, story.story_gid
@@ -181,6 +187,8 @@ async def source_parity(
                 "actor": story.created_by, "asana_story_gid": story.story_gid,
                 "operation_id": None,
             }))
+    if consumed_event_ids != expected_event_ids:
+        raise ValueError("source history does not contain every existing Asana event alias")
     records.extend(_record("project", _identity(project_id), {
         "project_id": str(project_id), "asana_project_gid": gid, "name": name,
     }) for gid, (project_id, name) in sorted(projects.items()))
