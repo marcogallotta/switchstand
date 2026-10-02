@@ -6,6 +6,10 @@ set -eu
 # Updater subprocesses inherit this through both direct and Coordinator dispatch.
 CODEX_INSTALL_DIR="$HOME/.local/state/switchstand/codex/updater-bin"
 export CODEX_INSTALL_DIR
+case ":${PATH:-}:" in
+    *":$CODEX_INSTALL_DIR:"*) ;;
+    *) PATH="${PATH:+$PATH:}$CODEX_INSTALL_DIR"; export PATH ;;
+esac
 
 canonical_repo="$HOME/switchstand"
 git_common() {

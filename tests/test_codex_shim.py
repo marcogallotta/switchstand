@@ -80,7 +80,12 @@ def test_launch_redirects_updater_visible_command_away_from_shim(tmp_path: Path)
     result_file = tmp_path / "result"
     executable(
         home / ".codex/packages/standalone/current/bin/codex",
-        '#!/bin/sh\nprintf "%s\\n" "$CODEX_INSTALL_DIR" > "$RESULT"\n',
+        '#!/bin/sh\n'
+        'case ":$PATH:" in\n'
+        '  *":$CODEX_INSTALL_DIR:"*) ;;\n'
+        '  *) printf "profile-rewrite\\n" > "$PROFILE_RESULT" ;;\n'
+        'esac\n'
+        'printf "%s\\n%s\\n" "$CODEX_INSTALL_DIR" "$PATH" > "$RESULT"\n',
     )
     launcher = install(home)
     outside = home / "outside"
@@ -91,15 +96,21 @@ def test_launch_redirects_updater_visible_command_away_from_shim(tmp_path: Path)
         env=os.environ | {
             "HOME": str(home),
             "RESULT": str(result_file),
+            "PROFILE_RESULT": str(tmp_path / "profile-result"),
             "CODEX_INSTALL_DIR": str(home / ".local/bin"),
+            "PATH": f"{home / '.local/bin'}:/usr/bin:/bin",
         },
         text=True, capture_output=True, check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert result_file.read_text().strip() == str(
-        home / ".local/state/switchstand/codex/updater-bin"
-    )
+    updater_bin = home / ".local/state/switchstand/codex/updater-bin"
+    install_dir, child_path = result_file.read_text().splitlines()
+    assert install_dir == str(updater_bin)
+    assert child_path.split(":") == [
+        str(home / ".local/bin"), "/usr/bin", "/bin", str(updater_bin),
+    ]
+    assert not (tmp_path / "profile-result").exists()
     assert not launcher.is_symlink()
 
 

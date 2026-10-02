@@ -322,8 +322,11 @@ Coordinator execution. Normal automatic updater subprocesses inherit that value 
 maintain their visible symlink outside `~/.local/bin/codex`; package updates still use Codex's
 normal standalone package cache. The launcher deliberately overrides an ambient value because
 allowing it to point back at `~/.local/bin` would break the routing invariant. Directly running the
-published installer from another shell does not inherit from the launcher and can still replace it,
-so the recovery units remain a fallback rather than the primary ownership mechanism.
+published installer adds its visible-command directory to a shell profile only when that directory
+is absent from `PATH`, so the launcher also appends the private directory after the managed shim.
+This prevents profile rewrites from making the updater command win future resolution. A direct
+installer run from another shell does not inherit either setting and can still replace the shim, so
+the recovery units remain a fallback rather than the primary ownership mechanism.
 
 Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
 `switchstand-codex-shim.path` recovery watch and `switchstand-codex-shim.timer` safety net.
