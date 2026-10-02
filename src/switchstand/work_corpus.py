@@ -7,7 +7,8 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -200,26 +201,33 @@ async def capture_manifest(
     source_candidate: str,
     *,
     classify_decode_errors: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Capture broad admission plus every readable bound Asana work item."""
     if len(source_candidate) != 40 or any(c not in "0123456789abcdef" for c in source_candidate):
         raise ValueError("source candidate must be a lowercase 40-character Git SHA")
 
+    if progress:
+        progress("broad-scan:start")
     broad: dict[str, ProviderSearchItem] = {}
     cursor: str | None = None
     cursors: set[str] = set()
     while True:
-        page = await provider.search_work(None, None, cursor, 100)
+        page = await provider.search_work(None, None, cursor, 50)
         for item in page.items:
             if item.provider_work_id in broad:
                 raise ValueError("provider scan returned duplicate work")
             broad[item.provider_work_id] = item
+        if progress:
+            progress(f"broad-scan:progress items={len(broad)}")
         cursor = page.next_cursor
         if cursor is None:
             break
         if cursor in cursors:
             raise ValueError("provider scan repeated a cursor")
         cursors.add(cursor)
+    if progress:
+        progress(f"broad-scan:complete items={len(broad)}")
 
     async with engine.connect() as connection:
         bindings = (
@@ -238,7 +246,10 @@ async def capture_manifest(
 
     included = dict(broad)
     exceptions: list[CorpusException] = []
-    for provider_id in sorted(set(bound) - set(broad)):
+    bound_only = sorted(set(bound) - set(broad))
+    if progress:
+        progress(f"bound-only:start items={len(bound_only)}")
+    for position, provider_id in enumerate(bound_only, 1):
         try:
             work = await provider.get(provider_id)
         except ProviderWorkDecodeError as error:
@@ -254,11 +265,22 @@ async def capture_manifest(
             exceptions.append(CorpusException(provider_id, bound[provider_id], "noncanonical"))
         else:
             included[provider_id] = _search_item(provider_id, work)
+        if progress and (position % 50 == 0 or position == len(bound_only)):
+            progress(f"bound-only:progress items={position}/{len(bound_only)}")
+    if progress:
+        progress(f"bound-only:complete included={len(included)} exceptions={len(exceptions)}")
 
-    rows = [
-        _row(item, bound.get(provider_id), await provider.dependencies_for_import(provider_id))
-        for provider_id, item in sorted(included.items())
-    ]
+    rows: list[CorpusRow] = []
+    if progress:
+        progress(f"dependencies:start items={len(included)}")
+    for position, (provider_id, item) in enumerate(sorted(included.items()), 1):
+        rows.append(_row(
+            item, bound.get(provider_id), await provider.dependencies_for_import(provider_id),
+        ))
+        if progress and (position % 50 == 0 or position == len(included)):
+            progress(f"dependencies:progress items={position}/{len(included)}")
+    if progress:
+        progress("capture:complete")
     document: dict[str, object] = {
         "schema_version": 1,
         "source_candidate": source_candidate,
@@ -278,10 +300,12 @@ async def capture_preflight_manifest(
     engine: AsyncEngine,
     provider: CorpusProvider,
     source_candidate: str,
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Capture the read-only zero-Asana source inventory."""
     corpus = await capture_manifest(
-        engine, provider, source_candidate, classify_decode_errors=True,
+        engine, provider, source_candidate, classify_decode_errors=True, progress=progress,
     )
     rows = cast(list[dict[str, object]], corpus["rows"])
     exceptions = cast(list[dict[str, object]], corpus["exceptions"])
@@ -443,9 +467,13 @@ async def capture_preflight_to_path(
     provider: CorpusProvider,
     path: Path,
     source_candidate: str,
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     try:
-        manifest = await capture_preflight_manifest(engine, provider, source_candidate)
+        manifest = await capture_preflight_manifest(
+            engine, provider, source_candidate, progress=progress,
+        )
     except CorpusCaptureDecodeError as error:
         create_new_private_bytes(
             failure_receipt_path(path),
@@ -467,8 +495,12 @@ async def _capture(path: Path, source_candidate: str, *, preflight: bool = False
     )
     try:
         provider = AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
-        capture = capture_preflight_to_path if preflight else capture_to_path
-        return await capture(engine, provider, path, source_candidate)
+        if preflight:
+            return await capture_preflight_to_path(
+                engine, provider, path, source_candidate,
+                progress=lambda message: print(message, file=sys.stderr, flush=True),
+            )
+        return await capture_to_path(engine, provider, path, source_candidate)
     finally:
         await client.aclose()
         await engine.dispose()

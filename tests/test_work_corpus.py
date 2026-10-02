@@ -140,6 +140,26 @@ async def test_stable_union_includes_readable_bound_continuity_targets(index):
     assert manifest["counts"] == {"broad": 1, "bound": 3, "included": 4, "exceptions": 0}
 
 
+async def test_capture_reports_bounded_scan_progress(index):
+    items = tuple(search_item(str(number)) for number in range(51))
+    progress: list[str] = []
+
+    await capture_preflight_manifest(
+        index.engine,
+        FakeProvider({None: ProviderSearchPage(items, None)}, {}),
+        SHA,
+        progress=progress.append,
+    )
+
+    assert progress == [
+        "broad-scan:start", "broad-scan:progress items=51", "broad-scan:complete items=51",
+        "bound-only:start items=0",
+        "bound-only:complete included=51 exceptions=0", "dependencies:start items=51",
+        "dependencies:progress items=50/51", "dependencies:progress items=51/51",
+        "capture:complete",
+    ]
+
+
 async def test_missing_and_noncanonical_bound_work_are_explicit_exceptions(index):
     missing = Handle(UUID(int=21), "asana", "missing")
     moved = Handle(UUID(int=22), "asana", "moved")
@@ -155,13 +175,15 @@ async def test_missing_and_noncanonical_bound_work_are_explicit_exceptions(index
         {"provider_work_id": "missing", "work_id": str(missing.id), "reason": "missing"},
         {"provider_work_id": "moved", "work_id": str(moved.id), "reason": "noncanonical"},
     ]
-    preflight = await capture_preflight_manifest(index.engine, provider, SHA)
+    progress: list[str] = []
+    preflight = await capture_preflight_manifest(index.engine, provider, SHA, progress=progress.append)
     assert preflight["handle_classifications"] == [
         {"provider_work_id": "missing", "work_id": str(missing.id),
          "state": "historical-missing", "reason": "missing"},
         {"provider_work_id": "moved", "work_id": str(moved.id),
          "state": "unresolved", "reason": "noncanonical"},
     ]
+    assert "bound-only:progress items=2/2" in progress
 
 
 async def test_preflight_classifies_bound_decode_failure_and_continues(index):
