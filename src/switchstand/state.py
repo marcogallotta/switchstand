@@ -163,6 +163,84 @@ work_parent_edges = Table(
     CheckConstraint("child_work_id <> parent_work_id", name="ck_work_parent_not_self"),
     CheckConstraint("row_version >= 1", name="ck_work_parent_version"),
 )
+canonical_work = Table(
+    "canonical_work", metadata,
+    Column("work_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("title", Text, nullable=False),
+    Column("normalized_title", Text, nullable=False),
+    Column("completed", Boolean, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("priority", Text),
+    Column("work_type", Text),
+    Column("lifecycle_state", Text),
+    Column("review_next_action", Text),
+    Column("wait_kind", Text),
+    Column("unblock_condition", Text),
+    Column("next_due", Text),
+    Column("row_version", BigInteger, nullable=False),
+    CheckConstraint("title <> ''", name="ck_canonical_work_title"),
+    CheckConstraint("normalized_title <> ''", name="ck_canonical_work_normalized_title"),
+    CheckConstraint("row_version >= 1", name="ck_canonical_work_version"),
+)
+legacy_work_aliases = Table(
+    "legacy_work_aliases", metadata,
+    Column("asana_task_gid", Text, primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), nullable=False, index=True),
+    CheckConstraint("asana_task_gid <> ''", name="ck_legacy_work_alias_gid"),
+)
+canonical_dependencies = Table(
+    "canonical_dependencies", metadata,
+    Column("work_id", PGUUID(as_uuid=True), ForeignKey("canonical_work.work_id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("depends_on_work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), primary_key=True),
+    CheckConstraint("work_id <> depends_on_work_id", name="ck_canonical_dependency_not_self"),
+)
+canonical_parents = Table(
+    "canonical_parents", metadata,
+    Column("child_work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="CASCADE"), primary_key=True),
+    Column("parent_work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), nullable=False),
+    CheckConstraint("child_work_id <> parent_work_id", name="ck_canonical_parent_not_self"),
+)
+canonical_projects = Table(
+    "canonical_projects", metadata,
+    Column("project_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("asana_project_gid", Text, unique=True),
+    Column("name", Text, nullable=False),
+    CheckConstraint("name <> ''", name="ck_canonical_project_name"),
+)
+canonical_project_memberships = Table(
+    "canonical_project_memberships", metadata,
+    Column("project_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_projects.project_id", ondelete="RESTRICT"), primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="CASCADE"), primary_key=True),
+    Column("section_name", Text),
+)
+work_events = Table(
+    "work_events", metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("work_id", PGUUID(as_uuid=True),
+           ForeignKey("canonical_work.work_id", ondelete="RESTRICT"), nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("subtype", Text, nullable=False),
+    Column("text", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("actor", Text),
+    Column("asana_story_gid", Text),
+    Column("operation_id", PGUUID(as_uuid=True)),
+    UniqueConstraint("work_id", "sequence"),
+    CheckConstraint("sequence >= 1", name="ck_work_event_sequence"),
+)
+Index("ix_canonical_work_page", canonical_work.c.normalized_title, canonical_work.c.work_id)
+Index("ix_work_events_page", work_events.c.work_id, work_events.c.sequence)
+Index("uq_work_events_story", work_events.c.asana_story_gid, unique=True,
+      postgresql_where=work_events.c.asana_story_gid.is_not(None))
+Index("uq_work_events_operation", work_events.c.operation_id, unique=True,
+      postgresql_where=work_events.c.operation_id.is_not(None))
 human_trajectory_revisions = Table(
     "human_trajectory_revisions", metadata,
     Column("trajectory_id", PGUUID(as_uuid=True), primary_key=True),
