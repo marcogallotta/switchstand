@@ -5,10 +5,11 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import uvicorn
-from chatgpt_fixture import ACTIVE, grant, service
+from chatgpt_fixture import ACTIVE, REFERENCE, grant, service
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
 from sqlalchemy import text
@@ -21,10 +22,11 @@ from switchstand.chatgpt_edge import (
     create_app,
     runtime_identity_from_meta,
 )
+from switchstand.core import UnknownEffect
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.messages import MessageState
-from switchstand.state import metadata
+from switchstand.state import PostgresState, metadata
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
@@ -142,7 +144,9 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
             if isinstance(item, dict) and item.get("name") == SERVER_NAME
         )
         tools = entry.get("tools")
-        assert isinstance(tools, dict) and "work_get" in tools and "grant_get" not in tools, entry
+        assert isinstance(tools, dict), entry
+        assert {"work_get", "work_update", "outcome_state_update"} <= tools.keys()
+        assert "grant_get" not in tools
 
         thread = response_result(client.request(
             "thread/start", {"cwd": str(workspace), "ephemeral": True}
@@ -152,22 +156,107 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
         thread_id = thread_data.get("id")
         assert isinstance(thread_id, str)
 
-        for _ in range(2):
+        def call(tool: str, arguments: dict[str, object]) -> dict[str, object]:
             called = response_result(client.request(
                 "mcpServer/tool/call",
                 {
                     "threadId": thread_id,
                     "server": SERVER_NAME,
-                    "tool": "work_get",
-                    "arguments": {"api_version": "1", "work_id": str(ACTIVE)},
+                    "tool": tool,
+                    "arguments": arguments,
                 },
             ))
             structured = called.get("structuredContent")
             assert isinstance(structured, dict), called
-            assert structured["status"] == "ok", structured
-            item = structured["item"]
-            assert isinstance(item, dict)
-            assert item["id"] == str(ACTIVE)
+            return structured
+
+        def get(work_id=ACTIVE) -> dict[str, object]:
+            result = call("work_get", {"api_version": "1", "work_id": str(work_id)})
+            assert result["status"] == "ok", result
+            item = result["item"]
+            assert isinstance(item, dict) and item["id"] == str(work_id)
+            return result
+
+        def write(
+            observed_revision: str, items: list[dict[str, object]],
+            expected_state_id: str | None,
+        ) -> str:
+            result = call("outcome_state_update", {
+                "api_version": "1", "operation_id": str(uuid4()),
+                "owner_work_id": str(ACTIVE), "expected_state_id": expected_state_id,
+                "owner_observed_revision": observed_revision, "items": items,
+            })
+            assert result["status"] == "APPLIED", result
+            state_id = result["state_id"]
+            assert isinstance(state_id, str)
+            return state_id
+
+        def update(observed_revision: str, patch: dict[str, object]) -> dict[str, object]:
+            result = call("work_update", {
+                "api_version": "1", "operation_id": str(uuid4()),
+                "work_id": str(ACTIVE), "observed_revision": observed_revision,
+                "patch": patch,
+            })
+            return result
+
+        def summary(
+            result: dict[str, object], currentness: str,
+            action_class: str | None,
+        ) -> None:
+            value = result["action_summary"]
+            assert isinstance(value, dict) and value["currentness"] == currentness
+            actions = value["actions"]
+            assert isinstance(actions, list)
+            assert value["open_action_count"] == len(actions)
+            assert [action["action_class"] for action in actions] == (
+                [] if action_class is None else [action_class]
+            )
+
+        # The real client sees every governing CURRENT/STALE action shape. Model-response
+        # frequency targets remain activation evidence, not an inert CI claim.
+        initial = get()
+        assert "action_summary" not in initial
+        needs_marco = {
+            "item_key": "decision", "description": "Choose rollout", "kind": "DECISION",
+            "status": "READY", "who_acts": "MARCO",
+            "what_yes_causes": "Dispatch implementation", "source_label": "AGENT",
+        }
+        state_id = write("r1", [needs_marco], None)
+        summary(get(), "CURRENT", "NEEDS_MARCO")
+        assert "action_summary" not in get(REFERENCE)
+        changed = update("r1", {"completed": True})
+        assert changed["status"] == "ok", changed
+        summary(changed, "STALE", "NEEDS_MARCO")
+
+        owner_can_do = {
+            "item_key": "owner", "description": "Continue implementation",
+            "kind": "DELIVERABLE", "status": "READY", "who_acts": "OWNER",
+            "source_label": "AGENT",
+        }
+        state_id = write("r2", [owner_can_do], state_id)
+        summary(get(), "CURRENT", "OWNER_CAN_DO")
+        changed = update("r2", {"completed": False})
+        summary(changed, "STALE", "OWNER_CAN_DO")
+
+        done = owner_can_do | {"status": "DONE"}
+        state_id = write("r3", [done], state_id)
+        summary(get(), "CURRENT", None)
+        changed = update("r3", {"completed": True})
+        summary(changed, "STALE", None)
+
+        ready_to_dispatch = {
+            "item_key": "dispatch", "description": "Dispatch reviewed package",
+            "kind": "DELIVERABLE", "status": "READY", "who_acts": "MARCO",
+            "dispatch_work_id": str(REFERENCE), "source_label": "AGENT",
+        }
+        write("r4", [ready_to_dispatch], state_id)
+        summary(get(), "CURRENT", "READY_TO_DISPATCH")
+        changed = update("r4", {"completed": False})
+        summary(changed, "STALE", "READY_TO_DISPATCH")
+
+        unknown = update("r5", {"notes": "inject unknown"})
+        assert unknown["status"] == "unknown" and unknown["effect"] == "unknown"
+        assert "action_summary" not in unknown
 
         registered = response_result(client.request(
             "mcpServer/tool/call",
@@ -227,7 +316,13 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
         await connection.run_sync(metadata.drop_all)
         await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await connection.run_sync(metadata.create_all)
+        await connection.execute(text(
+            "INSERT INTO work_handles (id, provider, provider_work_id) "
+            "VALUES (:active, 'asana', '123'), (:reference, 'asana', '456')"
+        ), {"active": ACTIVE, "reference": REFERENCE})
     subject = service()
+    subject.state = PostgresState(engine)
+    subject.outcome_state_enabled = True
     subject.messages = MessageState(engine, GrantState(engine))
     subject.grants.grant = grant(
         principal=PrincipalContext(
@@ -237,8 +332,18 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
             assurance="authenticated",
         ),
         scope="workspace",
-        operations=frozenset({"work_get"}),
+        operations=frozenset({"work_get", "work_update"}),
+        update_qualification="real:ordinary-workspace",
     )
+    provider = subject.providers["asana"]
+    original_update = provider.update
+
+    async def update_with_unknown(task_gid, patch):
+        if patch.notes == "inject unknown":
+            raise UnknownEffect("injected lost response")
+        await original_update(task_gid, patch)
+
+    monkeypatch.setattr(provider, "update", update_with_unknown)
     app = create_app(subject, CONFIG, client_storage=MemoryStore())
 
     sock = socket.socket()
@@ -265,7 +370,8 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
             'bearer_token_env_var = "SWITCHSTAND_PROOF_TOKEN"\n'
             'required = true\n'
             'default_tools_approval_mode = "approve"\n'
-            'enabled_tools = ["work_get", "agent_register", "agent_message_pending"]\n'
+            'enabled_tools = ["work_get", "work_update", "outcome_state_update", '
+            '"agent_register", "agent_message_pending"]\n'
         )
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)

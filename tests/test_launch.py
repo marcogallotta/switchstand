@@ -132,6 +132,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     servers = config["mcp_servers"]
 
     ordinary = {name for name, _ in build_ordinary_tools(chatgpt_service())}
+    ordinary.add("outcome_state_update")
     switchstand = servers["switchstand"]
     assert switchstand["required"] is False
     assert switchstand["default_tools_approval_mode"] == "approve"

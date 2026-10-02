@@ -864,6 +864,11 @@ def build_ordinary_tools(
             agent_binding=mailbox,
         )
 
+    # FastMCP derives argument-schema titles from the callable name. Codex rejects a
+    # tool whose registered name and generated argument title disagree.
+    enriched_work_get.__name__ = "work_get"
+    enriched_work_update.__name__ = "work_update"
+
     return (
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
