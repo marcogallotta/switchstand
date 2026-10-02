@@ -69,7 +69,7 @@ HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
 
 
-class PlainOrdinaryWorkResult(ClosedModel):
+class OrdinaryWorkResult(ClosedModel):
     """Provider-neutral ordinary work result without legacy related/grouped inference."""
     status: Status
     item: PublicWorkItem | None = None
@@ -80,7 +80,7 @@ class ActionSummaryUnavailable(ClosedModel):
     state: Literal["UNAVAILABLE"] = "UNAVAILABLE"
 
 
-class OrdinaryWorkResult(ClosedModel):
+class StatefulOrdinaryWorkResult(ClosedModel):
     """Exact ordinary work read enriched with owner-local actionable state."""
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -186,9 +186,9 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     )
 
 
-def project_ordinary_work(result: GrantedWorkResult) -> PlainOrdinaryWorkResult:
+def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     projected = project_work(result)
-    return PlainOrdinaryWorkResult(
+    return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
     )
 
@@ -314,7 +314,7 @@ def build_ordinary_tools(
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
-    ) -> PlainOrdinaryWorkResult:
+    ) -> OrdinaryWorkResult:
         """Read current state, including authoritative current notes; use work_structure for relations."""
         result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
@@ -334,13 +334,13 @@ def build_ordinary_tools(
 
     async def enriched_work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
-    ) -> OrdinaryWorkResult:
+    ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
         result = await work_get(api_version, work_id)
         summary = None
         if work_id is not None and result.status == "ok" and result.item is not None:
             summary = await action_summary(work_id, result.item.revision)
-        return OrdinaryWorkResult(
+        return StatefulOrdinaryWorkResult(
             action_summary=summary, item=result.item, status=result.status, guard=result.guard,
         )
 
@@ -374,7 +374,7 @@ def build_ordinary_tools(
     async def work_resolve_reference(
         api_version: Literal["1"],
         reference: Annotated[str, Field(min_length=1, max_length=2048)],
-    ) -> PlainOrdinaryWorkResult:
+    ) -> OrdinaryWorkResult:
         """Resolve one exact legacy task reference to current provider-neutral work."""
         result = await service.resolve_reference(WorkResolveReferenceRequest(
             api_version=api_version, reference=reference,

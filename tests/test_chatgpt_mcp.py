@@ -21,6 +21,7 @@ from switchstand.chatgpt_mcp import (
     ORDINARY_GENUINE_READ_TOOLS,
     ORDINARY_NON_IDEMPOTENT_TOOLS,
     OrdinaryRelationPatch,
+    OrdinaryWorkResult,
     build_chatgpt_server,
     build_ordinary_tools,
 )
@@ -696,6 +697,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         )).structured_content
         assert search["status"] == "denied" and search["items"] == []
         get_tool = next(tool for tool in tools if tool.name == "work_get")
+        assert get_tool.output_schema == OrdinaryWorkResult.model_json_schema()
         assert "include_related" not in get_tool.input_schema["properties"]
         assert "related" not in get_tool.output_schema["properties"]
         assert "grouped" not in get_tool.output_schema["properties"]
