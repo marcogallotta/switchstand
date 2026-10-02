@@ -187,8 +187,11 @@ messaging, and required continuation:
   marker/cutover pair. The same marker makes authoritative DB membership the sole authorization
   source for exact provider-backed notes, attachments, and history: Asana placement is then ignored,
   foreign/unadmitted provider identities are denied, and the membership token participates in
-  composite read currentness. Before that boundary provider admission remains authoritative. Public handoff /
-  current-workset discovery is deferred until a runtime identity source and contract are selected.
+  composite read currentness. Before that boundary provider admission remains authoritative. After the
+  boundary, the ordinary `workset_get` read accepts exactly one explicit stable `workset_id` or
+  launcher/bootstrap-supplied `workset_key`; it returns the nonterminal members, workflow/dependency
+  truth, membership roles, and an opaque revision from one PostgreSQL snapshot. It does not infer
+  identity from agent names, current work, provider placement, or mailbox state.
   Marker-gated parent `set`/`clear` mutations write only `work_parent_edges`, advance the owning
   work revision transactionally, and recover ambiguous effects by exact DB-edge readback; provider
   parent mutation remains the pre-marker compatibility path. Marker-gated parented creation still

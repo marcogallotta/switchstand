@@ -27,6 +27,10 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
+    WorksetMemberItem,
+    WorksetRequest,
+    WorksetResult,
+    WorksetSummary,
     WorkStructureRequest,
     WorkStructureResult,
 )
@@ -233,6 +237,46 @@ class ChatGPTService:
                 ).search(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkSearchResult(status="unknown")
+
+    async def workset(self, request: WorksetRequest) -> WorksetResult:
+        """Enumerate one explicit DB-authoritative workset without provider discovery."""
+        principal = await self.principal()
+        if principal is None:
+            return WorksetResult(status="denied")
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                authority, _ = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get", "work_search"}),
+                    workspace_only=True,
+                )
+                if authority is None:
+                    return WorksetResult(status="denied")
+                reader = getattr(self.state, "worksets", None)
+                if reader is None:
+                    return WorksetResult(status="unknown")
+                view = await reader.enumerate(
+                    request.workset_id, workset_key=request.workset_key,
+                )
+                if view is None:
+                    return WorksetResult(status="unknown")
+                return WorksetResult(
+                    status="ok", revision=view.revision,
+                    workset=WorksetSummary(
+                        workset_id=view.workset.workset_id,
+                        workset_key=view.workset.workset_key,
+                        name=view.workset.name, kind=view.workset.kind,
+                        role_identity=view.workset.role_identity,
+                        state=cast(Literal["ACTIVE", "RETIRED"], view.workset.state),
+                    ),
+                    members=tuple(WorksetMemberItem(
+                        item=member.item, semantics=member.semantics,
+                        member_role=member.member_role, depends_on=member.depends_on,
+                    ) for member in view.members),
+                )
+        except PermissionError:
+            return WorksetResult(status="denied")
+        except (SQLAlchemyError, ValueError, KeyError):
+            return WorksetResult(status="unknown")
 
     async def structure(self, request: WorkStructureRequest) -> WorkStructureResult:
         principal = await self.principal()
