@@ -211,11 +211,6 @@ messaging, and required continuation:
   `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and
   deterministic owner/Marco/dispatch action derivation. It does not own Stage 2 waits,
   dependencies, authorization, scheduling, activation, or MCP result enrichment.
-  `workset_capture.py` and the structure-only provider reads form the remaining inert Stage 3
-  input boundary: they capture an exact, twice-stable, digestible inventory of projects, sections,
-  task memberships, parents, and revisions with strictly bounded pagination. They do not map or
-  stage WorkIds, and no retained worksheet, staging, or activation owner can publish the rejected
-  Stage 3 authority markers.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
@@ -399,7 +394,6 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change DB-authoritative structured metadata or dependency edges | `work_metadata.py`, `work_index.py` | offline Stage 2 migration, update/relation routing, migrations, and `database-first-stage2.md` |
 | Change the inert compact zero-Asana work/relations/project model | `canonical_work.py`, `canonical_relations.py` | explicit canonical metadata, real-PostgreSQL repository tests, later compact migration and runtime wiring |
 | Change Stage 3 worksets, membership, parents, or authority reads | `worksets.py`, `state.py` | migration `0011`, structure reads, Stage 3 authority/cutover tests, and provider-authoritative behavior before the marker |
-| Change inert Stage 3 provider inventory capture | `workset_capture.py` | structure-only provider reads, bounded pagination/stability tests, and no mapping, staging, or authority effect |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
