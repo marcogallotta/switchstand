@@ -148,6 +148,45 @@ def test_delivery_identity_and_missed_child_latest_parent_oracle(setup, stale):
     assert Projection(home, binding).admit(client, children(thread)[0]) == "ADMITTED"
     assert len(client.calls) == 1
 
+
+def test_current_host_subagent_activity_terminal_shape_and_ambiguity():
+    started = {"type": "subAgentActivity", "id": "call_exact", "kind": "started",
+               "agentThreadId": "child", "agentPath": "/root/private-name"}
+    completed = {"type": "subAgentActivity", "id": "completion_event", "kind": "completed",
+                 "agentThreadId": "child", "agentPath": "/root/private-name"}
+    thread = {"turns": [{"items": [started, completed]}]}
+    source, = children(thread)
+    assert json.loads(source.source_id) == ["call_exact", "child", "completed"]
+    assert "private-name" not in source.source_id
+    thread["turns"][0]["items"].append({**started, "id": "second_start"})
+    assert children(thread) == []
+
+
+@pytest.mark.parametrize("current", [
+    [
+        {"type": "subAgentActivity", "id": "legacy_call", "kind": "started",
+         "agentThreadId": "child", "agentPath": "/root/child"},
+        {"type": "subAgentActivity", "id": "completion", "kind": "completed",
+         "agentThreadId": "child", "agentPath": "/root/child"},
+    ],
+    [{"type": "subAgentActivity", "id": "current_call", "kind": "started",
+      "agentThreadId": "child", "agentPath": "/root/child"}],
+    [
+        {"type": "subAgentActivity", "id": "current_call", "kind": "started",
+         "agentThreadId": "child", "agentPath": "/root/child"},
+        {"type": "subAgentActivity", "id": "second_start", "kind": "started",
+         "agentThreadId": "child", "agentPath": "/root/child"},
+        {"type": "subAgentActivity", "id": "completion", "kind": "completed",
+         "agentThreadId": "child", "agentPath": "/root/child"},
+    ],
+])
+def test_mixed_child_history_shapes_fail_closed(current):
+    legacy = {"type": "collabAgentToolCall", "id": "legacy_call", "tool": "spawnAgent",
+              "receiverThreadIds": ["child"],
+              "agentsStates": {"child": {"status": "completed"}}}
+    assert children({"turns": [{"items": [legacy, *current]}]}) == []
+    assert children({"turns": [{"items": [{**legacy, "agentsStates": {}}, *current]}]}) == []
+
 def test_simultaneous_probe_and_private_file_boundary(setup):
     import fcntl
     import os
