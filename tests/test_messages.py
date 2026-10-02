@@ -1,3 +1,5 @@
+"""Database-backed message tests used by the shadow-selection qualification."""
+
 import asyncio
 import hashlib
 import json
