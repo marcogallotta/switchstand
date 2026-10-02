@@ -15,11 +15,11 @@ from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderError, ProviderWork
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.provider import FIELDS, PROJECT, AsanaProvider
-from switchstand.state import metadata
 from switchstand.work_corpus import (
     CorpusCaptureDecodeError,
     _capture,
     capture_manifest,
+    capture_preflight_manifest,
     capture_to_path,
     compare_manifests,
     failure_receipt_path,
@@ -38,8 +38,8 @@ async def index(database_prerequisite):
         pytest.skip("TEST_DATABASE_URL is required for work-corpus tests")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
-        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.execute(text("DROP SCHEMA public CASCADE"))
+        await connection.execute(text("CREATE SCHEMA public"))
     await engine.dispose()
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
@@ -152,6 +152,87 @@ async def test_missing_and_noncanonical_bound_work_are_explicit_exceptions(index
         {"provider_work_id": "missing", "work_id": str(missing.id), "reason": "missing"},
         {"provider_work_id": "moved", "work_id": str(moved.id), "reason": "noncanonical"},
     ]
+    preflight = await capture_preflight_manifest(index.engine, provider, SHA)
+    assert preflight["handle_classifications"] == [
+        {"provider_work_id": "missing", "work_id": str(missing.id),
+         "state": "historical-missing"},
+        {"provider_work_id": "moved", "work_id": str(moved.id),
+         "state": "unresolved"},
+    ]
+
+
+async def test_manifest_reports_db_residue_needed_for_cutover_preflight(index, tmp_path: Path):
+    sender = UUID(int=41)
+    message_id = UUID(int=42)
+    projection_id = UUID(int=43)
+    operation_id = UUID(int=44)
+    event_id = UUID(int=45)
+    effect_id = UUID(int=46)
+    async with index.engine.begin() as connection:
+        await connection.execute(text(
+            "INSERT INTO work_handles (id, provider, provider_work_id) "
+            "VALUES (:id, 'asana', 'task')"
+        ), {"id": sender})
+        await connection.execute(text(
+            "INSERT INTO work_event_handles "
+            "(id, work_id, provider, provider_work_id, provider_event_id) "
+            "VALUES (:id, :work_id, 'asana', 'task', 'story')"
+        ), {"id": event_id, "work_id": sender})
+        await connection.execute(text(
+            "INSERT INTO effect_intents "
+            "(operation_id, fingerprint, principal_key, work_id, grant_id, grant_version, "
+            " intent, outcome) VALUES "
+            "(:operation_id, 'fingerprint', 'principal', :work_id, :grant_id, 1, "
+            " '{}'::jsonb, CAST(:outcome AS jsonb))"
+        ), {
+            "operation_id": str(effect_id), "work_id": str(sender),
+            "grant_id": str(UUID(int=47)),
+            "outcome": json.dumps({
+                "effect": "unknown", "operation": "work_update", "reason": "ambiguous"
+            }),
+        })
+        await connection.execute(text(
+            "INSERT INTO messages "
+            "(sender_work_id, message_id, route_ref, kind, payload, digest) "
+            "VALUES (:sender, :message, 'route', 'request', '{}'::jsonb, 'digest')"
+        ), {"sender": sender, "message": message_id})
+        await connection.execute(text(
+            "INSERT INTO message_projection "
+            "(projection_id, sender_work_id, message_id, operation_id, provider, target) "
+            "VALUES (:projection, :sender, :message, :operation, 'asana', 'task')"
+        ), {
+            "projection": projection_id, "sender": sender,
+            "message": message_id, "operation": operation_id,
+        })
+
+    manifest = await capture_preflight_manifest(
+        index.engine,
+        FakeProvider(
+            {None: ProviderSearchPage((search_item("task"),), None)},
+            {},
+        ),
+        SHA,
+    )
+
+    assert manifest["event_aliases"] == {
+        "total": 1, "by_provider": [{"provider": "asana", "count": 1}]
+    }
+    assert manifest["unknown_effects"] == [{
+        "operation_id": str(effect_id), "work_id": str(sender),
+        "operation": "work_update", "reason": "ambiguous",
+    }]
+    assert manifest["message_projections"] == [{
+        "projection_id": str(projection_id), "sender_work_id": str(sender),
+        "message_id": str(message_id), "operation_id": str(operation_id),
+        "provider": "asana", "target": "task", "state": "PENDING", "receipt": None,
+    }]
+    assert manifest == await capture_preflight_manifest(index.engine, FakeProvider(
+        {None: ProviderSearchPage((search_item("task"),), None)}, {}
+    ), SHA)
+    path = tmp_path / "preflight.json"
+    write_manifest(path, manifest)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert load_manifest(path) == manifest
 
 
 async def test_pagination_rejects_duplicate_and_repeated_cursor(index):
