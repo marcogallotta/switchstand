@@ -2,6 +2,11 @@
 set -eu
 
 : "${HOME:?HOME is required for Codex launch}"
+# Keep the standalone updater's visible command separate from this managed launcher.
+# Updater subprocesses inherit this through both direct and Coordinator dispatch.
+CODEX_INSTALL_DIR="$HOME/.local/state/switchstand/codex/updater-bin"
+export CODEX_INSTALL_DIR
+
 canonical_repo="$HOME/switchstand"
 git_common() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
