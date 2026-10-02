@@ -30,6 +30,7 @@ jobs:
           EVENT_KIND: ${{ github.event_name }}
           EVENT_SHA: ${{ github.sha }}
           PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_FORCED: ${{ github.event.forced }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -43,21 +44,36 @@ jobs:
               && test "${parents[0]}" = "$planner_base_sha" \
               && test "${parents[1]}" = "$planner_head_sha"; then
               subject_verified=true
+              identity_mode=VERIFIED
               parent_check=ordered-base-head-match
             else
               subject_verified=false
+              identity_mode=STALE
               parent_check=STALE_OR_UNAVAILABLE_COMPOSITION
             fi
           else
             planner_base_sha="$PUSH_BASE_SHA"
             planner_head_sha="$EVENT_SHA"
             execution_kind=exact-head
-            if test "$execution_sha" = "$planner_head_sha"; then
-              subject_verified=true
-              parent_check=not-applicable
-            else
+            if test "$execution_sha" != "$planner_head_sha"; then
               subject_verified=false
+              identity_mode=STALE
               parent_check=STALE_OR_UNAVAILABLE_EXACT_HEAD
+            elif test "$PUSH_FORCED" = true; then
+              subject_verified=false
+              identity_mode=NO_PLAN
+              parent_check=NO_PLAN_FORCED_PUSH
+            elif ! printf '%s' "$planner_base_sha" | grep -Eq '^[0-9a-f]{40}$' \
+              || test "$planner_base_sha" = 0000000000000000000000000000000000000000 \
+              || ! git cat-file -e "$planner_base_sha^{commit}" \
+              || ! git merge-base --is-ancestor "$planner_base_sha" "$planner_head_sha"; then
+              subject_verified=false
+              identity_mode=NO_PLAN
+              parent_check=NO_PLAN_UNAVAILABLE_OR_NON_ANCESTOR_PUSH_BASE
+            else
+              subject_verified=true
+              identity_mode=VERIFIED
+              parent_check=ancestor-base-head-match
             fi
           fi
           {
@@ -66,6 +82,7 @@ jobs:
             printf 'planner_base_sha=%s\n' "$planner_base_sha"
             printf 'planner_head_sha=%s\n' "$planner_head_sha"
             printf 'subject_verified=%s\n' "$subject_verified"
+            printf 'identity_mode=%s\n' "$identity_mode"
             printf 'parent_check=%s\n' "$parent_check"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -100,6 +117,7 @@ jobs:
           PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
           PARENT_CHECK: ${{ steps.identity.outputs.parent_check }}
           SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
+          IDENTITY_MODE: ${{ steps.identity.outputs.identity_mode }}
           PLANNER_MODE: ${{ steps.plan.outputs.planner_mode }}
         run: |
           python3 - "$RUNNER_TEMP/affected-test-plan.json" <<'PY'
@@ -109,7 +127,7 @@ jobs:
 
           with open(sys.argv[1]) as source:
               plan = json.load(source)
-          effective_mode = plan["mode"] if os.environ["SUBJECT_VERIFIED"] == "true" else "STALE"
+          effective_mode = plan["mode"] if os.environ["SUBJECT_VERIFIED"] == "true" else os.environ["IDENTITY_MODE"]
           selected = plan["selected_tests"] if effective_mode == "SELECTED" else []
           quality = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/commit/{os.environ["PLANNER_HEAD_SHA"]}/checks'
           report = {
