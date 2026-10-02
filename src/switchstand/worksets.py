@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -216,6 +217,26 @@ class WorksetReader:
         if workset_id is None:
             raise ValueError("admitted work lacks an authoritative workset")
         return await self.enumerate(workset_id)
+
+    async def content_authorization(self, work_id: UUID) -> str | None:
+        """Return the opaque Stage 3 authorization token, or pre-authority ``None``."""
+        generation = await self.generation()
+        if generation is None:
+            return None
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(
+                workset_memberships.c.workset_id,
+                workset_memberships.c.row_version,
+                worksets.c.row_version,
+                worksets.c.state,
+            ).join(worksets, worksets.c.workset_id == workset_memberships.c.workset_id).where(
+                workset_memberships.c.work_id == work_id,
+                workset_memberships.c.semantics == "AUTHORITATIVE",
+            ))).one_or_none()
+        if row is None:
+            raise PermissionError("work lacks authoritative workset membership")
+        payload = f"{generation}\0{work_id}\0{row[0]}\0{row[1]}\0{row[2]}\0{row[3]}"
+        return "s3_" + hashlib.sha256(payload.encode()).hexdigest()
 
     async def structure(self, work_id: UUID) -> DiscoveredStructure | None:
         """Read parent/children from Postgres only after Stage 3 authority."""

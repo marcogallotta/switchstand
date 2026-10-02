@@ -184,10 +184,13 @@ messaging, and required continuation:
   inert workset, membership, and parent storage with atomic, idempotent full-corpus staging while
   its authority marker remains absent. Internal reads enumerate one authoritative workset with
   Stage 2 workflow/dependency truth and serve `work_structure` from Postgres only after a valid
-  marker/cutover pair; before that boundary the provider remains authoritative. Public handoff /
+  marker/cutover pair. The same marker makes authoritative DB membership the sole authorization
+  source for exact provider-backed notes, attachments, and history: Asana placement is then ignored,
+  foreign/unadmitted provider identities are denied, and the membership token participates in
+  composite read currentness. Before that boundary provider admission remains authoritative. Public handoff /
   current-workset discovery is deferred until a runtime identity source and contract are selected;
-  this foundation makes no handoff-readiness claim, activates no writes or content authority, and
-  migrates no provider notes, comments, attachments, or history.
+  this foundation makes no handoff-readiness claim, activates no writes or authority marker, and
+  migrates no provider notes, comments, attachments, or history content.
   `outcome_state.py` separately owns inert append-only owner-local outcome snapshots and
   deterministic owner/Marco/dispatch action derivation. It does not own Stage 2 waits,
   dependencies, authorization, scheduling, activation, or MCP result enrichment.

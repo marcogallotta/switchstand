@@ -258,6 +258,9 @@ async def test_structure_uses_db_reader_only_when_authoritative(monkeypatch):
     )
 
     class AuthoritativeReader:
+        async def content_authorization(self, _work_id):
+            return None
+
         async def structure(self, work_id):
             assert work_id == ACTIVE
             return DiscoveredStructure(
