@@ -1,5 +1,8 @@
 # Database-first Stage 2
 
+> **Historical transition design.** The zero-Asana respec supersedes this procedure. Its former
+> `switchstand-stage12-cutover` host CLI has been removed; do not use this page as an operator runbook.
+
 Stage 2 makes PostgreSQL authoritative for structured work metadata and dependency edges in one
 planned single-host outage. The repository change is inert until the Stage 2 authority marker is
 written. Production import and authority cutover require their own current Human Review.
@@ -30,14 +33,13 @@ provider revision, structured value, and dependency; pass the approved SHA-256 b
 the exact Stage 1 preparation before returning success. Any drift refuses validation and keeps
 maintenance active; an ambiguous receipt/binding outcome is `UNKNOWN`. Do not activate Stage 1.
 
-The inert `ReviewCheckpoint` core makes this outage pause resumable. It binds the exact corpus,
+Historically, the inert `ReviewCheckpoint` core made this outage pause resumable. It binds the exact corpus,
 exception decision, Stage 1 preparation receipt, prepared-import digest, and generated worksheet
 bytes in a private durable `REVIEW_PENDING` receipt. Re-entry accepts only those same bytes and
 receipts. Its abort path delegates to the receipt-bound Stage 1 preparation cleanup; ambiguity
 remains `UNKNOWN`. The separately landed host operator composes gate/stop/snapshot orchestration
-around this core; landing either layer remains inert and neither starts an attempt nor changes
-authority. The `switchstand-stage12-cutover` CLI exposes prepare, status, approved resume, and
-pre-review abort. Targets are explicit; disposable runs require their exact C2d0 READY descriptor.
+around this core; landing either layer remained inert and neither started an attempt nor changed
+authority. The retired host CLI exposed prepare, status, approved resume, and pre-review abort.
 
 The standalone post-Stage-1 procedure can instead generate a JSON worksheet with:
 
