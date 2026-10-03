@@ -73,9 +73,13 @@ JTIs converge to it on use. Missing or expired JTI mappings are recovered only
 from a still-valid signed downstream token and the validated canonical credential;
 refresh metadata must also remain current, so rotation or revocation is not undone.
 Client IDs, signed tokens, grants, and runtime identities are never merged. Refresh
-rotation is serialized within the one edge process. Running overlapping edge
-processes against this file-backed OAuth store is not a supported activation shape:
-its refresh locks are process-local.
+rotation is serialized within the one edge process. A duplicate use of a just-consumed
+downstream refresh token can replay its exact response for five minutes only while the
+issued successor remains unconsumed and the client and scope request still match. This
+128-entry cache is process-local and intentionally lost on restart; no replay tokens are
+written to the OAuth store. Running overlapping edge processes against this file-backed
+OAuth store is not a supported activation shape: its refresh locks and replay cache are
+process-local.
 
 The read-only edge doctor needs no database or provider credentials. Keep its
 three protected OAuth values and the non-secret probe configuration in one
