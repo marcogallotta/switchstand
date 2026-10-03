@@ -29,85 +29,71 @@ During implementation:
 
 ## Governed implementation packages
 
-For a governed implementation task, keep one compact inline package projection in the
-existing task/Execution Plan. It carries the approved record; it is not a new approval
-artifact, package database, or parallel review ceremony. Include:
-- Package identity and exact approved record reference/revision.
-- Immutable package base SHA, candidate/composition identity, and included surfaces.
-- Counting method and exclusions, with production, support (tests/fixtures/tools/docs),
-  and total envelopes; separate the forecast from each explicitly approved stop limit.
-- Strongest credible simpler alternative, economy proof, and expected lines allocated
-  by material mechanism. Estimates are alarms, never targets or budgets to spend.
-- Exact replan triggers, including approved limits and material mechanism/owner changes.
+For a governed implementation task, keep one compact package projection in the existing
+task/Execution Plan. It carries the approved record; it is not a second approval artifact,
+package database, or parallel review ceremony. At approval freeze:
+- package identity, exact approved record revision and immutable package base SHA;
+- included package surfaces and which of them are support (tests/fixtures/tools/docs);
+- the ORIGINAL APPROVED upper forecasts for production and support;
+- the explicit approved margins and resulting production, support and total hard caps;
+- the strongest credible simpler alternative, economy proof and material replan triggers.
 
-Use a compact ledger within that projection to identify the retained contributions,
-their exact revisions, actual counts versus forecast/limits, and unresolved composition.
-Keep the projection current through implementation and pass it to existing exact-head
-review; the governing record remains authoritative if the projection disagrees with it.
-Do not invent an approved limit from a forecast or treat a forecast increase as approval.
+Forecasts are alarms, not targets. Later re-estimates may guide execution but never reset the
+original-forecast denominator or raise an approved cap. Do not maintain a running line-count
+ledger. Recompute retained fixed-base counts from Git with `python scripts/package-size.py`
+using the governing record's base, exact combined head, package patterns, support patterns,
+original forecasts and approved caps. The script reports facts only; it never sets a forecast,
+cap, exemption, authority decision or compliance verdict.
 
 ### Fixed-base accounting
 
-Measure aggregate retained package change once against the immutable package base,
-across all included surfaces and delivery slices. Report additions and deletions
-separately, and their sum as total changed lines (gross diff churn); additions alone
-are not that total. This measures the retained aggregate diff, not summed commit churn.
-Record generated/binary or otherwise uncountable surfaces explicitly rather than
-silently treating them as zero; use the governing package's stated counting method.
+Measure the retained aggregate once from the immutable package base to the exact combined
+candidate/head across all included delivery slices. Count additions plus deletions as gross
+changed lines; production and support remain separate and total is their sum. Package patterns
+are the evidenced inclusion boundary; changes outside them are unrelated and excluded. Do not
+invent ad-hoc exclusions to improve the result.
 
-For a single candidate containing the whole package, a fixed-base diff is sufficient.
-For a stack or partially landed package, identify the combined retained result and
-count shared contributions once. A per-PR diff or sum of overlapping diffs is not the
-package aggregate. Exclude unrelated changes only with an evidenced attribution.
-Splitting, stacking, rebasing, closing, superseding, or landing PRs cannot reset the
-base or erase changes retained in the package. Actual removal changes the retained
-result; administrative retirement alone does not. Preserve the original base when
-rebasing delivery branches. If composition or attribution cannot be established,
-report UNKNOWN and identify the missing evidence; do not assert envelope compliance.
-Use bounded repository evidence and the inline ledger, not a universal Git reconstructor.
+Renames and deletions remain in the fixed-base result. A rename crossing the approved package
+boundary or production/support classification, an uncountable/binary package change, or missing
+exact composition/attribution is `UNKNOWN`; do not assert envelope compliance. Splitting,
+stacking, rebasing, closing, superseding or landing PRs cannot reset the base or erase retained
+changes. A stack or partially landed package must be measured at one exact combined retained
+head; per-PR diffs or summed overlapping diffs are not the package aggregate.
 
-Package accounting supplements the existing >=500 actual PR/diff rule; it neither
-replaces that rule nor manufactures an exemption by splitting. A small PR can belong
-to an over-limit package, and an in-limit package can still trigger the per-PR rule.
+### Forecast miss and hard-cap handling
 
-### Economy proof and solution disposition
+Evaluate production and support independently against their ORIGINAL APPROVED upper forecast.
+A forecast-miss trigger fires only when actual retained gross change is both:
+- at least 1.5x that original forecast; and
+- at least 100 lines over that original forecast.
 
-Before approving defensive machinery, exercise the smallest credible implementation
-at the real boundary, or use a precise skeleton where execution is not yet practical.
-Name the contract, the boundary case, expected result, and remaining unproved claims.
-Compare the proposed mechanisms and support cost with the strongest simpler route;
-hypothetical completeness alone cannot justify additional machinery.
+A forecast miss inside the approved scope/caps is worker-owned: re-estimate and record
+**KEEP / SIMPLIFY / REPLACE** before further affected expansion. It does not by itself return
+to Marco. **KEEP** requires evidence that the simpler alternative is inadequate; **SIMPLIFY**
+removes/reuses mechanisms while preserving the outcome; **REPLACE** adopts a smaller sound
+solution and identifies what it supersedes.
 
-At an approved envelope breach, stated replan trigger, or material unapproved mechanism
-or owner change, stop affected expansion and publication. The implementation owner
-records the solution disposition before choosing a new delivery decomposition:
-- **KEEP:** retain the solution with evidence that the simpler alternative is inadequate.
-- **SIMPLIFY:** remove or reuse mechanisms while preserving the governing outcome.
-- **REPLACE:** adopt a smaller sound solution and identify the superseded mechanism.
+For size/envelope reasons, return to Marco only when the current trajectory projects a hard-cap
+breach. Bring one credible cut, or a plain reason no safe cut exists. Existing Human Input
+triggers remain independent: material scope, architecture, authority/trust, risk/burden or other
+consequential changes still return while cheap even if all line caps are green. Existing banned
+scope/authority boundaries and the >=500 actual PR/diff exemption rule remain hard and
+independent; splitting cannot launder either package growth or the per-PR rule.
 
-Record the reason, revised projection, evidence needed, and any still-required approval.
-KEEP does not waive a limit; a revised forecast does not raise an approved envelope.
-Resume the affected path only after the trigger is resolved within current authority
-or the controlling record explicitly approves the revised scope/limit as required.
-Then apply the existing KEEP ONE PR / SPLIT / REPLAN delivery decision. Solution
-disposition answers whether the mechanism should survive; decomposition answers how
-valid intermediate states should land. Neither decision substitutes for the other.
-Diagnosis, simplification, routine reversible mechanics, and unrelated authorized work
-continue. Routine implementation inside the approved outcome needs no fresh Human
-Review; route only decisions crossing existing authority/review boundaries.
+Before approving defensive machinery, exercise the smallest credible implementation at the real
+boundary, or use a precise skeleton where execution is not yet practical. Name the contract,
+boundary case, expected result and remaining unproved claims. Hypothetical completeness alone
+cannot justify additional machinery.
 
 ### Existing exact-head review handoff
 
-Supply the package projection/ledger with the exact head and governing record to the
-existing review. Reconcile retained aggregate counts and limits as well as actual PR
-size, including landed/superseded contributions and any UNKNOWN composition.
-For each material defensive mechanism, require a concrete contract failure,
-reproducible fault, or credible discriminating boundary case that a simpler solution
-would mishandle. Test that claim against the economy proof and simpler alternative;
-plausible-sounding completeness and green self-confirming tests are insufficient.
-Review any solution disposition before accepting the resulting delivery shape.
-Unresolved limits/triggers or unknown compliance hold only the affected readiness
-claim; use the existing findings and focused rereview process, not a second ceremony.
+Supply the governing package projection and exact `package-size.py` report with the exact head.
+Review verifies the immutable base, original forecasts, caps, package/support patterns, retained
+counts, UNKNOWN state, any forecast-miss disposition and actual PR size. Revised forecasts never
+erase an earlier miss or raise a cap. Review each material defensive mechanism against a concrete
+contract failure, reproducible fault or credible discriminating boundary case that a simpler
+solution would mishandle. Unresolved limits, UNKNOWN composition or an undispositioned trigger
+holds only the affected readiness claim; use normal focused rereview, not a second ceremony.
 
 ## Test quality and qualification
 
