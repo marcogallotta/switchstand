@@ -54,7 +54,7 @@ and UNKNOWN/readback rules reject invalid effects without relying on a prompt.
 ## Private configuration
 
 The authorized host keeps OAuth client credentials, allowed immutable identity,
-public resource URL, bind settings, database URL, and provider credentials
+public resource URL, bind settings, and database URL
 outside the repository and logs. The public resource URL uses HTTPS and ends in
 `/mcp`; the process binds only to loopback behind its reverse proxy. OAuth
 metadata, authorization, callback, consent, registration, token, and MCP routes
@@ -215,14 +215,13 @@ SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
 FASTMCP_HOME=/absolute/stable/auth/state
 ```
 
-The delegated-edge file contains the resource URL, numeric GitHub user ID, database and provider
+The delegated-edge file contains the resource URL, numeric GitHub user ID, and database
 configuration, but **not** the GitHub client secret, signing material, or `FASTMCP_HOME`:
 
 ```dotenv
 SWITCHSTAND_MCP_GITHUB_USER_ID=192548
 SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
 DATABASE_URL=...
-ASANA_TOKEN=...
 ```
 
 Delegated-edge startup fails closed if GitHub client ID/secret or `FASTMCP_HOME` is present, catching
