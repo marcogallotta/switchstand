@@ -74,6 +74,7 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
         "outcome_state_revisions",
         "canonical_work", "legacy_work_aliases", "work_dependencies", "work_parents",
         "projects", "project_memberships", "work_events",
+        "work_migration_receipts", "failure_records", "failure_resolutions",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
     database = inspect(engine)

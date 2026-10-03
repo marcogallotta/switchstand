@@ -5,12 +5,13 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.canonical_relations import project_memberships, projects
 from switchstand.canonical_work import canonical_metadata, canonical_work
+from switchstand.state import metadata
 from switchstand.work_corpus import (
     compare_parity_exports,
     parity_manifest,
@@ -83,6 +84,8 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
         pytest.skip("TEST_DATABASE_URL is required")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.execute(text("TRUNCATE work_handles CASCADE"))
         await connection.run_sync(canonical_metadata.drop_all)
         await connection.run_sync(canonical_metadata.create_all)
     yield engine

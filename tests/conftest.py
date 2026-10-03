@@ -42,6 +42,15 @@ def database_prerequisite() -> None:
     if url:
         engine = create_engine(url)
         try:
+            # Tests which rebuild an older schema with Alembic must not inherit
+            # tables owned by the current head from a preceding metadata-based
+            # fixture.  Keep the migration strict; isolate the disposable test
+            # database at the fixture boundary instead.
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "DROP TABLE IF EXISTS failure_resolutions, failure_records, "
+                    "work_migration_receipts CASCADE"
+                )
             canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
         finally:
             engine.dispose()

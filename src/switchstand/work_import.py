@@ -172,7 +172,15 @@ async def import_parity(
             for row in read_rows:
                 fields = {key: parity_value(value) for key, value in row.items()}
                 records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
-        if parity_manifest(records) != source_document:
+        source_records = {
+            (kind, cast(str, record["id"])): record["fields"]
+            for kind, _, _ in TABLES for record in grouped[kind]
+        }
+        readback_records = {
+            (cast(str, record["kind"]), cast(str, record["id"])): record["fields"]
+            for record in records
+        }
+        if readback_records != source_records:
             raise ValueError("target readback does not match source parity")
         await connection.execute(insert(work_migration_receipts).values(
             name=MIGRATION_COMPLETE_RECEIPT,
