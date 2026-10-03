@@ -70,6 +70,29 @@ def test_exact_plan_uses_supplied_head_tree_not_checkout(tmp_path: Path) -> None
     assert local.head.startswith(f"worktree:{head}:")
 
 
+def test_selected_test_absent_from_execution_tree_falls_back(
+    tmp_path: Path, capsys: CaptureFixture[str],
+) -> None:
+    repo, base = fixture_repo(tmp_path)
+    write(repo, "src/switchstand/alpha.py", "VALUE = 2\n")
+    head = commit(repo, "candidate")
+    git(repo, "checkout", "-q", base)
+    (repo / "tests/test_alpha.py").unlink()
+    execution_tree = commit(repo, "target deleted selected test")
+
+    main([
+        "--repo", str(repo), "--base", base, "--head", head,
+        "--execution-tree", execution_tree, "--json",
+    ])
+    plan = json.loads(capsys.readouterr().out)
+
+    assert plan["mode"] == "FULL_FALLBACK"
+    assert plan["selected_tests"] == ["tests/test_unrelated.py"]
+    assert plan["fallback_reasons"] == [
+        "selected test absent from execution tree:tests/test_alpha.py"
+    ]
+
+
 def test_changed_helper_selects_transitive_importer(tmp_path: Path) -> None:
     repo, base = fixture_repo(tmp_path)
     write(repo, "tests/helpers.py", "VALUE = 2\n")
@@ -170,5 +193,6 @@ def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
     assert "Build planner and selected-test development image" in workflow
     assert "/app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()'" in workflow
     assert "--repo /workspace" in workflow
+    assert '--execution-tree "$EXECUTION_SHA"' in workflow
     assert "GIT_CONFIG_KEY_0=safe.directory" in workflow
     assert "GIT_CONFIG_VALUE_0=/workspace" in workflow

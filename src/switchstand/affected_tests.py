@@ -10,7 +10,7 @@ import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -280,6 +280,43 @@ def plan_exact(repo: Path, base: str, head: str) -> Plan:
     )
 
 
+def validate_execution_tree(repo: Path, plan: Plan, execution_tree: str) -> Plan:
+    """Refuse a selected plan whose tests are absent from the tree being executed."""
+    try:
+        execution_sha = _exact_sha(repo, execution_tree)
+        files = tuple(
+            path
+            for path in _git(repo, "ls-tree", "-r", "--name-only", "-z", execution_sha)
+            .decode(errors="surrogateescape")
+            .split("\0")
+            if path
+        )
+    except RuntimeError:
+        return replace(
+            plan,
+            mode="NO_PLAN",
+            selected_tests=(),
+            fallback_reasons=(*plan.fallback_reasons, "execution tree unavailable"),
+        )
+    missing = tuple(test for test in plan.selected_tests if test not in files)
+    if not missing:
+        return plan
+    tests = tuple(path for path in files if path.startswith("tests/test_") and path.endswith(".py"))
+    return replace(
+        plan,
+        mode="FULL_FALLBACK" if tests else "NO_PLAN",
+        selected_tests=tests,
+        fallback_reasons=tuple(
+            sorted(
+                {
+                    *plan.fallback_reasons,
+                    *(f"selected test absent from execution tree:{path}" for path in missing),
+                }
+            )
+        ),
+    )
+
+
 def plan_local(repo: Path, base: str | None = None) -> Plan:
     current = _git(repo, "rev-parse", "HEAD").decode().strip()
     base_sha = _exact_sha(repo, base) if base else current
@@ -320,6 +357,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--base")
     parser.add_argument("--head")
+    parser.add_argument("--execution-tree")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -331,6 +369,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         if not args.base or not args.head:
             parser.error("exact mode requires --base and --head")
         plan = plan_exact(args.repo.resolve(), args.base, args.head)
+        if args.execution_tree:
+            plan = validate_execution_tree(args.repo.resolve(), plan, args.execution_tree)
     if args.json:
         print(json.dumps(asdict(plan), sort_keys=True, separators=(",", ":")))
     else:
