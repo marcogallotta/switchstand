@@ -34,7 +34,6 @@ from .grants import PrincipalContext, WorkGrant
 from .state import metadata
 
 DELIVERY_NAMESPACE = UUID("8b7eedf9-138d-4a5e-9060-7c208138402d")
-PROJECTION_NAMESPACE = UUID("5cf70ae7-4d39-4398-82d6-967d2cb6e3bc")
 PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
 
 messages = Table(
@@ -97,14 +96,6 @@ message_projection = Table(
 class MessageRoute(ClosedModel):
     recipient_work_id: UUID
     recipient_grant_version: int = Field(ge=1)
-    projection_provider: Literal["asana"] | None = None
-    projection_target: str | None = Field(default=None, min_length=1, pattern=r"^[0-9]+$")
-
-    @model_validator(mode="after")
-    def projection_pair(self) -> Self:
-        if (self.projection_provider is None) != (self.projection_target is None):
-            raise ValueError("message projection provider and target must be supplied together")
-        return self
 
 
 class MessageSubmitRequest(ClosedModel):
@@ -463,7 +454,6 @@ class MessageState:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
         delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
-        projection_id = uuid5(PROJECTION_NAMESPACE, identity)
         async with self.engine.begin() as connection:
             if (
                 agent_binding is not None
@@ -515,12 +505,6 @@ class MessageState:
                 message_id=request.message_id, recipient_work_id=route.recipient_work_id,
                 recipient_grant_version=route.recipient_grant_version,
             ).on_conflict_do_nothing())
-            if route.projection_provider is not None and route.projection_target is not None:
-                await connection.execute(insert(message_projection).values(
-                    projection_id=projection_id, sender_work_id=sender_work_id,
-                    message_id=request.message_id, operation_id=projection_id,
-                    provider=route.projection_provider, target=route.projection_target,
-                ).on_conflict_do_nothing())
             row = (await connection.execute(self._pending_query().where(
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()

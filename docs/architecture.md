@@ -187,8 +187,9 @@ messaging, and required continuation:
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. Current message routes create only the durable PostgreSQL message and delivery records;
-  provider projection remains only for frozen-cutover disposition and later schema retirement.
+  checks. Message routes accept and create only the durable PostgreSQL message and delivery records;
+  the historical projection table remains readable only for frozen-cutover disposition and later
+  schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
