@@ -69,10 +69,16 @@ def upgrade() -> None:
 def downgrade() -> None:
     connection = op.get_bind()
     connection.execute(
-        sa.text("LOCK TABLE failure_resolutions, failure_records IN ACCESS EXCLUSIVE MODE")
+        sa.text(
+            "LOCK TABLE failure_resolutions, failure_records, work_migration_receipts "
+            "IN ACCESS EXCLUSIVE MODE"
+        )
     )
-    if connection.scalar(sa.text("SELECT count(*) FROM failure_records")):
-        raise RuntimeError("preserve durable failure evidence; use a forward migration")
+    if (
+        connection.scalar(sa.text("SELECT count(*) FROM failure_records"))
+        or connection.scalar(sa.text("SELECT count(*) FROM work_migration_receipts"))
+    ):
+        raise RuntimeError("preserve durable failure or migration evidence; use a forward migration")
     op.drop_table("failure_resolutions")
     op.drop_table("failure_records")
     op.drop_table("work_migration_receipts")
