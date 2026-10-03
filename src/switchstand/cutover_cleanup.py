@@ -77,7 +77,7 @@ def _receipt_matches(operation: object, receipt: object, row: dict[str, object])
         kind = UpdateReceipt if operation == "work_update" else RelationReceipt
         return isinstance(receipt, kind) and all((
             receipt.observed_revision == request["observed_revision"],
-            receipt.patch.model_dump(mode="json") == request["patch"],
+            receipt.patch.model_dump(mode="json", exclude_unset=True) == request["patch"],
         ))
     return False
 async def apply_cleanup(engine: AsyncEngine, plan_path: Path, archive_path: Path) -> dict[str, int]:
