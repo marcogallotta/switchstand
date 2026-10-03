@@ -111,8 +111,8 @@ runtime or performing host I/O. See [Wakeful edge-monitor prototype](wakeful-edg
 `edge_monitor_host.py` is its inert one-shot host/fixture adapter; it neither schedules itself nor
 delivers the resulting neutral events.
 
-`source_task`, `source_stories`, and `source_story` are not part of this ordinary surface. They
-remain transitional managed compatibility reads for bounded legacy recovery/reference workflows.
+Provider source and attachment tools are not part of either current MCP surface. Legacy task URLs
+and GIDs resolve locally through the canonical alias table.
 
 ### Managed task-bound STDIO MCP
 
@@ -121,7 +121,7 @@ optional read-only reference WorkIds, the managed principal, run currentness, an
 gateways. Omitting a WorkId selects the active assignment; it is not workspace discovery. When
 `SWITCHSTAND_MANAGED` is absent, `server_from_env` returns an unbound server with no task authority.
 Managed construction reads canonical work and history from PostgreSQL and does not construct an
-Asana client; retained mutation owners are supplied explicitly to the unchanged tool surface.
+Asana client; retained mutation owners are supplied explicitly.
 
 `mcp.py::build_context_server` is the smaller read-only context surface. It exposes only the
 launch-bound work and its revision-checked history. Managed and ordinary MCPs reuse contracts and

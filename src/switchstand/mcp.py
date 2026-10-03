@@ -18,16 +18,8 @@ from .contracts import (
     AppendResult,
     ClosedModel,
     LaunchAuthority,
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTaskRequest,
-    SourceTaskResult,
     Status,
     WorkAppendRequest,
-    WorkAttachmentsRequest,
-    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
@@ -224,21 +216,6 @@ def build_server(
             WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
 
-    async def _work_attachments(
-        api_version: Literal["1"],
-        observed_revision: Annotated[str, Field(min_length=1)],
-        work_id: UUID | None = None,
-        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
-        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
-    ) -> WorkAttachmentsResult:
-        """Read one bounded name-only attachment page; on stale, repeat work_get and restart."""
-        return await service.attachments(  # type: ignore[attr-defined]
-            WorkAttachmentsRequest(
-                api_version=api_version, work_id=work_id or active_work_id,
-                observed_revision=observed_revision, cursor=cursor, limit=limit,
-            )
-        )
-
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
         work_id: UUID | None = None,
@@ -248,52 +225,13 @@ def build_server(
             WorkEventRequest(api_version=api_version, work_id=work_id or active_work_id,
                              event_id=event_id, observed_revision=observed_revision))
 
-    async def _source_task(api_version: Literal["1"], task_gid: str) -> SourceTaskResult:
-        """Read one exact canonical Asana task by Asana task GID; this is not a WorkId."""
-        return await service.source_task(  # type: ignore[attr-defined]
-            SourceTaskRequest(api_version=api_version, task_gid=task_gid)
-        )
-
-    async def _source_stories(
-        api_version: Literal["1"], task_gid: str, observed_revision: str,
-        offset: str | None = None, limit: int = 50,
-    ) -> SourceStoriesResult:
-        """Read one revision-checked page of exact Asana task history/comments."""
-        return await service.source_stories(  # type: ignore[attr-defined]
-            SourceStoriesRequest(
-                api_version=api_version,
-                task_gid=task_gid,
-                observed_revision=observed_revision,
-                offset=offset,
-                limit=limit,
-            )
-        )
-
-    async def _source_story(
-        api_version: Literal["1"], task_gid: str, story_gid: str,
-        observed_revision: str,
-    ) -> SourceStoryResult:
-        """Reread one exact material Asana story and verify its task and task revision."""
-        return await service.source_story(  # type: ignore[attr-defined]
-            SourceStoryRequest(
-                api_version=api_version,
-                task_gid=task_gid,
-                story_gid=story_gid,
-                observed_revision=observed_revision,
-            )
-        )
-
     async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
         """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
 
     closed_tool(server, "work_get", _work_get)
-    closed_tool(server, "work_attachments", _work_attachments)
     closed_tool(server, "work_history", _work_history)
     closed_tool(server, "work_event", _work_event)
-    closed_tool(server, "source_task", _source_task)
-    closed_tool(server, "source_stories", _source_stories)
-    closed_tool(server, "source_story", _source_story)
     closed_tool(server, "work_append", _work_append)
     if updates is not None and grants is not None and principal is not None:
         async def _work_update(

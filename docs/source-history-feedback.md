@@ -67,32 +67,18 @@ dedicated message tools. There is no daemon, generic inbox scan,
 inactive-session wake, or authority inferred from message delivery. A sender's
 successful send is not recipient pickup.
 
-## Raw source compatibility
+## Legacy references
 
-`source_task`, `source_stories`, and `source_story` are bounded compatibility
-reads on the managed surface for exact provider records still needed by legacy,
-reference, recovery, or failback flows. They are not the ordinary current MCP
-mental model and should not be copied into new ordinary workflows.
-
-Where supported, source reads accept an exact provider task identity already
-supplied by the assignment or its evidence and enforce the configured provider
-boundary. Page stories using only the returned cursor and observed revision;
-restart after `stale`. Before a consequential claim based on mutable comment
-content, reread the exact story. Source readability neither binds active work nor
-grants an effect, and a provider task ID never substitutes for a WorkId.
-
-Compatibility retirement is proof-gated: remove raw source reads only after all
-required ordinary, recovery, and failback consumers have verified neutral
-replacement coverage. Until then, keep compatibility use narrow and keep new
-current guidance on WorkId-based APIs.
+Provider source and attachment tools are retired from the current MCP surfaces.
+Legacy task GIDs and URLs resolve locally to WorkIds; provider identity is not a
+runtime authority.
 
 ## Surface boundaries
 
 - The HTTP/OAuth edge is the ordinary workspace surface and uses authenticated
   principal admission plus explicit WorkIds.
 - Managed task-bound Codex uses the launcher-controlled STDIO surface with
-  injected active/reference WorkIds; raw source reads exist there only for the
-  bounded compatibility cases above.
+  injected active/reference WorkIds.
 - Context-only launches expose only the minimal current-work/history view needed
   by that context contract.
 - The development MCP owns local selected-test check, commit, explicitly non-authoritative

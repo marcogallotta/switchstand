@@ -234,8 +234,8 @@ services, state, settings, or routing.
     full suite inside the deliberately constrained managed sandbox; its result does not establish CI
     equivalence or full qualification. Exact-head/composition GitHub Quality remains authoritative.
     This surface does not grant product work authority.
-  Raw `source_task/source_stories/source_story` remain transitional compatibility reads; prefer WorkId-based APIs for
-  new ordinary flows. Provider credentials remain in trusted host/service configuration and are not agent arguments.
+  Provider source and attachment tools are retired from managed and ordinary MCP surfaces. Legacy
+  task references resolve locally to WorkIds.
 
 CI runs on Python 3.14 with PostgreSQL. Correctness, types, and tests block; formatting is reported without rewriting
 review diffs. The development/Quality image must support the production Git command contract, including
