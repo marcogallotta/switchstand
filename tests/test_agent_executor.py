@@ -34,7 +34,12 @@ def test_executor_uses_exact_lease_limits_and_sandbox(
     seen: list[str] = []
 
     def run(arguments: list[str], **kwargs: object) -> SimpleNamespace:
-        seen.extend(arguments)
+        if arguments[0] == "systemd-run":
+            seen.extend(arguments)
+        if "--property=ActiveState" in arguments:
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        if "--property=ControlGroup" in arguments:
+            return SimpleNamespace(returncode=0, stdout="\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -95,6 +100,10 @@ def test_confirmed_timeout_stops_unit_then_cancels_lease(
         calls.append(arguments)
         if arguments[0] == "systemd-run":
             raise subprocess.TimeoutExpired(arguments, 1)
+        if "--property=ActiveState" in arguments:
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        if "--property=ControlGroup" in arguments:
+            return SimpleNamespace(returncode=0, stdout="\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -154,6 +163,7 @@ def test_nonzero_requires_terminal_unit_proof(
         [
             SimpleNamespace(returncode=9),
             SimpleNamespace(returncode=0, stdout="failed\n"),
+            SimpleNamespace(returncode=0, stdout="\n"),
             SimpleNamespace(returncode=0),
         ]
     )

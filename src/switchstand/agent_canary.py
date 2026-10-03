@@ -165,15 +165,19 @@ class Canary:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        observed = pressure or Pressure.current()
-        result = self.broker.ingest(parent, request_id, observed)
-        admissions.append({"request_id": request_id, "pressure": asdict(observed), "result": result})
+        result = self.broker.ingest(parent, request_id, pressure)
+        observed = asdict(pressure) if pressure is not None else {"source": "broker_live_sample"}
+        admissions.append({"request_id": request_id, "pressure": observed, "result": result})
         return result
 
     @staticmethod
     def _expected_file(workdir: Path, relative: str) -> dict[str, Any]:
         payload = (workdir / relative).read_bytes()
-        return {"path": relative, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+        return {
+            "path": relative,
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
 
     def _worker_evidence(self, worker: str, expected_file: dict[str, Any]) -> dict[str, Any]:
         path = self.broker.execution_dir(worker) / "stdout.log"
@@ -191,12 +195,14 @@ class Canary:
                 and int(cgroup["pids.max"]) == expected.tasks
                 and 100 * cpu_quota // cpu_period == expected.cpu_percent
             )
-        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        except KeyError, OSError, TypeError, ValueError, json.JSONDecodeError:
             value, valid = {}, False
         return {"lease_id": worker, "output": str(path), "proof": value, "valid": valid}
 
     def _record(self, report: dict[str, Any]) -> dict[str, Any]:
-        report["report_path"] = str(self.broker.root / "canaries" / report["run_id"] / "report.json")
+        report["report_path"] = str(
+            self.broker.root / "canaries" / report["run_id"] / "report.json"
+        )
         self.broker.record_canary(report["run_id"], report)
         return report
 

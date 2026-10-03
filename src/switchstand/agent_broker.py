@@ -17,7 +17,7 @@ from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
@@ -448,6 +448,7 @@ class Broker:
         unit_terminal: bool | None,
         cgroup_empty: bool | None,
         observed_monotonic: float | None = None,
+        release_state: Literal["completed", "cancelled"] = "completed",
     ) -> dict[str, str]:
         """Release a crashed attempt only from positive, identity-bound runtime proof."""
         observed = self.clock() if observed_monotonic is None else observed_monotonic
@@ -462,35 +463,62 @@ class Broker:
                 raise ValueError("execution identity mismatch")
             if observed_boot_id != lease.get("boot_id") or observed_boot_id != self.boot_id:
                 return {"state": "unknown", "reason": "boot_identity"}
-            terminal_state: str | None = None
+            resolved_state: str | None = None
             if execution_started is False:
                 expires = lease.get("claim_expires_monotonic")
                 if isinstance(expires, (int, float)) and observed >= expires:
-                    terminal_state = "abandoned"
-            if terminal_state is None and unit_terminal is True and cgroup_empty is True:
-                terminal_state = "completed"
-            if terminal_state is None:
+                    resolved_state = "abandoned"
+            if resolved_state is None and unit_terminal is True and cgroup_empty is True:
+                resolved_state = release_state
+            if resolved_state is None:
                 return {"state": "unknown", "reason": "runtime_ambiguous"}
             if any(
                 item["state"] in ACTIVE and item["parent"] == lease_id
                 for item in state["leases"].values()
             ):
                 return {"state": "unknown", "reason": "active_children"}
-            lease["state"] = terminal_state
+            lease["state"] = resolved_state
             lease["reconciled_monotonic"] = observed
             self._atomic_json(self.state_path, state)
-            return {"state": "released", "reason": terminal_state}
+            return {"state": "released", "reason": resolved_state}
 
-    def finish_execution(self, lease_id: str, state_name: str) -> None:
-        if state_name not in {"completed", "cancelled"}:
-            raise ValueError("invalid terminal execution state")
+    def reconcile_reservation(
+        self,
+        lease_id: str,
+        *,
+        reservation_id: str,
+        observed_boot_id: str,
+        launch_absent: bool | None,
+        observed_monotonic: float | None = None,
+        reservation_ttl_seconds: float = CLAIM_TTL_SECONDS,
+    ) -> dict[str, str]:
+        """Release an unattached reservation only after expiry and positive absence proof."""
+        observed = self.clock() if observed_monotonic is None else observed_monotonic
         with self._locked():
             state = self._read_state()
             lease = self._active_lease(state, lease_id)
-            if lease["state"] != "execution_active":
-                raise RuntimeError("lease has no active execution")
-            lease["state"] = state_name
+            if lease.get("reservation_id") != reservation_id:
+                raise ValueError("reservation identity mismatch")
+            if lease.get("state") != "reserved":
+                return {"state": "unknown", "reason": "execution_attached"}
+            if observed_boot_id != lease.get("boot_id") or observed_boot_id != self.boot_id:
+                return {"state": "unknown", "reason": "boot_identity"}
+            reserved = lease.get("reserved_monotonic")
+            if (
+                launch_absent is not True
+                or not isinstance(reserved, (int, float))
+                or observed < reserved + reservation_ttl_seconds
+            ):
+                return {"state": "unknown", "reason": "launch_ambiguous"}
+            lease["state"] = "abandoned"
+            lease["reconciled_monotonic"] = observed
             self._atomic_json(self.state_path, state)
+            return {"state": "released", "reason": "abandoned"}
+
+    def finish_execution(self, lease_id: str, state_name: str) -> None:
+        """Reject the legacy proof-free release path."""
+        del lease_id, state_name
+        raise RuntimeError("execution release requires identity-bound runtime reconciliation")
 
     def _reserve(self, state: dict[str, Any], request: LeaseRequest) -> dict[str, Any]:
         if request.worker == "root" or request.worker in state["leases"]:
@@ -525,6 +553,7 @@ class Broker:
             "total": asdict(requested),
             "state": "reserved",
             "reserved_monotonic": self.clock(),
+            "boot_id": self.boot_id,
             "attempt_id": None,
             "unit": None,
         }

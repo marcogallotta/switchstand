@@ -252,6 +252,47 @@ def test_reconcile_releases_only_expired_proven_not_started_attempt(tmp_path: Pa
     assert broker.status()["leases"]["worker"]["state"] == "abandoned"
 
 
+def test_unattached_reservation_releases_only_after_expiry_and_absence_proof(
+    tmp_path: Path,
+) -> None:
+    broker = Broker(tmp_path, clock=lambda: 10.0, boot_id="boot-a")
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", GREEN)
+
+    def reconcile(observed: float, absent: bool | None) -> dict[str, str]:
+        return broker.reconcile_reservation(
+            "worker",
+            reservation_id=result["reservation_id"],
+            observed_boot_id="boot-a",
+            launch_absent=absent,
+            observed_monotonic=observed,
+            reservation_ttl_seconds=5,
+        )
+
+    assert reconcile(14, True)["state"] == "unknown"
+    assert reconcile(15, None)["state"] == "unknown"
+    assert reconcile(15, True) == {"state": "released", "reason": "abandoned"}
+
+
+def test_proof_free_finish_path_is_rejected(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", GREEN)
+    broker.attach_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        receipt={"state": "starting"},
+    )
+
+    with pytest.raises(RuntimeError, match="runtime reconciliation"):
+        broker.finish_execution("worker", "completed")
+    assert broker.lease("worker")["state"] == "execution_active"
+
+
 @pytest.mark.parametrize(
     ("boot_id", "started", "terminal", "empty", "reason"),
     [

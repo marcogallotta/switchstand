@@ -16,7 +16,9 @@ ROOT = Budget(2100, 3072, 384, 300, 288, 3, 0)
 
 
 class FakeRunner:
-    def __init__(self, broker: Broker, state: str = "completed", bad_file: str | None = None) -> None:
+    def __init__(
+        self, broker: Broker, state: str = "completed", bad_file: str | None = None
+    ) -> None:
         self.broker = broker
         self.state = state
         self.bad_file = bad_file
@@ -51,7 +53,17 @@ class FakeRunner:
                 proof[self.bad_file] = "wrong"
         (execution / "stdout.log").write_text(json.dumps(proof) + "\n")
         if self.state == "completed":
-            self.broker.finish_execution(lease_id, "completed")
+            lease = self.broker.lease(lease_id)
+            self.broker.reconcile_execution(
+                lease_id,
+                reservation_id=lease["reservation_id"],
+                attempt_id=f"attempt-{lease_id}",
+                unit=f"unknown-{lease_id}.service",
+                observed_boot_id=self.broker.boot_id,
+                execution_started=True,
+                unit_terminal=True,
+                cgroup_empty=True,
+            )
         self.broker.record_execution(lease_id, receipt)
         return receipt
 
