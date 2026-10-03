@@ -780,6 +780,30 @@ async def test_source_identity_and_canonical_ancestry():
         await subject.source_task("123")
 
 
+async def test_zero_membership_read_is_literal_and_identity_checked():
+    orphan = source_task_payload()
+    orphan["data"]["memberships"] = []
+    subject, _ = provider((200, orphan))
+    assert await subject.has_zero_memberships("123") is True
+
+    outside = source_task_payload()
+    outside["data"]["memberships"] = [
+        {"project": {"gid": "outside", "name": "Outside"}, "section": None},
+    ]
+    subject, _ = provider((200, outside))
+    assert await subject.has_zero_memberships("123") is False
+
+    subject, _ = provider((200, source_task_payload(gid="different")))
+    with pytest.raises(ProviderError, match="provider response invalid"):
+        await subject.has_zero_memberships("123")
+
+    malformed = source_task_payload()
+    malformed["data"]["memberships"] = {"not": "a list"}
+    subject, _ = provider((200, malformed))
+    with pytest.raises(ProviderError, match="provider response invalid"):
+        await subject.has_zero_memberships("123")
+
+
 async def test_history_page_preserves_exact_cursor_and_revision():
     snapshot = source_task_payload()
     page = {"data": [source_story_payload()], "next_page": {"offset": "next"}}
@@ -808,15 +832,29 @@ async def test_import_snapshot_preserves_raw_structure_and_rechecks_revision():
     result = await subject.snapshot_for_import("123")
 
     assert result is not None
-    work, parent, placements = result
+    work, parent, placements, zero_memberships = result
     assert work.notes == "Notes" and parent == "789"
     assert placements == ((PROJECT, "Area", "Doing"),)
+    assert zero_memberships is False
     assert len(api.requests) == 2
 
     changed = source_task_payload(revision="r2")
     subject, _ = provider((200, snapshot), (200, changed))
     with pytest.raises(ProviderError, match="changed"):
         await subject.snapshot_for_import("123")
+
+
+async def test_import_snapshot_exposes_raw_empty_membership_despite_parent_canonicality():
+    child = source_task_payload()
+    child["data"].update(memberships=[], parent={"gid": "789"})
+    parent = source_task_payload(gid="789")
+    subject, _ = provider((200, child), (200, child), (200, parent))
+
+    result = await subject.snapshot_for_import("123")
+
+    assert result is not None
+    _, parent_gid, placements, zero_memberships = result
+    assert parent_gid == "789" and placements == () and zero_memberships is True
 
 
 @pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])

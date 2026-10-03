@@ -93,6 +93,9 @@ class FakeProvider:
     async def get(self, provider_work_id):
         return self.exact[provider_work_id]
 
+    async def has_zero_memberships(self, _provider_work_id):
+        return False
+
     async def dependencies_for_import(self, provider_work_id):
         return self.dependencies.get(provider_work_id, frozenset())
 
@@ -137,7 +140,9 @@ async def test_stable_union_includes_readable_bound_continuity_targets(index):
     assert rows["broad"]["dependencies"] == ["dependency-target"]
     assert rows["grant-target"]["work_id"] == str(grant.id)
     assert "Coordinator" not in str(manifest)
-    assert manifest["counts"] == {"broad": 1, "bound": 3, "included": 4, "exceptions": 0}
+    assert manifest["counts"] == {
+        "broad": 1, "bound": 3, "included": 4, "exceptions": 0, "retired": 0,
+    }
 
 
 async def test_capture_reports_bounded_scan_progress(index):
@@ -211,8 +216,70 @@ async def test_preflight_classifies_bound_decode_failure_and_continues(index):
         "task_handles": 1,
         "current": 0,
         "historical-missing": 0,
+        "retired": 0,
         "unresolved": 1,
     }
+
+
+async def test_zero_membership_retires_bound_decode_failure(index):
+    provider_work_id = "1218467001205757"
+    bound = Handle(UUID(int=24), "asana", provider_work_id)
+    await insert_handles(index.engine, bound)
+
+    class OrphanedDecodeFailure(FakeProvider):
+        async def get(self, _provider_work_id):
+            raise ProviderWorkDecodeError("priority_truth")
+
+        async def has_zero_memberships(self, _provider_work_id):
+            return True
+
+    provider = OrphanedDecodeFailure({None: ProviderSearchPage((), None)}, {})
+    corpus = await capture_manifest(index.engine, provider, SHA)
+    assert corpus["exceptions"] == [{
+        "provider_work_id": provider_work_id,
+        "work_id": str(bound.id),
+        "reason": "zero-membership",
+    }]
+    assert corpus["counts"]["retired"] == 1
+
+    preflight = await capture_preflight_manifest(index.engine, provider, SHA)
+    assert preflight["handle_classifications"] == [{
+        "provider_work_id": provider_work_id,
+        "work_id": str(bound.id),
+        "state": "retired",
+        "reason": "zero-membership",
+    }]
+    assert preflight["counts"] == {
+        "task_handles": 1,
+        "current": 0,
+        "historical-missing": 0,
+        "retired": 1,
+        "unresolved": 0,
+    }
+
+
+async def test_zero_membership_retires_readable_parent_inherited_task(index):
+    bound = Handle(UUID(int=25), "asana", "inherited")
+    await insert_handles(index.engine, bound)
+
+    class ParentInherited(FakeProvider):
+        async def has_zero_memberships(self, provider_work_id):
+            return provider_work_id == "inherited"
+
+    manifest = await capture_manifest(
+        index.engine,
+        ParentInherited(
+            {None: ProviderSearchPage((), None)},
+            {"inherited": provider_work("inherited", canonical=True)},
+        ),
+        SHA,
+    )
+
+    assert manifest["rows"] == []
+    assert manifest["exceptions"] == [{
+        "provider_work_id": "inherited", "work_id": str(bound.id),
+        "reason": "zero-membership",
+    }]
 
 
 async def test_manifest_reports_db_residue_needed_for_cutover_preflight(index, tmp_path: Path):

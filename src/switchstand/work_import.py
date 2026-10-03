@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import DateTime, Table, func, insert, select
+from sqlalchemy import DateTime, Table, delete, func, insert, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .canonical_relations import (
     project_memberships,
@@ -23,6 +23,7 @@ from .canonical_relations import (
     work_parents,
 )
 from .canonical_work import canonical_work, legacy_work_aliases
+from .state import work_event_handles, work_handles
 from .work_corpus import load_manifest, parity_manifest, parity_value, write_manifest
 from .work_events import work_events
 
@@ -81,7 +82,66 @@ def _records(document: dict[str, object]) -> dict[str, list[dict[str, object]]]:
     return grouped
 
 
-async def import_parity(engine: AsyncEngine, source: Path) -> int:
+def _retired_bindings(path: Path) -> set[tuple[str, UUID]]:
+    document = load_manifest(path)
+    exceptions = document.get("exceptions")
+    if not isinstance(exceptions, list):
+        raise TypeError("source corpus exceptions are invalid")
+    result: set[tuple[str, UUID]] = set()
+    for raw in cast(list[object], exceptions):
+        if not isinstance(raw, dict):
+            raise TypeError("source corpus exception must be an object")
+        item = cast(dict[str, object], raw)
+        if set(item) != {"provider_work_id", "work_id", "reason"}:
+            raise ValueError("source corpus exception identity is invalid")
+        if item["reason"] != "zero-membership":
+            continue
+        gid, work_id = item["provider_work_id"], item["work_id"]
+        if not isinstance(gid, str) or not gid or not isinstance(work_id, str):
+            raise ValueError("source corpus exception identity is invalid")
+        binding = gid, UUID(work_id)
+        if binding in result:
+            raise ValueError("source corpus contains duplicate retired identity")
+        result.add(binding)
+    return result
+
+
+async def _retire_legacy_event_handles(
+    connection: AsyncConnection, grouped: dict[str, list[dict[str, object]]],
+    corpus_path: Path | None,
+) -> None:
+    source_aliases = {
+        (
+            cast(str, cast(dict[str, object], record["fields"])["asana_task_gid"]),
+            UUID(cast(str, cast(dict[str, object], record["fields"])["work_id"])),
+        )
+        for record in grouped["alias"]
+    }
+    legacy_bindings = {
+        (gid, work_id)
+        for gid, work_id in (await connection.execute(select(
+            work_handles.c.provider_work_id, work_handles.c.id,
+        ).where(work_handles.c.provider == "asana"))).all()
+    }
+    omitted = legacy_bindings - source_aliases
+    if corpus_path is None:
+        if not omitted:
+            return
+        raise ValueError("source omits Asana identities but no source corpus was provided")
+    retired = _retired_bindings(corpus_path)
+    if retired != omitted:
+        raise ValueError("source corpus retired identities do not match omitted Asana bindings")
+    if not retired:
+        return
+    retired_work_ids = {work_id for _, work_id in retired}
+    await connection.execute(delete(work_event_handles).where(
+        work_event_handles.c.work_id.in_(retired_work_ids)
+    ))
+
+
+async def import_parity(
+    engine: AsyncEngine, source: Path, corpus_path: Path | None = None,
+) -> int:
     """Fail atomically unless every canonical target table is empty and valid."""
     grouped = _records(load_manifest(source))
     imported = 0
@@ -89,6 +149,7 @@ async def import_parity(engine: AsyncEngine, source: Path) -> int:
         for _, table, _ in TABLES:
             if await connection.scalar(select(func.count()).select_from(table)):
                 raise ValueError(f"import target table is not empty: {table.name}")
+        await _retire_legacy_event_handles(connection, grouped, corpus_path)
         for kind, table, keys in TABLES:
             rows: list[dict[str, object]] = []
             for record in grouped[kind]:
@@ -117,11 +178,11 @@ async def target_parity(engine: AsyncEngine) -> dict[str, object]:
     return parity_manifest(records)
 
 
-async def _run(action: str, path: Path) -> str:
+async def _run(action: str, path: Path, corpus_path: Path | None = None) -> str:
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
     try:
         if action == "import":
-            return f"imported_records={await import_parity(engine, path)}"
+            return f"imported_records={await import_parity(engine, path, corpus_path)}"
         manifest = await target_parity(engine)
         write_manifest(path, manifest)
         return f"target_records={len(cast(Sequence[object], manifest['records']))}"
@@ -133,9 +194,10 @@ def run(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("import", "export"))
     parser.add_argument("path", type=Path)
+    parser.add_argument("--corpus", type=Path)
     arguments = parser.parse_args(argv)
     try:
-        print(asyncio.run(_run(arguments.action, arguments.path)))
+        print(asyncio.run(_run(arguments.action, arguments.path, arguments.corpus)))
     except (KeyError, OSError, TypeError, ValueError) as error:
         parser.exit(1, f"Work import failed: {error}\n")
 

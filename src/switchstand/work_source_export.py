@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -27,9 +27,11 @@ TOMBSTONE_EVENT_TIME = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class SourceProvider(Protocol):
+    async def has_zero_memberships(self, provider_work_id: str) -> bool: ...
+
     async def snapshot_for_import(
         self, provider_work_id: str,
-    ) -> tuple[ProviderWork, str | None, tuple[Placement, ...]] | None: ...
+    ) -> tuple[ProviderWork, str | None, tuple[Placement, ...], bool] | None: ...
 
     async def dependencies_for_import(self, provider_work_id: str) -> frozenset[str]: ...
 
@@ -156,6 +158,20 @@ def _tombstones(
     return result
 
 
+async def _ignored_zero_memberships(
+    provider: SourceProvider, excluded: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Revalidate capture-time retirement without changing corpus classification."""
+    result: dict[str, dict[str, object]] = {}
+    for gid, item in excluded.items():
+        if item["reason"] != "zero-membership":
+            continue
+        if not await provider.has_zero_memberships(gid):
+            raise ValueError(f"retired source work gained a membership: {gid}")
+        result[gid] = item
+    return result
+
+
 async def _stories(
     provider: SourceProvider, gid: str, revision: str,
 ) -> list[ProviderSourceStory]:
@@ -180,12 +196,18 @@ async def _stories(
 
 async def source_parity(
     engine: AsyncEngine, provider: SourceProvider, corpus_path: Path,
-    tombstone_path: Path | None = None,
+    tombstone_path: Path | None = None, *, progress: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     """Export every current source field into the canonical parity schema."""
     corpus = load_manifest(corpus_path)
     rows, excluded = _current_rows(corpus)
-    tombstones = _tombstones(tombstone_path, corpus, excluded)
+    ignored = await _ignored_zero_memberships(provider, excluded)
+    if progress is not None:
+        progress(len(ignored))
+    reviewed_excluded = {
+        gid: item for gid, item in excluded.items() if gid not in ignored
+    }
+    tombstones = _tombstones(tombstone_path, corpus, reviewed_excluded)
     async with engine.connect() as connection:
         bindings = (await connection.execute(select(
             work_handles.c.provider_work_id, work_handles.c.id,
@@ -198,6 +220,9 @@ async def source_parity(
     expected.update({
         gid: UUID(cast(str, row["work_id"])) for gid, row in tombstones.items()
     })
+    expected.update({
+        gid: UUID(cast(str, row["work_id"])) for gid, row in ignored.items()
+    })
     if {gid: work_id for gid, work_id in bindings} != expected:
         raise ValueError("source corpus no longer matches current Asana bindings")
     event_ids = {(work_id, task_gid, story_gid): event_id
@@ -205,6 +230,7 @@ async def source_parity(
     expected_event_ids = {
         event_id for (work_id, _, _), event_id in event_ids.items()
         if work_id in set(expected.values())
+        and work_id not in {expected[gid] for gid in ignored}
     }
     consumed_event_ids: set[UUID] = set()
     records: list[dict[str, object]] = []
@@ -253,7 +279,9 @@ async def source_parity(
         snapshot = await provider.snapshot_for_import(gid)
         if snapshot is None:
             raise ValueError(f"source work became unavailable: {gid}")
-        work, parent_gid, placements = snapshot
+        work, parent_gid, placements, zero_memberships = snapshot
+        if zero_memberships:
+            raise ValueError(f"source work retired after corpus capture: {gid}")
         if not work.canonical or work.revision != revision:
             raise ValueError(f"source work changed or became noncanonical: {gid}")
         dependencies = await provider.dependencies_for_import(gid)
@@ -273,6 +301,8 @@ async def source_parity(
             _record("work", _identity(work_id), fields),
             _record("alias", _identity(gid), {"asana_task_gid": gid, "work_id": str(work_id)}),
         ))
+        if parent_gid in ignored:
+            raise ValueError(f"parent is retired without memberships: {gid}")
         if parent_gid is not None:
             if parent_gid not in expected:
                 raise ValueError(f"parent is outside the current corpus: {gid}")
@@ -280,6 +310,8 @@ async def source_parity(
                 "child_work_id": str(work_id), "parent_work_id": str(expected[parent_gid]),
             }))
         for dependency in sorted(dependencies):
+            if dependency in ignored:
+                raise ValueError(f"dependency is retired without memberships: {gid}")
             if dependency not in expected:
                 raise ValueError(f"dependency is outside the current corpus: {gid}")
             records.append(_record("dependency", _identity(work_id, expected[dependency]), {
@@ -322,16 +354,19 @@ async def source_parity(
     return parity_manifest(records)
 
 
-async def _export(corpus: Path, output: Path, tombstones: Path | None = None) -> int:
+async def _export(corpus: Path, output: Path, tombstones: Path | None = None) -> tuple[int, int]:
     engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0)
     client = httpx.AsyncClient(
         base_url="https://app.asana.com/api/1.0", trust_env=False,
         headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
     )
     try:
-        manifest = await source_parity(engine, AsanaProvider(client), corpus, tombstones)
+        ignored: list[int] = []
+        manifest = await source_parity(
+            engine, AsanaProvider(client), corpus, tombstones, progress=ignored.append,
+        )
         write_manifest(output, manifest)
-        return len(cast(Sequence[object], manifest["records"]))
+        return len(cast(Sequence[object], manifest["records"])), ignored[0]
     finally:
         await client.aclose()
         await engine.dispose()
@@ -344,9 +379,10 @@ def run(argv: list[str] | None = None) -> None:
     parser.add_argument("--tombstones", type=Path)
     arguments = parser.parse_args(argv)
     try:
-        print(f"source_records={asyncio.run(_export(
+        records, ignored = asyncio.run(_export(
             arguments.corpus, arguments.output, arguments.tombstones,
-        ))}")
+        ))
+        print(f"source_records={records} ignored_zero_memberships={ignored}")
     except (KeyError, OSError, TypeError, ValueError) as error:
         parser.exit(1, f"Work source export failed: {error}\n")
 

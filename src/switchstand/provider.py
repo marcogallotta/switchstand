@@ -489,6 +489,16 @@ class AsanaProvider:
             title, notes, completed, revision, routing, context, canonical,
         )
 
+    async def has_zero_memberships(self, provider_work_id: str) -> bool:
+        """Return whether an exact task has no project memberships at all."""
+        task = await self._task(provider_work_id)
+        if task is None:
+            return False
+        memberships = task.get("memberships")
+        if self._gid(task) != provider_work_id or not isinstance(memberships, list):
+            raise ProviderError("provider response invalid")
+        return not memberships
+
     async def structure_work(
         self, provider_work_id: str, observed_revision: str,
     ) -> ProviderStructure:
@@ -755,7 +765,9 @@ class AsanaProvider:
 
     async def snapshot_for_import(
         self, provider_work_id: str,
-    ) -> tuple[ProviderWork, str | None, tuple[tuple[str, str, str | None], ...]] | None:
+    ) -> tuple[
+        ProviderWork, str | None, tuple[tuple[str, str, str | None], ...], bool,
+    ] | None:
         """Read content and raw structure twice for one frozen offline export."""
         task = await self._task(provider_work_id)
         if task is None:
@@ -768,7 +780,10 @@ class AsanaProvider:
                 raise TypeError
             parent_gid = self._parent_gid(task)
             placements: dict[str, tuple[str, str, str | None]] = {}
-            for raw in cast(list[object], task["memberships"]):
+            raw_memberships = task["memberships"]
+            if not isinstance(raw_memberships, list):
+                raise TypeError
+            for raw in cast(list[object], raw_memberships):
                 if not isinstance(raw, dict):
                     raise TypeError
                 membership = cast(JSON, raw)
@@ -788,7 +803,7 @@ class AsanaProvider:
             work = await self.get(provider_work_id)
             if work is None or work.revision != revision:
                 raise ProviderError("provider work changed during import snapshot")
-            return work, parent_gid, tuple(sorted(placements.values()))
+            return work, parent_gid, tuple(sorted(placements.values())), not raw_memberships
         except (KeyError, TypeError, ValueError):
             raise ProviderError("provider response invalid") from None
 
