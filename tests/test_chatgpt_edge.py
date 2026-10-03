@@ -281,9 +281,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             assert tool.annotations is not None
             assert tool.annotations.read_only_hint is True
             assert tool.annotations.destructive_hint is False
-            assert tool.annotations.idempotent_hint is (
-                tool.name != "agent_project_bootstrap"
-            )
+            assert tool.annotations.idempotent_hint is True
             assert tool.annotations.open_world_hint is False
         search = await client.call_tool("work_search", {
             "api_version": "1", "text": "Task", "limit": 10,

@@ -40,7 +40,7 @@ def test_ordinary_annotation_policy_is_exhaustive():
     tool_names = {name for name, _ in build_ordinary_tools(service())}
     assert ORDINARY_GENUINE_READ_TOOLS.isdisjoint(ORDINARY_EFFECT_TOOLS)
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
-    assert ORDINARY_NON_IDEMPOTENT_TOOLS == {"agent_project_bootstrap"}
+    assert ORDINARY_NON_IDEMPOTENT_TOOLS == set()
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
 
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
@@ -389,7 +389,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference",
+            "repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
             "work_history", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
@@ -401,9 +401,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             assert tool.annotations is not None
             assert tool.annotations.read_only_hint is True
             assert tool.annotations.destructive_hint is False
-            assert tool.annotations.idempotent_hint is (
-                tool.name != "agent_project_bootstrap"
-            )
+            assert tool.annotations.idempotent_hint is True
             assert tool.annotations.open_world_hint is False
             if tool.name in {"work_get", "work_resolve_reference", "work_history", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
@@ -412,8 +410,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 assert tool.input_schema["properties"]["include_failure_detail"]["default"] is False
             assert tool.input_schema.get("additionalProperties") is False
             forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
-            if tool.name != "agent_project_bootstrap":
-                forbidden.add("role")
+            forbidden.add("role")
             assert not forbidden.intersection(tool.input_schema.get("properties", {}))
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
