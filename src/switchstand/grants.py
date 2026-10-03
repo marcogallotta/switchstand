@@ -243,36 +243,6 @@ class EffectBlocker(ClosedModel):
     outcome: EffectOutcomeView
 
 
-class EffectIntentView(ClosedModel):
-    """Provider-neutral durable intent safe to expose to its admitted owner."""
-    observed_revision: str
-    patch: ScalarPatch
-
-
-class EffectInspection(ClosedModel):
-    operation: Literal["work_update"]
-    operation_id: UUID
-    work_id: UUID
-    intent: EffectIntentView
-    original_outcome: EffectOutcomeView
-    current_outcome: EffectOutcomeView
-    readback: Literal["matched", "unconfirmed", "unavailable"]
-
-
-class EffectRecoveryResult(ClosedModel):
-    status: Literal["ok", "denied", "unknown"]
-    reason: str
-    inspection: EffectInspection | None = None
-
-    @model_validator(mode="after")
-    def exact_shape(self) -> Self:
-        if self.status == "denied" and self.inspection is not None:
-            raise ValueError("denied recovery cannot expose effect intent")
-        if self.status == "ok" and self.inspection is None:
-            raise ValueError("recovery result requires sanitized inspection")
-        return self
-
-
 class GuardOutcome(ClosedModel):
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
     operation: str

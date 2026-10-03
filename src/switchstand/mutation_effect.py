@@ -38,11 +38,7 @@ Prepare = Callable[[WorkGrant, str], Awaitable[PreparedMutation | GuardOutcome]]
 
 
 def blocked_effect_next_action(operation: str) -> str:
-    """Describe only recovery that the ordinary API actually supports."""
-    if operation == "work_update":
-        return (
-            "Use effect_reconcile with blocked_by.operation_id; this request was not sent."
-        )
+    """Direct every unresolved legacy effect to trusted frozen-cutover adjudication."""
     return (
         f"No ordinary exact recovery exists for the blocking {operation} effect; do not "
         "resend or start a new effect. Escalate for trusted operator adjudication."

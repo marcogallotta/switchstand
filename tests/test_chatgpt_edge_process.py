@@ -45,7 +45,7 @@ TOOLS = {
     "repository_bundle_get", "repository_candidate_qualification_get",
     "work_get", "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append",
-    "work_create", "work_update", "work_relate", "effect_reconcile",
+    "work_create", "work_update", "work_relate",
     "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
     "agent_message_receive", "agent_message_recover",
     "agent_message_result_send", "agent_message_disposition",

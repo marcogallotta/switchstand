@@ -7,15 +7,12 @@ import httpx
 import pytest
 from mcp import Client
 from pydantic import ValidationError
-from sqlalchemy import delete, select, update
+from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.chatgpt import ChatGPTService
-from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import Controller
-from switchstand.effect_recovery import EffectRecovery
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedUpdate, ScalarPatch, WorkGrant
 from switchstand.managed_identity import managed_principal, rotate_managed_grant
@@ -94,6 +91,7 @@ async def subject(database_prerequisite):
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     state, grants = PostgresState(engine), GrantState(engine)
     handle = await state.bind("asana", "123")
@@ -112,6 +110,8 @@ async def subject(database_prerequisite):
     )})
     yield gateway, grants, principal, grant, boundary
     await client.aclose()
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
 
@@ -156,8 +156,8 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
     assert reopened.effect == "applied" and boundary.puts[-1] == {"completed": False}
 
 
-async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resends(subject):
-    gateway, grants, principal, grant, boundary = subject
+async def test_unresolved_effect_blocks_with_trusted_operator_guidance(subject):
+    gateway, _grants, principal, grant, boundary = subject
     boundary.mode = "lost"
     unresolved = request(grant, "r1", title="Recovered")
     unknown = await gateway.update(principal, unresolved)
@@ -169,113 +169,7 @@ async def test_reconcile_by_operation_id_survives_grant_rotation_and_never_resen
     assert blocked.operation_id == later.operation_id and blocked.blocked_by is not None
     assert blocked.blocked_by.operation_id == unresolved.operation_id
     assert blocked.blocked_by.outcome.effect == "unknown"
-    assert "effect_reconcile" in blocked.next_action
-
-    restarted_grants = GrantState(grants.engine)
-    restarted_update = UpdateGateway(gateway.state, restarted_grants, gateway.providers)
-    recovery = EffectRecovery(
-        restarted_grants, restarted_update,
-    )
-    wrong = principal.model_copy(update={"subject": str(uuid4())})
-    assert (await recovery.reconcile(wrong, unresolved.operation_id)).reason == (
-        "effect_recovery_not_granted"
-    )
-
-    denied_grant = grant.model_copy(update={
-        "id": uuid4(), "version": 2, "operations": frozenset({"work_get"}),
-    })
-    await grants.issue(denied_grant, 1)
-    unauthorized = await gateway.update(
-        principal, request(denied_grant, "r1", completed=True),
-    )
-    assert unauthorized.reason == "operation_or_work_not_granted"
-    assert unauthorized.blocked_by is None
-    assert str(unresolved.operation_id) not in unauthorized.model_dump_json()
-    assert (await recovery.reconcile(principal, unresolved.operation_id)).reason == (
-        "effect_recovery_not_granted"
-    )
-    wrong_work = denied_grant.model_copy(update={
-        "id": uuid4(), "version": 3, "scope": "launch",
-        "authority": LaunchAuthority(active_work_id=uuid4()),
-        "operations": frozenset({"work_update"}),
-    })
-    await grants.issue(wrong_work, 2)
-    wrong_target = request(grant, "r1", completed=True).model_copy(update={
-        "grant_version": wrong_work.version,
-    })
-    ungranted_target = await gateway.update(principal, wrong_target)
-    assert ungranted_target.reason == "operation_or_work_not_granted"
-    assert ungranted_target.blocked_by is None
-    assert str(unresolved.operation_id) not in ungranted_target.model_dump_json()
-    assert (await recovery.reconcile(principal, unresolved.operation_id)).reason == (
-        "effect_recovery_not_granted"
-    )
-    current = wrong_work.model_copy(update={
-        "id": uuid4(), "version": 4, "scope": "workspace",
-        "authority": grant.authority,
-    })
-    await grants.issue(current, 3)
-
-    async def current_principal():
-        return principal
-    service = ChatGPTService(
-        current_principal, gateway.state, restarted_grants, gateway.providers,
-    )
-    reconcile_tool = dict(build_ordinary_tools(service))["effect_reconcile"]
-    reads = boundary.gets
-    still_unknown = await reconcile_tool("1", unresolved.operation_id)
-    assert still_unknown.status == "unknown"
-    assert still_unknown.inspection is not None
-    assert still_unknown.inspection.intent.observed_revision == "r1"
-    assert still_unknown.inspection.intent.patch == unresolved.patch
-    assert still_unknown.inspection.readback == "unconfirmed"
-    assert still_unknown.inspection.original_outcome.effect == "unknown"
-    assert still_unknown.inspection.current_outcome.effect == "unknown"
-    assert boundary.gets == reads + 1 and len(boundary.puts) == 1
-    rendered = still_unknown.model_dump(mode="json")
-    encoded = json.dumps(rendered)
-    assert all(f'"{key}"' not in encoded for key in (
-        "provider", "task_gid", "principal", "qualification",
-    ))
-
-    boundary.task.update(name="Recovered", modified_at="r2")
-    applied = await reconcile_tool("1", unresolved.operation_id)
-    assert applied.status == "ok" and applied.inspection is not None
-    assert applied.inspection.readback == "matched"
-    assert applied.inspection.current_outcome.effect == "applied"
-    assert len(boundary.puts) == 1
-    replay = await reconcile_tool("1", unresolved.operation_id)
-    assert replay.status == "ok" and replay.inspection is not None
-    assert replay.inspection.current_outcome.effect == "applied"
-    assert len(boundary.puts) == 1
-    async with grants.engine.connect() as connection:
-        stored = (await connection.execute(select(effect_intents.c.outcome).where(
-            effect_intents.c.operation_id == str(unresolved.operation_id)
-        ))).scalar_one()
-    assert stored["effect"] == "applied"
-
-
-async def test_reconcile_denies_malformed_durable_intent(subject):
-    gateway, grants, principal, grant, boundary = subject
-    boundary.mode = "lost"
-    unresolved = request(grant, "r1", title="Unconfirmed")
-    assert (await gateway.update(principal, unresolved)).effect == "unknown"
-    async with grants.engine.begin() as connection:
-        await connection.execute(update(effect_intents).where(
-            effect_intents.c.operation_id == str(unresolved.operation_id)
-        ).values(intent={"request": {"api_version": "1"}}))
-    recovery = EffectRecovery(
-        grants, gateway,
-    )
-    result = await recovery.reconcile(principal, unresolved.operation_id)
-    assert (result.status, result.reason, result.inspection) == (
-        "denied", "stored_effect_intent_invalid", None,
-    )
-    assert len(boundary.puts) == 1
-    async with grants.engine.begin() as connection:
-        await connection.execute(delete(effect_intents).where(
-            effect_intents.c.operation_id == str(unresolved.operation_id)
-        ))
+    assert "trusted operator adjudication" in blocked.next_action
 
 
 @pytest.mark.parametrize(("name", "gid", "changed_value", "old_value", "old_gid"), [
