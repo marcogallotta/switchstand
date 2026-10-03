@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from switchstand.agent_broker import Broker, Budget, Pressure
 
 ROOT = Budget(4096, 6144, 512, 400, 512, 4, 1)
-GREEN = Pressure(16_000, 8_000, 4_000, 0, 0)
+GREEN = Pressure(16_000, 12_000, 4_000, 0, 0, swap_activity_pages=0)
 
 
 def request(
@@ -89,13 +90,233 @@ def test_parent_cannot_complete_and_cancel_is_recursive(tmp_path: Path) -> None:
     assert {item["state"] for item in broker.status()["leases"].values()} == {"cancelled"}
 
 
-def test_pressure_refuses_without_reservation(tmp_path: Path) -> None:
+def test_historical_swap_without_recent_movement_admits_light(tmp_path: Path) -> None:
     broker = Broker(tmp_path)
     broker.initialize(ROOT)
     request(tmp_path, "root", "r1", "worker")
-    pressure = Pressure(16_000, 8_000, 4_000, 2_000, 0)
-    assert broker.ingest("root", "r1", pressure)["reason"] == "host_pressure"
+    pressure = Pressure(16_000, 12_000, 4_000, 3_900, 0, swap_activity_pages=0)
+    assert broker.ingest("root", "r1", pressure)["state"] == "reserved"
+
+
+@pytest.mark.parametrize(
+    ("pressure", "reason"),
+    [
+        (
+            Pressure(16_000, 12_000, 4_000, 3_900, 0, swap_activity_pages=1),
+            "host_pressure",
+        ),
+        (
+            Pressure(16_000, 12_000, 4_000, 0, 5, swap_activity_pages=0),
+            "host_pressure",
+        ),
+        (
+            Pressure(
+                16_000,
+                12_000,
+                4_000,
+                0,
+                0,
+                swap_activity_pages=None,
+                pswpin=10,
+                pswpout=10,
+            ),
+            "pressure_sample_missing",
+        ),
+        (
+            Pressure(
+                16_000,
+                12_000,
+                4_000,
+                0,
+                0,
+                swap_activity_pages=0,
+                sampled_monotonic=1,
+            ),
+            "pressure_sample_stale",
+        ),
+        (
+            Pressure(16_000, 12_000, 4_000, 0, 0, swap_activity_pages=-1),
+            "pressure_sample_invalid",
+        ),
+    ],
+)
+def test_pressure_refuses_without_reservation(
+    tmp_path: Path, pressure: Pressure, reason: str
+) -> None:
+    broker = Broker(tmp_path, clock=lambda: 10.0)
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", pressure)
+    assert result["reason"] == reason
     assert broker.status()["leases"] == {}
+
+
+def test_live_vmstat_samples_use_monotonic_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = Broker(tmp_path, clock=lambda: 12.0)
+    broker.initialize(ROOT)
+    samples = iter(
+        [
+            Pressure(16_000, 12_000, 4_000, 3_900, 0, sampled_monotonic=10, pswpin=5, pswpout=7),
+            Pressure(16_000, 12_000, 4_000, 3_900, 0, sampled_monotonic=11, pswpin=6, pswpout=7),
+        ]
+    )
+
+    def next_sample() -> Pressure:
+        return next(samples)
+
+    monkeypatch.setattr(Pressure, "current", staticmethod(next_sample))
+    request(tmp_path, "root", "r1", "first")
+    request(tmp_path, "root", "r2", "second")
+
+    assert broker.ingest("root", "r1")["reason"] == "pressure_sample_missing"
+    assert broker.ingest("root", "r2")["reason"] == "host_pressure"
+    assert broker.status()["leases"] == {}
+
+
+def test_available_memory_includes_atomic_top_level_reservations(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(Budget(4096, 4096, 512, 400, 512, 4, 1))
+    request(tmp_path, "root", "r1", "one")
+    request(tmp_path, "root", "r2", "two")
+    pressure = Pressure(8_000, 4_000, 4_000, 0, 0, swap_activity_pages=0)
+    barrier = threading.Barrier(2)
+    results: list[dict[str, object]] = []
+
+    def admit(request_id: str) -> None:
+        barrier.wait()
+        results.append(broker.ingest("root", request_id, pressure))
+
+    first = threading.Thread(target=admit, args=("r1",))
+    second = threading.Thread(target=admit, args=("r2",))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    assert sorted(str(result["state"]) for result in results) == ["refused", "reserved"]
+    assert next(result for result in results if result["state"] == "refused")["reason"] == (
+        "memory_available"
+    )
+
+
+def test_nested_admission_does_not_double_count_parent_allowance(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    parent_request(tmp_path)
+    pressure = Pressure(8_000, 4_300, 4_000, 0, 0, swap_activity_pages=0)
+    assert broker.ingest("root", "r1", pressure)["state"] == "reserved"
+    request(tmp_path, "parent", "r2", "child")
+    assert broker.ingest("parent", "r2", pressure)["state"] == "reserved"
+
+
+def test_reconcile_releases_only_expired_proven_not_started_attempt(tmp_path: Path) -> None:
+    now = 10.0
+    broker = Broker(tmp_path, clock=lambda: now, boot_id="boot-a")
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", GREEN)
+    broker.attach_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        receipt={"state": "starting"},
+        claim_ttl_seconds=5,
+    )
+
+    reservation_id = str(result["reservation_id"])
+
+    def reconcile(observed: float) -> dict[str, str]:
+        return broker.reconcile_execution(
+            "worker",
+            reservation_id=reservation_id,
+            attempt_id="attempt-1",
+            unit="worker.service",
+            observed_boot_id="boot-a",
+            execution_started=False,
+            unit_terminal=None,
+            cgroup_empty=None,
+            observed_monotonic=observed,
+        )
+
+    assert reconcile(14) == {
+        "state": "unknown",
+        "reason": "runtime_ambiguous",
+    }
+    assert reconcile(15) == {
+        "state": "released",
+        "reason": "abandoned",
+    }
+    assert broker.status()["leases"]["worker"]["state"] == "abandoned"
+
+
+@pytest.mark.parametrize(
+    ("boot_id", "started", "terminal", "empty", "reason"),
+    [
+        ("other-boot", True, True, True, "boot_identity"),
+        ("boot-a", None, None, None, "runtime_ambiguous"),
+        ("boot-a", True, True, False, "runtime_ambiguous"),
+        ("boot-a", True, False, True, "runtime_ambiguous"),
+    ],
+)
+def test_reconcile_preserves_ambiguous_or_nonempty_execution(
+    tmp_path: Path,
+    boot_id: str,
+    started: bool | None,
+    terminal: bool | None,
+    empty: bool | None,
+    reason: str,
+) -> None:
+    broker = Broker(tmp_path, clock=lambda: 20.0, boot_id="boot-a")
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", GREEN)
+    broker.attach_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        receipt={"state": "starting"},
+    )
+
+    assert broker.reconcile_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        observed_boot_id=boot_id,
+        execution_started=started,
+        unit_terminal=terminal,
+        cgroup_empty=empty,
+    ) == {"state": "unknown", "reason": reason}
+    assert broker.status()["leases"]["worker"]["state"] == "execution_active"
+
+
+def test_reconcile_releases_terminal_unit_only_with_empty_cgroup(tmp_path: Path) -> None:
+    broker = Broker(tmp_path, clock=lambda: 20.0, boot_id="boot-a")
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    result = broker.ingest("root", "r1", GREEN)
+    broker.attach_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        receipt={"state": "starting"},
+    )
+
+    assert broker.reconcile_execution(
+        "worker",
+        reservation_id=result["reservation_id"],
+        attempt_id="attempt-1",
+        unit="worker.service",
+        observed_boot_id="boot-a",
+        execution_started=True,
+        unit_terminal=True,
+        cgroup_empty=True,
+    ) == {"state": "released", "reason": "completed"}
 
 
 def test_strict_schema_and_hostile_spool_are_rejected(tmp_path: Path) -> None:
