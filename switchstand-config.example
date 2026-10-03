@@ -1,4 +1,1 @@
-ASANA_TOKEN=
-# Optional trusted-host admission of one standalone Asana test project (plain decimal GID).
-# Keep empty for the default production-only behavior.
-SWITCHSTAND_TEST_PROJECT_GID=
+# Stable host configuration belongs here. Per-run work authority does not.

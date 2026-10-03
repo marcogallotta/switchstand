@@ -21,10 +21,9 @@ services:
       - -c
       - |
         if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then
-          unset ASANA_TOKEN DATABASE_URL ACTIVE_WORK_ID REFERENCE_WORK_IDS
+          unset DATABASE_URL ACTIVE_WORK_ID REFERENCE_WORK_IDS
           exec uv run --no-sync switchstand
         fi
-        : "$${ASANA_TOKEN:?required}"
         : "$${ACTIVE_WORK_ID:?required}"
         uv run --no-sync python -c \
           'from switchstand.provision import require_current_schema; require_current_schema()'

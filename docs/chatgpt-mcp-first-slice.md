@@ -70,29 +70,11 @@ One fresh independent review is acquired by Coordinator under
 branch/alignment amendments, actual code/config/tests and CI evidence. Work owns
 corrections. Pure local tests may run in parallel with this review.
 
-## Reviewed disposable provider qualification
+## Historical disposable provider qualification
 
-Use an isolated checkout of the reviewed candidate. Preserve the live checkout,
-live runs and production database. Supply the existing Asana token to the host
-process and use a disposable `switchstand_test` database. Apply this candidate's
-Alembic migrations to that database only. The reviewed harness is:
-
-```sh
-PYTHONPATH=src uv run python scripts/chatgpt-mcp-canary.py --task DISPOSABLE_TASK_ID
-```
-
-The task must already be an explicitly authorized disposable canonical task;
-this command does not create/migrate Asana tasks. It provisions an expiring test
-grant on the trusted host and serves stdio. On re-entry it preserves the grant,
-OperationIds and prior effects. It fails on expired/different prior grants.
-
-Connect a local MCP client. Read `grant_get`, `work_get`, both current notes and
-paginated history, then exactly reread a material story. Submit one append with
-a saved OperationId, current grant version, WorkId and revision. Verify the exact
-receipt against the provider. Repeat/re-enter with that OperationId and verify
-one effect. Negative calls using another work or stale grant must send nothing.
-Record exact code SHA, tool inventory, task/story IDs and receipts. This proves
-local/provider mechanics only. Never inject failure into a live production task.
+The first slice used a disposable Asana-backed stdio harness. That harness was
+retired when the runtime became PostgreSQL-backed; it is not current operating
+guidance or a supported qualification path.
 
 Area-only canonicality/discovery depends on the separately owned approved
 provider adapter `1218431674737116` and registry `1218432271807843`. Consume that
@@ -123,8 +105,8 @@ Own-active append is not arbitrary cross-agent inbox send; receipt, acceptance
 and completed action remain distinct. Polling cadence and critical judgment
 belong to the active agent, not this server. No inactive wake is implemented.
 
-Record separate local and actual ChatGPT results. Landing requires the independent
-review, CI and local disposable qualification on the exact candidate. Real ChatGPT
+The historical candidate recorded separate local and actual ChatGPT results. Its landing required
+independent review, CI and local disposable qualification on the exact candidate. Real ChatGPT
 authentication, account capability and no-bypass evidence gate activation and
 reliance only; they do not block an otherwise qualified inert landing. Reconcile
 then-current main and rerun affected composed tests before non-force landing.

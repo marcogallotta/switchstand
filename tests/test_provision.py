@@ -59,6 +59,8 @@ def test_managed_controller_checks_schema_without_upgrading_it():
     managed = compose.split('if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then', 1)[1]
     assert "require_current_schema; require_current_schema()" in managed
     assert "alembic upgrade" not in managed
+    assert "ASANA_TOKEN" not in managed
+    assert 'ACTIVE_WORK_ID:?required' in managed
 
 
 def test_development_image_contains_repository_assets_read_by_tests():

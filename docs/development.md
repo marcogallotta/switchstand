@@ -155,8 +155,8 @@ services, state, settings, or routing.
   HEAD must equal the requested checkpoint, the recorded green must be that checkpoint or its ancestor, and it never
   moves HEAD, edits files, or rewrites green metadata. This mode itself grants no launch authority.
 - Setup once: run `install -d -m 700 ~/.config/switchstand` and
-  `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
-  configuration; never put per-run work authority in it.
+  `install -m 600 switchstand-config.example ~/.config/switchstand/.env`. This file is stable machine
+  configuration; the current managed runtime needs no provider credential, and per-run work authority never belongs in it.
 - Normal task-bound development: run
   `scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>`.
   It creates or resumes the task's private durable writer with ordinary development access. Its single initial request
