@@ -28,12 +28,11 @@ does not own ordinary HTTP authentication or grant issuance.
 `chatgpt_mcp.py::build_ordinary_tools` is the canonical definition of the ordinary tool inventory
 and behavior. It includes provider-neutral work discovery, history and events; protected
 append/create/update/relation operations; registered-name `agent_message_*` messaging;
-required-result persistence; and repository bundle transport. It temporarily retains the
-provider-effect reconciliation tool name until retirement; that tool is not part of the PostgreSQL
-work runtime. Provider-era effects are reconciled by the
-pre-cutover deployed application while its provider is still configured. This DB-native candidate
-fails closed on such reconciliation and is deployed only after that frozen disposition. Managed
-task-bound runtimes separately retain the WorkId-addressed `message_*` family.
+required-result persistence; and repository bundle transport. Provider-era effects receive any
+provider readback through the exact pre-cutover deployment while its provider is still configured.
+Separately authorized frozen-cutover operator action archives or deletes the adjudicated rows before
+the DB-native application is deployed. Managed task-bound runtimes separately retain the
+WorkId-addressed `message_*` family.
 
 `chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. Its
 `oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one
@@ -250,16 +249,11 @@ happened or recovery state is unreadable; it is not permission to create a new o
 When that barrier blocks a later authorized request, the later request remains explicitly `not_sent`
 and names the older blocking operation. Update and relation gateways verify the caller's current
 grant, write access, operation, version, and qualification before disclosing that blocker; denied
-callers receive no blocking-operation detail. `effect_reconcile` accepts only that OperationId, loads the durable
-provider-neutral scalar-update intent internally, requires the same authenticated principal and
-a current grant for the exact work and operation, and uses the existing operation-specific readback
-path. Its inspection omits provider identifiers, principal keys, and qualification internals. It can
-confirm the existing update or preserve `UNKNOWN`; relation and append recovery remain unsupported.
-Blocker guidance therefore points to `effect_reconcile` only for scalar updates and directs relation
-or append blockers to trusted operator adjudication without resend. It cannot retire, release, or
-overwrite an unresolved effect, including an orphan whose stored intent does not match the provider.
-Such adjudication remains an
-unimplemented trusted-operator product decision.
+callers receive no blocking-operation detail. The DB-native ordinary API exposes no exact recovery
+route for a provider-era effect. Blocker guidance directs every such effect to trusted frozen-cutover
+adjudication without resend. The exact pre-cutover deployment performs any provider readback; a
+separately authorized operator action archives or deletes the adjudicated rows before the DB-native
+application is installed.
 An applied result requires the operation's authoritative provider readback to match the intended
 change. Changes to provider relation behavior therefore normally require coordinated edits to the
 provider implementation, the relation gateway contract only when its provider-neutral semantics

@@ -32,16 +32,11 @@ existing WorkId, grant-version, revision, operation-identity, UNKNOWN, and
 effect-readback rules. Trusted grant issuance is not an MCP tool. Provider credentials and grant
 state stay behind the service boundary.
 
-`effect_reconcile` is the provider-neutral recovery route for an already-prepared UNKNOWN scalar
-update only while the deployed service still has that effect's provider configured. It accepts only
-the durable OperationId, reconstructs no caller-supplied mutation, and returns a sanitized
-intent/readback projection. The DB-native zero-Asana candidate intentionally has no provider and
-therefore preserves such an old effect as UNKNOWN; frozen-cutover procedure reconciles or archives
-those effects through the pre-cutover deployment before the DB-native application is installed.
-A mismatch remains UNKNOWN and continues to block the work; the ordinary edge exposes no retirement
-or release operation. Only a scalar-update blocker points callers to this tool. Relation and append
-blockers have no ordinary exact-recovery route and require trusted operator adjudication without a
-resend.
+The DB-native ordinary edge exposes no provider-effect recovery tool. Frozen-cutover procedure uses
+the exact pre-cutover provider-backed deployment for any provider readback. Archival or deletion is
+a separate explicitly authorized operator action completed before the DB-native application is
+installed. A surviving mismatch remains `UNKNOWN` and requires trusted operator adjudication without
+a resend.
 
 Raw `source_*` tools are not part of the ordinary current surface. They remain
 available only on bounded managed/recovery compatibility routes described in

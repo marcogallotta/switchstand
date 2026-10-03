@@ -30,7 +30,6 @@ from .contracts import (
     WorkSearchResult,
 )
 from .grants import (
-    EffectRecoveryResult,
     GrantedWorkResult,
     GuardOutcome,
     ProtectedAppend,
@@ -133,7 +132,6 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "work_create",
     "work_update",
     "work_relate",
-    "effect_reconcile",
     "required_result_save",
     "agent_register",
     "agent_takeover",
@@ -441,15 +439,6 @@ def build_ordinary_tools(
             patch=patch.internal(),
         ))
         audited("work_relate", str(work_id), result.status)
-        return result
-
-    async def effect_reconcile(
-        api_version: Literal["1"], operation_id: UUID,
-    ) -> EffectRecoveryResult:
-        """Reconcile stored UNKNOWN scalar update by identity without a replacement payload."""
-        del api_version
-        result = await service.reconcile_effect(operation_id)
-        audited("effect_reconcile", str(operation_id), result.status)
         return result
 
     async def required_result_save(
@@ -822,7 +811,6 @@ def build_ordinary_tools(
         *((("outcome_state_update", outcome_state_update),)
           if service.outcome_state_enabled else ()),
         ("work_relate", work_relate),
-        ("effect_reconcile", effect_reconcile),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
         ("agent_takeover", agent_takeover),
