@@ -1016,7 +1016,7 @@ async def _send_message(
                     status="denied", reason="recipient_route_unavailable"
                 )
             handle = await state.get(recipient_work_id)
-            if handle is None or handle.provider != "asana":
+            if handle is None:
                 return MessageSubmitResult(
                     status="denied", reason="recipient_route_unavailable"
                 )
@@ -1025,8 +1025,6 @@ async def _send_message(
             route = MessageRoute(
                 recipient_work_id=recipient_work_id,
                 recipient_grant_version=recipient.version,
-                projection_provider="asana",
-                projection_target=handle.provider_work_id,
             )
             submitted = MessageSubmitRequest(
                 api_version=request.api_version,
