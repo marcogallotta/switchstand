@@ -89,6 +89,39 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
             >= {(index.name, index.unique) for index in table.indexes}
 
 
+def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequisite):
+    url = disposable_url()
+    engine = create_engine(url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, "
+            "human_trajectory_revisions, agent_mailboxes, work_event_handles, "
+            "lifecycle_obligations, message_projection, message_deliveries, messages, "
+            "effect_intents, work_grants, work_handles CASCADE"
+        ))
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO work_migration_receipts (name, source_digest) "
+            "VALUES ('work-identity-migration-complete-v1', :digest)"
+        ), {"digest": "a" * 64})
+
+    with pytest.raises(RuntimeError, match="preserve durable failure or migration evidence"):
+        command.downgrade(config, "0012_outcome_state")
+
+    assert {
+        "work_migration_receipts", "failure_records", "failure_resolutions",
+    } <= set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0013_failure_journal"
+        assert connection.execute(text(
+            "SELECT name, source_digest FROM work_migration_receipts"
+        )).one() == ("work-identity-migration-complete-v1", "a" * 64)
+
+
 def test_agent_identity_migration_preserves_endpoint_and_delivery(
     monkeypatch, database_prerequisite,
 ):
