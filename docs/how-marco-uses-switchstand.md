@@ -10,6 +10,11 @@ Authority is separate from technical truth. It comes only from Marco's direct ac
 
 If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through the authenticated provider-neutral `switchstand` HTTP/OAuth MCP and follow its current routes. Do not substitute broad provider search or a remembered/candidate route.
 
+When that route or Marco requests meaningful root-cause analysis, use the canonical
+[root-cause analysis procedure](root-cause-analysis.md). It keeps one sanitized parent WorkId,
+routes corrections to their owning products, and shares process semantics across ordinary
+ChatGPT and Codex without pretending their mechanics or inactive-session behavior are identical.
+
 ## Three working modes
 
 ### Ordinary Codex Coordinator
@@ -123,6 +128,8 @@ ChatGPT and Codex deliberately use different coordinator, delegation, task-bindi
 - preserve explicit authority/currentness, proportional evidence, final Human Review where required, and protected-effect boundaries.
 
 Shared semantics do not imply identical host storage, tools, roles, or orchestration.
+The [root-cause analysis procedure](root-cause-analysis.md) applies this same boundary to
+evidence lanes, checkpoints, correction watches, and matching-event validation.
 
 ## Repository delivery
 

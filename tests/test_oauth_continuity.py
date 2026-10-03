@@ -1,12 +1,15 @@
 import time
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
+import httpx
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oauth_proxy.models import (
     ClientCode,
     JTIMapping,
+    ProxyDCRClient,
     RefreshTokenMetadata,
     UpstreamTokenSet,
     _hash_token,
@@ -14,9 +17,11 @@ from fastmcp.server.auth.oauth_proxy.models import (
 from key_value.aio.stores.filetree import FileTreeStore
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AuthorizationCode, RefreshToken, TokenError
-from mcp.shared.auth import OAuthClientInformationFull
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
+from starlette.applications import Starlette
 
+from switchstand import oauth_continuity
 from switchstand.oauth_continuity import (
     CANONICAL_UPSTREAM_TOKEN_ID,
     SwitchstandGitHubProvider,
@@ -308,6 +313,67 @@ async def put_refresh(
     return refresh_token
 
 
+def record_upstream_refreshes(subject, *, delay=0.0):
+    inputs = []
+
+    class OAuthClient:
+        async def refresh_token(self, **kwargs):
+            inputs.append(kwargs["refresh_token"])
+            if delay:
+                await anyio.sleep(delay)
+            return {
+                "access_token": "refreshed",
+                "refresh_token": f"rotated-upstream-{len(inputs)}",
+                "expires_in": 1800,
+                "refresh_expires_in": 3600,
+                "scope": SCOPE,
+            }
+
+    @asynccontextmanager
+    async def oauth_client():
+        yield OAuthClient()
+
+    subject._upstream_oauth_client = oauth_client
+    return inputs
+
+
+async def replay_setup(storage, *, delay=0.0):
+    subject = provider(storage)
+    verifier(subject, valid=frozenset({"good", "refreshed"}))
+    await subject._upstream_token_store.put(
+        key=CANONICAL_UPSTREAM_TOKEN_ID,
+        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
+        ttl=3600,
+    )
+    refresh_token = await put_refresh(subject, "returning-chat")
+    upstream_inputs = record_upstream_refreshes(subject, delay=delay)
+    downstream = client("returning-chat")
+    loaded = await subject.load_refresh_token(downstream, refresh_token)
+    assert loaded is not None
+    return subject, downstream, refresh_token, loaded, upstream_inputs
+
+
+async def register_http_client(subject) -> None:
+    await subject._client_store.put(
+        key="returning-chat",
+        value=ProxyDCRClient(
+            client_id="returning-chat",
+            token_endpoint_auth_method="none",
+            scope=SCOPE,
+        ),
+        ttl=3600,
+    )
+
+
+async def assert_invalid_grant(operation: Awaitable[object]) -> None:
+    try:
+        await operation
+    except TokenError as error:
+        assert error.error == "invalid_grant"
+    else:
+        raise AssertionError("invalid refresh replay was accepted")
+
+
 async def test_expired_refresh_mapping_recovers_from_valid_canonical_credential(
     tmp_path: Path,
 ):
@@ -353,44 +419,218 @@ async def test_expired_refresh_mapping_recovers_from_valid_canonical_credential(
     assert refresh_claims["scope"] == SCOPE
 
 
-async def test_rotated_refresh_mapping_is_not_recovered_for_a_late_request():
-    subject = provider(MemoryStore())
-    verifier(subject, valid=frozenset({"good", "refreshed"}))
-    await subject._upstream_token_store.put(
-        key=CANONICAL_UPSTREAM_TOKEN_ID,
-        value=upstream(CANONICAL_UPSTREAM_TOKEN_ID),
-        ttl=3600,
+async def test_token_endpoint_replays_refresh_delayed_215_seconds(monkeypatch):
+    now = 1000.0
+    monkeypatch.setattr(oauth_continuity, "monotonic", lambda: now)
+    subject, _, refresh_token, loaded, upstream_inputs = await replay_setup(
+        MemoryStore()
     )
-    refresh_token = await put_refresh(subject, "returning-chat")
-
-    class OAuthClient:
-        async def refresh_token(self, **_kwargs):
-            return {
-                "access_token": "refreshed",
-                "refresh_token": "rotated-upstream",
-                "expires_in": 1800,
-                "refresh_expires_in": 3600,
-                "scope": SCOPE,
-            }
-
-    @asynccontextmanager
-    async def oauth_client():
-        yield OAuthClient()
-
-    subject._upstream_oauth_client = oauth_client
     downstream = client("returning-chat")
-    loaded = await subject.load_refresh_token(downstream, refresh_token)
-    assert loaded is not None
-    await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    issued = await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    now += 215
+    await register_http_client(subject)
+    transport = httpx.ASGITransport(app=Starlette(routes=subject.get_routes("/mcp")))
+    async with httpx.AsyncClient(transport=transport, base_url=ISSUER) as http:
+        response = await http.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": "returning-chat",
+                "scope": SCOPE,
+            },
+        )
 
-    try:
-        await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
-    except TokenError as error:
-        assert error.error == "invalid_grant"
-        assert error.error_description == "Refresh token mapping not found"
-    else:
-        raise AssertionError("rotated refresh token was accepted twice")
+    assert response.status_code == 200
+    assert response.json() == issued.model_dump(mode="json", exclude_none=True)
+    assert upstream_inputs == ["upstream-refresh"]
     assert await subject._jti_mapping_store.get(key="refresh-jti-returning-chat") is None
+
+
+async def test_concurrent_token_requests_wait_for_replay_publication(monkeypatch):
+    subject, _, refresh_token, _, upstream_inputs = await replay_setup(MemoryStore())
+    await register_http_client(subject)
+    predecessor_consumed = anyio.Event()
+    permit_publication = anyio.Event()
+    second_load_started = anyio.Event()
+    original_converge = subject._converge_issued_tokens
+    original_load = subject.load_refresh_token
+    load_calls = 0
+
+    async def paused_converge(issued):
+        predecessor_consumed.set()
+        await permit_publication.wait()
+        await original_converge(issued)
+
+    async def tracked_load(client_info, token):
+        nonlocal load_calls
+        load_calls += 1
+        if load_calls == 2:
+            second_load_started.set()
+        return await original_load(client_info, token)
+
+    monkeypatch.setattr(subject, "_converge_issued_tokens", paused_converge)
+    monkeypatch.setattr(subject, "load_refresh_token", tracked_load)
+    transport = httpx.ASGITransport(app=Starlette(routes=subject.get_routes("/mcp")))
+    responses = []
+
+    async with httpx.AsyncClient(transport=transport, base_url=ISSUER) as http:
+        async def exchange():
+            responses.append(await http.post(
+                "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": "returning-chat",
+                    "scope": SCOPE,
+                },
+            ))
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(exchange)
+            await predecessor_consumed.wait()
+            group.start_soon(exchange)
+            await second_load_started.wait()
+            permit_publication.set()
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    assert upstream_inputs == ["upstream-refresh"]
+
+
+async def test_concurrent_duplicate_refreshes_share_exactly_one_upstream_call():
+    subject, downstream, _, loaded, upstream_inputs = await replay_setup(
+        MemoryStore(), delay=0.01
+    )
+    results = []
+
+    async def exchange():
+        results.append(await subject.exchange_refresh_token(downstream, loaded, [SCOPE]))
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(exchange)
+        group.start_soon(exchange)
+
+    assert len(results) == 2 and results[0] == results[1]
+    assert upstream_inputs == ["upstream-refresh"]
+
+
+async def test_refresh_replay_rejects_wrong_client_or_scopes_without_upstream_call():
+    subject, downstream, refresh_token, loaded, upstream_inputs = await replay_setup(
+        MemoryStore()
+    )
+    issued = await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+
+    assert await subject.load_refresh_token(client("other-chat"), refresh_token) is None
+    mismatches = (
+        (client("other-chat"), loaded, [SCOPE]),
+        (downstream, loaded, []),
+        (downstream, loaded.model_copy(update={"scopes": []}), [SCOPE]),
+    )
+    for replay_client, replay_token, replay_scopes in mismatches:
+        await assert_invalid_grant(
+            subject.exchange_refresh_token(replay_client, replay_token, replay_scopes)
+        )
+
+    assert await subject.exchange_refresh_token(downstream, loaded, [SCOPE]) == issued
+    assert upstream_inputs == ["upstream-refresh"]
+
+
+async def test_expired_refresh_replay_rejects_without_upstream_call(monkeypatch):
+    monotonic = 1000.0
+    monkeypatch.setattr(oauth_continuity, "monotonic", lambda: monotonic)
+    subject, downstream, refresh_token, loaded, upstream_inputs = await replay_setup(
+        MemoryStore()
+    )
+    await subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    monotonic += oauth_continuity.REFRESH_REPLAY_TTL_SECONDS
+    assert await subject.load_refresh_token(downstream, refresh_token) is None
+
+    await assert_invalid_grant(
+        subject.exchange_refresh_token(downstream, loaded, [SCOPE])
+    )
+    assert upstream_inputs == ["upstream-refresh"]
+
+
+async def test_predecessor_replay_rejects_after_successor_is_consumed():
+    subject, downstream, predecessor, loaded_predecessor, upstream_inputs = (
+        await replay_setup(MemoryStore())
+    )
+    first = await subject.exchange_refresh_token(
+        downstream, loaded_predecessor, [SCOPE]
+    )
+    successor = await subject.load_refresh_token(downstream, first.refresh_token)
+    assert successor is not None
+    await subject.exchange_refresh_token(downstream, successor, [SCOPE])
+
+    assert await subject.load_refresh_token(downstream, predecessor) is None
+    await assert_invalid_grant(
+        subject.exchange_refresh_token(downstream, loaded_predecessor, [SCOPE])
+    )
+    assert upstream_inputs == ["upstream-refresh", "rotated-upstream-1"]
+
+
+async def test_refresh_replay_cache_evicts_oldest_entry_at_128():
+    subject = provider(MemoryStore())
+    downstream = client("returning-chat")
+    predecessors = []
+    for number in range(oauth_continuity.REFRESH_REPLAY_MAX_ENTRIES + 1):
+        predecessor = subject.jwt_issuer.issue_refresh_token(
+            client_id=downstream.client_id,
+            scopes=[SCOPE],
+            jti=f"predecessor-{number}",
+            expires_in=3600,
+        )
+        successor = subject.jwt_issuer.issue_refresh_token(
+            client_id=downstream.client_id,
+            scopes=[SCOPE],
+            jti=f"successor-{number}",
+            expires_in=3600,
+        )
+        predecessors.append(predecessor)
+        subject._remember_refresh_replay(
+            downstream,
+            RefreshToken(
+                token=predecessor,
+                client_id=downstream.client_id,
+                scopes=[SCOPE],
+                expires_at=int(time.time()) + 3600,
+            ),
+            [SCOPE],
+            OAuthToken(
+                access_token=f"access-{number}",
+                token_type="Bearer",
+                refresh_token=successor,
+                scope=SCOPE,
+            ),
+        )
+
+    assert len(subject._refresh_replays) == 128
+    assert _hash_token(predecessors[0]) not in subject._refresh_replays
+    assert _hash_token(predecessors[-1]) in subject._refresh_replays
+
+
+async def test_refresh_replay_is_intentionally_lost_on_restart(tmp_path: Path):
+    storage_path = tmp_path / "oauth"
+    first, downstream, predecessor, loaded, upstream_inputs = await replay_setup(
+        FileTreeStore(data_directory=storage_path)
+    )
+    issued = await first.exchange_refresh_token(downstream, loaded, [SCOPE])
+    persisted = b"".join(
+        path.read_bytes() for path in storage_path.rglob("*") if path.is_file()
+    )
+    for secret in (predecessor, issued.access_token, issued.refresh_token):
+        assert secret.encode() not in persisted
+
+    restarted = provider(FileTreeStore(data_directory=storage_path))
+    verifier(restarted, valid=frozenset({"good", "refreshed"}))
+    restarted_inputs = record_upstream_refreshes(restarted)
+    assert await restarted.load_refresh_token(downstream, predecessor) is None
+    await assert_invalid_grant(
+        restarted.exchange_refresh_token(downstream, loaded, [SCOPE])
+    )
+    assert upstream_inputs == ["upstream-refresh"]
+    assert restarted_inputs == []
 
 
 async def test_distinct_client_refreshes_serialize_one_canonical_rotation_at_a_time():
@@ -549,12 +789,10 @@ async def test_legacy_refresh_recovery_repairs_canonical_for_waiting_clients():
             scopes=[SCOPE],
             expires_at=int(time.time()) + 3600,
         )
-        try:
+        assert (
             await subject.exchange_refresh_token(client(client_id), loaded, [SCOPE])
-        except TokenError as error:
-            assert error.error == "invalid_grant"
-        else:
-            raise AssertionError("rotated refresh token was accepted twice")
+            == result
+        )
 
 
 async def test_all_invalid_refresh_credentials_fail_once_without_consuming_client_token():

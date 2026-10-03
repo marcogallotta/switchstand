@@ -3,7 +3,8 @@
 Use this runbook for any credible current live-user failure. The failure itself enters
 incident mode; `CODE RED` is an additional explicit trigger, not a required incantation.
 The immediate objective is current truth and the smallest safe useful recovery. Root-cause
-analysis and unrelated work follow mitigation.
+analysis follows mitigation under the canonical
+[root-cause analysis procedure](root-cause-analysis.md); unrelated work waits.
 
 ## First minute
 
@@ -219,6 +220,10 @@ temporary setting; technical and response-process RCA; causal regression tests; 
 Wakeful follow-up; owned actions with dates or event triggers; and explicit residual
 `NOT_RUN`, `MISSING_CAPABILITY`, `UNKNOWN`, or Human Input. No item may disappear because the
 live symptom stopped.
+
+Incident recovery, causal-model acceptance, correction ownership, and correction validation are
+separate outcomes. Use the RCA procedure's exact parent/child identities and lifecycle; incident
+closure never turns an unvalidated correction into proof or removes its active follow-up watch.
 
 Monitoring must distinguish transport from authenticated function. Its authenticated probe uses
 the fixed, pre-registered, read-only canary and never creates or reauthorizes identities. At
