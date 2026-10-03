@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Fast-forward canonical main and prove a fresh Coordinator sees that exact commit."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import NoReturn
+
+SHA = re.compile(r"[0-9a-f]{40}")
+CANARY_STATUS = "SWITCHSTAND_COORDINATOR_CANARY_OK"
+
+
+def fail(message: str) -> NoReturn:
+    raise SystemExit(message)
+
+
+def git(repo: Path, *arguments: str, check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check and result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        fail(detail)
+    return result.stdout.strip()
+
+
+def fetch_source(origin: str) -> str:
+    prefixes = ("git@github.com:", "ssh://git@github.com/")
+    for prefix in prefixes:
+        if origin.startswith(prefix):
+            return "https://github.com/" + origin.removeprefix(prefix)
+    return origin
+
+
+def require_start_record(home: Path, raw: str) -> tuple[Path, str]:
+    path = Path(raw)
+    expected = home / ".local/state/switchstand/codex/coordinator"
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"Coordinator start record is unavailable: {error}")
+    if resolved.parent != expected.resolve() or not resolved.name.startswith("start-commit."):
+        fail("start record must be the exact Coordinator start-commit file")
+    if path.is_symlink() or not resolved.is_file():
+        fail("start record must be a regular file")
+    value = resolved.read_text().strip()
+    if not SHA.fullmatch(value):
+        fail("start record does not contain one exact Git commit")
+    return resolved, value
+
+
+def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
+    schema = artifact / "schema.json"
+    final = artifact / "final.json"
+    trace = artifact / "trace.jsonl"
+    stderr = artifact / "stderr.log"
+    schema.write_text(json.dumps({
+        "type": "object",
+        "properties": {
+            "status": {"const": CANARY_STATUS},
+            "start_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        },
+        "required": ["status", "start_commit"],
+        "additionalProperties": False,
+    }) + "\n")
+    prompt = (
+        "This is a read-only Switchstand Coordinator launch canary. Read the exact "
+        "Coordinator start-commit record path from your developer instructions, read that "
+        "file, and compare it with `git rev-parse HEAD` in the current repository. Do not "
+        "modify files or perform any other work. Return the required JSON with status "
+        f"{CANARY_STATUS} and start_commit set to the commit you verified."
+    )
+    command = [
+        str(shim), "exec", "--ephemeral", "--json", "--output-schema", str(schema),
+        "--output-last-message", str(final), prompt,
+    ]
+    with trace.open("w") as stdout_handle, stderr.open("w") as stderr_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=repo,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            returncode = process.wait(timeout=180)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            fail(f"fresh-agent canary timed out; evidence: {artifact}")
+    if returncode:
+        fail(f"fresh-agent canary failed; evidence: {artifact}")
+    try:
+        result = json.loads(final.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"fresh-agent canary returned invalid evidence ({error}); evidence: {artifact}")
+    if result != {"status": CANARY_STATUS, "start_commit": expected}:
+        fail(f"fresh-agent canary did not prove {expected}; evidence: {artifact}")
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        fail("usage: scripts/coordinator-handoff <start-commit-record>")
+    home_raw = os.environ.get("HOME")
+    if not home_raw or not Path(home_raw).is_absolute():
+        fail("HOME must be an absolute path")
+    home = Path(home_raw).resolve()
+    os.umask(0o077)
+    repo = home / "switchstand"
+    if not repo.is_dir():
+        fail("canonical Switchstand checkout is unavailable")
+    start_record, started = require_start_record(home, sys.argv[1])
+    if git(repo, "rev-parse", "--path-format=absolute", "--show-toplevel") != str(repo):
+        fail("handoff requires the canonical primary checkout")
+    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if common != repo / ".git" or git(repo, "branch", "--show-current") != "main":
+        fail("handoff requires the canonical primary main checkout")
+    if git(repo, "status", "--porcelain", "--untracked-files=all"):
+        fail("handoff refuses dirty main; local work is intact")
+    if subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{started}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    ).returncode:
+        fail("start record commit is unavailable in canonical history")
+
+    origin = git(repo, "remote", "get-url", "origin")
+    source = fetch_source(origin)
+    git(repo, "fetch", "--quiet", "--no-tags", source,
+        "+refs/heads/main:refs/remotes/origin/main")
+    accepted = git(repo, "rev-parse", "origin/main")
+    current = git(repo, "rev-parse", "HEAD")
+    if subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", current, accepted],
+        capture_output=True,
+        check=False,
+    ).returncode:
+        fail("handoff refuses divergent main; local commits are intact")
+    if current != accepted:
+        git(repo, "merge", "--ff-only", "--quiet", accepted)
+    if (git(repo, "rev-parse", "HEAD") != accepted
+            or git(repo, "branch", "--show-current") != "main"
+            or git(repo, "status", "--porcelain", "--untracked-files=all")):
+        fail("handoff could not read back clean main at the fetched revision")
+    if subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", started, accepted],
+        capture_output=True,
+        check=False,
+    ).returncode:
+        fail("recorded Coordinator start commit is not an ancestor of final main")
+
+    shim = home / ".local/bin/codex"
+    if shim.is_symlink() or not shim.is_file() or not os.access(shim, os.X_OK):
+        fail("materialized Codex shim is unavailable")
+    artifact_root = home / ".local/state/switchstand/codex/handoffs"
+    artifact_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(artifact_root, 0o700)
+    artifact = Path(tempfile.mkdtemp(prefix="canary-", dir=artifact_root))
+    os.chmod(artifact, 0o700)
+    run_canary(shim, repo, accepted, artifact)
+
+    print(f"Git boundary: {start_record} {started}..{accepted}")
+    print(f"Fresh-agent canary: PASS at {accepted}")
+    print(f"Evidence: {artifact}")
+
+
+if __name__ == "__main__":
+    main()
