@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from switchstand import launch_source
+from switchstand.canonical_work import CurrentWork
 from switchstand.launch_source import LaunchSource, LaunchSourceError, load_asana_token, parse_notes
 
 BASE = "a" * 40
@@ -49,41 +50,59 @@ def test_load_asana_token_rejects_non_plain_value_without_repeating_it(
     assert value not in str(error.value)
 
 
-def test_launch_source_main_uses_protected_config_instead_of_ambient_token(
+def test_launch_source_main_uses_database_url_without_asana_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    config = tmp_path / ".config" / "switchstand" / ".env"
-    config.parent.mkdir(parents=True)
-    config.write_text("ASANA_TOKEN=host-only\n")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("ASANA_TOKEN", "ambient-should-be-ignored")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://canonical")
     monkeypatch.setattr(sys, "argv", ["launch_source", "--repo", str(tmp_path),
                                       "--control-sha", BASE, "123"])
     observed: list[str] = []
 
-    def fake_resolve(repo: Path, active: str, token: str, control_sha: str) -> LaunchSource:
+    def fake_resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
         assert repo == tmp_path
         assert active == "123"
         assert control_sha == BASE
-        observed.append(token)
+        observed.append(database_url)
         return parse_notes(NOTES)
 
     monkeypatch.setattr(launch_source, "resolve", fake_resolve)
     launch_source.main()
-    assert observed == ["host-only"]
+    assert observed == ["postgresql+psycopg://canonical"]
     assert capsys.readouterr().out == f"{BASE} {CANDIDATE}\n"
 
 
-def test_launch_source_main_reports_missing_protected_credential(
+def test_launch_source_main_reports_missing_database_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(sys, "argv", ["launch_source", "--repo", str(tmp_path),
                                       "--control-sha", BASE, "123"])
     with pytest.raises(SystemExit) as error:
         launch_source.main()
     assert error.value.code == 1
-    assert "protected Asana config is unavailable" in capsys.readouterr().err
+    assert "DATABASE_URL" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_canonical_work_resolves_legacy_alias_or_exact_work_id():
+    work = CurrentWork(launch_source.UUID("11111111-1111-1111-1111-111111111111"),
+                       "Task", False, NOTES)
+
+    class Works:
+        async def resolve_asana_gid(self, gid: str):
+            return work.work_id if gid == "123" else None
+
+        async def get(self, work_id):
+            return work if work_id == work.work_id else None
+
+    works = Works()
+    assert await launch_source.canonical_work(works, "123") == work  # type: ignore[arg-type]
+    assert await launch_source.canonical_work(works, str(work.work_id)) == work  # type: ignore[arg-type]
+    with pytest.raises(LaunchSourceError, match="exact launch work read failed"):
+        await launch_source.canonical_work(works, "456")  # type: ignore[arg-type]
 
 
 def test_parse_notes_requires_complete_unique_exact_markers():

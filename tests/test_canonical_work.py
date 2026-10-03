@@ -16,6 +16,8 @@ from switchstand.canonical_work import (
     legacy_work_aliases,
     normalize_title,
 )
+from switchstand.launch_source import LaunchSourceError
+from switchstand.launch_source import canonical_work as launch_work
 from switchstand.state import metadata as shared_metadata
 
 
@@ -72,6 +74,10 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     assert await repository.get(first_id) == first
     assert await repository.resolve_asana_gid("1218000000000001") == first_id
     assert await repository.resolve_asana_gid("missing") is None
+    assert await launch_work(repository, "1218000000000001") == first
+    assert await launch_work(repository, str(first_id)) == first
+    with pytest.raises(LaunchSourceError, match="exact launch work read failed"):
+        await launch_work(repository, "1218000000000009")
     assert (await repository.search("  ALPHA ")).items == (first,)
     assert (await repository.search(completed=True)).items == (second,)
 
