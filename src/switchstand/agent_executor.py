@@ -11,8 +11,11 @@ from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 from switchstand.agent_broker import Broker
+from switchstand.failure_capture import capture_failure
+from switchstand.failure_journal import EffectState
 from switchstand.managed_launch import PreparedLaunch, PreparedLaunchStore
 
 HOST = "marco@.host"
@@ -263,6 +266,19 @@ class ManagedExecutor:
             else:
                 receipt = self._finish_and_reconcile(manifest, receipt, result.returncode)
         self.broker.record_execution(manifest.lease_id, receipt)
+        if receipt["state"] != "completed":
+            registration = capture_failure(
+                self.broker.root / "pending-failures",
+                attempted_claim=f"launch managed parent {manifest.work_id}",
+                observed_result=f"executor state={receipt['state']}",
+                effect_state=(EffectState.NOT_SENT if receipt["state"] == "not_started"
+                              else EffectState.UNKNOWN),
+                owner=manifest.work_id,
+                attempt_id=UUID(manifest.attempt_id),
+                operation_id=UUID(manifest.launch_id),
+                evidence=(str(execution / "stderr.log"),),
+            )
+            receipt["failure_registration"] = registration.value
         return receipt
 
     def _finish_and_reconcile(

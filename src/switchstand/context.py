@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
+from .failure_capture import capture_failure
+from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
 from .session import supervise
@@ -455,6 +457,14 @@ def main() -> None:
     try:
         run(arguments.active, arguments.assignment[0], arguments.target_repo)
     except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        capture_failure(
+            Path(os.environ.get("HOME", "/nonexistent"))
+            / ".local/state/switchstand/failures/pending",
+            attempted_claim=f"launch managed Worker for {arguments.active}",
+            observed_result=f"{type(error).__name__}: {error}",
+            effect_state=EffectState.UNKNOWN,
+            evidence=("switchstand launcher stderr",),
+        )
         parser().exit(1, f"switchstand launch failed: {error}\n")
 
 

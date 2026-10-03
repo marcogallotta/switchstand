@@ -1,7 +1,10 @@
 import argparse
 import asyncio
 import os
+from pathlib import Path
+from uuid import UUID
 
+import httpx
 from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -9,11 +12,20 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .bootstrap_adapters import (
+    AuthenticatedMigrationReceiptFile,
+    ExactAsanaTaskProbe,
+    ExistingGrantAdapter,
+    PostgresIdentityMapping,
+)
+from .bootstrap_identity import resolve_and_admit_pre_migration_launch
 from .canonical_work import CanonicalWorkRepository
 from .contracts import LaunchAuthority
 from .grant_state import GrantState
 from .launch_source import canonical_work, repository_marker
-from .managed_identity import rotate_managed_grant
+from .managed_identity import managed_principal, rotate_managed_grant
+from .provider import AsanaProvider
+from .state import PostgresState
 
 
 def parser() -> argparse.ArgumentParser:
@@ -37,8 +49,38 @@ async def run(
     engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
         works = CanonicalWorkRepository(engine)
+        exact_active: UUID | None
+        try:
+            exact_active = UUID(active) if str(UUID(active)) == active else None
+        except ValueError:
+            exact_active = None
+        canonical_active = None if exact_active is None else await works.get(exact_active)
+        if exact_active is not None and canonical_active is None:
+            if references or repository:
+                raise ValueError("pre-migration bootstrap supports one local work target only")
+            async with httpx.AsyncClient(
+                base_url="https://app.asana.com/api/1.0",
+                headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
+            ) as client:
+                admitted = await resolve_and_admit_pre_migration_launch(
+                    active,
+                    PostgresIdentityMapping(PostgresState(engine)),
+                    ExactAsanaTaskProbe(AsanaProvider(client)),
+                    AuthenticatedMigrationReceiptFile(
+                        Path(os.environ["SWITCHSTAND_MIGRATION_RECEIPT"])
+                        if os.getenv("SWITCHSTAND_MIGRATION_RECEIPT") else None,
+                        os.getenv("SWITCHSTAND_MIGRATION_RECEIPT_SHA256"),
+                    ),
+                    managed_principal(exact_active),
+                    ExistingGrantAdapter(GrantState(engine)),
+                )
+            authority = admitted.grant.authority
+            print(f"ACTIVE_WORK_ID={authority.active_work_id}")
+            print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
+            print(f"LEGACY_TASK_GIDS={admitted.identity.provider_work_id}")
+            return
         resolved = tuple(
-            [await canonical_work(works, active)]
+            [canonical_active or await canonical_work(works, active)]
             + [await canonical_work(works, value) for value in references]
         )
         if len({work.work_id for work in resolved}) != len(resolved):

@@ -29,6 +29,7 @@ failure_records = Table(
     Column("owner", Text, nullable=False),
     Column("attempted_claim", Text, nullable=False),
     Column("observed_result", Text, nullable=False),
+    Column("clearing_action", Text, nullable=False),
     Column("effect_state", Text, nullable=False),
     Column("occurred_at", DateTime(timezone=True), nullable=False),
     Column("evidence", JSONB, nullable=False),
@@ -84,6 +85,7 @@ class FailureRecord(ClosedModel):
     operation_id: UUID
     attempted_claim: str = Field(min_length=1, max_length=2000)
     observed_result: str = Field(min_length=1, max_length=4000)
+    clearing_action: str = Field(min_length=1, max_length=2000)
     effect_state: EffectState
     owner: str = Field(min_length=1, max_length=36)
     occurred_at: datetime
@@ -116,6 +118,7 @@ class FailureRecord(ClosedModel):
             update={
                 "attempted_claim": redact(self.attempted_claim),
                 "observed_result": redact(self.observed_result),
+                "clearing_action": redact(self.clearing_action),
                 "evidence": tuple(redact(item) for item in self.evidence),
             }
         )

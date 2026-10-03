@@ -18,6 +18,7 @@ def failure(result="connection refused"):
         operation_id=uuid4(),
         attempted_claim="start worker",
         observed_result=result,
+        clearing_action="synchronize the pending record",
         effect_state=EffectState.NOT_SENT,
         owner="COORDINATOR",
         occurred_at=datetime(2026, 10, 3, tzinfo=UTC),

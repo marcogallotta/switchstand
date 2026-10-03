@@ -27,6 +27,7 @@ def failure(*, attempt_id=None, operation_id=None, result="connection refused"):
         operation_id=operation_id or uuid4(),
         attempted_claim="start managed worker",
         observed_result=result,
+        clearing_action="verify runtime state and retry safely",
         effect_state=EffectState.NOT_SENT,
         owner=WORK_ID,
         occurred_at=NOW,
