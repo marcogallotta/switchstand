@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -42,6 +43,25 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == set()
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):
+    subject = service()
+    update = AsyncMock(side_effect=AssertionError("invalid patch reached update handler"))
+    monkeypatch.setattr(subject, "update", update)
+
+    async with Client(build_chatgpt_server(subject)) as client:
+        result = await client.call_tool("work_update", {
+            "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
+            "observed_revision": "r1", "patch": {},
+        })
+
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert any("patch must not be empty" in getattr(item, "text", "")
+               for item in result.content)
+    update.assert_not_awaited()
+    assert subject.providers["asana"].sends == 0
 
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()

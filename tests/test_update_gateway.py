@@ -1,6 +1,8 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from typing import cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -132,6 +134,12 @@ async def test_real_journal_and_asana_boundary_enforce_replay_and_reconciliation
 
     restarted = UpdateGateway(gateway.state, GrantState(grants.engine), gateway.providers)
     assert await restarted.update(principal, first) == applied
+    assert len(boundary.puts) == 1
+    changed_applied = first.model_copy(update={"patch": ScalarPatch(title="Other")})
+    conflict = await restarted.update(principal, changed_applied)
+    assert (conflict.status, conflict.effect, conflict.reason) == (
+        "denied", "not_sent", "operation_identity_conflict",
+    )
     assert len(boundary.puts) == 1
 
     boundary.mode = "lost"
@@ -301,6 +309,29 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
         })
         assert denied.structured_content["reason"] == "operation_or_work_not_granted"
         assert len(boundary.puts) == 1
+
+
+async def test_managed_update_rejects_empty_patch_before_handler():
+    active = uuid4()
+    principal = PrincipalContext(
+        issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test",
+    )
+    update = AsyncMock(side_effect=AssertionError("invalid patch reached update handler"))
+    server = build_server(
+        object(), active, grants=cast(GrantState, object()), principal=principal, updates=update,
+    )
+
+    async with Client(server) as client:
+        result = await client.call_tool("work_update", {
+            "api_version": "1", "operation_id": str(uuid4()),
+            "observed_revision": "r1", "patch": {},
+        })
+
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert any("patch must not be empty" in getattr(item, "text", "")
+               for item in result.content)
+    update.assert_not_awaited()
 
 
 @pytest.mark.parametrize("field", ["horizon", "stage3_gate"])
