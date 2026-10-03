@@ -233,6 +233,24 @@ async def test_partial_patch_receipt_survives_restart(subject, patch, payload):
     assert boundary.puts == [payload]
 
 
+async def test_unsupported_enriched_patch_is_durably_not_applied_before_put(subject):
+    gateway, grants, principal, grant, boundary = subject
+    update = request(
+        grant, "r1", notes="must not be partially applied",
+        unblock_condition="dependency completes",
+    )
+
+    rejected = await gateway.update(principal, update)
+
+    assert (rejected.status, rejected.effect, rejected.reason) == (
+        "not_applied", "not_sent", "provider_rejected_input",
+    )
+    assert boundary.puts == []
+    restarted = UpdateGateway(gateway.state, GrantState(grants.engine), gateway.providers)
+    assert await restarted.update(principal, update) == rejected
+    assert boundary.puts == []
+
+
 @pytest.mark.parametrize("field", ["title", "notes", "completed", "priority", "work_type", "review_next_action"])
 def test_public_update_patch_rejects_explicit_null(field):
     with pytest.raises(ValidationError):

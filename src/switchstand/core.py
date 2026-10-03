@@ -171,9 +171,9 @@ async def apply_scalar(
         if send:
             raise UnknownEffect("update readback unavailable") from None
         raise
-    routing = {"priority", "work_type", "horizon", "review_next_action", "stage3_gate"}
     matches = work is not None and all(
-        getattr(work.routing if field in routing else work, field) == getattr(patch, field)
+        getattr(work.routing if field in Routing.model_fields else work, field)
+        == getattr(patch, field)
         for field in patch.model_fields_set
     )
     return work if work is not None and work.canonical and matches else None

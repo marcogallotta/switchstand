@@ -680,6 +680,29 @@ async def test_update_is_narrow():
     subject, api = provider((200, {})); await subject.update("t", WorkPatch(completed=True))
     assert api.requests[0].method == "PUT" and json.loads(api.requests[0].content) == {
         "data": {"completed": True}}
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("lifecycle_state", "UNKNOWN"),
+    ("canonical_root", "NONE"),
+    ("owner_key", "owner"),
+    ("wait_kind", "DEPENDENCY"),
+    ("unblock_condition", "dependency completes"),
+    ("next_due", "2026-10-05"),
+    ("next_action_class", "OWNER_CAN_DO"),
+    ("next_action_ref", "item-1"),
+])
+async def test_unsupported_enriched_routing_is_rejected_before_put(field, value):
+    subject, api = provider()
+    with pytest.raises(ProviderError, match="routing write denied") as rejected:
+        await subject.update("t", WorkPatch.model_validate({
+            "notes": "must not be partially applied", field: value,
+        }))
+
+    assert rejected.value.failure == "invalid_request"
+    assert api.requests == []
+
+
 async def test_update_ambiguous_response_is_unknown_and_not_retried():
     error = httpx.ReadTimeout("lost", request=httpx.Request("PUT", "https://a"))
     subject, api = provider(error)
