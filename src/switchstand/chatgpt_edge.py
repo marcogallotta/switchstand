@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
 from .canonical_work import CanonicalWorkRepository
 from .canonical_work_runtime import CanonicalWorkRuntime
@@ -42,6 +43,7 @@ from .stable_auth import (
     normalize_resource_url,
 )
 from .state import PostgresState
+from .work_events import WorkEventRepository
 
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
@@ -233,6 +235,7 @@ def _create_resource_app(
         service.required_results,
         ordinary_workspace_admission=True,
         canonical_work=service.canonical_work,
+        canonical_events=service.canonical_events,
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
     )
@@ -275,13 +278,17 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
             create_notes_suffix=marker or None,
         )
         grants = GrantState(engine)
+        canonical_repository = CanonicalWorkRepository(engine)
         canonical_work = CanonicalWorkRuntime(
-            CanonicalWorkRepository(engine), CanonicalRelationsRepository(engine)
+            canonical_repository, CanonicalRelationsRepository(engine)
+        )
+        canonical_events = CanonicalEventReader(
+            canonical_repository, WorkEventRepository(engine)
         )
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
             "asana": provider,
         }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
-            canonical_work=canonical_work,
+            canonical_work=canonical_work, canonical_events=canonical_events,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1")
         runtime = None
         if marker:

@@ -44,7 +44,7 @@ class FakeMCP:
             work_id = IDS["dependency"] if arguments["text"] == "Dependency" else IDS["work"]
             return {"status": "ok", "items": [{"id": work_id, "title": arguments["text"],
                 "revision": "r1", "completed": False, "routing": {}, "context": {}}]}
-        if name == "work_structure":
+        if name == "work_history":
             return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
         raise AssertionError(name)
 

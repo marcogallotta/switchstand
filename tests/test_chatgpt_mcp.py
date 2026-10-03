@@ -5,7 +5,6 @@ from uuid import uuid4
 import pytest
 from chatgpt_fixture import (
     ACTIVE,
-    CONTEXT,
     PRINCIPAL,
     REFERENCE,
     assert_public,
@@ -25,13 +24,7 @@ from switchstand.chatgpt_mcp import (
     build_chatgpt_server,
     build_ordinary_tools,
 )
-from switchstand.contracts import (
-    Routing,
-    SourceTaskRequest,
-    WorkResolveReferenceRequest,
-)
-from switchstand.core import ProviderError
-from switchstand.discovery import ProviderSearchItem, ProviderStructure
+from switchstand.contracts import WorkResolveReferenceRequest
 from switchstand.grants import (
     GrantResult,
     GuardOutcome,
@@ -245,18 +238,6 @@ async def test_exceptional_work_purpose_is_preserved_in_audit() -> None:
     )
 
 
-async def test_broad_reads_survive_missing_revoked_or_unqualified_write_grant():
-    subject = service()
-    for selected in (None, grant(state="revoked"), grant(append_qualification=None)):
-        subject.grants.grant = selected
-        result = await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))
-        assert result.status == "ok" and result.item.notes == "initial notes"
-        denied = await subject.append(ProtectedAppend(api_version="1", operation_id=uuid4(),
-            work_id=ACTIVE, grant_version=1, observed_revision="r1", text="feedback"))
-        assert denied.status == "denied" and denied.effect == "not_sent"
-    assert subject.providers["asana"].sends == 0
-
-
 async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     subject = service()
     assert (await subject.get()).status == "ok"
@@ -267,12 +248,11 @@ async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     subject.principal = another
     assert (await subject.get(ACTIVE)).status == "denied"
     assert (await subject.grant_get()).status == "denied"
-    assert (await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))).status == "ok"
 
     async def absent():
         return None
     subject.principal = absent
-    assert (await subject.source_task(SourceTaskRequest(api_version="1", task_gid="123"))).status == "denied"
+    assert (await subject.get(ACTIVE)).status == "denied"
 
 
 async def test_workspace_search_requires_explicit_operation_and_returns_only_work_ids():
@@ -313,93 +293,6 @@ async def test_workspace_search_requires_explicit_operation_and_returns_only_wor
     )
     assert denied.structured_content["status"] == "denied"
     assert subject.providers["asana"].search_calls == [("Task", None, None, 10)]
-
-
-async def test_structure_requires_workspace_read_and_discovery_and_projects_atomically(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    subject = service()
-    provider = subject.providers["asana"]
-    relation = ProviderSearchItem(
-        "456", "Parent", False, "p1", Routing(priority="P1"), CONTEXT,
-    )
-    structure = AsyncMock(return_value=ProviderStructure("ok", "r1", relation, ()))
-    monkeypatch.setattr(provider, "structure_work", structure, raising=False)
-    server = build_chatgpt_server(subject)
-    for selected in (
-        grant(scope="launch", operations=frozenset({"work_get", "work_search"})),
-        grant(scope="workspace", operations=frozenset({"work_get"})),
-    ):
-        subject.grants.grant = selected
-        denied = await server.call_tool("work_structure", {
-            "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-        })
-        assert denied.structured_content["status"] == "denied"
-    structure.assert_not_awaited()
-    subject.grants.grant = grant(
-        scope="workspace", operations=frozenset({"work_get", "work_search"}),
-    )
-    result = await server.call_tool("work_structure", {
-        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-    })
-    value = result.structured_content
-    assert value["status"] == "ok" and value["parent"]["id"] == str(REFERENCE)
-    assert "provider" not in str(value).lower() and "456" not in str(value)
-    structure.assert_awaited_once_with("123", "r1")
-
-    structure.return_value = ProviderStructure("stale", "r2")
-    stale = await server.call_tool("work_structure", {
-        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-    })
-    assert stale.structured_content == {
-        "status": "stale", "work_id": str(ACTIVE), "revision": "r2",
-        "parent": None, "children": [],
-    }
-    structure.side_effect = ProviderError("private detail")
-    failed = await server.call_tool("work_structure", {
-        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-    })
-    assert failed.structured_content["status"] == "provider_error"
-    assert "private detail" not in str(failed)
-
-
-@pytest.mark.parametrize("parent_id, child_id", [
-    ("123", "child"),
-    ("same", "same"),
-])
-async def test_structure_invalid_snapshot_returns_no_structure_or_bindings(
-    monkeypatch, parent_id, child_id,
-):
-    from unittest.mock import AsyncMock
-
-    subject = service()
-    subject.grants.grant = grant(
-        scope="workspace", operations=frozenset({"work_get", "work_search"}),
-    )
-
-    def relation(provider_work_id):
-        return ProviderSearchItem(
-            provider_work_id, provider_work_id, False, "r1", Routing(), CONTEXT,
-        )
-
-    monkeypatch.setattr(
-        subject.providers["asana"], "structure_work",
-        AsyncMock(return_value=ProviderStructure(
-            "ok", "r1", relation(parent_id), (relation(child_id),)
-        )),
-        raising=False,
-    )
-    before = dict(subject.state.handles)
-
-    result = await build_chatgpt_server(subject).call_tool("work_structure", {
-        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
-    })
-
-    assert result.structured_content == {
-        "status": "provider_error", "work_id": None, "revision": None,
-        "parent": None, "children": [],
-    }
-    assert subject.state.handles == before
 
 
 async def test_launch_reference_denies_unbound_canonical_task_without_binding(monkeypatch):
@@ -496,8 +389,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
     async with Client(parameters) as client:
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
-            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference", "work_structure",
-            "work_history", "work_attachments", "work_event", "work_append",
+            "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap", "work_get", "work_search", "work_resolve_reference",
+            "work_history", "work_event", "work_append",
             "work_create", "work_update", "work_relate", "effect_reconcile",
             "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
@@ -512,11 +405,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
                 tool.name != "agent_project_bootstrap"
             )
             assert tool.annotations.open_world_hint is False
-            if tool.name in {"work_get", "work_resolve_reference", "work_structure", "work_history",
-                             "work_attachments", "work_event"}:
+            if tool.name in {"work_get", "work_resolve_reference", "work_history", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
-            if tool.name == "work_attachments":
-                assert tool.input_schema["properties"]["observed_revision"]["minLength"] == 1
             if tool.name == "repository_candidate_qualification_get":
                 assert tool.input_schema["properties"]["pull_request"]["minimum"] == 1
                 assert tool.input_schema["properties"]["include_failure_detail"]["default"] is False
