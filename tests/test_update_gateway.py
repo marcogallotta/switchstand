@@ -348,7 +348,7 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
     assert current.relation_qualification == "managed:task-bound"
     server = build_server(
         Controller(authority, gateway.state, gateway.providers), authority.active_work_id,
-        grants=grants, principal=managed_principal(authority.active_work_id), updates=gateway,
+        grants=grants, principal=managed_principal(authority.active_work_id), updates=gateway.update,
     )
     operation_id = uuid4()
     arguments = {

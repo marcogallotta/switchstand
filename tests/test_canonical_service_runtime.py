@@ -24,6 +24,7 @@ from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     LaunchAuthority,
     WorkEventRequest,
+    WorkGetRequest,
     WorkHistoryRequest,
     WorkResolveReferenceRequest,
     WorkSearchRequest,
@@ -36,6 +37,7 @@ from switchstand.grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from switchstand.mcp import controller_from_env
 from switchstand.state import PostgresState, metadata
 from switchstand.work_events import WorkEventRepository
 
@@ -112,6 +114,47 @@ async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Sub
     assert got.status == "ok" and got.item is not None
     assert got.item.title == "Database task" and got.item.source is None
     assert searched.status == "ok" and [item.id for item in searched.items] == [subject.work_id]
+
+
+async def test_managed_controller_constructs_db_only_canonical_reads(
+    subject: Subject, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference, unbound = uuid4(), uuid4()
+    works = CanonicalWorkRepository(subject.engine)
+    await works.create(CurrentWork(reference, "Reference", False, "reference notes"))
+    await works.create(CurrentWork(unbound, "Unbound", False, "unbound notes"))
+    unbound_event = await subject.events.append(
+        unbound, observed_version=1, operation_id=uuid4(), subtype="comment",
+        text="private", created_at=datetime.now(UTC), actor="Marco",
+    )
+    monkeypatch.setenv("ACTIVE_WORK_ID", str(subject.work_id))
+    monkeypatch.setenv("REFERENCE_WORK_IDS", str(reference))
+    monkeypatch.setenv("DATABASE_URL", subject.engine.url.render_as_string(hide_password=False))
+    monkeypatch.delenv("ASANA_TOKEN", raising=False)
+    controller = controller_from_env()
+
+    result = await controller.get(WorkGetRequest(
+        api_version="1", work_id=subject.work_id,
+    ))
+
+    assert result.status == "ok" and result.item is not None
+    assert result.item.title == "Database task"
+    assert (await controller.get(WorkGetRequest(
+        api_version="1", work_id=reference,
+    ))).status == "ok"
+    revision = canonical_revision(unbound, 2)
+    assert (await controller.get(WorkGetRequest(
+        api_version="1", work_id=unbound,
+    ))).status == "denied"
+    assert (await controller.history(WorkHistoryRequest(
+        api_version="1", work_id=unbound, observed_revision=revision,
+    ))).status == "denied"
+    assert (await controller.event(WorkEventRequest(
+        api_version="1", work_id=unbound, event_id=unbound_event.event.id,
+        observed_revision=revision,
+    ))).status == "denied"
+    assert controller.providers == {}
+    await controller.state.engine.dispose()  # type: ignore[attr-defined]
 
 
 async def test_service_routes_reference_and_event_reads_to_postgres(subject: Subject) -> None:
