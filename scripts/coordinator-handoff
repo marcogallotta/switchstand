@@ -15,19 +15,48 @@ from typing import NoReturn
 
 SHA = re.compile(r"[0-9a-f]{40}")
 CANARY_STATUS = "SWITCHSTAND_COORDINATOR_CANARY_OK"
+GIT_TIMEOUT_SECONDS = 30
+_evidence: Path | None = None
+_stage = "startup"
+_repo: Path | None = None
 
 
 def fail(message: str) -> NoReturn:
+    if _evidence is not None:
+        payload = {"status": "FAILED", "stage": _stage, "message": message}
+        if _repo is not None:
+            result = subprocess.run(
+                ["git", "-C", str(_repo), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+                env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode == 0:
+                payload["known_head"] = result.stdout.strip()
+        (_evidence / "result.json").write_text(json.dumps(payload, sort_keys=True) + "\n")
+        message = f"{message}; evidence: {_evidence}"
     raise SystemExit(message)
 
 
+def stage(name: str) -> None:
+    global _stage
+    _stage = name
+
+
 def git(repo: Path, *arguments: str, check: bool = True) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *arguments],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"git {' '.join(arguments)} timed out after {GIT_TIMEOUT_SECONDS}s")
     if check and result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
         fail(detail)
@@ -114,6 +143,7 @@ def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
 
 
 def main() -> None:
+    global _evidence, _repo
     if len(sys.argv) != 2:
         fail("usage: scripts/coordinator-handoff <start-commit-record>")
     home_raw = os.environ.get("HOME")
@@ -122,6 +152,13 @@ def main() -> None:
     home = Path(home_raw).resolve()
     os.umask(0o077)
     repo = home / "switchstand"
+    artifact_root = home / ".local/state/switchstand/codex/handoffs"
+    artifact_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(artifact_root, 0o700)
+    _evidence = Path(tempfile.mkdtemp(prefix="handoff-", dir=artifact_root))
+    os.chmod(_evidence, 0o700)
+    _repo = repo
+    stage("validate-inputs")
     if not repo.is_dir():
         fail("canonical Switchstand checkout is unavailable")
     start_record, started = require_start_record(home, sys.argv[1])
@@ -139,10 +176,12 @@ def main() -> None:
     ).returncode:
         fail("start record commit is unavailable in canonical history")
 
+    stage("fetch-main")
     origin = git(repo, "remote", "get-url", "origin")
     source = fetch_source(origin)
     git(repo, "fetch", "--quiet", "--no-tags", source,
         "+refs/heads/main:refs/remotes/origin/main")
+    stage("validate-fast-forward")
     accepted = git(repo, "rev-parse", "origin/main")
     current = git(repo, "rev-parse", "HEAD")
     if subprocess.run(
@@ -152,7 +191,9 @@ def main() -> None:
     ).returncode:
         fail("handoff refuses divergent main; local commits are intact")
     if current != accepted:
+        stage("fast-forward-main")
         git(repo, "merge", "--ff-only", "--quiet", accepted)
+    stage("read-back-main")
     if (git(repo, "rev-parse", "HEAD") != accepted
             or git(repo, "branch", "--show-current") != "main"
             or git(repo, "status", "--porcelain", "--untracked-files=all")):
@@ -164,19 +205,19 @@ def main() -> None:
     ).returncode:
         fail("recorded Coordinator start commit is not an ancestor of final main")
 
+    stage("validate-shim")
     shim = home / ".local/bin/codex"
     if shim.is_symlink() or not shim.is_file() or not os.access(shim, os.X_OK):
         fail("materialized Codex shim is unavailable")
-    artifact_root = home / ".local/state/switchstand/codex/handoffs"
-    artifact_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(artifact_root, 0o700)
-    artifact = Path(tempfile.mkdtemp(prefix="canary-", dir=artifact_root))
-    os.chmod(artifact, 0o700)
-    run_canary(shim, repo, accepted, artifact)
+    stage("fresh-agent-canary")
+    run_canary(shim, repo, accepted, _evidence)
+    (_evidence / "result.json").write_text(json.dumps({
+        "status": "PASS", "stage": _stage, "known_head": accepted,
+    }, sort_keys=True) + "\n")
 
     print(f"Git boundary: {start_record} {started}..{accepted}")
     print(f"Fresh-agent canary: PASS at {accepted}")
-    print(f"Evidence: {artifact}")
+    print(f"Evidence: {_evidence}")
 
 
 if __name__ == "__main__":

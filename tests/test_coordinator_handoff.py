@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import stat
 import subprocess
 from pathlib import Path
+from typing import Any, NoReturn, cast
+
+import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts/coordinator-handoff"
 
@@ -89,7 +93,7 @@ def test_fast_forwards_clean_main_and_proves_fresh_agent(tmp_path: Path) -> None
     artifact = Path(result.stdout.split("Evidence: ", 1)[1].strip())
     assert artifact.parent.stat().st_mode & 0o777 == 0o700
     assert {path.name for path in artifact.iterdir()} == {
-        "schema.json", "final.json", "trace.jsonl", "stderr.log",
+        "schema.json", "final.json", "trace.jsonl", "stderr.log", "result.json",
     }
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in artifact.iterdir())
 
@@ -108,6 +112,11 @@ def test_dirty_main_fails_before_fetch_or_canary(tmp_path: Path) -> None:
     assert "refuses dirty main" in result.stderr
     assert (primary / "untracked.txt").read_text() == "preserve me\n"
     assert not calls.exists()
+    artifact = Path(result.stderr.strip().rsplit("evidence: ", 1)[1])
+    evidence = json.loads((artifact / "result.json").read_text())
+    assert evidence["status"] == "FAILED"
+    assert evidence["stage"] == "validate-inputs"
+    assert evidence["known_head"] == git(primary, "rev-parse", "HEAD")
 
 
 def test_failed_canary_preserves_updated_main_and_evidence(tmp_path: Path) -> None:
@@ -124,3 +133,25 @@ def test_failed_canary_preserves_updated_main_and_evidence(tmp_path: Path) -> No
     assert "fresh-agent canary failed; evidence:" in result.stderr
     artifact = Path(result.stderr.strip().rsplit("evidence: ", 1)[1])
     assert (artifact / "stderr.log").exists()
+
+
+def test_git_is_noninteractive_and_timeout_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT), run_name="coordinator_handoff_test")
+    git_function = namespace["git"]
+    seen: dict[str, Any] = {}
+
+    def timeout_run(*args: Any, **kwargs: Any) -> NoReturn:
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(git_function.__globals__["subprocess"], "run", timeout_run)
+    try:
+        git_function(Path("/repo"), "fetch", "origin")
+    except SystemExit as error:
+        assert "git fetch origin timed out after 30s" in str(error)
+    else:
+        raise AssertionError("timeout must fail the handoff")
+    assert seen["timeout"] == 30
+    assert cast(dict[str, str], seen["env"])["GIT_TERMINAL_PROMPT"] == "0"
