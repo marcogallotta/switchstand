@@ -13,10 +13,8 @@ from switchstand.contracts import (
     WorkPlacement,
 )
 from switchstand.core import (
-    AttachmentPage,
     EventBinding,
     Handle,
-    ProviderAttachment,
     ProviderSourceStory,
     ProviderSourceTask,
     ProviderStoriesPage,
@@ -121,9 +119,6 @@ class Provider:
         return ProviderStructure(
             status="ok", revision=self.revision, children=(child,),
         )
-
-    async def list_attachments(self, task_gid, cursor, limit):
-        return AttachmentPage((ProviderAttachment("brief.txt"),), None)
 
     async def source_task(self, task_gid):
         return ProviderSourceTask(self.title, self.notes, self.completed, self.revision,

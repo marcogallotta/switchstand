@@ -3,19 +3,14 @@ from uuid import UUID, uuid4
 
 import pytest
 from chatgpt_fixture import PRINCIPAL, MemoryGrants, grant
-from pydantic import ValidationError
 
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     LaunchAuthority,
     Routing,
-    SourceStoriesRequest,
-    SourceStoryRequest,
-    SourceTaskRequest,
     WorkAppendRequest,
     WorkContext,
     WorkEventRequest,
-    WorkGetRequest,
     WorkHistoryRequest,
 )
 from switchstand.core import (
@@ -149,68 +144,6 @@ def setup_controller():
     return provider, controller
 
 
-def test_asana_source_identity_is_not_a_work_id():
-    with pytest.raises(ValidationError):
-        SourceTaskRequest(api_version="1", task_gid=str(WORK_ID))
-
-
-async def test_exact_task_and_revision_checked_history(setup_controller):
-    provider, controller = setup_controller
-    active = await controller.get(WorkGetRequest(api_version="1", work_id=WORK_ID))
-    assert active.status == "ok" and active.item and active.item.source
-    assert active.item.source.provider == "asana" and active.item.source.task_gid == TASK_GID
-    assert active.item.id == WORK_ID
-    task = await controller.source_task(SourceTaskRequest(api_version="1", task_gid=TASK_GID))
-    assert task.status == "ok" and task.item and task.item.task_gid == TASK_GID
-
-    page = await controller.source_stories(
-        SourceStoriesRequest(
-            api_version="1", task_gid=TASK_GID, observed_revision="r1"
-        )
-    )
-    assert page.status == "ok" and page.revision == "r1"
-    assert page.stories[0].story_gid == STORY_GID
-
-    provider.revision = "r2"
-    stale = await controller.source_stories(
-        SourceStoriesRequest(
-            api_version="1", task_gid=TASK_GID, observed_revision="r1"
-        )
-    )
-    assert stale.status == "stale" and stale.revision == "r2" and not stale.stories
-
-
-async def test_material_story_reread_checks_revision_and_target(setup_controller):
-    provider, controller = setup_controller
-    result = await controller.source_story(
-        SourceStoryRequest(
-            api_version="1", task_gid=TASK_GID,
-            story_gid=STORY_GID, observed_revision="r1",
-        )
-    )
-    assert result.status == "ok" and result.item
-    assert result.item.task_gid == TASK_GID
-
-    provider.story_task_gid = "999"
-    denied = await controller.source_story(
-        SourceStoryRequest(
-            api_version="1", task_gid=TASK_GID,
-            story_gid=STORY_GID, observed_revision="r1",
-        )
-    )
-    assert denied.status == "denied"
-
-    provider.story_task_gid = TASK_GID
-    provider.bump_revision_on_story = True
-    stale = await controller.source_story(
-        SourceStoryRequest(
-            api_version="1", task_gid=TASK_GID,
-            story_gid=STORY_GID, observed_revision="r1",
-        )
-    )
-    assert stale.status == "stale" and stale.revision == "r2"
-
-
 async def test_append_returns_exact_created_story_and_target(setup_controller):
     provider, controller = setup_controller
     result = await controller.append(
@@ -227,13 +160,9 @@ async def test_append_returns_exact_created_story_and_target(setup_controller):
     assert unknown.status == "unknown" and provider.append_count == 2
 
 
-async def test_exact_story_identity_is_required_for_read_and_append(setup_controller):
+async def test_exact_story_identity_is_required_for_append(setup_controller):
     provider, controller = setup_controller
     provider.story_gid = "999"
-    reread = await controller.source_story(SourceStoryRequest(
-        api_version="1", task_gid=TASK_GID, story_gid=STORY_GID, observed_revision="r1",
-    ))
-    assert reread.status == "denied" and reread.item is None
     appended = await controller.append(
         WorkAppendRequest(api_version="1", work_id=WORK_ID, text="feedback")
     )

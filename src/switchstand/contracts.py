@@ -4,9 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ApiVersion = Literal["1"]
-AsanaGid = str
 Status = Literal["ok", "stale", "denied", "unknown", "provider_error"]
-SourceStatus = Literal["ok", "stale", "denied", "unknown", "provider_error"]
 
 
 class ClosedModel(BaseModel):
@@ -180,40 +178,6 @@ class WorkResolveReferenceRequest(ClosedModel):
     reference: str = Field(min_length=1, max_length=2048)
 
 
-class WorkAttachmentsRequest(ClosedModel):
-    api_version: ApiVersion
-    work_id: UUID
-    observed_revision: str = Field(min_length=1)
-    cursor: str | None = Field(default=None, min_length=1, max_length=1024)
-    limit: int = Field(default=50, strict=True, ge=1, le=100)
-
-
-class WorkAttachment(ClosedModel):
-    name: str = Field(min_length=1)
-
-
-class WorkAttachmentsResult(ClosedModel):
-    status: Status
-    work_id: UUID | None = None
-    revision: str | None = None
-    attachments: tuple[WorkAttachment, ...] = ()
-    next_cursor: str | None = Field(default=None, min_length=1, max_length=1024)
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        if self.status == "ok":
-            if self.work_id is None or self.revision is None:
-                raise ValueError("successful attachment page requires work and revision")
-        elif self.status == "stale":
-            if (self.work_id is None or self.revision is None
-                    or self.attachments or self.next_cursor is not None):
-                raise ValueError("stale attachment page requires only current work and revision")
-        elif (self.work_id is not None or self.revision is not None
-              or self.attachments or self.next_cursor is not None):
-            raise ValueError("failed attachment page must not claim result data")
-        return self
-
-
 class WorkUpdateRequest(ClosedModel):
     api_version: ApiVersion
     work_id: UUID
@@ -267,93 +231,6 @@ class LaunchAuthority(ClosedModel):
 
     def can_read(self, work_id: UUID) -> bool:
         return work_id == self.active_work_id or work_id in self.reference_work_ids
-
-
-class SourceTask(ClosedModel):
-    task_gid: AsanaGid
-    title: str
-    notes: str
-    completed: bool
-    revision: str
-
-
-class SourceStory(ClosedModel):
-    story_gid: AsanaGid
-    task_gid: AsanaGid
-    subtype: str | None = None
-    text: str | None = None
-    created_at: str
-    created_by: str | None = None
-
-
-class SourceTaskRequest(ClosedModel):
-    api_version: ApiVersion
-    task_gid: AsanaGid = Field(min_length=1, pattern=r"^[0-9]+$")
-
-
-class SourceStoriesRequest(ClosedModel):
-    api_version: ApiVersion
-    task_gid: AsanaGid = Field(min_length=1, pattern=r"^[0-9]+$")
-    observed_revision: str = Field(min_length=1)
-    offset: str | None = None
-    limit: int = Field(default=50, ge=1, le=100)
-
-
-class SourceStoryRequest(ClosedModel):
-    api_version: ApiVersion
-    task_gid: AsanaGid = Field(min_length=1, pattern=r"^[0-9]+$")
-    story_gid: AsanaGid = Field(min_length=1, pattern=r"^[0-9]+$")
-    observed_revision: str = Field(min_length=1)
-
-
-class SourceTaskResult(ClosedModel):
-    status: Literal["ok", "denied", "unknown", "provider_error"]
-    item: SourceTask | None = None
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        if (self.status == "ok") != (self.item is not None):
-            raise ValueError("item presence does not match status")
-        return self
-
-
-class SourceStoriesResult(ClosedModel):
-    status: SourceStatus
-    task_gid: AsanaGid | None = None
-    revision: str | None = None
-    stories: tuple[SourceStory, ...] = ()
-    next_offset: str | None = None
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        if self.status == "ok":
-            if self.task_gid is None or self.revision is None:
-                raise ValueError("successful source page requires target and revision")
-        elif self.status == "stale":
-            if self.task_gid is None or self.revision is None or self.stories or self.next_offset is not None:
-                raise ValueError("stale source page requires only current target and revision")
-        elif self.task_gid is not None or self.revision is not None or self.stories or self.next_offset is not None:
-            raise ValueError("failed source page must not claim source data")
-        return self
-
-
-class SourceStoryResult(ClosedModel):
-    status: SourceStatus
-    task_gid: AsanaGid | None = None
-    revision: str | None = None
-    item: SourceStory | None = None
-
-    @model_validator(mode="after")
-    def valid_result(self) -> Self:
-        if self.status == "ok":
-            if self.task_gid is None or self.revision is None or self.item is None:
-                raise ValueError("successful story reread requires target, revision and story")
-        elif self.status == "stale":
-            if self.task_gid is None or self.revision is None or self.item is not None:
-                raise ValueError("stale story reread requires current target and revision only")
-        elif self.task_gid is not None or self.revision is not None or self.item is not None:
-            raise ValueError("failed story reread must not claim source data")
-        return self
 
 
 class WorkEvent(ClosedModel):

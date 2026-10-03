@@ -12,8 +12,6 @@ from .contracts import (
     WorkPlacement,
 )
 from .core import (
-    AttachmentPage,
-    ProviderAttachment,
     ProviderError,
     ProviderRelation,
     ProviderSourceStory,
@@ -73,7 +71,6 @@ OPT_FIELDS = ("gid,name,notes,completed,modified_at,"
               "custom_fields.enum_options.gid,custom_fields.enum_options.name,"
               "custom_fields.enum_options.enabled")
 STORY_FIELDS = "gid,resource_subtype,text,created_at,created_by.name,target.gid"
-ATTACHMENT_FIELDS = "name,parent.gid"
 JSON = dict[str, Any]
 LOG = logging.getLogger(__name__)
 READ_RETRY_DELAYS = (0.1, 0.25)
@@ -491,46 +488,6 @@ class AsanaProvider:
         return ProviderWork(
             title, notes, completed, revision, routing, context, canonical,
         )
-
-    async def list_attachments(
-        self, provider_work_id: str, cursor: str | None, limit: int
-    ) -> AttachmentPage:
-        try:
-            params: dict[str, str | int] = {
-                "parent": provider_work_id, "limit": limit, "opt_fields": ATTACHMENT_FIELDS,
-            }
-            if cursor is not None:
-                params["offset"] = cursor
-            response = await self._read("attachments", "/attachments", params=params)
-            response.raise_for_status()
-            payload = response.json()
-            data, next_page = payload["data"], payload["next_page"]
-            if not isinstance(data, list):
-                raise TypeError
-            raw_attachments = cast(list[object], data)
-            if len(raw_attachments) > limit:
-                raise TypeError
-            attachments: list[ProviderAttachment] = []
-            for value in raw_attachments:
-                if not isinstance(value, dict):
-                    raise TypeError
-                row = cast(JSON, value)
-                name = row.get("name")
-                if (not isinstance(name, str) or not name
-                        or self._gid(row.get("parent")) != provider_work_id):
-                    raise TypeError
-                attachments.append(ProviderAttachment(name))
-            next_cursor: str | None = None
-            if next_page is not None:
-                if not isinstance(next_page, dict):
-                    raise TypeError
-                next_cursor = cast(JSON, next_page).get("offset")
-                if (not isinstance(next_cursor, str) or not next_cursor
-                        or len(next_cursor) > 1024):
-                    raise TypeError
-            return AttachmentPage(tuple(attachments), next_cursor)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            raise ProviderError("provider request failed") from None
 
     async def structure_work(
         self, provider_work_id: str, observed_revision: str,
