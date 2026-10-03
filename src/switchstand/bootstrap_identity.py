@@ -11,7 +11,7 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 from .core import Handle
-from .grants import WorkGrant
+from .grants import PrincipalContext, WorkGrant
 
 MIGRATION_COMPLETE_RECEIPT = "work-identity-migration-complete-v1"
 
@@ -27,6 +27,8 @@ class BootstrapIdentityError(ValueError):
         "task_not_current",
         "missing_grant",
         "stale_grant",
+        "unauthenticated_principal",
+        "principal_mismatch",
         "ambiguous_grant",
         "wrong_scope",
     ]):
@@ -128,24 +130,33 @@ async def resolve_pre_migration_identity(
 
 async def admit_existing_launch_grant(
     identity: ResolvedBootstrapIdentity,
+    requesting_principal: PrincipalContext,
     grants: ExistingGrantReader,
 ) -> AdmittedBootstrap:
-    """Admit exactly one already-current launch grant; never issue or rotate one."""
+    """Admit one current grant for the exact authenticated requesting principal."""
+    if requesting_principal.assurance != "authenticated":
+        raise BootstrapIdentityError("unauthenticated_principal")
     candidates = tuple(await grants.for_active_work(identity.work_id))
-    matching = tuple(
+    exact_work = tuple(
         grant for grant in candidates
         if grant.authority.active_work_id == identity.work_id
     )
-    if not matching:
+    if not exact_work:
         raise BootstrapIdentityError("missing_grant")
-    current = tuple(grant for grant in matching if grant.current())
+    current = tuple(grant for grant in exact_work if grant.current())
     if not current:
         raise BootstrapIdentityError("stale_grant")
-    if len(current) != 1:
-        raise BootstrapIdentityError("ambiguous_grant")
-    grant = current[0]
-    if grant.scope != "launch":
+    principal_bound = tuple(
+        grant for grant in current if grant.principal == requesting_principal
+    )
+    if not principal_bound:
+        raise BootstrapIdentityError("principal_mismatch")
+    launch = tuple(grant for grant in principal_bound if grant.scope == "launch")
+    if not launch:
         raise BootstrapIdentityError("wrong_scope")
+    if len(launch) != 1:
+        raise BootstrapIdentityError("ambiguous_grant")
+    grant = launch[0]
     return AdmittedBootstrap(identity, grant)
 
 
@@ -154,8 +165,9 @@ async def resolve_and_admit_pre_migration_launch(
     mapping: WorkIdentityMapping,
     tasks: ExactTaskProbe,
     receipts: MigrationReceiptReader,
+    requesting_principal: PrincipalContext,
     grants: ExistingGrantReader,
 ) -> AdmittedBootstrap:
     """Small integration seam for a launcher compatibility fallback."""
     identity = await resolve_pre_migration_identity(value, mapping, tasks, receipts)
-    return await admit_existing_launch_grant(identity, grants)
+    return await admit_existing_launch_grant(identity, requesting_principal, grants)

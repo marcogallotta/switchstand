@@ -19,6 +19,12 @@ from switchstand.grants import PrincipalContext, WorkGrant
 WORK_ID = UUID("11111111-1111-4111-8111-111111111111")
 OTHER_WORK_ID = UUID("22222222-2222-4222-8222-222222222222")
 GID = "1218999999999999"
+PRINCIPAL = PrincipalContext(
+    issuer="test", subject="managed-worker", client_id="test", assurance="authenticated",
+)
+OTHER_PRINCIPAL = PrincipalContext(
+    issuer="test", subject="other-worker", client_id="test", assurance="authenticated",
+)
 
 
 class Mapping:
@@ -66,13 +72,12 @@ def grant(
     work_id: UUID = WORK_ID,
     scope: str = "launch",
     expires_at: datetime | None = None,
+    principal: PrincipalContext = PRINCIPAL,
 ) -> WorkGrant:
     return WorkGrant(
         id=uuid4(),
         version=4,
-        principal=PrincipalContext(
-            issuer="test", subject="managed-worker", client_id="test", assurance="authenticated",
-        ),
+        principal=principal,
         authority=LaunchAuthority(active_work_id=work_id),
         scope=scope,
         operations=frozenset({"work_get"}),
@@ -91,7 +96,7 @@ async def test_known_exact_work_id_resolves_and_admits_existing_grant():
     existing = grant()
 
     admitted = await resolve_and_admit_pre_migration_launch(
-        str(WORK_ID), mapping, tasks, receipts, Grants(existing),
+        str(WORK_ID), mapping, tasks, receipts, PRINCIPAL, Grants(existing),
     )
 
     assert admitted.identity.work_id == WORK_ID
@@ -172,7 +177,7 @@ async def test_missing_grant_is_rejected():
     identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
 
     with pytest.raises(BootstrapIdentityError, match="missing_grant"):
-        await admit_existing_launch_grant(identity, Grants())
+        await admit_existing_launch_grant(identity, PRINCIPAL, Grants())
 
 
 async def test_stale_grant_is_rejected():
@@ -181,7 +186,7 @@ async def test_stale_grant_is_rejected():
     stale = grant(expires_at=datetime.now(UTC) - timedelta(seconds=1))
 
     with pytest.raises(BootstrapIdentityError, match="stale_grant"):
-        await admit_existing_launch_grant(identity, Grants(stale))
+        await admit_existing_launch_grant(identity, PRINCIPAL, Grants(stale))
 
 
 async def test_wrong_scope_grant_is_rejected():
@@ -189,7 +194,9 @@ async def test_wrong_scope_grant_is_rejected():
     identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
 
     with pytest.raises(BootstrapIdentityError, match="wrong_scope"):
-        await admit_existing_launch_grant(identity, Grants(grant(scope="workspace")))
+        await admit_existing_launch_grant(
+            identity, PRINCIPAL, Grants(grant(scope="workspace")),
+        )
 
 
 async def test_ambiguous_current_grants_are_rejected():
@@ -197,7 +204,7 @@ async def test_ambiguous_current_grants_are_rejected():
     identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
 
     with pytest.raises(BootstrapIdentityError, match="ambiguous_grant"):
-        await admit_existing_launch_grant(identity, Grants(grant(), grant()))
+        await admit_existing_launch_grant(identity, PRINCIPAL, Grants(grant(), grant()))
 
 
 async def test_grant_for_different_work_does_not_authorize_launch():
@@ -205,7 +212,45 @@ async def test_grant_for_different_work_does_not_authorize_launch():
     identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
 
     with pytest.raises(BootstrapIdentityError, match="missing_grant"):
-        await admit_existing_launch_grant(identity, Grants(grant(work_id=OTHER_WORK_ID)))
+        await admit_existing_launch_grant(
+            identity, PRINCIPAL, Grants(grant(work_id=OTHER_WORK_ID)),
+        )
+
+
+async def test_grant_for_different_principal_does_not_authorize_launch():
+    mapping, tasks, receipts = boundaries()
+    identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
+
+    with pytest.raises(BootstrapIdentityError, match="principal_mismatch"):
+        await admit_existing_launch_grant(
+            identity, PRINCIPAL, Grants(grant(principal=OTHER_PRINCIPAL)),
+        )
+
+
+async def test_other_principals_grant_does_not_make_exact_principal_ambiguous():
+    mapping, tasks, receipts = boundaries()
+    identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
+    expected = grant()
+
+    admitted = await admit_existing_launch_grant(
+        identity, PRINCIPAL, Grants(grant(principal=OTHER_PRINCIPAL), expected),
+    )
+
+    assert admitted.grant is expected
+
+
+async def test_requesting_principal_must_itself_be_authenticated():
+    mapping, tasks, receipts = boundaries()
+    identity = await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, receipts)
+    unauthenticated = PrincipalContext(
+        issuer="test", subject="managed-worker", client_id="test", assurance="test",
+    )
+    grants = Grants(grant())
+
+    with pytest.raises(BootstrapIdentityError, match="unauthenticated_principal"):
+        await admit_existing_launch_grant(identity, unauthenticated, grants)
+
+    assert grants.reads == 0
 
 
 async def test_boundaries_are_read_only_and_existing_grant_identity_is_preserved():
@@ -213,7 +258,7 @@ async def test_boundaries_are_read_only_and_existing_grant_identity_is_preserved
     grants = Grants(grant())
 
     admitted = await resolve_and_admit_pre_migration_launch(
-        str(WORK_ID), mapping, tasks, receipts, grants,
+        str(WORK_ID), mapping, tasks, receipts, PRINCIPAL, grants,
     )
 
     assert admitted.grant is grants.values[0]
