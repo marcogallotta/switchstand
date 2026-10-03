@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -16,6 +17,7 @@ from sqlalchemy import DateTime, Table, delete, func, insert, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
+from .bootstrap_identity import MIGRATION_COMPLETE_RECEIPT
 from .canonical_relations import (
     project_memberships,
     projects,
@@ -23,7 +25,7 @@ from .canonical_relations import (
     work_parents,
 )
 from .canonical_work import canonical_work, legacy_work_aliases
-from .state import work_event_handles, work_handles
+from .state import work_event_handles, work_handles, work_migration_receipts
 from .work_corpus import load_manifest, parity_manifest, parity_value, write_manifest
 from .work_events import work_events
 
@@ -143,7 +145,8 @@ async def import_parity(
     engine: AsyncEngine, source: Path, corpus_path: Path | None = None,
 ) -> int:
     """Fail atomically unless every canonical target table is empty and valid."""
-    grouped = _records(load_manifest(source))
+    source_document = load_manifest(source)
+    grouped = _records(source_document)
     imported = 0
     async with engine.begin() as connection:
         for _, table, _ in TABLES:
@@ -161,6 +164,20 @@ async def import_parity(
             if rows:
                 await connection.execute(insert(table), rows)
                 imported += len(rows)
+        records: list[dict[str, object]] = []
+        for kind, table, keys in TABLES:
+            read_rows = (await connection.execute(select(table).order_by(
+                *[table.c[key] for key in keys]
+            ))).mappings()
+            for row in read_rows:
+                fields = {key: parity_value(value) for key, value in row.items()}
+                records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
+        if parity_manifest(records) != source_document:
+            raise ValueError("target readback does not match source parity")
+        await connection.execute(insert(work_migration_receipts).values(
+            name=MIGRATION_COMPLETE_RECEIPT,
+            source_digest=hashlib.sha256(source.read_bytes()).hexdigest(),
+        ))
     return imported
 
 

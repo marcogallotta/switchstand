@@ -165,11 +165,8 @@ async def test_only_named_authenticated_complete_receipt_disables_fallback(
 ):
     mapping, tasks, _ = boundaries()
 
-    identity = await resolve_pre_migration_identity(
-        str(WORK_ID), mapping, tasks, Receipts(receipt),
-    )
-
-    assert identity.work_id == WORK_ID
+    with pytest.raises(BootstrapIdentityError, match="migration_receipt_invalid"):
+        await resolve_pre_migration_identity(str(WORK_ID), mapping, tasks, Receipts(receipt))
 
 
 async def test_missing_grant_is_rejected():

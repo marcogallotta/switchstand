@@ -24,7 +24,7 @@ def capture_failure(
 ) -> RegistrationState:
     """Queue one redacted record locally; capture failure remains non-blocking."""
     attempt = attempt_id or uuid4()
-    registry = PendingFailureRegistry()
+    registry = PendingFailureRegistry(directory)
     registry.register(attempt)
     try:
         result = PendingFailureQueue(directory).enqueue(FailureRecord(

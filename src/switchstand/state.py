@@ -24,6 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from .core import Handle
 
 metadata = MetaData()
+work_migration_receipts = Table(
+    "work_migration_receipts",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("source_digest", Text, nullable=False),
+    Column("completed_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    CheckConstraint("length(source_digest) = 64", name="ck_work_migration_receipt_digest"),
+)
 work_handles = Table(
     "work_handles",
     metadata,

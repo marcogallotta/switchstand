@@ -10,20 +10,23 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .bootstrap_adapters import (
-    AuthenticatedMigrationReceiptFile,
     ExactAsanaTaskProbe,
     ExistingGrantAdapter,
     PostgresIdentityMapping,
+    PostgresMigrationReceiptReader,
 )
 from .bootstrap_identity import resolve_and_admit_pre_migration_launch
 from .canonical_work import CanonicalWorkRepository
 from .contracts import LaunchAuthority
+from .failure_journal import FailureJournal
 from .grant_state import GrantState
 from .launch_source import canonical_work, repository_marker
 from .managed_identity import managed_principal, rotate_managed_grant
+from .pending_failures import PendingFailureQueue, PendingFailureRegistry, failure_queue_root
 from .provider import AsanaProvider
 from .state import PostgresState
 
@@ -48,6 +51,13 @@ async def run(
         raise ValueError("at most eight reference tasks are allowed")
     engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
+        pending_root = failure_queue_root(Path(os.environ["HOME"]))
+        try:
+            await PendingFailureQueue(pending_root).sync(
+                FailureJournal(engine), PendingFailureRegistry(pending_root)
+            )
+        except (AttributeError, OSError, SQLAlchemyError, ValueError):
+            pass
         works = CanonicalWorkRepository(engine)
         exact_active: UUID | None
         try:
@@ -66,11 +76,7 @@ async def run(
                     active,
                     PostgresIdentityMapping(PostgresState(engine)),
                     ExactAsanaTaskProbe(AsanaProvider(client)),
-                    AuthenticatedMigrationReceiptFile(
-                        Path(os.environ["SWITCHSTAND_MIGRATION_RECEIPT"])
-                        if os.getenv("SWITCHSTAND_MIGRATION_RECEIPT") else None,
-                        os.getenv("SWITCHSTAND_MIGRATION_RECEIPT_SHA256"),
-                    ),
+                    PostgresMigrationReceiptReader(engine),
                     managed_principal(exact_active),
                     ExistingGrantAdapter(GrantState(engine)),
                 )
@@ -78,6 +84,8 @@ async def run(
             print(f"ACTIVE_WORK_ID={authority.active_work_id}")
             print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
             print(f"LEGACY_TASK_GIDS={admitted.identity.provider_work_id}")
+            print(f"MANAGED_GRANT_ID={admitted.grant.id}")
+            print(f"MANAGED_GRANT_VERSION={admitted.grant.version}")
             return
         resolved = tuple(
             [canonical_active or await canonical_work(works, active)]
@@ -94,13 +102,15 @@ async def run(
             if slug != "marcogallotta/ai-tools":
                 raise ValueError("repository is outside the prototype allowlist")
             print(f"SWITCHSTAND_REPOSITORY={slug}")
-        if managed_agent:
-            await rotate_managed_grant(GrantState(engine), authority)
+        grant = await rotate_managed_grant(GrantState(engine), authority) if managed_agent else None
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
         print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
         print("LEGACY_TASK_GIDS=" + ",".join(
             await works.asana_gids(authority.active_work_id)
         ))
+        if grant is not None:
+            print(f"MANAGED_GRANT_ID={grant.id}")
+            print(f"MANAGED_GRANT_VERSION={grant.version}")
     finally:
         await engine.dispose()
 

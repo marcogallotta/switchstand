@@ -297,12 +297,13 @@ def build_ordinary_tools(
         result = await work_get(api_version, work_id)
         summary = None
         failures = None
-        if work_id is not None and result.status == "ok" and result.item is not None:
-            summary = await action_summary(work_id, result.item.revision)
+        if result.status == "ok" and result.item is not None:
+            owner_work_id = result.item.id
+            summary = await action_summary(owner_work_id, result.item.revision)
             engine = getattr(service.state, "engine", None)
             if engine is not None:
                 try:
-                    opened = await FailureJournal(engine).open(owner=str(work_id))
+                    opened = await FailureJournal(engine).open(owner=str(owner_work_id))
                     if opened != "UNKNOWN":
                         failures = tuple(OpenFailureAction(
                             attempt_id=item.attempt_id,

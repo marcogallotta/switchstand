@@ -12,6 +12,17 @@ depends_on = None
 
 def upgrade() -> None:
     op.create_table(
+        "work_migration_receipts",
+        sa.Column("name", sa.Text(), primary_key=True),
+        sa.Column("source_digest", sa.Text(), nullable=False),
+        sa.Column(
+            "completed_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.CheckConstraint(
+            "length(source_digest) = 64", name="ck_work_migration_receipt_digest"
+        ),
+    )
+    op.create_table(
         "failure_records",
         sa.Column("attempt_id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("operation_id", postgresql.UUID(as_uuid=True), nullable=False, unique=True),
@@ -64,3 +75,4 @@ def downgrade() -> None:
         raise RuntimeError("preserve durable failure evidence; use a forward migration")
     op.drop_table("failure_resolutions")
     op.drop_table("failure_records")
+    op.drop_table("work_migration_receipts")

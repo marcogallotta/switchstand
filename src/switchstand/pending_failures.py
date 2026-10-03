@@ -9,7 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from .failure_journal import FailureJournal, FailureRecord
@@ -22,21 +22,51 @@ class RegistrationState(StrEnum):
 
 
 class PendingFailureRegistry:
-    def __init__(self) -> None:
+    def __init__(self, directory: Path | None = None) -> None:
+        self.directory = directory
         self._items: dict[UUID, RegistrationState] = {}
+        if directory is not None:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    @contextmanager
+    def _locked_items(self) -> Generator[dict[UUID, RegistrationState]]:
+        if self.directory is None:
+            yield self._items
+            return
+        descriptor = os.open(self.directory / ".registry.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            path = self.directory / "registry.json"
+            raw = {} if not path.exists() else cast(dict[str, str], json.loads(path.read_text()))
+            items = {UUID(key): RegistrationState(value) for key, value in raw.items()}
+            yield items
+            temporary = self.directory / f".registry.{uuid4()}.tmp"
+            output = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(output, "w") as stream:
+                json.dump({str(key): value.value for key, value in items.items()}, stream,
+                          sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            PendingFailureQueue(self.directory).fsync_directory()
+        finally:
+            os.close(descriptor)
 
     def register(self, attempt_id: UUID) -> None:
-        self._items.setdefault(attempt_id, RegistrationState.UNRECORDED)
+        with self._locked_items() as items:
+            items.setdefault(attempt_id, RegistrationState.UNRECORDED)
 
     def mark(self, attempt_id: UUID, state: RegistrationState) -> None:
-        if attempt_id not in self._items:
-            raise KeyError("failure must be registered before recording its disposition")
-        self._items[attempt_id] = state
+        with self._locked_items() as items:
+            if attempt_id not in items:
+                raise KeyError("failure must be registered before recording its disposition")
+            items[attempt_id] = state
 
     def closure_gate(self) -> tuple[bool, tuple[UUID, ...]]:
-        blocked = tuple(
-            key for key, state in self._items.items() if state == RegistrationState.UNRECORDED
-        )
+        with self._locked_items() as items:
+            blocked = tuple(
+                key for key, state in items.items() if state == RegistrationState.UNRECORDED
+            )
         return not blocked, blocked
 
 
@@ -73,12 +103,12 @@ class PendingFailureQueue:
                     output.flush()
                     os.fsync(output.fileno())
                 os.replace(temporary, target)
-                self._fsync_directory()
+                self.fsync_directory()
             finally:
                 temporary.unlink(missing_ok=True)
         return "PENDING_SYNC"
 
-    def _fsync_directory(self) -> None:
+    def fsync_directory(self) -> None:
         descriptor = os.open(self.directory, os.O_RDONLY)
         try:
             os.fsync(descriptor)
@@ -86,22 +116,31 @@ class PendingFailureQueue:
             os.close(descriptor)
 
     def pending(self) -> tuple[FailureRecord, ...]:
-        return tuple(
-            FailureRecord.model_validate_json(path.read_bytes())
-            for path in sorted(self.directory.glob("*.json"))
-        )
+        values: list[FailureRecord] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                UUID(path.stem)
+            except ValueError:
+                continue
+            values.append(FailureRecord.model_validate_json(path.read_bytes()))
+        return tuple(values)
 
-    async def sync(self, journal: FailureJournal) -> tuple[UUID, ...]:
+    async def sync(
+        self, journal: FailureJournal, registry: PendingFailureRegistry | None = None
+    ) -> tuple[UUID, ...]:
+        registry = registry or PendingFailureRegistry(self.directory)
         synchronized: list[UUID] = []
         for value in self.pending():
             result = await journal.record(value)
             readback = await journal.get(value.attempt_id)
             if result.status not in {"APPLIED", "REPLAYED"} or readback != value:
                 continue
+            registry.register(value.attempt_id)
+            registry.mark(value.attempt_id, RegistrationState.STORED)
             self._path(value.attempt_id).unlink(missing_ok=True)
             synchronized.append(value.attempt_id)
         if synchronized:
-            self._fsync_directory()
+            self.fsync_directory()
         return tuple(synchronized)
 
 
@@ -116,3 +155,7 @@ def legacy_cutoff_readiness(
     if not queue_empty:
         blockers.append("PENDING_SYNC_REMAINS")
     return not blockers, tuple(blockers)
+
+
+def failure_queue_root(home: Path) -> Path:
+    return home / ".local/state/switchstand/failures/pending"

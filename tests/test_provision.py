@@ -163,7 +163,7 @@ async def test_exact_canonical_miss_uses_existing_grant_fallback_without_rotatio
         authority = provision.LaunchAuthority(active_work_id=work_id)
         return SimpleNamespace(
             identity=SimpleNamespace(provider_work_id="1218999999999999"),
-            grant=SimpleNamespace(authority=authority),
+            grant=SimpleNamespace(authority=authority, id=UUID(int=9), version=3),
         )
 
     async def rotate(*_args):

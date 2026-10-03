@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path
-from typing import cast
 from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .bootstrap_identity import MigrationReceipt, ProviderTaskStatus
 from .core import Handle
 from .grant_state import GrantState
 from .grants import WorkGrant
 from .provider import AsanaProvider
-from .state import PostgresState
+from .state import PostgresState, work_migration_receipts
 
 
 class PostgresIdentityMapping:
@@ -45,22 +44,19 @@ class ExactAsanaTaskProbe:
         )
 
 
-class AuthenticatedMigrationReceiptFile:
-    """Accept a completion receipt only when a trusted exact digest authenticates it."""
+class PostgresMigrationReceiptReader:
+    """Read the server-owned migration cutoff from canonical state."""
 
-    def __init__(self, path: Path | None, expected_sha256: str | None):
-        self.path = path
-        self.expected_sha256 = expected_sha256
+    def __init__(self, engine: AsyncEngine):
+        self.engine = engine
 
     async def read(self, name: str) -> MigrationReceipt | None:
-        if self.path is None or self.expected_sha256 is None:
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(select(work_migration_receipts).where(
+                work_migration_receipts.c.name == name
+            ))).mappings().all()
+        if not rows:
             return None
-        payload = self.path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != self.expected_sha256:
-            return None
-        value = cast(dict[str, object], json.loads(payload))
-        return MigrationReceipt(
-            name=str(value.get("name", "")),
-            authenticated=True,
-            complete=value.get("complete") is True,
-        )
+        if len(rows) != 1 or len(rows[0]["source_digest"]) != 64:
+            return MigrationReceipt(name=name, authenticated=False, complete=False)
+        return MigrationReceipt(name=name, authenticated=True, complete=True)

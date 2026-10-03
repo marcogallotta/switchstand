@@ -21,6 +21,7 @@ class BootstrapIdentityError(ValueError):
 
     def __init__(self, reason: Literal[
         "invalid_work_id",
+        "migration_receipt_invalid",
         "migration_complete",
         "unknown_work_id",
         "unsupported_mapping",
@@ -100,12 +101,13 @@ async def resolve_pre_migration_identity(
     """Resolve an exact existing identity without creating or changing any binding."""
     work_id = exact_work_id(value)
     receipt = await receipts.read(MIGRATION_COMPLETE_RECEIPT)
-    if (
-        receipt is not None
-        and receipt.name == MIGRATION_COMPLETE_RECEIPT
-        and receipt.authenticated
-        and receipt.complete
-    ):
+    if receipt is not None:
+        if (
+            receipt.name != MIGRATION_COMPLETE_RECEIPT
+            or not receipt.authenticated
+            or not receipt.complete
+        ):
+            raise BootstrapIdentityError("migration_receipt_invalid")
         raise BootstrapIdentityError("migration_complete")
 
     handle = await mapping.get(work_id)
