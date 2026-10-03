@@ -1,3 +1,4 @@
+import hashlib
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -9,9 +10,10 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from switchstand.bootstrap_identity import MIGRATION_COMPLETE_RECEIPT
 from switchstand.canonical_relations import project_memberships, projects
 from switchstand.canonical_work import canonical_metadata, canonical_work
-from switchstand.state import metadata
+from switchstand.state import metadata, work_migration_receipts
 from switchstand.work_corpus import (
     compare_parity_exports,
     parity_manifest,
@@ -118,6 +120,72 @@ async def test_one_shot_import_and_exact_target_export(
 
     with pytest.raises(ValueError, match="not empty"):
         await import_parity(engine, source)
+
+
+async def test_reordered_source_import_records_receipt_only_after_exact_readback(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    source = tmp_path / "reordered.json"
+    records = list(reversed(source_records()))
+    write_manifest(source, parity_manifest(records))
+
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(
+            work_migration_receipts
+        )) == 0
+
+    assert await import_parity(engine, source) == len(records)
+
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(
+            work_migration_receipts.c.name,
+            work_migration_receipts.c.source_digest,
+        ))).one() == (
+            MIGRATION_COMPLETE_RECEIPT,
+            hashlib.sha256(source.read_bytes()).hexdigest(),
+        )
+
+
+async def test_readback_mismatch_rolls_back_without_migration_receipt(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    source = tmp_path / "mismatch.json"
+    write_manifest(source, parity_manifest(source_records()))
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            CREATE FUNCTION switchstand_test_rewrite_import_notes() RETURNS trigger
+            LANGUAGE plpgsql AS $$
+            BEGIN
+                NEW.notes := NEW.notes || '-changed';
+                RETURN NEW;
+            END
+            $$
+        """))
+        await connection.execute(text("""
+            CREATE TRIGGER switchstand_test_rewrite_import_notes
+            BEFORE INSERT ON canonical_work
+            FOR EACH ROW EXECUTE FUNCTION switchstand_test_rewrite_import_notes()
+        """))
+    try:
+        with pytest.raises(ValueError, match="target readback does not match source parity"):
+            await import_parity(engine, source)
+
+        async with engine.connect() as connection:
+            assert await connection.scalar(select(func.count()).select_from(
+                work_migration_receipts
+            )) == 0
+            assert await connection.scalar(select(func.count()).select_from(
+                canonical_work
+            )) == 0
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TRIGGER IF EXISTS switchstand_test_rewrite_import_notes "
+                "ON canonical_work"
+            ))
+            await connection.execute(text(
+                "DROP FUNCTION IF EXISTS switchstand_test_rewrite_import_notes()"
+            ))
 
 
 async def test_target_parity_normalizes_non_utc_postgres_session(
