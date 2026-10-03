@@ -166,8 +166,9 @@ messaging, and required continuation:
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
   projects DB event storage through the existing public history/event contracts without runtime
   wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
-  existing get, search, and scalar-update contracts; the ordinary edge constructs it default-off
-  until explicit activation.
+  existing get, search, create, and scalar-update contracts; protected creates atomically persist
+  the row, requested parent or project placement, and effect receipt. The ordinary edge constructs
+  it default-off until explicit activation.
   Migration `0008` materializes the compact tables; the repositories and runtime projection remain
   outside shared `state.metadata`, unregistered, and inert.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
@@ -363,7 +364,7 @@ UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migration `0008`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected-update atomicity |
+| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migration `0008`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
