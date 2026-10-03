@@ -37,6 +37,8 @@ class CorpusProvider(Protocol):
 
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
 
+    async def has_zero_memberships(self, provider_work_id: str) -> bool: ...
+
     async def dependencies_for_import(self, provider_work_id: str) -> frozenset[str]: ...
 
 
@@ -63,7 +65,7 @@ class CorpusException:
 class HandleClassification:
     provider_work_id: str
     work_id: str
-    state: Literal["current", "historical-missing", "unresolved"]
+    state: Literal["current", "historical-missing", "retired", "unresolved"]
     reason: str | None
 
 
@@ -253,6 +255,11 @@ async def capture_manifest(
         try:
             work = await provider.get(provider_id)
         except ProviderWorkDecodeError as error:
+            if await provider.has_zero_memberships(provider_id):
+                exceptions.append(CorpusException(
+                    provider_id, bound[provider_id], "zero-membership",
+                ))
+                continue
             if not classify_decode_errors:
                 raise CorpusCaptureDecodeError(provider_id, error.reason) from None
             exceptions.append(CorpusException(
@@ -261,6 +268,10 @@ async def capture_manifest(
             continue
         if work is None:
             exceptions.append(CorpusException(provider_id, bound[provider_id], "missing"))
+        elif not work.context.placements and await provider.has_zero_memberships(provider_id):
+            exceptions.append(CorpusException(
+                provider_id, bound[provider_id], "zero-membership",
+            ))
         elif not work.canonical:
             exceptions.append(CorpusException(provider_id, bound[provider_id], "noncanonical"))
         else:
@@ -291,6 +302,7 @@ async def capture_manifest(
             "bound": len(bound),
             "included": len(rows),
             "exceptions": len(exceptions),
+            "retired": sum(item.reason == "zero-membership" for item in exceptions),
         },
     }
     return _with_digest(document)
@@ -318,7 +330,9 @@ async def capture_preflight_manifest(
     classifications.extend(
         HandleClassification(
             cast(str, item["provider_work_id"]), cast(str, item["work_id"]),
-            "historical-missing" if item["reason"] == "missing" else "unresolved",
+            "historical-missing" if item["reason"] == "missing"
+            else "retired" if item["reason"] == "zero-membership"
+            else "unresolved",
             cast(str, item["reason"]),
         )
         for item in exceptions
@@ -326,7 +340,7 @@ async def capture_preflight_manifest(
     classifications.sort(key=lambda item: item.provider_work_id)
     classification_counts = {
         state: sum(item.state == state for item in classifications)
-        for state in ("current", "historical-missing", "unresolved")
+        for state in ("current", "historical-missing", "retired", "unresolved")
     }
     document: dict[str, object] = {
         "schema_version": 1,
