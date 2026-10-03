@@ -1,7 +1,6 @@
-"""Real process/socket/PostgreSQL replay; token verification and provider are fixtures."""
+"""Real process/socket/PostgreSQL replay with fixture token verification."""
 
 import asyncio
-import json
 import os
 import sys
 import time
@@ -13,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from chatgpt_fixture import Provider, assert_public, grant, read_chain
+from chatgpt_fixture import assert_public, grant, read_chain
 from disposable_postgres import (
     clean_environment,
     exited,
@@ -28,12 +27,18 @@ from mcp.server.auth.provider import AccessToken
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.canonical_work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_metadata,
+    canonical_revision,
+)
 from switchstand.contracts import LaunchAuthority
-from switchstand.core import ProviderSourceStory, UnknownEffect
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
-from switchstand.state import PostgresState
+from switchstand.state import PostgresState, metadata
+from switchstand.work_events import WorkEventRepository
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
@@ -51,74 +56,6 @@ RESOURCE = ISSUER + "mcp"
 CLIENT_ID = "chatgpt-client"
 
 
-class CountingProvider(Provider):
-    """Persist only the synthetic provider's stories across edge restarts."""
-
-    def __init__(self):
-        super().__init__()
-        self.path = Path(os.environ["EFFECT_FILE"])
-        self.state_path = Path(os.environ["PROVIDER_STATE_FILE"])
-        if self.path.exists():
-            self.stories = [ProviderSourceStory(**row) for row in json.loads(self.path.read_text())]
-        self.sends = len(self.stories)
-        if self.state_path.exists():
-            state = json.loads(self.state_path.read_text())
-            self.title, self.notes = state["title"], state["notes"]
-            self.completed, self.revision = state["completed"], state["revision"]
-        else:
-            self.revision = f"r{self.sends + 1}"
-
-    def _count(self, operation):
-        path = Path(os.environ["PROVIDER_CALL_FILE"])
-        counts = json.loads(path.read_text()) if path.exists() else {}
-        counts[operation] = counts.get(operation, 0) + 1
-        path.write_text(json.dumps(counts))
-
-    async def get(self, task_gid):
-        self._count("get")
-        if self.state_path.exists():
-            state = json.loads(self.state_path.read_text())
-            self.title, self.notes = state["title"], state["notes"]
-            self.completed, self.revision = state["completed"], state["revision"]
-        return await super().get(task_gid)
-
-    async def list_attachments(self, task_gid, cursor, limit):
-        self._count("list_attachments")
-        return await super().list_attachments(task_gid, cursor, limit)
-
-    async def source_stories(self, task_gid, revision, offset, limit, *, require_canonical=True):
-        if not self.stories:
-            from switchstand.core import ProviderStoriesPage
-            story = ProviderSourceStory("raw-read-event", task_gid, "comment_added", "history", "now", "Marco")
-            return ProviderStoriesPage(task_gid, self.revision,
-                                       (story,) if revision == self.revision else (), None, True,
-                                       stale=revision != self.revision)
-        return await super().source_stories(
-            task_gid, revision, offset, limit, require_canonical=require_canonical
-        )
-
-    async def source_story(self, task_gid, story_gid):
-        if story_gid == "raw-read-event":
-            return ProviderSourceStory(story_gid, task_gid, "comment_added", "history", "now", "Marco")
-        return await super().source_story(task_gid, story_gid)
-
-    async def append(self, task_gid, text):
-        from dataclasses import asdict
-        story = await super().append(task_gid, text)
-        self.path.write_text(json.dumps([asdict(row) for row in self.stories]))
-        if text == "injected lost response":
-            raise UnknownEffect("synthetic response lost after durable provider effect")
-        return story
-
-    async def update(self, task_gid, patch):
-        self._count("update")
-        await super().update(task_gid, patch)
-        self.state_path.write_text(json.dumps({
-            "title": self.title, "notes": self.notes,
-            "completed": self.completed, "revision": self.revision,
-        }))
-
-
 def _child_server() -> None:
     import switchstand.chatgpt_edge as edge
 
@@ -130,7 +67,6 @@ def _child_server() -> None:
         )
 
     edge.SwitchstandGitHubProvider.verify_token = verified
-    edge.AsanaProvider = lambda _client, _project=None, **_kwargs: CountingProvider()
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     original_get = edge.ChatGPTService.get
 
@@ -148,7 +84,6 @@ def _child_server() -> None:
 def _managed_server() -> None:
     import switchstand.mcp as managed
 
-    managed.AsanaProvider = lambda _client, _project=None: CountingProvider()
     managed.main()
 
 
@@ -161,10 +96,22 @@ async def _provision(url, subject):
     config.set_main_option("sqlalchemy.url", url)
     os.environ["DATABASE_URL"] = url
     command.upgrade(config, "head")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.run_sync(canonical_metadata.create_all)
     state, grants = PostgresState(engine), GrantState(engine)
     active = await state.bind("asana", "123")
     reference = await state.bind("asana", "456")
     denied = await state.bind("asana", "789")
+    works = CanonicalWorkRepository(engine)
+    for handle, title in ((active, "Task"), (reference, "Reference"), (denied, "Denied")):
+        await works.create(CurrentWork(handle.id, title, False, f"{title} notes"))
+        await works.bind_asana_gid(handle.provider_work_id, handle.id)
+    await WorkEventRepository(engine).append(
+        active.id, observed_version=1, operation_id=uuid4(), subtype="comment_added",
+        text="history", created_at=datetime.now(UTC), actor="Marco",
+        asana_story_gid="raw-read-event",
+    )
     principal = PrincipalContext(
         issuer=ISSUER, subject=subject, client_id=CLIENT_ID, assurance="authenticated",
     )
@@ -263,13 +210,13 @@ async def _discover(endpoint, selected):
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
 
 
-async def _exercise(endpoint, selected, operation_id):
+async def _exercise(endpoint, selected, operation_id, observed_revision):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         result = await client.call_tool("work_append", {
             "api_version": "1", "operation_id": str(operation_id),
             "work_id": str(selected.authority.active_work_id),
-            "observed_revision": "r1", "text": "durable vertical append",
+            "observed_revision": observed_revision, "text": "durable vertical append",
             "purpose": "provenance",
         })
         return result.structured_content
@@ -295,10 +242,7 @@ async def test_sigterm_drains_an_inflight_mcp_call(
     marker = tmp_path / "slow-get-started"
     env = clean_environment() | {
         "DATABASE_URL": url,
-        "ASANA_TOKEN": "test-only",
         "EFFECT_FILE": str(tmp_path / "effects"),
-        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
-        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
         "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
@@ -369,10 +313,7 @@ async def test_sigterm_closes_a_persistent_mcp_stream(
     port = free_port()
     env = clean_environment() | {
         "DATABASE_URL": url,
-        "ASANA_TOKEN": "test-only",
         "EFFECT_FILE": str(tmp_path / "effects"),
-        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
-        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
         "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
@@ -446,10 +387,8 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
     await _provision(url, subject)
     port = free_port()
     env = clean_environment() | {
-        "DATABASE_URL": url, "ASANA_TOKEN": "test-only",
+        "DATABASE_URL": url,
         "EFFECT_FILE": str(tmp_path / "effects"),
-        "PROVIDER_STATE_FILE": str(tmp_path / "provider-state.json"),
-        "PROVIDER_CALL_FILE": str(tmp_path / "provider-calls.json"),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
         "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
@@ -528,7 +467,7 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
         assert self_disposed["state"] == "DISPOSITIONED"
 
 
-async def test_process_with_fixture_identity_replays_durable_append_after_restart(
+async def test_process_replays_durable_database_append_after_restart(
     database_prerequisite,
 ):
     url = os.getenv("TEST_DATABASE_URL")
@@ -546,11 +485,8 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
     run = run / str(uuid4())
     run.mkdir(mode=0o700)
     effects = run / "effects"
-    provider_calls = run / "provider-calls.json"
     env = clean_environment() | {
-        "DATABASE_URL": url, "ASANA_TOKEN": "test-only", "EFFECT_FILE": str(effects),
-        "PROVIDER_STATE_FILE": str(run / "provider-state.json"),
-        "PROVIDER_CALL_FILE": str(provider_calls),
+        "DATABASE_URL": url, "EFFECT_FILE": str(effects),
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
@@ -559,46 +495,63 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _discover(endpoint, selected)
     selected = await _replace_with_launch(url, selected)
     with _server(env, port) as endpoint:
-        first = await _exercise(endpoint, selected, operation_id)
+        first = await _exercise(
+            endpoint, selected, operation_id,
+            canonical_revision(selected.authority.active_work_id, 2),
+        )
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
         assert first["receipt"]["work_id"] == str(selected.authority.active_work_id)
         admission = WorkspaceAdmissionState.admission(selected.principal)
         assert first["receipt"]["grant_id"] == str(admission.id)
         assert first["receipt"]["grant_version"] == admission.version == 1
-        assert await _exercise(endpoint, selected, operation_id) == first
+        assert await _exercise(
+            endpoint, selected, operation_id,
+            canonical_revision(selected.authority.active_work_id, 2),
+        ) == first
     with _server(env, port) as endpoint:
-        assert await _exercise(endpoint, selected, operation_id) == first
-        assert len(json.loads(effects.read_text())) == 1
-        await _boundaries(endpoint, selected, denied, effects)
+        assert await _exercise(
+            endpoint, selected, operation_id,
+            canonical_revision(selected.authority.active_work_id, 2),
+        ) == first
+        await _boundaries(endpoint, selected, denied)
     with _server(env, port) as endpoint:
-        await _contained_after_restart(endpoint, selected, effects)
+        replay = await _exercise(
+            endpoint, selected, operation_id,
+            canonical_revision(selected.authority.active_work_id, 2),
+        )
+        assert replay == first
 
-async def _boundaries(endpoint, selected, denied_work, effects):
+async def _boundaries(endpoint, selected, denied_work):
     async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
         async def call(tool, **args):
             return (await client.call_tool(tool, {"api_version": "1", **args})).structured_content
 
         active = str(selected.authority.active_work_id)
         args = {
-            "work_id": active, "observed_revision": "r2", "text": "second",
+            "work_id": active,
+            "observed_revision": canonical_revision(selected.authority.active_work_id, 3),
+            "text": "second",
             "purpose": "provenance",
         }
-        for target in [str(denied_work), str(uuid4())]:
-            denied = await call("work_append", **(args | {"work_id": target}),
-                                operation_id=str(uuid4()))
-            assert denied["status"] == "denied" and denied["effect"] == "not_sent"
-        assert len(json.loads(effects.read_text())) == 1
+        stale = await call("work_append", **(args | {"work_id": str(denied_work)}),
+                           operation_id=str(uuid4()))
+        assert stale["status"] == "stale" and stale["effect"] == "not_sent"
+        denied = await call("work_append", **(args | {"work_id": str(uuid4())}),
+                            operation_id=str(uuid4()))
+        assert denied["status"] == "denied" and denied["effect"] == "not_sent"
         second = await call("work_append", **args, operation_id=str(uuid4()))
         assert second["status"] == "ok"
         receipt = second["receipt"]
         first = await call(
-            "work_history", work_id=active, observed_revision="r3", limit=1,
+            "work_history", work_id=active,
+            observed_revision=canonical_revision(selected.authority.active_work_id, 4), limit=2,
             purpose="investigation",
         )
-        assert len(first["events"]) == 1 and first["next_cursor"] is not None
+        assert len(first["events"]) == 2 and first["next_cursor"] is not None
         last = await call(
-            "work_history", work_id=active, observed_revision="r3", limit=1,
+            "work_history", work_id=active,
+            observed_revision=canonical_revision(selected.authority.active_work_id, 4), limit=2,
             cursor=first["next_cursor"], purpose="investigation",
         )
         assert len(last["events"]) == 1 and last["next_cursor"] is None
@@ -609,29 +562,13 @@ async def _boundaries(endpoint, selected, denied_work, effects):
         )
         readback = await call(
             "work_event", work_id=active, event_id=appended["id"],
-            observed_revision="r3", purpose="investigation",
+            observed_revision=canonical_revision(selected.authority.active_work_id, 4),
+            purpose="investigation",
         )
         assert readback["item"]["text"] == receipt["text"]
         assert readback["item"]["id"] == appended["id"]
-        lost_id = str(uuid4())
-        lost_args = args | {"observed_revision": "r3", "text": "injected lost response",
-                            "operation_id": lost_id}
-        lost = await call("work_append", **lost_args)
-        assert lost["effect"] == "unknown"
-        assert (await call("work_append", **lost_args))["effect"] == "unknown"
-        assert len(json.loads(effects.read_text())) == 3
-        (effects.parent / "lost.json").write_text(json.dumps(lost_args))
-
-
-async def _contained_after_restart(endpoint, selected, effects):
-    args = json.loads((effects.parent / "lost.json").read_text())
-    async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
-        for request in [args, args | {"operation_id": str(uuid4()), "observed_revision": "r4"}]:
-            result = (await client.call_tool("work_append", {
-                "api_version": "1", **request,
-            })).structured_content
-            assert result["effect"] in {"unknown", "not_sent"} and result["status"] != "ok"
-        assert len(json.loads(effects.read_text())) == 3
+        stale = await call("work_append", **args, operation_id=str(uuid4()))
+        assert stale["status"] == "stale" and stale["effect"] == "not_sent"
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--serve"]:

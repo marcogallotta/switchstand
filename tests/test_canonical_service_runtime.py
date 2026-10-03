@@ -38,7 +38,9 @@ from switchstand.contracts import (
 from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
     CreateReceipt,
+    EffectReceipt,
     PrincipalContext,
+    ProtectedAppend,
     ProtectedCreate,
     ProtectedRelation,
     ProtectedUpdate,
@@ -49,7 +51,7 @@ from switchstand.grants import (
     WorkGrant,
 )
 from switchstand.mcp import controller_from_env
-from switchstand.state import PostgresState, metadata
+from switchstand.state import PostgresState, metadata, work_handles
 from switchstand.work_events import WorkEventRepository
 
 
@@ -86,11 +88,13 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
         id=uuid4(), version=1, principal=principal,
         authority=LaunchAuthority(active_work_id=handle.id), scope="workspace",
         operations=frozenset({
-            "work_get", "work_search", "work_create", "work_update", "work_relate",
+            "work_get", "work_search", "work_append", "work_create", "work_update",
+            "work_relate",
         }),
         issuer="test", provenance="disposable PostgreSQL",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         update_qualification="test:canonical",
+        append_qualification="test:canonical",
         create_qualification="test:canonical",
         relation_qualification="test:canonical",
     )
@@ -261,6 +265,26 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
     assert stored.item.title == "Created" and stored.item.notes == "created notes"
     async with subject.engine.connect() as connection:
         assert await connection.scalar(select(work_parents.c.parent_work_id)) == subject.work_id
+        handle = (await connection.execute(select(work_handles).where(
+            work_handles.c.id == first.work_id
+        ))).mappings().one()
+        assert (handle["provider"], handle["provider_work_id"]) == (
+            "postgres", str(first.work_id),
+        )
+
+
+async def test_active_service_routes_append_to_canonical_events(subject: Subject) -> None:
+    request = ProtectedAppend(
+        api_version="1", operation_id=uuid4(), work_id=subject.work_id,
+        grant_version=subject.grant.version,
+        observed_revision=canonical_revision(subject.work_id, 1), text="database append",
+    )
+
+    applied = await subject.service.append(request)
+
+    assert applied.effect == "applied" and isinstance(applied.receipt, EffectReceipt)
+    assert applied.receipt.provider == "postgres"
+    assert await subject.service.append(request) == applied
 
 
 async def test_workspace_create_uses_existing_project_alias(subject: Subject) -> None:

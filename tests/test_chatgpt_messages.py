@@ -33,7 +33,7 @@ async def messaging(database_prerequisite):
         await connection.run_sync(metadata.create_all)
     state, grants = PostgresState(engine), GrantState(engine)
     principals = [PrincipalContext(issuer="fixture", subject=str(uuid4()), client_id="test", assurance="test") for _ in range(2)]
-    works = [(await state.bind("asana", str(uuid4().int))).id for _ in range(2)]
+    works = [(await state.bind("postgres", str(uuid4()))).id for _ in range(2)]
     issued = [grant(principal=p, active=w, operations=frozenset({"message"})) for p, w in zip(principals, works, strict=True)]
     for selected in issued:
         await grants.issue(selected, None)
@@ -61,8 +61,11 @@ async def row_counts(service):
 
 async def test_service_vertical_correlation_and_truthful_reply_failure(messaging, monkeypatch):
     service, actor, principals, works, _issued = messaging
+    before = await row_counts(service)
     first = await service.message_send(send(works[0], 1, works[1]))
     assert first.status == "ok"
+    after = await row_counts(service)
+    assert tuple(new - old for new, old in zip(after, before, strict=True)) == (1, 1, 0)
     actor[0] = principals[1]
     pending = await service.message_pending(works[1], MessagePendingRequest(
         api_version="1", grant_version=1))

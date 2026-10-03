@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -35,7 +34,6 @@ from .oauth_continuity import (
     SwitchstandGitHubProvider,
 )
 from .principal import RequestPrincipal
-from .provider import AsanaProvider
 from .stable_auth import (
     REQUIRED_SCOPE,
     IntrospectionTokenVerifier,
@@ -261,22 +259,13 @@ def _create_resource_app(
 
 @asynccontextmanager
 async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
-    """Own the resource edge's provider/database dependencies for either launch mode."""
+    """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
-    client = httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0", trust_env=False,
-        headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"},
-    )
     try:
         async def unresolved_principal():
             return None
 
-        test_project = os.getenv("SWITCHSTAND_TEST_PROJECT_GID", "").strip()
         marker = os.getenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "").strip()
-        provider = AsanaProvider(
-            client, test_project or None, test_only=bool(test_project),
-            create_notes_suffix=marker or None,
-        )
         grants = GrantState(engine)
         canonical_repository = CanonicalWorkRepository(engine)
         canonical_work = CanonicalWorkRuntime(
@@ -285,10 +274,10 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
         canonical_events = CanonicalEventReader(
             canonical_repository, WorkEventRepository(engine)
         )
-        service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {
-            "asana": provider,
-        }, MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
+        service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {},
+            MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
             canonical_work=canonical_work, canonical_events=canonical_events,
+            canonical_work_active=True,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1")
         runtime = None
         if marker:
@@ -298,7 +287,6 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
             )
         yield service, runtime
     finally:
-        await client.aclose()
         await engine.dispose()
 
 

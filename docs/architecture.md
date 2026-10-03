@@ -11,14 +11,11 @@ The ordinary authenticated flow is:
 
 1. `chatgpt_edge.py` authenticates the HTTP caller, creates the runtime dependencies, and registers
    the canonical ordinary tools produced by `chatgpt_mcp.py::build_ordinary_tools`.
-2. `chatgpt.py::ChatGPTService` resolves caller admission and coordinates provider-neutral reads or
-   the appropriate protected gateway.
-3. `state.py::PostgresState` translates stable WorkIds to provider bindings. `provider.py` owns the
-   Asana protocol, payloads, pagination, and provider readback semantics.
-4. Protected gateways in `effects.py`, `creates.py`, `updates.py`, and `relations.py` validate the
-   current principal/grant and preserve effect identity before calling the provider.
-5. `grant_state.py` journals effect intent and outcome. A success is returned only after the
-   gateway's authoritative readback establishes the requested result.
+2. `chatgpt.py::ChatGPTService` resolves caller admission and routes ordinary work operations to
+   the canonical PostgreSQL owners.
+3. `canonical_work_runtime.py`, `effects.py::CanonicalAppendGateway`, and the canonical event and
+   relation repositories validate currentness and apply work mutations.
+4. `grant_state.py` journals each protected mutation in the same transaction as canonical state.
 
 `contracts.py` owns shared closed request/result models. `core.py::Controller` is the bounded work
 read/source controller used by managed launches and by the exact-source compatibility methods; it
@@ -29,10 +26,14 @@ does not own ordinary HTTP authentication or grant issuance.
 ### Authenticated ordinary HTTP MCP
 
 `chatgpt_mcp.py::build_ordinary_tools` is the canonical definition of the ordinary tool inventory
-and behavior. It includes provider-neutral work discovery, structure, history, attachments and
-events; protected append/create/update/relation operations; registered-name `agent_message_*`
-messaging; required-result persistence; and repository bundle transport. Managed task-bound
-runtimes separately retain the WorkId-addressed `message_*` family.
+and behavior. It includes provider-neutral work discovery, history and events; protected
+append/create/update/relation operations; registered-name `agent_message_*` messaging;
+required-result persistence; and repository bundle transport. It temporarily retains the
+Asana-specific project bootstrap and provider-effect reconciliation tool names until retirement;
+they are not part of the PostgreSQL work runtime. Provider-era effects are reconciled by the
+pre-cutover deployed application while its provider is still configured. This DB-native candidate
+fails closed on such reconciliation and is deployed only after that frozen disposition. Managed
+task-bound runtimes separately retain the WorkId-addressed `message_*` family.
 
 `chatgpt_edge.py` is the HTTP/OAuth edge, not a second tool definition. Its
 `oauth_continuity.py` provider restricts authentication to the configured GitHub user and keeps one
@@ -43,7 +44,7 @@ while its signed claims remain valid, its stored client metadata remains current
 that canonical upstream credential still passes the configured identity and scope checks. Explicit
 and transparent refresh share one process-local serialization boundary.
 The edge bridges the authenticated request into a `RequestPrincipal`, builds
-the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
+the PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
@@ -168,10 +169,10 @@ messaging, and required continuation:
   wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
   existing get, search, create, scalar-update, parent, and dependency contracts. Protected creates
   atomically persist the row, requested parent or project placement, and effect receipt; protected
-  parent/dependency changes atomically persist the relation and receipt. The ordinary edge
-  constructs it default-off until explicit activation.
-  Migration `0008` materializes the compact tables; the repositories and runtime projection remain
-  outside shared `state.metadata`, unregistered, and inert.
+  parent/dependency changes atomically persist the relation and receipt. The repository's ordinary
+  edge constructs this runtime directly; deployment and cutover remain separate effects.
+  Migration `0008` materializes the compact tables. The repositories remain outside shared
+  `state.metadata` and are registered explicitly by the edge.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic
@@ -187,9 +188,10 @@ messaging, and required continuation:
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
-- `messages.py` owns `messages`, `message_deliveries`, and `message_projection`, including the
+- `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. Provider projection is optional and does not replace the durable message record.
+  checks. Current message routes create only the durable PostgreSQL message and delivery records;
+  provider projection remains only for frozen-cutover disposition and later schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
@@ -216,7 +218,9 @@ transition. A new session or caller must not silently continue a RECEIVED delive
 
 ## Protected effects and UNKNOWN
 
-The protected gateways are the semantic owners of provider writes:
+The canonical runtime and `effects.py::CanonicalAppendGateway` own ordinary PostgreSQL work
+mutations. The following legacy gateways remain only for managed/source compatibility and the
+frozen-cutover disposition of provider-era effects; they are not ordinary PostgreSQL write owners:
 
 - `effects.py::AppendGateway` owns append intent, send, and exact story/task readback;
 - `creates.py::CreateGateway` owns creation and binding of the resulting provider work;

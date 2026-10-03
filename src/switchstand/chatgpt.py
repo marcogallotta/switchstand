@@ -31,7 +31,7 @@ from .core import (
 from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
 from .effect_recovery import EffectRecovery
-from .effects import AppendGateway
+from .effects import AppendGateway, CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
     EffectRecoveryResult,
@@ -103,6 +103,10 @@ class ChatGPTService:
             else grants
         )
         self.gateway = AppendGateway(state, self.admission_grants, providers)
+        self.canonical_append = (
+            None if canonical_events is None
+            else CanonicalAppendGateway(self.admission_grants, canonical_events.events)
+        )
         self.create_gateway = CreateGateway(state, self.admission_grants, providers)
         self.update_gateway = UpdateGateway(state, self.admission_grants, providers)
         self.relation_gateway = RelationGateway(state, self.admission_grants, providers)
@@ -404,6 +408,12 @@ class ChatGPTService:
         principal = await self.principal()
         if principal is None:
             return self.gateway.guard(request, "denied", "authenticated_principal_required")
+        if self.canonical_work_active:
+            if self.canonical_append is None:
+                return self.gateway.guard(
+                    request, "unknown", "canonical_events_unavailable", possible_send=False,
+                )
+            return await self.canonical_append.append(principal, request)
         return await self.gateway.append(principal, request)
 
     async def create(self, request: ProtectedCreate) -> GuardOutcome:

@@ -47,6 +47,7 @@ from .grants import (
 )
 from .mutation_effect import blocked_effect_next_action
 from .relations import RelationGateway
+from .state import work_handles
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
@@ -356,6 +357,9 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"
                                 )
+                        await connection.execute(insert(work_handles).values(
+                            id=work_id, provider="postgres", provider_work_id=str(work_id),
+                        ))
                         await self.works.create_locked(
                             connection, CurrentWork(work_id, request.title, False, request.notes)
                         )
