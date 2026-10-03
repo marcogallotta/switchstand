@@ -29,7 +29,6 @@ from switchstand.messages import (
     RuntimeCurrentness,
     message_deliveries,
     message_effect_operation_id,
-    message_projection,
     pending_managed_messages,
     send_managed_result,
 )
@@ -80,7 +79,6 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
             MessageRoute(
                 recipient_work_id=recipient.id,
                 recipient_grant_version=recipient_grant.version,
-                projection_provider="asana", projection_target="222",
             ),
             MessageSubmitRequest(
                 api_version="1", message_id=request_id,
@@ -138,7 +136,6 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
                 MessageRoute(
                     recipient_work_id=recipient.id,
                     recipient_grant_version=2,
-                    projection_provider="asana", projection_target="222",
                 ),
                 MessageSubmitRequest(
                     api_version="1", message_id=uuid4(), grant_version=sender_grant.version,
@@ -194,9 +191,6 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
                 assert await connection.scalar(select(func.count()).select_from(
                     message_rows
                 ).where(message_rows.c.message_id == race_result_id)) == 0
-                assert await connection.scalar(select(func.count()).select_from(
-                    message_projection
-                ).where(message_projection.c.message_id == race_result_id)) == 0
 
             result_id = uuid4()
             result = await client.call_tool("message_result_send", {

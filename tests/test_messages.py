@@ -30,7 +30,6 @@ from switchstand.messages import (
     RuntimeCurrentness,
     message_deliveries,
     message_effect_operation_id,
-    message_projection,
     messages,
     send_received_result,
 )
@@ -81,10 +80,9 @@ def request(selected, **changes):
     return MessageSubmitRequest(**(values | changes))
 
 
-def route(selected, target="123"):
+def route(selected):
     return MessageRoute(recipient_work_id=selected.authority.active_work_id,
-                        recipient_grant_version=selected.version,
-                        projection_provider="asana", projection_target=target)
+                        recipient_grant_version=selected.version)
 
 
 async def test_route_identity_contract_storage_seam_and_restart(subject):
@@ -97,7 +95,6 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
         (selected_route, submitted.model_copy(update={"payload": {"text": "different"}})),
         (selected_route.model_copy(update={"recipient_work_id": uuid4()}), submitted),
         (selected_route.model_copy(update={"recipient_grant_version": 2}), submitted),
-        (selected_route.model_copy(update={"projection_target": "456"}), submitted),
     ]
     for selected, candidate in variants:
         assert (await state.submit(sender_principal, selected, candidate)).status == "conflict"
@@ -112,8 +109,6 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
             message_id=submitted.message_id, recipient_work_id=uuid4(), recipient_grant_version=1,
         ))
         assert len((await connection.execute(select(message_deliveries))).all()) == 2
-        projection = (await connection.execute(select(message_projection))).mappings().one()
-        assert projection["target"] == "123"
     restarted = MessageState(engine, GrantState(engine))
     pending = await restarted.pending(recipient_principal, MessagePendingRequest(
         api_version="1", grant_version=recipient.version,
@@ -122,10 +117,6 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
 
 
 @pytest.mark.parametrize("model, values", [
-    (MessageRoute, {"recipient_work_id": uuid4(), "recipient_grant_version": 1,
-                    "projection_provider": "email", "projection_target": "123"}),
-    (MessageRoute, {"recipient_work_id": uuid4(), "recipient_grant_version": 1,
-                    "projection_provider": "asana", "projection_target": "not-a-gid"}),
     (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
                             "route_ref": "Bad Route", "kind": "request", "payload": {}}),
     (MessageSubmitRequest, {"api_version": "1", "message_id": uuid4(), "grant_version": 1,
@@ -258,7 +249,6 @@ async def test_result_correlation_disposition_replay_and_concurrency(subject):
     async with engine.connect() as connection:
         assert len((await connection.execute(select(messages))).all()) == 4
         assert len((await connection.execute(select(message_deliveries))).all()) == 4
-        assert len((await connection.execute(select(message_projection))).all()) == 4
 
 
 async def test_restart_currentness_and_unknown_effect_are_fail_closed(subject):
@@ -499,7 +489,7 @@ async def test_recover_never_rewrites_available_or_dispositioned_delivery(subjec
 
 
 async def test_admitted_message_path_uses_binding_generation_without_work_grants(subject):
-    state, engine, grants, *_ = subject
+    state, _engine, grants, *_ = subject
     sender_work, recipient_work = uuid4(), uuid4()
     assert await grants.current_for_active_work(sender_work) is None
     assert await grants.current_for_active_work(recipient_work) is None
@@ -549,5 +539,3 @@ async def test_admitted_message_path_uses_binding_generation_without_work_grants
         ),
     )
     assert disposed.status == "ok" and disposed.state == "DISPOSITIONED"
-    async with engine.connect() as connection:
-        assert (await connection.execute(select(message_projection))).all() == []
