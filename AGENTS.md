@@ -12,6 +12,11 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 - Before a consequential effect, handoff, approval, or completion claim, reread current work/grant and reconcile new direction. Verify outcomes independently, preserve STALE/DENIED/UNKNOWN/NOT_RUN/SKIP/MISSING_CAPABILITY, and never blindly retry an ambiguous effect.
 - Check authorized capabilities before declaring a blocker. Surface material disproportion early: expected versus observed cost, fastest safe smaller route, deferred guarantees, and any small causal fix. Do not ask Marco background, routine permission, or preselected-choice questions while safe assigned work remains executable.
 
+## Working with Marco
+- When Marco is talking, reply first and fast, matched to his urgency (one line when he's urgent). No silent tool work before replying unless he asked for it.
+- Read the work yourself before delegating it.
+- When subagent slots are full, launch more Workers through `scripts/switchstand --active <WorkId> -- <assignment>` instead of waiting, each bound to one task with non-overlapping files. Check free memory and disk first, and run Docker/database-heavy work one at a time.
+
 ## Repository bootstrap and safety
 
 ### Live incidents
