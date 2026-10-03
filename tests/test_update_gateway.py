@@ -7,7 +7,7 @@ import httpx
 import pytest
 from mcp import Client
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -91,7 +91,12 @@ async def subject(database_prerequisite):
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
+        # This process-style test may follow another process which migrated and
+        # populated the same disposable database. Own a complete schema reset:
+        # metadata.drop_all() cannot remove tables referenced by head-only
+        # lifecycle tables and must not inherit their durable rows.
+        await connection.execute(text("DROP SCHEMA public CASCADE"))
+        await connection.execute(text("CREATE SCHEMA public"))
         await connection.run_sync(metadata.create_all)
     state, grants = PostgresState(engine), GrantState(engine)
     handle = await state.bind("asana", "123")
