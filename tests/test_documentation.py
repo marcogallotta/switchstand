@@ -63,3 +63,27 @@ def test_claude_bootstrap_imports_canonical_agents_file():
     }
 
     assert "AGENTS.md" in imports
+
+
+def test_agents_coordination_contract_is_discoverable():
+    agents = (ROOT / "AGENTS.md").read_text()
+
+    required_rules = (
+        "meaningful investigation, implementation, review, migration, activation, or operational task requires one exact WorkId",
+        "live mitigation must not wait for WorkId creation or resolution",
+        "acknowledge before nontrivial reasoning, tools, or waits",
+        "review the idea proportionately for ambiguity, consequence, and conflict",
+        "Keep every safely usable built-in Worker slot on the highest-priority executable product slices",
+        "a product-gate review is product work",
+        "Start a requested review immediately with a free Worker",
+        "built-in slots are full and additional already-authorized independent slices remain",
+        "Do not invent filler work",
+        "Leave capacity idle only when no executable independent slice exists",
+        "required Human Input or HOLD blocks every remaining slice",
+        "applicable resource limit is reached; state the reason",
+        "terminal result as an immediate coordination interrupt",
+        "Slice mutations by writable surface and semantic concern",
+        "suspend the later mutation, reconcile any effects, then re-slice or serialize it",
+    )
+
+    assert [rule for rule in required_rules if rule not in agents] == []
