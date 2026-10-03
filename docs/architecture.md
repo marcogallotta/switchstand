@@ -41,7 +41,11 @@ JTIs, grants, and runtime identities remain distinct. Legacy JTI mappings conver
 credential. A still-valid signed downstream token can rebuild a missing or expired JTI mapping only
 while its signed claims remain valid, its stored client metadata remains current for refresh, and
 that canonical upstream credential still passes the configured identity and scope checks. Explicit
-and transparent refresh share one process-local serialization boundary.
+and transparent refresh share one process-local serialization boundary. A consumed downstream
+refresh token has a process-local five-minute, 128-entry replay window that returns the exact
+already-issued token response only to the same client and identical original and requested scopes;
+it never repeats the upstream refresh. The replay cache is intentionally not restart-persistent, so
+a duplicate arriving after an edge restart is rejected rather than reviving consumed token state.
 The edge bridges the authenticated request into a `RequestPrincipal`, builds
 the Asana/PostgreSQL-backed service, registers every ordinary tool with FastMCP, and supplies the
 MCP session ID used for message-currentness fencing. Repository MCP configuration and deployment

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 
 from fastmcp.server.auth.auth import AccessToken as FastAccessToken
 from fastmcp.server.auth.oauth_proxy.models import (
     JTIMapping,
     UpstreamTokenSet,
+    _hash_token,  # pyright: ignore[reportPrivateUsage] -- match FastMCP's store key
 )
 from fastmcp.server.auth.providers.github import GitHubProvider
 from joserfc.errors import JoseError
@@ -27,6 +31,20 @@ LOG = logging.getLogger(__name__)
 
 CANONICAL_UPSTREAM_TOKEN_ID = "switchstand-github-canonical-v1"
 FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60
+REFRESH_REPLAY_TTL_SECONDS = 5 * 60
+REFRESH_REPLAY_MAX_ENTRIES = 128
+
+
+@dataclass(frozen=True)
+class _RefreshReplay:
+    client_id: str | None
+    token_scopes: frozenset[str]
+    requested_scopes: frozenset[str]
+    token_expires_at: int | None
+    successor_hash: str
+    successor_jti: str
+    issued: OAuthToken
+    expires_at: float
 
 
 class SwitchstandGitHubProvider(GitHubProvider):
@@ -35,7 +53,107 @@ class SwitchstandGitHubProvider(GitHubProvider):
     def __init__(self, *, allowed_user_id: str, **kwargs: Any) -> None:
         self.allowed_user_id = allowed_user_id
         self._required_upstream_scopes = frozenset(kwargs.get("required_scopes") or [])
+        self._refresh_replays: OrderedDict[str, _RefreshReplay] = OrderedDict()
         super().__init__(**kwargs)
+
+    async def _load_refresh_replay(
+        self,
+        client: OAuthClientInformationFull,
+        token: str,
+        token_scopes: frozenset[str] | None = None,
+        requested_scopes: frozenset[str] | None = None,
+    ) -> _RefreshReplay | None:
+        key = _hash_token(token)
+        replay = self._refresh_replays.get(key)
+        if replay is None:
+            return None
+        if replay.expires_at <= monotonic():
+            self._refresh_replays.pop(key, None)
+            LOG.info("mcp_refresh_replay_expired")
+            raise TokenError("invalid_grant", "Refresh token replay window expired")
+        if (
+            replay.client_id != client.client_id
+            or (token_scopes is not None and replay.token_scopes != token_scopes)
+            or (
+                requested_scopes is not None
+                and replay.requested_scopes != requested_scopes
+            )
+        ):
+            LOG.warning("mcp_refresh_replay_rejected")
+            raise TokenError("invalid_grant", "Refresh token replay does not match request")
+        successor = await self._refresh_token_store.get(key=replay.successor_hash)
+        successor_mapping = await self._jti_mapping_store.get(key=replay.successor_jti)
+        if (
+            successor is None
+            or successor.client_id != replay.client_id
+            or successor_mapping is None
+            or successor_mapping.upstream_token_id != CANONICAL_UPSTREAM_TOKEN_ID
+        ):
+            self._refresh_replays.pop(key, None)
+            LOG.info("mcp_refresh_replay_successor_consumed")
+            raise TokenError("invalid_grant", "Refresh token replay successor was consumed")
+        if self._refresh_replays.get(key) is not replay:
+            return None
+        self._refresh_replays.move_to_end(key)
+        LOG.info("mcp_refresh_replay_accepted")
+        return replay
+
+    def _remember_refresh_replay(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+        issued: OAuthToken,
+    ) -> None:
+        if issued.refresh_token is None:
+            return
+        now = monotonic()
+        for key, replay in list(self._refresh_replays.items()):
+            if replay.expires_at <= now:
+                del self._refresh_replays[key]
+        key = _hash_token(refresh_token.token)
+        successor_jti, _ = self._jti_and_ttl(issued.refresh_token, refresh=True)
+        _, predecessor_ttl = self._jti_and_ttl(refresh_token.token, refresh=True)
+        self._refresh_replays[key] = _RefreshReplay(
+            client_id=client.client_id,
+            token_scopes=frozenset(refresh_token.scopes),
+            requested_scopes=frozenset(scopes),
+            token_expires_at=refresh_token.expires_at,
+            successor_hash=_hash_token(issued.refresh_token),
+            successor_jti=successor_jti,
+            issued=issued.model_copy(deep=True),
+            expires_at=now + min(REFRESH_REPLAY_TTL_SECONDS, predecessor_ttl),
+        )
+        self._refresh_replays.move_to_end(key)
+        if len(self._refresh_replays) > REFRESH_REPLAY_MAX_ENTRIES:
+            self._refresh_replays.popitem(last=False)
+            LOG.info("mcp_refresh_replay_evicted")
+
+    async def load_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: str,
+    ) -> RefreshToken | None:
+        current = await super().load_refresh_token(client, refresh_token)
+        if current is not None:
+            return current
+        canonical_lock = self._get_refresh_lock(CANONICAL_UPSTREAM_TOKEN_ID)
+        async with canonical_lock:
+            current = await super().load_refresh_token(client, refresh_token)
+            if current is not None:
+                return current
+            try:
+                replay = await self._load_refresh_replay(client, refresh_token)
+            except TokenError:
+                return None
+            if replay is None:
+                return None
+            return RefreshToken(
+                token=refresh_token,
+                client_id=replay.client_id or "",
+                scopes=sorted(replay.token_scopes),
+                expires_at=replay.token_expires_at,
+            )
 
     async def _valid_upstream(self, token_set: UpstreamTokenSet) -> MCPAccessToken | None:
         validated = await self._token_validator.verify_token(token_set.access_token)
@@ -251,6 +369,15 @@ class SwitchstandGitHubProvider(GitHubProvider):
         async with canonical_lock:
             mapping = await self._jti_mapping_store.get(key=refresh_jti)
             if mapping is None:
+                replay = await self._load_refresh_replay(
+                    client,
+                    refresh_token.token,
+                    frozenset(refresh_token.scopes),
+                    frozenset(scopes),
+                )
+                if replay is not None:
+                    return replay.issued.model_copy(deep=True)
+            if mapping is None:
                 current = await super().load_refresh_token(client, refresh_token.token)
                 if current is not None:
                     await self._rebind_to_valid_canonical(refresh_jti, refresh_ttl)
@@ -287,4 +414,5 @@ class SwitchstandGitHubProvider(GitHubProvider):
                     client, refresh_token, scopes
                 )
             await self._converge_issued_tokens(issued)
+            self._remember_refresh_replay(client, refresh_token, scopes, issued)
             return issued
