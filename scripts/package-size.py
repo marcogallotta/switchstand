@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Report retained fixed-base package size without storing or setting policy."""
 
 import argparse
@@ -11,8 +10,7 @@ from pathlib import Path
 def git(repo: Path, *args: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if result.returncode:
