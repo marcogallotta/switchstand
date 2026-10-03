@@ -94,6 +94,7 @@ jobs:
         env:
           PLANNER_BASE_SHA: ${{ steps.identity.outputs.planner_base_sha }}
           PLANNER_HEAD_SHA: ${{ steps.identity.outputs.planner_head_sha }}
+          EXECUTION_SHA: ${{ steps.identity.outputs.execution_sha }}
           SUBJECT_VERIFIED: ${{ steps.identity.outputs.subject_verified }}
         run: |
           docker run --rm \
@@ -104,7 +105,8 @@ jobs:
             -v "$PWD:/workspace:ro" -w /workspace \
             switchstand-affected-test-shadow \
             /app/.venv/bin/python -c 'from switchstand.affected_tests import main; main()' \
-            --repo /workspace --base "$PLANNER_BASE_SHA" --head "$PLANNER_HEAD_SHA" --json \
+            --repo /workspace --base "$PLANNER_BASE_SHA" --head "$PLANNER_HEAD_SHA" \
+            --execution-tree "$EXECUTION_SHA" --json \
             > "$RUNNER_TEMP/affected-test-plan.json"
           python3 - "$RUNNER_TEMP/affected-test-plan.json" "$GITHUB_OUTPUT" "$SUBJECT_VERIFIED" <<'PY'
           import json
