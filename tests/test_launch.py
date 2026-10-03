@@ -234,6 +234,7 @@ def test_dirty_task_branch_requires_exact_active_task_before_managed_effects(
     monkeypatch.chdir(control)
     monkeypatch.setenv("SWITCHSTAND_CONTROL_ROOT", str(control))
     monkeypatch.setenv("SWITCHSTAND_CANDIDATE_ROOT", str(candidate))
+    monkeypatch.setenv("SWITCHSTAND_RESOLVED_WORK_ID", str(ACTIVE))
     monkeypatch.setattr("switchstand.launch.linked_branch", lambda *_: "v2-task-foreign")
     monkeypatch.setattr(
         "switchstand.launch.readback",
@@ -246,9 +247,11 @@ def test_dirty_task_branch_requires_exact_active_task_before_managed_effects(
 
 
 def test_parse_authority_requires_exact_complete_response():
-    output = f"build step=value\nACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS={REFERENCE}\n"
+    output = (f"build step=value\nACTIVE_WORK_ID={ACTIVE}\n"
+              f"REFERENCE_WORK_IDS={REFERENCE}\nLEGACY_TASK_GIDS=123\n")
     parsed = parse_authority(output)
     assert parsed.active == ACTIVE
+    assert parsed.legacy_task_gids == ("123",)
     with pytest.raises(ValueError):
         parse_authority(f"ACTIVE_WORK_ID={ACTIVE}\n")
 
@@ -279,6 +282,7 @@ def test_provision_passes_human_task_ids_and_surfaces_backup_receipt(
             command,
             0,
             stdout=(f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS={REFERENCE}\n"
+                    "LEGACY_TASK_GIDS=123\n"
                     + ("SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools\n" if repository else "")),
             stderr="",
         )
@@ -334,7 +338,7 @@ def test_provision_does_not_pass_partial_selector_to_attached_control(monkeypatc
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\n",
+            stdout=f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\nLEGACY_TASK_GIDS=123\n",
             stderr="",
         )
 
@@ -406,7 +410,7 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
     control = tmp_path / "control"
     candidate = tmp_path / "candidate"
     result = prepare_managed_run(
-        control, candidate, "owned", "123", (), {}, tmp_path
+        control, candidate, "owned", "123", (), {}, tmp_path, ACTIVE
     )
     assert events == [
         "reserved",
@@ -416,6 +420,32 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "development",
     ]
     assert result.authority is authority and result.development is development
+
+
+def test_prepare_managed_run_rejects_resolved_work_id_mismatch(monkeypatch, tmp_path):
+    events = []
+
+    @contextmanager
+    def reservation(*args):
+        yield lambda active: events.append("recorded")
+
+    monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
+    monkeypatch.setattr("switchstand.launch.reclaim_development", lambda *args: None)
+    monkeypatch.setattr(
+        "switchstand.launch.provision",
+        lambda *args: type("Authority", (), {"active": ACTIVE})(),
+    )
+    monkeypatch.setattr(
+        "switchstand.launch.prepare_development",
+        lambda *args: events.append("development"),
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        prepare_managed_run(
+            tmp_path, tmp_path, "owned", "legacy", (), {}, tmp_path,
+            UUID("00000000-0000-0000-0000-000000000002"),
+        )
+    assert events == []
 
 
 def test_supervisor_forwards_termination_and_always_cleans_up(monkeypatch):

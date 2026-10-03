@@ -5,7 +5,7 @@ set -eu
     echo "warning: scripts/switchstand-start is deprecated; use scripts/switchstand --isolated" >&2
 
 usage() {
-    echo "usage: scripts/switchstand --isolated --active <Asana task ID or URL> --commit <exact-40-character-SHA> [--reference <ID-or-URL>] [prompt]" >&2
+    echo "usage: scripts/switchstand --isolated --active <WorkId-or-legacy-reference> --commit <exact-40-character-SHA> [--reference <WorkId-or-legacy-reference>] [prompt]" >&2
     exit 2
 }
 
@@ -96,21 +96,58 @@ primary=$(dirname "$common")
 python="$primary/.venv/bin/python"
 [ -x "$python" ] || { echo "trusted CONTROL Python environment is unavailable" >&2; exit 1; }
 unset ASANA_TOKEN
-task_id=$(PYTHONPATH="$repo/src" "$python" -P -c \
-    'import sys; from switchstand.task_ref import asana_task_id; print(asana_task_id(sys.argv[1]))' \
-    "$active")
-resolved=$(PYTHONPATH="$repo/src" "$python" -P -m switchstand.launch_source \
-    --repo "$repo" --control-sha "$accepted" "$task_id")
+[ -n "${HOME:-}" ] || { echo "host HOME is required for durable task work" >&2; exit 1; }
+case "$HOME" in
+    /*) : ;;
+    *) echo "host HOME must be absolute for durable task work" >&2; exit 1 ;;
+esac
+state_file=$repo/compose.state.yaml
+docker compose --project-directory "$repo" -f "$state_file" up -d --wait postgres >/dev/null
+postgres_id=$(docker compose --project-directory "$repo" -f "$state_file" ps -q postgres)
+[ -n "$postgres_id" ] || { echo "canonical PostgreSQL container is unavailable" >&2; exit 1; }
+postgres_ips=$(docker inspect --format \
+    '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' "$postgres_id") || {
+    echo "canonical PostgreSQL network identity could not be inspected" >&2
+    exit 1
+}
+one_postgres_ip() {
+    set -- $1
+    [ "$#" -eq 1 ] && [ -n "$1" ] || return 1
+    printf '%s\n' "$1"
+}
+postgres_ip=$(one_postgres_ip "$postgres_ips") || {
+    echo "canonical PostgreSQL must have exactly one reachable container network address" >&2
+    exit 1
+}
+case "$postgres_ip" in *[!0-9.]*|'')
+    echo "canonical PostgreSQL returned an invalid container network address" >&2
+    exit 1
+esac
+resolved=$(DATABASE_URL="postgresql+psycopg://switchstand:switchstand@$postgres_ip/switchstand" \
+    PYTHONPATH="$repo/src" "$python" -P -m switchstand.launch_source \
+    --repo "$repo" --control-sha "$accepted" "$active")
 task_base=
 candidate=
 extra=
-IFS=' ' read -r task_base candidate extra <<EOF_RESOLVED
+task_id=
+legacy_task_ids=
+IFS=' ' read -r task_id task_base candidate legacy_task_ids extra <<EOF_RESOLVED
 $resolved
 EOF_RESOLVED
-[ -n "$task_base" ] && [ -n "$candidate" ] && [ -z "$extra" ] || {
+[ -n "$task_id" ] && [ -n "$task_base" ] && [ -n "$candidate" ] \
+    && [ -n "$legacy_task_ids" ] && [ -z "$extra" ] || {
     echo "launch source resolver returned an invalid result" >&2
     exit 1
 }
+if [ "$legacy_task_ids" = - ]; then
+    legacy_task_ids=
+else
+    case "$legacy_task_ids" in *[!0-9,]*|,*|*,|*,,*)
+        echo "launch source resolver returned invalid legacy task aliases" >&2
+        exit 1
+    esac
+    legacy_task_ids=$(printf '%s' "$legacy_task_ids" | tr ',' ' ')
+fi
 [ "$task_base" = "$accepted" ] || {
     echo "launch task base does not match selected CONTROL" >&2
     exit 1
@@ -119,11 +156,6 @@ EOF_RESOLVED
     echo "launch task candidate does not match requested --commit" >&2
     exit 1
 }
-[ -n "${HOME:-}" ] || { echo "host HOME is required for durable task work" >&2; exit 1; }
-case "$HOME" in
-    /*) : ;;
-    *) echo "host HOME must be absolute for durable task work" >&2; exit 1 ;;
-esac
 state_root=$HOME/.local/state/switchstand/worktrees
 umask 077
 mkdir -p "$state_root" || { echo "durable task-work directory is unavailable" >&2; exit 1; }
@@ -137,15 +169,25 @@ state_root=$(CDPATH= cd -- "$state_root" && pwd -P) || {
     exit 1
 }
 durable_target=$state_root/switchstand-task-$task_id
+for legacy_task_id in $legacy_task_ids; do
+    legacy_target=$state_root/switchstand-task-$legacy_task_id
+    if [ -e "$legacy_target" ] || [ -L "$legacy_target" ]; then
+        echo "legacy task writer exists at $legacy_target; work is intact, reconcile before WorkId relaunch" >&2
+        exit 1
+    fi
+done
 for old_root in "${TMPDIR:-/tmp}" /tmp; do
     canonical_old_root=$(CDPATH= cd -- "$old_root" && pwd -P 2>/dev/null || true)
     [ -n "$canonical_old_root" ] || continue
-    old_target=$canonical_old_root/switchstand-task-$task_id
-    if [ "$old_target" != "$durable_target" ] \
-            && { [ -e "$old_target" ] || [ -L "$old_target" ]; }; then
-        echo "legacy task writer exists at $old_target; work is intact, reconcile before durable relaunch" >&2
-        exit 1
-    fi
+    for old_id in "$task_id" $legacy_task_ids; do
+        [ -n "$old_id" ] || continue
+        old_target=$canonical_old_root/switchstand-task-$old_id
+        if [ "$old_target" != "$durable_target" ] \
+                && { [ -e "$old_target" ] || [ -L "$old_target" ]; }; then
+            echo "legacy task writer exists at $old_target; work is intact, reconcile before durable relaunch" >&2
+            exit 1
+        fi
+    done
 done
 target=$(cd "$repo" && TMPDIR="$state_root" \
     scripts/switchstand-worktree "task-$task_id" "$candidate" --resume-exact)
@@ -172,6 +214,7 @@ fi
 cd "$repo"
 printf 'SWITCHSTAND_ACCEPTED_BASE=%s\nSWITCHSTAND_CANDIDATE_SHA=%s\n' "$task_base" "$candidate" >&2
 SWITCHSTAND_REQUESTING_GIT_COMMON=$common \
+    SWITCHSTAND_RESOLVED_WORK_ID=$task_id \
     SWITCHSTAND_CONTROL_ROOT=$repo \
     SWITCHSTAND_CONTROL_SHA=$accepted \
     SWITCHSTAND_CANDIDATE_ROOT=$target \

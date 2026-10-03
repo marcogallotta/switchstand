@@ -16,17 +16,19 @@ from .development import (
     reclaim_development,
 )
 from .run import RunReceipt, reserve_run
-from .task_ref import asana_task_id
 
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
+AUTHORITY_OUTPUT_NAMES = (*AUTHORITY_NAMES, "LEGACY_TASK_GIDS")
 MANAGED_NAME = "SWITCHSTAND_MANAGED"
 REQUESTING_GIT_COMMON = "SWITCHSTAND_REQUESTING_GIT_COMMON"
+RESOLVED_WORK_ID = "SWITCHSTAND_RESOLVED_WORK_ID"
 CHILD_TERM_SECONDS = 1.0
 
 
 class Authority(NamedTuple):
     active: UUID
     references: tuple[UUID, ...]
+    legacy_task_gids: tuple[str, ...] = ()
 
 
 class PreparedRun(NamedTuple):
@@ -74,7 +76,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Bind human-readable work and start Codex inside the managed boundary."
     )
-    result.add_argument("--active", required=True, help="active Asana task ID or URL")
+    result.add_argument("--active", required=True, help="active WorkId or legacy task ID/URL")
     result.add_argument("--commit", required=True, help="exact candidate commit SHA")
     result.add_argument(
         "--reference", action="append", default=[], help="read-only Asana task ID or URL"
@@ -166,6 +168,7 @@ def clean_environment(source: dict[str, str]) -> dict[str, str]:
         for name, value in source.items()
         if name != "ASANA_TOKEN"
         and name != MANAGED_NAME
+        and name != RESOLVED_WORK_ID
         and name not in AUTHORITY_NAMES
         and not name.startswith("DOCKER_")
     }
@@ -175,17 +178,20 @@ def parse_authority(output: str) -> Authority:
     assignments: dict[str, str] = {}
     for line in output.splitlines():
         name, separator, value = line.partition("=")
-        if name not in AUTHORITY_NAMES:
+        if name not in AUTHORITY_OUTPUT_NAMES:
             continue
         if not separator or name in assignments:
             raise ValueError("provisioner returned an invalid authority response")
         assignments[name] = value
-    if set(assignments) != set(AUTHORITY_NAMES):
+    if set(assignments) != set(AUTHORITY_OUTPUT_NAMES):
         raise ValueError("provisioner returned an invalid authority response")
     references = tuple(
         UUID(value) for value in assignments["REFERENCE_WORK_IDS"].split(",") if value
     )
-    return Authority(UUID(assignments["ACTIVE_WORK_ID"]), references)
+    legacy = tuple(value for value in assignments["LEGACY_TASK_GIDS"].split(",") if value)
+    if any(not value.isdecimal() for value in legacy) or len(set(legacy)) != len(legacy):
+        raise ValueError("provisioner returned invalid legacy task aliases")
+    return Authority(UUID(assignments["ACTIVE_WORK_ID"]), references, legacy)
 
 
 def provision(
@@ -252,13 +258,13 @@ def provision_output(
         "--no-sync",
         "switchstand-provision",
         "--active",
-        asana_task_id(active),
+        active,
         "--managed-agent",
     ]
     if repository:
         command.append("--repository")
     for reference in references:
-        command.extend(("--reference", asana_task_id(reference)))
+        command.extend(("--reference", reference))
     completed = subprocess.run(
         command, cwd=control, env=env, check=True, text=True, capture_output=True
     )
@@ -273,12 +279,15 @@ def prepare_managed_run(
     references: tuple[str, ...],
     env: dict[str, str],
     git_dir: Path,
+    expected_active: UUID,
 ) -> PreparedRun:
     def reclaim(receipt: RunReceipt) -> None:
         reclaim_development(candidate, receipt.run_id, env)
 
     with reserve_run(candidate, branch, git_dir, reclaim) as record:
         authority = provision(control, active, references, env)
+        if authority.active != expected_active:
+            raise ValueError("provisioned WorkId does not match the exact resolved launch work")
         receipt = record(authority.active)
         development = prepare_development(control, candidate, receipt.run_id, env)
     return PreparedRun(authority, development, receipt)
@@ -356,7 +365,8 @@ def run(arguments: argparse.Namespace) -> None:
     env = clean_environment(dict(os.environ))
     codex_args = validate_codex_args(arguments.codex_args)
     branch = linked_branch(candidate, env)
-    task_branch = "v2-task-" + asana_task_id(arguments.active)
+    resolved_work_id = UUID(os.environ[RESOLVED_WORK_ID])
+    task_branch = "v2-task-" + str(resolved_work_id)
     if branch != task_branch:
         raise ValueError("candidate task branch does not match the exact active task")
     checked = readback(control, candidate, env)
@@ -370,7 +380,8 @@ def run(arguments: argparse.Namespace) -> None:
     ).stdout.strip()).resolve(strict=True)
     print(f"Revision: {observed}", file=sys.stderr)
     prepared = prepare_managed_run(
-        control, candidate, branch, arguments.active, tuple(arguments.reference), env, git_dir
+        control, candidate, branch, arguments.active, tuple(arguments.reference), env, git_dir,
+        resolved_work_id,
     )
     authority, development, receipt = prepared
     env["ACTIVE_WORK_ID"] = str(authority.active)

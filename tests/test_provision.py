@@ -83,6 +83,10 @@ async def test_repository_admission_uses_canonical_rows_before_grant(monkeypatch
         def __init__(self, value):
             assert value is engine
 
+        async def asana_gids(self, work_id):
+            assert work_id == active
+            return ("123",)
+
     async def current(_works, value):
         events.append(f"read:{value}")
         work_id = active if value == "123" else reference
@@ -103,6 +107,7 @@ async def test_repository_admission_uses_canonical_rows_before_grant(monkeypatch
         output = capsys.readouterr().out
         assert f"ACTIVE_WORK_ID={active}" in output
         assert f"REFERENCE_WORK_IDS={reference}" in output
+        assert "LEGACY_TASK_GIDS=123" in output
         assert events == ["read:123", "read:456", "grant", "dispose"]
     else:
         with pytest.raises(ValueError):

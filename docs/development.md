@@ -34,7 +34,7 @@ For managed task-bound work, run the following command instead; it creates or re
 the private writer and supplies the pinned development tools:
 
 ```bash
-scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>
+scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>
 ```
 
 For an ordinary Claude Code Coordinator, install the host shim once with
@@ -158,7 +158,7 @@ services, state, settings, or routing.
   `install -m 600 switchstand-config.example ~/.config/switchstand/.env`, then fill in `ASANA_TOKEN`. This file is stable machine
   configuration; never put per-run work authority in it.
 - Normal task-bound development: run
-  `scripts/switchstand --active <Asana task URL or ID> -- <exact initial assignment>`.
+  `scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>`.
   It creates or resumes the task's private durable writer with ordinary development access. Its single initial request
   requires the agent to read bound `work_get`, then page bound `work_history` at that returned revision before material
   work. A stale history read restarts from a fresh `work_get`, so later completion or supersession evidence is
@@ -200,21 +200,23 @@ services, state, settings, or routing.
   managed external selector is installed with an ACTIVE CONTROL manifest; repository landing does not install, activate
   or cut over that selector.
 - Isolated exact-candidate qualification: from the clean ordinary `main` checkout, run
-  `scripts/switchstand --isolated --active <Asana task URL> --commit <exact-candidate-SHA>`. This command delegates
+  `scripts/switchstand --isolated --active <WorkId or legacy task URL/ID> --commit <exact-candidate-SHA>`. This command delegates
   only to the fixed user-level external selector at `$HOME/.local/bin/switchstand-start`; there is no repository or
   candidate fallback. Until that separately managed selector has an ACTIVE manifest/CONTROL readback, the command
   intentionally fails closed and is not reliance-ready. Once active, the selected CONTROL-internal launcher freshly
   fetches `origin/main`,
   fast-forwards a clean ancestor `main` to that exact revision, and reads back a clean HEAD. Dirty or divergent main
-  fails with local work intact. The trusted resolver reads only `ASANA_TOKEN` from the protected host config;
-  the token is not exported into the candidate launch environment. The task must still contain exact base and candidate
+  fails with local work intact. The trusted resolver starts the canonical state database, requires exactly one
+  reachable container-network address, and resolves WorkId, legacy aliases, and launch notes from PostgreSQL.
+  It does not read or export `ASANA_TOKEN`. The task must still contain exact base and candidate
   refs and SHAs matching the remote and the requested commit. A stale task binding stops launch after any safe main
   fast-forward. The launcher creates
   or reuses the task-named linked writer without moving or cleaning an existing worktree, then proves the candidate is
   registered to the same repository and at the requested commit. A dirty writer at that exact remote-bound checkpoint
   can resume with edits intact. New task writers live under the host's private 0700
-  `~/.local/state/switchstand/worktrees` directory. A same-task legacy writer under `/tmp` or the caller's `TMPDIR`
-  blocks creation of a second writer and remains untouched; reconcile it explicitly before relaunch. A locally moved
+  `~/.local/state/switchstand/worktrees` directory. Any canonical legacy-GID writer in that durable root, `/tmp`, or
+  the caller's `TMPDIR` blocks creation of a second writer regardless of input spelling and remains untouched;
+  reconcile it explicitly before relaunch. A locally moved
   HEAD, wrong task branch, foreign worktree, running/UNKNOWN prior run, or stale task binding fails with work intact.
   The accepted control-side launcher repeats
   the fetch, control/candidate/provenance checks immediately before managed effects and reports the observed revision.

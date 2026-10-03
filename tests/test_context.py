@@ -157,6 +157,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
         context.run("1218242783900077", "repair the launcher")
 
     assert [event[0] for event in events] == ["preflight", "provision", "writer", "codex"]
+    assert events[2][2] == ACTIVE
     provision_env = events[1][4]
     codex_env = events[3][3]
     assert codex_env["SWITCHSTAND_CHECK_UV"] == str(tmp_path / "pinned-uv")
@@ -164,6 +165,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert "ASANA_TOKEN" not in codex_env
     assert "REFERENCE_WORK_IDS" not in codex_env
     assert codex_env["ACTIVE_WORK_ID"] == str(ACTIVE)
+    assert codex_env["SWITCHSTAND_TASK_ID"] == str(ACTIVE)
     assert codex_env["SWITCHSTAND_MANAGED"] == "1"
     command = events[3][2]
     assert command[1:3] == ["-C", str(writer)]
@@ -182,6 +184,24 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert "Follow next_cursor until null" in prompt
     assert "if history is stale" in prompt
     assert "Do not resume completed or superseded intent" in prompt
+
+
+def test_context_work_id_launch_rejects_existing_legacy_gid_writer(monkeypatch, tmp_path):
+    legacy = "1218242783900077"
+    root = tmp_path / ".local/state/switchstand/writers"
+    root.mkdir(parents=True, mode=0o700)
+    (root / f"task-{legacy}").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(context, "prepared_check_environment", lambda *args: "uv")
+    monkeypatch.setattr(context, "validate_control", lambda *args: tmp_path)
+    monkeypatch.setattr(context, "_git", lambda *args, **kwargs: "head")
+    monkeypatch.setattr(
+        context, "provision", lambda *args: Authority(ACTIVE, (), (legacy,))
+    )
+
+    with pytest.raises(ValueError, match="legacy task writer exists"):
+        context.run(str(ACTIVE), "assignment")
 
 
 @pytest.mark.parametrize("assignment", ["inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
