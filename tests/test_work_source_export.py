@@ -20,6 +20,7 @@ from switchstand.work_import import import_parity, target_parity
 from switchstand.work_source_export import source_parity
 
 PARENT, CHILD, EVENT, MISSING_EVENT = UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=4)
+TOMBSTONE, TOMBSTONE_EVENT = UUID(int=5), UUID(int=6)
 
 
 @pytest.fixture
@@ -119,6 +120,11 @@ async def corpus(engine: AsyncEngine, provider: Source, path: Path) -> None:
     write_manifest(path, await capture_manifest(engine, provider, "a" * 40))
 
 
+def digested(document: dict[str, object]) -> dict[str, object]:
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    return document | {"sha256": hashlib.sha256(canonical).hexdigest()}
+
+
 async def test_source_export_roundtrips_every_kind_and_is_deterministic(
     engine: AsyncEngine, tmp_path: Path,
 ):
@@ -170,7 +176,7 @@ async def test_source_export_rejects_changed_dependencies_or_incomplete_corpus(
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     document["sha256"] = hashlib.sha256(canonical).hexdigest()
     write_manifest(broken, document)
-    with pytest.raises(ValueError, match="without exceptions"):
+    with pytest.raises(ValueError, match="exception identity"):
         await source_parity(engine, Source(), broken)
 
     provider.dependencies["child"] = frozenset(("parent",))
@@ -181,3 +187,129 @@ async def test_source_export_rejects_changed_dependencies_or_incomplete_corpus(
         ))
     with pytest.raises(ValueError, match="every existing Asana event alias"):
         await source_parity(engine, provider, source_path)
+
+
+async def test_reviewed_tombstone_roundtrips_work_alias_and_known_event_aliases(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles).values(
+            id=TOMBSTONE, provider="asana", provider_work_id="retired",
+        ))
+        await connection.execute(insert(work_event_handles).values(
+            id=TOMBSTONE_EVENT, work_id=TOMBSTONE, provider="asana",
+            provider_work_id="retired", provider_event_id="retired-story",
+        ))
+
+    class WithMissingTombstone(Source):
+        async def get(self, provider_work_id: str) -> ProviderWork | None:
+            return None if provider_work_id == "retired" else await super().get(provider_work_id)
+
+    provider = WithMissingTombstone()
+    corpus_path = tmp_path / "corpus.json"
+    await corpus(engine, provider, corpus_path)
+    source_corpus = json.loads(corpus_path.read_text())
+    disposition_path = tmp_path / "tombstones.json"
+    write_manifest(disposition_path, digested({
+        "schema_version": 1,
+        "corpus_sha256": source_corpus["sha256"],
+        "tombstones": [{
+            "provider_work_id": "retired", "work_id": str(TOMBSTONE),
+            "source_reason": "missing", "disposition": "retired_tombstone",
+            "title": "Retired proof", "notes": "Intentionally retained as a tombstone.",
+            "event_aliases": [{
+                "event_id": str(TOMBSTONE_EVENT), "story_gid": "retired-story",
+            }],
+        }],
+    }))
+
+    exported = await source_parity(engine, provider, corpus_path, disposition_path)
+    records = cast(list[dict[str, object]], exported["records"])
+    tombstone = next(cast(dict[str, object], row["fields"]) for row in records
+                     if row["kind"] == "work" and row["id"] == f'["{TOMBSTONE}"]')
+    event = next(cast(dict[str, object], row["fields"]) for row in records
+                 if row["kind"] == "event" and row["id"] == f'["{TOMBSTONE_EVENT}"]')
+    assert tombstone == {
+        "work_id": str(TOMBSTONE), "title": "Retired proof",
+        "normalized_title": "retired proof", "completed": True,
+        "notes": "Intentionally retained as a tombstone.", "assignee": None,
+        "priority": None, "work_type": None, "lifecycle_state": None,
+        "review_next_action": None, "wait_kind": None, "unblock_condition": None,
+        "next_due": None, "row_version": 1,
+    }
+    assert event["id"] == str(TOMBSTONE_EVENT)
+    assert event["asana_story_gid"] == "retired-story"
+    assert event["subtype"] == "historical_alias"
+
+    source_path, target_path = tmp_path / "source.json", tmp_path / "target.json"
+    write_manifest(source_path, exported)
+    assert await import_parity(engine, source_path) == len(records)
+    write_manifest(target_path, await target_parity(engine))
+    assert compare_parity_exports(source_path, target_path).records == len(records)
+
+
+async def test_tombstone_disposition_is_exact_and_cannot_hide_other_exceptions(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles).values(
+            id=TOMBSTONE, provider="asana", provider_work_id="retired",
+        ))
+
+    class WithMissingTombstone(Source):
+        async def get(self, provider_work_id: str) -> ProviderWork | None:
+            return None if provider_work_id == "retired" else await super().get(provider_work_id)
+
+    provider = WithMissingTombstone()
+    corpus_path = tmp_path / "corpus.json"
+    await corpus(engine, provider, corpus_path)
+    source_corpus = json.loads(corpus_path.read_text())
+    with pytest.raises(ValueError, match="require a reviewed"):
+        await source_parity(engine, provider, corpus_path)
+
+    disposition_path = tmp_path / "tombstones.json"
+    write_manifest(disposition_path, digested({
+        "schema_version": 1,
+        "corpus_sha256": source_corpus["sha256"],
+        "tombstones": [{
+            "provider_work_id": "retired", "work_id": str(TOMBSTONE),
+            "source_reason": "decode:priority_truth",
+            "disposition": "retired_tombstone", "title": "Wrong decision",
+            "notes": "", "event_aliases": [],
+        }],
+    }))
+    with pytest.raises(ValueError, match="does not match a retired"):
+        await source_parity(engine, provider, corpus_path, disposition_path)
+
+
+async def test_tombstone_disposition_binds_every_known_event_alias(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles).values(
+            id=TOMBSTONE, provider="asana", provider_work_id="retired",
+        ))
+        await connection.execute(insert(work_event_handles).values(
+            id=TOMBSTONE_EVENT, work_id=TOMBSTONE, provider="asana",
+            provider_work_id="retired", provider_event_id="known-story",
+        ))
+
+    class WithMissingTombstone(Source):
+        async def get(self, provider_work_id: str) -> ProviderWork | None:
+            return None if provider_work_id == "retired" else await super().get(provider_work_id)
+
+    provider = WithMissingTombstone()
+    corpus_path = tmp_path / "corpus.json"
+    await corpus(engine, provider, corpus_path)
+    source_corpus = json.loads(corpus_path.read_text())
+    disposition_path = tmp_path / "tombstones.json"
+    write_manifest(disposition_path, digested({
+        "schema_version": 1, "corpus_sha256": source_corpus["sha256"],
+        "tombstones": [{
+            "provider_work_id": "retired", "work_id": str(TOMBSTONE),
+            "source_reason": "missing", "disposition": "retired_tombstone",
+            "title": "Retired", "notes": "", "event_aliases": [],
+        }],
+    }))
+    with pytest.raises(ValueError, match="event aliases changed"):
+        await source_parity(engine, provider, corpus_path, disposition_path)
