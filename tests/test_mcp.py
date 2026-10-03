@@ -137,13 +137,15 @@ def test_managed_environment_without_authority_fails(monkeypatch):
         server_from_env()
 
 
-def test_controller_rejects_invalid_trusted_test_project(monkeypatch):
+def test_managed_controller_needs_no_asana_configuration(monkeypatch):
     monkeypatch.setenv("ACTIVE_WORK_ID", str(ID))
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
-    monkeypatch.setenv("ASANA_TOKEN", "unused")
+    monkeypatch.delenv("ASANA_TOKEN", raising=False)
     monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
-    with pytest.raises(ValueError, match="invalid test project GID"):
-        controller_from_env()
+    controller = controller_from_env()
+
+    assert controller.providers == {}
+    assert controller.authority.active_work_id == ID
 
 
 def test_managed_controller_script_without_authority_fails():

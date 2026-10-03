@@ -1,16 +1,19 @@
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-import httpx
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field, JsonValue
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .canonical_event_reads import CanonicalEventReader
+from .canonical_relations import CanonicalRelationsRepository
+from .canonical_work import CanonicalWorkRepository
+from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
     AppendResult,
     ClosedModel,
@@ -59,10 +62,9 @@ from .messages import (
     pending_managed_messages,
     send_managed_result,
 )
-from .provider import AsanaProvider
 from .run import managed_runtime_currentness
 from .state import PostgresState
-from .updates import UpdateGateway
+from .work_events import WorkEventRepository
 
 
 class PublicWorkItem(WorkSearchItem):
@@ -99,15 +101,42 @@ def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
     return public
 
 
-def controller_from_env() -> Controller:
+class _CanonicalController(Controller):
+    """Keep the managed MCP contract while projecting reads from canonical storage."""
+
+    def __init__(
+        self, authority: LaunchAuthority, state: PostgresState,
+        work: CanonicalWorkRuntime, events: CanonicalEventReader,
+    ):
+        super().__init__(authority, state, {})
+        self.work, self.events = work, events
+
+    async def get(self, request: WorkGetRequest) -> WorkResult:
+        if not self.authority.can_read(request.work_id):
+            return WorkResult(status="denied")
+        return await self.work.get(request.work_id)
+
+    async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
+        if not self.authority.can_read(request.work_id):
+            return WorkHistoryResult(status="denied")
+        return await self.events.history(request)
+
+    async def event(self, request: WorkEventRequest) -> WorkEventResult:
+        if not self.authority.can_read(request.work_id):
+            return WorkEventResult(status="denied")
+        return await self.events.event(request)
+
+
+def controller_from_env() -> _CanonicalController:
     references = tuple(UUID(value) for value in os.getenv("REFERENCE_WORK_IDS", "").split(",") if value)
     authority = LaunchAuthority(active_work_id=UUID(os.environ["ACTIVE_WORK_ID"]), reference_work_ids=references)
     engine = create_async_engine(os.environ["DATABASE_URL"])
-    client = httpx.AsyncClient(base_url="https://app.asana.com/api/1.0", trust_env=False,
-                               headers={"Authorization": f"Bearer {os.environ['ASANA_TOKEN']}"})
-    return Controller(authority, PostgresState(engine), {
-        "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID"))
-    })
+    repository = CanonicalWorkRepository(engine)
+    return _CanonicalController(
+        authority, PostgresState(engine),
+        CanonicalWorkRuntime(repository, CanonicalRelationsRepository(engine)),
+        CanonicalEventReader(repository, WorkEventRepository(engine)),
+    )
 
 
 def closed_tool(
@@ -170,7 +199,7 @@ def build_server(
     messages: MessageState | None = None, grants: GrantState | None = None,
     principal: PrincipalContext | None = None,
     currentness: Callable[[], RuntimeCurrentness | None] | None = None,
-    updates: UpdateGateway | None = None,
+    updates: Callable[[PrincipalContext, ProtectedUpdate], Awaitable[GuardOutcome]] | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
@@ -277,7 +306,7 @@ def build_server(
                 grant_version=1 if grant is None else grant.version,
                 observed_revision=observed_revision, patch=patch,
             )
-            return await updates.update(principal, request)
+            return await updates(principal, request)
 
         closed_tool(server, "work_update", _work_update)
     if messages is not None and grants is not None and principal is not None and currentness is not None:
@@ -380,7 +409,7 @@ def server_from_env() -> MCPServer:
     engine = cast(PostgresState, service.state).engine
     grants = GrantState(engine)
     messages = MessageState(engine, grants)
-    updates = UpdateGateway(service.state, grants, service.providers)
+    work = service.work
     active = service.authority.active_work_id
 
     def currentness() -> RuntimeCurrentness | None:
@@ -396,7 +425,8 @@ def server_from_env() -> MCPServer:
     return build_server(
         service, active, service.authority.reference_work_ids,
         messages=messages, grants=grants, principal=managed_principal(active),
-        currentness=currentness, updates=updates,
+        currentness=currentness,
+        updates=lambda principal, request: work.protected_update(grants, principal, request),
     )
 
 
