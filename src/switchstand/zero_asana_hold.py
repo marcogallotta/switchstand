@@ -106,7 +106,7 @@ class HostHoldOperations:
     def preflight(self, paths: HoldPaths, source_candidate: str) -> None:
         validate_target(self.config)
         if (
-            paths.attempt_dir != self.config.attempt_dir
+            paths != HoldPaths.create(self.config.attempt_dir)
             or source_candidate != self.config.candidate_sha
         ):
             raise Failed("hold attempt or source candidate does not match edge configuration")
