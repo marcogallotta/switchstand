@@ -29,6 +29,7 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
+from .failure_journal import FailureJournal
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
@@ -61,6 +62,7 @@ AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
 
 class OrdinaryWorkResult(ClosedModel):
     """Provider-neutral ordinary work result without legacy related/grouped inference."""
+
     status: Status
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
@@ -70,10 +72,22 @@ class ActionSummaryUnavailable(ClosedModel):
     state: Literal["UNAVAILABLE"] = "UNAVAILABLE"
 
 
+class OpenFailureAction(ClosedModel):
+    attempt_id: UUID
+    clearing_action: str
+    effect_state: str
+
+
 class StatefulOrdinaryWorkResult(ClosedModel):
     """Exact ordinary work read enriched with owner-local actionable state."""
+
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
-        default=None, exclude_if=lambda value: value is None,
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    open_failures: tuple[OpenFailureAction, ...] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
     )
     item: PublicWorkItem | None = None
     status: Status
@@ -82,7 +96,8 @@ class StatefulOrdinaryWorkResult(ClosedModel):
 
 class OrdinaryUpdateResult(GuardOutcome):
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
-        default=None, exclude_if=lambda value: value is None,
+        default=None,
+        exclude_if=lambda value: value is None,
     )
 
 
@@ -93,6 +108,7 @@ class OutcomeStateUpdateResult(ClosedModel):
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
+
     kind: Literal["parent", "dependency"]
     action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
@@ -112,35 +128,41 @@ class OrdinaryRelationPatch(ClosedModel):
 
     def internal(self) -> RelationPatch:
         return RelationPatch(
-            kind=self.kind, action=self.action, target_work_id=self.target_work_id,
+            kind=self.kind,
+            action=self.action,
+            target_work_id=self.target_work_id,
         )
 
 
-ORDINARY_GENUINE_READ_TOOLS = frozenset({
-    "repository_bundle_get",
-    "repository_candidate_qualification_get",
-    "work_get",
-    "work_search",
-    "work_resolve_reference",
-    "work_history",
-    "work_event",
-    "agent_message_pending",
-})
+ORDINARY_GENUINE_READ_TOOLS = frozenset(
+    {
+        "repository_bundle_get",
+        "repository_candidate_qualification_get",
+        "work_get",
+        "work_search",
+        "work_resolve_reference",
+        "work_history",
+        "work_event",
+        "agent_message_pending",
+    }
+)
 
-ORDINARY_EFFECT_TOOLS = frozenset({
-    "work_append",
-    "work_create",
-    "work_update",
-    "work_relate",
-    "required_result_save",
-    "agent_register",
-    "agent_takeover",
-    "agent_message_send",
-    "agent_message_receive",
-    "agent_message_recover",
-    "agent_message_result_send",
-    "agent_message_disposition",
-})
+ORDINARY_EFFECT_TOOLS = frozenset(
+    {
+        "work_append",
+        "work_create",
+        "work_update",
+        "work_relate",
+        "required_result_save",
+        "agent_register",
+        "agent_takeover",
+        "agent_message_send",
+        "agent_message_receive",
+        "agent_message_recover",
+        "agent_message_result_send",
+        "agent_message_disposition",
+    }
+)
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
@@ -163,7 +185,9 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
 def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     projected = project_work(result)
     return OrdinaryWorkResult(
-        status=projected.status, item=projected.item, guard=projected.guard,
+        status=projected.status,
+        item=projected.item,
+        guard=projected.guard,
     )
 
 
@@ -174,9 +198,9 @@ def build_ordinary_tools(
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
-    chat_identity = agent_identity or (lambda: (_ for _ in ()).throw(
-        RuntimeError("ChatGPT runtime identity unavailable")
-    ))
+    chat_identity = agent_identity or (
+        lambda: (_ for _ in ()).throw(RuntimeError("ChatGPT runtime identity unavailable"))
+    )
     message_engine = None if service.messages is None else getattr(service.messages, "engine", None)
     mailboxes = None if message_engine is None else AgentMailboxState(message_engine)
 
@@ -193,11 +217,18 @@ def build_ordinary_tools(
         return result.grant.version, "ok"
 
     def admission_unknown(
-        operation: str, work_id: UUID | None = None, operation_id: UUID | None = None,
+        operation: str,
+        work_id: UUID | None = None,
+        operation_id: UUID | None = None,
     ) -> GuardOutcome:
         return GuardOutcome(
-            status="unknown", operation=operation, work_id=work_id, operation_id=operation_id,
-            reason="admission_state_unavailable", effect="not_sent", retry="none",
+            status="unknown",
+            operation=operation,
+            work_id=work_id,
+            operation_id=operation_id,
+            reason="admission_state_unavailable",
+            effect="not_sent",
+            retry="none",
             next_action="Retry after admission state is readable; no provider effect was sent.",
         )
 
@@ -221,10 +252,12 @@ def build_ordinary_tools(
         }
         if result.status != "current" or result.bundle_url is None:
             return CallToolResult(
-                content=[TextContent(
-                    type="text",
-                    text=f"Repository bundle {result.status}: {result.reason or 'unavailable'}.",
-                )],
+                content=[
+                    TextContent(
+                        type="text",
+                        text=f"Repository bundle {result.status}: {result.reason or 'unavailable'}.",
+                    )
+                ],
                 structured_content=structured,
             )
         return CallToolResult(
@@ -255,13 +288,15 @@ def build_ordinary_tools(
         """Qualify the exact current GitHub PR candidate against code-owned CI gates."""
         del api_version
         result = await repository_candidate.qualify_repository_candidate(
-            pull_request, include_failure_detail,
+            pull_request,
+            include_failure_detail,
         )
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
         return result
 
     async def work_get(
-        api_version: Literal["1"], work_id: UUID | None = None,
+        api_version: Literal["1"],
+        work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
         """Read canonical current state, including current notes, routing, and placement context."""
         result = await service.get(work_id)
@@ -269,38 +304,68 @@ def build_ordinary_tools(
         return project_ordinary_work(result)
 
     async def action_summary(
-        owner_work_id: UUID, currentness_token: str,
+        owner_work_id: UUID,
+        currentness_token: str,
     ) -> ActionSummary | ActionSummaryUnavailable | None:
         outcomes = getattr(service.state, "outcomes", None)
         if outcomes is None:
             return ActionSummaryUnavailable()
         try:
             summary = await outcomes.summary(owner_work_id, currentness_token)
-        except (SQLAlchemyError, KeyError, TypeError, ValueError, ValidationError):
+        except SQLAlchemyError, KeyError, TypeError, ValueError, ValidationError:
             return ActionSummaryUnavailable()
         return ActionSummaryUnavailable() if summary == "UNKNOWN" else summary
 
     async def enriched_work_get(
-        api_version: Literal["1"], work_id: UUID | None = None,
+        api_version: Literal["1"],
+        work_id: UUID | None = None,
     ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
         result = await work_get(api_version, work_id)
         summary = None
+        failures = None
         if work_id is not None and result.status == "ok" and result.item is not None:
             summary = await action_summary(work_id, result.item.revision)
+            engine = getattr(service.state, "engine", None)
+            if engine is not None:
+                try:
+                    opened = await FailureJournal(engine).open(owner=str(work_id))
+                    if opened != "UNKNOWN":
+                        failures = tuple(
+                            OpenFailureAction(
+                                attempt_id=item.attempt_id,
+                                clearing_action=item.clearing_action,
+                                effect_state=item.effect_state.value,
+                            )
+                            for item in opened
+                        )
+                except SQLAlchemyError, KeyError, TypeError, ValueError:
+                    failures = None
         return StatefulOrdinaryWorkResult(
-            action_summary=summary, item=result.item, status=result.status, guard=result.guard,
+            action_summary=summary,
+            open_failures=failures,
+            item=result.item,
+            status=result.status,
+            guard=result.guard,
         )
 
     async def work_search(
-        api_version: Literal["1"], text: str | None = None,
-        completed: bool | None = None, cursor: str | None = None, limit: int = 50,
+        api_version: Literal["1"],
+        text: str | None = None,
+        completed: bool | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
     ) -> WorkSearchResult:
         """Search admitted workspace work and return only stable provider-neutral WorkIds."""
-        result = await service.search(WorkSearchRequest(
-            api_version=api_version, text=text, completed=completed,
-            cursor=cursor, limit=limit,
-        ))
+        result = await service.search(
+            WorkSearchRequest(
+                api_version=api_version,
+                text=text,
+                completed=completed,
+                cursor=cursor,
+                limit=limit,
+            )
+        )
         audited("work_search", None, result.status)
         return result
 
@@ -309,38 +374,62 @@ def build_ordinary_tools(
         reference: Annotated[str, Field(min_length=1, max_length=2048)],
     ) -> OrdinaryWorkResult:
         """Resolve one exact legacy task reference to current provider-neutral work."""
-        result = await service.resolve_reference(WorkResolveReferenceRequest(
-            api_version=api_version, reference=reference,
-        ))
+        result = await service.resolve_reference(
+            WorkResolveReferenceRequest(
+                api_version=api_version,
+                reference=reference,
+            )
+        )
         audited("work_resolve_reference", None, result.status)
         return project_ordinary_work(result)
 
     async def work_history(
-        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        api_version: Literal["1"],
+        work_id: UUID,
+        observed_revision: str,
         purpose: HistoryPurpose,
-        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> WorkHistoryResult:
         """Exceptional investigation/recovery/legacy history; never normal grounding or polling."""
         result = await service.history(
-            WorkHistoryRequest(api_version=api_version, work_id=work_id,
-                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+            WorkHistoryRequest(
+                api_version=api_version,
+                work_id=work_id,
+                observed_revision=observed_revision,
+                cursor=cursor,
+                limit=limit,
+            )
+        )
         audited("work_history", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_event(
-        api_version: Literal["1"], event_id: UUID, observed_revision: str,
-        work_id: UUID, purpose: HistoryPurpose,
+        api_version: Literal["1"],
+        event_id: UUID,
+        observed_revision: str,
+        work_id: UUID,
+        purpose: HistoryPurpose,
     ) -> WorkEventResult:
         """Exceptional investigation/recovery/legacy event read; never normal grounding or polling."""
         result = await service.event(
-            WorkEventRequest(api_version=api_version, work_id=work_id,
-                             event_id=event_id, observed_revision=observed_revision))
+            WorkEventRequest(
+                api_version=api_version,
+                work_id=work_id,
+                event_id=event_id,
+                observed_revision=observed_revision,
+            )
+        )
         audited("work_event", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_append(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, text: str, purpose: AppendPurpose,
+        api_version: Literal["1"],
+        operation_id: UUID,
+        work_id: UUID,
+        observed_revision: str,
+        text: str,
+        purpose: AppendPurpose,
     ) -> GuardOutcome:
         """Append exceptional provenance/history only; never current state, results, or messaging."""
         grant_version, admission = await current_grant_version()
@@ -348,16 +437,25 @@ def build_ordinary_tools(
             return admission_unknown("work_append", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_append", "no_current_grant")
-        result = await service.append(ProtectedAppend(
-            api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision, text=text,
-        ))
+        result = await service.append(
+            ProtectedAppend(
+                api_version=api_version,
+                operation_id=operation_id,
+                work_id=work_id,
+                grant_version=grant_version,
+                observed_revision=observed_revision,
+                text=text,
+            )
+        )
         audited("work_append", f"{work_id}:purpose={purpose}", result.status)
         return result
 
     async def work_create(
-        api_version: Literal["1"], operation_id: UUID,
-        parent_work_id: UUID, title: str, notes: str = "",
+        api_version: Literal["1"],
+        operation_id: UUID,
+        parent_work_id: UUID,
+        title: str,
+        notes: str = "",
     ) -> GuardOutcome:
         """Create parented work through current authenticated admission."""
         grant_version, admission = await current_grant_version()
@@ -365,16 +463,25 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
-        result = await service.create(ProtectedCreate(
-            api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            grant_version=grant_version, title=title, notes=notes,
-        ))
+        result = await service.create(
+            ProtectedCreate(
+                api_version=api_version,
+                operation_id=operation_id,
+                parent_work_id=parent_work_id,
+                grant_version=grant_version,
+                title=title,
+                notes=notes,
+            )
+        )
         audited("work_create", str(parent_work_id), result.status)
         return result
 
     async def work_update(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: ScalarPatch,
+        api_version: Literal["1"],
+        operation_id: UUID,
+        work_id: UUID,
+        observed_revision: str,
+        patch: ScalarPatch,
     ) -> GuardOutcome:
         """Write canonical current state; use notes for intent, progress, findings, verdicts, and results."""
         grant_version, admission = await current_grant_version()
@@ -382,20 +489,33 @@ def build_ordinary_tools(
             return admission_unknown("work_update", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_update", "no_current_grant")
-        result = await service.update(ProtectedUpdate(
-            api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision, patch=patch,
-        ))
+        result = await service.update(
+            ProtectedUpdate(
+                api_version=api_version,
+                operation_id=operation_id,
+                work_id=work_id,
+                grant_version=grant_version,
+                observed_revision=observed_revision,
+                patch=patch,
+            )
+        )
         audited("work_update", str(work_id), result.status)
         return result
 
     async def enriched_work_update(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: ScalarPatch,
+        api_version: Literal["1"],
+        operation_id: UUID,
+        work_id: UUID,
+        observed_revision: str,
+        patch: ScalarPatch,
     ) -> OrdinaryUpdateResult:
         """Write canonical state and enrich known outcomes from one fresh exact read."""
         result = await work_update(
-            api_version, operation_id, work_id, observed_revision, patch,
+            api_version,
+            operation_id,
+            work_id,
+            observed_revision,
+            patch,
         )
         summary = None
         if result.status != "unknown" and result.effect != "unknown":
@@ -408,24 +528,31 @@ def build_ordinary_tools(
         )
 
     async def outcome_state_update(
-        api_version: Literal["1"], operation_id: UUID, owner_work_id: UUID,
-        expected_state_id: UUID | None, owner_observed_revision: Annotated[
-            str, Field(min_length=1)
-        ], items: tuple[OutcomeItem, ...],
+        api_version: Literal["1"],
+        operation_id: UUID,
+        owner_work_id: UUID,
+        expected_state_id: UUID | None,
+        owner_observed_revision: Annotated[str, Field(min_length=1)],
+        items: tuple[OutcomeItem, ...],
     ) -> OutcomeStateUpdateResult:
         """Record AGENT outcome state for one explicit admitted owner at its exact revision."""
         del api_version
         result = await service.outcome_state_update(
-            operation_id=operation_id, owner_work_id=owner_work_id,
+            operation_id=operation_id,
+            owner_work_id=owner_work_id,
             expected_state_id=expected_state_id,
-            owner_observed_revision=owner_observed_revision, items=items,
+            owner_observed_revision=owner_observed_revision,
+            items=items,
         )
         audited("outcome_state_update", str(owner_work_id), result.status)
         return OutcomeStateUpdateResult(status=result.status, state_id=result.state_id)
 
     async def work_relate(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: str, patch: OrdinaryRelationPatch,
+        api_version: Literal["1"],
+        operation_id: UUID,
+        work_id: UUID,
+        observed_revision: str,
+        patch: OrdinaryRelationPatch,
     ) -> GuardOutcome:
         """Apply one bounded relation mutation through current authenticated admission."""
         grant_version, admission = await current_grant_version()
@@ -433,17 +560,24 @@ def build_ordinary_tools(
             return admission_unknown("work_relate", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_relate", "no_current_grant")
-        result = await service.relate(ProtectedRelation(
-            api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision,
-            patch=patch.internal(),
-        ))
+        result = await service.relate(
+            ProtectedRelation(
+                api_version=api_version,
+                operation_id=operation_id,
+                work_id=work_id,
+                grant_version=grant_version,
+                observed_revision=observed_revision,
+                patch=patch.internal(),
+            )
+        )
         audited("work_relate", str(work_id), result.status)
         return result
 
     async def required_result_save(
-        api_version: Literal["1"], work_id: UUID,
-        observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
+        api_version: Literal["1"],
+        work_id: UUID,
+        observed_revision: str,
+        text: Annotated[str, Field(min_length=1, max_length=8000)],
     ) -> GuardOutcome:
         """Promote one required result into canonical current notes with authoritative readback."""
         grant_version, admission = await current_grant_version()
@@ -451,23 +585,33 @@ def build_ordinary_tools(
             return admission_unknown("required_result_save", work_id)
         if grant_version is None:
             return service.denied("required_result_save", "no_current_grant")
-        result = await service.required_result_save(RequiredResultSaveRequest(
-            api_version=api_version, work_id=work_id, grant_version=grant_version,
-            observed_revision=observed_revision, text=text,
-        ))
+        result = await service.required_result_save(
+            RequiredResultSaveRequest(
+                api_version=api_version,
+                work_id=work_id,
+                grant_version=grant_version,
+                observed_revision=observed_revision,
+                text=text,
+            )
+        )
         audited("required_result_save", str(work_id), result.status)
         return result
 
-    async def agent_context() -> AgentMessageContext | tuple[
-        Literal["denied", "recovery_required"],
-        Literal[
-            "state_unavailable", "no_current_grant", "agent_not_registered",
-            "runtime_identity_unavailable",
-        ],
-    ]:
+    async def agent_context() -> (
+        AgentMessageContext
+        | tuple[
+            Literal["denied", "recovery_required"],
+            Literal[
+                "state_unavailable",
+                "no_current_grant",
+                "agent_not_registered",
+                "runtime_identity_unavailable",
+            ],
+        ]
+    ):
         try:
             principal = await service.principal()
-        except (KeyError, RuntimeError, ValueError):
+        except KeyError, RuntimeError, ValueError:
             return "recovery_required", "state_unavailable"
         if principal is None:
             return "denied", "no_current_grant"
@@ -475,7 +619,7 @@ def build_ordinary_tools(
             return "recovery_required", "state_unavailable"
         try:
             chat_session = chat_identity()
-        except (KeyError, RuntimeError, TypeError, ValueError):
+        except KeyError, RuntimeError, TypeError, ValueError:
             return "recovery_required", "runtime_identity_unavailable"
         if not chat_session:
             return "recovery_required", "runtime_identity_unavailable"
@@ -490,34 +634,35 @@ def build_ordinary_tools(
         failure: tuple[
             Literal["denied", "recovery_required"],
             Literal[
-                "state_unavailable", "no_current_grant", "agent_not_registered",
+                "state_unavailable",
+                "no_current_grant",
+                "agent_not_registered",
                 "runtime_identity_unavailable",
             ],
         ],
     ) -> MessageTransitionResult:
         if failure[1] == "agent_not_registered":
-            return MessageTransitionResult(
-                status=failure[0], reason="receiving_binding_changed"
-            )
+            return MessageTransitionResult(status=failure[0], reason="receiving_binding_changed")
         return MessageTransitionResult(status=failure[0], reason=failure[1])
 
     def agent_runtime(mailbox_generation: int) -> RuntimeCurrentness:
         durable_generation = str(mailbox_generation)
         return RuntimeCurrentness(
-            generation=durable_generation, current_generation=durable_generation,
+            generation=durable_generation,
+            current_generation=durable_generation,
         )
 
     async def agent_submit_view(
-        result: MessageSubmitResult, *, request: bool = False,
+        result: MessageSubmitResult,
+        *,
+        request: bool = False,
     ) -> AgentMessageSubmitResult:
         if result.status != "ok" or result.message is None:
             return AgentMessageSubmitResult(status=result.status, reason=result.reason)
         assert mailboxes is not None
         view = await public_message(mailboxes, result.message)
         if view is None:
-            return AgentMessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
+            return AgentMessageSubmitResult(status="recovery_required", reason="state_unavailable")
         next_action = None
         if request and view.state in ("AVAILABLE", "RECEIVED"):
             next_action = (
@@ -534,7 +679,9 @@ def build_ordinary_tools(
                 "original delivery."
             )
         return AgentMessageSubmitResult(
-            status="ok", message=view, next_action=next_action,
+            status="ok",
+            message=view,
+            next_action=next_action,
         )
 
     async def agent_register(
@@ -545,15 +692,11 @@ def build_ordinary_tools(
         del api_version
         try:
             principal = await service.principal()
-        except (KeyError, RuntimeError, ValueError):
-            result = AgentRegistrationResult(
-                status="recovery_required", reason="state_unavailable"
-            )
+        except KeyError, RuntimeError, ValueError:
+            result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             if principal is None:
-                result = AgentRegistrationResult(
-                    status="denied", reason="no_current_grant"
-                )
+                result = AgentRegistrationResult(status="denied", reason="no_current_grant")
             elif mailboxes is None:
                 result = AgentRegistrationResult(
                     status="recovery_required", reason="state_unavailable"
@@ -561,7 +704,7 @@ def build_ordinary_tools(
             else:
                 try:
                     chat_session = chat_identity()
-                except (KeyError, RuntimeError, TypeError, ValueError):
+                except KeyError, RuntimeError, TypeError, ValueError:
                     chat_session = ""
                 if not chat_session:
                     result = AgentRegistrationResult(
@@ -587,7 +730,7 @@ def build_ordinary_tools(
         try:
             principal = await service.principal()
             chat_session = chat_identity()
-        except (KeyError, RuntimeError, TypeError, ValueError):
+        except KeyError, RuntimeError, TypeError, ValueError:
             principal, chat_session = None, ""
         if principal is None:
             result = AgentRegistrationResult(status="denied", reason="no_current_grant")
@@ -608,8 +751,10 @@ def build_ordinary_tools(
         return result
 
     async def agent_message_send(
-        api_version: Literal["1"], recipient_name: str,
-        message_id: UUID, payload: JsonValue,
+        api_version: Literal["1"],
+        recipient_name: str,
+        message_id: UUID,
+        payload: JsonValue,
     ) -> AgentMessageSubmitResult:
         """Send one durable request to a registered immutable agent name."""
         context = await agent_context()
@@ -619,19 +764,18 @@ def build_ordinary_tools(
         assert mailboxes is not None and service.messages is not None
         recipient = await mailboxes.by_name(recipient_name)
         if recipient.status == "recovery_required":
-            return AgentMessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
+            return AgentMessageSubmitResult(status="recovery_required", reason="state_unavailable")
         if recipient.status != "ok" or recipient.mailbox is None:
-            return AgentMessageSubmitResult(
-                status="denied", reason="recipient_not_registered"
-            )
+            return AgentMessageSubmitResult(status="denied", reason="recipient_not_registered")
         replay = await service.messages.committed_public_replay(
             sender.endpoint_id,
             MessageSendRequest(
-                api_version=api_version, work_id=sender.endpoint_id,
-                grant_version=sender.generation, message_id=message_id,
-                route_ref=f"agent.{recipient.mailbox.name_key}", payload=payload,
+                api_version=api_version,
+                work_id=sender.endpoint_id,
+                grant_version=sender.generation,
+                message_id=message_id,
+                route_ref=f"agent.{recipient.mailbox.name_key}",
+                payload=payload,
                 recipient_work_id=recipient.mailbox.endpoint_id,
             ),
             agent_binding=sender,
@@ -651,12 +795,16 @@ def build_ordinary_tools(
             payload=payload,
         )
         result = await service.messages.submit_admitted(
-            sender.endpoint_id, route, submitted, agent_binding=sender,
+            sender.endpoint_id,
+            route,
+            submitted,
+            agent_binding=sender,
         )
         return await agent_submit_view(result, request=True)
 
     async def agent_message_pending(
-        api_version: Literal["1"], cursor: UUID | None = None,
+        api_version: Literal["1"],
+        cursor: UUID | None = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> AgentMessagePendingResult:
         """List this registered agent's durable pending deliveries without WorkId addressing."""
@@ -686,12 +834,15 @@ def build_ordinary_tools(
                 )
             views.append(view)
         return AgentMessagePendingResult(
-            status="ok", messages=tuple(views),
-            next_cursor=result.next_cursor, has_more=result.has_more,
+            status="ok",
+            messages=tuple(views),
+            next_cursor=result.next_cursor,
+            has_more=result.has_more,
         )
 
     async def agent_message_receive(
-        api_version: Literal["1"], delivery_id: UUID,
+        api_version: Literal["1"],
+        delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Receive one delivery for this registered name under current MCP-session fencing."""
         context = await agent_context()
@@ -701,16 +852,20 @@ def build_ordinary_tools(
         runtime = agent_runtime(mailbox.generation)
         assert service.messages is not None
         return await service.messages.receive_admitted(
-            mailbox.endpoint_id, mailbox.generation, runtime,
+            mailbox.endpoint_id,
+            mailbox.generation,
+            runtime,
             MessageReceiveRequest(
-                api_version=api_version, delivery_id=delivery_id,
+                api_version=api_version,
+                delivery_id=delivery_id,
                 grant_version=mailbox.generation,
             ),
             agent_binding=mailbox,
         )
 
     async def agent_message_recover(
-        api_version: Literal["1"], delivery_id: UUID,
+        api_version: Literal["1"],
+        delivery_id: UUID,
     ) -> MessageTransitionResult:
         """Explicitly recover a received delivery after an authorized binding/session replacement."""
         context = await agent_context()
@@ -720,17 +875,22 @@ def build_ordinary_tools(
         runtime = agent_runtime(mailbox.generation)
         assert service.messages is not None
         return await service.messages.recover_admitted(
-            mailbox.endpoint_id, mailbox.generation, runtime,
+            mailbox.endpoint_id,
+            mailbox.generation,
+            runtime,
             MessageReceiveRequest(
-                api_version=api_version, delivery_id=delivery_id,
+                api_version=api_version,
+                delivery_id=delivery_id,
                 grant_version=mailbox.generation,
             ),
             agent_binding=mailbox,
         )
 
     async def agent_message_result_send(
-        api_version: Literal["1"], delivery_id: UUID,
-        message_id: UUID, payload: JsonValue,
+        api_version: Literal["1"],
+        delivery_id: UUID,
+        message_id: UUID,
+        payload: JsonValue,
     ) -> AgentMessageSubmitResult:
         """Reply to one received delivery as this registered agent name."""
         context = await agent_context()
@@ -742,9 +902,12 @@ def build_ordinary_tools(
         replay = await service.messages.committed_public_replay(
             mailbox.endpoint_id,
             MessageSendRequest(
-                api_version=api_version, work_id=mailbox.endpoint_id,
-                grant_version=mailbox.generation, message_id=message_id,
-                payload=payload, in_reply_to_delivery_id=delivery_id,
+                api_version=api_version,
+                work_id=mailbox.endpoint_id,
+                grant_version=mailbox.generation,
+                message_id=message_id,
+                payload=payload,
+                in_reply_to_delivery_id=delivery_id,
             ),
             agent_binding=mailbox,
         )
@@ -761,18 +924,28 @@ def build_ordinary_tools(
             recipient_grant_version=recipient.mailbox.generation,
         )
         submitted = MessageSubmitRequest(
-            api_version=api_version, message_id=message_id,
-            grant_version=mailbox.generation, route_ref=reply.route_ref,
-            kind="result", payload=payload, in_reply_to_delivery_id=delivery_id,
+            api_version=api_version,
+            message_id=message_id,
+            grant_version=mailbox.generation,
+            route_ref=reply.route_ref,
+            kind="result",
+            payload=payload,
+            in_reply_to_delivery_id=delivery_id,
         )
         result = await service.messages.submit_received_result(
-            mailbox.endpoint_id, mailbox.generation, runtime.generation, route, submitted,
+            mailbox.endpoint_id,
+            mailbox.generation,
+            runtime.generation,
+            route,
+            submitted,
             agent_binding=mailbox,
         )
         return await agent_submit_view(result)
 
     async def agent_message_disposition(
-        api_version: Literal["1"], delivery_id: UUID, result_message_id: UUID,
+        api_version: Literal["1"],
+        delivery_id: UUID,
+        result_message_id: UUID,
     ) -> MessageTransitionResult:
         """Disposition one received delivery using its exact reply as evidence."""
         context = await agent_context()
@@ -783,11 +956,15 @@ def build_ordinary_tools(
         assert service.messages is not None
         evidence = DispositionEvidence(kind="result", result_message_id=result_message_id)
         return await service.messages.disposition_admitted(
-            mailbox.endpoint_id, mailbox.generation, runtime,
+            mailbox.endpoint_id,
+            mailbox.generation,
+            runtime,
             MessageDispositionRequest(
-                api_version=api_version, delivery_id=delivery_id,
+                api_version=api_version,
+                delivery_id=delivery_id,
                 grant_version=mailbox.generation,
-                disposition_digest=disposition_digest(evidence), evidence=evidence,
+                disposition_digest=disposition_digest(evidence),
+                evidence=evidence,
             ),
             agent_binding=mailbox,
         )
@@ -808,8 +985,11 @@ def build_ordinary_tools(
         ("work_append", work_append),
         ("work_create", work_create),
         ("work_update", enriched_work_update if service.outcome_state_enabled else work_update),
-        *((("outcome_state_update", outcome_state_update),)
-          if service.outcome_state_enabled else ()),
+        *(
+            (("outcome_state_update", outcome_state_update),)
+            if service.outcome_state_enabled
+            else ()
+        ),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),

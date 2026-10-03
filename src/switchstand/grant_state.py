@@ -14,12 +14,14 @@ from .grants import GuardOutcome, WorkGrant
 from .state import metadata, work_handles
 
 work_grants = Table(
-    "work_grants", metadata,
+    "work_grants",
+    metadata,
     Column("principal_key", Text, primary_key=True),
     Column("document", JSONB, nullable=True),
 )
 effect_intents = Table(
-    "effect_intents", metadata,
+    "effect_intents",
+    metadata,
     Column("operation_id", Text, primary_key=True),
     Column("fingerprint", Text, nullable=False),
     Column("principal_key", Text, nullable=False),
@@ -47,17 +49,27 @@ class GrantState:
 
     async def current(self, principal_key: str) -> WorkGrant | None:
         async with self.engine.connect() as connection:
-            value = (await connection.execute(select(work_grants.c.document).where(
-                work_grants.c.principal_key == principal_key
-            ))).scalar_one_or_none()
+            value = (
+                await connection.execute(
+                    select(work_grants.c.document).where(
+                        work_grants.c.principal_key == principal_key
+                    )
+                )
+            ).scalar_one_or_none()
         return None if value is None else WorkGrant.model_validate(value)
 
     async def current_for_active_work(self, work_id: UUID) -> WorkGrant | None:
         """Resolve one current task-owner grant without exposing principal identity to callers."""
         async with self.engine.connect() as connection:
-            values = (await connection.execute(select(work_grants.c.document).where(
-                work_grants.c.document.is_not(None)
-            ))).scalars().all()
+            values = (
+                (
+                    await connection.execute(
+                        select(work_grants.c.document).where(work_grants.c.document.is_not(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
         matches: list[WorkGrant] = []
         for value in values:
             if value is None:
@@ -69,21 +81,49 @@ class GrantState:
             raise ValueError("multiple current grants own the same active work")
         return matches[0] if matches else None
 
+    async def for_active_work(self, work_id: UUID) -> tuple[WorkGrant, ...]:
+        """Enumerate existing exact-work grants without issuing or rotating authority."""
+        async with self.engine.connect() as connection:
+            values = (
+                (
+                    await connection.execute(
+                        select(work_grants.c.document).where(work_grants.c.document.is_not(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return tuple(
+            grant
+            for value in values
+            if value is not None
+            and (grant := WorkGrant.model_validate(value)).authority.active_work_id == work_id
+        )
+
     @asynccontextmanager
     async def locked_message_route(
-        self, principal_key: str, sender_work_id: UUID, recipient_work_id: UUID | None,
+        self,
+        principal_key: str,
+        sender_work_id: UUID,
+        recipient_work_id: UUID | None,
     ) -> AsyncGenerator[tuple[WorkGrant | None, WorkGrant | None]]:
         """Serialize grant writers while selecting the unique message route."""
         async with self.engine.begin() as connection:
-            await connection.execute(text(
-                "LOCK TABLE work_grants IN SHARE ROW EXCLUSIVE MODE"
-            ))
-            values = (await connection.execute(select(work_grants.c.document).where(
-                work_grants.c.document.is_not(None)
-            ))).scalars().all()
-            await connection.execute(select(work_handles.c.id).where(
-                work_handles.c.id == sender_work_id
-            ).with_for_update())
+            await connection.execute(text("LOCK TABLE work_grants IN SHARE ROW EXCLUSIVE MODE"))
+            values = (
+                (
+                    await connection.execute(
+                        select(work_grants.c.document).where(work_grants.c.document.is_not(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await connection.execute(
+                select(work_handles.c.id)
+                .where(work_handles.c.id == sender_work_id)
+                .with_for_update()
+            )
             sender = None
             matches: list[WorkGrant] = []
             for value in values:
@@ -92,9 +132,12 @@ class GrantState:
                 grant = WorkGrant.model_validate(value)
                 if grant.principal.key == principal_key:
                     sender = grant
-                if (grant.current() and grant.scope in {"launch", "workspace"}
-                        and "message" in grant.operations
-                        and grant.authority.active_work_id == recipient_work_id):
+                if (
+                    grant.current()
+                    and grant.scope in {"launch", "workspace"}
+                    and "message" in grant.operations
+                    and grant.authority.active_work_id == recipient_work_id
+                ):
                     matches.append(grant)
             yield sender, matches[0] if len(matches) == 1 else None
 
@@ -102,59 +145,95 @@ class GrantState:
         """Trusted control path only; compare-and-replace also handles revoke/terminal."""
         key = grant.principal.key
         async with self.engine.begin() as connection:
-            await connection.execute(insert(work_grants).values(
-                principal_key=key, document=None
-            ).on_conflict_do_nothing())
-            value = (await connection.execute(select(work_grants.c.document).where(
-                work_grants.c.principal_key == key
-            ).with_for_update())).scalar_one()
+            await connection.execute(
+                insert(work_grants)
+                .values(principal_key=key, document=None)
+                .on_conflict_do_nothing()
+            )
+            value = (
+                await connection.execute(
+                    select(work_grants.c.document)
+                    .where(work_grants.c.principal_key == key)
+                    .with_for_update()
+                )
+            ).scalar_one()
             old = None if value is None else WorkGrant.model_validate(value)
             if (None if old is None else old.version) != expected_version:
                 raise ValueError("stale grant issuance")
             if grant.version != (expected_version or 0) + 1:
                 raise ValueError("grant version must advance exactly once")
-            await connection.execute(update(work_grants).where(
-                work_grants.c.principal_key == key
-            ).values(document=grant.model_dump(mode="json")))
+            await connection.execute(
+                update(work_grants)
+                .where(work_grants.c.principal_key == key)
+                .values(document=grant.model_dump(mode="json"))
+            )
 
     @asynccontextmanager
     async def locked(
-        self, principal_key: str, work_id: UUID | None = None,
+        self,
+        principal_key: str,
+        work_id: UUID | None = None,
     ) -> AsyncGenerator[WorkGrant | None]:
         async with self.engine.begin() as connection:
-            value = (await connection.execute(select(work_grants.c.document).where(
-                work_grants.c.principal_key == principal_key
-            ).with_for_update())).scalar_one_or_none()
+            value = (
+                await connection.execute(
+                    select(work_grants.c.document)
+                    .where(work_grants.c.principal_key == principal_key)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             grant = None if value is None else WorkGrant.model_validate(value)
             if work_id is not None:
-                await connection.execute(select(work_handles.c.id).where(
-                    work_handles.c.id == work_id
-                ).with_for_update())
+                await connection.execute(
+                    select(work_handles.c.id).where(work_handles.c.id == work_id).with_for_update()
+                )
             yield grant
 
     async def previous(
-        self, operation_id: UUID, work_id: UUID,
+        self,
+        operation_id: UUID,
+        work_id: UUID,
     ) -> tuple[str, str, GuardOutcome] | None:
         async with self.engine.connect() as connection:
             # Called under the work lock: unresolved sends block the entire target,
             # including changed payloads, principals or new OperationIds.
-            rows = (await connection.execute(select(effect_intents).where(
-                (effect_intents.c.operation_id == str(operation_id))
-                | ((effect_intents.c.work_id == str(work_id))
-                   & (effect_intents.c.outcome["effect"].astext == "unknown"))
-            ))).mappings().all()
+            rows = (
+                (
+                    await connection.execute(
+                        select(effect_intents).where(
+                            (effect_intents.c.operation_id == str(operation_id))
+                            | (
+                                (effect_intents.c.work_id == str(work_id))
+                                & (effect_intents.c.outcome["effect"].astext == "unknown")
+                            )
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
         if not rows:
             return None
         row = next((r for r in rows if r["operation_id"] == str(operation_id)), rows[0])
-        return str(row["principal_key"]), str(row["fingerprint"]), GuardOutcome.model_validate(
-            row["outcome"]
+        return (
+            str(row["principal_key"]),
+            str(row["fingerprint"]),
+            GuardOutcome.model_validate(row["outcome"]),
         )
 
     async def exact(self, operation_id: UUID) -> EffectRecord | None:
         async with self.engine.connect() as connection:
-            row = (await connection.execute(select(effect_intents).where(
-                effect_intents.c.operation_id == str(operation_id)
-            ))).mappings().one_or_none()
+            row = (
+                (
+                    await connection.execute(
+                        select(effect_intents).where(
+                            effect_intents.c.operation_id == str(operation_id)
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
         if row is None:
             return None
         raw_intent = row["intent"]
@@ -172,26 +251,42 @@ class GrantState:
     async def unresolved_create(self, parent_work_id: UUID) -> bool:
         """Fence a second child create while one exact parent effect is unresolved."""
         async with self.engine.connect() as connection:
-            intents = (await connection.execute(select(effect_intents.c.intent).where(
-                effect_intents.c.outcome["effect"].astext == "unknown"
-            ))).scalars().all()
+            intents = (
+                (
+                    await connection.execute(
+                        select(effect_intents.c.intent).where(
+                            effect_intents.c.outcome["effect"].astext == "unknown"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
         for raw in intents:
             if not isinstance(raw, dict):
                 continue
             intent = cast(dict[str, object], raw)
             request = intent.get("request")
-            if (isinstance(request, dict)
-                    and cast(dict[str, object], request).get("parent_work_id")
-                    == str(parent_work_id)):
+            if isinstance(request, dict) and cast(dict[str, object], request).get(
+                "parent_work_id"
+            ) == str(parent_work_id):
                 return True
         return False
 
     async def created_work_allowed(self, principal_key: str, work_id: UUID) -> bool:
         async with self.engine.connect() as connection:
-            values = (await connection.execute(select(effect_intents.c.outcome).where(
-                (effect_intents.c.principal_key == principal_key)
-                & (effect_intents.c.work_id == str(work_id))
-            ))).scalars().all()
+            values = (
+                (
+                    await connection.execute(
+                        select(effect_intents.c.outcome).where(
+                            (effect_intents.c.principal_key == principal_key)
+                            & (effect_intents.c.work_id == str(work_id))
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
         return any(
             (outcome := GuardOutcome.model_validate(value)).operation == "work_create"
             and outcome.effect == "applied"
@@ -199,25 +294,35 @@ class GrantState:
         )
 
     async def prepare(
-        self, request: dict[str, object], grant: WorkGrant, fingerprint: str,
+        self,
+        request: dict[str, object],
+        grant: WorkGrant,
+        fingerprint: str,
         unknown: GuardOutcome,
     ) -> None:
         # Separate transaction: intent survives a crash/rollback of the held locks.
         # No FK to those locked rows: a FK insertion could wait on our own locks.
         async with self.engine.begin() as connection:
-            await connection.execute(insert(effect_intents).values(
-                operation_id=str(unknown.operation_id), fingerprint=fingerprint,
-                principal_key=grant.principal.key, work_id=str(unknown.work_id),
-                grant_id=str(grant.id), grant_version=grant.version,
-                intent=request, outcome=unknown.model_dump(mode="json"),
-            ))
+            await connection.execute(
+                insert(effect_intents).values(
+                    operation_id=str(unknown.operation_id),
+                    fingerprint=fingerprint,
+                    principal_key=grant.principal.key,
+                    work_id=str(unknown.work_id),
+                    grant_id=str(grant.id),
+                    grant_version=grant.version,
+                    intent=request,
+                    outcome=unknown.model_dump(mode="json"),
+                )
+            )
 
     async def finish(self, outcome: GuardOutcome) -> None:
         async with self.engine.begin() as connection:
-            result = await connection.execute(update(effect_intents).where(
-                effect_intents.c.operation_id == str(outcome.operation_id)
-            ).values(outcome=outcome.model_dump(mode="json", exclude_none=True)).returning(
-                effect_intents.c.operation_id
-            ))
+            result = await connection.execute(
+                update(effect_intents)
+                .where(effect_intents.c.operation_id == str(outcome.operation_id))
+                .values(outcome=outcome.model_dump(mode="json", exclude_none=True))
+                .returning(effect_intents.c.operation_id)
+            )
             if result.scalar_one_or_none() is None:
                 raise ValueError("effect intent missing")

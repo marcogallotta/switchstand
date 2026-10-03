@@ -129,9 +129,15 @@ state, but their authority and inventories are intentionally not interchangeable
 
 ### Inert resource-worker trial
 
-`agent_broker.py`, `agent_executor.py`, and `agent_canary.py` are a default-off trial architecture,
+`agent_broker.py`, `agent_executor.py`, `managed_launch.py`, and `agent_canary.py` are a default-off trial architecture,
 not the active worker launcher. The broker owns host-wide lease admission and durable status; the
-executor applies a reserved leaf lease through a sandboxed transient systemd unit; the canary owns
+executor applies a reserved lease through a sandboxed transient systemd unit; sealed prepared-parent
+manifests bind the exact WorkId, current grant, reservation, attempt, unit, private writer/home, and
+fixed headless Codex command. Admission uses available memory, PSI, recent swap movement, and an
+atomic reservation ledger. Release requires identity-bound proof that the unit is terminal and its
+cgroup absent or empty; expired unattached reservations require positive proof that no launch was
+prepared. Native children inherit the parent's aggregate cgroup but are not individually admitted.
+The canary owns
 the bounded live proof. Adoption requires that separately authorized canary to prove limits,
 read-only output, recursive cancellation and cleanup, pressure capture, and deterministic excess
 worker denial. A failed or incomplete proof preserves the trial for diagnosis or retirement; it
@@ -157,6 +163,17 @@ module functions used by launch, not MCP tools. This surface is separate from pr
 
 PostgreSQL is the authoritative application state for identities, grants, effect recovery,
 messaging, and required continuation:
+
+- `failure_journal.py` owns append-only redacted failure attempts and resolutions;
+  `pending_failures.py` owns the atomic offline queue and close/handoff gate. Stateful reads may
+  project unresolved clearing actions, but the journal remains authoritative. The legacy
+  `friction.md` source cannot be archived until import, read parity, queue synchronization, and an
+  explicit cutoff all pass.
+- `bootstrap_identity.py` and `bootstrap_adapters.py` own the temporary pre-migration launch
+  compatibility boundary. It runs only after an exact canonical WorkId miss, verifies the immutable
+  WorkId-to-Asana mapping and exact current provider task, and accepts only one already-current
+  exact-principal launch grant. It never derives or rotates authority from provider content and is
+  disabled by an authenticated migration-complete receipt.
 
 - `canonical_work.py`, `canonical_relations.py`, and `work_events.py` own the explicit, inert
   compact zero-Asana schema definitions and repositories for current rows, stable title/completion

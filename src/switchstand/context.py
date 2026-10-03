@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
+from .failure_capture import capture_failure
+from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
 from .session import supervise
@@ -27,7 +29,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--target-repo", type=Path)
     result.add_argument("--active", required=True, help="active WorkId or legacy task ID/URL")
     result.add_argument(
-        "assignment", nargs=1, type=initial_assignment,
+        "assignment",
+        nargs=1,
+        type=initial_assignment,
         help="exact initial assignment (pass after --)",
     )
     return result
@@ -35,8 +39,11 @@ def parser() -> argparse.ArgumentParser:
 
 def _git(repo: Path, *arguments: str, env: dict[str, str]) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), *arguments], capture_output=True, text=True,
-        check=True, env=env,
+        ["git", "-C", str(repo), *arguments],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
     ).stdout.strip()
 
 
@@ -44,9 +51,12 @@ def _private_directory(path: Path, *, create: bool = True) -> Path:
     if create:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = path.lstat()
-    if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700):
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
         raise ValueError(f"{path} must be a real user-owned 0700 directory")
     return path.resolve(strict=True)
 
@@ -54,13 +64,27 @@ def _private_directory(path: Path, *, create: bool = True) -> Path:
 def validate_control(control: Path, env: dict[str, str]) -> Path:
     control = control.resolve(strict=True)
     root, git_dir, common, branch, head = _git(
-        control, "rev-parse", "--path-format=absolute", "--show-toplevel",
-        "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD", "HEAD", env=env,
+        control,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-dir",
+        "--git-common-dir",
+        "--abbrev-ref",
+        "HEAD",
+        "HEAD",
+        env=env,
     ).splitlines()
     if Path(root).resolve() != control:
         raise ValueError("launcher must run from the clean CONTROL checkout root")
-    _git(control, "fetch", "--no-tags", "origin",
-         "+refs/heads/main:refs/remotes/origin/main", env=env)
+    _git(
+        control,
+        "fetch",
+        "--no-tags",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+        env=env,
+    )
     accepted = _git(control, "rev-parse", "origin/main", env=env)
     identity = f"CONTROL {control}: HEAD={head}; origin/main={accepted}"
     if _git(control, "status", "--porcelain", "--untracked-files=all", env=env):
@@ -76,23 +100,33 @@ def validate_control(control: Path, env: dict[str, str]) -> Path:
     elif head != accepted:
         _fast_forward(control, head, accepted, identity, env)
     control_hook = control / "scripts/codex-hook"
-    if (not control_hook.is_file() or not os.access(control_hook, os.X_OK)
-            or control_hook.resolve(strict=True) != control / "scripts/codex-hook"):
+    if (
+        not control_hook.is_file()
+        or not os.access(control_hook, os.X_OK)
+        or control_hook.resolve(strict=True) != control / "scripts/codex-hook"
+    ):
         raise ValueError("exact CONTROL hook is unavailable")
     return control
 
 
 def _fast_forward(
-    repo: Path, head: str, accepted: str, identity: str, env: dict[str, str],
+    repo: Path,
+    head: str,
+    accepted: str,
+    identity: str,
+    env: dict[str, str],
 ) -> None:
     if subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", head, accepted],
-        env=env, capture_output=True, check=False,
+        env=env,
+        capture_output=True,
+        check=False,
     ).returncode:
         raise ValueError(f"{identity}; not a clean ancestor; local work is intact")
     _git(repo, "merge", "--ff-only", accepted, env=env)
-    if (_git(repo, "rev-parse", "HEAD", env=env) != accepted
-            or _git(repo, "status", "--porcelain", "--untracked-files=all", env=env)):
+    if _git(repo, "rev-parse", "HEAD", env=env) != accepted or _git(
+        repo, "status", "--porcelain", "--untracked-files=all", env=env
+    ):
         raise ValueError(f"{identity}; fast-forward readback failed")
 
 
@@ -100,8 +134,11 @@ def _provider_origin(control: Path, env: dict[str, str]) -> str:
     origin = _git(control, "remote", "get-url", "origin", env=env)
     parsed = urlparse(origin)
     provider_url = parsed.scheme in {"https", "ssh", "git"} and bool(parsed.netloc)
-    provider_scp = (":" in origin and "@" in origin.split(":", 1)[0]
-                    and not origin.startswith(("/", "./", "../")))
+    provider_scp = (
+        ":" in origin
+        and "@" in origin.split(":", 1)[0]
+        and not origin.startswith(("/", "./", "../"))
+    )
     if not (provider_url or provider_scp):
         raise ValueError("CONTROL origin must be an external provider repository")
     return origin
@@ -133,14 +170,15 @@ def validate_target(path: Path, repository: str, env: dict[str, str]) -> Target:
     if root != path or Path(_git(root, "rev-parse", "--show-toplevel", env=env)) != root:
         raise ValueError("target must be the canonical checkout root")
     origin = _provider_origin(root, env)
-    allowed = {"https://github.com/marcogallotta/ai-tools.git",
-               "https://github.com/marcogallotta/ai-tools",
-               "git@github.com:marcogallotta/ai-tools.git",
-               "ssh://git@github.com/marcogallotta/ai-tools.git"}
+    allowed = {
+        "https://github.com/marcogallotta/ai-tools.git",
+        "https://github.com/marcogallotta/ai-tools",
+        "git@github.com:marcogallotta/ai-tools.git",
+        "ssh://git@github.com/marcogallotta/ai-tools.git",
+    }
     if repository != "marcogallotta/ai-tools" or origin not in allowed:
         raise ValueError("target origin does not match the admitted ai-tools repository")
-    _git(root, "fetch", "--no-tags", "origin",
-         "+refs/heads/main:refs/remotes/origin/main", env=env)
+    _git(root, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main", env=env)
     main = _git(root, "rev-parse", "refs/remotes/origin/main^{commit}", env=env)
     return Target(root, origin, repository, main)
 
@@ -168,8 +206,9 @@ def durable_root(env: dict[str, str]) -> Path:
     return _private_directory(Path(env["HOME"]) / ".local/state/switchstand/writers")
 
 
-def reject_legacy_writers(legacy_gids: tuple[str, ...], work_id: UUID, env: dict[str, str],
-                         target: Target | None = None) -> None:
+def reject_legacy_writers(
+    legacy_gids: tuple[str, ...], work_id: UUID, env: dict[str, str], target: Target | None = None
+) -> None:
     for legacy in legacy_gids:
         path = durable_root(env) / _task_name(legacy, target)
         if legacy != str(work_id) and (path.exists() or path.is_symlink()):
@@ -183,12 +222,23 @@ def _bind_git_identity(control: Path, writer: Path, env: dict[str, str]) -> None
     # ordinary author identity into this private clone while CONTROL can still
     # resolve it, so local commits do not require broader HOME access.
     for key in ("user.name", "user.email"):
-        _git(writer, "config", "--local", key,
-             _git(control, "config", "--get", key, env=env), env=env)
+        _git(
+            writer,
+            "config",
+            "--local",
+            key,
+            _git(control, "config", "--get", key, env=env),
+            env=env,
+        )
 
 
-def validate_writer(control: Path, writer: Path, work_id: UUID | str, env: dict[str, str],
-                    target: Target | None = None) -> Path:
+def validate_writer(
+    control: Path,
+    writer: Path,
+    work_id: UUID | str,
+    env: dict[str, str],
+    target: Target | None = None,
+) -> Path:
     writer = writer.resolve(strict=True)
     task = str(work_id)
     if writer != durable_root(env) / _task_name(task, target):
@@ -196,11 +246,23 @@ def validate_writer(control: Path, writer: Path, work_id: UUID | str, env: dict[
     _private_directory(writer, create=False)
     git_dir = _private_directory(writer / ".git", create=False)
     root, absolute_git, common, branch, head = _git(
-        writer, "rev-parse", "--path-format=absolute", "--show-toplevel",
-        "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD", "HEAD", env=env,
+        writer,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-dir",
+        "--git-common-dir",
+        "--abbrev-ref",
+        "HEAD",
+        "HEAD",
+        env=env,
     ).splitlines()
-    if (Path(root).resolve() != writer or Path(absolute_git).resolve() != git_dir
-            or Path(common).resolve() != git_dir or branch != f"v2-task-{task}"):
+    if (
+        Path(root).resolve() != writer
+        or Path(absolute_git).resolve() != git_dir
+        or Path(common).resolve() != git_dir
+        or branch != f"v2-task-{task}"
+    ):
         raise ValueError("writer does not have private task-bound Git metadata")
     if (git_dir / "objects/info/alternates").exists():
         raise ValueError("writer must not share an object store")
@@ -211,16 +273,21 @@ def validate_writer(control: Path, writer: Path, work_id: UUID | str, env: dict[
     green = (git_dir / "switchstand-green-sha").read_text().strip()
     if subprocess.run(
         ["git", "-C", str(writer), "merge-base", "--is-ancestor", green, head],
-        env=env, capture_output=True, check=False,
+        env=env,
+        capture_output=True,
+        check=False,
     ).returncode:
         raise ValueError("writer does not descend from its green baseline")
-    if _git(writer, "remote", "get-url", "origin", env=env) != (target.origin if target else _provider_origin(control, env)):
+    if _git(writer, "remote", "get-url", "origin", env=env) != (
+        target.origin if target else _provider_origin(control, env)
+    ):
         raise ValueError("writer origin is not the exact provider repository")
     return writer
 
 
-def create_writer(control: Path, work_id: UUID | str, env: dict[str, str],
-                  target: Target | None = None) -> Path:
+def create_writer(
+    control: Path, work_id: UUID | str, env: dict[str, str], target: Target | None = None
+) -> Path:
     task = str(work_id)
     root = durable_root(env)
     _task_mode(root, task, target)
@@ -237,8 +304,15 @@ def create_writer(control: Path, work_id: UUID | str, env: dict[str, str],
         # Resume it exactly. Only an untouched writer (HEAD still at its recorded
         # green baseline and no dirty files) may follow a newer accepted main.
         if not dirty and head == green and head != accepted:
-            _git(validated, "fetch", "--no-tags", "--no-write-fetch-head",
-                 str(target.root if target else control), accepted, env=env)
+            _git(
+                validated,
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                str(target.root if target else control),
+                accepted,
+                env=env,
+            )
             _fast_forward(validated, head, accepted, identity, env)
             green_path.write_text(accepted + "\n")
         _bind_git_identity(control, validated, env)
@@ -248,12 +322,29 @@ def create_writer(control: Path, work_id: UUID | str, env: dict[str, str],
     temporary = Path(tempfile.mkdtemp(prefix=f".task-{task}.", dir=root))
     try:
         subprocess.run(
-            ["git", "clone", "--no-local", "--no-checkout", str(target.root if target else control), str(temporary)],
-            check=True, env=env, capture_output=True, text=True,
+            [
+                "git",
+                "clone",
+                "--no-local",
+                "--no-checkout",
+                str(target.root if target else control),
+                str(temporary),
+            ],
+            check=True,
+            env=env,
+            capture_output=True,
+            text=True,
         )
         temporary.chmod(0o700)
         (temporary / ".git").chmod(0o700)
-        _git(temporary, "remote", "set-url", "origin", (target.origin if target else _provider_origin(control, env)), env=env)
+        _git(
+            temporary,
+            "remote",
+            "set-url",
+            "origin",
+            (target.origin if target else _provider_origin(control, env)),
+            env=env,
+        )
         if target:
             _git(temporary, "fetch", "--no-tags", str(target.root), base, env=env)
         _git(temporary, "checkout", "-b", branch, base, env=env)
@@ -275,9 +366,13 @@ def create_writer(control: Path, work_id: UUID | str, env: dict[str, str],
 def _validate_auth(home: Path) -> Path:
     auth = home / ".codex/auth.json"
     metadata = auth.lstat()
-    if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
-            or auth.resolve(strict=True) != auth.absolute()):
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or auth.resolve(strict=True) != auth.absolute()
+    ):
         raise ValueError("canonical Codex auth must be a real user-owned 0600 file")
     return auth
 
@@ -285,8 +380,11 @@ def _validate_auth(home: Path) -> Path:
 def _write_managed(path: Path, content: str) -> None:
     if path.exists() or path.is_symlink():
         metadata = path.lstat()
-        if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != os.getuid()):
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+        ):
             raise ValueError(f"managed file {path} is unsafe")
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
@@ -305,7 +403,10 @@ def _write_managed(path: Path, content: str) -> None:
 def prepared_check_environment(control: Path, env: dict[str, str]) -> str:
     result = subprocess.run(
         [str(control / "scripts/bootstrap"), "--print-uv"],
-        env=env, capture_output=True, text=True, check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode:
         raise ValueError(result.stderr.strip())
@@ -315,8 +416,13 @@ def prepared_check_environment(control: Path, env: dict[str, str]) -> str:
     return str(path.resolve(strict=True))
 
 
-def managed_codex_home(control: Path, writer: Path, work_id: UUID | str, env: dict[str, str],
-                       target: Target | None = None) -> Path:
+def managed_codex_home(
+    control: Path,
+    writer: Path,
+    work_id: UUID | str,
+    env: dict[str, str],
+    target: Target | None = None,
+) -> Path:
     task = str(work_id)
     root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
     _task_mode(root, task, target)
@@ -338,12 +444,23 @@ def managed_codex_home(control: Path, writer: Path, work_id: UUID | str, env: di
     if executable is None:
         raise ValueError("Codex executable is unavailable")
     codex_executable = Path(executable).resolve(strict=True)
-    hooks = {"description": "Exact clean-CONTROL Switchstand guard.", "hooks": {
-        "PreToolUse": [{"matcher": "^Bash$", "hooks": [
-            {"type": "command", "command": str(hook), "timeout": 10}]}],
-        "PermissionRequest": [{"matcher": "^Bash$", "hooks": [
-            {"type": "command", "command": str(hook), "timeout": 10}]}],
-    }}
+    hooks = {
+        "description": "Exact clean-CONTROL Switchstand guard.",
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "^Bash$",
+                    "hooks": [{"type": "command", "command": str(hook), "timeout": 10}],
+                }
+            ],
+            "PermissionRequest": [
+                {
+                    "matcher": "^Bash$",
+                    "hooks": [{"type": "command", "command": str(hook), "timeout": 10}],
+                }
+            ],
+        },
+    }
     _write_managed(managed / "hooks.json", json.dumps(hooks, indent=2) + "\n")
     config = f'''approval_policy = "never"
 default_permissions = "switchstand-task"
@@ -390,24 +507,39 @@ exclude = ["*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "SSH_AUTH_SOCK",
 def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
     if not assignment:
         raise ValueError("initial assignment must not be empty")
-    prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
-              'Ground this assignment with work_get(api_version="1") '
-              "without a WorkId, then reconcile its current history with "
-              "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
-              "before material work. Follow next_cursor until null; if history is stale, "
-              "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Work only in this private task clone. This is ordinary "
-              "development; the exact CONTROL hook remains active.")
+    prompt = (
+        "Exact launch assignment:\n" + assignment + "\n\n"
+        'Ground this assignment with work_get(api_version="1") '
+        "without a WorkId, then reconcile its current history with "
+        'work_history(api_version="1", observed_revision=<the returned revision>) '
+        "before material work. Follow next_cursor until null; if history is stale, "
+        "repeat work_get and restart the history read. Do not resume completed or "
+        "superseded intent. Work only in this private task clone. This is ordinary "
+        "development; the exact CONTROL hook remains active."
+    )
     return [
-        "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
+        "codex",
+        "-C",
+        str(writer),
+        "-m",
+        "gpt-5.6-sol",
+        "-a",
+        "never",
         "--dangerously-bypass-hook-trust",
-        "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
-        "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
-        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
-        "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
-        "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
-        "-c", 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
-        "-c", "mcp_servers.switchstand.required=true",
+        "-c",
+        f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
+        "-c",
+        'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
+        "-c",
+        'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
+        "-c",
+        'mcp_servers.switchstand.default_tools_approval_mode="auto"',
+        "-c",
+        'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
+        "-c",
+        'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
+        "-c",
+        "mcp_servers.switchstand.required=true",
         prompt,
     ]
 
@@ -418,10 +550,17 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     control = validate_control(Path.cwd(), env)
     if _git(control, "rev-parse", "HEAD", env=env) != loaded_head:
         # Load the accepted launcher's code before using any shared services.
-        os.execv(str(control / "scripts/switchstand"),
-                 [str(control / "scripts/switchstand"), "--active", active,
-                  *(["--target-repo", str(target_repo)] if target_repo else []),
-                  "--", assignment])
+        os.execv(
+            str(control / "scripts/switchstand"),
+            [
+                str(control / "scripts/switchstand"),
+                "--active",
+                active,
+                *(["--target-repo", str(target_repo)] if target_repo else []),
+                "--",
+                assignment,
+            ],
+        )
     env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
     target = None
     if target_repo is not None:
@@ -439,13 +578,18 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)
     env["SWITCHSTAND_TASK_ID"] = str(authority.active)
-    env["CODEX_HOME"] = str(managed_codex_home(control, writer, authority.active, env, target)
-                            if target else managed_codex_home(control, writer, authority.active, env))
+    env["CODEX_HOME"] = str(
+        managed_codex_home(control, writer, authority.active, env, target)
+        if target
+        else managed_codex_home(control, writer, authority.active, env)
+    )
     for name in tuple(env):
         upper = name.upper()
-        if (any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))
-                or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
-                or name.startswith("GH_")):
+        if (
+            any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))
+            or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
+            or name.startswith("GH_")
+        ):
             env.pop(name, None)
     raise SystemExit(supervise(codex_command(control, writer, assignment), env, writer / ".git"))
 
@@ -455,6 +599,14 @@ def main() -> None:
     try:
         run(arguments.active, arguments.assignment[0], arguments.target_repo)
     except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        capture_failure(
+            Path(os.environ.get("HOME", "/nonexistent"))
+            / ".local/state/switchstand/failures/pending",
+            attempted_claim=f"launch managed Worker for {arguments.active}",
+            observed_result=f"{type(error).__name__}: {error}",
+            effect_state=EffectState.UNKNOWN,
+            evidence=("switchstand launcher stderr",),
+        )
         parser().exit(1, f"switchstand launch failed: {error}\n")
 
 

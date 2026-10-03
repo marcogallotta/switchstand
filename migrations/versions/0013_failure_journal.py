@@ -19,6 +19,7 @@ def upgrade() -> None:
         sa.Column("owner", sa.Text(), nullable=False),
         sa.Column("attempted_claim", sa.Text(), nullable=False),
         sa.Column("observed_result", sa.Text(), nullable=False),
+        sa.Column("clearing_action", sa.Text(), nullable=False),
         sa.Column("effect_state", sa.Text(), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("evidence", postgresql.JSONB(), nullable=False),
