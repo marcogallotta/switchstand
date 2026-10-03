@@ -7,18 +7,7 @@ from .contracts import (
     AppendResult,
     LaunchAuthority,
     Routing,
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStory,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTask,
-    SourceTaskRequest,
-    SourceTaskResult,
     WorkAppendRequest,
-    WorkAttachment,
-    WorkAttachmentsRequest,
-    WorkAttachmentsResult,
     WorkContext,
     WorkEvent,
     WorkEventRequest,
@@ -134,17 +123,6 @@ class ProviderStoriesPage:
     stale: bool = False
 
 
-@dataclass(frozen=True)
-class ProviderAttachment:
-    name: str
-
-
-@dataclass(frozen=True)
-class AttachmentPage:
-    attachments: tuple[ProviderAttachment, ...]
-    next_cursor: str | None
-
-
 class State(Protocol):
     async def get(self, work_id: UUID) -> Handle | None: ...
     async def get_by_provider(self, provider: str, provider_work_id: str) -> Handle | None: ...
@@ -164,9 +142,6 @@ class EventState(Protocol):
 
 class Provider(Protocol):
     async def get(self, provider_work_id: str) -> ProviderWork | None: ...
-    async def list_attachments(
-        self, provider_work_id: str, cursor: str | None, limit: int
-    ) -> AttachmentPage: ...
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None: ...
     async def append(self, provider_work_id: str, text: str) -> str | None: ...
     async def source_task(self, provider_task_id: str) -> ProviderSourceTask | None: ...
@@ -216,17 +191,6 @@ class Controller:
         )
 
     @staticmethod
-    def _source_story(story: ProviderSourceStory) -> SourceStory:
-        return SourceStory(
-            story_gid=story.story_gid,
-            task_gid=story.task_gid,
-            subtype=story.subtype,
-            text=story.text,
-            created_at=story.created_at,
-            created_by=story.created_by,
-        )
-
-    @staticmethod
     def _work_event(
         work_id: UUID, event_id: UUID, story: ProviderSourceStory,
     ) -> WorkEvent:
@@ -250,9 +214,6 @@ class Controller:
             return WorkResult(status="denied")
         return WorkResult(status="ok", item=self._item(work_id, work, handle))
 
-    def _source_provider(self) -> Provider | None:
-        return self.providers.get("asana")
-
     async def bind_work(self, provider_name: str, provider_work_id: str) -> Handle:
         provider = self.providers[provider_name]
         work = await provider.get(provider_work_id)
@@ -272,47 +233,6 @@ class Controller:
             return WorkResult(status="unknown")
         except ProviderError:
             return WorkResult(status="provider_error")
-
-    async def attachments(self, request: WorkAttachmentsRequest) -> WorkAttachmentsResult:
-        if not self.authority.can_read(request.work_id):
-            return WorkAttachmentsResult(status="denied")
-        try:
-            handle = await self.state.get(request.work_id)
-            if handle is None:
-                return WorkAttachmentsResult(status="unknown")
-            provider = self.providers.get(handle.provider)
-            if provider is None:
-                return WorkAttachmentsResult(status="provider_error")
-            before = await provider.get(handle.provider_work_id)
-            if before is None:
-                return WorkAttachmentsResult(status="unknown")
-            if not before.canonical:
-                return WorkAttachmentsResult(status="denied")
-            if before.revision != request.observed_revision:
-                return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id, revision=before.revision
-                )
-            page = await provider.list_attachments(
-                handle.provider_work_id, request.cursor, request.limit
-            )
-            after = await provider.get(handle.provider_work_id)
-            if after is None:
-                return WorkAttachmentsResult(status="unknown")
-            if not after.canonical:
-                return WorkAttachmentsResult(status="denied")
-            if after.revision != before.revision:
-                return WorkAttachmentsResult(
-                    status="stale", work_id=request.work_id, revision=after.revision
-                )
-            return WorkAttachmentsResult(
-                status="ok", work_id=request.work_id, revision=after.revision,
-                attachments=tuple(WorkAttachment(name=item.name) for item in page.attachments),
-                next_cursor=page.next_cursor,
-            )
-        except UnknownEffect:
-            return WorkAttachmentsResult(status="unknown")
-        except ProviderError:
-            return WorkAttachmentsResult(status="provider_error")
 
     async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
         if not self.authority.can_read(request.work_id):
@@ -407,101 +327,6 @@ class Controller:
             return WorkEventResult(status="unknown")
         except ProviderError:
             return WorkEventResult(status="provider_error")
-
-    async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
-        provider = self._source_provider()
-        if provider is None:
-            return SourceTaskResult(status="provider_error")
-        try:
-            task = await provider.source_task(request.task_gid)
-            if task is None:
-                return SourceTaskResult(status="unknown")
-            if not task.canonical:
-                return SourceTaskResult(status="denied")
-            return SourceTaskResult(
-                status="ok",
-                item=SourceTask(
-                    task_gid=request.task_gid,
-                    title=task.title,
-                    notes=task.notes,
-                    completed=task.completed,
-                    revision=task.revision,
-                ),
-            )
-        except UnknownEffect:
-            return SourceTaskResult(status="unknown")
-        except ProviderError:
-            return SourceTaskResult(status="provider_error")
-
-    async def source_stories(self, request: SourceStoriesRequest) -> SourceStoriesResult:
-        provider = self._source_provider()
-        if provider is None:
-            return SourceStoriesResult(status="provider_error")
-        try:
-            page = await provider.source_stories(
-                request.task_gid, request.observed_revision, request.offset, request.limit
-            )
-            if page is None:
-                return SourceStoriesResult(status="unknown")
-            if not page.canonical:
-                return SourceStoriesResult(status="denied")
-            if (page.task_gid != request.task_gid or len(page.stories) > request.limit
-                    or any(story.task_gid != request.task_gid for story in page.stories)):
-                return SourceStoriesResult(status="provider_error")
-            if page.stale or page.revision != request.observed_revision:
-                return SourceStoriesResult(
-                    status="stale", task_gid=page.task_gid, revision=page.revision
-                )
-            return SourceStoriesResult(
-                status="ok",
-                task_gid=page.task_gid,
-                revision=page.revision,
-                stories=tuple(self._source_story(story) for story in page.stories),
-                next_offset=page.next_offset,
-            )
-        except UnknownEffect:
-            return SourceStoriesResult(status="unknown")
-        except ProviderError:
-            return SourceStoriesResult(status="provider_error")
-
-    async def source_story(self, request: SourceStoryRequest) -> SourceStoryResult:
-        provider = self._source_provider()
-        if provider is None:
-            return SourceStoryResult(status="provider_error")
-        try:
-            before = await provider.source_task(request.task_gid)
-            if before is None:
-                return SourceStoryResult(status="unknown")
-            if not before.canonical:
-                return SourceStoryResult(status="denied")
-            if before.revision != request.observed_revision:
-                return SourceStoryResult(
-                    status="stale", task_gid=request.task_gid, revision=before.revision
-                )
-            story = await provider.source_story(request.task_gid, request.story_gid)
-            if story is None:
-                return SourceStoryResult(status="unknown")
-            if story.task_gid != request.task_gid or story.story_gid != request.story_gid:
-                return SourceStoryResult(status="denied")
-            after = await provider.source_task(request.task_gid)
-            if after is None:
-                return SourceStoryResult(status="unknown")
-            if not after.canonical:
-                return SourceStoryResult(status="denied")
-            if after.revision != before.revision:
-                return SourceStoryResult(
-                    status="stale", task_gid=request.task_gid, revision=after.revision
-                )
-            return SourceStoryResult(
-                status="ok",
-                task_gid=request.task_gid,
-                revision=after.revision,
-                item=self._source_story(story),
-            )
-        except UnknownEffect:
-            return SourceStoryResult(status="unknown")
-        except ProviderError:
-            return SourceStoryResult(status="provider_error")
 
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
         if request.work_id != self.authority.active_work_id:
