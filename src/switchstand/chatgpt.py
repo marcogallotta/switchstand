@@ -440,6 +440,14 @@ class ChatGPTService:
             return self.relation_gateway.guard(
                 request, "denied", "authenticated_principal_required"
             )
+        if self.canonical_work_active:
+            if self.canonical_work is None:
+                return self.relation_gateway.guard(
+                    request, "unknown", "canonical_work_unavailable", possible_send=False,
+                )
+            return await self.canonical_work.protected_relation(
+                self.admission_grants, principal, request
+            )
         return await self.relation_gateway.update(principal, request)
 
     async def reconcile_effect(self, operation_id: UUID) -> EffectRecoveryResult:

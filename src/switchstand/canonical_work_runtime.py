@@ -40,10 +40,13 @@ from .grants import (
     GuardOutcome,
     PrincipalContext,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
+    RelationReceipt,
     UpdateReceipt,
 )
 from .mutation_effect import blocked_effect_next_action
+from .relations import RelationGateway
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
@@ -398,3 +401,127 @@ class CanonicalWorkRuntime:
             return CreateGateway.guard(
                 request, "unknown", "state_or_effect_unavailable", possible_send=True
             )
+
+    async def protected_relation(
+        self, grants: GrantState, principal: PrincipalContext, request: ProtectedRelation,
+    ) -> GuardOutcome:
+        """Apply and journal one canonical parent or dependency change atomically."""
+        fingerprint = RelationGateway.fingerprint(principal, request)
+        for attempt in range(2):
+            try:
+                async with (
+                    grants.locked(principal.key) as grant,
+                    grants.engine.begin() as connection,
+                ):
+                    current = await self.works.get_locked(connection, request.work_id)
+                    exact = (await connection.execute(select(effect_intents).where(
+                        effect_intents.c.operation_id == str(request.operation_id)
+                    ))).mappings().one_or_none()
+                    if exact is not None:
+                        if (exact["principal_key"] != principal.key
+                                or exact["fingerprint"] != fingerprint):
+                            return RelationGateway.guard(
+                                request, "denied", "operation_identity_conflict"
+                            )
+                        return GuardOutcome.model_validate(exact["outcome"])
+                    if grant is None or grant.principal != principal or not grant.current():
+                        return RelationGateway.guard(request, "denied", "no_current_grant")
+                    if (not grant.can_write(request.work_id)
+                            or "work_relate" not in grant.operations):
+                        return RelationGateway.guard(
+                            request, "denied", "operation_or_work_not_granted"
+                        )
+                    if request.grant_version != grant.version:
+                        return RelationGateway.guard(
+                            request, "stale", "grant_version_changed"
+                        )
+                    qualification = grant.relation_qualification
+                    expected = "test:" if principal.assurance == "test" else "real:"
+                    if qualification is None or not qualification.startswith(expected):
+                        return RelationGateway.guard(
+                            request, "denied", "relation_not_qualified_for_this_surface"
+                        )
+                    blocked = (await connection.execute(select(effect_intents).where(
+                        (effect_intents.c.work_id == str(request.work_id))
+                        & (effect_intents.c.outcome["effect"].astext == "unknown")
+                    ).limit(1))).mappings().one_or_none()
+                    if blocked is not None:
+                        prior = GuardOutcome.model_validate(blocked["outcome"])
+                        assert prior.operation_id is not None and prior.work_id is not None
+                        return RelationGateway.guard(
+                            request, "unknown", "target_has_unresolved_effect"
+                        ).model_copy(update={
+                            "next_action": blocked_effect_next_action(prior.operation),
+                            "blocked_by": EffectBlocker(
+                                operation=prior.operation, operation_id=prior.operation_id,
+                                work_id=prior.work_id, outcome=EffectOutcomeView(
+                                    status=prior.status, reason=prior.reason,
+                                    effect=prior.effect, retry=prior.retry,
+                                ),
+                            ),
+                        })
+                    if current is None:
+                        return RelationGateway.guard(request, "denied", "work_not_bound")
+                    if request.observed_revision != canonical_revision(
+                        request.work_id, current.row_version
+                    ):
+                        return RelationGateway.guard(
+                            request, "stale", "source_revision_changed"
+                        )
+                    patch = request.patch
+                    if patch.kind not in {"parent", "dependency"}:
+                        return RelationGateway.guard(
+                            request, "denied", "invalid_database_relation"
+                        )
+                    target = patch.target_work_id
+                    if target is not None and not grant.can_read(target, explicit_target=True):
+                        return RelationGateway.guard(
+                            request, "denied", "relation_target_not_granted"
+                        )
+                    if patch.kind == "parent":
+                        await self.relations.set_parent(
+                            request.work_id, target, current.row_version,
+                            connection=connection,
+                        )
+                    else:
+                        assert target is not None
+                        await self.relations.change_dependency(
+                            request.work_id, target, add=patch.action == "add",
+                            observed_version=current.row_version, connection=connection,
+                        )
+                    receipt = RelationReceipt(
+                        operation_id=request.operation_id, principal=principal,
+                        grant_id=grant.id, grant_version=grant.version,
+                        work_id=request.work_id, provider="postgres",
+                        task_gid=str(request.work_id),
+                        observed_revision=request.observed_revision,
+                        patch=patch, qualification=qualification,
+                    )
+                    outcome = GuardOutcome(
+                        status="ok", operation="work_relate", work_id=request.work_id,
+                        operation_id=request.operation_id, reason="relation_state_converged",
+                        effect="applied", retry="none",
+                        next_action="Use the recorded receipt.", receipt=receipt,
+                    )
+                    await connection.execute(insert(effect_intents).values(
+                        operation_id=str(request.operation_id), fingerprint=fingerprint,
+                        principal_key=principal.key, work_id=str(request.work_id),
+                        grant_id=str(grant.id), grant_version=grant.version,
+                        intent={"request": request.model_dump(mode="json"),
+                                "authority": "postgres"},
+                        outcome=outcome.model_dump(mode="json", exclude_none=True),
+                    ))
+                    return outcome
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                return RelationGateway.guard(
+                    request, "denied", "invalid_database_relation"
+                )
+            except (LookupError, TypeError, ValueError, KeyError):
+                return RelationGateway.guard(request, "denied", "invalid_database_relation")
+            except SQLAlchemyError:
+                return RelationGateway.guard(
+                    request, "unknown", "state_or_effect_unavailable", possible_send=True
+                )
+        raise AssertionError("bounded retry exhausted")

@@ -126,11 +126,17 @@ class CanonicalRelationsRepository:
         )
 
     async def set_parent(
-        self, work_id: UUID, parent_work_id: UUID | None, observed_version: int,
+        self, work_id: UUID, parent_work_id: UUID | None, observed_version: int, *,
+        connection: AsyncConnection | None = None,
     ) -> int:
         if parent_work_id == work_id:
             raise ValueError("work cannot parent itself")
-        async with self.engine.begin() as connection:
+        if connection is None:
+            async with self.engine.begin() as owned:
+                return await self.set_parent(
+                    work_id, parent_work_id, observed_version, connection=owned
+                )
+        else:
             version = await _locked_version(connection, work_id, observed_version)
             await connection.execute(text(
                 "LOCK TABLE work_parents IN SHARE ROW EXCLUSIVE MODE"
@@ -165,11 +171,17 @@ class CanonicalRelationsRepository:
 
     async def change_dependency(
         self, work_id: UUID, depends_on_work_id: UUID, *, add: bool,
-        observed_version: int,
+        observed_version: int, connection: AsyncConnection | None = None,
     ) -> int:
         if depends_on_work_id == work_id:
             raise ValueError("work cannot depend on itself")
-        async with self.engine.begin() as connection:
+        if connection is None:
+            async with self.engine.begin() as owned:
+                return await self.change_dependency(
+                    work_id, depends_on_work_id, add=add,
+                    observed_version=observed_version, connection=owned,
+                )
+        else:
             version = await _locked_version(connection, work_id, observed_version)
             if await connection.scalar(select(canonical_work.c.work_id).where(
                 canonical_work.c.work_id == depends_on_work_id
@@ -179,7 +191,9 @@ class CanonicalRelationsRepository:
                 (work_dependencies.c.work_id == work_id)
                 & (work_dependencies.c.depends_on_work_id == depends_on_work_id)
             )
-            exists = await connection.scalar(select(work_dependencies.c.work_id).where(condition))
+            exists = await connection.scalar(select(
+                work_dependencies.c.work_id
+            ).where(condition))
             if bool(exists) == add:
                 return version
             if add:

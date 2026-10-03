@@ -16,6 +16,7 @@ from switchstand.canonical_relations import (
     CanonicalRelationsRepository,
     project_memberships,
     projects,
+    work_dependencies,
     work_parents,
 )
 from switchstand.canonical_work import (
@@ -39,7 +40,10 @@ from switchstand.grants import (
     CreateReceipt,
     PrincipalContext,
     ProtectedCreate,
+    ProtectedRelation,
     ProtectedUpdate,
+    RelationPatch,
+    RelationReceipt,
     ScalarPatch,
     UpdateReceipt,
     WorkGrant,
@@ -81,11 +85,14 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
     grant = WorkGrant(
         id=uuid4(), version=1, principal=principal,
         authority=LaunchAuthority(active_work_id=handle.id), scope="workspace",
-        operations=frozenset({"work_get", "work_search", "work_create", "work_update"}),
+        operations=frozenset({
+            "work_get", "work_search", "work_create", "work_update", "work_relate",
+        }),
         issuer="test", provenance="disposable PostgreSQL",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         update_qualification="test:canonical",
         create_qualification="test:canonical",
+        relation_qualification="test:canonical",
     )
     await grants.issue(grant, None)
     runtime = CanonicalWorkRuntime(works, CanonicalRelationsRepository(engine))
@@ -121,6 +128,18 @@ def create(subject: Subject, operation_id: UUID | None = None, **values: object)
         "api_version": "1", "operation_id": operation_id or uuid4(), "grant_version": 1,
         "title": "Created", "notes": "created notes", "parent_work_id": subject.work_id,
     } | values)
+
+
+def relation(
+    subject: Subject, patch: RelationPatch, operation_id: UUID | None = None,
+    observed_version: int = 1,
+) -> ProtectedRelation:
+    return ProtectedRelation(
+        api_version="1", operation_id=operation_id or uuid4(), work_id=subject.work_id,
+        grant_version=1, observed_revision=canonical_revision(
+            subject.work_id, observed_version
+        ), patch=patch,
+    )
 
 async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Subject) -> None:
     got = await subject.service.get(subject.work_id)
@@ -311,6 +330,78 @@ async def test_create_journal_failure_rolls_back_row_and_exact_retry_is_safe(
     assert unknown.effect == "unknown" and unknown.retry == "reconcile"
     assert before_retry.status == "unknown"
     assert applied.effect == "applied" and isinstance(applied.receipt, CreateReceipt)
+
+
+async def test_atomic_parent_relation_replays_and_rejects_conflict(subject: Subject) -> None:
+    target = uuid4()
+    await subject.runtime.works.create(CurrentWork(target, "Parent", False, ""))
+    request = relation(subject, RelationPatch(
+        kind="parent", action="set", target_work_id=target,
+    ))
+
+    first = await subject.service.relate(request)
+    replay = await subject.service.relate(request)
+    conflict = await subject.service.relate(request.model_copy(update={
+        "patch": RelationPatch(kind="parent", action="clear"),
+    }))
+
+    assert first == replay and first.effect == "applied"
+    assert isinstance(first.receipt, RelationReceipt)
+    assert first.receipt.provider == "postgres"
+    assert conflict.reason == "operation_identity_conflict"
+    stored = await subject.runtime.relations.get(subject.work_id)
+    assert stored.parent_work_id == target
+    assert (await subject.runtime.works.get(subject.work_id)).row_version == 2  # type: ignore[union-attr]
+
+
+async def test_atomic_dependency_relation_and_unsupported_kind(subject: Subject) -> None:
+    target = uuid4()
+    await subject.runtime.works.create(CurrentWork(target, "Dependency", False, ""))
+
+    applied = await subject.service.relate(relation(subject, RelationPatch(
+        kind="dependency", action="add", target_work_id=target,
+    )))
+    unsupported = await subject.service.relate(relation(
+        subject, RelationPatch(kind="assignee", action="set", assignee_gid="123"),
+        observed_version=2,
+    ))
+
+    assert applied.effect == "applied"
+    assert unsupported.reason == "invalid_database_relation"
+    async with subject.engine.connect() as connection:
+        assert (await connection.execute(select(
+            work_dependencies.c.work_id, work_dependencies.c.depends_on_work_id
+        ))).one() == (subject.work_id, target)
+
+
+async def test_relation_journal_failure_rolls_back_change_and_retry_is_safe(
+    subject: Subject, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = uuid4()
+    await subject.runtime.works.create(CurrentWork(target, "Parent", False, ""))
+    request = relation(subject, RelationPatch(
+        kind="parent", action="set", target_work_id=target,
+    ))
+    set_parent = subject.runtime.relations.set_parent
+
+    async def fail_after_write(
+        work_id: UUID, parent_work_id: UUID | None, observed_version: int, *,
+        connection: AsyncConnection | None = None,
+    ) -> None:
+        await set_parent(
+            work_id, parent_work_id, observed_version, connection=connection
+        )
+        raise SQLAlchemyError("injected journal boundary failure")
+
+    monkeypatch.setattr(subject.runtime.relations, "set_parent", fail_after_write)
+    unknown = await subject.service.relate(request)
+    monkeypatch.setattr(subject.runtime.relations, "set_parent", set_parent)
+    before_retry = await subject.runtime.relations.get(subject.work_id)
+    applied = await subject.service.relate(request)
+
+    assert unknown.effect == "unknown" and unknown.retry == "reconcile"
+    assert before_retry.parent_work_id is None
+    assert applied.effect == "applied" and isinstance(applied.receipt, RelationReceipt)
 
 
 async def test_stale_and_ungranted_updates_do_not_write_or_journal(subject: Subject) -> None:
