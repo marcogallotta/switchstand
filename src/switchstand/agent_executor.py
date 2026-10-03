@@ -261,6 +261,8 @@ class ManagedExecutor:
                 )
             except subprocess.TimeoutExpired:
                 receipt = self._stop_and_reconcile(manifest, receipt)
+            except KeyboardInterrupt:
+                receipt = self._stop_and_reconcile(manifest, receipt)
             except OSError as error:
                 receipt = {**receipt, "state": "not_started", "error": type(error).__name__}
             else:
@@ -370,7 +372,7 @@ class ManagedExecutor:
         terminal = values[0] in {"inactive", "failed"}
         group = values[1]
         if not group:
-            return terminal, True
+            return terminal, None
         events = Path("/sys/fs/cgroup") / group.removeprefix("/") / "cgroup.events"
         try:
             populated = next(
@@ -473,13 +475,7 @@ class ManagedExecutor:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lease_id")
-    parser.add_argument("working_directory", type=Path)
+    parser.add_argument("manifest", type=Path)
     parser.add_argument("--timeout", type=int, default=RUN_TIMEOUT_SECONDS)
-    parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    print(
-        json.dumps(
-            Executor().run(args.lease_id, args.command, args.working_directory, args.timeout)
-        )
-    )
+    print(json.dumps(ManagedExecutor().run(args.manifest, args.timeout)))

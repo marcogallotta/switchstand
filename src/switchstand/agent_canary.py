@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from switchstand.agent_broker import CLASSES, Broker, Pressure
 from switchstand.agent_executor import Executor
@@ -54,7 +54,7 @@ class Canary:
                 worker = f"{run_id}-cancel-{index}"
                 self._reserve(rehearsal, f"{run_id}-c{index}", worker, {}, pressure, admissions)
                 cancelled_children.append(worker)
-            cancelled = self.broker.cancel(rehearsal)
+            cancelled = self._release_unlaunched(rehearsal, "cancelled")
             active_roots.remove(rehearsal)
             cancelled_expected = sorted([rehearsal, *cancelled_children])
 
@@ -73,7 +73,7 @@ class Canary:
                 raise AdmissionStopped(third)
         except AdmissionStopped as stopped:
             for active in active_roots:
-                self.broker.cancel(active)
+                self._release_unlaunched(active, "cancelled")
             state = (
                 "refused_during_admission"
                 if stopped.result.get("state") == "refused"
@@ -109,7 +109,7 @@ class Canary:
             and all(item["valid"] for item in evidence)
         )
         if successful:
-            self.broker.complete(parent)
+            self._release_unlaunched(parent, "completed")
         states = self.broker.status()["leases"]
         return self._record(
             report
@@ -125,6 +125,33 @@ class Canary:
                 "lease_states": {key: value["state"] for key, value in states.items()},
             }
         )
+
+    def _release_unlaunched(
+        self, root: str, state: Literal["completed", "cancelled"]
+    ) -> list[str]:
+        leases = self.broker.status()["leases"]
+        subtree: list[str] = []
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            subtree.append(current)
+            pending.extend(
+                key for key, item in leases.items()
+                if item["parent"] == current and item["state"] == "reserved"
+            )
+        for lease_id in reversed(subtree):
+            lease = leases[lease_id]
+            result = self.broker.reconcile_reservation(
+                lease_id,
+                reservation_id=lease["reservation_id"],
+                observed_boot_id=self.broker.boot_id,
+                launch_absent=True,
+                require_expiry=False,
+                release_state=state,
+            )
+            if result["state"] != "released":
+                raise RuntimeError("canary reservation release remained ambiguous")
+        return subtree
 
     def _reserve(
         self,

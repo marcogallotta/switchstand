@@ -39,7 +39,7 @@ def test_executor_uses_exact_lease_limits_and_sandbox(
         if "--property=ActiveState" in arguments:
             return SimpleNamespace(returncode=0, stdout="inactive\n")
         if "--property=ControlGroup" in arguments:
-            return SimpleNamespace(returncode=0, stdout="\n")
+            return SimpleNamespace(returncode=0, stdout="/missing-test-cgroup\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -103,7 +103,7 @@ def test_confirmed_timeout_stops_unit_then_cancels_lease(
         if "--property=ActiveState" in arguments:
             return SimpleNamespace(returncode=0, stdout="inactive\n")
         if "--property=ControlGroup" in arguments:
-            return SimpleNamespace(returncode=0, stdout="\n")
+            return SimpleNamespace(returncode=0, stdout="/missing-test-cgroup\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -150,7 +150,7 @@ def test_launch_error_is_durable_and_not_retried(
 def test_claim_prevents_ledger_cancellation_race(tmp_path: Path) -> None:
     broker = reserve(tmp_path)
     broker.claim_execution("leaf", {"state": "starting"})
-    with pytest.raises(RuntimeError, match="confirmed stop"):
+    with pytest.raises(RuntimeError, match="identity-bound reconciliation"):
         broker.cancel("leaf")
     assert broker.status()["leases"]["leaf"]["state"] == "execution_active"
 
@@ -163,7 +163,7 @@ def test_nonzero_requires_terminal_unit_proof(
         [
             SimpleNamespace(returncode=9),
             SimpleNamespace(returncode=0, stdout="failed\n"),
-            SimpleNamespace(returncode=0, stdout="\n"),
+            SimpleNamespace(returncode=0, stdout="/missing-test-cgroup\n"),
             SimpleNamespace(returncode=0),
         ]
     )

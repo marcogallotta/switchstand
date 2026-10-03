@@ -281,13 +281,20 @@ class Broker:
         request = LeaseRequest.model_validate_json(self._read_request(parent, request_id))
         if request.parent != parent or request.request_id != request_id:
             raise ValueError("request identity does not match its inbox")
+        result = self.reserve(request, pressure)
+        self._atomic_json(self.root / "results" / f"{request_id}.json", result)
+        return result
+
+    def reserve(
+        self, request: LeaseRequest, pressure: Pressure | None = None
+    ) -> dict[str, Any]:
+        """Atomically admit a trusted request without using the untrusted spool."""
         with self._locked():
             state = self._read_state()
-            prior = state["requests"].get(request_id)
+            prior = state["requests"].get(request.request_id)
             if prior is not None:
-                if prior["parent"] != parent:
+                if prior["parent"] != request.parent:
                     raise ValueError("request identifier collision")
-                self._atomic_json(self.root / "results" / f"{request_id}.json", prior)
                 return prior
             sample = self._pressure(state, pressure)
             reserved_memory, candidate_memory = self._admission_memory(state, request)
@@ -299,52 +306,24 @@ class Broker:
             )
             if refusal:
                 result = {
-                    "request_id": request_id,
-                    "parent": parent,
+                    "request_id": request.request_id,
+                    "parent": request.parent,
                     "state": "refused",
                     "reason": refusal,
                 }
             else:
                 result = self._reserve(state, request)
-            state["requests"][request_id] = result
+            state["requests"][request.request_id] = result
             self._atomic_json(self.state_path, state)
-            self._atomic_json(self.root / "results" / f"{request_id}.json", result)
             return result
 
     def complete(self, lease_id: str) -> None:
-        with self._locked():
-            state = self._read_state()
-            lease = self._active_lease(state, lease_id)
-            if lease["state"] != "reserved":
-                raise RuntimeError("execution completion requires executor proof")
-            if any(
-                item["state"] in ACTIVE and item["parent"] == lease_id
-                for item in state["leases"].values()
-            ):
-                raise RuntimeError("lease has active children")
-            lease["state"] = "completed"
-            self._atomic_json(self.state_path, state)
+        del lease_id
+        raise RuntimeError("lease release requires identity-bound reconciliation")
 
     def cancel(self, lease_id: str) -> list[str]:
-        with self._locked():
-            state = self._read_state()
-            self._active_lease(state, lease_id)
-            subtree: list[str] = []
-            pending = [lease_id]
-            while pending:
-                current = pending.pop()
-                subtree.append(current)
-                pending.extend(
-                    key
-                    for key, item in state["leases"].items()
-                    if item["parent"] == current and item["state"] in ACTIVE
-                )
-            if any(state["leases"][item]["state"] == "execution_active" for item in subtree):
-                raise RuntimeError("active execution requires confirmed stop")
-            for item in subtree:
-                state["leases"][item]["state"] = "cancelled"
-            self._atomic_json(self.state_path, state)
-            return subtree
+        del lease_id
+        raise RuntimeError("lease release requires identity-bound reconciliation")
 
     def status(self) -> dict[str, Any]:
         with self._locked():
@@ -491,6 +470,8 @@ class Broker:
         launch_absent: bool | None,
         observed_monotonic: float | None = None,
         reservation_ttl_seconds: float = CLAIM_TTL_SECONDS,
+        require_expiry: bool = True,
+        release_state: Literal["abandoned", "completed", "cancelled"] = "abandoned",
     ) -> dict[str, str]:
         """Release an unattached reservation only after expiry and positive absence proof."""
         observed = self.clock() if observed_monotonic is None else observed_monotonic
@@ -507,13 +488,18 @@ class Broker:
             if (
                 launch_absent is not True
                 or not isinstance(reserved, (int, float))
-                or observed < reserved + reservation_ttl_seconds
+                or (require_expiry and observed < reserved + reservation_ttl_seconds)
             ):
                 return {"state": "unknown", "reason": "launch_ambiguous"}
-            lease["state"] = "abandoned"
+            if any(
+                item["state"] in ACTIVE and item["parent"] == lease_id
+                for item in state["leases"].values()
+            ):
+                return {"state": "unknown", "reason": "active_children"}
+            lease["state"] = release_state
             lease["reconciled_monotonic"] = observed
             self._atomic_json(self.state_path, state)
-            return {"state": "released", "reason": "abandoned"}
+            return {"state": "released", "reason": release_state}
 
     def finish_execution(self, lease_id: str, state_name: str) -> None:
         """Reject the legacy proof-free release path."""

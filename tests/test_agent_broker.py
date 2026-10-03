@@ -77,17 +77,18 @@ def test_hierarchy_subdivides_and_deduplicates(tmp_path: Path) -> None:
     }
 
 
-def test_parent_cannot_complete_and_cancel_is_recursive(tmp_path: Path) -> None:
+def test_proof_free_complete_and_cancel_are_rejected(tmp_path: Path) -> None:
     broker = Broker(tmp_path)
     broker.initialize(ROOT)
     parent_request(tmp_path)
     broker.ingest("root", "r1", GREEN)
     request(tmp_path, "parent", "r2", "child")
     broker.ingest("parent", "r2", GREEN)
-    with pytest.raises(RuntimeError, match="active children"):
+    with pytest.raises(RuntimeError, match="identity-bound"):
         broker.complete("parent")
-    assert set(broker.cancel("parent")) == {"parent", "child"}
-    assert {item["state"] for item in broker.status()["leases"].values()} == {"cancelled"}
+    with pytest.raises(RuntimeError, match="identity-bound"):
+        broker.cancel("parent")
+    assert {item["state"] for item in broker.status()["leases"].values()} == {"reserved"}
 
 
 def test_historical_swap_without_recent_movement_admits_light(tmp_path: Path) -> None:
