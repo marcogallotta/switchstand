@@ -25,7 +25,7 @@ Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Wor
 
 #### Coordinator handoff
 
-The launcher records the canonical repository commit at Coordinator start and injects the exact record path into developer context. Reread it after compaction and before handoff. The outgoing Coordinator must fetch and fast-forward a clean canonical `main`, then run the existing manual fresh-agent canary before transferring work; the successor must not be the first consumer of the changed launch path.
+The launcher records the canonical repository commit at Coordinator start and injects the exact record path into developer context. Reread it after compaction and before handoff. The outgoing Coordinator runs `scripts/coordinator-handoff <that-exact-start-commit-path>`. The command refuses dirty or divergent canonical `main`, fetches through the canonical remote identity (using HTTPS for GitHub SSH remotes), fast-forwards and reads back the exact revision, then launches an ephemeral read-only Codex through the materialized shim. Handoff proceeds only when that fresh Coordinator proves its injected start record and repository HEAD both equal the final commit; failures retain private evidence under `~/.local/state/switchstand/codex/handoffs`. The successor is therefore not the first consumer of the changed launch path.
 
 Keep the handoff to four fields: **Git boundary** (starting record, final commit, and range), **trigger/change**, **outstanding work**, and **flag as broken** (the newly changed behavior whose failure the successor must report).
 

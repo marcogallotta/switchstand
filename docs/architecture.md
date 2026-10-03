@@ -322,6 +322,12 @@ binary, even when the checkout is missing or broken; inside that Git common dire
 to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
 mutable checkout. The launcher exports a private `CODEX_INSTALL_DIR` before either route, so Codex's
 automatic updater maintains its otherwise-unused visible command outside the managed launcher path.
+`scripts/coordinator-handoff` is the sole guarded canonical-main update path for Coordinator
+replacement. It accepts the launch-record path injected by `codex-dispatch`, refuses dirty or
+divergent primary state, fast-forwards to the fetched remote `main`, and then uses the materialized
+shim to launch an ephemeral read-only Codex. The handoff is proven only when that fresh process
+reports the same exact commit from its injected start record and repository HEAD; failure evidence
+is retained in private durable state and never rewinds the safely advanced primary.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under
