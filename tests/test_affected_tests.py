@@ -6,7 +6,7 @@ from pathlib import Path
 
 from _pytest.capture import CaptureFixture
 
-from switchstand.affected_tests import main, plan_exact, plan_local, validate_execution_tree
+from switchstand.affected_tests import main, plan_exact, plan_local
 
 
 def git(repo: Path, *args: str) -> str:
@@ -70,7 +70,9 @@ def test_exact_plan_uses_supplied_head_tree_not_checkout(tmp_path: Path) -> None
     assert local.head.startswith(f"worktree:{head}:")
 
 
-def test_selected_test_absent_from_execution_tree_falls_back(tmp_path: Path) -> None:
+def test_selected_test_absent_from_execution_tree_falls_back(
+    tmp_path: Path, capsys: CaptureFixture[str],
+) -> None:
     repo, base = fixture_repo(tmp_path)
     write(repo, "src/switchstand/alpha.py", "VALUE = 2\n")
     head = commit(repo, "candidate")
@@ -78,13 +80,17 @@ def test_selected_test_absent_from_execution_tree_falls_back(tmp_path: Path) -> 
     (repo / "tests/test_alpha.py").unlink()
     execution_tree = commit(repo, "target deleted selected test")
 
-    plan = validate_execution_tree(repo, plan_exact(repo, base, head), execution_tree)
+    main([
+        "--repo", str(repo), "--base", base, "--head", head,
+        "--execution-tree", execution_tree, "--json",
+    ])
+    plan = json.loads(capsys.readouterr().out)
 
-    assert plan.mode == "FULL_FALLBACK"
-    assert plan.selected_tests == ("tests/test_unrelated.py",)
-    assert plan.fallback_reasons == (
-        "selected test absent from execution tree:tests/test_alpha.py",
-    )
+    assert plan["mode"] == "FULL_FALLBACK"
+    assert plan["selected_tests"] == ["tests/test_unrelated.py"]
+    assert plan["fallback_reasons"] == [
+        "selected test absent from execution tree:tests/test_alpha.py"
+    ]
 
 
 def test_changed_helper_selects_transitive_importer(tmp_path: Path) -> None:
