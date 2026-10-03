@@ -20,6 +20,16 @@ GRANT_ID = UUID("22222222-2222-4222-8222-222222222222")
 GREEN = Pressure(16_000, 12_000, 4_000, 3_900, 0, swap_activity_pages=0)
 
 
+def prove_empty_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path, "read_text",
+        lambda path, *args, **kwargs: (
+            "populated 0\n" if path.name == "cgroup.events" else original(path, *args, **kwargs)
+        ),
+    )
+
+
 def prepared(tmp_path: Path) -> tuple[Broker, Path]:
     root = tmp_path / "broker"
     broker = Broker(root)
@@ -130,6 +140,7 @@ def test_private_launch_paths_and_exact_reservation_are_required(tmp_path: Path)
 def test_managed_executor_uses_aggregate_budget_and_exact_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker, path = prepared(tmp_path)
     calls: list[list[str]] = []
 
@@ -165,6 +176,7 @@ def test_managed_executor_uses_aggregate_budget_and_exact_paths(
 def test_managed_timeout_releases_only_after_terminal_empty_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker, path = prepared(tmp_path)
 
     def run(arguments: list[str], **_: object) -> SimpleNamespace:
@@ -179,6 +191,27 @@ def test_managed_timeout_releases_only_after_terminal_empty_proof(
     monkeypatch.setattr(subprocess, "run", run)
     receipt = ManagedExecutor(broker).run(path, timeout=60)
 
+    assert receipt["state"] == "timed_out"
+    assert broker.status()["leases"]["managed-parent"]["state"] == "cancelled"
+
+
+def test_managed_signal_stops_and_reconciles_before_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prove_empty_cgroup(monkeypatch)
+    broker, path = prepared(tmp_path)
+
+    def run(arguments: list[str], **_: object) -> SimpleNamespace:
+        if arguments[0] == "systemd-run":
+            raise KeyboardInterrupt
+        if "--property=ActiveState" in arguments:
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        if "--property=ControlGroup" in arguments:
+            return SimpleNamespace(returncode=0, stdout="/test-cgroup\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    receipt = ManagedExecutor(broker).run(path, timeout=60)
     assert receipt["state"] == "timed_out"
     assert broker.status()["leases"]["managed-parent"]["state"] == "cancelled"
 
@@ -203,6 +236,15 @@ def test_managed_executor_preserves_reservation_when_runtime_is_ambiguous(
 def test_blank_control_group_is_not_empty_proof(monkeypatch: pytest.MonkeyPatch) -> None:
     def run(arguments: list[str], **_: object) -> SimpleNamespace:
         value = "inactive\n" if "--property=ActiveState" in arguments else "\n"
+        return SimpleNamespace(returncode=0, stdout=value)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert ManagedExecutor.runtime_proof("unit.service") == (True, None)
+
+
+def test_missing_cgroup_events_is_not_empty_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(arguments: list[str], **_: object) -> SimpleNamespace:
+        value = "inactive\n" if "--property=ActiveState" in arguments else "/gone\n"
         return SimpleNamespace(returncode=0, stdout=value)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -235,6 +277,69 @@ def test_managed_parent_launcher_refusal_never_prepares_or_executes(
     )
     assert result["state"] == "refused"
     assert called is False
+
+
+def test_initial_launch_obtains_bounded_swap_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = Broker(tmp_path / "broker")
+    broker.initialize(MANAGED_ROOT_BUDGET)
+    samples = iter([
+        Pressure(16_000, 12_000, 4_000, 3_900, 0, sampled_monotonic=10, pswpin=5, pswpout=7),
+        Pressure(16_000, 12_000, 4_000, 3_900, 0, sampled_monotonic=10.1,
+                 pswpin=5, pswpout=7),
+    ])
+    observed: list[Pressure] = []
+    monkeypatch.setattr(Pressure, "current", classmethod(lambda cls: next(samples)))
+    monkeypatch.setattr("switchstand.managed_launch.time.sleep", lambda delay: delay == 0.1)
+    monkeypatch.setattr(
+        broker, "reserve",
+        lambda request, pressure: observed.append(pressure) or {
+            "request_id": request.request_id, "parent": "root", "state": "refused",
+            "reason": "test",
+        },
+    )
+    result = ManagedParentLauncher(broker).run(
+        work_id=WORK_ID, grant_id=GRANT_ID, grant_version=7,
+        control=tmp_path, writer=tmp_path, codex_home=tmp_path,
+        codex_executable=Path("/bin/true"), assignment="task",
+    )
+    assert result["state"] == "refused"
+    assert observed[0].swap_activity_pages == 0
+    assert observed[0].activity_window_seconds == pytest.approx(0.1)
+
+
+def test_managed_launcher_turns_term_and_hup_into_executor_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import signal
+
+    broker = Broker(tmp_path / "broker")
+    broker.initialize(MANAGED_ROOT_BUDGET)
+    for name, mode in (("control", 0o755), ("writer", 0o700), ("home", 0o700)):
+        (tmp_path / name).mkdir(mode=mode)
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    seen: list[signal.Signals] = []
+
+    def run(_executor: ManagedExecutor, _manifest: Path) -> dict[str, str]:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                signal.raise_signal(signum)
+            except KeyboardInterrupt:
+                seen.append(signum)
+        return {"state": "completed"}
+
+    monkeypatch.setattr(ManagedExecutor, "run", run)
+    result = ManagedParentLauncher(broker).run(
+        work_id=WORK_ID, grant_id=GRANT_ID, grant_version=7,
+        control=tmp_path / "control", writer=tmp_path / "writer",
+        codex_home=tmp_path / "home", codex_executable=executable,
+        assignment="task", pressure=GREEN,
+    )
+    assert result["state"] == "completed"
+    assert seen == [signal.SIGTERM, signal.SIGHUP]
 
 
 def test_direct_trusted_reservations_are_atomic(tmp_path: Path) -> None:

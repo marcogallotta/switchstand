@@ -10,6 +10,16 @@ from switchstand.agent_executor import HOST, SANDBOX, Executor
 GREEN = Pressure(16_000, 8_000, 4_000, 0, 0)
 
 
+def prove_empty_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path, "read_text",
+        lambda path, *args, **kwargs: (
+            "populated 0\n" if path.name == "cgroup.events" else original(path, *args, **kwargs)
+        ),
+    )
+
+
 def reserve(tmp_path: Path, children: bool = False) -> Broker:
     broker = Broker(tmp_path)
     broker.initialize(Budget(4096, 6144, 512, 400, 512, 4, 1))
@@ -30,6 +40,7 @@ def reserve(tmp_path: Path, children: bool = False) -> Broker:
 def test_executor_uses_exact_lease_limits_and_sandbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker = reserve(tmp_path)
     seen: list[str] = []
 
@@ -93,6 +104,7 @@ def test_non_leaf_is_not_launched(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_confirmed_timeout_stops_unit_then_cancels_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker = reserve(tmp_path)
     calls: list[list[str]] = []
 
@@ -116,6 +128,7 @@ def test_confirmed_timeout_stops_unit_then_cancels_lease(
 def test_unconfirmed_timeout_preserves_unknown_and_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker = reserve(tmp_path)
 
     def run(arguments: list[str], **kwargs: object) -> SimpleNamespace:
@@ -158,6 +171,7 @@ def test_claim_prevents_ledger_cancellation_race(tmp_path: Path) -> None:
 def test_nonzero_requires_terminal_unit_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    prove_empty_cgroup(monkeypatch)
     broker = reserve(tmp_path)
     replies = iter(
         [

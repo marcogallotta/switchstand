@@ -382,7 +382,7 @@ class ManagedExecutor:
                 if line.startswith("populated ")
             )
         except FileNotFoundError:
-            return terminal, True
+            return terminal, None
         except OSError, IndexError, StopIteration:
             return terminal, None
         return terminal, populated == "0"

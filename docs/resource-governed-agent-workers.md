@@ -1,13 +1,12 @@
 # Resource-governed agent workers
 
-This is a default-off trial architecture, not the active worker launcher.
+Managed parent Workers now enter through this resource-governed runtime by default. The live
+systemd/cgroup qualification remains a distinct, separately authorized canary effect.
 
-- Layer 1 (current, inert): one per-user lease authority at `~/.local/state/switchstand/agent-broker` for hostile-spool validation, pressure admission, nested budgets, recursive cancellation, and durable status; workers see only their exact inbox, it never starts/signals processes, and activation remains separately authorized.
-- Layer 2 (current, inert): an opt-in host-operator transient systemd service applies each reserved leaf lease's hard cgroup-v2 limits and read-only sandbox. The worker cannot reach the Docker socket or user-manager bus. Timeout cleanup fails UNKNOWN rather than releasing a lease when systemd cannot confirm the stop.
-- Layer 3 (current, inert): an explicit canary command prepares a two-light-worker proof, a recursive ledger-cancellation rehearsal, deterministic third-worker denial, read-only output evidence, Docker-socket denial, and durable pressure/status capture. Running it is a separate activation effect: first confirm the host pressure guard is green, then authorize the live systemd proof; do not treat landing this package as activation.
+- Layer 1 (active): one per-user lease authority at `~/.local/state/switchstand/agent-broker` performs pressure admission, nested-budget accounting, atomic reservation, and durable status. Initial admission obtains a bounded second pressure sample so recent swap movement is known.
+- Layer 2 (active path, live proof pending): a sealed manifest is the executor's only production input. A transient systemd service applies the aggregate lease's cgroup-v2 limits and exact path sandbox. Timeout or signal cleanup remains `UNKNOWN` unless the exact unit is terminal and its cgroup is positively read as empty.
+- Layer 3 (qualification): the explicit canary exercises limits, recursive cancellation, excess denial, sandboxing, and durable pressure/status capture. Running it remains a separate effect and landing does not claim that NOT_RUN proof.
 
-Adoption requires that exact separately authorized canary to pass and an explicit decision assigning
-the active runtime owner. A failed, incomplete, or `UNKNOWN` proof authorizes neither partial
-reliance nor blind retry; it leaves an explicit diagnose-or-retire decision. Retirement requires
-recorded non-adoption and bounded disposal of broker state and any transient units. The repository
-architecture map owns the corresponding edit and retirement boundaries.
+The production path fails closed on pressure, identity, reservation, runtime, and cleanup ambiguity.
+Native children share the parent's aggregate cgroup but do not pass through child-count admission.
+A failed, incomplete, or `UNKNOWN` canary authorizes neither a live-proof claim nor blind retry.

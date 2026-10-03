@@ -127,22 +127,22 @@ Asana client; retained mutation owners are supplied explicitly.
 launch-bound work and its revision-checked history. Managed and ordinary MCPs reuse contracts and
 state, but their authority and inventories are intentionally not interchangeable.
 
-### Inert resource-worker trial
+### Managed resource-worker runtime
 
-`agent_broker.py`, `agent_executor.py`, `managed_launch.py`, and `agent_canary.py` are a default-off trial architecture,
-not the active worker launcher. The broker owns host-wide lease admission and durable status; the
+`context.py` routes managed parent launches through `agent_broker.py`, `managed_launch.py`, and
+`agent_executor.py`; direct managed Codex subprocess launch is not a production path. The broker
+owns host-wide lease admission and durable status; the
 executor applies a reserved lease through a sandboxed transient systemd unit; sealed prepared-parent
 manifests bind the exact WorkId, current grant, reservation, attempt, unit, private writer/home, and
 fixed headless Codex command. Admission uses available memory, PSI, recent swap movement, and an
 atomic reservation ledger. Release requires identity-bound proof that the unit is terminal and its
 cgroup absent or empty; expired unattached reservations require positive proof that no launch was
 prepared. Native children inherit the parent's aggregate cgroup but are not individually admitted.
-The canary owns
-the bounded live proof. Adoption requires that separately authorized canary to prove limits,
+The canary owns the bounded live qualification proof. Live qualification still requires that
+separately authorized canary to prove limits,
 read-only output, recursive cancellation and cleanup, pressure capture, and deterministic excess
-worker denial. A failed or incomplete proof preserves the trial for diagnosis or retirement; it
-does not authorize retries or partial reliance. The adoption-versus-retirement decision remains
-explicit and evidence-gated. See [Resource-governed agent workers](resource-governed-agent-workers.md).
+worker denial. A failed or incomplete proof does not authorize retries or a live-proof claim.
+See [Resource-governed agent workers](resource-governed-agent-workers.md).
 
 ### Development MCP
 

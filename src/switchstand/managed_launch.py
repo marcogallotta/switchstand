@@ -7,7 +7,9 @@ import hmac
 import json
 import os
 import secrets
+import signal
 import stat
+import time
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
@@ -321,6 +323,10 @@ class ManagedParentLauncher:
         else:
             if Budget(**state["root"]) != MANAGED_ROOT_BUDGET:
                 raise RuntimeError("existing broker budget does not match managed-parent policy")
+        if pressure is None:
+            first = Pressure.current()
+            time.sleep(0.1)
+            pressure = Pressure.current().with_activity(first.sample_record())
         launch_id = uuid4().hex
         request = LeaseRequest(
             request_id=f"request-{launch_id}",
@@ -355,4 +361,16 @@ class ManagedParentLauncher:
             raise
         from .agent_executor import ManagedExecutor
 
-        return ManagedExecutor(self.broker).run(manifest)
+        executor = ManagedExecutor(self.broker)
+        previous: dict[signal.Signals, Any] = {}
+
+        def interrupt(_number: int, _frame: object) -> None:
+            raise KeyboardInterrupt
+
+        try:
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                previous[signum] = signal.signal(signum, interrupt)
+            return executor.run(manifest)
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
