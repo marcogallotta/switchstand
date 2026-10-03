@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -11,6 +12,7 @@ from switchstand.launch_source import LaunchSource, LaunchSourceError, load_asan
 
 BASE = "a" * 40
 CANDIDATE = "b" * 40
+WORK_ID = UUID("11111111-1111-1111-1111-111111111111")
 NOTES = f"""SWITCHSTAND_REPOSITORY=marcogallotta/switchstand
 SWITCHSTAND_BASE_REF=refs/heads/main
 SWITCHSTAND_BASE_SHA={BASE}
@@ -60,17 +62,19 @@ def test_launch_source_main_uses_database_url_without_asana_token(
                                       "--control-sha", BASE, "123"])
     observed: list[str] = []
 
-    def fake_resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
+    def fake_resolve(
+        repo: Path, active: str, database_url: str, control_sha: str,
+    ) -> tuple[UUID, tuple[str, ...], LaunchSource]:
         assert repo == tmp_path
         assert active == "123"
         assert control_sha == BASE
         observed.append(database_url)
-        return parse_notes(NOTES)
+        return WORK_ID, ("123",), parse_notes(NOTES)
 
     monkeypatch.setattr(launch_source, "resolve", fake_resolve)
     launch_source.main()
     assert observed == ["postgresql+psycopg://canonical"]
-    assert capsys.readouterr().out == f"{BASE} {CANDIDATE}\n"
+    assert capsys.readouterr().out == f"{WORK_ID} {BASE} {CANDIDATE} 123\n"
 
 
 def test_launch_source_main_reports_missing_database_url(

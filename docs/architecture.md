@@ -288,7 +288,8 @@ development preparation, process supervision, and cleanup requests. `codex_runti
 command construction, configuration/readback, and managed runtime profile validation.
 `run.py` supplies durable run identity/currentness checks.
 
-For isolated launch, host-side `launch_source.py` reads and validates the protected source request;
+For isolated launch, host-side `launch_source.py` resolves a WorkId or legacy task reference through
+canonical PostgreSQL work and reads the protected source request from its notes;
 `candidate.py::prepare_launch_source` verifies and materializes the exact Git repository/ref before
 preflight. This is a transitional trusted-host bridge, not a provider API for agent code.
 

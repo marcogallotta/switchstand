@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+WORK_ID = "11111111-1111-1111-1111-111111111111"
+
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
@@ -143,10 +145,11 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     state_root = home / ".local" / "state" / "switchstand" / "worktrees"
     state_root.mkdir(parents=True, mode=0o700)
     state_root.chmod(0o700)
-    target = state_root / "switchstand-task-9999999999999999"
+    target = state_root / f"switchstand-task-{WORK_ID}"
     common = repo / ".git"
     control_python = repo / ".venv" / "bin" / "python"
     scripts.mkdir(parents=True)
+    (repo / "compose.state.yaml").write_text("services: {}\n")
     fake_bin.mkdir()
     (target / "scripts").mkdir(parents=True)
     control_python.parent.mkdir(parents=True)
@@ -177,6 +180,17 @@ case "$*" in
   *) exit 91 ;;
 esac
 """)
+    executable(fake_bin / "docker", """#!/bin/sh
+case "$*" in
+  *"compose "*"compose.state.yaml up -d --wait postgres"*) exit 0 ;;
+  *"compose "*"compose.state.yaml ps -q postgres"*) echo fake-postgres ;;
+  "inspect --format "*" fake-postgres")
+      [ "${FAKE_INSPECT_FAIL:-0}" = 0 ] || exit 1
+      printf '%b\\n' "${FAKE_POSTGRES_IPS-172.19.0.2}"
+      ;;
+  *) exit 92 ;;
+esac
+""")
     executable(control_python, """#!/bin/sh
 if [ "$1" = "-P" ] && [ "$2" = "-c" ]; then
   printf '%s\\n' "$*" > "$FAKE_TASK_REF_LOG"
@@ -186,12 +200,13 @@ fi
 if [ "$1" = "-P" ] && [ "$2" = "-m" ] && [ "$3" = "switchstand.launch_source" ]; then
   printf '%s\\n' "$*" > "$FAKE_SOURCE_ARGS"
   printf '%s\\n' "${ASANA_TOKEN:-}" > "$FAKE_SOURCE_TOKEN"
+  printf '%s\\n' "${DATABASE_URL:-}" > "$FAKE_SOURCE_DATABASE_URL"
   printf '%s\\n' "${PYTHONPATH:-}" > "$FAKE_SOURCE_PYTHONPATH"
   if [ "${FAKE_SOURCE_FAIL:-0}" = 1 ]; then
     echo 'launch source preparation failed: simulated exact source failure' >&2
     exit 1
   fi
-  printf '%s %s\\n' "$FAKE_ACCEPTED" "$FAKE_CANDIDATE"
+  printf '%s %s %s %s\\n' "$FAKE_WORK_ID" "$FAKE_ACCEPTED" "$FAKE_CANDIDATE" "$FAKE_LEGACY_GIDS"
   exit 0
 fi
 pwd > "$FAKE_LAUNCH_CWD"
@@ -224,6 +239,8 @@ echo "$FAKE_TARGET"
         "FAKE_CONTROL_DIRTY": "0",
         "FAKE_ACCEPTED": "a" * 40,
         "FAKE_CANDIDATE": "a" * 40,
+        "FAKE_WORK_ID": WORK_ID,
+        "FAKE_LEGACY_GIDS": "9999999999999999",
         "FAKE_TARGET_HEAD": "a" * 40,
         "FAKE_TARGET_DIRTY": "0",
         "FAKE_OBJECT_TYPE": "commit",
@@ -231,6 +248,7 @@ echo "$FAKE_TARGET"
         "FAKE_TASK_REF_LOG": str(tmp_path / "task-ref.log"),
         "FAKE_SOURCE_ARGS": str(tmp_path / "source.args"),
         "FAKE_SOURCE_TOKEN": str(tmp_path / "source.token"),
+        "FAKE_SOURCE_DATABASE_URL": str(tmp_path / "source.database-url"),
         "FAKE_SOURCE_PYTHONPATH": str(tmp_path / "source.pythonpath"),
         "FAKE_WORKTREE_LOG": str(tmp_path / "worktree.log"),
         "FAKE_WORKTREE_CWD": str(tmp_path / "worktree.cwd"),
@@ -272,7 +290,7 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     )
     assert (tmp_path / "source.args").read_text().splitlines() == [source_args]
     assert (tmp_path / "worktree.log").read_text() == (
-        f"task-9999999999999999 {'a' * 40} --resume-exact\n"
+        f"task-{WORK_ID} {'a' * 40} --resume-exact\n"
     )
     assert (tmp_path / "worktree.cwd").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "launch.cwd").read_text().strip() == str(start.parents[1])
@@ -287,7 +305,35 @@ def test_start_creates_task_writer_and_forwards_launch_arguments(tmp_path):
     assert (tmp_path / "control.root").read_text().strip() == str(start.parents[1])
     assert (tmp_path / "candidate.root").read_text().strip() == str(target)
     assert (tmp_path / "source.token").read_text() == "\n"
+    assert (tmp_path / "source.database-url").read_text() == (
+        "postgresql+psycopg://switchstand:switchstand@172.19.0.2/switchstand\n"
+    )
     assert (tmp_path / "launch.token").read_text() == "\n"
+
+
+@pytest.mark.parametrize("addresses", ["", "172.19.0.2\\n172.20.0.2"])
+def test_start_requires_exactly_one_postgres_network_address(tmp_path, addresses):
+    start, environment, _ = fixture(tmp_path)
+    environment["FAKE_POSTGRES_IPS"] = addresses
+    result = subprocess.run(
+        [start, "--active", WORK_ID, "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "exactly one reachable container network address" in result.stderr
+    assert not (tmp_path / "source.args").exists()
+
+
+def test_start_fails_closed_when_postgres_network_identity_is_missing(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    environment["FAKE_INSPECT_FAIL"] = "1"
+    result = subprocess.run(
+        [start, "--active", WORK_ID, "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "network identity could not be inspected" in result.stderr
+    assert not (tmp_path / "source.args").exists()
 
 
 @pytest.mark.parametrize(
@@ -407,13 +453,28 @@ def test_start_keeps_legacy_task_writer_intact_without_creating_second_writer(tm
     (legacy / "unfinished.txt").write_text("keep me\n")
     environment["TMPDIR"] = str(legacy.parent)
     blocked = subprocess.run(
-        [start, "--active", "9999999999999999", "--commit", "a" * 40],
+        [start, "--active", WORK_ID, "--commit", "a" * 40],
         env=environment, text=True, capture_output=True, check=False,
     )
     assert blocked.returncode == 1
     assert "legacy task writer exists" in blocked.stderr
     assert (legacy / "unfinished.txt").read_text() == "keep me\n"
     assert not (tmp_path / "launch.args").exists()
+    assert not (tmp_path / "worktree.log").exists()
+
+
+def test_start_work_id_refuses_durable_legacy_gid_writer(tmp_path):
+    start, environment, _ = fixture(tmp_path)
+    legacy = Path(environment["HOME"]) / (
+        ".local/state/switchstand/worktrees/switchstand-task-9999999999999999"
+    )
+    legacy.mkdir()
+    blocked = subprocess.run(
+        [start, "--active", WORK_ID, "--commit", "a" * 40],
+        env=environment, text=True, capture_output=True, check=False,
+    )
+    assert blocked.returncode == 1
+    assert str(legacy) in blocked.stderr
     assert not (tmp_path / "worktree.log").exists()
 
 
@@ -813,5 +874,3 @@ def test_task_writer_canonicalizes_noncanonical_state_root_before_create_and_reu
     assert reused.stdout == str(target) + "\n"
     assert run_git(target, "status", "--porcelain", "--untracked-files=all").stdout == before
     assert (target / "unfinished.txt").read_text() == "keep me\n"
-
-

@@ -9,11 +9,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import UUID
 
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
 from .session import supervise
-from .task_ref import asana_task_id
 
 
 def initial_assignment(value: str) -> str:
@@ -25,7 +25,7 @@ def initial_assignment(value: str) -> str:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Start development in a private task clone.")
     result.add_argument("--target-repo", type=Path)
-    result.add_argument("--active", required=True, help="active Asana task URL or ID")
+    result.add_argument("--active", required=True, help="active WorkId or legacy task ID/URL")
     result.add_argument(
         "assignment", nargs=1, type=initial_assignment,
         help="exact initial assignment (pass after --)",
@@ -168,6 +168,16 @@ def durable_root(env: dict[str, str]) -> Path:
     return _private_directory(Path(env["HOME"]) / ".local/state/switchstand/writers")
 
 
+def reject_legacy_writers(legacy_gids: tuple[str, ...], work_id: UUID, env: dict[str, str],
+                         target: Target | None = None) -> None:
+    for legacy in legacy_gids:
+        path = durable_root(env) / _task_name(legacy, target)
+        if legacy != str(work_id) and (path.exists() or path.is_symlink()):
+            raise ValueError(
+                f"legacy task writer exists at {path}; reconcile before WorkId relaunch"
+            )
+
+
 def _bind_git_identity(control: Path, writer: Path, env: dict[str, str]) -> None:
     # The task session cannot read the user's global Git configuration. Bind the
     # ordinary author identity into this private clone while CONTROL can still
@@ -177,10 +187,10 @@ def _bind_git_identity(control: Path, writer: Path, env: dict[str, str]) -> None
              _git(control, "config", "--get", key, env=env), env=env)
 
 
-def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str],
+def validate_writer(control: Path, writer: Path, work_id: UUID | str, env: dict[str, str],
                     target: Target | None = None) -> Path:
     writer = writer.resolve(strict=True)
-    task = asana_task_id(active)
+    task = str(work_id)
     if writer != durable_root(env) / _task_name(task, target):
         raise ValueError("writer is not the canonical private clone for this task")
     _private_directory(writer, create=False)
@@ -209,14 +219,14 @@ def validate_writer(control: Path, writer: Path, active: str, env: dict[str, str
     return writer
 
 
-def create_writer(control: Path, active: str, env: dict[str, str],
+def create_writer(control: Path, work_id: UUID | str, env: dict[str, str],
                   target: Target | None = None) -> Path:
-    task = asana_task_id(active)
+    task = str(work_id)
     root = durable_root(env)
     _task_mode(root, task, target)
     writer = root / _task_name(task, target)
     if writer.exists():
-        validated = validate_writer(control, writer, active, env, target)
+        validated = validate_writer(control, writer, work_id, env, target)
         head = _git(validated, "rev-parse", "HEAD", env=env)
         green_path = validated / ".git/switchstand-green-sha"
         green = green_path.read_text().strip()
@@ -259,7 +269,7 @@ def create_writer(control: Path, active: str, env: dict[str, str],
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-    return validate_writer(control, writer, active, env, target)
+    return validate_writer(control, writer, work_id, env, target)
 
 
 def _validate_auth(home: Path) -> Path:
@@ -305,9 +315,9 @@ def prepared_check_environment(control: Path, env: dict[str, str]) -> str:
     return str(path.resolve(strict=True))
 
 
-def managed_codex_home(control: Path, writer: Path, active: str, env: dict[str, str],
+def managed_codex_home(control: Path, writer: Path, work_id: UUID | str, env: dict[str, str],
                        target: Target | None = None) -> Path:
-    task = asana_task_id(active)
+    task = str(work_id)
     root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
     _task_mode(root, task, target)
     managed = _private_directory(root / _task_name(task, target))
@@ -417,18 +427,20 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     if target_repo is not None:
         authority, repository = provision_target(control, active, (), env)
         target = validate_target(target_repo, repository, env)
+        reject_legacy_writers(authority.legacy_task_gids, authority.active, env, target)
         runtime_root = _private_directory(Path(env["HOME"]) / ".local/state/switchstand/codex")
-        _task_mode(runtime_root, asana_task_id(active), target)
-        writer = create_writer(control, active, env, target)
+        _task_mode(runtime_root, str(authority.active), target)
+        writer = create_writer(control, authority.active, env, target)
     else:
         authority = provision(control, active, (), env)
-        writer = create_writer(control, active, env)
+        reject_legacy_writers(authority.legacy_task_gids, authority.active, env)
+        writer = create_writer(control, authority.active, env)
     env["ACTIVE_WORK_ID"] = str(authority.active)
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)
-    env["SWITCHSTAND_TASK_ID"] = asana_task_id(active)
-    env["CODEX_HOME"] = str(managed_codex_home(control, writer, active, env, target)
-                            if target else managed_codex_home(control, writer, active, env))
+    env["SWITCHSTAND_TASK_ID"] = str(authority.active)
+    env["CODEX_HOME"] = str(managed_codex_home(control, writer, authority.active, env, target)
+                            if target else managed_codex_home(control, writer, authority.active, env))
     for name in tuple(env):
         upper = name.upper()
         if (any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))

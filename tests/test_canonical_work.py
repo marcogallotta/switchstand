@@ -73,6 +73,8 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
 
     assert await repository.get(first_id) == first
     assert await repository.resolve_asana_gid("1218000000000001") == first_id
+    assert await repository.asana_gids(first_id) == ("1218000000000001",)
+    assert await repository.asana_gids(second_id) == ()
     assert await repository.resolve_asana_gid("missing") is None
     assert await launch_work(repository, "1218000000000001") == first
     assert await launch_work(repository, str(first_id)) == first

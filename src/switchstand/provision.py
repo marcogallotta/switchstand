@@ -56,6 +56,9 @@ async def run(
             await rotate_managed_grant(GrantState(engine), authority)
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
         print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
+        print("LEGACY_TASK_GIDS=" + ",".join(
+            await works.asana_gids(authority.active_work_id)
+        ))
     finally:
         await engine.dispose()
 

@@ -208,6 +208,15 @@ class CanonicalWorkRepository:
                 legacy_work_aliases.c.asana_task_gid == gid
             ))
 
+    async def asana_gids(self, work_id: UUID) -> tuple[str, ...]:
+        async with self.engine.connect() as connection:
+            rows = (await connection.scalars(select(
+                legacy_work_aliases.c.asana_task_gid
+            ).where(legacy_work_aliases.c.work_id == work_id).order_by(
+                legacy_work_aliases.c.asana_task_gid
+            ))).all()
+        return tuple(rows)
+
     async def bind_asana_gid(self, gid: str, work_id: UUID) -> None:
         if not gid:
             raise ValueError("legacy Asana task GID cannot be empty")

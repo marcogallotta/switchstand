@@ -126,16 +126,23 @@ def prepare_source(
     return source
 
 
-async def _resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
+async def _resolve(
+    repo: Path, active: str, database_url: str, control_sha: str,
+) -> tuple[UUID, tuple[str, ...], LaunchSource]:
     engine = create_async_engine(database_url)
     try:
-        work = await canonical_work(CanonicalWorkRepository(engine), active)
-        return prepare_source(repo, str(work.work_id), parse_notes(work.notes), control_sha)
+        works = CanonicalWorkRepository(engine)
+        work = await canonical_work(works, active)
+        return work.work_id, await works.asana_gids(work.work_id), prepare_source(
+            repo, str(work.work_id), parse_notes(work.notes), control_sha
+        )
     finally:
         await engine.dispose()
 
 
-def resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
+def resolve(
+    repo: Path, active: str, database_url: str, control_sha: str,
+) -> tuple[UUID, tuple[str, ...], LaunchSource]:
     return asyncio.run(_resolve(repo, active, database_url, control_sha))
 
 
@@ -150,13 +157,13 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        source = resolve(
+        work_id, legacy_gids, source = resolve(
             arguments.repo.resolve(strict=True), arguments.active,
             os.environ["DATABASE_URL"], arguments.control_sha,
         )
     except (KeyError, LaunchSourceError, OSError, subprocess.CalledProcessError) as error:
         parser().exit(1, f"launch source preparation failed: {error}\n")
-    print(source.base_sha, source.candidate_sha)
+    print(work_id, source.base_sha, source.candidate_sha, ",".join(legacy_gids) or "-")
 
 
 if __name__ == "__main__":
