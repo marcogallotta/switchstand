@@ -96,7 +96,7 @@ def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
     schema.write_text(json.dumps({
         "type": "object",
         "properties": {
-            "status": {"const": CANARY_STATUS},
+            "status": {"type": "string", "const": CANARY_STATUS},
             "start_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         },
         "required": ["status", "start_commit"],
