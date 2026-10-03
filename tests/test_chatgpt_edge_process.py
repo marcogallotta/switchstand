@@ -42,7 +42,7 @@ from switchstand.work_events import WorkEventRepository
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
-    "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap",
+    "repository_bundle_get", "repository_candidate_qualification_get",
     "work_get", "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "effect_reconcile",
@@ -190,9 +190,7 @@ async def _discover(endpoint, selected):
             assert tool.annotations is not None
             assert tool.annotations.read_only_hint is True
             assert tool.annotations.destructive_hint is False
-            assert tool.annotations.idempotent_hint is (
-                tool.name != "agent_project_bootstrap"
-            )
+            assert tool.annotations.idempotent_hint is True
             assert tool.annotations.open_world_hint is False
         observed = (await client.call_tool("work_get", {
             "api_version": "1", "work_id": str(selected.authority.active_work_id),

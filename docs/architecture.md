@@ -29,8 +29,8 @@ does not own ordinary HTTP authentication or grant issuance.
 and behavior. It includes provider-neutral work discovery, history and events; protected
 append/create/update/relation operations; registered-name `agent_message_*` messaging;
 required-result persistence; and repository bundle transport. It temporarily retains the
-Asana-specific project bootstrap and provider-effect reconciliation tool names until retirement;
-they are not part of the PostgreSQL work runtime. Provider-era effects are reconciled by the
+provider-effect reconciliation tool name until retirement; that tool is not part of the PostgreSQL
+work runtime. Provider-era effects are reconciled by the
 pre-cutover deployed application while its provider is still configured. This DB-native candidate
 fails closed on such reconciliation and is deployed only after that frozen disposition. Managed
 task-bound runtimes separately retain the WorkId-addressed `message_*` family.
@@ -89,10 +89,8 @@ Ordinary creation is parent-WorkId-only, and ordinary relation changes accept on
 dependency WorkIds; raw project, section, and assignee identifiers stay behind trusted internal
 and provider boundaries.
 Every current tool is explicitly non-destructive and bounded rather than open-world. Current tools
-are idempotent under their stable identity or transition contracts except
-`agent_project_bootstrap`: its applied provider writes can return UNKNOWN without a stable
-operation identity and must not be blindly retried. Registration rejects a new ordinary tool until
-that classification is extended.
+are idempotent under their stable identity or transition contracts. Registration rejects a new
+ordinary tool until that classification is extended.
 
 `edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
 edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
@@ -349,12 +347,6 @@ deterministic development `/24`, and the descriptor binds the exact subnet and D
 Provisioning failures are durable and bounded;
 their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
 namespaced resources. It never selects or changes production state.
-
-`durable_agent_project.py` backs the `switchstand-bootstrap-agent-project` command and the ordinary
-MCP `agent_project_bootstrap` adapter. It is a retained, explicit operator utility for creating or reconciling one marked Asana role project, its ordered
-CURRENT/WAITING/DEFERRED sections, the supplied custom fields, and a multihomed `AGENT MASTER` task.
-It performs exact preflight and post-write readback and reports ambiguous post-write state as
-UNKNOWN. It is not runtime mailbox storage, work discovery, or a general project-management API.
 
 ## Where to edit
 

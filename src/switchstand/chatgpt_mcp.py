@@ -1,5 +1,3 @@
-import asyncio
-import json
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
@@ -31,7 +29,6 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
-from .durable_agent_project import BootstrapError, run_mcp_bootstrap
 from .grants import (
     EffectRecoveryResult,
     GrantedWorkResult,
@@ -132,7 +129,6 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
-    "agent_project_bootstrap",
     "work_append",
     "work_create",
     "work_update",
@@ -148,7 +144,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_disposition",
 })
 
-ORDINARY_NON_IDEMPOTENT_TOOLS = frozenset({"agent_project_bootstrap"})
+ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
 
 
@@ -265,32 +261,6 @@ def build_ordinary_tools(
         )
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
         return result
-
-    async def agent_project_bootstrap(
-        api_version: Literal["1"], role: str, project_name: str, workspace_gid: str,
-        team_gid: str, main_project_gid: str, priority_field_gid: str,
-        work_kind_field_gid: str, currentness_field_gid: str,
-        canonical_concern_field_gid: str, apply: bool = False,
-    ) -> CallToolResult:
-        """Preview or apply the existing durable-agent Asana project bootstrap."""
-        del api_version
-        def result(value: dict[str, Any]) -> CallToolResult:
-            return CallToolResult(
-                content=[TextContent(type="text", text=json.dumps(value))],
-                structured_content=value,
-            )
-        try:
-            value = await asyncio.to_thread(
-                run_mcp_bootstrap,
-                role, project_name, workspace_gid, team_gid, main_project_gid,
-                priority_field_gid, work_kind_field_gid, currentness_field_gid,
-                canonical_concern_field_gid, apply,
-            )
-            return result(value)
-        except BootstrapError as error:
-            return CallToolResult(
-                content=[TextContent(type="text", text=str(error))], is_error=True,
-            )
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
@@ -841,7 +811,6 @@ def build_ordinary_tools(
     return (
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
-        ("agent_project_bootstrap", agent_project_bootstrap),
         ("work_get", enriched_work_get if service.outcome_state_enabled else work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),

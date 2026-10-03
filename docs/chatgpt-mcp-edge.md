@@ -13,7 +13,6 @@ availability alone is not an authenticated health check.
 The edge exposes mostly provider-neutral capabilities in semantic groups:
 
 - repository bootstrap for an ordinary ChatGPT session that has no checkout;
-- the fixed agent-project bootstrap operator utility, with preview by default;
 - work discovery, exact legacy-reference resolution, reads, history, and events;
 - grant-checked work creation, update, relation, and append operations;
 - registered-name `agent_message_*` messaging (managed task-bound runtimes separately retain
@@ -30,10 +29,8 @@ Codex session that already has the repository uses Git normally.
 The edge does not create a second authority system. It resolves the verified
 OAuth principal to the current workspace admission. Work tools apply the
 existing WorkId, grant-version, revision, operation-identity, UNKNOWN, and
-effect-readback rules. The agent-project bootstrap instead preserves the
-operator utility's narrower contract, including an operator-inspected UNKNOWN
-after a possible write. Trusted grant issuance is not an MCP tool. Provider
-credentials and grant state stay behind the service boundary.
+effect-readback rules. Trusted grant issuance is not an MCP tool. Provider credentials and grant
+state stay behind the service boundary.
 
 `effect_reconcile` is the provider-neutral recovery route for an already-prepared UNKNOWN scalar
 update only while the deployed service still has that effect's provider configured. It accepts only

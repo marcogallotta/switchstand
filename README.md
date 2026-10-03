@@ -50,7 +50,6 @@ For candidate diagnostics, `repository_candidate_qualification_get` is the prefe
 - [Development](docs/development.md): writers, checks, evidence subjects, launch, and recovery.
 - [Code quality and Code Review](docs/code-quality.md): implementation, review, qualification, and candidate/current-target rules.
 - [Work, messaging, and source compatibility](docs/source-history-feedback.md): WorkId reads, durable messages, feedback, and legacy source boundaries.
-- [Agent-project bootstrap MCP](docs/agent-project-bootstrap-mcp.md): the thin ordinary MCP adapter, its dry-run default, and its retained operator/UNKNOWN boundaries.
 - [North Star](docs/north-star.md): durable strategic direction; a guiding reference only, not an execution owner.
 - [Roadmap](docs/roadmap.md): historical 2026-09-29 planning snapshot; current status and priority come from live Switchstand work.
 - [Resource-governed agent workers](docs/resource-governed-agent-workers.md): inert broker/executor/canary trial and its evidence-gated adoption or retirement boundary.
