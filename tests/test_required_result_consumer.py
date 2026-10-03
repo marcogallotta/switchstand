@@ -8,6 +8,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from switchstand.canonical_relations import CanonicalRelationsRepository
+from switchstand.canonical_work import CanonicalWorkRepository, CurrentWork, canonical_metadata
+from switchstand.canonical_work_runtime import CanonicalWorkRuntime
 from switchstand.chatgpt import ChatGPTService, RequiredResultSaveRequest
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderError, ProviderSourceStory
@@ -32,10 +35,12 @@ async def result_engine(database_prerequisite) -> AsyncEngine:
         pytest.fail("required-result tests require the disposable switchstand_test database")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(canonical_metadata.drop_all)
         await connection.run_sync(metadata.drop_all)
         await connection.run_sync(metadata.create_all)
     yield engine
     async with engine.begin() as connection:
+        await connection.run_sync(canonical_metadata.drop_all)
         await connection.run_sync(metadata.drop_all)
     await engine.dispose()
 
@@ -110,6 +115,54 @@ async def test_save_closes_and_restart_replays_without_duplicate(
     conflict = await restarted.required_result_save(request(grant, "different result"))
     assert conflict.status == "denied"
     assert conflict.reason == "lifecycle_result_identity_conflict" and provider.revision == "r2"
+
+
+async def test_canonical_save_updates_postgres_notes_and_replays_without_provider(
+    result_engine: AsyncEngine,
+) -> None:
+    state, grants = PostgresState(result_engine), GrantState(result_engine)
+    handle = await state.bind("asana", "123")
+    works = CanonicalWorkRepository(result_engine)
+    async with result_engine.begin() as connection:
+        await connection.run_sync(canonical_metadata.create_all)
+    await works.create(CurrentWork(handle.id, "Canonical", False, "initial notes"))
+    principal = PrincipalContext(
+        issuer="required-result-test", subject=str(uuid4()),
+        client_id="local-test", assurance="test",
+    )
+    grant = WorkGrant(
+        id=uuid4(), version=1, principal=principal,
+        authority=LaunchAuthority(active_work_id=handle.id),
+        operations=frozenset({"work_get", "work_update"}),
+        issuer="fixture-operator", provenance="canonical required-result integration",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        update_qualification="test:required-result",
+    )
+    await grants.issue(grant, None)
+
+    async def resolve() -> PrincipalContext:
+        return principal
+
+    runtime = CanonicalWorkRuntime(works, CanonicalRelationsRepository(result_engine))
+    service = ChatGPTService(
+        resolve, state, grants, {},
+        required_results=RequiredResultPersistence(LifecycleRepository(result_engine)),
+        canonical_work=runtime, canonical_work_active=True,
+    )
+    action = RequiredResultSaveRequest(
+        api_version="1", work_id=handle.id, grant_version=1,
+        observed_revision=(await runtime.get(handle.id)).item.revision,  # type: ignore[union-attr]
+        text="final result",
+    )
+
+    first = await service.required_result_save(action)
+    replay = await service.required_result_save(action)
+    stored = await runtime.get(handle.id)
+
+    assert first.status == "ok" and first.effect == "applied"
+    assert replay.status == "ok" and replay.reason == "required_result_already_persisted"
+    assert stored.item is not None
+    assert stored.item.notes == "initial notes\n\n## Current required result\n\nfinal result"
 
 
 async def test_save_refuses_to_replace_notes_when_promoted_result_will_not_fit(

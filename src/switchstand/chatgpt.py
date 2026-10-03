@@ -484,7 +484,10 @@ class ChatGPTService:
             currentness = hashlib.sha256(
                 f"{principal.key}:{grant.id}:{grant.version}".encode()
             ).hexdigest()
-            destination = f"{handle.provider}:task:{handle.provider_work_id}:notes"
+            destination = (
+                f"postgres:work:{request.work_id}:notes" if self.canonical_work_active
+                else f"{handle.provider}:task:{handle.provider_work_id}:notes"
+            )
             correlation = hashlib.sha256(request.text.encode()).hexdigest()
             operation_id = uuid5(
                 REQUIRED_RESULT_NAMESPACE, f"{principal.key}:{request.work_id}:{destination}"
@@ -541,12 +544,24 @@ class ChatGPTService:
 
             effect = await self.admission_grants.exact(operation_id)
             if effect is None:
-                provider = self.providers[handle.provider]
-                current_work = await provider.get(handle.provider_work_id)
-                if current_work is None or not current_work.canonical:
-                    return self._result_guard(
-                        request, "unknown", "source_read_unavailable", operation_id
-                    )
+                if self.canonical_work_active:
+                    if self.canonical_work is None:
+                        return self._result_guard(
+                            request, "unknown", "canonical_work_unavailable", operation_id
+                        )
+                    current_result = await self.canonical_work.get(request.work_id)
+                    current_work = current_result.item
+                    if current_work is None:
+                        return self._result_guard(
+                            request, "unknown", "source_read_unavailable", operation_id
+                        )
+                else:
+                    provider = self.providers[handle.provider]
+                    current_work = await provider.get(handle.provider_work_id)
+                    if current_work is None or not current_work.canonical:
+                        return self._result_guard(
+                            request, "unknown", "source_read_unavailable", operation_id
+                        )
                 if current_work.completed:
                     return self._result_guard(request, "denied", "work_is_terminal", operation_id)
                 if current_work.revision != request.observed_revision:
@@ -612,7 +627,13 @@ class ChatGPTService:
                     request, "denied", "lifecycle_result_identity_conflict", operation_id
                 )
 
-            outcome = await self.update_gateway.update(principal, update_request)
+            if self.canonical_work_active:
+                assert self.canonical_work is not None
+                outcome = await self.canonical_work.protected_update(
+                    self.admission_grants, principal, update_request
+                )
+            else:
+                outcome = await self.update_gateway.update(principal, update_request)
             possible_send = outcome.effect != "not_sent"
             if outcome.effect == "applied" and isinstance(outcome.receipt, UpdateReceipt):
                 evidence = {
