@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 from switchstand import chatgpt_edge
 from switchstand.canonical_event_reads import CanonicalEventReader
-from switchstand.canonical_relations import CanonicalRelationsRepository
+from switchstand.canonical_relations import (
+    CanonicalRelationsRepository,
+    project_memberships,
+    projects,
+    work_parents,
+)
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -31,7 +36,9 @@ from switchstand.contracts import (
 )
 from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
+    CreateReceipt,
     PrincipalContext,
+    ProtectedCreate,
     ProtectedUpdate,
     ScalarPatch,
     UpdateReceipt,
@@ -74,10 +81,11 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
     grant = WorkGrant(
         id=uuid4(), version=1, principal=principal,
         authority=LaunchAuthority(active_work_id=handle.id), scope="workspace",
-        operations=frozenset({"work_get", "work_search", "work_update"}),
+        operations=frozenset({"work_get", "work_search", "work_create", "work_update"}),
         issuer="test", provenance="disposable PostgreSQL",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         update_qualification="test:canonical",
+        create_qualification="test:canonical",
     )
     await grants.issue(grant, None)
     runtime = CanonicalWorkRuntime(works, CanonicalRelationsRepository(engine))
@@ -106,6 +114,13 @@ def update(subject: Subject, operation_id: UUID | None = None, **patch: object) 
         grant_version=1, observed_revision=canonical_revision(subject.work_id, 1),
         patch=ScalarPatch.model_validate(patch),
     )
+
+
+def create(subject: Subject, operation_id: UUID | None = None, **values: object) -> ProtectedCreate:
+    return ProtectedCreate.model_validate({
+        "api_version": "1", "operation_id": operation_id or uuid4(), "grant_version": 1,
+        "title": "Created", "notes": "created notes", "parent_work_id": subject.work_id,
+    } | values)
 
 async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Subject) -> None:
     got = await subject.service.get(subject.work_id)
@@ -207,6 +222,95 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
     assert first.receipt.resulting_revision == canonical_revision(subject.work_id, 2)
     assert conflict.reason == "operation_identity_conflict"
     assert (await subject.runtime.get(subject.work_id)).item.title == "Changed"  # type: ignore[union-attr]
+
+
+async def test_atomic_create_replays_and_persists_parent_without_provider(
+    subject: Subject,
+) -> None:
+    request = create(subject)
+
+    first = await subject.service.create(request)
+    replay = await subject.service.create(request)
+    conflict = await subject.service.create(request.model_copy(update={"title": "Different"}))
+
+    assert first == replay and first.effect == "applied"
+    assert isinstance(first.receipt, CreateReceipt)
+    assert first.receipt.provider == "postgres" and first.receipt.task_gid == str(first.work_id)
+    assert conflict.reason == "operation_identity_conflict"
+    stored = await subject.runtime.get(first.work_id)  # type: ignore[arg-type]
+    assert stored.status == "ok" and stored.item is not None
+    assert stored.item.title == "Created" and stored.item.notes == "created notes"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(work_parents.c.parent_work_id)) == subject.work_id
+
+
+async def test_workspace_create_uses_existing_project_alias(subject: Subject) -> None:
+    project_id = uuid4()
+    async with subject.engine.begin() as connection:
+        await connection.execute(projects.insert().values(
+            project_id=project_id, asana_project_gid="999", name="Switchstand",
+        ))
+    request = create(subject, parent_work_id=None, project_gid="999")
+
+    applied = await subject.service.create(request)
+    missing = await subject.service.create(create(
+        subject, parent_work_id=None, project_gid="998",
+    ))
+
+    assert applied.effect == "applied" and applied.receipt.project_gid == "999"
+    assert missing.reason == "project_not_admitted" and missing.effect == "not_sent"
+    async with subject.engine.connect() as connection:
+        membership = (await connection.execute(select(
+            project_memberships.c.project_id, project_memberships.c.work_id
+        ))).one()
+        assert membership == (project_id, applied.work_id)
+
+
+async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:
+    principal = subject.principal.model_copy(update={
+        "subject": str(uuid4()), "assurance": "authenticated",
+    })
+    grant = subject.grant.model_copy(update={
+        "id": uuid4(), "principal": principal, "create_qualification": "real:canonical",
+    })
+    await subject.grants.issue(grant, None)
+
+    async def resolve() -> PrincipalContext:
+        return principal
+
+    service = ChatGPTService(
+        resolve, subject.service.state, subject.grants, {}, canonical_work=subject.runtime,
+        canonical_events=subject.service.canonical_events, canonical_work_active=True,
+    )
+    assert (await service.create(create(subject))).effect == "applied"
+    for version, qualification in enumerate(("test:create", "legacy:create", "garbage"), 2):
+        grant = grant.model_copy(update={
+            "id": uuid4(), "version": version, "create_qualification": qualification,
+        })
+        await subject.grants.issue(grant, version - 1)
+        denied = await service.create(create(subject, grant_version=version))
+        assert denied.reason == "create_not_qualified_for_this_surface"
+
+
+async def test_create_journal_failure_rolls_back_row_and_exact_retry_is_safe(
+    subject: Subject, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = create(subject)
+    create_locked = subject.runtime.works.create_locked
+
+    async def fail_after_write(connection: AsyncConnection, item: CurrentWork) -> None:
+        await create_locked(connection, item)
+        raise SQLAlchemyError("injected journal boundary failure")
+
+    monkeypatch.setattr(subject.runtime.works, "create_locked", fail_after_write)
+    unknown = await subject.service.create(request)
+    monkeypatch.setattr(subject.runtime.works, "create_locked", create_locked)
+    before_retry = await subject.runtime.get(unknown.work_id)  # type: ignore[arg-type]
+    applied = await subject.service.create(request)
+
+    assert unknown.effect == "unknown" and unknown.retry == "reconcile"
+    assert before_retry.status == "unknown"
+    assert applied.effect == "applied" and isinstance(applied.receipt, CreateReceipt)
 
 
 async def test_stale_and_ungranted_updates_do_not_write_or_journal(subject: Subject) -> None:

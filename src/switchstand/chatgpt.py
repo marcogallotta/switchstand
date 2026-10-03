@@ -410,6 +410,14 @@ class ChatGPTService:
         principal = await self.principal()
         if principal is None:
             return self.create_gateway.guard(request, "denied", "authenticated_principal_required")
+        if self.canonical_work_active:
+            if self.canonical_work is None:
+                return self.create_gateway.guard(
+                    request, "unknown", "canonical_work_unavailable", possible_send=False,
+                )
+            return await self.canonical_work.protected_create(
+                self.admission_grants, principal, request
+            )
         return await self.create_gateway.create(principal, request)
 
     async def update(self, request: ProtectedUpdate) -> GuardOutcome:

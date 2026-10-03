@@ -229,10 +229,15 @@ class CanonicalWorkRepository:
         if item.row_version != 1:
             raise ValueError("new canonical work must start at version 1")
         async with self.engine.begin() as connection:
-            await connection.execute(insert(canonical_work).values(
-                work_id=item.work_id, normalized_title=normalize_title(item.title),
-                row_version=1, **{name: getattr(item, name) for name in _SCALARS},
-            ))
+            await self.create_locked(connection, item)
+
+    async def create_locked(self, connection: AsyncConnection, item: CurrentWork) -> None:
+        if item.row_version != 1:
+            raise ValueError("new canonical work must start at version 1")
+        await connection.execute(insert(canonical_work).values(
+            work_id=item.work_id, normalized_title=normalize_title(item.title),
+            row_version=1, **{name: getattr(item, name) for name in _SCALARS},
+        ))
 
     async def replace(self, item: CurrentWork) -> CurrentWork:
         async with self.engine.begin() as connection:

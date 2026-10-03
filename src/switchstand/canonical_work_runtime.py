@@ -11,7 +11,13 @@ from uuid import UUID
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from .canonical_relations import CanonicalRelationsRepository, WorkRelations
+from .canonical_relations import (
+    CanonicalRelationsRepository,
+    WorkRelations,
+    project_memberships,
+    projects,
+    work_parents,
+)
 from .canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
 from .contracts import (
     Routing,
@@ -25,12 +31,15 @@ from .contracts import (
     WorkSearchResult,
     WorkUpdateRequest,
 )
+from .creates import CreateGateway
 from .grant_state import GrantState, effect_intents
 from .grants import (
+    CreateReceipt,
     EffectBlocker,
     EffectOutcomeView,
     GuardOutcome,
     PrincipalContext,
+    ProtectedCreate,
     ProtectedUpdate,
     UpdateReceipt,
 )
@@ -281,3 +290,111 @@ class CanonicalWorkRuntime:
                     request, "unknown", "state_or_effect_unavailable", possible=True
                 )
         raise AssertionError("bounded retry exhausted")
+
+    async def protected_create(
+        self, grants: GrantState, principal: PrincipalContext, request: ProtectedCreate,
+    ) -> GuardOutcome:
+        """Create and journal one canonical work item in one transaction."""
+        try:
+            work_id = CreateGateway.work_id(request.operation_id)
+            fingerprint = CreateGateway.fingerprint(principal, request)
+            for attempt in range(2):
+                try:
+                    async with (
+                        grants.locked(principal.key) as grant,
+                        grants.engine.begin() as connection,
+                    ):
+                        exact = (await connection.execute(select(effect_intents).where(
+                            effect_intents.c.operation_id == str(request.operation_id)
+                        ))).mappings().one_or_none()
+                        if exact is not None:
+                            if (exact["principal_key"] != principal.key
+                                    or exact["fingerprint"] != fingerprint):
+                                return CreateGateway.guard(
+                                    request, "denied", "operation_identity_conflict"
+                                )
+                            return GuardOutcome.model_validate(exact["outcome"])
+                        if grant is None or grant.principal != principal or not grant.current():
+                            return CreateGateway.guard(request, "denied", "no_current_grant")
+                        if "work_create" not in grant.operations:
+                            return CreateGateway.guard(request, "denied", "operation_not_granted")
+                        if request.grant_version != grant.version:
+                            return CreateGateway.guard(request, "stale", "grant_version_changed")
+                        qualification = grant.create_qualification
+                        expected_qualification = (
+                            "test:" if principal.assurance == "test" else "real:"
+                        )
+                        if (qualification is None
+                                or not qualification.startswith(expected_qualification)):
+                            return CreateGateway.guard(
+                                request, "denied", "create_not_qualified_for_this_surface"
+                            )
+                        parent = request.parent_work_id
+                        project_id = None
+                        if parent is not None:
+                            if not grant.can_write(parent):
+                                return CreateGateway.guard(
+                                    request, "denied", "parent_not_granted"
+                                )
+                            current = await self.works.get_locked(connection, parent)
+                            if current is None or current.completed:
+                                return CreateGateway.guard(
+                                    request, "denied", "parent_not_writable"
+                                )
+                        else:
+                            if grant.scope != "workspace":
+                                return CreateGateway.guard(
+                                    request, "denied", "workspace_create_required"
+                                )
+                            project_id = await connection.scalar(select(
+                                projects.c.project_id
+                            ).where(projects.c.asana_project_gid == request.project_gid))
+                            if project_id is None:
+                                return CreateGateway.guard(
+                                    request, "denied", "project_not_admitted"
+                                )
+                        await self.works.create_locked(
+                            connection, CurrentWork(work_id, request.title, False, request.notes)
+                        )
+                        if parent is not None:
+                            await connection.execute(insert(work_parents).values(
+                                child_work_id=work_id, parent_work_id=parent
+                            ))
+                        else:
+                            await connection.execute(insert(project_memberships).values(
+                                project_id=project_id, work_id=work_id, section_name=None
+                            ))
+                        receipt = CreateReceipt(
+                            operation_id=request.operation_id, principal=principal,
+                            grant_id=grant.id, grant_version=grant.version, work_id=work_id,
+                            provider="postgres", task_gid=str(work_id),
+                            parent_task_gid=None if parent is None else str(parent),
+                            project_gid=request.project_gid, title=request.title,
+                            qualification=qualification,
+                        )
+                        outcome = GuardOutcome(
+                            status="ok", operation="work_create", work_id=work_id,
+                            operation_id=request.operation_id, reason="exact_create_verified",
+                            effect="applied", retry="none",
+                            next_action="Use the recorded create receipt.", receipt=receipt,
+                        )
+                        await connection.execute(insert(effect_intents).values(
+                            operation_id=str(request.operation_id), fingerprint=fingerprint,
+                            principal_key=principal.key, work_id=str(work_id),
+                            grant_id=str(grant.id), grant_version=grant.version,
+                            intent={"request": request.model_dump(mode="json"),
+                                    "authority": "postgres"},
+                            outcome=outcome.model_dump(mode="json", exclude_none=True),
+                        ))
+                        return outcome
+                except IntegrityError:
+                    if attempt == 0:
+                        continue
+                    return CreateGateway.guard(request, "denied", "invalid_database_create")
+            raise AssertionError("bounded retry exhausted")
+        except (TypeError, ValueError, KeyError):
+            return CreateGateway.guard(request, "denied", "invalid_database_create")
+        except SQLAlchemyError:
+            return CreateGateway.guard(
+                request, "unknown", "state_or_effect_unavailable", possible_send=True
+            )
