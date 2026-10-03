@@ -11,7 +11,11 @@ import pytest
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from switchstand.cutover_cleanup import apply_cleanup, cleanup_snapshot
+from switchstand.cutover_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _receipt_matches,
+    apply_cleanup,
+    cleanup_snapshot,
+)
 from switchstand.grant_state import effect_intents
 from switchstand.grants import (
     EffectReceipt,
@@ -100,6 +104,29 @@ def applied() -> dict[str, object]:
             text="exact text", qualification="trusted_frozen_cutover_readback",
         ),
     ).model_dump(mode="json", exclude_none=True)
+
+
+def test_update_receipt_matches_legacy_serialized_null_defaults():
+    receipt = UpdateReceipt(
+        operation_id=REPLACE, principal=PRINCIPAL, grant_id=GRANT, grant_version=1,
+        work_id=WORK, provider="asana", task_gid="1218", observed_revision="v1",
+        resulting_revision="v2", patch=ScalarPatch(notes="exact notes"),
+        qualification="trusted_frozen_cutover_readback",
+    )
+    row: dict[str, object] = {
+        "intent": {
+            "provider": "asana", "task_gid": "1218",
+            "qualification": "trusted_frozen_cutover_readback",
+            "request": {
+                "observed_revision": "v1",
+                "patch": {"notes": "exact notes", "completed": None, "priority": None},
+            },
+        },
+    }
+
+    assert _receipt_matches("work_update", receipt, row)
+    with pytest.raises(ValueError, match="patch values must not be null"):
+        ScalarPatch(notes="exact notes", completed=None)
 
 
 def plan(snapshot: dict[str, object]) -> dict[str, object]:
