@@ -172,7 +172,7 @@ def main() -> None:
             arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent,
             repository=arguments.repository
         ))
-    except (KeyError, TypeError, ValueError, PermissionError, RuntimeError) as error:
+    except Exception as error:  # noqa: BLE001 - this is the final secret-redacting CLI boundary
         detail = redact_environment(str(error), dict(os.environ))
         parser().exit(1, f"provisioning failed: {detail[:4000]}\n")
 

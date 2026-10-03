@@ -447,6 +447,29 @@ def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypa
     assert not any("switchstand-provision" in command for command in calls)
 
 
+def test_state_upgrade_failure_redacts_host_secret(monkeypatch):
+    secret = "host-upgrade-secret"
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nHEAD\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            command, 17, stdout="", stderr=f"upgrade rejected {secret}\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as failed:
+        provision(
+            Path("/repo"), "123", (), {"HOME": "/home/test", "UPGRADE_SECRET": secret}
+        )
+    assert secret not in str(failed.value)
+    assert "[redacted]" in str(failed.value)
+
+
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):
     events = []
 

@@ -262,7 +262,8 @@ def provision_output(
         cwd=control, env=upgrade_env, text=True, capture_output=True, check=False,
     )
     if upgrade.returncode:
-        raise RuntimeError(upgrade.stderr.strip() or "shared state upgrade failed")
+        detail = redact_environment(upgrade.stderr.strip(), upgrade_env)
+        raise RuntimeError((detail or "shared state upgrade failed")[:4000])
     if upgrade.stdout and "; backup " in upgrade.stdout:
         # The backup path is the recovery receipt. Do not swallow it merely
         # because the automatic upgrade succeeded.

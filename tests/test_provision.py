@@ -55,6 +55,27 @@ def test_stale_schema_fails_before_provider_effect(monkeypatch):
     assert called == []
 
 
+def test_controller_boundary_redacts_unexpected_exception_with_container_secret(monkeypatch):
+    messages = []
+    secret = "controller-only-value"
+    monkeypatch.setenv("CONTROLLER_SECRET", secret)
+    monkeypatch.setattr(
+        provision, "require_current_schema",
+        lambda: (_ for _ in ()).throw(Exception(f"database exploded with {secret}")),
+    )
+    monkeypatch.setattr(provision, "parser", lambda: type("Parser", (), {
+        "parse_args": lambda self: argparse.Namespace(active="123", reference=[],
+                                                       managed_agent=True, repository=False),
+        "exit": lambda self, status, message: (
+            messages.append(message), (_ for _ in ()).throw(SystemExit(status))
+        )[1],
+    })())
+    with pytest.raises(SystemExit):
+        provision.main()
+    assert secret not in messages[0]
+    assert "[redacted]" in messages[0]
+
+
 def test_managed_controller_checks_schema_without_upgrading_it():
     compose = (Path(__file__).parents[1] / "compose.yaml").read_text()
     managed = compose.split('if [ "$${SWITCHSTAND_MANAGED:-}" != 1 ]; then', 1)[1]

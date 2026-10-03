@@ -135,9 +135,10 @@ owns host-wide lease admission and durable status; the
 executor applies a reserved lease through a sandboxed transient systemd unit; sealed prepared-parent
 manifests bind the exact WorkId, current grant, reservation, attempt, unit, private writer/home, and
 fixed headless Codex command. Admission uses available memory, PSI, recent swap movement, and an
-atomic reservation ledger. Release requires identity-bound proof that the unit is terminal and its
-cgroup absent or empty; expired unattached reservations require positive proof that no launch was
-prepared. Native children inherit the parent's aggregate cgroup but are not individually admitted.
+atomic reservation ledger. Release requires identity-bound proof that the unit is terminal and the
+exact cgroup's `cgroup.events` was positively read as `populated 0`; cgroup absence is `UNKNOWN`.
+Expired unattached reservations require positive proof that no launch was prepared. Native children
+inherit the parent's aggregate cgroup but are not individually admitted.
 The canary owns the bounded live qualification proof. Live qualification still requires that
 separately authorized canary to prove limits,
 read-only output, recursive cancellation and cleanup, pressure capture, and deterministic excess
