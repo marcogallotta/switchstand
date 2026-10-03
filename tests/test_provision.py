@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -52,6 +53,27 @@ def test_stale_schema_fails_before_provider_effect(monkeypatch):
     with pytest.raises(SystemExit):
         provision.main()
     assert called == []
+
+
+def test_controller_boundary_redacts_unexpected_exception_with_container_secret(monkeypatch):
+    messages = []
+    secret = "controller-only-value"
+    monkeypatch.setenv("CONTROLLER_SECRET", secret)
+    monkeypatch.setattr(
+        provision, "require_current_schema",
+        lambda: (_ for _ in ()).throw(Exception(f"database exploded with {secret}")),
+    )
+    monkeypatch.setattr(provision, "parser", lambda: type("Parser", (), {
+        "parse_args": lambda self: argparse.Namespace(active="123", reference=[],
+                                                       managed_agent=True, repository=False),
+        "exit": lambda self, status, message: (
+            messages.append(message), (_ for _ in ()).throw(SystemExit(status))
+        )[1],
+    })())
+    with pytest.raises(SystemExit):
+        provision.main()
+    assert secret not in messages[0]
+    assert "[redacted]" in messages[0]
 
 
 def test_managed_controller_checks_schema_without_upgrading_it():
@@ -131,6 +153,55 @@ async def test_provisioner_rejects_duplicate_canonical_work(monkeypatch):
     monkeypatch.setattr(provision, "canonical_work", lambda *_: _async_value(work))
     with pytest.raises(ValueError, match="distinct"):
         await provision.run("123", ("123",))
+
+
+async def test_exact_canonical_miss_uses_existing_grant_fallback_without_rotation(
+    monkeypatch, capsys
+):
+    work_id = UUID("00000000-0000-4000-8000-000000000001")
+    events = []
+
+    class Engine:
+        async def dispose(self):
+            events.append("dispose")
+
+    class Works:
+        def __init__(self, _engine):
+            pass
+
+        async def get(self, requested):
+            events.append(f"canonical:{requested}")
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def fallback(value, *_args):
+        events.append(f"fallback:{value}")
+        authority = provision.LaunchAuthority(active_work_id=work_id)
+        return SimpleNamespace(
+            identity=SimpleNamespace(provider_work_id="1218999999999999"),
+            grant=SimpleNamespace(authority=authority, id=UUID(int=9), version=3),
+        )
+
+    async def rotate(*_args):
+        events.append("rotated")
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused")
+    monkeypatch.setenv("ASANA_TOKEN", "credential")
+    monkeypatch.setattr(provision, "create_async_engine", lambda _: Engine())
+    monkeypatch.setattr(provision, "CanonicalWorkRepository", Works)
+    monkeypatch.setattr(provision.httpx, "AsyncClient", lambda **_: Client())
+    monkeypatch.setattr(provision, "resolve_and_admit_pre_migration_launch", fallback)
+    monkeypatch.setattr(provision, "rotate_managed_grant", rotate)
+
+    await provision.run(str(work_id), (), managed_agent=True)
+
+    assert events == [f"canonical:{work_id}", f"fallback:{work_id}", "dispose"]
+    assert f"ACTIVE_WORK_ID={work_id}" in capsys.readouterr().out
 
 
 async def _async_value(value):

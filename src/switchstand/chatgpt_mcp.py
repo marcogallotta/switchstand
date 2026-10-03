@@ -29,6 +29,7 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
+from .failure_journal import FailureJournal
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
@@ -70,9 +71,18 @@ class ActionSummaryUnavailable(ClosedModel):
     state: Literal["UNAVAILABLE"] = "UNAVAILABLE"
 
 
+class OpenFailureAction(ClosedModel):
+    attempt_id: UUID
+    clearing_action: str
+    effect_state: str
+
+
 class StatefulOrdinaryWorkResult(ClosedModel):
     """Exact ordinary work read enriched with owner-local actionable state."""
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    open_failures: tuple[OpenFailureAction, ...] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
     item: PublicWorkItem | None = None
@@ -286,10 +296,25 @@ def build_ordinary_tools(
         """Read exact work with its owner-local action summary when available."""
         result = await work_get(api_version, work_id)
         summary = None
-        if work_id is not None and result.status == "ok" and result.item is not None:
-            summary = await action_summary(work_id, result.item.revision)
+        failures = None
+        if result.status == "ok" and result.item is not None:
+            owner_work_id = result.item.id
+            summary = await action_summary(owner_work_id, result.item.revision)
+            engine = getattr(service.state, "engine", None)
+            if engine is not None:
+                try:
+                    opened = await FailureJournal(engine).open(owner=str(owner_work_id))
+                    if opened != "UNKNOWN":
+                        failures = tuple(OpenFailureAction(
+                            attempt_id=item.attempt_id,
+                            clearing_action=item.clearing_action,
+                            effect_state=item.effect_state.value,
+                        ) for item in opened)
+                except (SQLAlchemyError, KeyError, TypeError, ValueError):
+                    failures = None
         return StatefulOrdinaryWorkResult(
-            action_summary=summary, item=result.item, status=result.status, guard=result.guard,
+            action_summary=summary, open_failures=failures, item=result.item,
+            status=result.status, guard=result.guard,
         )
 
     async def work_search(

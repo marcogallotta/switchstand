@@ -11,9 +11,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
+from .failure_capture import capture_failure
+from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
-from .session import supervise
+from .managed_launch import ManagedParentLauncher
+from .pending_failures import PendingFailureRegistry, failure_queue_root
 
 
 def initial_assignment(value: str) -> str:
@@ -439,22 +442,57 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)
     env["SWITCHSTAND_TASK_ID"] = str(authority.active)
-    env["CODEX_HOME"] = str(managed_codex_home(control, writer, authority.active, env, target)
-                            if target else managed_codex_home(control, writer, authority.active, env))
+    codex_home = (managed_codex_home(control, writer, authority.active, env, target)
+                  if target else managed_codex_home(control, writer, authority.active, env))
+    env["CODEX_HOME"] = str(codex_home)
     for name in tuple(env):
         upper = name.upper()
         if (any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))
                 or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
                 or name.startswith("GH_")):
             env.pop(name, None)
-    raise SystemExit(supervise(codex_command(control, writer, assignment), env, writer / ".git"))
+    if authority.grant_id is None or authority.grant_version is None:
+        raise RuntimeError("provisioner did not return an exact managed grant")
+    executable = shutil.which("codex", path=env.get("PATH"))
+    if executable is None:
+        raise RuntimeError("Codex executable is unavailable")
+    pending = failure_queue_root(Path(env["HOME"]))
+    receipt = ManagedParentLauncher().run(
+        work_id=authority.active,
+        grant_id=authority.grant_id,
+        grant_version=authority.grant_version,
+        control=control,
+        writer=writer,
+        codex_home=codex_home,
+        codex_executable=Path(executable),
+        assignment=assignment,
+    )
+    if receipt.get("state") != "completed":
+        raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")
+    try:
+        closable, _ = PendingFailureRegistry(pending).closure_gate()
+    except (OSError, TypeError, ValueError):
+        closable = False
+    if not closable:
+        raise RuntimeError("managed launch completion has unrecorded failure evidence")
+    raise SystemExit(0)
 
 
 def main() -> None:
     arguments = parser().parse_args()
     try:
         run(arguments.active, arguments.assignment[0], arguments.target_repo)
-    except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError
+    ) as error:
+        capture_failure(
+            Path(os.environ.get("HOME", "/nonexistent"))
+            / ".local/state/switchstand/failures/pending",
+            attempted_claim=f"launch managed Worker for {arguments.active}",
+            observed_result=f"{type(error).__name__}: {error}",
+            effect_state=EffectState.UNKNOWN,
+            evidence=("switchstand launcher stderr",),
+        )
         parser().exit(1, f"switchstand launch failed: {error}\n")
 
 

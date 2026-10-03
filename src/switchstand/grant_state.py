@@ -69,6 +69,17 @@ class GrantState:
             raise ValueError("multiple current grants own the same active work")
         return matches[0] if matches else None
 
+    async def for_active_work(self, work_id: UUID) -> tuple[WorkGrant, ...]:
+        """Enumerate existing exact-work grants without issuing or rotating authority."""
+        async with self.engine.connect() as connection:
+            values = (await connection.execute(select(work_grants.c.document).where(
+                work_grants.c.document.is_not(None)
+            ))).scalars().all()
+        return tuple(
+            grant for value in values if value is not None
+            and (grant := WorkGrant.model_validate(value)).authority.active_work_id == work_id
+        )
+
     @asynccontextmanager
     async def locked_message_route(
         self, principal_key: str, sender_work_id: UUID, recipient_work_id: UUID | None,

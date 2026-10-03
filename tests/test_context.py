@@ -119,12 +119,19 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
 
     def fake_provision(repo, active, references, env):
         events.append(("provision", repo, active, references, dict(env)))
-        return Authority(ACTIVE, ())
+        return Authority(ACTIVE, (), (), UUID(int=2), 7)
 
-    def fake_supervise(command, env, temporary_parent):
-        assert temporary_parent == tmp_path / "writer/.git"
-        events.append(("codex", "codex", command, dict(env)))
-        raise RuntimeError("stop after readback")
+    class Launcher:
+        def run(self, **values):
+            events.append(("managed", values))
+            return {"state": "completed"}
+
+    class Registry:
+        def __init__(self, _root):
+            pass
+
+        def closure_gate(self):
+            return True, ()
 
     writer = tmp_path / "writer"
     writer.mkdir()
@@ -151,39 +158,24 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     )
     monkeypatch.setattr(context.subprocess, "run", fake_run)
     monkeypatch.setattr(context.shutil, "which", lambda *args, **kwargs: "/bin/true")
-    monkeypatch.setattr(context, "supervise", fake_supervise)
+    monkeypatch.setattr(context, "ManagedParentLauncher", Launcher)
+    monkeypatch.setattr(context, "PendingFailureRegistry", Registry)
 
-    with pytest.raises(RuntimeError, match="readback"):
+    with pytest.raises(SystemExit) as stopped:
         context.run("1218242783900077", "repair the launcher")
+    assert stopped.value.code == 0
 
-    assert [event[0] for event in events] == ["preflight", "provision", "writer", "codex"]
+    assert [event[0] for event in events] == ["preflight", "provision", "writer", "managed"]
     assert events[2][2] == ACTIVE
     provision_env = events[1][4]
-    codex_env = events[3][3]
-    assert codex_env["SWITCHSTAND_CHECK_UV"] == str(tmp_path / "pinned-uv")
     assert "ASANA_TOKEN" not in provision_env
-    assert "ASANA_TOKEN" not in codex_env
-    assert "REFERENCE_WORK_IDS" not in codex_env
-    assert codex_env["ACTIVE_WORK_ID"] == str(ACTIVE)
-    assert codex_env["SWITCHSTAND_TASK_ID"] == str(ACTIVE)
-    assert codex_env["SWITCHSTAND_MANAGED"] == "1"
-    command = events[3][2]
-    assert command[1:3] == ["-C", str(writer)]
-    assert command[3:7] == ["-m", "gpt-5.6-sol", "-a", "never"]
-    assert command[7] == "--dangerously-bypass-hook-trust"
-    assert 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]' in command
-    assert 'mcp_servers.switchstand.default_tools_approval_mode="auto"' in command
-    assert 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"' in command
-    assert 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"' in command
-    assert f'mcp_servers.switchstand.command="{tmp_path / "scripts" / "switchstand-context-mcp"}"' in command
-    assert str(writer / "scripts" / "switchstand-context-mcp") not in command
-    prompt = command[-1]
-    assert prompt.startswith("Exact launch assignment:\nrepair the launcher\n\n")
-    assert prompt.index('work_get(api_version="1")') < prompt.index("work_history(")
-    assert "before material work" in prompt
-    assert "Follow next_cursor until null" in prompt
-    assert "if history is stale" in prompt
-    assert "Do not resume completed or superseded intent" in prompt
+    launch = events[3][1]
+    assert launch["work_id"] == ACTIVE
+    assert launch["grant_id"] == UUID(int=2)
+    assert launch["grant_version"] == 7
+    assert launch["writer"] == writer
+    assert launch["codex_home"] == tmp_path / "codex"
+    assert launch["assignment"] == "repair the launcher"
 
 
 def test_context_work_id_launch_rejects_existing_legacy_gid_writer(monkeypatch, tmp_path):

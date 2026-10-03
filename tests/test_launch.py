@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import subprocess
@@ -253,6 +254,76 @@ def test_parse_authority_requires_exact_complete_response():
     assert parsed.legacy_task_gids == ("123",)
     with pytest.raises(ValueError):
         parse_authority(f"ACTIVE_WORK_ID={ACTIVE}\n")
+    managed = parse_authority(
+        output + f"MANAGED_GRANT_ID={UUID(int=9)}\nMANAGED_GRANT_VERSION=4\n"
+    )
+    assert managed.grant_id == UUID(int=9)
+    assert managed.grant_version == 4
+    with pytest.raises(ValueError):
+        parse_authority(output + f"MANAGED_GRANT_ID={UUID(int=9)}\n")
+
+
+def test_provision_surfaces_bounded_redacted_controller_stderr(monkeypatch):
+    secret = "host-secret"
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nmain\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command, 9, stdout="", stderr=f"provider rejected token {secret}\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as failed:
+        provision(Path("/repo"), "123", (), {"HOME": "/home/test", "ASANA_TOKEN": secret})
+    assert "provider rejected token [redacted]" in str(failed.value)
+    assert secret not in str(failed.value)
+
+
+def test_provision_replays_host_queue_and_deletes_only_exact_ack(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from switchstand.failure_journal import EffectState, FailureRecord
+    from switchstand.pending_failures import PendingFailureQueue, failure_queue_root
+
+    value = FailureRecord(
+        attempt_id=UUID(int=31), operation_id=UUID(int=32), attempted_claim="launch",
+        observed_result="failed", clearing_action="inspect", effect_state=EffectState.NOT_SENT,
+        owner="COORDINATOR", occurred_at=datetime(2026, 10, 3, tzinfo=UTC),
+    )
+    queue = PendingFailureQueue(failure_queue_root(tmp_path))
+    queue.enqueue(value)
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nmain\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        frame = json.loads(kwargs["input"])
+        ack = {
+            "attempt_id": str(value.attempt_id), "operation_id": str(value.operation_id),
+            "digest": frame["digest"],
+        }
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=("FAILURE_ACK=" + json.dumps(ack) + "\n"
+                    f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\nLEGACY_TASK_GIDS=123\n"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provision(Path("/repo"), "123", (), {"HOME": str(tmp_path)})
+    assert queue.pending() == ()
 
 
 @pytest.mark.parametrize("repository", [False, True])
@@ -374,6 +445,29 @@ def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypa
         provisioner(Path("/repo"), "123", (), {"HOME": "/home/test"})
 
     assert not any("switchstand-provision" in command for command in calls)
+
+
+def test_state_upgrade_failure_redacts_host_secret(monkeypatch):
+    secret = "host-upgrade-secret"
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nHEAD\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            command, 17, stdout="", stderr=f"upgrade rejected {secret}\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as failed:
+        provision(
+            Path("/repo"), "123", (), {"HOME": "/home/test", "UPGRADE_SECRET": secret}
+        )
+    assert secret not in str(failed.value)
+    assert "[redacted]" in str(failed.value)
 
 
 def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_path):

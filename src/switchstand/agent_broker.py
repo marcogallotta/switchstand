@@ -5,16 +5,19 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import stat
 import tempfile
-from collections.abc import Generator, Mapping
+import time
+import uuid
+from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
@@ -22,6 +25,9 @@ STATE_ROOT = Path.home() / ".local/state/switchstand/agent-broker"
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 ACTIVE = {"reserved", "execution_active"}
 FIELDS = ("memory_high_mib", "memory_max_mib", "swap_max_mib", "cpu_percent", "tasks")
+PRESSURE_MAX_AGE_SECONDS = 5.0
+SWAP_ACTIVITY_MAX_WINDOW_SECONDS = 60.0
+CLAIM_TTL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -107,6 +113,11 @@ class Pressure:
     swap_total_mib: int
     swap_used_mib: int
     memory_psi_avg10: float
+    swap_activity_pages: int | None = None
+    sampled_monotonic: float | None = None
+    activity_window_seconds: float | None = None
+    pswpin: int | None = None
+    pswpout: int | None = None
 
     @classmethod
     def current(cls) -> Pressure:
@@ -116,30 +127,134 @@ class Pressure:
             memory[key] = int(value) // 1024
         psi = Path("/proc/pressure/memory").read_text().splitlines()[0]
         avg10 = float(next(item.split("=")[1] for item in psi.split() if item.startswith("avg10=")))
+        vmstat: dict[str, int] = {}
+        for line in Path("/proc/vmstat").read_text().splitlines():
+            key, value = line.split()
+            if key in {"pswpin", "pswpout"}:
+                vmstat[key] = int(value)
+        if set(vmstat) != {"pswpin", "pswpout"}:
+            raise ValueError("missing swap activity counters")
         return cls(
             memory["MemTotal"],
             memory["MemAvailable"],
             memory["SwapTotal"],
             memory["SwapTotal"] - memory["SwapFree"],
             avg10,
+            sampled_monotonic=time.monotonic(),
+            pswpin=vmstat["pswpin"],
+            pswpout=vmstat["pswpout"],
         )
 
-    def refusal(self, worker_class: str) -> str | None:
-        if self.memory_available_mib < max(2048, self.memory_total_mib // 5):
+    def with_activity(self, previous: Mapping[str, Any] | None) -> Pressure:
+        """Derive recent swap movement from a prior sample from this broker ledger."""
+        if self.pswpin is None or self.pswpout is None or self.sampled_monotonic is None:
+            return self
+        if previous is None:
+            return self
+        try:
+            elapsed = self.sampled_monotonic - float(previous["sampled_monotonic"])
+            activity = (self.pswpin - int(previous["pswpin"])) + (
+                self.pswpout - int(previous["pswpout"])
+            )
+        except KeyError, TypeError, ValueError:
+            return self
+        if elapsed <= 0 or activity < 0:
+            return self
+        return Pressure(
+            self.memory_total_mib,
+            self.memory_available_mib,
+            self.swap_total_mib,
+            self.swap_used_mib,
+            self.memory_psi_avg10,
+            swap_activity_pages=activity,
+            sampled_monotonic=self.sampled_monotonic,
+            activity_window_seconds=elapsed,
+            pswpin=self.pswpin,
+            pswpout=self.pswpout,
+        )
+
+    def sample_record(self) -> dict[str, int | float] | None:
+        if self.pswpin is None or self.pswpout is None or self.sampled_monotonic is None:
+            return None
+        return {
+            "pswpin": self.pswpin,
+            "pswpout": self.pswpout,
+            "sampled_monotonic": self.sampled_monotonic,
+        }
+
+    def refusal(
+        self,
+        worker_class: str,
+        *,
+        reserved_memory_mib: int = 0,
+        candidate_memory_mib: int = 0,
+        now_monotonic: float | None = None,
+    ) -> str | None:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        numbers = (
+            self.memory_total_mib,
+            self.memory_available_mib,
+            self.swap_total_mib,
+            self.swap_used_mib,
+            self.memory_psi_avg10,
+            reserved_memory_mib,
+            candidate_memory_mib,
+        )
+        if any(not math.isfinite(value) or value < 0 for value in numbers):
+            return "pressure_sample_invalid"
+        sampled = self.sampled_monotonic
+        if sampled is not None and (not math.isfinite(sampled) or now < sampled):
+            return "pressure_sample_invalid"
+        if sampled is not None and now - sampled > PRESSURE_MAX_AGE_SECONDS:
+            return "pressure_sample_stale"
+        activity = self.swap_activity_pages
+        # Old explicit fixtures with no swap usage represent a fresh zero-activity sample.
+        # A real sample always carries cumulative vmstat counters and is derived by the broker.
+        if (
+            activity is None
+            and self.pswpin is None
+            and self.pswpout is None
+            and not self.swap_used_mib
+        ):
+            activity = 0
+        if activity is None:
+            if self.pswpin is None and self.pswpout is None and self.swap_used_mib:
+                # Preserve the conservative meaning of legacy injected red samples. Live
+                # admission uses vmstat deltas; an explicit zero delta admits used swap.
+                return "host_pressure"
+            return "pressure_sample_missing"
+        if type(activity) is not int or activity < 0:
+            return "pressure_sample_invalid"
+        if self.activity_window_seconds is not None:
+            if not math.isfinite(self.activity_window_seconds) or self.activity_window_seconds <= 0:
+                return "pressure_sample_invalid"
+            if self.activity_window_seconds > SWAP_ACTIVITY_MAX_WINDOW_SECONDS:
+                return "pressure_sample_stale"
+        required = (
+            max(2048, self.memory_total_mib // 5) + reserved_memory_mib + candidate_memory_mib
+        )
+        if self.memory_available_mib < required:
             return "memory_available"
-        swap = 0 if not self.swap_total_mib else 100 * self.swap_used_mib / self.swap_total_mib
-        if swap >= 50 or self.memory_psi_avg10 >= 5:
+        if activity or self.memory_psi_avg10 >= 5:
             return "host_pressure"
-        if worker_class != "light" and (swap >= 25 or self.memory_psi_avg10 >= 2):
+        if worker_class != "light" and self.memory_psi_avg10 >= 2:
             return "host_pressure_light_only"
         return None
 
 
 class Broker:
-    def __init__(self, root: Path = STATE_ROOT) -> None:
+    def __init__(
+        self,
+        root: Path = STATE_ROOT,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        boot_id: str | None = None,
+    ) -> None:
         self.root = root
         self.state_path = root / "state.json"
         self.lock_path = root / "broker.lock"
+        self.clock = clock
+        self.boot_id = boot_id or Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
     def initialize(self, budget: Budget) -> None:
         self._secure_dir(self.root)
@@ -149,7 +264,13 @@ class Broker:
         with self._locked():
             if self.state_path.exists():
                 raise RuntimeError("broker is already initialized")
-            state = {"version": 1, "root": asdict(budget), "leases": {}, "requests": {}}
+            state = {
+                "version": 2,
+                "root": asdict(budget),
+                "leases": {},
+                "requests": {},
+                "pressure_sample": None,
+            }
             self._atomic_json(self.state_path, state)
 
     def ingest(
@@ -160,63 +281,49 @@ class Broker:
         request = LeaseRequest.model_validate_json(self._read_request(parent, request_id))
         if request.parent != parent or request.request_id != request_id:
             raise ValueError("request identity does not match its inbox")
+        result = self.reserve(request, pressure)
+        self._atomic_json(self.root / "results" / f"{request_id}.json", result)
+        return result
+
+    def reserve(
+        self, request: LeaseRequest, pressure: Pressure | None = None
+    ) -> dict[str, Any]:
+        """Atomically admit a trusted request without using the untrusted spool."""
         with self._locked():
             state = self._read_state()
-            prior = state["requests"].get(request_id)
+            prior = state["requests"].get(request.request_id)
             if prior is not None:
-                if prior["parent"] != parent:
+                if prior["parent"] != request.parent:
                     raise ValueError("request identifier collision")
-                self._atomic_json(self.root / "results" / f"{request_id}.json", prior)
                 return prior
-            refusal = (pressure or Pressure.current()).refusal(request.worker_class)
+            sample = self._pressure(state, pressure)
+            reserved_memory, candidate_memory = self._admission_memory(state, request)
+            refusal = sample.refusal(
+                request.worker_class,
+                reserved_memory_mib=reserved_memory,
+                candidate_memory_mib=candidate_memory,
+                now_monotonic=self.clock(),
+            )
             if refusal:
                 result = {
-                    "request_id": request_id,
-                    "parent": parent,
+                    "request_id": request.request_id,
+                    "parent": request.parent,
                     "state": "refused",
                     "reason": refusal,
                 }
             else:
                 result = self._reserve(state, request)
-            state["requests"][request_id] = result
+            state["requests"][request.request_id] = result
             self._atomic_json(self.state_path, state)
-            self._atomic_json(self.root / "results" / f"{request_id}.json", result)
             return result
 
     def complete(self, lease_id: str) -> None:
-        with self._locked():
-            state = self._read_state()
-            lease = self._active_lease(state, lease_id)
-            if lease["state"] != "reserved":
-                raise RuntimeError("execution completion requires executor proof")
-            if any(
-                item["state"] in ACTIVE and item["parent"] == lease_id
-                for item in state["leases"].values()
-            ):
-                raise RuntimeError("lease has active children")
-            lease["state"] = "completed"
-            self._atomic_json(self.state_path, state)
+        del lease_id
+        raise RuntimeError("lease release requires identity-bound reconciliation")
 
     def cancel(self, lease_id: str) -> list[str]:
-        with self._locked():
-            state = self._read_state()
-            self._active_lease(state, lease_id)
-            subtree: list[str] = []
-            pending = [lease_id]
-            while pending:
-                current = pending.pop()
-                subtree.append(current)
-                pending.extend(
-                    key
-                    for key, item in state["leases"].items()
-                    if item["parent"] == current and item["state"] in ACTIVE
-                )
-            if any(state["leases"][item]["state"] == "execution_active" for item in subtree):
-                raise RuntimeError("active execution requires confirmed stop")
-            for item in subtree:
-                state["leases"][item]["state"] = "cancelled"
-            self._atomic_json(self.state_path, state)
-            return subtree
+        del lease_id
+        raise RuntimeError("lease release requires identity-bound reconciliation")
 
     def status(self) -> dict[str, Any]:
         with self._locked():
@@ -251,13 +358,36 @@ class Broker:
             self._atomic_json(path, receipt)
             return path
 
-    def claim_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
+    def attach_execution(
+        self,
+        lease_id: str,
+        *,
+        reservation_id: str,
+        attempt_id: str,
+        unit: str,
+        receipt: Mapping[str, Any],
+        claim_ttl_seconds: float = CLAIM_TTL_SECONDS,
+    ) -> None:
+        """Atomically bind one executor attempt and systemd unit to a reservation."""
+        if not ID.fullmatch(attempt_id) or not ID.fullmatch(unit):
+            raise ValueError("invalid attempt or unit identifier")
+        if not math.isfinite(claim_ttl_seconds) or claim_ttl_seconds <= 0:
+            raise ValueError("claim ttl must be positive")
+        for key, expected in (("attempt_id", attempt_id), ("unit", unit)):
+            if key in receipt and receipt[key] != expected:
+                raise ValueError(f"receipt {key} does not match execution claim")
         with self._locked():
             state = self._read_state()
             lease = self._active_lease(state, lease_id)
             if lease["state"] != "reserved":
                 raise RuntimeError("lease execution is already claimed")
+            if lease["reservation_id"] != reservation_id:
+                raise ValueError("reservation identity mismatch")
             lease["state"] = "execution_active"
+            lease["attempt_id"] = attempt_id
+            lease["unit"] = unit
+            lease["claim_expires_monotonic"] = self.clock() + claim_ttl_seconds
+            lease["boot_id"] = self.boot_id
             self._atomic_json(self.state_path, state)
             path = self.execution_dir(lease_id) / "status.json"
             descriptor = os.open(
@@ -270,16 +400,111 @@ class Broker:
                 os.fsync(handle.fileno())
             self._fsync_dir(path.parent)
 
-    def finish_execution(self, lease_id: str, state_name: str) -> None:
-        if state_name not in {"completed", "cancelled"}:
-            raise ValueError("invalid terminal execution state")
+    def claim_execution(self, lease_id: str, receipt: Mapping[str, Any]) -> None:
+        """Compatibility wrapper; new executors should use attach_execution explicitly."""
+        lease = self.lease(lease_id)
+        attempt_id = receipt.get("attempt_id", f"attempt-{lease_id}")
+        unit = receipt.get("unit", f"unknown-{lease_id}.service")
+        if not isinstance(attempt_id, str) or not isinstance(unit, str):
+            raise TypeError("attempt and unit identifiers must be strings")
+        self.attach_execution(
+            lease_id,
+            reservation_id=lease["reservation_id"],
+            attempt_id=attempt_id,
+            unit=unit,
+            receipt=receipt,
+        )
+
+    def reconcile_execution(
+        self,
+        lease_id: str,
+        *,
+        reservation_id: str,
+        attempt_id: str,
+        unit: str,
+        observed_boot_id: str,
+        execution_started: bool | None,
+        unit_terminal: bool | None,
+        cgroup_empty: bool | None,
+        observed_monotonic: float | None = None,
+        release_state: Literal["completed", "cancelled"] = "completed",
+    ) -> dict[str, str]:
+        """Release a crashed attempt only from positive, identity-bound runtime proof."""
+        observed = self.clock() if observed_monotonic is None else observed_monotonic
         with self._locked():
             state = self._read_state()
             lease = self._active_lease(state, lease_id)
-            if lease["state"] != "execution_active":
-                raise RuntimeError("lease has no active execution")
-            lease["state"] = state_name
+            if (
+                lease.get("reservation_id") != reservation_id
+                or lease.get("attempt_id") != attempt_id
+                or lease.get("unit") != unit
+            ):
+                raise ValueError("execution identity mismatch")
+            if observed_boot_id != lease.get("boot_id") or observed_boot_id != self.boot_id:
+                return {"state": "unknown", "reason": "boot_identity"}
+            resolved_state: str | None = None
+            if execution_started is False:
+                expires = lease.get("claim_expires_monotonic")
+                if isinstance(expires, (int, float)) and observed >= expires:
+                    resolved_state = "abandoned"
+            if resolved_state is None and unit_terminal is True and cgroup_empty is True:
+                resolved_state = release_state
+            if resolved_state is None:
+                return {"state": "unknown", "reason": "runtime_ambiguous"}
+            if any(
+                item["state"] in ACTIVE and item["parent"] == lease_id
+                for item in state["leases"].values()
+            ):
+                return {"state": "unknown", "reason": "active_children"}
+            lease["state"] = resolved_state
+            lease["reconciled_monotonic"] = observed
             self._atomic_json(self.state_path, state)
+            return {"state": "released", "reason": resolved_state}
+
+    def reconcile_reservation(
+        self,
+        lease_id: str,
+        *,
+        reservation_id: str,
+        observed_boot_id: str,
+        launch_absent: bool | None,
+        observed_monotonic: float | None = None,
+        reservation_ttl_seconds: float = CLAIM_TTL_SECONDS,
+        require_expiry: bool = True,
+        release_state: Literal["abandoned", "completed", "cancelled"] = "abandoned",
+    ) -> dict[str, str]:
+        """Release an unattached reservation only after expiry and positive absence proof."""
+        observed = self.clock() if observed_monotonic is None else observed_monotonic
+        with self._locked():
+            state = self._read_state()
+            lease = self._active_lease(state, lease_id)
+            if lease.get("reservation_id") != reservation_id:
+                raise ValueError("reservation identity mismatch")
+            if lease.get("state") != "reserved":
+                return {"state": "unknown", "reason": "execution_attached"}
+            if observed_boot_id != lease.get("boot_id") or observed_boot_id != self.boot_id:
+                return {"state": "unknown", "reason": "boot_identity"}
+            reserved = lease.get("reserved_monotonic")
+            if (
+                launch_absent is not True
+                or not isinstance(reserved, (int, float))
+                or (require_expiry and observed < reserved + reservation_ttl_seconds)
+            ):
+                return {"state": "unknown", "reason": "launch_ambiguous"}
+            if any(
+                item["state"] in ACTIVE and item["parent"] == lease_id
+                for item in state["leases"].values()
+            ):
+                return {"state": "unknown", "reason": "active_children"}
+            lease["state"] = release_state
+            lease["reconciled_monotonic"] = observed
+            self._atomic_json(self.state_path, state)
+            return {"state": "released", "reason": release_state}
+
+    def finish_execution(self, lease_id: str, state_name: str) -> None:
+        """Reject the legacy proof-free release path."""
+        del lease_id, state_name
+        raise RuntimeError("execution release requires identity-bound runtime reconciliation")
 
     def _reserve(self, state: dict[str, Any], request: LeaseRequest) -> dict[str, Any]:
         if request.worker == "root" or request.worker in state["leases"]:
@@ -305,6 +530,7 @@ class Broker:
             }
         lease = {
             "lease_id": request.worker,
+            "reservation_id": uuid.uuid4().hex,
             "request_id": request.request_id,
             "parent": request.parent,
             "worker_class": request.worker_class,
@@ -312,6 +538,10 @@ class Broker:
             "children": asdict(children),
             "total": asdict(requested),
             "state": "reserved",
+            "reserved_monotonic": self.clock(),
+            "boot_id": self.boot_id,
+            "attempt_id": None,
+            "unit": None,
         }
         state["leases"][request.worker] = lease
         self._secure_dir(self.root / "inboxes" / request.worker)
@@ -320,7 +550,33 @@ class Broker:
             "parent": request.parent,
             "state": "reserved",
             "lease_id": request.worker,
+            "reservation_id": lease["reservation_id"],
         }
+
+    def _pressure(self, state: dict[str, Any], supplied: Pressure | None) -> Pressure:
+        if supplied is not None:
+            return supplied
+        try:
+            raw = Pressure.current()
+        except OSError, ValueError, KeyError, StopIteration:
+            return Pressure(0, 0, 0, 0, math.nan)
+        pressure = raw.with_activity(state.get("pressure_sample"))
+        record = raw.sample_record()
+        if record is not None:
+            state["pressure_sample"] = record
+        return pressure
+
+    @staticmethod
+    def _admission_memory(state: dict[str, Any], request: LeaseRequest) -> tuple[int, int]:
+        reserved = sum(
+            int(item["total"]["memory_max_mib"])
+            for item in state["leases"].values()
+            if item["state"] in ACTIVE and item["parent"] == "root"
+        )
+        if request.parent != "root":
+            return reserved, 0
+        requested = CLASSES[request.worker_class].add(request.children.budget())
+        return reserved, requested.memory_max_mib
 
     def _read_request(self, parent: str, request_id: str) -> bytes:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
