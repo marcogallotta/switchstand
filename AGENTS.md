@@ -12,6 +12,14 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 - Before a consequential effect, handoff, approval, or completion claim, reread current work/grant and reconcile new direction. Verify outcomes independently, preserve STALE/DENIED/UNKNOWN/NOT_RUN/SKIP/MISSING_CAPABILITY, and never blindly retry an ambiguous effect.
 - Check authorized capabilities before declaring a blocker. Surface material disproportion early: expected versus observed cost, fastest safe smaller route, deferred guarantees, and any small causal fix. Do not ask Marco background, routine permission, or preselected-choice questions while safe assigned work remains executable.
 
+## Working with Marco
+- When Marco is talking, reply first and fast, matched to his urgency (one line when he's urgent). For an urgent command such as kill, STOP (pause) or CANCEL, do it at once and confirm in one line. No silent tool work before replying unless he asked for it; replying is not an effect, so still reread before consequential effects.
+- Read the work yourself before delegating it.
+- When subagent slots are full, launch more Workers for already-assigned WorkIds with `scripts/switchstand --active <WorkId> -- <assignment>` in a detached terminal such as tmux, instead of waiting; one task each, non-overlapping files, reporting short summaries through durable messages, not raw output. Check free memory and disk first, and run Docker/database-heavy work one at a time.
+- A lower-priority question never pauses or interrupts higher-priority work. If Marco rejects a question, the work itself is not rejected, and a stop or cancel covers only what he named.
+- Ask Marco in plain words with the outcome, exact change, consequence, size and your recommendation; send findings to the work owner first, not straight to Marco.
+- Do not end a turn while executable work remains; when a mechanism fails or hits a cap, simplify or take the next smallest route within current authority instead of stopping or asking for more; Human Input and HOLD rules still apply.
+
 ## Repository bootstrap and safety
 
 ### Live incidents
