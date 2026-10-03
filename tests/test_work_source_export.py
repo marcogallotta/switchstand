@@ -18,15 +18,39 @@ from switchstand.provider import ProviderWorkDecodeError
 from switchstand.state import metadata, work_event_handles, work_handles
 from switchstand.work_corpus import (
     capture_manifest,
+    capture_manifest_connection,
     compare_parity_exports,
     parity_manifest,
     write_manifest,
 )
-from switchstand.work_import import import_parity, target_parity
-from switchstand.work_source_export import source_parity
+from switchstand.work_import import (
+    import_parity,
+    import_parity_connection,
+    target_parity,
+    target_parity_connection,
+)
+from switchstand.work_source_export import (  # pyright: ignore[reportPrivateUsage]
+    _dependency_work_id,
+    _parent_work_id,
+    source_parity,
+    source_parity_connection,
+)
 
 PARENT, CHILD, EVENT, MISSING_EVENT = UUID(int=1), UUID(int=2), UUID(int=3), UUID(int=4)
 TOMBSTONE, TOMBSTONE_EVENT = UUID(int=5), UUID(int=6)
+
+
+def test_parent_only_omission_keeps_dependencies_fail_closed() -> None:
+    expected = {"parent": PARENT, "retired": TOMBSTONE}
+    ignored = {"retired": {"reason": "zero-membership"}}
+    assert _parent_work_id("child", "parent", expected, ignored) == PARENT
+    assert _parent_work_id("child", "retired", expected, ignored) is None
+    with pytest.raises(ValueError, match="parent is outside"):
+        _parent_work_id("child", "outside", expected, ignored)
+    with pytest.raises(ValueError, match="dependency is retired"):
+        _dependency_work_id("child", "retired", expected, ignored)
+    with pytest.raises(ValueError, match="dependency is outside"):
+        _dependency_work_id("child", "outside", expected, ignored)
 
 
 @pytest.fixture
@@ -142,9 +166,14 @@ async def test_source_export_roundtrips_every_kind_and_is_deterministic(
 ):
     provider = Source()
     source_path = tmp_path / "corpus.json"
-    await corpus(engine, provider, source_path)
+    async with engine.connect() as connection:
+        write_manifest(
+            source_path,
+            await capture_manifest_connection(connection, provider, "a" * 40),
+        )
 
-    first = await source_parity(engine, provider, source_path)
+    async with engine.connect() as connection:
+        first = await source_parity_connection(connection, provider, source_path)
     second = await source_parity(engine, provider, source_path)
     assert first == second
     rows = cast(list[dict[str, object]], first["records"])
@@ -166,8 +195,9 @@ async def test_source_export_roundtrips_every_kind_and_is_deterministic(
     imported = tmp_path / "source-parity.json"
     target = tmp_path / "target-parity.json"
     write_manifest(imported, first)
-    assert await import_parity(engine, imported) == len(rows)
-    write_manifest(target, await target_parity(engine))
+    async with engine.begin() as connection:
+        assert await import_parity_connection(connection, imported) == len(rows)
+        write_manifest(target, await target_parity_connection(connection))
     assert compare_parity_exports(imported, target).records == len(rows)
 
 
@@ -327,8 +357,12 @@ async def test_zero_membership_exports_only_identity_tombstone(
     provider.zero_membership = True
 
     provider.retired_parent = True
-    with pytest.raises(ValueError, match="parent is retired"):
-        await source_parity(engine, provider, corpus_path)
+    without_retired_parent = await source_parity(engine, provider, corpus_path)
+    assert not any(
+        row["kind"] == "parent"
+        and cast(dict[str, object], row["fields"])["child_work_id"] == str(CHILD)
+        for row in cast(list[dict[str, object]], without_retired_parent["records"])
+    )
     provider.retired_parent = False
 
     provider.current_zero_membership = True

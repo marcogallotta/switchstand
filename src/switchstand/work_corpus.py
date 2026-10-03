@@ -17,7 +17,7 @@ from uuid import UUID
 
 import httpx
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .core import ProviderError, ProviderWork
 from .discovery import ProviderSearchItem, ProviderSearchPage
@@ -206,6 +206,25 @@ async def capture_manifest(
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Capture broad admission plus every readable bound Asana work item."""
+    async with engine.connect() as connection:
+        return await capture_manifest_connection(
+            connection,
+            provider,
+            source_candidate,
+            classify_decode_errors=classify_decode_errors,
+            progress=progress,
+        )
+
+
+async def capture_manifest_connection(
+    connection: AsyncConnection,
+    provider: CorpusProvider,
+    source_candidate: str,
+    *,
+    classify_decode_errors: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Capture the corpus using an already-owned database connection."""
     if len(source_candidate) != 40 or any(c not in "0123456789abcdef" for c in source_candidate):
         raise ValueError("source candidate must be a lowercase 40-character Git SHA")
 
@@ -231,17 +250,16 @@ async def capture_manifest(
     if progress:
         progress(f"broad-scan:complete items={len(broad)}")
 
-    async with engine.connect() as connection:
-        bindings = (
-            await connection.execute(
-                select(
-                    work_handles.c.provider_work_id,
-                    work_handles.c.id,
-                )
-                .where(work_handles.c.provider == "asana")
-                .order_by(work_handles.c.provider_work_id)
+    bindings = (
+        await connection.execute(
+            select(
+                work_handles.c.provider_work_id,
+                work_handles.c.id,
             )
-        ).all()
+            .where(work_handles.c.provider == "asana")
+            .order_by(work_handles.c.provider_work_id)
+        )
+    ).all()
     bound = {provider_id: str(work_id) for provider_id, work_id in bindings}
     if len(bound) != len(bindings):
         raise ValueError("database contains duplicate Asana bindings")
