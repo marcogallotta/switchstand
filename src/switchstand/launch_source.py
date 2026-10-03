@@ -1,15 +1,16 @@
 import argparse
 import asyncio
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
-import httpx
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from .candidate import CandidateError, prepare_launch_source
-from .core import ProviderError
-from .provider import AsanaProvider
+from .canonical_work import CanonicalWorkRepository, CurrentWork
 from .task_ref import asana_task_id
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -77,16 +78,15 @@ def parse_notes(notes: str) -> LaunchSource:
     return LaunchSource(repository, base_ref, base_sha, candidate_ref, candidate_sha)
 
 
-async def _task_notes(task_id: str, token: str) -> str:
-    async with httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0",
-        headers={"Authorization": f"Bearer {token}"},
-        trust_env=False,
-    ) as client:
-        task = await AsanaProvider(client).source_task(task_id)
-    if task is None:
-        raise LaunchSourceError("exact launch task read failed")
-    return task.notes
+async def canonical_work(works: CanonicalWorkRepository, reference: str) -> CurrentWork:
+    try:
+        work_id = UUID(reference)
+    except ValueError:
+        work_id = await works.resolve_asana_gid(asana_task_id(reference))
+    work = None if work_id is None else await works.get(work_id)
+    if work is None:
+        raise LaunchSourceError("exact launch work read failed")
+    return work
 
 
 def load_asana_token(config: Path) -> str:
@@ -126,29 +126,33 @@ def prepare_source(
     return source
 
 
-def resolve(repo: Path, active: str, token: str, control_sha: str) -> LaunchSource:
-    task_id = asana_task_id(active)
+async def _resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
+    engine = create_async_engine(database_url)
     try:
-        notes = asyncio.run(_task_notes(task_id, token))
-    except (ProviderError, httpx.HTTPError):
-        raise LaunchSourceError("exact launch task read failed") from None
-    return prepare_source(repo, task_id, parse_notes(notes), control_sha)
+        work = await canonical_work(CanonicalWorkRepository(engine), active)
+        return prepare_source(repo, str(work.work_id), parse_notes(work.notes), control_sha)
+    finally:
+        await engine.dispose()
+
+
+def resolve(repo: Path, active: str, database_url: str, control_sha: str) -> LaunchSource:
+    return asyncio.run(_resolve(repo, active, database_url, control_sha))
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Resolve and prepare an exact managed launch source.")
     result.add_argument("--repo", type=Path, required=True)
     result.add_argument("--control-sha", required=True)
-    result.add_argument("active", help="exact active Asana task ID or URL")
+    result.add_argument("active", help="exact active WorkId or legacy task ID/URL")
     return result
 
 
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        token = load_asana_token(Path.home() / ".config" / "switchstand" / ".env")
         source = resolve(
-            arguments.repo.resolve(strict=True), arguments.active, token, arguments.control_sha
+            arguments.repo.resolve(strict=True), arguments.active,
+            os.environ["DATABASE_URL"], arguments.control_sha,
         )
     except (KeyError, LaunchSourceError, OSError, subprocess.CalledProcessError) as error:
         parser().exit(1, f"launch source preparation failed: {error}\n")

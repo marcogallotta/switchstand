@@ -1,9 +1,11 @@
 import argparse
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from switchstand import provision
+from switchstand.canonical_work import CurrentWork
 from switchstand.task_ref import asana_task_id
 
 
@@ -64,48 +66,65 @@ def test_development_image_contains_repository_assets_read_by_tests():
     assert (root / "compose.yaml").is_file()
 
 
-async def test_provisioner_rejects_invalid_trusted_test_project(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
-    monkeypatch.setenv("ASANA_TOKEN", "unused")
-    monkeypatch.setenv("SWITCHSTAND_TEST_PROJECT_GID", "invalid")
-    with pytest.raises(ValueError, match="invalid test project GID"):
-        await provision.run("123", ())
-
-
-@pytest.mark.parametrize("status,notes", [("denied", ""), ("ok", ""),
-    ("ok", "SWITCHSTAND_REPOSITORY=other/repo"),
-    ("ok", "SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools")])
-async def test_repository_admission_reads_current_work_before_grant(monkeypatch, capsys, status, notes):
-    from types import SimpleNamespace
-    from uuid import UUID
+@pytest.mark.parametrize("notes", ["", "SWITCHSTAND_REPOSITORY=other/repo",
+    "SWITCHSTAND_REPOSITORY=marcogallotta/ai-tools"])
+async def test_repository_admission_uses_canonical_rows_before_grant(monkeypatch, capsys, notes):
     active = UUID("00000000-0000-0000-0000-000000000001")
-    authority = SimpleNamespace(active_work_id=active, reference_work_ids=())
+    reference = UUID("00000000-0000-0000-0000-000000000002")
     events = []
-    async def admit(*args):
-        events.append("provision")
-        return authority
-    class Current:
-        def __init__(self, bound, state, providers):
-            assert bound is authority
-        async def get(self, request):
-            assert request.work_id == active and request.api_version == "1"
-            events.append("current")
-            return SimpleNamespace(status=status, item=SimpleNamespace(notes=notes))
+
+    class Engine:
+        async def dispose(self):
+            events.append("dispose")
+
+    engine = Engine()
+
+    class Works:
+        def __init__(self, value):
+            assert value is engine
+
+    async def current(_works, value):
+        events.append(f"read:{value}")
+        work_id = active if value == "123" else reference
+        return CurrentWork(work_id, value, False, notes if value == "123" else "")
+
     async def rotate(*args):
         events.append("grant")
+
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused:unused@localhost/unused")
-    monkeypatch.setenv("ASANA_TOKEN", "unused")
-    monkeypatch.delenv("SWITCHSTAND_TEST_PROJECT_GID", raising=False)
-    monkeypatch.setattr(provision, "provision_launch", admit)
-    monkeypatch.setattr(provision, "Controller", Current)
+    monkeypatch.delenv("ASANA_TOKEN", raising=False)
+    monkeypatch.setattr(provision, "create_async_engine", lambda _: engine)
+    monkeypatch.setattr(provision, "CanonicalWorkRepository", Works)
+    monkeypatch.setattr(provision, "canonical_work", current)
     monkeypatch.setattr(provision, "rotate_managed_grant", rotate)
-    valid = status == "ok" and notes.endswith("marcogallotta/ai-tools")
+    valid = notes.endswith("marcogallotta/ai-tools")
     if valid:
-        await provision.run("123", (), managed_agent=True, repository=True)
-        assert events == ["provision", "current", "grant"]
-        assert f"ACTIVE_WORK_ID={active}" in capsys.readouterr().out
+        await provision.run("123", ("456",), managed_agent=True, repository=True)
+        output = capsys.readouterr().out
+        assert f"ACTIVE_WORK_ID={active}" in output
+        assert f"REFERENCE_WORK_IDS={reference}" in output
+        assert events == ["read:123", "read:456", "grant", "dispose"]
     else:
         with pytest.raises(ValueError):
             await provision.run("123", (), managed_agent=True, repository=True)
-        assert events == ["provision", "current"]
+        assert events == ["read:123", "dispose"]
         assert "ACTIVE_WORK_ID=" not in capsys.readouterr().out
+
+
+async def test_provisioner_rejects_duplicate_canonical_work(monkeypatch):
+    work = CurrentWork(UUID("00000000-0000-0000-0000-000000000001"), "Task", False, "")
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused")
+    monkeypatch.setattr(provision, "create_async_engine", lambda _: Engine())
+    monkeypatch.setattr(provision, "CanonicalWorkRepository", lambda _: object())
+    monkeypatch.setattr(provision, "canonical_work", lambda *_: _async_value(work))
+    with pytest.raises(ValueError, match="distinct"):
+        await provision.run("123", ("123",))
+
+
+async def _async_value(value):
+    return value

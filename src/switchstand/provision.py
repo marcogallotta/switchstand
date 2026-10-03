@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import os
 
-import httpx
 from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -10,23 +9,20 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .contracts import WorkGetRequest
-from .core import Controller, ProviderError, provision_launch
+from .canonical_work import CanonicalWorkRepository
+from .contracts import LaunchAuthority
 from .grant_state import GrantState
-from .launch_source import repository_marker
+from .launch_source import canonical_work, repository_marker
 from .managed_identity import rotate_managed_grant
-from .provider import AsanaProvider
-from .state import PostgresState
-from .task_ref import asana_task_id
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Bind canonical Asana tasks to stable, opaque Switchstand WorkIds."
+        description="Resolve canonical work into one managed launch authority."
     )
-    result.add_argument("--active", required=True, help="active Asana task URL or ID")
+    result.add_argument("--active", required=True, help="active WorkId or legacy task ID/URL")
     result.add_argument(
-        "--reference", action="append", default=[], help="read-only Asana task URL or ID"
+        "--reference", action="append", default=[], help="read-only WorkId or legacy task ID/URL"
     )
     result.add_argument("--managed-agent", action="store_true")
     result.add_argument("--repository", action="store_true")
@@ -36,29 +32,23 @@ def parser() -> argparse.ArgumentParser:
 async def run(
     active: str, references: tuple[str, ...], *, managed_agent: bool = False, repository: bool = False,
 ) -> None:
-    database_url = os.environ["DATABASE_URL"]
-    token = os.environ["ASANA_TOKEN"]
-    engine = create_async_engine(database_url)
-    client = httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0",
-        trust_env=False,
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    if len(references) > 8:
+        raise ValueError("at most eight reference tasks are allowed")
+    engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
-        authority = await provision_launch(
-            PostgresState(engine),
-            "asana",
-            AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
-            asana_task_id(active),
-            tuple(asana_task_id(value) for value in references),
+        works = CanonicalWorkRepository(engine)
+        resolved = tuple(
+            [await canonical_work(works, active)]
+            + [await canonical_work(works, value) for value in references]
+        )
+        if len({work.work_id for work in resolved}) != len(resolved):
+            raise ValueError("active and reference tasks must be distinct")
+        authority = LaunchAuthority(
+            active_work_id=resolved[0].work_id,
+            reference_work_ids=tuple(work.work_id for work in resolved[1:]),
         )
         if repository:
-            current = await Controller(authority, PostgresState(engine), {
-                "asana": AsanaProvider(client, os.getenv("SWITCHSTAND_TEST_PROJECT_GID")),
-            }).get(WorkGetRequest(api_version="1", work_id=authority.active_work_id))
-            if current.status != "ok" or current.item is None:
-                raise ValueError("current work repository admission failed")
-            slug = repository_marker(current.item.notes)
+            slug = repository_marker(resolved[0].notes)
             if slug != "marcogallotta/ai-tools":
                 raise ValueError("repository is outside the prototype allowlist")
             print(f"SWITCHSTAND_REPOSITORY={slug}")
@@ -67,7 +57,6 @@ async def run(
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
         print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
     finally:
-        await client.aclose()
         await engine.dispose()
 
 
@@ -107,7 +96,7 @@ def main() -> None:
             arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent,
             repository=arguments.repository
         ))
-    except (KeyError, ValueError, PermissionError, ProviderError, RuntimeError) as error:
+    except (KeyError, ValueError, PermissionError, RuntimeError) as error:
         parser().exit(1, f"provisioning failed: {error}\n")
 
 
