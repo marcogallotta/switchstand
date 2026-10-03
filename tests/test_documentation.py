@@ -13,6 +13,7 @@ REQUIRED_ENTRY_POINTS = (
     "docs/north-star.md",
     "docs/roadmap.md",
     "docs/research-sources.md",
+    "docs/root-cause-analysis.md",
 )
 INLINE_DESTINATION = re.compile(r"!?\[[^]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))")
 
@@ -87,3 +88,56 @@ def test_agents_coordination_contract_is_discoverable():
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+
+def test_root_cause_analysis_contract_and_entry_links_are_discoverable():
+    procedure = (ROOT / "docs/root-cause-analysis.md").read_text()
+    required_contract = (
+        "RCA-PROCEDURE-V1",
+        "## Bounded triggers",
+        "one sanitized RCA parent WorkId",
+        "PRELIMINARY —",
+        "UNKNOWN —",
+        "proportional non-interfering evidence lanes",
+        "Prior RCAs and recurrences",
+        "failure mechanism",
+        "credible alternatives and falsifiers",
+        "counterfactual control",
+        "Immediate stopgap",
+        "Existing product requirement/test",
+        "Genuinely new product",
+        "Process/documentation",
+        "CORRECTIONS_OWNED",
+        "safe controlled replay",
+        "next eligible natural matching event",
+        "not an inactive wake or background daemon",
+        "current routed product work, which owns current status and priority",
+        "historical roadmap as evidence only",
+        "active follow-up sweep at startup, on re-entry, at every bounded work-batch boundary",
+        "before handoff, and when a correction due or unblock event occurs",
+        "Documentation reachability tests prove only",
+    )
+    normalized = " ".join(procedure.lower().split())
+
+    assert [
+        rule
+        for rule in required_contract
+        if rule.lower() not in normalized
+    ] == []
+
+    entry_links = {
+        "AGENTS.md": "docs/root-cause-analysis.md",
+        "docs/operations-live-incident.md": "root-cause-analysis.md",
+        "docs/operations-incident-record.md": "root-cause-analysis.md",
+        "docs/how-marco-uses-switchstand.md": "root-cause-analysis.md",
+    }
+    assert {
+        path: target
+        for path, target in entry_links.items()
+        if target not in (ROOT / path).read_text()
+    } == {}
+
+    agents = (ROOT / "AGENTS.md").read_text()
+    working_with_marco = agents.split("## Working with Marco", 1)[1].split("\n## ", 1)[0]
+    assert "[root-cause analysis procedure](docs/root-cause-analysis.md)" in working_with_marco
+    assert "whether or not it arises from a live incident" in working_with_marco

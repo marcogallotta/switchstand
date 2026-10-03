@@ -3,6 +3,9 @@
 This is the canonical record shape for
 [live-incident operations](operations-live-incident.md). Store each incident privately at
 `~/.local/state/switchstand/incidents/<IncidentId>/`; do not commit live records or secrets.
+Technical and response-process causal work uses the separate canonical
+[root-cause analysis procedure](root-cause-analysis.md); link its sanitized parent WorkId here
+without copying private evidence or duplicating the causal record.
 
 ## Current status (`status.md`)
 
@@ -25,6 +28,7 @@ Replace it thereafter from a mode-`0600` temporary file in the same directory.
 - Dependency boundary: <client -> ingress -> origin -> auth -> provider; evidence at each layer>
 - Evidence: <CURRENT/HISTORICAL/UNKNOWN and exact private paths/identities>
 - Residual truth: <NOT_RUN/MISSING_CAPABILITY/UNKNOWN/Human Input, or none>
+- RCA parent WorkId / state: <exact identity / current RCA lifecycle state>
 
 ## Temporary coordination changes
 
@@ -70,8 +74,10 @@ Human Input, or owned residual work. If it is not satisfied, keep the incident `
   candidate and bundled good work are accounted for; forward-only state was not rewound.
 - [ ] Every temporary Project Settings, `START HERE`, agent-guidance, canary, or HOLD change is
   `REMOVED` or reviewed and installed as permanent guidance.
-- [ ] Technical RCA distinguishes trigger, root and contributing causes; response-process RCA
-  covers detection, diagnosis, communication, mitigation, and recovery.
+- [ ] The sanitized RCA parent links the accepted causal model under the current canonical
+  procedure; technical and response-process analysis covers mechanism, conditions, failed
+  controls, alternatives, counterfactual, detection, diagnosis, communication, mitigation,
+  and recovery.
 - [ ] Causal regression/qualification evidence exists, with exact `NOT_RUN`,
   `MISSING_CAPABILITY`, or `UNKNOWN` preserved.
 - [ ] Monitoring and Wakeful detection/notification follow-up is completed or has an owner,

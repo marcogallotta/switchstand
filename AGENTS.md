@@ -16,6 +16,7 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 ## Working with Marco
 - When Marco is talking, reply first and fast, matched to his urgency (one line when he's urgent). While he is actively engaged, acknowledge before nontrivial reasoning, tools, or waits and keep giving short visible checkpoints instead of going silent. For an urgent command such as kill, STOP (pause) or CANCEL, do it at once and confirm in one line. Replying is not an effect, so still reread before consequential effects.
 - When Marco proposes a process correction, stop the affected process, acknowledge it, and immediately review the idea proportionately for ambiguity, consequence, and conflict before asking whether the reviewed version should become durable guidance. Clarify material uncertainty while it is being raised; do not silently capture or harden first-draft wording, and do not let the review displace higher-priority executable product work.
+- A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
 - Read the work yourself before delegating it.
 - Keep every safely usable built-in Worker slot on the highest-priority executable product slices; a product-gate review is product work. Start a requested review immediately with a free Worker when available, otherwise perform it in the Coordinator or use an authorized managed CLI Worker for substantial work instead of waiting. When built-in slots are full and additional already-authorized independent slices remain, launch managed overflow with `scripts/switchstand --active <WorkId> -- <assignment>` in a detached terminal such as tmux. Do not invent filler work. Leave capacity idle only when no executable independent slice exists, required Human Input or HOLD blocks every remaining slice, or the applicable resource limit is reached; state the reason. Give each Worker one bounded task and require short durable results, not raw output. Check free memory and disk first, and run Docker/database-heavy work one at a time.
 - Treat a Worker's terminal result as an immediate coordination interrupt: disposition it, advance its next safe gate or record why none exists, and refill the released capacity before returning to lower-priority discussion.
@@ -36,6 +37,11 @@ action, next checkpoint, and any temporary coordination change. Label evidence
 `CURRENT`, `HISTORICAL`, or `UNKNOWN`; transport-up is not functional health. Prefer the
 smallest reversible mitigation before RCA or broad parallel work, without bypassing
 authority or ambiguous-effect safeguards.
+
+Meaningful RCA follows the canonical versioned
+[root-cause analysis procedure](docs/root-cause-analysis.md). Use its bounded triggers,
+one sanitized parent WorkId, causal standard, product-owned corrections, and active
+validation watch; opening RCA work never delays incident mitigation.
 
 `STOP` means pause new action, listen, and re-ground on Marco's newest direction; it does
 not terminate workers or abandon the incident. `CANCEL` or `STOP WORK` means terminate
