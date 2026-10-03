@@ -15,7 +15,8 @@ from .failure_capture import capture_failure
 from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
-from .session import supervise
+from .managed_launch import ManagedParentLauncher
+from .pending_failures import PendingFailureRegistry, failure_queue_root
 
 
 def initial_assignment(value: str) -> str:
@@ -441,15 +442,37 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
     env["SWITCHSTAND_MANAGED"] = "1"
     env["SWITCHSTAND_TASK_WRITER"] = str(writer)
     env["SWITCHSTAND_TASK_ID"] = str(authority.active)
-    env["CODEX_HOME"] = str(managed_codex_home(control, writer, authority.active, env, target)
-                            if target else managed_codex_home(control, writer, authority.active, env))
+    codex_home = (managed_codex_home(control, writer, authority.active, env, target)
+                  if target else managed_codex_home(control, writer, authority.active, env))
+    env["CODEX_HOME"] = str(codex_home)
     for name in tuple(env):
         upper = name.upper()
         if (any(word in upper for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"))
                 or name in {"SSH_AUTH_SOCK", "GIT_ASKPASS", "DOCKER_CONFIG"}
                 or name.startswith("GH_")):
             env.pop(name, None)
-    raise SystemExit(supervise(codex_command(control, writer, assignment), env, writer / ".git"))
+    if authority.grant_id is None or authority.grant_version is None:
+        raise RuntimeError("provisioner did not return an exact managed grant")
+    executable = shutil.which("codex", path=env.get("PATH"))
+    if executable is None:
+        raise RuntimeError("Codex executable is unavailable")
+    pending = failure_queue_root(Path(env["HOME"]))
+    receipt = ManagedParentLauncher().run(
+        work_id=authority.active,
+        grant_id=authority.grant_id,
+        grant_version=authority.grant_version,
+        control=control,
+        writer=writer,
+        codex_home=codex_home,
+        codex_executable=Path(executable),
+        assignment=assignment,
+    )
+    closable, _ = PendingFailureRegistry(pending).closure_gate()
+    if not closable:
+        raise RuntimeError("managed launch has an unrecorded failure")
+    if receipt.get("state") == "completed":
+        raise SystemExit(0)
+    raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")
 
 
 def main() -> None:

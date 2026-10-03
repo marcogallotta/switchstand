@@ -14,10 +14,12 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
-from .agent_broker import ID, Broker
+from .agent_broker import CLASSES, ID, Broker, Budget, ChildBudget, LeaseRequest, Pressure
 
 MANIFEST_VERSION = 1
 MAX_MANIFEST_BYTES = 64 * 1024
+MANAGED_CHILDREN = Budget(1400, 2048, 256, 200, 192, 2, 0)
+MANAGED_ROOT_BUDGET = CLASSES["implementation"].add(MANAGED_CHILDREN)
 
 
 class PreparedLaunch(BaseModel):
@@ -208,6 +210,7 @@ class PreparedLaunchStore:
         reservation_id: str,
         *,
         observed_monotonic: float | None = None,
+        require_expiry: bool = True,
     ) -> dict[str, str]:
         """Reconcile only when the private store proves no launch was prepared."""
         launch_absent: bool | None = True
@@ -226,6 +229,7 @@ class PreparedLaunchStore:
             observed_boot_id=self.broker.boot_id,
             launch_absent=launch_absent,
             observed_monotonic=observed_monotonic,
+            require_expiry=require_expiry,
         )
 
     def _seal(self, payload: dict[str, Any]) -> str:
@@ -289,3 +293,66 @@ class PreparedLaunchStore:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+class ManagedParentLauncher:
+    """Trusted production seam from admitted authority to one sealed managed parent."""
+
+    def __init__(self, broker: Broker | None = None):
+        self.broker = broker or Broker()
+
+    def run(
+        self,
+        *,
+        work_id: UUID,
+        grant_id: UUID,
+        grant_version: int,
+        control: Path,
+        writer: Path,
+        codex_home: Path,
+        codex_executable: Path,
+        assignment: str,
+        pressure: Pressure | None = None,
+    ) -> dict[str, Any]:
+        try:
+            state = self.broker.status()
+        except FileNotFoundError:
+            self.broker.initialize(MANAGED_ROOT_BUDGET)
+        else:
+            if Budget(**state["root"]) != MANAGED_ROOT_BUDGET:
+                raise RuntimeError("existing broker budget does not match managed-parent policy")
+        launch_id = uuid4().hex
+        request = LeaseRequest(
+            request_id=f"request-{launch_id}",
+            parent="root",
+            worker=f"managed-{launch_id[:20]}",
+            worker_class="implementation",
+            children=ChildBudget(**MANAGED_CHILDREN.__dict__),
+        )
+        reservation = self.broker.reserve(request, pressure)
+        if reservation["state"] != "reserved":
+            return reservation
+        store = PreparedLaunchStore(self.broker)
+        try:
+            manifest = store.prepare(
+                work_id=work_id,
+                grant_id=grant_id,
+                grant_version=grant_version,
+                lease_id=reservation["lease_id"],
+                reservation_id=reservation["reservation_id"],
+                control=control,
+                writer=writer,
+                codex_home=codex_home,
+                codex_executable=codex_executable,
+                assignment=assignment,
+            )
+        except Exception:
+            store.reconcile_unlaunched(
+                reservation["lease_id"], reservation["reservation_id"],
+                observed_monotonic=self.broker.clock(),
+                require_expiry=False,
+            )
+            raise
+        from .agent_executor import ManagedExecutor
+
+        return ManagedExecutor(self.broker).run(manifest)

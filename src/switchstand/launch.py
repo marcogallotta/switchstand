@@ -18,7 +18,9 @@ from .development import (
 from .run import RunReceipt, reserve_run
 
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
-AUTHORITY_OUTPUT_NAMES = (*AUTHORITY_NAMES, "LEGACY_TASK_GIDS")
+AUTHORITY_OUTPUT_NAMES = (
+    *AUTHORITY_NAMES, "LEGACY_TASK_GIDS", "MANAGED_GRANT_ID", "MANAGED_GRANT_VERSION"
+)
 MANAGED_NAME = "SWITCHSTAND_MANAGED"
 REQUESTING_GIT_COMMON = "SWITCHSTAND_REQUESTING_GIT_COMMON"
 RESOLVED_WORK_ID = "SWITCHSTAND_RESOLVED_WORK_ID"
@@ -29,6 +31,8 @@ class Authority(NamedTuple):
     active: UUID
     references: tuple[UUID, ...]
     legacy_task_gids: tuple[str, ...] = ()
+    grant_id: UUID | None = None
+    grant_version: int | None = None
 
 
 class PreparedRun(NamedTuple):
@@ -183,7 +187,10 @@ def parse_authority(output: str) -> Authority:
         if not separator or name in assignments:
             raise ValueError("provisioner returned an invalid authority response")
         assignments[name] = value
-    if set(assignments) != set(AUTHORITY_OUTPUT_NAMES):
+    required = set(AUTHORITY_OUTPUT_NAMES[:3])
+    optional = set(AUTHORITY_OUTPUT_NAMES[3:])
+    present = set(assignments)
+    if not required <= present or bool(optional & present) != (optional <= present):
         raise ValueError("provisioner returned an invalid authority response")
     references = tuple(
         UUID(value) for value in assignments["REFERENCE_WORK_IDS"].split(",") if value
@@ -191,7 +198,16 @@ def parse_authority(output: str) -> Authority:
     legacy = tuple(value for value in assignments["LEGACY_TASK_GIDS"].split(",") if value)
     if any(not value.isdecimal() for value in legacy) or len(set(legacy)) != len(legacy):
         raise ValueError("provisioner returned invalid legacy task aliases")
-    return Authority(UUID(assignments["ACTIVE_WORK_ID"]), references, legacy)
+    grant_id = UUID(assignments["MANAGED_GRANT_ID"]) if "MANAGED_GRANT_ID" in assignments else None
+    grant_version = (
+        int(assignments["MANAGED_GRANT_VERSION"])
+        if "MANAGED_GRANT_VERSION" in assignments else None
+    )
+    if grant_version is not None and grant_version <= 0:
+        raise ValueError("provisioner returned invalid grant version")
+    return Authority(
+        UUID(assignments["ACTIVE_WORK_ID"]), references, legacy, grant_id, grant_version
+    )
 
 
 def provision(
@@ -266,8 +282,16 @@ def provision_output(
     for reference in references:
         command.extend(("--reference", reference))
     completed = subprocess.run(
-        command, cwd=control, env=env, check=True, text=True, capture_output=True
+        command, cwd=control, env=env, check=False, text=True, capture_output=True
     )
+    if completed.returncode:
+        detail = completed.stderr.strip()
+        for name, value in env.items():
+            if value and any(
+                word in name.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+            ):
+                detail = detail.replace(value, "[REDACTED]")
+        raise RuntimeError((detail or "provisioning command failed")[:4000])
     return completed.stdout
 
 

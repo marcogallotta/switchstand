@@ -17,6 +17,7 @@ from switchstand.agent_broker import Broker
 from switchstand.failure_capture import capture_failure
 from switchstand.failure_journal import EffectState
 from switchstand.managed_launch import PreparedLaunch, PreparedLaunchStore
+from switchstand.pending_failures import failure_queue_root
 
 HOST = "marco@.host"
 RUN_TIMEOUT_SECONDS = 3600
@@ -270,7 +271,7 @@ class ManagedExecutor:
         self.broker.record_execution(manifest.lease_id, receipt)
         if receipt["state"] != "completed":
             registration = capture_failure(
-                self.broker.root / "pending-failures",
+                failure_queue_root(Path.home()),
                 attempted_claim=f"launch managed parent {manifest.work_id}",
                 observed_result=f"executor state={receipt['state']}",
                 effect_state=(EffectState.NOT_SENT if receipt["state"] == "not_started"

@@ -253,6 +253,36 @@ def test_parse_authority_requires_exact_complete_response():
     assert parsed.legacy_task_gids == ("123",)
     with pytest.raises(ValueError):
         parse_authority(f"ACTIVE_WORK_ID={ACTIVE}\n")
+    managed = parse_authority(
+        output + f"MANAGED_GRANT_ID={UUID(int=9)}\nMANAGED_GRANT_VERSION=4\n"
+    )
+    assert managed.grant_id == UUID(int=9)
+    assert managed.grant_version == 4
+    with pytest.raises(ValueError):
+        parse_authority(output + f"MANAGED_GRANT_ID={UUID(int=9)}\n")
+
+
+def test_provision_surfaces_bounded_redacted_controller_stderr(monkeypatch):
+    secret = "host-secret"
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nmain\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command, 9, stdout="", stderr=f"provider rejected token {secret}\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as failed:
+        provision(Path("/repo"), "123", (), {"HOME": "/home/test", "ASANA_TOKEN": secret})
+    assert "provider rejected token [REDACTED]" in str(failed.value)
+    assert secret not in str(failed.value)
 
 
 @pytest.mark.parametrize("repository", [False, True])

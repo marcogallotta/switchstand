@@ -9,7 +9,11 @@ import pytest
 
 from switchstand.agent_broker import Broker, Budget, Pressure
 from switchstand.agent_executor import ManagedExecutor
-from switchstand.managed_launch import PreparedLaunchStore
+from switchstand.managed_launch import (
+    MANAGED_ROOT_BUDGET,
+    ManagedParentLauncher,
+    PreparedLaunchStore,
+)
 
 WORK_ID = UUID("11111111-1111-4111-8111-111111111111")
 GRANT_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -131,8 +135,10 @@ def test_managed_executor_uses_aggregate_budget_and_exact_paths(
 
     def run(arguments: list[str], **_: object) -> SimpleNamespace:
         calls.append(arguments)
-        if "show" in arguments:
-            return SimpleNamespace(returncode=0, stdout="inactive\n\n")
+        if "--property=ActiveState" in arguments:
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        if "--property=ControlGroup" in arguments:
+            return SimpleNamespace(returncode=0, stdout="/missing-test-cgroup\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -164,8 +170,10 @@ def test_managed_timeout_releases_only_after_terminal_empty_proof(
     def run(arguments: list[str], **_: object) -> SimpleNamespace:
         if arguments[0] == "systemd-run":
             raise subprocess.TimeoutExpired(arguments, 60)
-        if "show" in arguments:
-            return SimpleNamespace(returncode=0, stdout="inactive\n\n")
+        if "--property=ActiveState" in arguments:
+            return SimpleNamespace(returncode=0, stdout="inactive\n")
+        if "--property=ControlGroup" in arguments:
+            return SimpleNamespace(returncode=0, stdout="/missing-test-cgroup\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -190,3 +198,60 @@ def test_managed_executor_preserves_reservation_when_runtime_is_ambiguous(
 
     assert receipt["state"] == "unknown"
     assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+def test_blank_control_group_is_not_empty_proof(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(arguments: list[str], **_: object) -> SimpleNamespace:
+        value = "inactive\n" if "--property=ActiveState" in arguments else "\n"
+        return SimpleNamespace(returncode=0, stdout=value)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert ManagedExecutor.runtime_proof("unit.service") == (True, None)
+
+
+def test_managed_parent_launcher_refusal_never_prepares_or_executes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = Broker(tmp_path / "broker")
+    broker.initialize(MANAGED_ROOT_BUDGET)
+    called = False
+
+    def prepare(*_args: object, **_kwargs: object) -> Path:
+        nonlocal called
+        called = True
+        raise AssertionError("refused launches must not be prepared")
+
+    monkeypatch.setattr(PreparedLaunchStore, "prepare", prepare)
+    result = ManagedParentLauncher(broker).run(
+        work_id=WORK_ID,
+        grant_id=GRANT_ID,
+        grant_version=7,
+        control=tmp_path,
+        writer=tmp_path,
+        codex_home=tmp_path,
+        codex_executable=Path("/bin/true"),
+        assignment="task",
+        pressure=Pressure(16_000, 100, 4_000, 3_900, 0, swap_activity_pages=0),
+    )
+    assert result["state"] == "refused"
+    assert called is False
+
+
+def test_direct_trusted_reservations_are_atomic(tmp_path: Path) -> None:
+    broker = Broker(tmp_path / "broker")
+    broker.initialize(Budget(700, 1024, 128, 100, 96, 1, 0))
+    from switchstand.agent_broker import ChildBudget, LeaseRequest
+
+    empty = ChildBudget(
+        memory_high_mib=0, memory_max_mib=0, swap_max_mib=0,
+        cpu_percent=0, tasks=0, workers=0, heavy=0,
+    )
+    first = broker.reserve(LeaseRequest(
+        request_id="one", parent="root", worker="one", worker_class="light", children=empty,
+    ), GREEN)
+    second = broker.reserve(LeaseRequest(
+        request_id="two", parent="root", worker="two", worker_class="light", children=empty,
+    ), GREEN)
+    assert first["state"] == "reserved"
+    assert second == {"request_id": "two", "parent": "root", "state": "refused",
+                      "reason": "parent_budget"}
