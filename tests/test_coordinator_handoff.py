@@ -95,6 +95,10 @@ def test_fast_forwards_clean_main_and_proves_fresh_agent(tmp_path: Path) -> None
     assert {path.name for path in artifact.iterdir()} == {
         "schema.json", "final.json", "trace.jsonl", "stderr.log", "result.json",
     }
+    schema = json.loads((artifact / "schema.json").read_text())
+    assert schema["properties"]["status"] == {
+        "type": "string", "const": "SWITCHSTAND_COORDINATOR_CANARY_OK",
+    }
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in artifact.iterdir())
 
 
