@@ -204,9 +204,10 @@ def run(argv: list[str] | None = None) -> int:
         }}, 5), "ok", "dependency work_get")
         dependency_item = _item(dependency, args.dependency_work_id, "dependency")
         dependency_search = _search_match(client, dependency_item, 6)
-        stale = _status(client.call("tools/call", {"name": "work_structure", "arguments": {
+        stale = _status(client.call("tools/call", {"name": "work_history", "arguments": {
             "api_version": "1", "work_id": str(args.work_id),
             "observed_revision": "semantic-probe-deliberately-stale",
+            "limit": 1,
         }}, 7), "stale", "stale currentness")
         if stale.get("work_id") != str(args.work_id) or stale.get("revision") != revision:
             raise ProbeFailure("stale currentness did not return exact target revision")

@@ -14,8 +14,7 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 
 - repository bootstrap for an ordinary ChatGPT session that has no checkout;
 - the fixed agent-project bootstrap operator utility, with preview by default;
-- work discovery, exact legacy-reference resolution, reads, structure, history,
-  attachments, and events;
+- work discovery, exact legacy-reference resolution, reads, history, and events;
 - grant-checked work creation, update, relation, and append operations;
 - registered-name `agent_message_*` messaging (managed task-bound runtimes separately retain
   WorkId-addressed `message_*` tools); and
