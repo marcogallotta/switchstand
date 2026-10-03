@@ -1,11 +1,12 @@
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 from uuid import UUID
 
 from .codex_runtime import codex_command, readback, validate_codex_args
@@ -15,6 +16,8 @@ from .development import (
     prepare_development,
     reclaim_development,
 )
+from .failure_journal import redact_environment
+from .pending_failures import PendingFailureQueue, PendingFailureRegistry, failure_queue_root
 from .run import RunReceipt, reserve_run
 
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
@@ -221,6 +224,14 @@ def provision_output(
     *, repository: bool = False,
 ) -> str:
     """Run trusted provisioning, optionally requesting repository admission."""
+    queue: PendingFailureQueue | None = None
+    registry: PendingFailureRegistry | None = None
+    frames: tuple[str, ...] = ()
+    home = Path(env["HOME"]) if "HOME" in env else None
+    if home is not None and home.is_dir():
+        queue = PendingFailureQueue(failure_queue_root(home))
+        registry = PendingFailureRegistry(queue.directory)
+        frames = queue.frames()
     state_file = str(control / "compose.state.yaml")
     control_file = str(control / "compose.yaml")
     subprocess.run(
@@ -268,6 +279,8 @@ def provision_output(
         "--build",
         "--rm",
         "--no-deps",
+        "--env",
+        "SWITCHSTAND_FAILURE_REPLAY=1",
         "controller",
         "uv",
         "run",
@@ -282,15 +295,30 @@ def provision_output(
     for reference in references:
         command.extend(("--reference", reference))
     completed = subprocess.run(
-        command, cwd=control, env=env, check=False, text=True, capture_output=True
+        command, cwd=control, env=env, check=False, text=True, capture_output=True,
+        input="".join(f"{frame}\n" for frame in frames),
     )
+    acknowledged: set[UUID] = set()
+    for line in completed.stdout.splitlines():
+        if not line.startswith("FAILURE_ACK="):
+            continue
+        raw_value: object = json.loads(line.removeprefix("FAILURE_ACK="))
+        if not isinstance(raw_value, dict):
+            raise TypeError("controller returned malformed failure acknowledgement")
+        untyped = cast(dict[object, object], raw_value)
+        if set(untyped) != {"attempt_id", "operation_id", "digest"} or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in untyped.items()
+        ):
+            raise RuntimeError("controller returned malformed failure acknowledgement")
+        raw = cast(dict[str, str], untyped)
+        attempt_id, operation_id = UUID(raw["attempt_id"]), UUID(raw["operation_id"])
+        if attempt_id in acknowledged or queue is None or registry is None or not queue.acknowledge(
+            attempt_id, operation_id, raw["digest"], registry
+        ):
+            raise RuntimeError("controller returned invalid failure acknowledgement")
+        acknowledged.add(attempt_id)
     if completed.returncode:
-        detail = completed.stderr.strip()
-        for name, value in env.items():
-            if value and any(
-                word in name.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
-            ):
-                detail = detail.replace(value, "[REDACTED]")
+        detail = redact_environment(completed.stderr.strip(), env)
         raise RuntimeError((detail or "provisioning command failed")[:4000])
     return completed.stdout
 

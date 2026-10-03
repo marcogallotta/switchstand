@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from collections.abc import Generator
@@ -64,6 +65,9 @@ class PendingFailureRegistry:
 
     def closure_gate(self) -> tuple[bool, tuple[UUID, ...]]:
         with self._locked_items() as items:
+            if self.directory is not None:
+                for value in PendingFailureQueue(self.directory).pending():
+                    items.setdefault(value.attempt_id, RegistrationState.PENDING_SYNC)
             blocked = tuple(
                 key for key, state in items.items() if state == RegistrationState.UNRECORDED
             )
@@ -124,6 +128,40 @@ class PendingFailureQueue:
                 continue
             values.append(FailureRecord.model_validate_json(path.read_bytes()))
         return tuple(values)
+
+    def frames(self) -> tuple[str, ...]:
+        """Snapshot sanitized immutable records for the controller stdin boundary."""
+        frames: list[str] = []
+        with self._lock():
+            for value in self.pending():
+                payload = value.canonical()
+                encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                frames.append(json.dumps({
+                    "record": payload, "digest": hashlib.sha256(encoded).hexdigest()
+                }, sort_keys=True, separators=(",", ":")))
+        return tuple(frames)
+
+    def acknowledge(
+        self, attempt_id: UUID, operation_id: UUID, digest: str,
+        registry: PendingFailureRegistry | None = None,
+    ) -> bool:
+        """Delete only an exact host record acknowledged after canonical DB readback."""
+        registry = registry or PendingFailureRegistry(self.directory)
+        with self._lock():
+            path = self._path(attempt_id)
+            if not path.exists():
+                return False
+            value = FailureRecord.model_validate_json(path.read_bytes())
+            encoded = json.dumps(
+                value.canonical(), sort_keys=True, separators=(",", ":")
+            ).encode()
+            if value.operation_id != operation_id or hashlib.sha256(encoded).hexdigest() != digest:
+                return False
+            registry.register(attempt_id)
+            registry.mark(attempt_id, RegistrationState.STORED)
+            path.unlink()
+            self.fsync_directory()
+            return True
 
     async def sync(
         self, journal: FailureJournal, registry: PendingFailureRegistry | None = None

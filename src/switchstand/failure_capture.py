@@ -24,9 +24,9 @@ def capture_failure(
 ) -> RegistrationState:
     """Queue one redacted record locally; capture failure remains non-blocking."""
     attempt = attempt_id or uuid4()
-    registry = PendingFailureRegistry(directory)
-    registry.register(attempt)
     try:
+        registry = PendingFailureRegistry(directory)
+        registry.register(attempt)
         result = PendingFailureQueue(directory).enqueue(FailureRecord(
             attempt_id=attempt,
             operation_id=operation_id or uuid4(),
@@ -40,7 +40,7 @@ def capture_failure(
         ))
         if result == "PENDING_SYNC":
             registry.mark(attempt, RegistrationState.PENDING_SYNC)
+        _, blocked = registry.closure_gate()
+        return RegistrationState.UNRECORDED if blocked else RegistrationState.PENDING_SYNC
     except (OSError, TypeError, ValueError):
-        pass
-    _, blocked = registry.closure_gate()
-    return RegistrationState.UNRECORDED if blocked else RegistrationState.PENDING_SYNC
+        return RegistrationState.UNRECORDED

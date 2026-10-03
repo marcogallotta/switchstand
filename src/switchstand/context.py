@@ -467,19 +467,24 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
         codex_executable=Path(executable),
         assignment=assignment,
     )
-    closable, _ = PendingFailureRegistry(pending).closure_gate()
+    if receipt.get("state") != "completed":
+        raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")
+    try:
+        closable, _ = PendingFailureRegistry(pending).closure_gate()
+    except (OSError, TypeError, ValueError):
+        closable = False
     if not closable:
-        raise RuntimeError("managed launch has an unrecorded failure")
-    if receipt.get("state") == "completed":
-        raise SystemExit(0)
-    raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")
+        raise RuntimeError("managed launch completion has unrecorded failure evidence")
+    raise SystemExit(0)
 
 
 def main() -> None:
     arguments = parser().parse_args()
     try:
         run(arguments.active, arguments.assignment[0], arguments.target_repo)
-    except (KeyError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError
+    ) as error:
         capture_failure(
             Path(os.environ.get("HOME", "/nonexistent"))
             / ".local/state/switchstand/failures/pending",

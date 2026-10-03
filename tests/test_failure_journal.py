@@ -15,6 +15,7 @@ from switchstand.failure_journal import (
     FailureJournal,
     FailureRecord,
     FailureResolution,
+    redact_environment,
 )
 
 NOW = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
@@ -48,6 +49,16 @@ def test_validation_and_redaction():
     assert "abc.def" not in sanitized.observed_result
     assert "hunter2" not in sanitized.observed_result
     assert "user:pass" not in sanitized.observed_result
+
+
+def test_boundary_redaction_covers_controller_only_and_encoded_url_credentials():
+    text = (
+        "controller-value postgresql+psycopg://user%40name:p%2Fass@db/x "
+        "Bearer abc.def token=loose"
+    )
+    redacted = redact_environment(text, {"CONTROLLER_SECRET": "controller-value"})
+    for secret in ("controller-value", "user%40name", "p%2Fass", "abc.def", "loose"):
+        assert secret not in redacted
 
 
 @pytest.fixture

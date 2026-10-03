@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import subprocess
@@ -281,8 +282,48 @@ def test_provision_surfaces_bounded_redacted_controller_stderr(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(RuntimeError) as failed:
         provision(Path("/repo"), "123", (), {"HOME": "/home/test", "ASANA_TOKEN": secret})
-    assert "provider rejected token [REDACTED]" in str(failed.value)
+    assert "provider rejected token [redacted]" in str(failed.value)
     assert secret not in str(failed.value)
+
+
+def test_provision_replays_host_queue_and_deletes_only_exact_ack(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from switchstand.failure_journal import EffectState, FailureRecord
+    from switchstand.pending_failures import PendingFailureQueue, failure_queue_root
+
+    value = FailureRecord(
+        attempt_id=UUID(int=31), operation_id=UUID(int=32), attempted_claim="launch",
+        observed_result="failed", clearing_action="inspect", effect_state=EffectState.NOT_SENT,
+        owner="COORDINATOR", occurred_at=datetime(2026, 10, 3, tzinfo=UTC),
+    )
+    queue = PendingFailureQueue(failure_queue_root(tmp_path))
+    queue.enqueue(value)
+
+    def fake_run(command, **kwargs):
+        if "up" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="a" * 40 + "\n/repo/.git\nmain\n", stderr=""
+            )
+        if command[0] == "/repo/scripts/switchstand-upgrade-state":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        frame = json.loads(kwargs["input"])
+        ack = {
+            "attempt_id": str(value.attempt_id), "operation_id": str(value.operation_id),
+            "digest": frame["digest"],
+        }
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=("FAILURE_ACK=" + json.dumps(ack) + "\n"
+                    f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\nLEGACY_TASK_GIDS=123\n"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provision(Path("/repo"), "123", (), {"HOME": str(tmp_path)})
+    assert queue.pending() == ()
 
 
 @pytest.mark.parametrize("repository", [False, True])

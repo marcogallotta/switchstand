@@ -1,7 +1,10 @@
 import argparse
 import asyncio
+import hashlib
+import json
 import os
-from pathlib import Path
+import sys
+from typing import cast
 from uuid import UUID
 
 import httpx
@@ -10,7 +13,6 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .bootstrap_adapters import (
@@ -22,11 +24,10 @@ from .bootstrap_adapters import (
 from .bootstrap_identity import resolve_and_admit_pre_migration_launch
 from .canonical_work import CanonicalWorkRepository
 from .contracts import LaunchAuthority
-from .failure_journal import FailureJournal
+from .failure_journal import FailureJournal, FailureRecord, redact_environment
 from .grant_state import GrantState
 from .launch_source import canonical_work, repository_marker
 from .managed_identity import managed_principal, rotate_managed_grant
-from .pending_failures import PendingFailureQueue, PendingFailureRegistry, failure_queue_root
 from .provider import AsanaProvider
 from .state import PostgresState
 
@@ -51,13 +52,33 @@ async def run(
         raise ValueError("at most eight reference tasks are allowed")
     engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
-        pending_root = failure_queue_root(Path(os.environ["HOME"]))
-        try:
-            await PendingFailureQueue(pending_root).sync(
-                FailureJournal(engine), PendingFailureRegistry(pending_root)
-            )
-        except (AttributeError, OSError, SQLAlchemyError, ValueError):
-            pass
+        replay_lines = sys.stdin if os.getenv("SWITCHSTAND_FAILURE_REPLAY") == "1" else ()
+        for line in replay_lines:
+            frame_value: object = json.loads(line)
+            if not isinstance(frame_value, dict):
+                raise TypeError("invalid failure replay frame")
+            untyped = cast(dict[object, object], frame_value)
+            if set(untyped) != {"record", "digest"}:
+                raise ValueError("invalid failure replay frame")
+            frame = cast(dict[str, object], untyped)
+            record = FailureRecord.model_validate(frame["record"])
+            encoded = json.dumps(
+                record.canonical(), sort_keys=True, separators=(",", ":")
+            ).encode()
+            digest = hashlib.sha256(encoded).hexdigest()
+            if frame["digest"] != digest:
+                raise ValueError("failure replay digest mismatch")
+            journal = FailureJournal(engine)
+            result = await journal.record(record)
+            if result.status not in {"APPLIED", "REPLAYED"} or await journal.get(
+                record.attempt_id
+            ) != record:
+                raise RuntimeError("failure replay readback mismatch")
+            print("FAILURE_ACK=" + json.dumps({
+                "attempt_id": str(record.attempt_id),
+                "operation_id": str(record.operation_id),
+                "digest": digest,
+            }, sort_keys=True, separators=(",", ":")))
         works = CanonicalWorkRepository(engine)
         exact_active: UUID | None
         try:
@@ -151,8 +172,9 @@ def main() -> None:
             arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent,
             repository=arguments.repository
         ))
-    except (KeyError, ValueError, PermissionError, RuntimeError) as error:
-        parser().exit(1, f"provisioning failed: {error}\n")
+    except (KeyError, TypeError, ValueError, PermissionError, RuntimeError) as error:
+        detail = redact_environment(str(error), dict(os.environ))
+        parser().exit(1, f"provisioning failed: {detail[:4000]}\n")
 
 
 if __name__ == "__main__":

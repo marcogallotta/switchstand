@@ -73,6 +73,17 @@ def redact(value: str) -> str:
     return _SECRET.sub(replace, value)
 
 
+def redact_environment(value: str, environment: dict[str, str]) -> str:
+    """Redact syntax-based credentials plus exact secret values known at this boundary."""
+    result = redact(value)
+    for name, secret in environment.items():
+        if secret and any(
+            word in name.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "KEY")
+        ):
+            result = result.replace(secret, "[redacted]")
+    return result
+
+
 class EffectState(StrEnum):
     NOT_SENT = "NOT_SENT"
     APPLIED = "APPLIED"

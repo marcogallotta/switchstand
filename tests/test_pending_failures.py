@@ -1,3 +1,4 @@
+import json
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -91,3 +92,28 @@ def test_concurrent_enqueue_cannot_replace_an_attempt(tmp_path):
         results = tuple(executor.map(queue.enqueue, (value, conflict)))
     assert sorted(results) == ["CONFLICT", "PENDING_SYNC"]
     assert queue.pending() in ((value,), (conflict,))
+
+
+def test_host_ack_deletes_only_exact_readback_identity(tmp_path):
+    queue = PendingFailureQueue(tmp_path / "pending")
+    value = failure()
+    queue.enqueue(value)
+    frame = json.loads(queue.frames()[0])
+    assert not queue.acknowledge(value.attempt_id, uuid4(), frame["digest"])
+    assert queue.pending() == (value,)
+    assert not queue.acknowledge(value.attempt_id, value.operation_id, "0" * 64)
+    assert queue.pending() == (value,)
+    assert queue.acknowledge(value.attempt_id, value.operation_id, frame["digest"])
+    assert queue.pending() == ()
+    assert PendingFailureRegistry(queue.directory).closure_gate() == (True, ())
+
+
+def test_queue_file_reconciles_an_empty_registry_as_pending_sync(tmp_path):
+    queue = PendingFailureQueue(tmp_path / "pending")
+    value = failure()
+    queue.enqueue(value)
+    registry = PendingFailureRegistry(queue.directory)
+    assert registry.closure_gate() == (True, ())
+    assert json.loads((queue.directory / "registry.json").read_text()) == {
+        str(value.attempt_id): "PENDING_SYNC"
+    }
