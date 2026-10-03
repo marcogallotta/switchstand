@@ -61,7 +61,7 @@ class FakeProvider:
             return
         fields = patch.model_fields_set
         routing = self.work.routing.model_dump()
-        for field in {"horizon", "review_next_action", "stage3_gate"} & fields:
+        for field in set(Routing.model_fields) & fields:
             routing[field] = getattr(patch, field)
         self.work = ProviderWork(
             self.work.title,
@@ -129,6 +129,30 @@ async def test_update_returns_authoritative_readback(setup_controller):
     patch = WorkPatch(notes="new", horizon="Stage 3")
     result = await controller.update(WorkUpdateRequest(api_version="1", work_id=active, observed_revision="r1", patch=patch))
     assert result.status == "ok" and result.item and result.item.routing.horizon == "Stage 3"
+    assert len(provider.updates) == 1
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("lifecycle_state", "UNKNOWN"),
+    ("canonical_root", "NONE"),
+    ("owner_key", "owner"),
+    ("wait_kind", "DEPENDENCY"),
+    ("unblock_condition", "dependency completes"),
+    ("next_due", "2026-10-05"),
+    ("next_action_class", "OWNER_CAN_DO"),
+    ("next_action_ref", "item-1"),
+])
+async def test_update_converges_every_enriched_routing_field(
+    setup_controller, field, value,
+):
+    active, _, provider, controller = setup_controller
+    result = await controller.update(WorkUpdateRequest(
+        api_version="1", work_id=active, observed_revision="r1",
+        patch=WorkPatch.model_validate({field: value}),
+    ))
+
+    assert result.status == "ok" and result.item is not None
+    assert getattr(result.item.routing, field) == value
     assert len(provider.updates) == 1
 
 async def test_write_denial_and_readback_mismatch_are_not_success(setup_controller):

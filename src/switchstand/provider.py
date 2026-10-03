@@ -972,6 +972,11 @@ class AsanaProvider:
             raise
     async def update(self, provider_work_id: str, patch: WorkPatch) -> None:
         changed = patch.model_fields_set
+        unsupported_routing = changed & (
+            set(Routing.model_fields) - set(FIELDS) - {"work_type"}
+        )
+        if unsupported_routing:
+            raise ProviderError("routing write denied", failure="invalid_request")
         data = {("name" if name == "title" else name): getattr(patch, name)
                 for name in {"title", "notes", "completed"} & changed}
         if self._create_notes_suffix is not None and "notes" in data:

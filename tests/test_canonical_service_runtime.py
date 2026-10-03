@@ -154,6 +154,30 @@ async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Sub
     assert searched.status == "ok" and [item.id for item in searched.items] == [subject.work_id]
 
 
+async def test_service_updates_and_projects_coherent_lifecycle_routing(
+    subject: Subject,
+) -> None:
+    changed = await subject.service.update(update(
+        subject, lifecycle_state="WAITING", wait_kind="DEPENDENCY",
+        unblock_condition="dependency completes", next_due="2026-10-05",
+    ))
+    readback = await subject.service.get(subject.work_id)
+
+    assert changed.status == "ok" and changed.effect == "applied"
+    assert readback.status == "ok" and readback.item is not None
+    assert {
+        "lifecycle_state": readback.item.routing.lifecycle_state,
+        "wait_kind": readback.item.routing.wait_kind,
+        "unblock_condition": readback.item.routing.unblock_condition,
+        "next_due": readback.item.routing.next_due,
+    } == {
+        "lifecycle_state": "WAITING",
+        "wait_kind": "DEPENDENCY",
+        "unblock_condition": "dependency completes",
+        "next_due": "2026-10-05",
+    }
+
+
 async def test_managed_controller_constructs_db_only_canonical_reads(
     subject: Subject, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
