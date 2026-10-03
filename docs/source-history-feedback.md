@@ -44,6 +44,12 @@ Both use the same durable message state and preserve pending, receive/recover,
 correlated result, and disposition semantics. Delivery, receipt, disposition,
 effect, and completion are distinct states.
 
+When an authorized replacement session gets `receiving_binding_changed` for an
+exact received delivery, its first response is `agent_message_recover` on that
+delivery. Preserve the exact delivery and watch; do not re-register, duplicate
+the receipt, review, or result, or infer transfer or authority. Continue with
+the correlated result and disposition only after recovery succeeds.
+
 On the ordinary HTTP/OAuth surface, `work_append` is only for exceptional
 provenance, investigation, or legacy reconciliation on writable admitted work;
 the required closed purpose makes that intent explicit. It must not store
