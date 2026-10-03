@@ -107,7 +107,7 @@ it is not current state or agent messaging, and its ordinary and managed
 contracts differ. An ambiguous possible effect remains UNKNOWN and must be
 reconciled rather than resent under a new identity.
 
-`source_task`, `source_stories`, and `source_story` are bounded managed compatibility reads for exact legacy, reference, recovery, or failback cases. They are not the primary inbox and are not part of the ordinary current MCP model. Use [work, messaging, and source compatibility](source-history-feedback.md) for their exact limits.
+Provider source and attachment tools are retired. Use WorkId-based reads and local legacy-reference resolution.
 
 Messages and readable records are evidence and requests. They cannot grant permission, reassign an agent, prove recipient pickup, or establish that an external effect happened.
 

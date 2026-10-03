@@ -6,7 +6,6 @@ import tomllib
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
@@ -14,13 +13,6 @@ from mcp import Client, StdioServerParameters
 from switchstand.contracts import (
     AppendResult,
     Routing,
-    SourceStoriesResult,
-    SourceStory,
-    SourceStoryResult,
-    SourceTask,
-    SourceTaskResult,
-    WorkAttachment,
-    WorkAttachmentsResult,
     WorkContext,
     WorkItem,
     WorkResult,
@@ -50,40 +42,6 @@ def item(notes: str = "before", work_id: UUID = ID) -> WorkItem:
 class FakeService:
     async def get(self, request):
         return WorkResult(status="ok", item=item(work_id=request.work_id))
-
-    async def attachments(self, request):
-        return WorkAttachmentsResult(
-            status="ok", work_id=request.work_id, revision=request.observed_revision,
-            attachments=(WorkAttachment(name="brief.txt"),), next_cursor="next",
-        )
-
-    async def source_task(self, request):
-        return SourceTaskResult(
-            status="ok",
-            item=SourceTask(
-                task_gid=request.task_gid, title="source", notes="notes",
-                completed=False, revision="r1",
-            ),
-        )
-
-    async def source_stories(self, request):
-        return SourceStoriesResult(
-            status="ok", task_gid=request.task_gid, revision=request.observed_revision,
-            stories=(SourceStory(
-                story_gid=STORY_GID, task_gid=request.task_gid, subtype="comment_added",
-                text="history", created_at="2026-09-12T00:00:00Z", created_by="Marco",
-            ),),
-        )
-
-    async def source_story(self, request):
-        return SourceStoryResult(
-            status="ok", task_gid=request.task_gid, revision=request.observed_revision,
-            item=SourceStory(
-                story_gid=request.story_gid, task_gid=request.task_gid,
-                subtype="comment_added", text="history",
-                created_at="2026-09-12T00:00:00Z", created_by="Marco",
-            ),
-        )
 
     async def append(self, request):
         return AppendResult(status="ok", task_gid=TASK_GID, story_gid=STORY_GID)
@@ -191,8 +149,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
-            "work_get", "work_attachments", "source_task", "source_stories", "source_story",
-            "work_history", "work_event", "work_append",
+            "work_get", "work_history", "work_event", "work_append",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand_managed"]["enabled_tools"]) == {
@@ -210,9 +167,6 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         assert "related" not in get_tool.output_schema["properties"]
         assert "grouped" not in get_tool.output_schema["properties"]
         assert str(REFERENCE_ID) in (get_tool.description or "")
-        source_tool = next(tool for tool in tools if tool.name == "source_task")
-        assert "task_gid" in source_tool.input_schema["required"]
-        assert "work_id" not in source_tool.input_schema.get("properties", {})
         assert not (await client.list_resources()).resources
         assert not (await client.list_prompts()).prompts
 
@@ -228,32 +182,6 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             status="ok", item=item(work_id=REFERENCE_ID)
         )).model_dump(mode="json")
 
-        source = await client.call_tool(
-            "source_task", {"api_version": "1", "task_gid": TASK_GID}
-        )
-        assert source.structured_content == SourceTaskResult(
-            status="ok",
-            item=SourceTask(
-                task_gid=TASK_GID, title="source", notes="notes",
-                completed=False, revision="r1",
-            ),
-        ).model_dump(mode="json")
-        stories = await client.call_tool(
-            "source_stories",
-            {"api_version": "1", "task_gid": TASK_GID, "observed_revision": "r1"},
-        )
-        assert stories.structured_content["status"] == "ok"
-        assert stories.structured_content["stories"][0]["story_gid"] == STORY_GID
-        story = await client.call_tool(
-            "source_story",
-            {
-                "api_version": "1", "task_gid": TASK_GID,
-                "story_gid": STORY_GID, "observed_revision": "r1",
-            },
-        )
-        assert story.structured_content["status"] == "ok"
-        assert story.structured_content["item"]["task_gid"] == TASK_GID
-
         base = {"api_version": "1", "work_id": str(ID)}
         appended = await client.call_tool("work_append", base | {"text": "history"})
         assert appended.structured_content == {
@@ -261,81 +189,6 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         }
         rejected = await client.call_tool("work_get", base | {"extra": "secret"})
         assert rejected.is_error
-
-
-async def test_managed_attachment_tool_uses_controller_and_asana_boundary():
-    from test_source_history import FakeState
-
-    from switchstand.contracts import LaunchAuthority
-    from switchstand.core import Controller
-    from switchstand.provider import PROJECT, AsanaProvider
-
-    requests = []
-
-    def respond(request):
-        requests.append(request)
-        if request.url.path.endswith("/attachments"):
-            return httpx.Response(200, json={
-                "data": [{"gid": "hidden", "name": "brief.txt",
-                          "parent": {"gid": "1218431511675555"},
-                          "download_url": "https://secret.invalid"}],
-                "next_page": {"offset": "next"},
-            })
-        return httpx.Response(200, json={"data": {
-            "gid": "1218431511675555",
-            "name": "Task", "notes": "Notes", "completed": False, "modified_at": "r1",
-            "assignee": {"gid": "hidden-user", "name": "Ada"},
-            "memberships": [{"project": {"gid": PROJECT, "name": "Engineering"},
-                             "section": {"gid": "hidden-section", "name": "Doing"}}],
-            "parent": None,
-            "custom_fields": [],
-        }})
-
-    async with httpx.AsyncClient(
-        base_url="https://app.asana.com/api/1.0", transport=httpx.MockTransport(respond)
-    ) as http:
-        service = Controller(
-            LaunchAuthority(active_work_id=ID), FakeState(), {"asana": AsanaProvider(http)}
-        )
-        async with Client(build_server(service, ID)) as client:
-            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-            schema = tools["work_attachments"].input_schema
-            assert "work_id" not in schema["required"]
-            assert schema["properties"]["limit"]["maximum"] == 100
-            assert schema["properties"]["observed_revision"]["minLength"] == 1
-            assert schema["properties"]["cursor"]["anyOf"][0]["maxLength"] == 1024
-            work = (await client.call_tool(
-                "work_get", {"api_version": "1"}
-            )).structured_content["item"]
-            assert [request.url.path for request in requests] == [
-                "/api/1.0/tasks/1218431511675555"
-            ]
-            assert work["context"] == {
-                "assignee": "Ada",
-                "placements": [{"area": "Engineering", "stage": "Doing"}],
-            }
-            assert "hidden-user" not in str(work) and "hidden-section" not in str(work)
-            revision = work["revision"]
-            result = await client.call_tool(
-                "work_attachments", {"api_version": "1", "observed_revision": revision}
-            )
-            assert result.structured_content == {
-                "status": "ok", "work_id": str(ID), "revision": "r1",
-                "attachments": [{"name": "brief.txt"}], "next_cursor": "next",
-            }
-            assert "provider" not in str(result.structured_content)
-            rejected = await client.call_tool(
-                "work_attachments", {"api_version": "1", "observed_revision": "r1",
-                                     "extra": "secret"}
-            )
-            assert rejected.is_error
-            for invalid in ({"observed_revision": ""}, {"limit": "1"},
-                            {"limit": 1.0}, {"limit": True}):
-                rejected = await client.call_tool(
-                    "work_attachments",
-                    {"api_version": "1", "observed_revision": "r1", **invalid},
-                )
-                assert rejected.is_error
 
 
 async def test_managed_controller_stdio_read_chain():
