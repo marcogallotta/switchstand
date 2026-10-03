@@ -23,8 +23,6 @@ from .chatgpt import ChatGPTService, RequiredResultSaveRequest
 from .contracts import (
     ClosedModel,
     Status,
-    WorkAttachmentsRequest,
-    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkHistoryRequest,
@@ -32,8 +30,6 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
-    WorkStructureRequest,
-    WorkStructureResult,
 )
 from .durable_agent_project import BootstrapError, run_mcp_bootstrap
 from .grants import (
@@ -130,9 +126,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_get",
     "work_search",
     "work_resolve_reference",
-    "work_structure",
     "work_history",
-    "work_attachments",
     "work_event",
     "agent_message_pending",
 })
@@ -301,7 +295,7 @@ def build_ordinary_tools(
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
-        """Read current state, including authoritative current notes; use work_structure for relations."""
+        """Read canonical current state, including current notes, routing, and placement context."""
         result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
@@ -353,17 +347,6 @@ def build_ordinary_tools(
         audited("work_resolve_reference", None, result.status)
         return project_ordinary_work(result)
 
-    async def work_structure(
-        api_version: Literal["1"], work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)],
-    ) -> WorkStructureResult:
-        """Read the immediate parent and complete direct children of bound workspace work."""
-        result = await service.structure(WorkStructureRequest(
-            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
-        ))
-        audited("work_structure", str(work_id), result.status)
-        return result
-
     async def work_history(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
         purpose: HistoryPurpose,
@@ -374,20 +357,6 @@ def build_ordinary_tools(
             WorkHistoryRequest(api_version=api_version, work_id=work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
         audited("work_history", f"{work_id}:purpose={purpose}", result.status)
-        return result
-
-    async def work_attachments(
-        api_version: Literal["1"], work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)],
-        cursor: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
-        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
-    ) -> WorkAttachmentsResult:
-        """List attachment names only; on stale, repeat work_get and restart pagination."""
-        result = await service.attachments(WorkAttachmentsRequest(
-            api_version=api_version, work_id=work_id, observed_revision=observed_revision,
-            cursor=cursor, limit=limit,
-        ))
-        audited("work_attachments", str(work_id), result.status)
         return result
 
     async def work_event(
@@ -876,9 +845,7 @@ def build_ordinary_tools(
         ("work_get", enriched_work_get if service.outcome_state_enabled else work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
-        ("work_structure", work_structure),
         ("work_history", work_history),
-        ("work_attachments", work_attachments),
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),

@@ -8,18 +8,11 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from .canonical_event_reads import CanonicalEventReader
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
-    SourceStoriesRequest,
-    SourceStoriesResult,
-    SourceStoryRequest,
-    SourceStoryResult,
-    SourceTaskRequest,
-    SourceTaskResult,
-    WorkAttachmentsRequest,
-    WorkAttachmentsResult,
     WorkEventRequest,
     WorkEventResult,
     WorkGetRequest,
@@ -28,8 +21,6 @@ from .contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
-    WorkStructureRequest,
-    WorkStructureResult,
 )
 from .core import (
     Controller,
@@ -101,6 +92,7 @@ class ChatGPTService:
         required_results: RequiredResultPersistence | None = None,
         ordinary_workspace_admission: bool = False,
         canonical_work: CanonicalWorkRuntime | None = None,
+        canonical_events: CanonicalEventReader | None = None,
         canonical_work_active: bool = False,
         outcome_state_enabled: bool = False,
     ):
@@ -120,11 +112,9 @@ class ChatGPTService:
         self.messages = messages
         self.required_results = required_results
         self.canonical_work = canonical_work
+        self.canonical_events = canonical_events
         self.canonical_work_active = canonical_work_active
         self.outcome_state_enabled = outcome_state_enabled
-        # Only exact source methods use this controller; its dummy authority is
-        # never consulted for work reads or writes on the ChatGPT surface.
-        self.sources = Controller(LaunchAuthority(active_work_id=UUID(int=0)), state, providers)
 
     @staticmethod
     def denied(
@@ -217,7 +207,9 @@ class ChatGPTService:
                 )
                 if authority is None:
                     return WorkSearchResult(status="denied")
-                if self.canonical_work_active and self.canonical_work is not None:
+                if self.canonical_work_active:
+                    if self.canonical_work is None:
+                        return WorkSearchResult(status="unknown")
                     return await self.canonical_work.search(request)
                 provider = self.providers.get("asana")
                 if provider is None:
@@ -227,64 +219,6 @@ class ChatGPTService:
                 ).search(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkSearchResult(status="unknown")
-
-    async def structure(self, request: WorkStructureRequest) -> WorkStructureResult:
-        principal = await self.principal()
-        if principal is None:
-            return WorkStructureResult(status="denied")
-        try:
-            async with self.admission_grants.locked(principal.key) as grant:
-                authority, _ = await self._read_authority(
-                    principal, grant,
-                    operations=frozenset({"work_get", "work_search"}),
-                    work_id=request.work_id, explicit_target=True, workspace_only=True,
-                )
-                if authority is None:
-                    return WorkStructureResult(status="denied")
-                handle = await self.state.get(request.work_id)
-                assert handle is not None
-                provider = self.providers.get(handle.provider)
-                if provider is None:
-                    return WorkStructureResult(status="provider_error")
-                current = await provider.get(handle.provider_work_id)
-                if current is None:
-                    return WorkStructureResult(status="provider_error")
-                if not current.canonical:
-                    return WorkStructureResult(status="denied")
-                revision = current.revision
-                if revision != request.observed_revision:
-                    return WorkStructureResult(
-                        status="stale", work_id=request.work_id, revision=revision,
-                    )
-                result = await WorkDiscovery(
-                    handle.provider, cast(DiscoveryProvider, provider), self.state
-                ).structure(handle.provider_work_id, current.revision)
-                if result is None:
-                    return WorkStructureResult(status="provider_error")
-                latest = await provider.get(handle.provider_work_id)
-                if latest is None:
-                    return WorkStructureResult(status="provider_error")
-                if not latest.canonical:
-                    return WorkStructureResult(status="denied")
-                resulting_revision = latest.revision
-                if result.status == "stale":
-                    return WorkStructureResult(
-                        status="stale", work_id=request.work_id,
-                        revision=result.revision,
-                    )
-                if (result.revision != latest.revision
-                        or resulting_revision != revision):
-                    return WorkStructureResult(
-                        status="stale", work_id=request.work_id,
-                        revision=resulting_revision,
-                    )
-                return WorkStructureResult(
-                    status="ok", work_id=request.work_id,
-                    revision=resulting_revision,
-                    parent=result.parent, children=result.children,
-                )
-        except (SQLAlchemyError, ValueError, KeyError):
-            return WorkStructureResult(status="unknown")
 
     async def resolve_reference(
         self, request: WorkResolveReferenceRequest,
@@ -318,6 +252,8 @@ class ChatGPTService:
                     )
                     if authority is None:
                         return self._reference_denied(reason or "work_not_granted")
+                elif handle is None and self.canonical_work_active:
+                    return GrantedWorkResult(status="unknown")
                 elif handle is None:
                     provider = self.providers.get(parsed.provider)
                     if provider is None:
@@ -332,9 +268,14 @@ class ChatGPTService:
                         )
                     handle = await self.state.bind(parsed.provider, parsed.provider_work_id)
                 authority = LaunchAuthority(active_work_id=handle.id)
-                result = await Controller(authority, self.state, self.providers).get(
-                    WorkGetRequest(api_version="1", work_id=handle.id)
-                )
+                if self.canonical_work_active:
+                    if self.canonical_work is None:
+                        return GrantedWorkResult(status="unknown")
+                    result = await self.canonical_work.get(handle.id)
+                else:
+                    result = await Controller(authority, self.state, self.providers).get(
+                        WorkGetRequest(api_version="1", work_id=handle.id)
+                    )
                 if result.status == "denied":
                     return self._reference_denied(
                         "reference_not_admitted",
@@ -367,13 +308,14 @@ class ChatGPTService:
                         status="denied",
                         guard=self.denied("work_get", reason or "work_not_granted"),
                     )
-                result = (
-                    await self.canonical_work.get(target)
-                    if self.canonical_work_active and self.canonical_work is not None
-                    else await Controller(authority, self.state, self.providers).get(
+                if self.canonical_work_active:
+                    if self.canonical_work is None:
+                        return GrantedWorkResult(status="unknown")
+                    result = await self.canonical_work.get(target)
+                else:
+                    result = await Controller(authority, self.state, self.providers).get(
                         WorkGetRequest(api_version="1", work_id=target)
                     )
-                )
                 return GrantedWorkResult(status=result.status, item=result.item)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
@@ -395,13 +337,14 @@ class ChatGPTService:
                 )
                 if authority is None:
                     return OutcomeWrite("DENIED")
-                current = (
-                    await self.canonical_work.get(owner_work_id)
-                    if self.canonical_work_active and self.canonical_work is not None
-                    else await Controller(authority, self.state, self.providers).get(
+                if self.canonical_work_active:
+                    if self.canonical_work is None:
+                        return OutcomeWrite("UNKNOWN")
+                    current = await self.canonical_work.get(owner_work_id)
+                else:
+                    current = await Controller(authority, self.state, self.providers).get(
                         WorkGetRequest(api_version="1", work_id=owner_work_id)
                     )
-                )
                 if current.status != "ok" or current.item is None:
                     return OutcomeWrite("UNKNOWN")
                 if current.item.revision != owner_observed_revision:
@@ -429,25 +372,13 @@ class ChatGPTService:
                 )
                 if authority is None:
                     return WorkHistoryResult(status="denied")
+                if self.canonical_work_active:
+                    if self.canonical_events is None:
+                        return WorkHistoryResult(status="unknown")
+                    return await self.canonical_events.history(request)
                 return await Controller(authority, self.state, self.providers).history(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkHistoryResult(status="unknown")
-
-    async def attachments(self, request: WorkAttachmentsRequest) -> WorkAttachmentsResult:
-        principal = await self.principal()
-        if principal is None:
-            return WorkAttachmentsResult(status="denied")
-        try:
-            async with self.admission_grants.locked(principal.key) as grant:
-                authority, _ = await self._read_authority(
-                    principal, grant, operations=frozenset({"work_get"}),
-                    work_id=request.work_id, explicit_target=True,
-                )
-                if authority is None:
-                    return WorkAttachmentsResult(status="denied")
-                return await Controller(authority, self.state, self.providers).attachments(request)
-        except (SQLAlchemyError, ProviderError, ValueError, KeyError):
-            return WorkAttachmentsResult(status="unknown")
 
     async def event(self, request: WorkEventRequest) -> WorkEventResult:
         principal = await self.principal()
@@ -461,6 +392,10 @@ class ChatGPTService:
                 )
                 if authority is None:
                     return WorkEventResult(status="denied")
+                if self.canonical_work_active:
+                    if self.canonical_events is None:
+                        return WorkEventResult(status="unknown")
+                    return await self.canonical_events.event(request)
                 return await Controller(authority, self.state, self.providers).event(request)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return WorkEventResult(status="unknown")
@@ -481,7 +416,11 @@ class ChatGPTService:
         principal = await self.principal()
         if principal is None:
             return self.update_gateway.guard(request, "denied", "authenticated_principal_required")
-        if self.canonical_work_active and self.canonical_work is not None:
+        if self.canonical_work_active:
+            if self.canonical_work is None:
+                return self.update_gateway.guard(
+                    request, "unknown", "canonical_work_unavailable", possible_send=False,
+                )
             return await self.canonical_work.protected_update(
                 self.admission_grants, principal, request
             )
@@ -742,18 +681,3 @@ class ChatGPTService:
         return await pending_messages(
             self.state, self.grants, self.messages, principal, work_id, request
         )
-
-    async def source_task(self, request: SourceTaskRequest) -> SourceTaskResult:
-        if await self.principal() is None:
-            return SourceTaskResult(status="denied")
-        return await self.sources.source_task(request)
-
-    async def source_stories(self, request: SourceStoriesRequest) -> SourceStoriesResult:
-        if await self.principal() is None:
-            return SourceStoriesResult(status="denied")
-        return await self.sources.source_stories(request)
-
-    async def source_story(self, request: SourceStoryRequest) -> SourceStoryResult:
-        if await self.principal() is None:
-            return SourceStoryResult(status="denied")
-        return await self.sources.source_story(request)

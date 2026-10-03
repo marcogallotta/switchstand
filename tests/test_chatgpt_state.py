@@ -16,12 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand import test_grant
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_chatgpt_server
-from switchstand.contracts import (
-    LaunchAuthority,
-    SourceStoriesRequest,
-    SourceStoryRequest,
-    SourceTaskRequest,
-)
+from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderError
 from switchstand.effects import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
@@ -364,34 +359,6 @@ async def test_revocation_serializes_with_inflight_send_then_denies(subject):
     assert not done
     assert (await service.append(request(revoked, text="later"))).status == "denied"
     assert provider.sends == 1
-
-
-async def test_inbox_arrival_reread_receipt_and_reentry(subject):
-    service, selected, provider = subject
-    source = SourceTaskRequest(api_version="1", task_gid="123")
-    assert (await service.source_task(source)).item.notes == "initial notes"
-    await provider.append("123", "sender=coordinator; request inspect source 123/story 1")
-    provider.notes = "updated message in notes"
-    assert (await service.source_task(source)).item.notes == "updated message in notes"
-    page = SourceStoriesRequest(api_version="1", task_gid="123", observed_revision="r1", limit=1)
-    assert (await service.source_stories(page)).status == "stale"
-    page = page.model_copy(update={"observed_revision": provider.revision})
-    message = (await service.source_stories(page)).stories[0]
-    reread = await service.source_story(SourceStoryRequest(api_version="1", task_gid="123",
-        story_gid=message.story_gid, observed_revision=provider.revision))
-    assert reread.item == message and message.created_by == "shared-provider-author"
-    req = request(selected, observed_revision=provider.revision)
-    receipt = await service.append(req)
-    assert receipt.status == "ok" and receipt.receipt.principal == selected.principal
-    service.grants = GrantState(service.grants.engine)
-    service.gateway = AppendGateway(service.state, service.grants, service.providers)
-    assert await service.append(req) == receipt and provider.sends == 2
-    current = (await service.source_task(source)).item.revision
-    first_page = await service.source_stories(page.model_copy(update={"observed_revision": current}))
-    assert first_page.next_offset == "1"
-    second = await service.source_stories(page.model_copy(update={
-        "observed_revision": current, "offset": first_page.next_offset}))
-    assert second.stories[0].story_gid == receipt.receipt.story_gid and second.next_offset is None
 
 
 async def test_workspace_scope_requires_explicit_bound_canonical_targets(subject):

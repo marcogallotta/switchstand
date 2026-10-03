@@ -38,8 +38,8 @@ from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
     "repository_bundle_get", "repository_candidate_qualification_get", "agent_project_bootstrap",
-    "work_get", "work_search", "work_resolve_reference", "work_structure",
-    "work_history", "work_attachments", "work_event", "work_append",
+    "work_get", "work_search", "work_resolve_reference",
+    "work_history", "work_event", "work_append",
     "work_create", "work_update", "work_relate", "effect_reconcile",
     "agent_register", "agent_takeover", "agent_message_send", "agent_message_pending",
     "agent_message_receive", "agent_message_recover",
@@ -256,19 +256,9 @@ async def _discover(endpoint, selected):
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
         for tool in listed_tools:
-            if tool.name in {"work_search", "work_get", "work_structure", "work_history", "work_attachments", "work_event"}:
+            if tool.name in {"work_search", "work_get", "work_history", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
                 assert tool.inputSchema.get("additionalProperties") is False
-                if tool.name == "work_attachments":
-                    schema = tool.inputSchema
-                    assert set(schema["required"]) == {"api_version", "work_id", "observed_revision"}
-                    assert schema["properties"]["observed_revision"]["minLength"] == 1
-                    cursor_types = schema["properties"]["cursor"]["anyOf"]
-                    assert next(item for item in cursor_types if item.get("type") == "string")[
-                        "maxLength"
-                    ] == 1024
-                    limit = schema["properties"]["limit"]
-                    assert (limit["default"], limit["minimum"], limit["maximum"]) == (50, 1, 100)
         await read_chain(client, search["items"][0]["id"], exceptional_purpose=True)
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
 
@@ -569,7 +559,6 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _discover(endpoint, selected)
     selected = await _replace_with_launch(url, selected)
     with _server(env, port) as endpoint:
-        await _attachments(endpoint, selected, denied, provider_calls)
         first = await _exercise(endpoint, selected, operation_id)
         assert first["status"] == "ok" and first["effect"] == "applied"
         assert first["receipt"]["operation_id"] == str(operation_id)
@@ -584,37 +573,6 @@ async def test_process_with_fixture_identity_replays_durable_append_after_restar
         await _boundaries(endpoint, selected, denied, effects)
     with _server(env, port) as endpoint:
         await _contained_after_restart(endpoint, selected, effects)
-
-async def _attachments(endpoint, selected, denied_work, provider_calls):
-    async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
-        async def call(work_id, revision):
-            result = await client.call_tool("work_attachments", {
-                "api_version": "1", "work_id": str(work_id), "observed_revision": revision,
-            })
-            assert_public(result.structured_content)
-            return result.structured_content
-
-        active = selected.authority.active_work_id
-        stable = await call(active, "r1")
-        assert stable == {
-            "status": "ok", "work_id": str(active), "revision": "r1",
-            "attachments": [{"name": "brief.txt"}], "next_cursor": None,
-        }
-        stale = await call(active, "old")
-        assert stale == {
-            "status": "stale", "work_id": str(active), "revision": "r1",
-            "attachments": [], "next_cursor": None,
-        }
-        before_peer = json.loads(provider_calls.read_text())
-        denied = await call(denied_work, "r1")
-        assert denied == {
-            "status": "denied", "work_id": None, "revision": None,
-            "attachments": [], "next_cursor": None,
-        }
-        after_peer = json.loads(provider_calls.read_text())
-        assert after_peer["get"] == before_peer["get"] + 1
-        assert after_peer["list_attachments"] == before_peer["list_attachments"]
-
 
 async def _boundaries(endpoint, selected, denied_work, effects):
     async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
