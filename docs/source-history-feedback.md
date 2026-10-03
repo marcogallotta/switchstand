@@ -2,7 +2,7 @@
 
 Switchstand's current MCP model is provider-neutral and WorkId-based. Ordinary
 clients discover or resolve admitted work, then use work, structure, history,
-attachment, event, and protected-effect operations. Managed Codex receives its
+event, and protected-effect operations. Managed Codex receives its
 active and reference WorkIds from the trusted launcher; those bindings, not tool
 arguments or readable provider records, define its work boundary.
 
@@ -18,8 +18,8 @@ chronology.
 History and exact-event reads are exceptional. They require an explicit
 `investigation`, `recovery`, or `legacy_reconciliation` purpose and are not for
 normal grounding, re-entry, current-work discovery, or routine polling. Use the
-revision returned by `work_get` when reading bounded history, attachments, or
-exact events. A stale result means reread current work and restart the affected
+revision returned by `work_get` when reading bounded history or exact events. A
+stale result means reread current work and restart the affected
 paginated read; partial, malformed, unavailable, or stale pages never prove
 complete history. Promote any controlling conclusion from exceptional history
 back into notes before relying on it as current state.
