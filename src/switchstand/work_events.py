@@ -26,7 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.engine import Row
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .canonical_work import canonical_metadata, canonical_work
 
@@ -177,6 +177,19 @@ class WorkEventRepository:
         subtype: str, text: str | None, created_at: datetime, actor: str | None = None,
         asana_story_gid: str | None = None,
     ) -> AppendOutcome:
+        async with self.engine.begin() as connection:
+            return await self.append_locked(
+                connection, work_id, observed_version=observed_version,
+                operation_id=operation_id, subtype=subtype, text=text,
+                created_at=created_at, actor=actor, asana_story_gid=asana_story_gid,
+            )
+
+    async def append_locked(
+        self, connection: AsyncConnection, work_id: UUID, *, observed_version: int,
+        operation_id: UUID, subtype: str, text: str | None, created_at: datetime,
+        actor: str | None = None, asana_story_gid: str | None = None,
+    ) -> AppendOutcome:
+        """Append inside the caller's transaction so journal and event commit together."""
         if not subtype or "\0" in subtype:
             raise ValueError("event subtype must be non-empty PostgreSQL text")
         if text is not None and "\0" in text:
@@ -185,43 +198,42 @@ class WorkEventRepository:
             raise ValueError("event creation time must include a timezone")
         if asana_story_gid is not None and not asana_story_gid:
             raise ValueError("historical story GID must be non-empty")
-        async with self.engine.begin() as connection:
-            version = await connection.scalar(select(self.works.c.row_version).where(
-                self.works.c.work_id == work_id
-            ).with_for_update())
-            if version is None:
-                raise UnknownWorkError("work does not exist")
+        version = await connection.scalar(select(self.works.c.row_version).where(
+            self.works.c.work_id == work_id
+        ).with_for_update())
+        if version is None:
+            raise UnknownWorkError("work does not exist")
 
-            replay = (await connection.execute(select(*self.columns).where(
-                self.events.c.operation_id == operation_id
-            ))).one_or_none()
-            if replay is not None:
-                event = _event(replay)
-                if (
-                    event.work_id != work_id or event.subtype != subtype or event.text != text
-                    or event.created_at != created_at or event.actor != actor
-                    or event.asana_story_gid != asana_story_gid
-                ):
-                    raise OperationConflictError("OperationId was reused with another append")
-                return AppendOutcome(event, event.result_version, False)
+        replay = (await connection.execute(select(*self.columns).where(
+            self.events.c.operation_id == operation_id
+        ))).one_or_none()
+        if replay is not None:
+            event = _event(replay)
+            if (
+                event.work_id != work_id or event.subtype != subtype or event.text != text
+                or event.created_at != created_at or event.actor != actor
+                or event.asana_story_gid != asana_story_gid
+            ):
+                raise OperationConflictError("OperationId was reused with another append")
+            return AppendOutcome(event, event.result_version, False)
 
-            if version != observed_version:
-                raise StaleWorkVersion(cast(int, version))
-            sequence = cast(int, await connection.scalar(select(
-                func.coalesce(func.max(self.events.c.sequence), 0) + 1
-            ).where(self.events.c.work_id == work_id)))
-            event_id = uuid4()
-            next_version = cast(int, version) + 1
-            values = {
-                "id": event_id, "work_id": work_id, "sequence": sequence,
-                "result_version": next_version, "subtype": subtype, "text": text,
-                "created_at": created_at, "actor": actor,
-                "asana_story_gid": asana_story_gid, "operation_id": operation_id,
-            }
-            row = (await connection.execute(
-                insert(self.events).values(values).returning(*self.columns)
-            )).one()
-            await connection.execute(update(self.works).where(
-                self.works.c.work_id == work_id
-            ).values(row_version=next_version))
-            return AppendOutcome(_event(row), next_version, True)
+        if version != observed_version:
+            raise StaleWorkVersion(cast(int, version))
+        sequence = cast(int, await connection.scalar(select(
+            func.coalesce(func.max(self.events.c.sequence), 0) + 1
+        ).where(self.events.c.work_id == work_id)))
+        event_id = uuid4()
+        next_version = cast(int, version) + 1
+        values = {
+            "id": event_id, "work_id": work_id, "sequence": sequence,
+            "result_version": next_version, "subtype": subtype, "text": text,
+            "created_at": created_at, "actor": actor,
+            "asana_story_gid": asana_story_gid, "operation_id": operation_id,
+        }
+        row = (await connection.execute(
+            insert(self.events).values(values).returning(*self.columns)
+        )).one()
+        await connection.execute(update(self.works).where(
+            self.works.c.work_id == work_id
+        ).values(row_version=next_version))
+        return AppendOutcome(_event(row), next_version, True)

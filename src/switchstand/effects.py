@@ -2,9 +2,12 @@
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import insert, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from .canonical_work import canonical_revision, canonical_work
 from .core import (
     Provider,
     ProviderError,
@@ -13,7 +16,7 @@ from .core import (
     observed_revision_matches,
     provider_rejection_reason,
 )
-from .grant_state import GrantState
+from .grant_state import GrantState, effect_intents
 from .grants import (
     EffectBlocker,
     EffectOutcomeView,
@@ -24,6 +27,7 @@ from .grants import (
     WorkGrant,
 )
 from .mutation_effect import blocked_effect_next_action
+from .work_events import OperationConflictError, StaleWorkVersion, WorkEventRepository
 
 
 class AppendGateway:
@@ -157,3 +161,110 @@ class AppendGateway:
                     receipt=receipt,
                 )
         return self.guard(request, "unknown", "effect_readback_unconfirmed", possible_send=True)
+
+
+class CanonicalAppendGateway:
+    """DB-native append owner; event, revision, and receipt commit atomically."""
+
+    def __init__(self, grants: GrantState, events: WorkEventRepository):
+        self.grants, self.events = grants, events
+
+    async def append(self, principal: PrincipalContext, request: ProtectedAppend) -> GuardOutcome:
+        fingerprint = AppendGateway.fingerprint(principal, request)
+        try:
+            async with self.grants.locked(principal.key) as grant:
+                if not AppendGateway.admitted(principal, grant) or grant is None:
+                    return AppendGateway.guard(request, "denied", "no_current_grant")
+                if (not grant.can_write(request.work_id)
+                        or "work_append" not in grant.operations):
+                    return AppendGateway.guard(
+                        request, "denied", "operation_or_work_not_granted"
+                    )
+                if request.grant_version != grant.version:
+                    return AppendGateway.guard(request, "stale", "grant_version_changed")
+                qualification = grant.append_qualification
+                if (qualification is None or (principal.assurance == "test")
+                        != qualification.startswith("test:")):
+                    return AppendGateway.guard(
+                        request, "denied", "append_not_qualified_for_this_surface"
+                    )
+                async with self.grants.engine.begin() as connection:
+                    current = (await connection.execute(select(
+                        canonical_work.c.row_version, canonical_work.c.completed,
+                    ).where(canonical_work.c.work_id == request.work_id).with_for_update())).one_or_none()
+                    if current is None:
+                        return AppendGateway.guard(request, "denied", "work_not_bound")
+                    exact = (await connection.execute(select(effect_intents).where(
+                        effect_intents.c.operation_id == str(request.operation_id)
+                    ))).mappings().one_or_none()
+                    if exact is not None:
+                        if (exact["principal_key"] != principal.key
+                                or exact["fingerprint"] != fingerprint):
+                            return AppendGateway.guard(
+                                request, "denied", "operation_identity_conflict"
+                            )
+                        return GuardOutcome.model_validate(exact["outcome"])
+                    blocked = (await connection.execute(select(effect_intents).where(
+                        (effect_intents.c.work_id == str(request.work_id))
+                        & (effect_intents.c.outcome["effect"].astext == "unknown")
+                    ).limit(1))).mappings().one_or_none()
+                    if blocked is not None:
+                        prior = GuardOutcome.model_validate(blocked["outcome"])
+                        assert prior.operation_id is not None and prior.work_id is not None
+                        return AppendGateway.guard(
+                            request, "unknown", "target_has_unresolved_effect"
+                        ).model_copy(update={
+                            "next_action": blocked_effect_next_action(prior.operation),
+                            "blocked_by": EffectBlocker(
+                                operation=prior.operation, operation_id=prior.operation_id,
+                                work_id=prior.work_id, outcome=EffectOutcomeView(
+                                    status=prior.status, reason=prior.reason,
+                                    effect=prior.effect, retry=prior.retry,
+                                ),
+                            ),
+                        })
+                    if current.completed:
+                        return AppendGateway.guard(request, "denied", "work_is_terminal")
+                    if request.observed_revision != canonical_revision(
+                        request.work_id, current.row_version
+                    ):
+                        return AppendGateway.guard(
+                            request, "stale", "source_revision_changed"
+                        )
+                    appended = await self.events.append_locked(
+                        connection, request.work_id, observed_version=current.row_version,
+                        operation_id=request.operation_id, subtype="comment_added",
+                        text=request.text, created_at=datetime.now(UTC), actor=principal.subject,
+                    )
+                    receipt = EffectReceipt(
+                        operation_id=request.operation_id, principal=principal,
+                        grant_id=grant.id, grant_version=grant.version,
+                        work_id=request.work_id, provider="postgres",
+                        task_gid=str(request.work_id), story_gid=str(appended.event.id),
+                        text=request.text, qualification=qualification,
+                    )
+                    outcome = GuardOutcome(
+                        status="ok", operation="work_append", work_id=request.work_id,
+                        operation_id=request.operation_id, reason="exact_effect_verified",
+                        effect="applied", retry="none",
+                        next_action="Use the recorded receipt.", receipt=receipt,
+                    )
+                    await connection.execute(insert(effect_intents).values(
+                        operation_id=str(request.operation_id), fingerprint=fingerprint,
+                        principal_key=principal.key, work_id=str(request.work_id),
+                        grant_id=str(grant.id), grant_version=grant.version,
+                        intent={"request": request.model_dump(mode="json"),
+                                "authority": "postgres"},
+                        outcome=outcome.model_dump(mode="json", exclude_none=True),
+                    ))
+                    return outcome
+        except IntegrityError:
+            return AppendGateway.guard(request, "denied", "operation_identity_conflict")
+        except StaleWorkVersion:
+            return AppendGateway.guard(request, "stale", "source_revision_changed")
+        except (OperationConflictError, TypeError, ValueError, KeyError):
+            return AppendGateway.guard(request, "denied", "invalid_database_append")
+        except SQLAlchemyError:
+            return AppendGateway.guard(
+                request, "unknown", "state_or_effect_unavailable", possible_send=True
+            )
