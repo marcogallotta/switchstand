@@ -880,6 +880,68 @@ async def test_import_snapshot_exposes_raw_empty_membership_despite_parent_canon
     assert parent_gid == "789" and placements == () and zero_memberships is True
 
 
+async def test_import_parent_proof_ignores_retired_routing_but_is_revision_stable():
+    retired = source_task_payload(canonical=False)
+    retired["data"].update(
+        completed=True,
+        memberships=[],
+        custom_fields=[field(FIELDS["priority"], enabled=False, option="P1", display="P1")],
+    )
+    subject, api = provider((200, retired), (200, retired))
+
+    assert await subject.retired_unbound_parent_for_import("123") is True
+    assert len(api.requests) == 2
+
+    changed = source_task_payload(revision="r2", canonical=False)
+    changed["data"].update(completed=True, memberships=[])
+    subject, _ = provider((200, retired), (200, changed))
+    with pytest.raises(ProviderError, match="changed"):
+        await subject.retired_unbound_parent_for_import("123")
+
+
+@pytest.mark.parametrize(("change", "responses"), [
+    (lambda data: data.update(gid="different"), 2),
+    (lambda data: data.update(modified_at=None), 2),
+    (lambda data: data.update(completed=False), 2),
+    (lambda data: data.update(memberships=[
+        {"project": {"gid": "outside", "name": "Outside"}, "section": None},
+    ]), 2),
+])
+async def test_import_parent_proof_rejects_unproved_retirement(change, responses):
+    payload = source_task_payload(canonical=False)
+    payload["data"].update(completed=True, memberships=[])
+    change(payload["data"])
+    subject, _ = provider(*([(200, payload)] * responses))
+
+    if payload["data"].get("gid") != "123" or payload["data"].get("modified_at") is None:
+        with pytest.raises(ProviderError, match="provider response invalid"):
+            await subject.retired_unbound_parent_for_import("123")
+    else:
+        assert await subject.retired_unbound_parent_for_import("123") is False
+
+
+async def test_import_parent_proof_rejects_inherited_canonical_parent():
+    child = source_task_payload(canonical=False)
+    child["data"].update(completed=True, memberships=[], parent={"gid": "789"})
+    ancestor = source_task_payload(gid="789", canonical=True)
+    subject, api = provider((200, child), (200, ancestor), (200, child))
+
+    assert await subject.retired_unbound_parent_for_import("123") is False
+    assert len(api.requests) == 3
+
+
+async def test_import_parent_proof_detects_change_during_canonical_read():
+    first = source_task_payload(canonical=False)
+    first["data"].update(completed=True, memberships=[], parent={"gid": "789"})
+    ancestor = source_task_payload(gid="789", canonical=False)
+    second = source_task_payload(revision="r2", canonical=False)
+    second["data"].update(completed=True, memberships=[], parent={"gid": "789"})
+    subject, _ = provider((200, first), (200, ancestor), (200, second))
+
+    with pytest.raises(ProviderError, match="changed"):
+        await subject.retired_unbound_parent_for_import("123")
+
+
 @pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])
 async def test_changed_or_noncanonical_history_does_not_fetch_stories(canonical, revision):
     subject, api = provider((200, source_task_payload(canonical=canonical, revision=revision)))

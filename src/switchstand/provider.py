@@ -763,6 +763,39 @@ class AsanaProvider:
         """Read exact dependency identities for the bounded offline migration."""
         return await self._dependency_gids(provider_work_id)
 
+    async def retired_unbound_parent_for_import(self, provider_work_id: str) -> bool:
+        """Prove only the minimal facts needed to omit an outside retired parent."""
+        first = await self._task(provider_work_id)
+        if first is None:
+            return False
+
+        def facts(task: JSON) -> tuple[str, bool, list[object], str | None]:
+            if self._gid(task) != provider_work_id:
+                raise TypeError
+            revision = task.get("modified_at")
+            completed = task.get("completed")
+            memberships = task.get("memberships")
+            if (
+                not isinstance(revision, str)
+                or not isinstance(completed, bool)
+                or not isinstance(memberships, list)
+            ):
+                raise TypeError
+            return revision, completed, cast(list[object], memberships), self._parent_gid(task)
+
+        try:
+            first_facts = facts(first)
+            _, completed, memberships, _ = first_facts
+            if not completed or memberships:
+                return False
+            canonical = await self._canonical(first)
+            second = await self._task(provider_work_id)
+            if second is None or facts(second) != first_facts:
+                raise ProviderError("provider work changed during import parent proof")
+            return not canonical
+        except (KeyError, TypeError, ValueError):
+            raise ProviderError("provider response invalid") from None
+
     async def snapshot_for_import(
         self, provider_work_id: str,
     ) -> tuple[
