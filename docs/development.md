@@ -19,9 +19,11 @@ This reuses the existing source owner and host configuration without exporting c
 or creating an MCP impersonation session. Do not run it as a task in the live edge process:
 admission performs synchronous host RPC. Each page reads at most 50 metadata references,
 then the next page follows on the next two-second cycle; a completed scan restarts from the
-beginning so newly committed UUIDs behind a cursor are not lost. Each individual admission
-holds source read locks while binding/readback RPCs execute; the 10-second RPC timeout is
-per call, not a bound on a complete page or binding scan. Host latency/capacity remains a
+beginning so newly committed UUIDs behind a cursor are not lost. Source transactions end
+before host RPCs: authoritative source receive/disposition/takeover remain independent of
+host latency. A source may change after preflight, so a wake is only a reference requiring
+the agent's canonical reread. The 10-second RPC timeout is per call, not a bound on a
+complete page or binding scan. Host latency/capacity remains a
 live qualification obligation. Output contains wake IDs and outcomes, never source payloads.
 `opt_in=False` is inert. Stop/cancel the dedicated process to suspend this pilot; restart with
 the same configuration to reconcile pending admissions. This is not full product suspend,

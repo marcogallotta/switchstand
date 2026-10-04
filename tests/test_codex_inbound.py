@@ -1,11 +1,13 @@
 import asyncio
 import json
+import threading
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import create_engine, text, update
+from sqlalchemy.exc import SQLAlchemyError
 
-from switchstand.agent_mailboxes import AgentMailboxState
+from switchstand.agent_mailboxes import AgentMailboxState, agent_mailboxes, chat_session_key
 from switchstand.codex_wakeful import (
     Projection,
     WakeSourceRef,
@@ -79,6 +81,46 @@ async def test_disposition_between_scan_and_admission_does_not_wake(subject, set
     assert not (home / "codex-wakeful.json").exists()
 
 
+async def test_source_lifecycle_progresses_while_host_admission_waits(subject, setup, monkeypatch):
+    home, _, client, binding = setup
+    messages, mailboxes, mailbox, delivery_id = await source(subject)
+    sync = create_engine(messages.engine.url)
+    finished, failures = threading.Event(), []
+
+    def transition():
+        try:
+            with sync.begin() as connection:
+                connection.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                connection.execute(update(message_deliveries).where(
+                    message_deliveries.c.delivery_id == delivery_id
+                ).values(state="DISPOSITIONED"))
+                connection.execute(update(agent_mailboxes).where(
+                    agent_mailboxes.c.endpoint_id == mailbox.endpoint_id
+                ).values(generation=mailbox.generation + 1,
+                         session_key=chat_session_key("codex:replacement")))
+        except SQLAlchemyError as exc:
+            failures.append(type(exc).__name__)
+        finally:
+            finished.set()
+
+    def waiting_host(*_args, **_kwargs):
+        worker = threading.Thread(target=transition)
+        worker.start()
+        try:
+            assert finished.wait(3), "source lifecycle blocked by host admission"
+            assert not failures, "source lifecycle could not acquire canonical locks"
+        finally:
+            worker.join(timeout=3)
+        return "UNKNOWN"
+
+    monkeypatch.setattr(Projection, "admit", waiting_host)
+    try:
+        await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client)
+        assert await messages.pending_delivery_ids(mailbox) is None
+    finally:
+        sync.dispose()
+
+
 async def test_exact_mailbox_session_and_takeover_fence(subject, setup):
     home, _, client, binding = setup
     messages, mailboxes, mailbox, delivery_id = await source(subject, "codex:other")
@@ -87,8 +129,7 @@ async def test_exact_mailbox_session_and_takeover_fence(subject, setup):
     takeover = await mailboxes.takeover(mailbox.name, mailbox.principal_key, "codex:exact")
     assert takeover.mailbox is not None and takeover.mailbox.generation == mailbox.generation + 1
     assert await messages.pending_delivery_ids(mailbox) is None
-    async with messages.pending_delivery(mailbox, delivery_id) as pending:
-        assert not pending
+    assert not await messages.pending_delivery(mailbox, delivery_id)
     assert await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client) == (
         None, {"source": "STALE"})
     assert not client.calls

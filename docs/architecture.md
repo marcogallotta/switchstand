@@ -484,9 +484,10 @@ neutral SQLite/outbox owner; ordinary launcher behavior does not invoke the prec
 The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
-to the exact Codex root/start record. Each source reread holds shared mailbox/delivery locks
-through its individual admission; the runtime idle check is preflight, not an atomic fence
-against a concurrently starting host turn. Busy targets remain pending; unsupported history
+to the exact Codex root/start record. Source transactions finish before host admission so
+host latency cannot block canonical receive/disposition/takeover. Source and runtime checks
+are preflight, not atomic fences against concurrent source changes or host turns; the awakened
+agent must reread the exact delivery before acting. Busy targets remain pending; unsupported history
 and ambiguous attempts remain UNKNOWN without resend. A home-wide private lock excludes all
 precursor writers, and the source is never received or dispositioned by intake. Stopping the
 process preserves source records and the private admission projection; restarting the same

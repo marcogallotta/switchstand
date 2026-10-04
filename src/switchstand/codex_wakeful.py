@@ -299,7 +299,7 @@ async def inbound_cycle(
     projection: Projection, client: SharedClient, cursor: UUID | None = None,
     stop: asyncio.Event | None = None,
 ) -> tuple[UUID | None, dict[str, str]]:
-    """One metadata-only page; source locks fence each individual idle admission."""
+    """One metadata-only page with source revalidation before individual idle admission."""
     binding = projection.binding
     current = await mailboxes.by_endpoint_id(mailbox.endpoint_id)
     if current.status == "recovery_required":
@@ -317,11 +317,10 @@ async def inbound_cycle(
             break
         source = WakeSourceRef("switchstand_inbound", str(delivery_id))
         identity = wake_id(binding, source)
-        async with messages.pending_delivery(mailbox, delivery_id) as pending:
-            if not pending:
-                results[identity] = "STALE"
-                continue
-            results[identity] = projection.admit(client, source, idle_only=True)
+        if not await messages.pending_delivery(mailbox, delivery_id):
+            results[identity] = "STALE"
+            continue
+        results[identity] = projection.admit(client, source, idle_only=True)
     return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
 
 
