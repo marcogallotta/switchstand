@@ -62,7 +62,7 @@ env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS
             "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
             "SWITCHSTAND_RUN_ID"]
 required = false
-enabled_tools = ["work_get", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition", "agent_task_request"]
+enabled_tools = ["work_get", "work_history", "work_event", "work_append", "work_update", "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
 default_tools_approval_mode = "approve"
 
 [mcp_servers.switchstand_development]
