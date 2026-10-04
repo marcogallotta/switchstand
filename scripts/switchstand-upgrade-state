@@ -102,8 +102,11 @@ case "$revision" in
     0012_outcome_state)
         counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)"
         ;;
+    0013_failure_journal)
+        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)||'|'||(SELECT count(*) FROM work_migration_receipts)||'|'||(SELECT count(*) FROM failure_records)||'|'||(SELECT count(*) FROM failure_resolutions)"
+        ;;
     *)
-        echo "unsupported shared schema: expected 0002, 0004, 0005, 0006, 0007, 0012, or $EXPECTED_NEW; actual ${revision:-<none>}" >&2
+        echo "unsupported shared schema: expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, or $EXPECTED_NEW; actual ${revision:-<none>}" >&2
         exit 1
         ;;
 esac

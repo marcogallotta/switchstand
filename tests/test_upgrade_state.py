@@ -127,7 +127,7 @@ def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 1
-    assert "expected 0002, 0004, 0005, 0006, 0007, 0012, or 0014_canonical_routing; actual unexpected" in result.stderr
+    assert "expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, or 0014_canonical_routing; actual unexpected" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
     assert "build" not in trace
@@ -267,6 +267,22 @@ def test_upgrades_existing_mailbox_schema_and_preserves_agent_mailboxes(
     assert "preserved counts 78|2|3|4|5|6|7|8|9" in result.stdout
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "count(*) FROM agent_mailboxes" in trace
+    assert "run --rm --network container:shared" in trace
+
+
+def test_upgrades_existing_0013_and_preserves_failure_journal_counts(tmp_path):
+    repo, env = _repo(tmp_path)
+    env["FAKE_REVISION"] = "0013_failure_journal"
+    env["FAKE_COUNTS"] = "78|2|3|4|5|6|7|8|9|10|11|12|13|14|15"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "0013_failure_journal -> 0014_canonical_routing" in result.stdout
+    assert "preserved counts 78|2|3|4|5|6|7|8|9|10|11|12|13|14|15" in result.stdout
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    for table in ("work_migration_receipts", "failure_records", "failure_resolutions"):
+        assert f"count(*) FROM {table}" in trace
     assert "run --rm --network container:shared" in trace
 
 
