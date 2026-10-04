@@ -275,9 +275,11 @@ review diffs. The development/Quality image must support the production Git comm
 `--no-lazy-fetch`; landing-reconciliation tests fail with `MISSING_CAPABILITY` rather than skip if that prerequisite
 regresses. Pytest short summaries expose any remaining SKIPPED/XFAIL claims so aggregate Quality SUCCESS does not
 silently imply they ran. Stage branches and pull requests are based on the exact last accepted green SHA. Landing reconciliation
-models the repository's GitHub merge-commit flow: the landed result must be the current accepted result with exactly
-the reviewed base and reviewed candidate as its ordered parents, the reviewed candidate must descend from that base,
-and the landed tree must equal the reviewed candidate tree. Integration admits State, Provider, then MCP and reruns affected plus full gates after each admission.
+models the repository's GitHub merge-commit flow. For a direct or rebased candidate, the landed result has the exact current
+reviewed base and candidate as ordered parents, the candidate descends from that base, and the landed tree equals the candidate
+tree. When an immutable candidate is preserved after target advancement, it keeps its original reviewed-base ancestry; the landed
+result instead has the exact current base and immutable candidate as ordered parents, and its tree equals the exact qualified
+composition tree. Integration admits State, Provider, then MCP and reruns affected plus full gates after each admission.
 
 ## Known recovery limits
 

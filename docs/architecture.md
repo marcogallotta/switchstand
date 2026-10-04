@@ -393,9 +393,12 @@ Docker inspection, naming, labels, and removal primitives. Launch decides when t
 the remaining overlap is a known lifecycle-policy convergence boundary, not evidence of two equal
 owners.
 
-Git landing verification follows the repository's merge-commit model: the landing commit must have
-the reviewed base and reviewed candidate as its two ordered parents, the candidate must descend from
-the reviewed base, and the landing tree must equal the reviewed candidate tree.
+Git landing verification follows the repository's merge-commit model. For a direct or rebased
+candidate, the landing commit has the exact current reviewed base and candidate as its ordered
+parents, the candidate descends from that base, and the landing tree equals the candidate tree. When
+an immutable candidate is preserved after target advancement, it retains its original reviewed-base
+ancestry; the landing commit instead has the exact current base and immutable candidate as its
+ordered parents, and its tree equals the exact qualified composition tree.
 
 ## Operator provisioning surface
 
