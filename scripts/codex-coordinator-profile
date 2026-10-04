@@ -123,7 +123,7 @@ def render_hooks(hook: Path, primary: Path) -> str:
     return json.dumps(hooks, indent=2) + "\n"
 
 
-def _replace(path: Path, output: str) -> None:
+def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", dir=path.parent, prefix=f".{path.name}.", delete=False
@@ -131,7 +131,13 @@ def _replace(path: Path, output: str) -> None:
         temporary = Path(handle.name)
         handle.write(output)
     os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    try:
+        if exclusive:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -150,8 +156,8 @@ def main() -> None:
     resolved_hook = hook.resolve(strict=True)
     if not resolved_hook.is_file() or not os.access(resolved_hook, os.X_OK):
         raise SystemExit("Coordinator hook is unavailable")
-    _replace(destination, output)
-    _replace(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
+    _write(destination, output, exclusive=True)
+    _write(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":

@@ -346,9 +346,12 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
-`codex-dispatch` records the exact generated policy, executable, repository controls and
+`codex-dispatch` creates an immutable per-launch named profile and records that exact generated
+policy, executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
-`scripts/coordinator-control`. Its comparison keeps proven mismatches monotonically
+`scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
+session storage and byte-stable hooks without replacing another generation's profile evidence. Its
+comparison keeps proven mismatches monotonically
 `CONTROL_STALE`; each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
 identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
