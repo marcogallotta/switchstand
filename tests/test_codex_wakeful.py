@@ -247,9 +247,16 @@ for line in sys.stdin:
     if "id" not in request:
         continue
     if request["method"] == "thread/queue/list":
-        print(json.dumps({{"jsonrpc": "2.0", "id": 999, "method": "fixture/request"}}), flush=True)
+        frames = [
+            {{"jsonrpc": "2.0", "id": 999, "method": "fixture/request"}},
+            {{"jsonrpc": "2.0", "id": request["id"],
+              "result": {{"data": [], "nextCursor": None}}}},
+        ]
+        sys.stdout.write("".join(json.dumps(frame) + "\\n" for frame in frames))
+        sys.stdout.flush()
         rejection = json.loads(sys.stdin.readline())
         assert rejection["id"] == 999 and rejection["error"]["code"] == -32601
+        continue
     result = ({{"serverInfo": {{"name": "fixture", "version": "1"}}}}
               if request["method"] == "initialize"
               else {{"data": [], "nextCursor": None}})

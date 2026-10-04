@@ -16,7 +16,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import Any, BinaryIO, cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -74,10 +74,11 @@ class QueueClient:
         if (not self.codex.is_file() or not os.access(self.codex, os.X_OK)
                 or not self.home.is_dir()):
             raise OSError("UNAVAILABLE: unproved Codex runtime")
-        self.process: subprocess.Popen[str] | None = None
-        self.stdin: TextIO | None = None
-        self.stdout: TextIO | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+        self.stdin: BinaryIO | None = None
+        self.stdout: BinaryIO | None = None
         self.selector: selectors.BaseSelector | None = None
+        self.read_buffer = bytearray()
         self.sequence = 0
 
     def _start(self) -> None:
@@ -90,17 +91,16 @@ class QueueClient:
                 [str(self.codex), "app-server", "--listen", "stdio://"],
                 cwd=self.home,
                 env=environment,
-                text=True,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                bufsize=1,
+                bufsize=0,
             )
             self.process = process
             if process.stdin is None or process.stdout is None:
                 raise OSError("Codex app-server pipes unavailable")
-            self.stdin = cast(TextIO, process.stdin)
-            self.stdout = cast(TextIO, process.stdout)
+            self.stdin = cast(BinaryIO, process.stdin)
+            self.stdout = cast(BinaryIO, process.stdout)
             self.selector = selectors.DefaultSelector()
             self.selector.register(process.stdout, selectors.EVENT_READ)
             self.call("initialize", {"clientInfo": {"name": "switchstand-wakeful-probe",
@@ -114,7 +114,7 @@ class QueueClient:
         self._start()
         assert self.stdin is not None
         try:
-            self.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            self.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
             self.stdin.flush()
         except (OSError, BrokenPipeError) as exc:
             raise OSError("UNKNOWN: request send failed") from exc
@@ -128,9 +128,7 @@ class QueueClient:
             self.write({"jsonrpc": "2.0", "id": self.sequence,
                         "method": method, "params": params})
             while time.monotonic() < deadline:
-                if not self.selector.select(deadline - time.monotonic()):
-                    break
-                line = self.stdout.readline()
+                line = self.read_line(deadline)
                 if not line:
                     break
                 response = json.loads(line)
@@ -146,12 +144,29 @@ class QueueClient:
             raise OSError("UNKNOWN: response lost") from exc
         raise OSError("UNKNOWN: response lost")
 
+    def read_line(self, deadline: float) -> bytes | None:
+        assert self.stdout is not None and self.selector is not None
+        while True:
+            newline = self.read_buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.read_buffer[:newline])
+                del self.read_buffer[:newline + 1]
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.selector.select(remaining):
+                return None
+            chunk = os.read(self.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.read_buffer.extend(chunk)
+
     def close(self) -> None:
         selector, process = self.selector, self.process
         self.selector = None
         self.process = None
         self.stdin = None
         self.stdout = None
+        self.read_buffer.clear()
         if selector is not None:
             selector.close()
         if process is None or process.poll() is not None:
