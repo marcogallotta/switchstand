@@ -40,13 +40,38 @@ PARENT, CHILD, EVENT, MISSING_EVENT = UUID(int=1), UUID(int=2), UUID(int=3), UUI
 TOMBSTONE, TOMBSTONE_EVENT = UUID(int=5), UUID(int=6)
 
 
-def test_parent_only_omission_keeps_dependencies_fail_closed() -> None:
+async def test_parent_only_omission_keeps_dependencies_fail_closed() -> None:
+    class ParentSource:
+        def __init__(self, parent: ProviderWork | None, zero_memberships: bool) -> None:
+            self.parent = parent
+            self.zero_memberships = zero_memberships
+
+        async def snapshot_for_import(self, provider_work_id: str):
+            assert provider_work_id == "outside"
+            if self.parent is None:
+                return None
+            return self.parent, None, (), self.zero_memberships
+
+    def outside_parent(*, completed: bool, canonical: bool) -> ProviderWork:
+        return ProviderWork(
+            "Outside", "", completed, "revision-outside", Routing(), WorkContext(), canonical,
+        )
+
     expected = {"parent": PARENT, "retired": TOMBSTONE}
     ignored = {"retired": {"reason": "zero-membership"}}
-    assert _parent_work_id("child", "parent", expected, ignored) == PARENT
-    assert _parent_work_id("child", "retired", expected, ignored) is None
-    with pytest.raises(ValueError, match="parent is outside"):
-        _parent_work_id("child", "outside", expected, ignored)
+    unavailable = ParentSource(None, False)
+    assert await _parent_work_id(unavailable, "child", "parent", expected, ignored) == PARENT
+    assert await _parent_work_id(unavailable, "child", "retired", expected, ignored) is None
+    retired = ParentSource(outside_parent(completed=True, canonical=False), True)
+    assert await _parent_work_id(retired, "child", "outside", expected, ignored) is None
+    for parent in (
+        unavailable,
+        ParentSource(outside_parent(completed=False, canonical=False), True),
+        ParentSource(outside_parent(completed=True, canonical=False), False),
+        ParentSource(outside_parent(completed=True, canonical=True), True),
+    ):
+        with pytest.raises(ValueError, match="parent is outside"):
+            await _parent_work_id(parent, "child", "outside", expected, ignored)
     with pytest.raises(ValueError, match="dependency is retired"):
         _dependency_work_id("child", "retired", expected, ignored)
     with pytest.raises(ValueError, match="dependency is outside"):
@@ -309,6 +334,7 @@ async def test_zero_membership_exports_only_identity_tombstone(
     class WithZeroMembership(Source):
         zero_membership = True
         retired_parent = False
+        unbound_retired_parent = False
         current_zero_membership = False
 
         async def get(self, provider_work_id: str) -> ProviderWork | None:
@@ -322,6 +348,11 @@ async def test_zero_membership_exports_only_identity_tombstone(
         async def snapshot_for_import(self, provider_work_id: str):
             if provider_work_id == "retired":
                 raise AssertionError("retired content must not be read")
+            if provider_work_id == "1218550811313318":
+                return ProviderWork(
+                    "Old parent", "", True, "revision-old-parent",
+                    Routing(), WorkContext(), False,
+                ), None, (), True
             snapshot = await super().snapshot_for_import(provider_work_id)
             if provider_work_id == "parent" and self.current_zero_membership:
                 assert snapshot is not None
@@ -329,6 +360,9 @@ async def test_zero_membership_exports_only_identity_tombstone(
             if provider_work_id == "child" and self.retired_parent:
                 assert snapshot is not None
                 return snapshot[0], "retired", snapshot[2], snapshot[3]
+            if provider_work_id == "child" and self.unbound_retired_parent:
+                assert snapshot is not None
+                return snapshot[0], "1218550811313318", snapshot[2], snapshot[3]
             return snapshot
 
         async def source_stories(self, provider_task_id: str, *args, **kwargs):
@@ -364,6 +398,15 @@ async def test_zero_membership_exports_only_identity_tombstone(
         for row in cast(list[dict[str, object]], without_retired_parent["records"])
     )
     provider.retired_parent = False
+
+    provider.unbound_retired_parent = True
+    without_unbound_retired_parent = await source_parity(engine, provider, corpus_path)
+    assert not any(
+        row["kind"] == "parent"
+        and cast(dict[str, object], row["fields"])["child_work_id"] == str(CHILD)
+        for row in cast(list[dict[str, object]], without_unbound_retired_parent["records"])
+    )
+    provider.unbound_retired_parent = False
 
     provider.current_zero_membership = True
     with pytest.raises(ValueError, match="retired after corpus capture"):
