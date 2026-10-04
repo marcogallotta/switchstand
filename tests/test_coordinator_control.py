@@ -190,6 +190,30 @@ def test_corrupt_launch_profile_receipt_is_currentness_unknown(tmp_path: Path) -
     assert "manifest identity is invalid" in status["reason"]
 
 
+def test_legacy_v1_known_frozen_mismatch_wins_during_upgrade(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = 1
+    manifest.pop("runtime_mutable_controls")
+    control = next(
+        item
+        for item in manifest["frozen_controls"]
+        if item["id"] == "repository:scripts/coordinator-control"
+    )
+    control["sha256"] = "0" * 64
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_digest"}
+    manifest["manifest_digest"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    result, status = check(manifest_path, "post-sync")
+
+    assert result.returncode == 3
+    assert status["state"] == "CONTROL_STALE"
+    assert status["frozen_mismatches"] == ["repository:scripts/coordinator-control"]
+
+
 def test_unresolved_document_dependencies_are_explicit_component_unknowns(
     tmp_path: Path,
 ) -> None:

@@ -220,7 +220,7 @@ def create(arguments: argparse.Namespace) -> int:
     ]
     rereadable, unresolved = markdown_dependencies(repo)
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "session": {
             "generation": str(uuid.uuid4()),
             "started_at": datetime.now(UTC).isoformat(),
@@ -294,17 +294,19 @@ def acknowledge(arguments: argparse.Namespace) -> int:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
-    if payload.get("schema_version") != 1 or payload.get("manifest_digest") != canonical_digest(
-        payload
-    ):
+    schema_version = payload.get("schema_version")
+    if schema_version not in (1, 2) or payload.get("manifest_digest") != canonical_digest(payload):
         raise ValueError("launch manifest identity is invalid")
     if (
         not isinstance(payload.get("session"), dict)
         or not isinstance(payload.get("frozen_controls"), list)
-        or not isinstance(payload.get("runtime_mutable_controls"), list)
         or not isinstance(payload.get("rereadable_controls"), dict)
         or not isinstance(payload.get("unresolved_rereadable_controls"), list)
         or not isinstance(payload.get("unproved_frozen_controls"), list)
+        or (
+            schema_version == 2
+            and not isinstance(payload.get("runtime_mutable_controls"), list)
+        )
     ):
         raise TypeError("launch manifest structure is invalid")
     return payload

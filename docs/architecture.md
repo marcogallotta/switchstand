@@ -352,7 +352,10 @@ deploy, or activate anything.
 as frozen-control evidence and a uniquely named runtime profile that Codex may persist normal
 session preferences into. The manifest records the snapshot digest and the runtime profile's
 launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
-copy. It also records the executable, repository controls and
+copy. This receipt is launch-manifest schema v2; the checker still accepts valid legacy v1
+manifests so known frozen-control mismatches become permanent `CONTROL_STALE` during upgrade,
+while missing or corrupt v2 proof fails closed as `CURRENTNESS_UNKNOWN`. It also records the
+executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
 session storage and byte-stable hooks without replacing another generation's evidence. Its
