@@ -57,7 +57,8 @@ interval aggregation; it neither persists records nor establishes journal durabi
 `flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. B1 is always partial:
 it reports canonical current state and relations plus observed target events from one read-only,
 repeatable-read transaction. It names excluded sources and computes no elapsed time; journal timing
-remains unavailable until cross-restart retention is proved.
+remains unavailable until cross-restart retention is proved. Its concise format is a deterministic
+projection of the same JSON facts and coverage reasons, not another correlation or inference layer.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI

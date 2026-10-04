@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import func, select, text
@@ -145,10 +145,42 @@ async def report(engine: AsyncEngine, work_id: UUID) -> dict[str, object]:
             return await _snapshot(connection, work_id)
 
 
-async def _run(work_id: UUID) -> None:
+def render_concise(value: dict[str, object]) -> str:
+    """Render only explicit B1 facts and coverage, without deriving new evidence."""
+    snapshot = cast(dict[str, object], value["snapshot"])
+    admission = cast(dict[str, object], value["admission"])
+    scope = cast(dict[str, object], value["scope"])
+    root = cast(dict[str, object], scope["canonical_root"])
+    events = cast(dict[str, object], value["events"])
+    coverage = cast(dict[str, dict[str, str]], value["coverage"])
+    lines = [
+        f"status={value['status']} work_id={value['work_id']} captured_at={value['captured_at']}",
+        (f"snapshot row_version={snapshot['row_version']} isolation={snapshot['isolation']} "
+         f"read_only={snapshot['read_only']}"),
+        (f"admission status={admission['status']} at={admission['at']} "
+         f"reason={admission['reason']}"),
+        f"root status={root['status']} work_id={root['work_id']} reason={root['reason']}",
+        (f"evidence_count={len(cast(list[object], events['items']))} "
+         f"events_coverage={events['coverage']}"),
+    ]
+    lines.extend(
+        f"coverage {name}={item['status']}:{item['reason']}"
+        for name, item in sorted(coverage.items())
+    )
+    lines.append(f"elapsed={value['elapsed']}")
+    return "\n".join(lines) + "\n"
+
+
+def render(value: dict[str, object], output_format: Literal["json", "concise"]) -> str:
+    if output_format == "concise":
+        return render_concise(value)
+    return json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+async def _run(work_id: UUID, output_format: Literal["json", "concise"]) -> None:
     engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
-        print(json.dumps(await report(engine, work_id), sort_keys=True, separators=(",", ":")))
+        print(render(await report(engine, work_id), output_format), end="")
     finally:
         await engine.dispose()
 
@@ -156,5 +188,6 @@ async def _run(work_id: UUID) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Report exact read-only flow evidence")
     parser.add_argument("--work-id", type=UUID, required=True)
+    parser.add_argument("--format", choices=("json", "concise"), default="json")
     arguments = parser.parse_args()
-    asyncio.run(_run(arguments.work_id))
+    asyncio.run(_run(arguments.work_id, arguments.format))
