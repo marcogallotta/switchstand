@@ -81,6 +81,8 @@ def test_agents_coordination_contract_is_discoverable():
         "a non-root agent reports only its assigned work and explicitly named children",
         "item-only update when a material semantic transition changes that item's outcome",
         "activity, elapsed time, or worker reassignment alone is not a material transition",
+        "major completion or activation notification as persistent",
+        "until Marco explicitly acknowledges it; silence or unrelated progress never clears it",
         "full in-flight snapshot when Marco asks, at a coordination handoff",
         "material portfolio, critical-path, dependency, effect, or human-attention change",
         "time is only a bounded silence watchdog, never the primary trigger",
