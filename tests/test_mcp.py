@@ -158,7 +158,6 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             "work_update",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",
-            "agent_task_request",
         }
         assert all(tool.input_schema.get("additionalProperties") is False and
                    tool.output_schema.get("additionalProperties") is False for tool in tools)

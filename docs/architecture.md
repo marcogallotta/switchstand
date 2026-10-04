@@ -259,9 +259,10 @@ messaging, and required continuation:
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
 - `task_runs.py` owns inert investigation/validation requests and their trusted START-to-RunReceipt
-  bindings. The managed MCP admits only a current launch-bound `agent_task` grant and exact requester
-  RunReceipt to create a server-identified request; result submission, continuation/takeover,
-  runtime launch, ordinary HTTP exposure, and activation remain absent.
+  bindings. Its managed MCP adapter can admit only a current launch-bound `agent_task` grant and
+  exact requester RunReceipt to create a server-identified request; default grant issuance and
+  launch wiring, result submission, continuation/takeover, runtime launch, ordinary HTTP exposure,
+  and activation remain absent.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
