@@ -208,6 +208,8 @@ messaging, and required continuation:
   deleting persisted revisions. This state does not own Stage 2 waits, dependencies, authorization,
   scheduling, activation, or implicit owner inference.
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
+  Internal typed proposal admission binds one immutable consequence to an exact canonical package
+  revision; a changed proposal requires a new package revision and human decision.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
