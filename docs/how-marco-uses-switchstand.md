@@ -124,6 +124,7 @@ ChatGPT and Codex deliberately use different coordinator, delegation, task-bindi
 - keep independent review exact and challenge findings/remedies rather than treating reviewer suggestions as requirements;
 - the source work owner/requester keeps the exact review outcome watch through terminal verdict, while a router/Coordinator may separately own reviewer acquisition;
 - preserve unresolved material obligations and exact nonterminal reviews/messages/watches in durable current state so replacement does not depend on chat memory or comment archaeology;
+- use exactly one independent bounded situation review for an exact, deduplicated situation only when a hard required-currentness/invariant contradiction or ambiguous consequential effect mandates it, or when the work owner accepts an advisory evidence trigger; raw confidence alone never triggers it. The reviewer has no effect authority and cannot request another situation review; the owner acts, challenges, or escalates. Pause only the affected path while live mitigation and unrelated work continue, and never trigger reviews recursively;
 - challenge disproportionate scope, machinery, review, and qualification growth without turning supervision into a second substantive review;
 - preserve explicit authority/currentness, proportional evidence, final Human Review where required, and protected-effect boundaries.
 

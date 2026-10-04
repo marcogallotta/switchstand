@@ -113,6 +113,41 @@ def test_agents_coordination_contract_is_discoverable():
     assert [rule for rule in required_rules if rule not in agents] == []
 
 
+def test_situation_review_v1_contract_is_discoverable_in_shared_guidance():
+    agents = (ROOT / "AGENTS.md").read_text().lower()
+    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text().lower()
+    required_agents = (
+        "raw confidence alone never triggers a situation review",
+        "hard contradiction in required currentness or an applicable invariant",
+        "ambiguous evidence about whether a consequential effect occurred",
+        "mandates exactly one independent bounded situation review",
+        "advisory evidence trigger requires the work owner to accept",
+        "deduplicate the review by exact situation identity",
+        "reviewer has no effect authority",
+        "may not request or trigger another situation review",
+        "owner acts on, challenges, or escalates",
+        "pause only the affected consequential path",
+        "live mitigation and unrelated authorized work continue",
+        "never recursively triggers another situation review",
+    )
+    required_usage = (
+        "exactly one independent bounded situation review",
+        "exact, deduplicated situation",
+        "hard required-currentness/invariant contradiction",
+        "ambiguous consequential effect",
+        "work owner accepts an advisory evidence trigger",
+        "raw confidence alone never triggers it",
+        "reviewer has no effect authority and cannot request another situation review",
+        "owner acts, challenges, or escalates",
+        "pause only the affected path",
+        "live mitigation and unrelated work continue",
+        "never trigger reviews recursively",
+    )
+
+    assert [rule for rule in required_agents if rule not in agents] == []
+    assert [rule for rule in required_usage if rule not in usage] == []
+
+
 def test_root_cause_analysis_contract_and_entry_links_are_discoverable():
     procedure = (ROOT / "docs/root-cause-analysis.md").read_text()
     required_contract = (
