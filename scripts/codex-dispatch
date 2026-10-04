@@ -22,7 +22,7 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
 fi
 
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
-continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-OFF}
+continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-PILOT}
 continuity_lifetime=${SWITCHSTAND_CODEX_LIFETIME:-ASSIGNMENT}
 case "$continuity_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_CONTINUITY must be OFF or PILOT" >&2; exit 2;; esac

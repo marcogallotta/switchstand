@@ -379,12 +379,13 @@ promptless host development access while making the shared primary checkout read
 metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
 mutations and first-class patches outside `friction.md`, and Edit-family writes into Claude auto-memory. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
-user-level instructions. The same per-launch renderer keeps the role-neutral root-continuity pilot
-default-OFF. An explicit launch-only selector can add only root `UserPromptSubmit` and `Stop`
-handlers backed by `scripts/codex-continuity-hook`; each generation's immutable profile freezes
-the handlers and exposes the resolved continuity/lifetime modes, while the selector is removed
-before Codex starts. The shared `hooks.json` remains the byte-stable destructive guard, so concurrent
-OFF and PILOT launches cannot replace one another's continuity policy. The separate hook admits only exact terminal deliberate-yield markers, writes minimal
+user-level instructions. The same per-launch renderer defaults role-neutral root continuity to
+`PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
+`scripts/codex-continuity-hook`. The explicit launch-only
+`SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's
+immutable profile freezes and exposes the resolved continuity/lifetime modes, while launch selectors
+are removed before Codex starts. The shared `hooks.json` remains the byte-stable destructive guard,
+so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook admits only exact terminal deliberate-yield markers, writes minimal
 private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
 registers `SubagentStop` or changes the destructive-command guard.
 Because the Linux sandbox cannot carve out one writable file below a
