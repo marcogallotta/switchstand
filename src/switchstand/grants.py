@@ -71,6 +71,18 @@ class ProtectedCreate(ClosedModel):
     grant_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     notes: str = Field(default="", max_length=8000)
+    priority: str = Field(default="UNSET", min_length=1)
+    work_type: str = Field(default="UNKNOWN", min_length=1)
+    lifecycle_state: Literal[
+        "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+    ] = "UNKNOWN"
+    canonical_root: str | None = Field(default=None, min_length=1)
+    owner_key: str = Field(default="UNKNOWN", min_length=1)
+    wait_kind: str = Field(default="UNKNOWN", min_length=1)
+    unblock_condition: str = Field(default="UNKNOWN", min_length=1)
+    next_due: str = Field(default="UNKNOWN", min_length=1)
+    next_action_class: str = Field(default="UNKNOWN", min_length=1)
+    next_action_ref: str = Field(default="UNKNOWN", min_length=1)
     parent_work_id: UUID | None = None
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
 

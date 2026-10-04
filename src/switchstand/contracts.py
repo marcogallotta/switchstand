@@ -27,7 +27,7 @@ class Routing(ClosedModel):
     next_action_ref: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
-    def coherent_wait(self) -> Self:
+    def valid_representation(self) -> Self:
         if self.lifecycle_state not in {
             None, "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
         }:
@@ -37,15 +37,6 @@ class Routing(ClosedModel):
                 UUID(self.canonical_root)
             except ValueError as error:
                 raise ValueError("canonical root must be NONE, UNKNOWN, or a WorkId") from error
-        if self.lifecycle_state in {"WAITING", "DEFERRED"}:
-            if self.wait_kind in {None, "NONE", "UNKNOWN"}:
-                raise ValueError("waiting/deferred work requires exact wait kind")
-            if self.unblock_condition in {None, "NONE", "UNKNOWN"}:
-                raise ValueError("waiting/deferred work requires exact reopen condition")
-        if self.lifecycle_state in {"CURRENT", "TERMINAL"} and any(
-            value != "NONE" for value in (self.wait_kind, self.unblock_condition, self.next_due)
-        ):
-            raise ValueError("current/terminal work cannot carry a wait")
         return self
 
 
@@ -118,6 +109,11 @@ class WorkSearchRequest(ClosedModel):
     api_version: ApiVersion
     text: str | None = Field(default=None, min_length=1, max_length=500)
     completed: bool | None = None
+    lifecycle_state: str | None = Field(default=None, min_length=1)
+    owner_key: str | None = Field(default=None, min_length=1)
+    priority: str | None = Field(default=None, min_length=1)
+    work_type: str | None = Field(default=None, min_length=1)
+    canonical_root: str | None = Field(default=None, min_length=1)
     cursor: str | None = Field(default=None, min_length=1, max_length=1024)
     limit: int = Field(default=50, ge=1, le=100)
 

@@ -472,6 +472,13 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         create = next(tool for tool in tools if tool.name == "work_create")
         assert "parent_work_id" in create.input_schema["required"]
         assert "project_gid" not in create.input_schema["properties"]
+        assert {"canonical_root", "owner_key", "next_action_class", "next_action_ref"} <= (
+            create.input_schema["properties"].keys()
+        )
+        search = next(tool for tool in tools if tool.name == "work_search")
+        assert {"lifecycle_state", "owner_key", "priority", "work_type", "canonical_root"} <= (
+            search.input_schema["properties"].keys()
+        )
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]

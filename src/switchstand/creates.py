@@ -57,6 +57,16 @@ class CreateGateway:
         ]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
 
+    @staticmethod
+    def legacy_semantics_supported(request: ProtectedCreate) -> bool:
+        return (
+            request.priority == "UNSET" and request.work_type == "UNKNOWN"
+            and request.lifecycle_state == "UNKNOWN" and request.canonical_root is None
+            and request.owner_key == "UNKNOWN" and request.wait_kind == "UNKNOWN"
+            and request.unblock_condition == "UNKNOWN" and request.next_due == "UNKNOWN"
+            and request.next_action_class == "UNKNOWN" and request.next_action_ref == "UNKNOWN"
+        )
+
     @classmethod
     def guard(
         cls, request: ProtectedCreate, status: str, reason: str, *, possible_send: bool = False,
@@ -85,6 +95,8 @@ class CreateGateway:
         return value
 
     async def create(self, principal: PrincipalContext, request: ProtectedCreate) -> GuardOutcome:
+        if not self.legacy_semantics_supported(request):
+            return self.guard(request, "denied", "semantic_create_requires_canonical_runtime")
         try:
             normalize_title(request.title)
         except (TypeError, ValueError):

@@ -48,6 +48,7 @@ from .grants import (
 from .mutation_effect import blocked_effect_next_action
 from .relations import RelationGateway
 from .state import work_handles
+from .work_policy import SEMANTIC_FIELDS, validate_resultant_state
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
@@ -74,6 +75,20 @@ def _routing(work: CurrentWork) -> Routing:
         next_action_class=work.next_action_class,
         next_action_ref=work.next_action_ref,
     )
+
+
+def _validate_semantic_write(work: CurrentWork, fields: set[str] | frozenset[str]) -> None:
+    if fields & SEMANTIC_FIELDS:
+        validate_resultant_state(
+            lifecycle_state=work.lifecycle_state, canonical_root=work.canonical_root,
+            owner_key=work.owner_key, wait_kind=work.wait_kind,
+            unblock_condition=work.unblock_condition, next_due=work.next_due,
+            next_action_class=work.next_action_class, next_action_ref=work.next_action_ref,
+        )
+
+
+def _exact_root(value: str | None) -> UUID | None:
+    return None if value in {None, "NONE", "UNKNOWN"} else UUID(value)
 
 
 def _context(work: CurrentWork, relations: WorkRelations) -> WorkContext:
@@ -121,11 +136,20 @@ class CanonicalWorkRuntime:
 
     async def search(self, request: WorkSearchRequest) -> WorkSearchResult:
         for _ in range(2):
+            filters = {
+                name: value for name, value in (
+                    ("lifecycle_state", request.lifecycle_state),
+                    ("owner_key", request.owner_key), ("priority", request.priority),
+                    ("work_type", request.work_type),
+                    ("canonical_root", request.canonical_root),
+                ) if value is not None
+            }
             page = await self.works.search(
                 request.text,
                 completed=request.completed,
                 cursor=request.cursor,
                 limit=request.limit,
+                **filters,
             )
             items: list[WorkSearchItem] = []
             for work in page.items:
@@ -159,7 +183,12 @@ class CanonicalWorkRuntime:
             return WorkResult(status="denied")
         values = {field: getattr(patch, field) for field in fields}  # pyright: ignore[reportUnknownArgumentType]
         try:
-            changed = await self.works.replace(replace(current, **values))
+            candidate = replace(current, **values)
+            _validate_semantic_write(candidate, fields)
+            root_id = _exact_root(candidate.canonical_root)
+            if root_id is not None and await self.works.get(root_id) is None:
+                return WorkResult(status="denied")
+            changed = await self.works.replace(candidate)
         except ValueError as error:
             if "stale canonical work version" not in str(error):
                 return WorkResult(status="denied")
@@ -260,8 +289,15 @@ class CanonicalWorkRuntime:
                     if not fields <= _SCALAR_FIELDS:
                         return self._guard(request, "denied", "invalid_database_metadata")
                     values = {field: getattr(request.patch, field) for field in fields}
+                    candidate = replace(current, **values)
+                    _validate_semantic_write(candidate, fields)
+                    root_id = _exact_root(candidate.canonical_root)
+                    if root_id is not None and await self.works.get_locked(
+                        connection, root_id
+                    ) is None:
+                        return self._guard(request, "denied", "canonical_root_not_bound")
                     changed = await self.works.replace_locked(
-                        connection, replace(current, **values)
+                        connection, candidate
                     )
                     receipt = UpdateReceipt(
                         operation_id=request.operation_id, principal=principal,
@@ -306,7 +342,7 @@ class CanonicalWorkRuntime:
         """Create and journal one canonical work item in one transaction."""
         try:
             work_id = CreateGateway.work_id(request.operation_id)
-            fingerprint = CreateGateway.fingerprint(principal, request)
+            request_json = request.model_dump(mode="json")
             for attempt in range(2):
                 try:
                     async with (
@@ -317,8 +353,11 @@ class CanonicalWorkRuntime:
                             effect_intents.c.operation_id == str(request.operation_id)
                         ))).mappings().one_or_none()
                         if exact is not None:
-                            if (exact["principal_key"] != principal.key
-                                    or exact["fingerprint"] != fingerprint):
+                            prior_request = cast(dict[str, object], exact["intent"]).get("request")
+                            normalized_prior = ProtectedCreate.model_validate(
+                                prior_request
+                            ).model_dump(mode="json")
+                            if exact["principal_key"] != principal.key or normalized_prior != request_json:
                                 return CreateGateway.guard(
                                     request, "denied", "operation_identity_conflict"
                                 )
@@ -340,6 +379,7 @@ class CanonicalWorkRuntime:
                             )
                         parent = request.parent_work_id
                         project_id = None
+                        root = request.canonical_root
                         if parent is not None:
                             if not grant.can_write(parent):
                                 return CreateGateway.guard(
@@ -350,6 +390,12 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "parent_not_writable"
                                 )
+                            inherited = current.canonical_root or "UNKNOWN"
+                            if root is not None and root != inherited:
+                                return CreateGateway.guard(
+                                    request, "denied", "child_root_conflicts_with_parent"
+                                )
+                            root = inherited
                         else:
                             if grant.scope != "workspace":
                                 return CreateGateway.guard(
@@ -362,11 +408,33 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"
                                 )
+                            root = str(work_id) if root is None else root
+                        created = CurrentWork(
+                            work_id, request.title, False, request.notes,
+                            priority=request.priority, work_type=request.work_type,
+                            lifecycle_state=request.lifecycle_state, canonical_root=root,
+                            owner_key=request.owner_key, wait_kind=request.wait_kind,
+                            unblock_condition=request.unblock_condition, next_due=request.next_due,
+                            next_action_class=request.next_action_class,
+                            next_action_ref=request.next_action_ref,
+                        )
+                        _validate_semantic_write(created, SEMANTIC_FIELDS)
+                        root_id = _exact_root(root)
+                        if (root_id is not None
+                                and not (parent is None and root_id == work_id)
+                                and await self.works.get_locked(connection, root_id) is None):
+                            return CreateGateway.guard(
+                                request, "denied", "canonical_root_not_bound"
+                            )
+                        resolved = {field: getattr(created, field) for field in SEMANTIC_FIELDS}
+                        fingerprint = hashlib.sha256(json.dumps(
+                            [principal.key, request_json, resolved], sort_keys=True
+                        ).encode()).hexdigest()
                         await connection.execute(insert(work_handles).values(
                             id=work_id, provider="postgres", provider_work_id=str(work_id),
                         ))
                         await self.works.create_locked(
-                            connection, CurrentWork(work_id, request.title, False, request.notes)
+                            connection, created
                         )
                         if parent is not None:
                             await connection.execute(insert(work_parents).values(
@@ -376,6 +444,21 @@ class CanonicalWorkRuntime:
                             await connection.execute(insert(project_memberships).values(
                                 project_id=project_id, work_id=work_id, section_name=None
                             ))
+                        stored = await self.works.get_locked(connection, work_id)
+                        stored_handle = await connection.scalar(select(work_handles.c.id).where(
+                            work_handles.c.id == work_id
+                        ))
+                        relation = await connection.scalar(
+                            select(work_parents.c.parent_work_id).where(
+                                work_parents.c.child_work_id == work_id
+                            ) if parent is not None else select(
+                                project_memberships.c.project_id
+                            ).where(project_memberships.c.work_id == work_id)
+                        )
+                        if stored != created or stored_handle != work_id or relation != (
+                            parent if parent is not None else project_id
+                        ):
+                            raise ValueError("canonical create readback mismatch")
                         receipt = CreateReceipt(
                             operation_id=request.operation_id, principal=principal,
                             grant_id=grant.id, grant_version=grant.version, work_id=work_id,
@@ -394,7 +477,7 @@ class CanonicalWorkRuntime:
                             operation_id=str(request.operation_id), fingerprint=fingerprint,
                             principal_key=principal.key, work_id=str(work_id),
                             grant_id=str(grant.id), grant_version=grant.version,
-                            intent={"request": request.model_dump(mode="json"),
+                            intent={"request": request_json, "resolved_state": resolved,
                                     "authority": "postgres"},
                             outcome=outcome.model_dump(mode="json", exclude_none=True),
                         ))

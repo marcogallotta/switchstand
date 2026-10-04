@@ -120,6 +120,21 @@ async def test_create_binds_reserved_work_and_normal_work_readback():
     assert readback.item.title == "Created" and provider.creates == 1
 
 
+async def test_legacy_create_fails_closed_for_semantic_state_and_changed_operation():
+    service, selected, _state, provider = subject()
+    operation_id = uuid4()
+    applied = await service.create(request(selected, operation_id))
+    changed = await service.create(request(
+        selected, operation_id, owner_key="agent:root",
+    ))
+    unsupported = await service.create(request(selected, owner_key="agent:root"))
+
+    assert applied.effect == "applied"
+    assert changed.reason == "semantic_create_requires_canonical_runtime"
+    assert unsupported.reason == "semantic_create_requires_canonical_runtime"
+    assert changed.effect == unsupported.effect == "not_sent" and provider.creates == 1
+
+
 async def test_lost_create_response_recovers_after_restart_without_second_send():
     service, selected, state, provider = subject()
     req = request(selected)
