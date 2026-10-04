@@ -374,7 +374,9 @@ namespaced resources. It never selects or changes production state.
 `zero_asana_hold.py` owns the transition-only integrated production hold: exact host edge gate and
 stop, create-new FastMCP snapshot, and one PostgreSQL transaction whose SHARE locks span source
 capture/export/readback and the injected cutover continuation. Direct Asana writes remain a stated
-coordination limitation rather than a technical freeze.
+coordination limitation rather than a technical freeze. Its terminal receipt binds the stopped
+systemd process/listener proof and PostgreSQL database, user, backend, timeout, held-lock, and
+waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 
 ## Where to edit
 
