@@ -271,6 +271,38 @@ class Projection:
     def save(self) -> None:
         atomic_replace_bytes(self.path, json.dumps(self.records, sort_keys=True).encode())
 
+    def hydrate_thread(self, client: QueueClient, thread: dict[str, Any]) -> dict[str, Any] | None:
+        if thread.get("historyMode") == "legacy":
+            return thread
+        if thread.get("historyMode") != "paginated":
+            return None
+        turns: list[dict[str, Any]] = []
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            page = client.call("thread/turns/list", {
+                "threadId": self.binding.thread_id, "cursor": cursor, "limit": 100,
+                "sortDirection": "asc", "itemsView": "full"})
+            raw_turns = page["data"]
+            if not isinstance(raw_turns, list):
+                return None
+            current: list[dict[str, Any]] = []
+            for raw_turn in cast(list[Any], raw_turns):
+                if not isinstance(raw_turn, dict):
+                    return None
+                turn = cast(dict[str, Any], raw_turn)
+                if (turn.get("itemsView") != "full"
+                        or not isinstance(turn.get("items"), list)):
+                    return None
+                current.append(turn)
+            turns.extend(current)
+            cursor = page.get("nextCursor")
+            if cursor is None:
+                return {**thread, "turns": turns}
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                return None
+            seen_cursors.add(cursor)
+
     def reconcile_thread(self, thread: dict[str, Any], identity: str) -> str:
         record = self.records[identity]
         if thread["id"] != self.binding.thread_id:
@@ -282,8 +314,6 @@ class Projection:
                                   timestamp=time.time())
                     self.save()
                     return "ADMITTED"
-        if thread.get("historyMode") != "legacy":
-            return "UNKNOWN"
         return "PROVEN_ABSENT"
 
     def reconcile_queue(self, client: QueueClient, identity: str) -> str:
@@ -326,6 +356,9 @@ class Projection:
                                                 "includeTurns": True})["thread"]
             if thread["id"] != self.binding.thread_id:
                 return "STALE"
+            thread = self.hydrate_thread(client, thread)
+            if thread is None:
+                return "UNKNOWN"
             result = self.reconcile_thread(thread, identity)
             if result != "PROVEN_ABSENT":
                 return result
