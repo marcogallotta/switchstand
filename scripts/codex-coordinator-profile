@@ -39,13 +39,23 @@ def _toml_value(value: Any) -> str:
     raise TypeError(f"unsupported preference type: {type(value).__name__}")
 
 
-def render(config: dict[str, Any], primary: Path, start_record: Path) -> str:
+def render(
+    config: dict[str, Any], primary: Path, start_record: Path, manifest_record: Path
+) -> str:
     lines = [
         'approval_policy = "never"',
         'default_permissions = "switchstand-coordinator"',
         "developer_instructions = " + json.dumps(
             f"Coordinator start commit is recorded at {start_record}. "
-            "Reread that file after context compaction and before handoff."
+            f"Its launch-control manifest is {manifest_record}. After context compaction, run "
+            f"{primary / 'scripts/coordinator-control'} check {manifest_record} "
+            "--trigger post-compaction; reread every returned dependency plus current work, "
+            "open obligations, and the start commit. CONTROL_STALE is permanent for this "
+            "generation: start no new consequential effect; only reconcile already-started "
+            "or ambiguous effects, preserve obligations, reach the smallest safe checkpoint, "
+            "and hand off. CURRENTNESS_UNKNOWN blocks only actions depending on its unknown "
+            "component. After an in-session canonical sync, run the same check with "
+            "--trigger post-sync and reread every returned changed dependency."
         ),
     ]
     section: tuple[str, ...] = ()
@@ -121,15 +131,18 @@ def _replace(path: Path, output: str) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 8:
         raise SystemExit(
-            "usage: codex-coordinator-profile SOURCE PROFILE PRIMARY HOOKS HOOK START_RECORD"
+            "usage: codex-coordinator-profile SOURCE PROFILE PRIMARY HOOKS HOOK "
+            "START_RECORD MANIFEST_RECORD"
         )
-    source, destination, primary, hooks_destination, hook, start_record = map(
+    source, destination, primary, hooks_destination, hook, start_record, manifest_record = map(
         Path, sys.argv[1:]
     )
     with source.open("rb") as handle:
-        output = render(tomllib.load(handle), primary.resolve(strict=True), start_record)
+        output = render(
+            tomllib.load(handle), primary.resolve(strict=True), start_record, manifest_record
+        )
     resolved_hook = hook.resolve(strict=True)
     if not resolved_hook.is_file() or not os.access(resolved_hook, os.X_OK):
         raise SystemExit("Coordinator hook is unavailable")
