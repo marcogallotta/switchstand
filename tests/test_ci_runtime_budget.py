@@ -109,6 +109,40 @@ def test_ambiguous_provider_or_timing_state_is_unknown(
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "progress"),
+    [
+        (ProviderRunStatus.REQUESTED, ProviderProgress.IN_PROGRESS),
+        (ProviderRunStatus.REQUESTED, ProviderProgress.COMPLETED),
+        (ProviderRunStatus.COMPLETED, ProviderProgress.REQUESTED),
+        (ProviderRunStatus.COMPLETED, ProviderProgress.IN_PROGRESS),
+    ],
+)
+def test_reverse_impossible_status_progress_is_unknown(
+    status: ProviderRunStatus, progress: ProviderProgress
+) -> None:
+    result = evaluate_runtime_budget(state(status=status, progress=progress), (policy(),))
+
+    assert (result.status, result.reason) == (
+        BudgetStatus.UNKNOWN,
+        UnknownReason.PROVIDER_STATE_INCONSISTENT,
+    )
+
+
+@pytest.mark.parametrize(
+    "progress",
+    [ProviderProgress.REQUESTED, ProviderProgress.IN_PROGRESS, ProviderProgress.COMPLETED],
+)
+def test_running_execution_allows_subordinate_step_progress(
+    progress: ProviderProgress,
+) -> None:
+    result = evaluate_runtime_budget(
+        state(progress=progress, observed_at=START + timedelta(seconds=300)), (policy(),)
+    )
+
+    assert result.status is BudgetStatus.BREACH
+
+
 def test_only_exact_allowlisted_selector_is_managed() -> None:
     policies = (policy(),)
 
@@ -150,6 +184,18 @@ def test_policy_rejects_invalid_advisory_order(changes: dict[str, object]) -> No
 def test_timestamps_must_be_timezone_aware() -> None:
     with pytest.raises(ValueError, match="observed_at must be timezone-aware"):
         state(observed_at=datetime(2026, 10, 4, 12, 5, tzinfo=UTC).replace(tzinfo=None))
+
+
+def test_negative_subsecond_delta_is_clock_inconsistent_before_truncation() -> None:
+    result = evaluate_runtime_budget(
+        state(observed_at=START - timedelta(microseconds=1)), (policy(),)
+    )
+
+    assert (result.status, result.reason, result.elapsed_seconds) == (
+        BudgetStatus.UNKNOWN,
+        UnknownReason.CLOCK_INCONSISTENT,
+        None,
+    )
 
 
 def test_provisional_hard_field_does_not_enforce_an_effect() -> None:

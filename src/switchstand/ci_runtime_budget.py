@@ -14,6 +14,8 @@ class RunClass(StrEnum):
 
 
 class ProviderRunStatus(StrEnum):
+    """Lifecycle of the exact selected execution (workflow job)."""
+
     REQUESTED = "REQUESTED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -21,6 +23,8 @@ class ProviderRunStatus(StrEnum):
 
 
 class ProviderProgress(StrEnum):
+    """Provider-visible subordinate job/step progress, not a duplicate run status."""
+
     REQUESTED = "REQUESTED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -38,6 +42,7 @@ class UnknownReason(StrEnum):
     POLICY_AMBIGUOUS = "POLICY_AMBIGUOUS"
     PROVIDER_STATUS_UNKNOWN = "PROVIDER_STATUS_UNKNOWN"
     PROVIDER_PROGRESS_UNKNOWN = "PROVIDER_PROGRESS_UNKNOWN"
+    PROVIDER_STATE_INCONSISTENT = "PROVIDER_STATE_INCONSISTENT"
     START_UNKNOWN = "START_UNKNOWN"
     OBSERVATION_UNKNOWN = "OBSERVATION_UNKNOWN"
     CLOCK_INCONSISTENT = "CLOCK_INCONSISTENT"
@@ -153,6 +158,20 @@ def evaluate_runtime_budget(
             None,
             UnknownReason.PROVIDER_PROGRESS_UNKNOWN,
         )
+    inconsistent = (
+        state.status is ProviderRunStatus.REQUESTED
+        and state.progress is not ProviderProgress.REQUESTED
+    ) or (
+        state.status is ProviderRunStatus.COMPLETED
+        and state.progress is not ProviderProgress.COMPLETED
+    )
+    if inconsistent:
+        return BudgetResult(
+            BudgetStatus.UNKNOWN,
+            policy.policy_version,
+            None,
+            UnknownReason.PROVIDER_STATE_INCONSISTENT,
+        )
     if state.status in {ProviderRunStatus.REQUESTED, ProviderRunStatus.COMPLETED}:
         return BudgetResult(BudgetStatus.WITHIN, policy.policy_version, None)
     if state.started_at is None:
@@ -163,11 +182,12 @@ def evaluate_runtime_budget(
         return BudgetResult(
             BudgetStatus.UNKNOWN, policy.policy_version, None, UnknownReason.OBSERVATION_UNKNOWN
         )
-    elapsed = int((state.observed_at - state.started_at).total_seconds())
-    if elapsed < 0:
+    raw_elapsed = (state.observed_at - state.started_at).total_seconds()
+    if raw_elapsed < 0:
         return BudgetResult(
             BudgetStatus.UNKNOWN, policy.policy_version, None, UnknownReason.CLOCK_INCONSISTENT
         )
+    elapsed = int(raw_elapsed)
     status = (
         BudgetStatus.BREACH if elapsed >= policy.warning_seconds else BudgetStatus.WITHIN
     )
