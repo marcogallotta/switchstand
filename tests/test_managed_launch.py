@@ -80,6 +80,34 @@ def prepared(tmp_path: Path) -> tuple[Broker, Path]:
     return broker, manifest
 
 
+def persist_execution_receipt(
+    broker: Broker, path: Path, state: str
+) -> tuple[dict[str, object], float]:
+    manifest = PreparedLaunchStore(broker).load(path)
+    receipt: dict[str, object] = {
+        "launch_id": manifest.launch_id,
+        "lease_id": manifest.lease_id,
+        "reservation_id": manifest.reservation_id,
+        "attempt_id": manifest.attempt_id,
+        "unit": manifest.unit,
+        "work_id": str(manifest.work_id),
+        "grant_id": str(manifest.grant_id),
+        "grant_version": manifest.grant_version,
+        "state": "starting",
+    }
+    broker.attach_execution(
+        manifest.lease_id,
+        reservation_id=manifest.reservation_id,
+        attempt_id=manifest.attempt_id,
+        unit=manifest.unit,
+        receipt=receipt,
+        claim_ttl_seconds=5,
+    )
+    receipt["state"] = state
+    broker.record_execution(manifest.lease_id, receipt)
+    return receipt, float(broker.lease(manifest.lease_id)["claim_expires_monotonic"])
+
+
 def test_prepared_manifest_is_exact_sealed_and_has_only_canonical_command(tmp_path: Path) -> None:
     broker, path = prepared(tmp_path)
     manifest = PreparedLaunchStore(broker).load(path)
@@ -230,6 +258,99 @@ def test_managed_executor_preserves_reservation_when_runtime_is_ambiguous(
     receipt = ManagedExecutor(broker).run(path, timeout=60)
 
     assert receipt["state"] == "unknown"
+    assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+def test_persisted_not_started_executor_can_be_recovered_after_claim_expiry(
+    tmp_path: Path,
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "not_started")
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "released", "reason": "abandoned"}
+    assert broker.status()["leases"]["managed-parent"]["state"] == "abandoned"
+
+
+@pytest.mark.parametrize(
+    ("changed", "reason"),
+    [
+        ({"attempt_id": "different-attempt"}, "receipt_identity"),
+        ({"state": "unknown"}, "receipt_ambiguous"),
+    ],
+)
+def test_not_started_recovery_holds_mismatched_or_unknown_receipt(
+    tmp_path: Path, changed: dict[str, object], reason: str
+) -> None:
+    broker, path = prepared(tmp_path)
+    receipt, expires = persist_execution_receipt(broker, path, "not_started")
+    broker.record_execution("managed-parent", {**receipt, **changed})
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "unknown", "reason": reason}
+    assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+def test_lost_executor_recovery_uses_exact_terminal_empty_runtime_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    manifest = PreparedLaunchStore(broker).load(path)
+    units: list[str] = []
+    monkeypatch.setattr(
+        ManagedExecutor,
+        "runtime_proof",
+        staticmethod(lambda unit: units.append(unit) or (True, True)),
+    )
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "released", "reason": "cancelled"}
+    assert units == [manifest.unit]
+    assert broker.status()["leases"]["managed-parent"]["state"] == "cancelled"
+
+
+def test_lost_executor_recovery_holds_unexpired_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    monkeypatch.setattr(
+        ManagedExecutor, "runtime_proof", staticmethod(lambda _unit: (True, True))
+    )
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires - 0.001
+    )
+
+    assert recovered == {"state": "unknown", "reason": "runtime_ambiguous"}
+    assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+@pytest.mark.parametrize("proof", [(True, None), (False, True), (None, None)])
+def test_lost_executor_recovery_holds_ambiguous_runtime_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    proof: tuple[bool | None, bool | None],
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    monkeypatch.setattr(ManagedExecutor, "runtime_proof", staticmethod(lambda _unit: proof))
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "unknown", "reason": "runtime_ambiguous"}
     assert broker.lease("managed-parent")["state"] == "execution_active"
 
 

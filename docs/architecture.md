@@ -140,7 +140,12 @@ executor applies a reserved lease through a sandboxed transient systemd unit; se
 manifests bind the exact WorkId, current grant, reservation, attempt, unit, private writer/home, and
 fixed headless Codex command. Admission uses available memory, PSI, recent swap movement, and an
 atomic reservation ledger. Release requires identity-bound proof that the unit is terminal and the
-exact cgroup's `cgroup.events` was positively read as `populated 0`; cgroup absence is `UNKNOWN`.
+exact cgroup's `cgroup.events` was positively read as `populated 0`, or an expired executor claim
+whose sealed manifest and exact durable receipt prove that execution was never started. Missing,
+mismatched, or ambiguous recovery evidence is `UNKNOWN`; cgroup absence is also `UNKNOWN`. An
+expired lost-executor claim with an exact persisted starting receipt may release only after its
+exact unit is terminal and its exact cgroup is positively empty; that unknown execution outcome is
+released as cancelled.
 Expired unattached reservations require positive proof that no launch was prepared. Native children
 inherit the parent's aggregate cgroup but are not individually admitted.
 The canary owns the bounded live qualification proof. Live qualification still requires that
