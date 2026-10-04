@@ -122,6 +122,59 @@ def test_agents_coordination_contract_is_discoverable():
     assert [rule for rule in required_rules if rule not in agents] == []
 
 
+def test_situation_review_v1_contract_is_discoverable_in_shared_guidance():
+    agents = (ROOT / "AGENTS.md").read_text().lower()
+    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text().lower()
+    required_agents = (
+        "raw confidence alone never triggers a situation review",
+        "mechanically established contradiction in required currentness or an applicable invariant",
+        "evidence that a consequential effect is ambiguous",
+        "other conditions are advisory warnings which require owner acceptance before review",
+        "explicit low confidence about a named consequential decision",
+        "decision, affected path, specific uncertainty, supporting evidence and next falsifier",
+        "exact workid/run/review/operation",
+        "expected observable condition or next-check time",
+        "evidence of last material progress and current owner",
+        "exact attempts, outcomes, shared objective and recurring blocker",
+        "exact current claim and revision plus the contradictory evidence and its currentness",
+        "missing evidence is `unknown`/`insufficient_data`, never \"stalled\"",
+        "deduplicate by exact situation identity plus evidence set",
+        "reviewer has no effect authority",
+        "may not request or trigger another situation review",
+        "verdict, current truth labeled `current`, `historical` or `unknown`",
+        "causal challenge, the smallest safe next action, the affected path",
+        "remaining unknowns and the exact marco decision needed, if any",
+        "owner takes an authorized action, records a material challenge with counterevidence",
+        "pause only the affected consequential path",
+        "live mitigation and unrelated authorized work continue",
+        "never recursively triggers another situation review",
+    )
+    required_usage = (
+        "exactly one independent bounded situation review",
+        "mechanically established required-currentness/applicable-invariant contradiction",
+        "evidence of an ambiguous consequential effect",
+        "owner accepts an advisory warning",
+        "named consequential decision, affected path, uncertainty, evidence and next falsifier",
+        "exact workid/run/review/operation, expected observable or next-check",
+        "last-progress evidence and owner",
+        "exact attempts, outcomes, shared objective and recurring blocker",
+        "exact current plan/status claim and revision plus contradictory evidence and currentness",
+        "missing evidence is `unknown`/`insufficient_data`, not \"stalled\"",
+        "deduplicate by exact situation identity plus evidence set",
+        "`current`/`historical`/`unknown` truth labels",
+        "causal challenge, smallest safe next action, affected path, remaining unknowns",
+        "exact marco decision if any",
+        "reviewer has no effect authority and cannot request another situation review",
+        "owner acts, materially challenges with counterevidence, or pauses/escalates",
+        "pause only the affected path",
+        "live mitigation and unrelated work continue",
+        "never trigger reviews recursively",
+    )
+
+    assert [rule for rule in required_agents if rule not in agents] == []
+    assert [rule for rule in required_usage if rule not in usage] == []
+
+
 def test_root_cause_analysis_contract_and_entry_links_are_discoverable():
     procedure = (ROOT / "docs/root-cause-analysis.md").read_text()
     required_contract = (
