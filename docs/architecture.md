@@ -328,6 +328,13 @@ divergent primary state, fast-forwards to the fetched remote `main`, and then us
 shim to launch an ephemeral read-only Codex. The handoff is proven only when that fresh process
 reports the same exact commit from its injected start record and repository HEAD; failure evidence
 is retained in private durable state and never rewinds the safely advanced primary.
+`coordinator_sync.py` owns the smaller pre-handoff synchronization control exposed only through the
+Coordinator's generated local stdio MCP profile. Its read operation observes the fixed canonical
+checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
+refuses dirty or divergent state, and performs an ancestor-only fast-forward. It accepts no path,
+repository, remote, branch, or ref arguments and is absent from the ordinary ChatGPT MCP surface.
+This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
+deploy, or activate anything.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under
@@ -405,6 +412,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
 | Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |
+| Change guarded canonical-main synchronization | `coordinator_sync.py` | generated Coordinator profile, stdio boundary tests, and `scripts/coordinator-handoff` interaction |
 
 ## Compatibility and retirement boundaries
 
