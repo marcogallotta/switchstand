@@ -29,6 +29,109 @@ def poisoned_git_environment(primary: Path) -> dict[str, str]:
     }
 
 
+def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    primary.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", primary, "init", "-b", "main"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test",
+         "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base"],
+        check=True, capture_output=True,
+    )
+    codex_home = home / ".codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}\n")
+    (codex_home / "config.toml").write_text("")
+    marker = tmp_path / "codex-executed"
+    executable(
+        codex_home / "packages/standalone/current/bin/codex",
+        '#!/bin/sh\nprintf "executed\\n" > "$MARKER"\n',
+    )
+    executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
+    return home, primary, marker, os.environ | {
+        "HOME": str(home), "MARKER": str(marker)
+    }
+
+
+def test_dispatch_rejects_invalid_legacy_friction_store_before_codex(
+    tmp_path: Path,
+) -> None:
+    for kind in ("directory", "symlink"):
+        case = tmp_path / kind
+        home, primary, marker, env = dispatch_fixture(case)
+        state = home / ".local/state/switchstand"
+        state.mkdir(parents=True)
+        legacy = state / "friction.md"
+        if kind == "directory":
+            legacy.mkdir()
+        else:
+            target = case / "external-friction"
+            target.write_text("external unchanged\n")
+            legacy.symlink_to(target)
+
+        result = subprocess.run(
+            [DISPATCH], cwd=primary, env=env, text=True,
+            capture_output=True, check=False,
+        )
+
+        assert result.returncode != 0
+        assert "Coordinator legacy friction store is invalid" in result.stderr
+        assert not marker.exists()
+        assert legacy.is_dir() if kind == "directory" else legacy.is_symlink()
+        assert not (primary / "friction.md").exists()
+
+
+def test_dispatch_rejects_invalid_current_friction_paths_without_mutating_legacy(
+    tmp_path: Path,
+) -> None:
+    cases = ("root-file", "root-symlink", "store-directory", "store-symlink")
+    for kind in cases:
+        case = tmp_path / kind
+        home, primary, marker, env = dispatch_fixture(case)
+        state = home / ".local/state/switchstand"
+        state.mkdir(parents=True)
+        legacy = state / "friction.md"
+        legacy.write_text("legacy unchanged\n")
+        binding = primary / "friction.md"
+        binding.symlink_to(legacy)
+        binding_before = os.readlink(binding)
+        root = state / "friction"
+        if kind == "root-file":
+            root.write_text("invalid root\n")
+            expected = "Coordinator friction root is invalid"
+        elif kind == "root-symlink":
+            target = case / "external-root"
+            target.mkdir()
+            root.symlink_to(target)
+            expected = "Coordinator friction root is invalid"
+        else:
+            root.mkdir()
+            store = root / "friction.md"
+            if kind == "store-directory":
+                store.mkdir()
+            else:
+                target = case / "external-current-friction"
+                target.write_text("external unchanged\n")
+                store.symlink_to(target)
+            expected = "Coordinator friction store is invalid"
+
+        result = subprocess.run(
+            [DISPATCH], cwd=primary, env=env, text=True,
+            capture_output=True, check=False,
+        )
+
+        assert result.returncode != 0
+        assert expected in result.stderr
+        assert not marker.exists()
+        assert legacy.read_text() == "legacy unchanged\n"
+        assert binding.is_symlink()
+        assert os.readlink(binding) == binding_before
+
+
 def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     tmp_path: Path,
 ) -> None:
