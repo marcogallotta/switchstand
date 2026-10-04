@@ -41,7 +41,12 @@ async def _snapshot(
     return {"effects": effects, "projections": projections}
 async def cleanup_snapshot(engine: AsyncEngine) -> dict[str, object]:
     async with engine.connect() as connection:
-        current = await _snapshot(connection, lock=False)
+        return await cleanup_snapshot_connection(connection)
+
+
+async def cleanup_snapshot_connection(connection: AsyncConnection) -> dict[str, object]:
+    """Snapshot cleanup rows using an already-owned database connection."""
+    current = await _snapshot(connection, lock=False)
     return _manifest({
         "schema_version": 1,
         "effects": [{"row": row, "sha256": _digest(row)} for row in current["effects"]],
@@ -84,64 +89,71 @@ def _receipt_matches(operation: object, receipt: object, row: dict[str, object])
         ))
     return False
 async def apply_cleanup(engine: AsyncEngine, plan_path: Path, archive_path: Path) -> dict[str, int]:
+    async with engine.begin() as connection:
+        return await apply_cleanup_connection(connection, plan_path, archive_path)
+
+
+async def apply_cleanup_connection(
+    connection: AsyncConnection, plan_path: Path, archive_path: Path,
+) -> dict[str, int]:
+    """Apply reviewed cleanup inside the caller's already-open transaction."""
     plan = load_manifest(plan_path)
     if plan.get("schema_version") != 1:
         raise ValueError("cleanup plan schema is invalid")
     effect_actions, projection_actions = _actions(plan, "effects"), _actions(plan, "projections")
     replaced = deleted = projections_deleted = 0
-    async with engine.begin() as connection:
-        current = await _snapshot(connection, lock=True)
-        effects = {cast(str, row["operation_id"]): row for row in current["effects"]}
-        projections = {
-            str(row["projection_id"]): row
-            for row in current["projections"]
-        }
-        if set(effects) != set(effect_actions) or set(projections) != set(projection_actions):
-            raise ValueError("cleanup plan does not name every current unresolved row")
-        for identity, row in effects.items():
-            action = effect_actions[identity]
-            if action.get("sha256") != _digest(row):
-                raise ValueError(f"effect row changed: {identity}")
-            disposition = action.get("action")
-            if disposition == "delete":
-                await connection.execute(delete(effect_intents).where(
-                    effect_intents.c.operation_id == identity
-                ))
-                deleted += 1
-            elif disposition == "replace":
-                outcome = GuardOutcome.model_validate(action.get("outcome"))
-                receipt = outcome.receipt
-                operation = cast(dict[str, object], row["outcome"])["operation"]
-                if (outcome.effect != "applied" or outcome.operation_id != UUID(identity)
-                        or outcome.operation != operation
-                        or outcome.work_id != UUID(cast(str, row["work_id"]))
-                        or receipt is None or receipt.operation_id != outcome.operation_id
-                        or receipt.work_id != outcome.work_id
-                        or receipt.grant_id != UUID(cast(str, row["grant_id"]))
-                        or receipt.grant_version != row["grant_version"]
-                        or receipt.principal.key != row["principal_key"]
-                        or not _receipt_matches(operation, receipt, row)):
-                    raise ValueError(f"replacement outcome identity is invalid: {identity}")
-                await connection.execute(update(effect_intents).where(
-                    effect_intents.c.operation_id == identity
-                ).values(outcome=outcome.model_dump(mode="json", exclude_none=True)))
-                replaced += 1
-            else:
-                raise ValueError(f"unsupported effect disposition: {identity}")
-        for identity, row in projections.items():
-            action = projection_actions[identity]
-            if action.get("action") != "delete" or action.get("sha256") != _digest(row):
-                raise ValueError(f"projection row changed or disposition invalid: {identity}")
-            await connection.execute(delete(message_projection).where(
-                message_projection.c.projection_id == UUID(identity)
+    current = await _snapshot(connection, lock=True)
+    effects = {cast(str, row["operation_id"]): row for row in current["effects"]}
+    projections = {
+        str(row["projection_id"]): row
+        for row in current["projections"]
+    }
+    if set(effects) != set(effect_actions) or set(projections) != set(projection_actions):
+        raise ValueError("cleanup plan does not name every current unresolved row")
+    for identity, row in effects.items():
+        action = effect_actions[identity]
+        if action.get("sha256") != _digest(row):
+            raise ValueError(f"effect row changed: {identity}")
+        disposition = action.get("action")
+        if disposition == "delete":
+            await connection.execute(delete(effect_intents).where(
+                effect_intents.c.operation_id == identity
             ))
-            projections_deleted += 1
-        write_manifest(archive_path, _manifest({"schema_version": 1, **current}))
-        directory = os.open(archive_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            deleted += 1
+        elif disposition == "replace":
+            outcome = GuardOutcome.model_validate(action.get("outcome"))
+            receipt = outcome.receipt
+            operation = cast(dict[str, object], row["outcome"])["operation"]
+            if (outcome.effect != "applied" or outcome.operation_id != UUID(identity)
+                    or outcome.operation != operation
+                    or outcome.work_id != UUID(cast(str, row["work_id"]))
+                    or receipt is None or receipt.operation_id != outcome.operation_id
+                    or receipt.work_id != outcome.work_id
+                    or receipt.grant_id != UUID(cast(str, row["grant_id"]))
+                    or receipt.grant_version != row["grant_version"]
+                    or receipt.principal.key != row["principal_key"]
+                    or not _receipt_matches(operation, receipt, row)):
+                raise ValueError(f"replacement outcome identity is invalid: {identity}")
+            await connection.execute(update(effect_intents).where(
+                effect_intents.c.operation_id == identity
+            ).values(outcome=outcome.model_dump(mode="json", exclude_none=True)))
+            replaced += 1
+        else:
+            raise ValueError(f"unsupported effect disposition: {identity}")
+    for identity, row in projections.items():
+        action = projection_actions[identity]
+        if action.get("action") != "delete" or action.get("sha256") != _digest(row):
+            raise ValueError(f"projection row changed or disposition invalid: {identity}")
+        await connection.execute(delete(message_projection).where(
+            message_projection.c.projection_id == UUID(identity)
+        ))
+        projections_deleted += 1
+    write_manifest(archive_path, _manifest({"schema_version": 1, **current}))
+    directory = os.open(archive_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     return {"replaced": replaced, "deleted": deleted, "projections_deleted": projections_deleted}
 async def _run(action: str, first: Path, second: Path | None) -> object:
     engine = create_async_engine(os.environ["DATABASE_URL"])
