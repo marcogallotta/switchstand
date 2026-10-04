@@ -67,6 +67,14 @@ trusted_hash = "must-not-copy"
         "Reread that file after context compaction and before handoff."
     )
     assert profile["features"] == {"hooks": True}
+    assert profile["mcp_servers"] == {
+        "switchstand_coordinator_control": {
+            "command": str(primary / "scripts/switchstand-coordinator-control-mcp"),
+            "required": True,
+            "default_tools_approval_mode": "approve",
+            "enabled_tools": ["coordinator_currentness_get", "coordinator_main_sync"],
+        }
+    }
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
         ":root": "read",
@@ -85,6 +93,7 @@ trusted_hash = "must-not-copy"
     assert profile["notice"] == {"hide_rate_limit_model_nudge": True}
     assert set(profile) == {
         "approval_policy", "default_permissions", "developer_instructions", "features", "permissions",
+        "mcp_servers",
         "model_auto_compact_token_limit", "model_auto_compact_token_limit_scope",
         "tui", "notice",
     }
