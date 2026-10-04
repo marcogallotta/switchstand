@@ -300,7 +300,8 @@ async def test_reviewed_tombstone_roundtrips_work_alias_and_known_event_aliases(
         "priority": None, "work_type": None, "lifecycle_state": None,
         "review_next_action": None, "canonical_root": None, "owner_key": None,
         "wait_kind": None, "unblock_condition": None, "next_due": None,
-        "next_action_class": None, "next_action_ref": None, "row_version": 1,
+        "next_action_class": None, "next_action_ref": None, "admitted_at": None,
+        "row_version": 1,
     }
     assert event["id"] == str(TOMBSTONE_EVENT)
     assert event["asana_story_gid"] == "retired-story"
@@ -432,7 +433,8 @@ async def test_zero_membership_exports_only_identity_tombstone(
             "work_type": None, "lifecycle_state": None,
             "review_next_action": None, "canonical_root": None, "owner_key": None,
             "wait_kind": None, "unblock_condition": None, "next_due": None,
-            "next_action_class": None, "next_action_ref": None, "row_version": 1,
+            "next_action_class": None, "next_action_ref": None, "admitted_at": None,
+            "row_version": 1,
         },
     }, {
         "kind": "alias", "id": '["retired"]', "fields": {

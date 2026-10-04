@@ -89,7 +89,8 @@ def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
         item = result.item
         public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
                                      completed=item.completed, revision=item.revision,
-                                     routing=item.routing, context=item.context)
+                                     routing=item.routing, context=item.context,
+                                     admitted_at=item.admitted_at)
     return public
 
 

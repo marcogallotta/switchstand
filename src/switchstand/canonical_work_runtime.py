@@ -122,6 +122,7 @@ class CanonicalWorkRuntime:
             revision=canonical_revision(work.work_id, work.row_version),
             routing=_routing(work),
             context=_context(work, relations),
+            admitted_at=work.admitted_at,
         )
 
     async def get(self, work_id: UUID) -> WorkResult:
@@ -163,6 +164,7 @@ class CanonicalWorkRuntime:
                     revision=public.revision,
                     routing=public.routing,
                     context=public.context,
+                    admitted_at=public.admitted_at,
                 ))
             else:
                 return WorkSearchResult(
@@ -456,9 +458,11 @@ class CanonicalWorkRuntime:
                                 project_memberships.c.project_id
                             ).where(project_memberships.c.work_id == work_id)
                         )
-                        if stored != created or stored_handle != work_id or relation != (
+                        if (stored is None or stored.admitted_at is None
+                                or replace(stored, admitted_at=None) != created
+                                or stored_handle != work_id or relation != (
                             parent if parent is not None else project_id
-                        ):
+                        )):
                             raise ValueError("canonical create readback mismatch")
                         receipt = CreateReceipt(
                             operation_id=request.operation_id, principal=principal,
