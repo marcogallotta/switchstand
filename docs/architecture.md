@@ -371,6 +371,11 @@ Provisioning failures are durable and bounded;
 their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
 namespaced resources. It never selects or changes production state.
 
+`zero_asana_hold.py` owns the transition-only integrated production hold: exact host edge gate and
+stop, create-new FastMCP snapshot, and one PostgreSQL transaction whose SHARE locks span source
+capture/export/readback and the injected cutover continuation. Direct Asana writes remain a stated
+coordination limitation rather than a technical freeze.
+
 ## Where to edit
 
 | Intended change | Primary owner | Usually inspect or update with it |
