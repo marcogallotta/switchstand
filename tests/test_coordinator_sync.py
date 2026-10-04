@@ -171,8 +171,6 @@ def test_hostile_git_execution_config_is_sanitized_during_real_fast_forward(
     executable(helper, marker)
     hook = primary / ".git/hooks/post-merge"
     executable(hook, marker)
-    git(primary, "config", "core.fsmonitor", str(helper))
-    git(primary, "config", "core.hooksPath", str(hook.parent))
     git(primary, "config", "core.sshCommand", str(helper))
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
@@ -211,6 +209,28 @@ def test_filter_command_and_noncanonical_remote_are_rejected_before_execution(
     assert wrong_remote.status == "not_applied"
     assert wrong_remote.reason == "canonical_remote_identity_mismatch"
     assert git(primary, "rev-parse", "HEAD") == started
+    assert not marker.exists()
+
+
+def test_alternate_refs_command_is_rejected_then_normal_fast_forward_works(
+    tmp_path: Path,
+) -> None:
+    home, primary, source, started, target = setup(tmp_path)
+    marker = tmp_path / "alternate-refs-escaped"
+    git(primary, "config", "core.alternateRefsCommand", f"/usr/bin/touch {marker}")
+    subject = control(home, source.parent / "remote.git")
+
+    rejected = subject.sync(target)
+
+    assert rejected.status == "not_applied" and rejected.effect == "not_sent"
+    assert rejected.reason == "unsafe_local_git_config"
+    assert git(primary, "rev-parse", "HEAD") == started
+    assert not marker.exists()
+
+    git(primary, "config", "--unset", "core.alternateRefsCommand")
+    applied = subject.sync(target)
+    assert applied.status == "ok" and applied.effect == "applied"
+    assert git(primary, "rev-parse", "HEAD") == target
     assert not marker.exists()
 
 

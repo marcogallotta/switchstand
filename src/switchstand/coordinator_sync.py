@@ -28,15 +28,11 @@ CANONICAL_ORIGINS = frozenset({
     "git@github.com:marcogallotta/switchstand.git",
     "ssh://git@github.com/marcogallotta/switchstand.git",
 })
-FORBIDDEN_CONFIG_PREFIXES = (
-    "alias.", "credential.", "diff.", "filter.", "http.", "include.", "includeif.",
-    "merge.", "url.",
-)
-FORBIDDEN_CONFIG_KEYS = frozenset({
-    "core.askpass", "core.editor", "core.gitproxy", "core.pager",
-    "interactive.difffilter", "sequence.editor",
+ALLOWED_LOCAL_CONFIG_KEYS = frozenset({
+    "core.bare", "core.filemode", "core.ignorecase", "core.logallrefupdates",
+    "core.precomposeunicode", "core.repositoryformatversion", "core.sshcommand",
+    "remote.origin.fetch", "remote.origin.url", "user.email", "user.name",
 })
-FORBIDDEN_REMOTE_SUFFIXES = (".proxy", ".receivepack", ".uploadpack", ".vcs")
 
 
 class CurrentnessResult(ClosedModel):
@@ -148,9 +144,10 @@ class CoordinatorSync:
         ).stdout.splitlines()
         lowered = tuple(name.lower() for name in names)
         for key in lowered:
-            if (key.startswith(FORBIDDEN_CONFIG_PREFIXES)
-                    or key in FORBIDDEN_CONFIG_KEYS
-                    or (key.startswith("remote.") and key.endswith(FORBIDDEN_REMOTE_SUFFIXES))):
+            branch_tracking = (
+                key.startswith("branch.") and key.endswith((".remote", ".merge"))
+            )
+            if key not in ALLOWED_LOCAL_CONFIG_KEYS and not branch_tracking:
                 raise GitFailure("unsafe_local_git_config")
         origin = self._git(
             "config", "--local", "--no-includes", "--get", "remote.origin.url"
@@ -182,24 +179,25 @@ class CoordinatorSync:
 
     def currentness(self) -> CurrentnessResult:
         try:
-            current = self._validate_repo()
-            self._validate_local_config()
-            target = self._remote_main()
-            if not self._clean():
+            with self._config_guard():
+                self._validate_local_config()
+                current = self._validate_repo()
+                target = self._remote_main()
+                if not self._clean():
+                    return CurrentnessResult(
+                        status="BLOCKED", current_sha=current, target_sha=target,
+                        reason="dirty_canonical_checkout",
+                    )
+                if current == target:
+                    return CurrentnessResult(
+                        status="CURRENT", current_sha=current, target_sha=target,
+                        reason="canonical_main_current",
+                    )
                 return CurrentnessResult(
-                    status="BLOCKED", current_sha=current, target_sha=target,
-                    reason="dirty_canonical_checkout",
+                    status="SYNC_REQUIRED", current_sha=current, target_sha=target,
+                    reason="canonical_main_differs",
                 )
-            if current == target:
-                return CurrentnessResult(
-                    status="CURRENT", current_sha=current, target_sha=target,
-                    reason="canonical_main_current",
-                )
-            return CurrentnessResult(
-                status="SYNC_REQUIRED", current_sha=current, target_sha=target,
-                reason="canonical_main_differs",
-            )
-        except GitFailure as error:
+        except (GitFailure, OSError) as error:
             return CurrentnessResult(status="UNKNOWN", reason=str(error))
 
     def sync(self, target_sha: str) -> SyncResult:
@@ -208,31 +206,31 @@ class CoordinatorSync:
                 status="not_applied", effect="not_sent", target_sha=target_sha,
                 reason="invalid_target_sha",
             )
-        try:
-            current = self._validate_repo()
-        except GitFailure as error:
+        if (self.repo.is_symlink() or not self.repo.is_dir()
+                or not (self.repo / ".git").is_dir()):
             return SyncResult(
                 status="not_applied", effect="not_sent", target_sha=target_sha,
-                reason=str(error),
+                reason="canonical_checkout_unavailable",
             )
         lock_path = self.repo / ".git" / "switchstand-coordinator-sync.lock"
         try:
             with lock_path.open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 with self._config_guard():
+                    self._validate_local_config()
+                    current = self._validate_repo()
                     return self._sync_locked(current, target_sha)
         except (OSError, GitFailure) as error:
             return SyncResult(
-                status="not_applied", effect="not_sent", previous_sha=current,
-                target_sha=target_sha, resulting_sha=current,
+                status="not_applied", effect="not_sent", target_sha=target_sha,
                 reason=str(error) if isinstance(error, GitFailure) else "sync_lock_unavailable",
             )
 
     def _sync_locked(self, observed_current: str, target_sha: str) -> SyncResult:
         merge_attempted = False
         try:
-            current = self._validate_repo()
             self._validate_local_config()
+            current = self._validate_repo()
             if current != observed_current:
                 return self._unchanged(current, target_sha, "current_head_changed")
             if not self._clean():
