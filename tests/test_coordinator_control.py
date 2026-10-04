@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import subprocess
@@ -13,7 +14,7 @@ def git(repo: Path, *arguments: str) -> str:
     return subprocess.check_output(["git", "-C", repo, *arguments], text=True).strip()
 
 
-def setup(tmp_path: Path) -> tuple[Path, Path, Path]:
+def setup(tmp_path: Path, *, successor_eligible: bool = False) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "-C", repo, "init", "-b", "main"], check=True, capture_output=True)
@@ -32,8 +33,7 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path]:
         path = tmp_path / name
         path.write_text(name + "\n")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    result = subprocess.run(
-        [
+    command = [
             SCRIPT,
             "create",
             "--repo",
@@ -52,12 +52,29 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path]:
             tmp_path / "shim",
             "--invocation-digest",
             "a" * 64,
-        ],
+        ]
+    if successor_eligible:
+        command.append("--successor-eligible")
+    result = subprocess.run(
+        command,
         text=True,
         capture_output=True,
         check=True,
     )
     return repo, start, Path(result.stdout.strip())
+
+
+def pending_handoff(start: Path, commit: str) -> Path:
+    artifact = start.parent.parent / "handoffs/handoff-test"
+    artifact.mkdir(parents=True)
+    (artifact / "obligations").write_text("continue exact work\n")
+    obligations_hash = hashlib.sha256((artifact / "obligations").read_bytes()).hexdigest()
+    handoff = {"handoff_id": "handoff-id", "state": "AWAITING_SUCCESSOR",
+               "target_commit": commit, "obligations_sha256": obligations_hash}
+    (artifact / "handoff.json").write_text(json.dumps(handoff))
+    pointer = {"handoff_id": "handoff-id", "artifact": str(artifact)}
+    (start.parent / "pending-handoff.json").write_text(json.dumps(pointer))
+    return artifact
 
 
 def check(
@@ -172,3 +189,53 @@ def test_unresolved_document_dependencies_are_explicit_component_unknowns(
         == "CURRENTNESS_UNKNOWN"
         for item in status["unresolved_rereadable_controls"]
     )
+
+
+def test_actual_successor_launch_is_bound_and_must_acknowledge(tmp_path: Path) -> None:
+    repo, start, first = setup(tmp_path)
+    first.unlink()
+    artifact = pending_handoff(start, git(repo, "rev-parse", "HEAD"))
+    profile = tmp_path / "profile"
+    command = [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
+               "--start-record", start, "--profile", profile,
+               "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
+               "--shim", tmp_path / "shim", "--invocation-digest", "b" * 64, "--successor-eligible"]
+    result = subprocess.run(command, text=True, capture_output=True, check=True)
+    manifest_path = Path(result.stdout.strip())
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["handoff"]["handoff_id"] == "handoff-id"
+    proof = json.loads((artifact / "successor-launch.json").read_text())
+    assert proof["session_generation"] == manifest["session"]["generation"]
+    assert json.loads((artifact / "handoff.json").read_text())["state"] == "SUCCESSOR_LAUNCHED"
+    assert (start.parent / "pending-handoff.json").exists()
+
+    original = (artifact / "obligations").read_text()
+    (artifact / "obligations").write_text("tampered\n")
+    rejected = subprocess.run([SCRIPT, "acknowledge", manifest_path], capture_output=True, check=False)
+    assert rejected.returncode != 0 and (start.parent / "pending-handoff.json").exists()
+    (artifact / "obligations").write_text(original)
+    acknowledged = subprocess.run([SCRIPT, "acknowledge", manifest_path], text=True,
+                                  capture_output=True, check=True)
+    assert json.loads(acknowledged.stdout)["state"] == "ACKNOWLEDGED"
+    assert json.loads((artifact / "handoff.json").read_text())["state"] == "ACKNOWLEDGED"
+    assert json.loads((artifact / "successor-ack.json").read_text())["acknowledgement"] == \
+        "SECONDARY_COORDINATOR_ACK"
+    assert not (start.parent / "pending-handoff.json").exists()
+
+
+def test_ineligible_launch_does_not_consume_pending_handoff(tmp_path: Path) -> None:
+    repo, start, first = setup(tmp_path)
+    first.unlink()
+    artifact = pending_handoff(start, git(repo, "rev-parse", "HEAD"))
+    result = subprocess.run(
+        [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
+         "--start-record", start, "--profile", tmp_path / "profile",
+         "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
+         "--shim", tmp_path / "shim", "--invocation-digest", "c" * 64],
+        text=True, capture_output=True, check=True,
+    )
+    manifest_path = Path(result.stdout.strip())
+    manifest = json.loads(manifest_path.read_text())
+    assert "handoff" not in manifest
+    assert not (artifact / "successor-launch.json").exists()
+    assert (start.parent / "pending-handoff.json").exists()

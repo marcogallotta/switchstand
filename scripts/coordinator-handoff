@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Fast-forward canonical main and prove a fresh Coordinator sees that exact commit."""
+"""Fast-forward canonical main and prepare one real successor handoff."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import NoReturn
 
 SHA = re.compile(r"[0-9a-f]{40}")
-CANARY_STATUS = "SWITCHSTAND_COORDINATOR_CANARY_OK"
 GIT_TIMEOUT_SECONDS = 30
 _evidence: Path | None = None
 _stage = "startup"
@@ -88,64 +88,66 @@ def require_start_record(home: Path, raw: str) -> tuple[Path, str]:
     return resolved, value
 
 
-def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
-    schema = artifact / "schema.json"
-    final = artifact / "final.json"
-    trace = artifact / "trace.jsonl"
-    stderr = artifact / "stderr.log"
-    schema.write_text(json.dumps({
-        "type": "object",
-        "properties": {
-            "status": {"type": "string", "const": CANARY_STATUS},
-            "start_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        },
-        "required": ["status", "start_commit"],
-        "additionalProperties": False,
-    }) + "\n")
-    prompt = (
-        "This is a read-only Switchstand Coordinator launch canary. Read the exact "
-        "Coordinator start-commit record path from your developer instructions, read that "
-        "file, and compare it with `git rev-parse HEAD` in the current repository. Do not "
-        "modify files or perform any other work. Return the required JSON with status "
-        f"{CANARY_STATUS} and start_commit set to the commit you verified."
-    )
-    command = [
-        str(shim), "exec", "--ephemeral", "--json", "--output-schema", str(schema),
-        "--output-last-message", str(final), prompt,
-    ]
-    with trace.open("w") as stdout_handle, stderr.open("w") as stderr_handle:
-        process = subprocess.Popen(
-            command,
-            cwd=repo,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            returncode = process.wait(timeout=180)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-            fail(f"fresh-agent canary timed out; evidence: {artifact}")
-    if returncode:
-        fail(f"fresh-agent canary failed; evidence: {artifact}")
+def manifest_digest(payload: dict[str, object]) -> str:
+    unsigned = {key: value for key, value in payload.items() if key != "manifest_digest"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def require_launch_manifest(start_record: Path, started: str) -> dict[str, object]:
+    path = Path(f"{start_record}.manifest.json")
     try:
-        result = json.loads(final.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"fresh-agent canary returned invalid evidence ({error}); evidence: {artifact}")
-    if result != {"status": CANARY_STATUS, "start_commit": expected}:
-        fail(f"fresh-agent canary did not prove {expected}; evidence: {artifact}")
+        payload = json.loads(path.read_text())
+        session = payload["session"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        fail(f"outgoing launch manifest is unavailable: {error}")
+    if (
+        payload.get("manifest_digest") != manifest_digest(payload)
+        or session.get("start_commit") != started
+        or session.get("start_record") != str(start_record)
+    ):
+        fail("outgoing launch manifest identity does not match the current generation")
+    return payload
+
+
+def require_obligations(home: Path, raw: str) -> Path:
+    path = Path(raw)
+    root = home / ".local/state/switchstand"
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"handoff obligations are unavailable: {error}")
+    if (
+        not resolved.is_relative_to(root.resolve())
+        or path.is_symlink()
+        or not resolved.is_file()
+        or resolved.stat().st_size > 65536
+    ):
+        fail("handoff obligations must be one regular private state file up to 64 KiB")
+    return resolved
+
+
+def write_json(path: Path, payload: dict[str, object], *, exclusive: bool = False) -> None:
+    output = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(output)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    try:
+        if exclusive:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> None:
     global _evidence, _repo
-    if len(sys.argv) != 2:
-        fail("usage: scripts/coordinator-handoff <start-commit-record>")
+    if len(sys.argv) != 3:
+        fail("usage: scripts/coordinator-handoff <start-commit-record> <obligations-file>")
     home_raw = os.environ.get("HOME")
     if not home_raw or not Path(home_raw).is_absolute():
         fail("HOME must be an absolute path")
@@ -162,6 +164,11 @@ def main() -> None:
     if not repo.is_dir():
         fail("canonical Switchstand checkout is unavailable")
     start_record, started = require_start_record(home, sys.argv[1])
+    outgoing_manifest = require_launch_manifest(start_record, started)
+    obligations = require_obligations(home, sys.argv[2])
+    pending = start_record.parent / "pending-handoff.json"
+    if pending.exists():
+        fail("a prior Coordinator handoff is still pending")
     if git(repo, "rev-parse", "--path-format=absolute", "--show-toplevel") != str(repo):
         fail("handoff requires the canonical primary checkout")
     common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
@@ -205,18 +212,38 @@ def main() -> None:
     ).returncode:
         fail("recorded Coordinator start commit is not an ancestor of final main")
 
-    stage("validate-shim")
-    shim = home / ".local/bin/codex"
-    if shim.is_symlink() or not shim.is_file() or not os.access(shim, os.X_OK):
-        fail("materialized Codex shim is unavailable")
-    stage("fresh-agent-canary")
-    run_canary(shim, repo, accepted, _evidence)
-    (_evidence / "result.json").write_text(json.dumps({
-        "status": "PASS", "stage": _stage, "known_head": accepted,
-    }, sort_keys=True) + "\n")
+    stage("prepare-successor")
+    handoff_id = str(uuid.uuid4())
+    obligation_copy = _evidence / "obligations"
+    obligation_copy.write_bytes(obligations.read_bytes())
+    os.chmod(obligation_copy, 0o600)
+    handoff = {
+        "handoff_id": handoff_id,
+        "state": "AWAITING_SUCCESSOR",
+        "target_commit": accepted,
+        "outgoing_generation": outgoing_manifest["session"]["generation"],
+        "outgoing_manifest_digest": outgoing_manifest["manifest_digest"],
+        "obligations_sha256": hashlib.sha256(obligation_copy.read_bytes()).hexdigest(),
+        "old_session_retirement": "BLOCKED_UNTIL_ACKNOWLEDGED",
+    }
+    write_json(_evidence / "handoff.json", handoff)
+    write_json(
+        _evidence / "result.json",
+        {"status": "WAITING_FOR_SUCCESSOR", "stage": _stage, "known_head": accepted},
+    )
+    try:
+        write_json(
+            pending,
+            {"handoff_id": handoff_id, "artifact": str(_evidence)},
+            exclusive=True,
+        )
+    except FileExistsError:
+        fail("another Coordinator handoff became pending concurrently")
 
     print(f"Git boundary: {start_record} {started}..{accepted}")
-    print(f"Fresh-agent canary: PASS at {accepted}")
+    print(f"Handoff: WAITING_FOR_SUCCESSOR {handoff_id}")
+    print("Launch one fresh Coordinator with plain `codex`; do not resume the old session.")
+    print("Obligations transfer and old-session retirement remain blocked until ACKNOWLEDGED.")
     print(f"Evidence: {_evidence}")
 
 

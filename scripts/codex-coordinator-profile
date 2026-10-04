@@ -55,7 +55,11 @@ def render(
             "or ambiguous effects, preserve obligations, reach the smallest safe checkpoint, "
             "and hand off. CURRENTNESS_UNKNOWN blocks only actions depending on its unknown "
             "component. After an in-session canonical sync, run the same check with "
-            "--trigger post-sync and reread every returned changed dependency."
+            "--trigger post-sync and reread every returned changed dependency. If the manifest "
+            "contains a handoff, read its exact obligations file, then run "
+            f"{primary / 'scripts/coordinator-control'} acknowledge {manifest_record}. Only its "
+            "ACKNOWLEDGED result transfers those obligations and permits the prior generation "
+            "to retire."
         ),
     ]
     section: tuple[str, ...] = ()
