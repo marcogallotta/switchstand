@@ -23,6 +23,7 @@ FROZEN_REPOSITORY_FILES = (
     ".codex/config.toml",
     "scripts/codex-dispatch",
     "scripts/codex-coordinator-profile",
+    "scripts/codex-continuity-hook",
     "scripts/codex-hook",
     "scripts/coordinator-control",
     "scripts/coordinator-handoff",

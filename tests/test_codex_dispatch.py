@@ -102,6 +102,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == runtime_receipt["launch_sha256"]
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
+    assert "mode=OFF; lifetime=ASSIGNMENT" in profile["developer_instructions"]
     assert not (coordinator_home / "AGENTS.md").exists()
     friction_store = home / ".local/state/switchstand/friction.md"
     assert (primary / "friction.md").is_symlink()
@@ -159,6 +160,51 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         receipt = manifest["runtime_mutable_controls"][0]
         assert Path(receipt["path"]) in profiles
         assert receipt["snapshot"] == str(generated)
+
+
+def test_dispatch_freezes_opt_in_continuity_and_scrubs_selectors(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    primary.mkdir(parents=True)
+    subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
+                   capture_output=True)
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "--allow-empty", "-m", "base"],
+        check=True, capture_output=True,
+    )
+    codex_home = home / ".codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}\n")
+    (codex_home / "config.toml").write_text("")
+    result_file = tmp_path / "result"
+    executable(
+        codex_home / "packages/standalone/current/bin/codex",
+        '#!/bin/sh\nprintf "%s|%s\n" "${SWITCHSTAND_CODEX_CONTINUITY-unset}" '
+        '"${SWITCHSTAND_CODEX_LIFETIME-unset}" > "$RESULT"\n',
+    )
+    executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file),
+            "SWITCHSTAND_CODEX_CONTINUITY": "PILOT",
+            "SWITCHSTAND_CODEX_LIFETIME": "STANDING",
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result_file.read_text() == "unset|unset\n"
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
+    profile = tomllib.loads(profile_path.read_text())
+    assert "mode=PILOT; lifetime=STANDING" in profile["developer_instructions"]
+    assert set(profile["hooks"]) == {"UserPromptSubmit", "Stop"}
+    assert "SubagentStop" not in profile["hooks"]
+    shared = json.loads((coordinator_home / "hooks.json").read_text())
+    assert set(shared["hooks"]) == {"PreToolUse"}
 
 
 def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(

@@ -22,6 +22,12 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
 fi
 
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
+continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-OFF}
+continuity_lifetime=${SWITCHSTAND_CODEX_LIFETIME:-ASSIGNMENT}
+case "$continuity_mode" in OFF|PILOT) ;; *)
+    echo "SWITCHSTAND_CODEX_CONTINUITY must be OFF or PILOT" >&2; exit 2;; esac
+case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)
+    echo "SWITCHSTAND_CODEX_LIFETIME must be ASSIGNMENT or STANDING" >&2; exit 2;; esac
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then
@@ -40,6 +46,7 @@ manifest_record="$start_record.manifest.json"
 coordinator_profile="switchstand-coordinator-${start_record##*.}"
 coordinator_profile_path="$coordinator_home/$coordinator_profile.config.toml"
 coordinator_profile_snapshot="$coordinator_home/$coordinator_profile.launch.toml"
+continuity_telemetry="$coordinator_home/continuity-${start_record##*.}.jsonl"
 invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
@@ -82,6 +89,8 @@ fi
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
     "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
+    "$script_dir/codex-continuity-hook" "$continuity_mode" "$continuity_lifetime" \
+    "$continuity_telemetry" \
     "$start_record" "$manifest_record"
 
 "$script_dir/coordinator-control" create \
@@ -91,6 +100,7 @@ fi
     --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
     --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
 
+unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
         -c 'model_reasoning_effort="medium"' \
