@@ -55,6 +55,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         '#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" > "$RESULT"\n'
         'printf "%s\\n" "$@" >> "$RESULT"\n',
     )
+    executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
 
     result = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
@@ -82,13 +83,18 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
     assert profile["approval_policy"] == "never"
-    records = list(coordinator_home.glob("start-commit.*"))
+    records = [path for path in coordinator_home.glob("start-commit.*")
+               if not path.name.endswith(".manifest.json")]
     assert len(records) == 1
     assert records[0].read_text() == subprocess.check_output(
         ["git", "-C", primary, "rev-parse", "HEAD"], text=True
     )
     assert str(records[0]) in profile["developer_instructions"]
-    assert "after context compaction" in profile["developer_instructions"]
+    assert "--trigger post-compaction" in profile["developer_instructions"]
+    manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["session"]["start_commit"] == records[0].read_text().strip()
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
     assert not (coordinator_home / "AGENTS.md").exists()

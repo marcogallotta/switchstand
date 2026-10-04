@@ -16,7 +16,8 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> None
     hook.write_text("#!/bin/sh\nexit 0\n")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
     subprocess.run(
-        [SCRIPT, source, destination, primary, hooks, hook, primary / "start-commit"],
+        [SCRIPT, source, destination, primary, hooks, hook, primary / "start-commit",
+         primary / "launch-manifest.json"],
         check=True,
     )
 
@@ -62,10 +63,11 @@ trusted_hash = "must-not-copy"
     profile = tomllib.loads(destination.read_text())
     assert profile["approval_policy"] == "never"
     assert profile["default_permissions"] == "switchstand-coordinator"
-    assert profile["developer_instructions"] == (
-        f"Coordinator start commit is recorded at {primary / 'start-commit'}. "
-        "Reread that file after context compaction and before handoff."
-    )
+    instructions = profile["developer_instructions"]
+    assert f"Coordinator start commit is recorded at {primary / 'start-commit'}." in instructions
+    assert str(primary / "launch-manifest.json") in instructions
+    assert "--trigger post-compaction" in instructions
+    assert "CONTROL_STALE is permanent" in instructions
     assert profile["features"] == {"hooks": True}
     assert profile["mcp_servers"] == {
         "switchstand_coordinator_control": {
