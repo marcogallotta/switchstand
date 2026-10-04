@@ -99,7 +99,11 @@ def work(gid: str) -> ProviderWork:
     )
     return ProviderWork(
         gid.title(), f"notes-{gid}", False, f"revision-{gid}",
-        Routing(priority="P1", work_type="Implementation"), context, True,
+        Routing(
+            priority="P1", work_type="Implementation", canonical_root="NONE",
+            owner_key="coordinator", next_action_class="OWNER_CAN_DO",
+            next_action_ref="implement",
+        ), context, True,
     )
 
 
@@ -294,8 +298,9 @@ async def test_reviewed_tombstone_roundtrips_work_alias_and_known_event_aliases(
         "normalized_title": "retired proof", "completed": True,
         "notes": "Intentionally retained as a tombstone.", "assignee": None,
         "priority": None, "work_type": None, "lifecycle_state": None,
-        "review_next_action": None, "wait_kind": None, "unblock_condition": None,
-        "next_due": None, "row_version": 1,
+        "review_next_action": None, "canonical_root": None, "owner_key": None,
+        "wait_kind": None, "unblock_condition": None, "next_due": None,
+        "next_action_class": None, "next_action_ref": None, "row_version": 1,
     }
     assert event["id"] == str(TOMBSTONE_EVENT)
     assert event["asana_story_gid"] == "retired-story"
@@ -425,8 +430,9 @@ async def test_zero_membership_exports_only_identity_tombstone(
             "normalized_title": "wrong retained content", "completed": True,
             "notes": "must not migrate", "assignee": None, "priority": None,
             "work_type": None, "lifecycle_state": None,
-            "review_next_action": None, "wait_kind": None,
-            "unblock_condition": None, "next_due": None, "row_version": 1,
+            "review_next_action": None, "canonical_root": None, "owner_key": None,
+            "wait_kind": None, "unblock_condition": None, "next_due": None,
+            "next_action_class": None, "next_action_ref": None, "row_version": 1,
         },
     }, {
         "kind": "alias", "id": '["retired"]', "fields": {
