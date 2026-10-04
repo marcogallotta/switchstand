@@ -365,6 +365,7 @@ def build_server(
                     or grant.authority.active_work_id != active_work_id
                     or not grant.can_write(active_work_id)
                     or "agent_task" not in grant.operations
+                    or execution_work_id != active_work_id
                 ):
                     return TaskRunRequestResult(
                         status="denied", reason="operation_not_granted"
@@ -423,7 +424,6 @@ def server_from_env() -> MCPServer:
         messages=messages, grants=grants, principal=managed_principal(active),
         currentness=currentness,
         updates=lambda principal, request: work.protected_update(grants, principal, request),
-        task_runs=TaskRunState(engine, work.works),
     )
 
 

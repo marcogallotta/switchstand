@@ -150,7 +150,6 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     managed = {
         "work_get", "work_history", "work_event", "work_append", "work_update", "message_pending",
         "message_receive", "message_recover", "message_result_send", "message_disposition",
-        "agent_task_request",
     }
     switchstand_managed = servers["switchstand_managed"]
     assert switchstand_managed["required"] is False
