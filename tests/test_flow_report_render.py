@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 from switchstand.flow_report import render
 
@@ -56,3 +57,28 @@ def test_json_remains_the_default_shape_without_renderer_inference() -> None:
 
     assert json.loads(output) == REPORT
     assert "unobserved" not in output and "critical_path" not in output
+
+
+def test_concise_render_keeps_github_subjects_separate() -> None:
+    value = deepcopy(REPORT)
+    value["github"] = {
+        "status": "OBSERVED", "reason": None, "correlation": "CALLER_SUPPLIED",
+        "pull_request": 17, "expected_head_sha": "a" * 40,
+        "observed_head_sha": "a" * 40, "qualification_status": "READY",
+        "subjects": {
+            "exact_head": {"status": "OBSERVED", "reason": None,
+                           "subject_sha": "a" * 40, "intervals": [{}, {}],
+                           "union_ms": 15_000},
+            "composition": {"status": "OBSERVED", "reason": None,
+                            "subject_sha": "b" * 40, "intervals": [{}],
+                            "union_ms": 5_000},
+        },
+    }
+
+    output = render(value, "concise")
+
+    assert "github status=OBSERVED reason=None correlation=CALLER_SUPPLIED" in output
+    assert "github_exact_head status=OBSERVED reason=None" in output
+    assert "intervals=2 union_ms=15000" in output
+    assert "github_composition status=OBSERVED reason=None" in output
+    assert "intervals=1 union_ms=5000" in output
