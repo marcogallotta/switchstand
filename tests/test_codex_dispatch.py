@@ -70,6 +70,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert "--dangerously-bypass-approvals-and-sandbox" not in arguments
     assert "--disable" not in arguments
     assert arguments[arguments.index("-a") + 1] == "never"
+    assert arguments[arguments.index("-m") + 1] == "gpt-6.1-sol"
     assert arguments[arguments.index("--enable") + 1] == "hooks"
     assert "--dangerously-bypass-hook-trust" in arguments
     assert 'default_permissions="switchstand-coordinator"' in arguments
