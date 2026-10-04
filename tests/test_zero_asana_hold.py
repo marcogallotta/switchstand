@@ -15,9 +15,11 @@ from switchstand.edge_maintenance import Config, Failed
 from switchstand.work_corpus import load_manifest
 
 SHA = "a" * 40
+
 def digested(value: dict[str, object]) -> dict[str, object]:
     body = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return value | {"sha256": hashlib.sha256(body).hexdigest()}
+
 class Context:
     def __init__(self, value: object, enter=lambda: None, exit=lambda _error: None):
         self.value, self.enter, self.exit = value, enter, exit
@@ -26,6 +28,7 @@ class Context:
         return self.value
     async def __aexit__(self, kind, _error, _traceback):
         self.exit(kind)
+
 class Connection:
     def __init__(self):
         self.in_transaction = self.committed = False
@@ -40,11 +43,13 @@ class Connection:
     async def execute(self, statement: object):
         assert "LOCK TABLE work_handles, work_event_handles IN SHARE MODE" in str(statement)
         self.calls.append("lock")
+
 class Engine:
     def __init__(self, connection: Connection):
         self.connection = connection
     def connect(self):
         return Context(self.connection)
+
 class Operations:
     def __init__(self, root: Path):
         self.lock_path = root / "exact.lock"
@@ -55,6 +60,7 @@ class Operations:
     def snapshot_current(self, target):
         target.write_bytes(b"fastmcp")
         return hashlib.sha256(b"fastmcp").hexdigest()
+
 def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     attempt = tmp_path / "attempt"
     attempt.mkdir(mode=0o700)
@@ -89,8 +95,10 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(hold, "_database_identity", identity)
     monkeypatch.setattr(hold, "write_manifest", write)
     return paths, connection, operations, state
+
 async def no_tombstones(_corpus, _path):
     return None
+
 async def test_hold_uses_one_locked_transaction_and_truthful_receipts(tmp_path, monkeypatch):
     paths, connection, operations, state = setup(tmp_path, monkeypatch)
     async def continue_cutover(subject, _artifacts):
@@ -108,6 +116,7 @@ async def test_hold_uses_one_locked_transaction_and_truthful_receipts(tmp_path, 
     assert load_manifest(paths.final_receipt)["postgres_transaction"].endswith(
         "THROUGH_COMMIT_THEN_RELEASED"
     )
+
 async def test_failed_continuation_never_emits_final_receipt(tmp_path, monkeypatch):
     paths, connection, operations, state = setup(tmp_path, monkeypatch)
     async def fail(*_arguments):
@@ -119,6 +128,7 @@ async def test_failed_continuation_never_emits_final_receipt(tmp_path, monkeypat
         )
     assert load_manifest(paths.prepared_receipt)["terminal"] is False
     assert not paths.final_receipt.exists() and not connection.committed and not state["flock"]
+
 async def test_changed_second_corpus_blocks_continuation_and_final_receipt(tmp_path, monkeypatch):
     paths, connection, operations, state = setup(tmp_path, monkeypatch)
     async def changed(subject, *_args, **_kwargs):
@@ -134,6 +144,7 @@ async def test_changed_second_corpus_blocks_continuation_and_final_receipt(tmp_p
             paths, operations, no_tombstones, must_not_continue,
         )
     assert not paths.final_receipt.exists() and not connection.committed
+
 def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypatch):
     assert not hasattr(hold, "deploy")
     config = Config(
@@ -157,6 +168,8 @@ def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypa
     assert all(f"--machine={hold.HOST_MACHINE}" in command for command in commands)
     with pytest.raises(Failed, match="already exists"):
         operations.snapshot_current(target)
+
+
 def test_host_preflight_rejects_artifact_path_outside_attempt(tmp_path, monkeypatch):
     config = Config(
         tmp_path / "attempt", tmp_path / "current", "b" * 40,
