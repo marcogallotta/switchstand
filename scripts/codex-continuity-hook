@@ -14,19 +14,19 @@ from typing import Any
 
 MODES = {"OFF", "PILOT"}
 LIFETIMES = {"ASSIGNMENT", "STANDING"}
-MARKERS = {"ASSIGNMENT_COMPLETE", "REAL_BLOCKER", "HANDOFF", "USER_STOP"}
-MARKER = re.compile(
-    r"<!-- SWITCHSTAND_YIELD:(ASSIGNMENT_COMPLETE|REAL_BLOCKER|HANDOFF|USER_STOP) -->"
-)
+MARKER_NAMES = ("ASSIGNMENT_COMPLETE", "REAL_BLOCKER", "HANDOFF", "USER_STOP")
+MARKERS = frozenset(MARKER_NAMES)
+MARKER_PATTERN = "|".join(MARKER_NAMES)
+MARKER = re.compile(rf"<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->")
 TERMINAL_MARKER = re.compile(
-    r"(?:^|\n)<!-- SWITCHSTAND_YIELD:"
-    r"(ASSIGNMENT_COMPLETE|REAL_BLOCKER|HANDOFF|USER_STOP) -->\s*\Z"
+    rf"(?:^|\n)<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->\s*\Z"
 )
 CONTINUATION = (
     "This top-level Codex assignment is still active. Do not end merely because you replied, "
     "reported status, finished one item, received feedback, or hit a partial blocker. Continue "
     "the next owned executable action. If the run is genuinely finished, blocked, stopped, or "
-    "handed off, reissue the final reply with exactly one permitted terminal hidden yield marker."
+    "handed off, reissue the final reply with exactly one permitted terminal hidden yield marker "
+    "as the final line: {markers}."
 )
 PROMPT_CONTEXT = (
     "This user message arrived while the top-level assignment is active. Treat it as an "
@@ -72,6 +72,17 @@ def _fail_open(telemetry: Path, payload: dict[str, Any], reason: str) -> None:
 
 def _subagent(payload: dict[str, Any]) -> bool:
     return any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path"))
+
+
+def _continuation(lifetime: str) -> str:
+    allowed = (
+        marker for marker in MARKER_NAMES
+        if lifetime == "ASSIGNMENT" or marker != "ASSIGNMENT_COMPLETE"
+    )
+    markers = ", ".join(
+        f"`<!-- SWITCHSTAND_YIELD:{marker} -->`" for marker in allowed
+    )
+    return CONTINUATION.format(markers=markers)
 
 
 def main() -> None:
@@ -120,7 +131,7 @@ def main() -> None:
         if allowed:
             print("{}")
         else:
-            print(json.dumps({"decision": "block", "reason": CONTINUATION}))
+            print(json.dumps({"decision": "block", "reason": _continuation(arguments.lifetime)}))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         _fail_open(arguments.telemetry, payload, str(error))
 

@@ -397,7 +397,7 @@ Coordinator-control MCP; unrelated user MCP configuration remains excluded. The 
 `SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's
 immutable profile freezes and exposes the resolved continuity/lifetime modes, while launch selectors
 are removed before Codex starts. The shared `hooks.json` remains the byte-stable destructive guard,
-so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook admits only exact terminal deliberate-yield markers, writes minimal
+so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook's blocked-stop response enumerates the exact terminal deliberate-yield markers accepted for the current lifetime, writes minimal
 private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
 registers `SubagentStop` or changes the destructive-command guard.
 Because an exact writable file root can be misclassified as a directory by sandbox child-mount

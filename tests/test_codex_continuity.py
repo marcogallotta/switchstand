@@ -68,6 +68,18 @@ def test_missing_marker_blocks_even_after_prior_stop_continuation(
     assert events[0]["yield_marker"] is None
 
 
+def test_stop_continuation_names_every_marker_accepted_for_the_lifetime(
+    tmp_path: Path,
+) -> None:
+    assignment, _ = invoke(tmp_path, stop("Checkpoint only"))
+    standing, _ = invoke(tmp_path, stop("Checkpoint only"), lifetime="STANDING")
+
+    for marker in ("ASSIGNMENT_COMPLETE", "REAL_BLOCKER", "HANDOFF", "USER_STOP"):
+        syntax = f"`<!-- SWITCHSTAND_YIELD:{marker} -->`"
+        assert syntax in assignment["reason"]
+        assert (syntax in standing["reason"]) == (marker != "ASSIGNMENT_COMPLETE")
+
+
 @pytest.mark.parametrize("marker", ["REAL_BLOCKER", "HANDOFF", "USER_STOP"])
 def test_common_deliberate_yields_are_allowed(tmp_path: Path, marker: str) -> None:
     output, events = invoke(
