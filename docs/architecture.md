@@ -323,11 +323,13 @@ to `scripts/codex-dispatch`. The installed launcher is a regular host file, not 
 mutable checkout. The launcher exports a private `CODEX_INSTALL_DIR` before either route, so Codex's
 automatic updater maintains its otherwise-unused visible command outside the managed launcher path.
 `scripts/coordinator-handoff` is the sole guarded canonical-main update path for Coordinator
-replacement. It accepts the launch-record path injected by `codex-dispatch`, refuses dirty or
-divergent primary state, fast-forwards to the fetched remote `main`, and then uses the materialized
-shim to launch an ephemeral read-only Codex. The handoff is proven only when that fresh process
-reports the same exact commit from its injected start record and repository HEAD; failure evidence
-is retained in private durable state and never rewinds the safely advanced primary.
+replacement. It accepts the launch-record path injected by `codex-dispatch` and an exact private
+obligations file, refuses dirty or divergent primary state, fast-forwards to fetched remote `main`,
+and registers a pending handoff in private durable state. Only the next plain Coordinator launch
+may consume it: `codex-dispatch` binds the actual generated launch manifest and generation to the
+handoff, then the successor acknowledges that deterministic launcher proof. Obligations do not
+transfer and the old generation does not retire before that acknowledgement. Failure evidence is
+retained and never rewinds the safely advanced primary.
 `coordinator_sync.py` owns the smaller pre-handoff synchronization control exposed only through the
 Coordinator's generated local stdio MCP profile. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,

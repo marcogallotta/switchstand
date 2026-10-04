@@ -82,13 +82,22 @@ fi
     "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
     "$start_record" "$manifest_record"
 
-"$script_dir/coordinator-control" create \
-    --repo "$canonical_repo" --control-root "$script_dir/.." \
-    --start-record "$start_record" \
-    --profile "$coordinator_home/$coordinator_profile.config.toml" \
-    --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
-    --shim "$HOME/.local/bin/codex" \
-    --invocation-digest "$invocation_digest" >/dev/null
+if [ "$#" -eq 0 ]; then
+    "$script_dir/coordinator-control" create \
+        --repo "$canonical_repo" --control-root "$script_dir/.." \
+        --start-record "$start_record" \
+        --profile "$coordinator_home/$coordinator_profile.config.toml" \
+        --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+        --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" \
+        --successor-eligible >/dev/null
+else
+    "$script_dir/coordinator-control" create \
+        --repo "$canonical_repo" --control-root "$script_dir/.." \
+        --start-record "$start_record" \
+        --profile "$coordinator_home/$coordinator_profile.config.toml" \
+        --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+        --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
+fi
 
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \

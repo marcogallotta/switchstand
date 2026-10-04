@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -103,6 +104,35 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert (primary / "friction.md").resolve() == friction_store
     assert friction_store.read_text() == "existing friction\n"
     assert friction_store.stat().st_mode & 0o777 == 0o600
+
+    artifact = home / ".local/state/switchstand/codex/handoffs/handoff-real-successor"
+    artifact.mkdir(parents=True)
+    (artifact / "obligations").write_text("continue\n")
+    git_head = subprocess.check_output(
+        ["git", "-C", primary, "rev-parse", "HEAD"], text=True).strip()
+    (artifact / "handoff.json").write_text(json.dumps({
+        "handoff_id": "test-handoff", "state": "AWAITING_SUCCESSOR",
+        "target_commit": git_head,
+        "obligations_sha256": hashlib.sha256((artifact / "obligations").read_bytes()).hexdigest(),
+    }))
+    (coordinator_home / "pending-handoff.json").write_text(json.dumps(
+        {"handoff_id": "test-handoff", "artifact": str(artifact)}
+    ))
+    fresh = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        text=True, capture_output=True, check=False,
+    )
+    assert fresh.returncode == 0, fresh.stderr
+    successor = next(
+        json.loads(path.read_text()) for path in coordinator_home.glob("*.manifest.json")
+        if "handoff" in json.loads(path.read_text())
+    )
+    assert successor["session"]["start_commit"] == git_head
+    assert successor["handoff"]["handoff_id"] == "test-handoff"
+    assert json.loads((artifact / "successor-launch.json").read_text())[
+        "session_generation"
+    ] == successor["session"]["generation"]
 
     repeated = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -133,6 +134,66 @@ def component(identifier: str, path: Path) -> dict[str, str]:
     return {"id": identifier, "path": str(path), "sha256": digest_file(path)}
 
 
+def handoff_artifact(start_record: Path, raw: str) -> Path:
+    root = (start_record.parent.parent / "handoffs").resolve(strict=True)
+    artifact = Path(raw).resolve(strict=True)
+    if (
+        artifact.parent != root
+        or not artifact.name.startswith("handoff-")
+        or not artifact.is_dir()
+    ):
+        raise ValueError("handoff artifact is outside the private handoff root")
+    return artifact
+
+
+def write_launch_manifest(
+    destination: Path,
+    manifest: dict[str, Any],
+    start_record: Path,
+    successor_eligible: bool,
+) -> None:
+    pending = start_record.parent / "pending-handoff.json"
+    lock = start_record.parent / "handoff.lock"
+    with lock.open("a+") as handle:
+        os.chmod(lock, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        artifact: Path | None = None
+        handoff: dict[str, Any] | None = None
+        if successor_eligible and pending.exists():
+            pointer = json.loads(pending.read_text())
+            artifact = handoff_artifact(start_record, pointer["artifact"])
+            handoff = json.loads((artifact / "handoff.json").read_text())
+            if (
+                handoff.get("state") != "AWAITING_SUCCESSOR"
+                or handoff.get("handoff_id") != pointer.get("handoff_id")
+                or handoff.get("target_commit") != manifest["session"]["start_commit"]
+                or handoff.get("obligations_sha256") != digest_file(artifact / "obligations")
+            ):
+                raise ValueError("pending handoff does not admit this successor launch")
+            manifest["handoff"] = {
+                "artifact": str(artifact),
+                "handoff_id": handoff["handoff_id"],
+                "obligations": str(artifact / "obligations"),
+            }
+        manifest["manifest_digest"] = canonical_digest(manifest)
+        atomic_json(destination, manifest, exclusive=True)
+        if artifact is not None and handoff is not None:
+            proof = {
+                "handoff_id": handoff["handoff_id"],
+                "manifest": str(destination),
+                "manifest_digest": manifest["manifest_digest"],
+                "session_generation": manifest["session"]["generation"],
+                "start_commit": manifest["session"]["start_commit"],
+            }
+            atomic_json(artifact / "successor-launch.json", proof, exclusive=True)
+            handoff |= {
+                "state": "SUCCESSOR_LAUNCHED",
+                "successor_generation": manifest["session"]["generation"],
+                "successor_manifest_digest": manifest["manifest_digest"],
+            }
+            atomic_json(artifact / "handoff.json", handoff)
+
+
 def create(arguments: argparse.Namespace) -> int:
     repo = arguments.repo.resolve(strict=True)
     control_root = arguments.control_root.resolve(strict=True)
@@ -173,10 +234,48 @@ def create(arguments: argparse.Namespace) -> int:
             }
         ],
     }
-    manifest["manifest_digest"] = canonical_digest(manifest)
     destination = Path(f"{start_record}.manifest.json")
-    atomic_json(destination, manifest, exclusive=True)
+    write_launch_manifest(destination, manifest, start_record, arguments.successor_eligible)
     print(destination)
+    return 0
+
+
+def acknowledge(arguments: argparse.Namespace) -> int:
+    manifest_path = arguments.manifest.resolve(strict=True)
+    manifest = load_manifest(manifest_path)
+    binding = manifest.get("handoff")
+    if not isinstance(binding, dict):
+        raise SystemExit("this Coordinator generation has no pending handoff")
+    start_record = Path(manifest["session"]["start_record"]).resolve(strict=True)
+    artifact = handoff_artifact(start_record, binding["artifact"])
+    pending = start_record.parent / "pending-handoff.json"
+    lock = start_record.parent / "handoff.lock"
+    with lock.open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handoff = json.loads((artifact / "handoff.json").read_text())
+        proof = json.loads((artifact / "successor-launch.json").read_text())
+        expected = {
+            "handoff_id": handoff["handoff_id"],
+            "manifest": str(manifest_path),
+            "manifest_digest": manifest["manifest_digest"],
+            "session_generation": manifest["session"]["generation"],
+            "start_commit": manifest["session"]["start_commit"],
+        }
+        if (handoff.get("state") != "SUCCESSOR_LAUNCHED" or proof != expected
+                or handoff.get("obligations_sha256") != digest_file(artifact / "obligations")):
+            raise SystemExit("deterministic successor launch proof is absent or conflicting")
+        pointer = json.loads(pending.read_text())
+        if pointer.get("handoff_id") != handoff["handoff_id"]:
+            raise SystemExit("pending handoff pointer changed before acknowledgement")
+        acknowledgement = expected | {
+            "acknowledgement": "SECONDARY_COORDINATOR_ACK",
+            "acknowledged_at": datetime.now(UTC).isoformat(),
+        }
+        atomic_json(artifact / "successor-ack.json", acknowledgement, exclusive=True)
+        handoff |= {"state": "ACKNOWLEDGED", "acknowledged_at": acknowledgement["acknowledged_at"]}
+        atomic_json(artifact / "handoff.json", handoff)
+        pending.unlink()
+    print(json.dumps({"state": "ACKNOWLEDGED", **expected}, sort_keys=True))
     return 0
 
 
@@ -286,6 +385,7 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--executable", type=Path, required=True)
     launch.add_argument("--shim", type=Path, required=True)
     launch.add_argument("--invocation-digest", required=True)
+    launch.add_argument("--successor-eligible", action="store_true")
     launch.set_defaults(function=create)
     current = commands.add_parser("check")
     current.add_argument("manifest", type=Path)
@@ -294,6 +394,9 @@ def parser() -> argparse.ArgumentParser:
     invocation = commands.add_parser("digest-argv")
     invocation.add_argument("values", nargs=argparse.REMAINDER)
     invocation.set_defaults(function=lambda arguments: print(argv_digest(arguments.values)) or 0)
+    ack = commands.add_parser("acknowledge")
+    ack.add_argument("manifest", type=Path)
+    ack.set_defaults(function=acknowledge)
     return result
 
 
