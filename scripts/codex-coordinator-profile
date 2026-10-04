@@ -40,8 +40,19 @@ def _toml_value(value: Any) -> str:
 
 
 def render(
-    config: dict[str, Any], primary: Path, start_record: Path, manifest_record: Path
+    config: dict[str, Any],
+    primary: Path,
+    start_record: Path,
+    manifest_record: Path,
+    continuity_hook: Path,
+    continuity_mode: str,
+    lifetime: str,
+    telemetry: Path,
 ) -> str:
+    continuity_command = shlex.join((
+        str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
+        "--telemetry", str(telemetry),
+    ))
     lines = [
         'approval_policy = "never"',
         'default_permissions = "switchstand-coordinator"',
@@ -59,7 +70,9 @@ def render(
             "contains a handoff, read its exact obligations file, then run "
             f"{primary / 'scripts/coordinator-control'} acknowledge {manifest_record}. Only its "
             "ACKNOWLEDGED result transfers those obligations and permits the prior generation "
-            "to retire."
+            "to retire. "
+            f"Resolved root continuity launch state: mode={continuity_mode}; "
+            f"lifetime={lifetime}."
         ),
     ]
     section: tuple[str, ...] = ()
@@ -96,6 +109,17 @@ def render(
         "enabled = true",
         "dangerously_allow_all_unix_sockets = true",
     ]
+    if continuity_mode == "PILOT":
+        for event in ("UserPromptSubmit", "Stop"):
+            lines += [
+                "",
+                f"[[hooks.{event}]]",
+                "",
+                f"[[hooks.{event}.hooks]]",
+                'type = "command"',
+                f"command = {json.dumps(continuity_command)}",
+                "timeout = 10",
+            ]
     for path in PREFERENCES:
         value = _lookup(config, path)
         if value is None or not path[:-1]:
@@ -141,21 +165,32 @@ def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 9:
+    if len(sys.argv) != 13:
         raise SystemExit(
             "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY HOOKS HOOK "
-            "START_RECORD MANIFEST_RECORD"
+            "CONTINUITY_HOOK CONTINUITY_MODE LIFETIME TELEMETRY START_RECORD MANIFEST_RECORD"
         )
-    source, snapshot, runtime_profile, primary, hooks_destination, hook, start_record, manifest_record = map(
-        Path, sys.argv[1:]
+    (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook,
+     continuity_mode, lifetime, telemetry, start_record, manifest_record) = sys.argv[1:]
+    source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook = map(
+        Path, (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook)
     )
-    with source.open("rb") as handle:
-        output = render(
-            tomllib.load(handle), primary.resolve(strict=True), start_record, manifest_record
-        )
+    telemetry, start_record, manifest_record = map(Path, (telemetry, start_record, manifest_record))
+    if continuity_mode not in {"OFF", "PILOT"}:
+        raise SystemExit("continuity mode must be OFF or PILOT")
+    if lifetime not in {"ASSIGNMENT", "STANDING"}:
+        raise SystemExit("continuity lifetime must be ASSIGNMENT or STANDING")
     resolved_hook = hook.resolve(strict=True)
     if not resolved_hook.is_file() or not os.access(resolved_hook, os.X_OK):
         raise SystemExit("Coordinator hook is unavailable")
+    resolved_continuity_hook = continuity_hook.resolve(strict=True)
+    if not resolved_continuity_hook.is_file() or not os.access(resolved_continuity_hook, os.X_OK):
+        raise SystemExit("Continuity hook is unavailable")
+    with source.open("rb") as handle:
+        output = render(
+            tomllib.load(handle), primary.resolve(strict=True), start_record, manifest_record,
+            resolved_continuity_hook, continuity_mode, lifetime, telemetry,
+        )
     _write(snapshot, output, exclusive=True)
     _write(runtime_profile, output, exclusive=True)
     _write(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))

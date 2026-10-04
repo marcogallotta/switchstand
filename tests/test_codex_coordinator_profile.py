@@ -14,12 +14,16 @@ SCRIPT = ROOT / "scripts" / "codex-coordinator-profile"
 
 def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path:
     hook = primary / "scripts/codex-hook"
+    continuity_hook = primary / "scripts/codex-continuity-hook"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\nexit 0\n")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    continuity_hook.write_text("#!/bin/sh\nexit 0\n")
+    continuity_hook.chmod(continuity_hook.stat().st_mode | stat.S_IXUSR)
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     subprocess.run(
-        [SCRIPT, source, destination, runtime_profile, primary, hooks, hook, primary / "start-commit",
+        [SCRIPT, source, destination, runtime_profile, primary, hooks, hook, continuity_hook,
+         "OFF", "ASSIGNMENT", primary / "telemetry.jsonl", primary / "start-commit",
          primary / "launch-manifest.json"],
         check=True,
     )
@@ -72,6 +76,7 @@ trusted_hash = "must-not-copy"
     assert str(primary / "launch-manifest.json") in instructions
     assert "--trigger post-compaction" in instructions
     assert "CONTROL_STALE is permanent" in instructions
+    assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert profile["features"] == {"hooks": True}
     assert profile["mcp_servers"] == {
         "switchstand_coordinator_control": {
@@ -104,6 +109,7 @@ trusted_hash = "must-not-copy"
         "tui", "notice",
     }
     hook_config = json.loads(hooks.read_text())
+    assert hook_config["description"] == "Switchstand Coordinator shared-primary guard."
     group = hook_config["hooks"]["PreToolUse"][0]
     assert group["matcher"] == "^(Bash|apply_patch)$"
     assert group["hooks"][0]["command"] == (
@@ -114,6 +120,41 @@ trusted_hash = "must-not-copy"
     assert hooks.stat().st_mode & 0o777 == 0o600
     assert runtime_profile.read_bytes() == destination.read_bytes()
     assert runtime_profile.stat().st_mode & 0o777 == 0o600
+
+
+def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> None:
+    source = tmp_path / "config.toml"
+    destination = tmp_path / "coordinator.config.toml"
+    runtime_profile = tmp_path / "coordinator.runtime.toml"
+    primary = tmp_path / "primary"
+    hooks = tmp_path / "hooks.json"
+    guard = primary / "scripts/codex-hook"
+    continuity = primary / "scripts/codex-continuity-hook"
+    primary.mkdir()
+    source.write_text("")
+    for script in (guard, continuity):
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+
+    subprocess.run(
+        [SCRIPT, source, destination, runtime_profile, primary, hooks, guard, continuity,
+         "PILOT", "STANDING", primary / "telemetry.jsonl", primary / "start-commit",
+         primary / "launch-manifest.json"],
+        check=True,
+    )
+
+    rendered = tomllib.loads(destination.read_text())
+    assert "mode=PILOT; lifetime=STANDING" in rendered["developer_instructions"]
+    assert set(rendered["hooks"]) == {"UserPromptSubmit", "Stop"}
+    assert "SubagentStop" not in rendered["hooks"]
+    for event in ("UserPromptSubmit", "Stop"):
+        command = rendered["hooks"][event][0]["hooks"][0]["command"]
+        assert str(continuity) in command
+        assert "--mode PILOT --lifetime STANDING" in command
+        assert f"--telemetry {primary / 'telemetry.jsonl'}" in command
+    shared = json.loads(hooks.read_text())
+    assert set(shared["hooks"]) == {"PreToolUse"}
 
 
 def test_new_profile_omits_removed_preferences_without_replacing_prior_profile(
