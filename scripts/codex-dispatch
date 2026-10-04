@@ -61,29 +61,57 @@ else
 fi
 
 friction_path="$canonical_repo/friction.md"
-friction_store="$HOME/.local/state/switchstand/friction.md"
+friction_state="$HOME/.local/state/switchstand"
+legacy_friction_store="$friction_state/friction.md"
+friction_root="$friction_state/friction"
+friction_store="$friction_root/friction.md"
 if [ -L "$friction_path" ]; then
-    if [ "$(readlink -f "$friction_path")" != "$friction_store" ]; then
+    friction_target=$(readlink -f "$friction_path")
+    if [ "$friction_target" != "$legacy_friction_store" ] && \
+            [ "$friction_target" != "$friction_store" ]; then
         echo "Coordinator friction binding is invalid" >&2
         exit 1
     fi
 elif [ -f "$friction_path" ]; then
-    if [ -e "$friction_store" ]; then
+    if [ -e "$legacy_friction_store" ]; then
         echo "Coordinator friction migration would overwrite existing state" >&2
         exit 1
     fi
-    mv "$friction_path" "$friction_store"
-    chmod 600 "$friction_store"
-    ln -s "$friction_store" "$friction_path"
+    cp "$friction_path" "$legacy_friction_store"
+    chmod 600 "$legacy_friction_store"
+    rm "$friction_path"
+    ln -s "$legacy_friction_store" "$friction_path"
 elif [ -e "$friction_path" ]; then
     echo "Coordinator friction binding is invalid" >&2
     exit 1
 else
-    if [ ! -f "$friction_store" ]; then
-        touch "$friction_store"
-        chmod 600 "$friction_store"
+    if [ ! -e "$legacy_friction_store" ]; then
+        touch "$legacy_friction_store"
+        chmod 600 "$legacy_friction_store"
+    elif [ ! -f "$legacy_friction_store" ] || [ -L "$legacy_friction_store" ]; then
+        echo "Coordinator legacy friction store is invalid" >&2
+        exit 1
     fi
-    ln -s "$friction_store" "$friction_path"
+    ln -s "$legacy_friction_store" "$friction_path"
+fi
+if [ -L "$legacy_friction_store" ] || \
+        { [ -e "$legacy_friction_store" ] && [ ! -f "$legacy_friction_store" ]; }; then
+    echo "Coordinator legacy friction store is invalid" >&2
+    exit 1
+fi
+if [ -L "$friction_root" ] || { [ -e "$friction_root" ] && [ ! -d "$friction_root" ]; }; then
+    echo "Coordinator friction root is invalid" >&2
+    exit 1
+fi
+mkdir -p "$friction_root"
+chmod 700 "$friction_root"
+if [ -L "$friction_store" ] || { [ -e "$friction_store" ] && [ ! -f "$friction_store" ]; }; then
+    echo "Coordinator friction store is invalid" >&2
+    exit 1
+fi
+if [ ! -e "$friction_store" ]; then
+    cp "$legacy_friction_store" "$friction_store"
+    chmod 600 "$friction_store"
 fi
 
 writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')

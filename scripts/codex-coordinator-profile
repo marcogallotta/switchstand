@@ -108,7 +108,7 @@ def render(
         f'{json.dumps(str(writer))} = "write"',
         f'{json.dumps(str(start_record.parent))} = "write"',
         f'{json.dumps(str(primary.parent / ".cache/switchstand"))} = "write"',
-        f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction.md"))} = "write"',
+        f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction"))} = "write"',
         '":tmpdir" = "write"',
         '":slash_tmp" = "write"',
         "",

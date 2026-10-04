@@ -566,8 +566,9 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         denied = hook(foreign, value, environment, tool=tool, coordinator_primary=primary,
                       coordinator_writer=writer)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    store = tmp_path / ".local/state/switchstand/friction.md"
-    for root in (primary, writer):
+    legacy_store = tmp_path / ".local/state/switchstand/friction.md"
+    current_store = tmp_path / ".local/state/switchstand/friction/friction.md"
+    for root, store in ((primary, legacy_store), (writer, current_store)):
         (root / "friction.md").symlink_to(store)
         assert hook(root, "*** Update File: friction.md", environment | {"HOME": str(tmp_path)}, tool="apply_patch", coordinator_primary=primary, coordinator_writer=writer) == {}
         assert hook(root, str(root / "friction.md"), environment | {"HOME": str(tmp_path)}, tool="Edit", coordinator_primary=primary, coordinator_writer=writer) == {}

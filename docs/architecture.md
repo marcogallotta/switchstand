@@ -384,9 +384,11 @@ are removed before Codex starts. The shared `hooks.json` remains the byte-stable
 so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook admits only exact terminal deliberate-yield markers, writes minimal
 private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
 registers `SubagentStop` or changes the destructive-command guard.
-Because the Linux sandbox cannot carve out one writable file below a
-read-only directory, dispatch preserves the ignored `friction.md` content in Switchstand's local
-state and binds the repository path to it with a validated symlink. Outside the canonical repository,
+Because an exact writable file root can be misclassified as a directory by sandbox child-mount
+handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory and
+binds their repository `friction.md` path to its mode-0600 file with a validated symlink. The first
+new launch copies a valid legacy local-state `friction.md` into that directory without moving or
+deleting the legacy file, so already-running agents remain undisturbed. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned

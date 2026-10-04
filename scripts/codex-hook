@@ -328,8 +328,11 @@ def friction_binding(candidate: str, primary: str, writer: str | None) -> bool:
     if writer is None:
         return logical == os.path.join(primary, "friction.md")
     bindings = {os.path.join(root, "friction.md") for root in (primary, writer)}
-    durable = os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction.md"))
-    return logical in bindings and os.path.islink(logical) and os.path.realpath(logical) == durable
+    durable = {
+        os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction.md")),
+        os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction/friction.md")),
+    }
+    return logical in bindings and os.path.islink(logical) and os.path.realpath(logical) in durable
 
 
 def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> str | None:
