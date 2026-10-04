@@ -49,7 +49,8 @@ def _record(kind: str, identity: str, fields: dict[str, object]) -> dict[str, ob
     return {"kind": kind, "id": identity, "fields": fields}
 
 
-def _parent_work_id(
+async def _parent_work_id(
+    provider: SourceProvider,
     gid: str,
     parent_gid: str | None,
     expected: dict[str, UUID],
@@ -57,9 +58,14 @@ def _parent_work_id(
 ) -> UUID | None:
     if parent_gid is None or parent_gid in ignored:
         return None
-    if parent_gid not in expected:
-        raise ValueError(f"parent is outside the current corpus: {gid}")
-    return expected[parent_gid]
+    if parent_gid in expected:
+        return expected[parent_gid]
+    snapshot = await provider.snapshot_for_import(parent_gid)
+    if snapshot is not None:
+        parent, _, _, zero_memberships = snapshot
+        if parent.completed and zero_memberships and not parent.canonical:
+            return None
+    raise ValueError(f"parent is outside the current corpus: {gid}")
 
 
 def _dependency_work_id(
@@ -341,7 +347,9 @@ async def source_parity_connection(
             _record("work", _identity(work_id), fields),
             _record("alias", _identity(gid), {"asana_task_gid": gid, "work_id": str(work_id)}),
         ))
-        parent_work_id = _parent_work_id(gid, parent_gid, expected, ignored)
+        parent_work_id = await _parent_work_id(
+            provider, gid, parent_gid, expected, ignored,
+        )
         if parent_work_id is not None:
             records.append(_record("parent", _identity(work_id), {
                 "child_work_id": str(work_id), "parent_work_id": str(parent_work_id),
