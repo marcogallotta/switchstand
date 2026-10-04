@@ -50,7 +50,8 @@ def test_compact_schema_has_no_provider_or_authority_columns():
     assert set(canonical_work.c.keys()) == {
         "work_id", "title", "normalized_title", "completed", "notes", "assignee", "priority",
         "work_type", "lifecycle_state", "review_next_action", "wait_kind",
-        "unblock_condition", "next_due", "row_version",
+        "unblock_condition", "next_due", "canonical_root", "owner_key",
+        "next_action_class", "next_action_ref", "row_version",
     }
     assert "horizon" not in canonical_work.c
     assert legacy_work_aliases.primary_key.columns.keys() == ["asana_task_gid"]
@@ -64,7 +65,8 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     first = CurrentWork(
         first_id, "Alpha Task", False, "notes", assignee="Marco", priority="P0",
         lifecycle_state="CURRENT", wait_kind="NONE", unblock_condition="NONE",
-        next_due="NONE",
+        next_due="NONE", canonical_root=str(first_id), owner_key="agent:root",
+        next_action_class="OWNER_CAN_DO", next_action_ref="implement",
     )
     second = CurrentWork(second_id, "Beta Task", True, "done", lifecycle_state="TERMINAL")
     await repository.create(first)

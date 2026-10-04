@@ -95,7 +95,7 @@ async def test_update_replaces_supported_scalars_and_returns_new_revision() -> N
 
 
 @pytest.mark.asyncio
-async def test_update_rejects_stale_and_noncanonical_fields_without_writing() -> None:
+async def test_update_rejects_stale_and_unsupported_fields_without_writing() -> None:
     work_id = uuid4()
     current = _work(work_id, 2)
     works = SimpleNamespace(get=AsyncMock(return_value=current), replace=AsyncMock())
@@ -110,7 +110,7 @@ async def test_update_rejects_stale_and_noncanonical_fields_without_writing() ->
     denied = await runtime.update(WorkUpdateRequest(
         api_version="1", work_id=work_id,
         observed_revision=canonical_revision(work_id, 2),
-        patch=WorkPatch(canonical_root="NONE"),
+        patch=WorkPatch(horizon="Q4", notes="required legacy note"),
     ))
 
     assert stale.status == "stale"

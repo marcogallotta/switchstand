@@ -50,8 +50,13 @@ def work(work_id: UUID, title: str) -> dict[str, object]:
         "work_id": str(work_id), "title": title, "normalized_title": title.casefold(),
         "completed": False, "notes": f"notes for {title}", "assignee": "Marco",
         "priority": "P1", "work_type": "Implementation", "lifecycle_state": None,
-        "review_next_action": None, "wait_kind": None, "unblock_condition": None,
-        "next_due": None, "row_version": 1,
+        "review_next_action": None,
+        "canonical_root": str(PARENT) if work_id == WORK else None,
+        "owner_key": "coordinator" if work_id == WORK else None,
+        "wait_kind": None, "unblock_condition": None, "next_due": None,
+        "next_action_class": "OWNER_CAN_DO" if work_id == WORK else None,
+        "next_action_ref": "implement" if work_id == WORK else None,
+        "row_version": 1,
     })
 
 
@@ -117,6 +122,20 @@ async def test_one_shot_import_and_exact_target_export(
         assert await connection.scalar(select(canonical_work.c.notes).where(
             canonical_work.c.work_id == WORK
         )) == "notes for Child"
+        assert (await connection.execute(select(
+            canonical_work.c.canonical_root,
+            canonical_work.c.owner_key,
+            canonical_work.c.next_action_class,
+            canonical_work.c.next_action_ref,
+        ).where(canonical_work.c.work_id == WORK))).one() == (
+            str(PARENT), "coordinator", "OWNER_CAN_DO", "implement",
+        )
+        assert (await connection.execute(select(
+            canonical_work.c.canonical_root,
+            canonical_work.c.owner_key,
+            canonical_work.c.next_action_class,
+            canonical_work.c.next_action_ref,
+        ).where(canonical_work.c.work_id == PARENT))).one() == (None, None, None, None)
         assert await connection.scalar(select(projects.c.asana_project_gid)) == (
             "1218000000000002"
         )

@@ -8,7 +8,7 @@ import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import (
@@ -43,9 +43,13 @@ canonical_work = Table(
     Column("work_type", Text),
     Column("lifecycle_state", Text),
     Column("review_next_action", Text),
+    Column("canonical_root", Text),
+    Column("owner_key", Text),
     Column("wait_kind", Text),
     Column("unblock_condition", Text),
     Column("next_due", Text),
+    Column("next_action_class", Text),
+    Column("next_action_ref", Text),
     Column("row_version", BigInteger, nullable=False),
     CheckConstraint("title <> ''", name="ck_canonical_work_title"),
     CheckConstraint("normalized_title <> ''", name="ck_canonical_work_normalized_title"),
@@ -94,9 +98,13 @@ class CurrentWork:
     work_type: str | None = None
     lifecycle_state: str | None = None
     review_next_action: str | None = None
+    canonical_root: str | None = None
+    owner_key: str | None = None
     wait_kind: str | None = None
     unblock_condition: str | None = None
     next_due: str | None = None
+    next_action_class: str | None = None
+    next_action_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,18 +116,15 @@ class CurrentWorkPage:
 _SCALARS = (
     "title", "completed", "notes", "assignee", "priority", "work_type", "lifecycle_state",
     "review_next_action", "wait_kind", "unblock_condition", "next_due",
+    "canonical_root", "owner_key", "next_action_class", "next_action_ref",
 )
 _COLUMNS = (canonical_work.c.work_id, *[canonical_work.c[name] for name in _SCALARS],
             canonical_work.c.row_version)
 
 
 def _item(row: Sequence[object]) -> CurrentWork:
-    return CurrentWork(
-        cast(UUID, row[0]), cast(str, row[1]), cast(bool, row[2]), cast(str, row[3]),
-        cast(int, row[12]), cast(str | None, row[4]), cast(str | None, row[5]),
-        cast(str | None, row[6]), cast(str | None, row[7]), cast(str | None, row[8]),
-        cast(str | None, row[9]), cast(str | None, row[10]), cast(str | None, row[11]),
-    )
+    values = cast(dict[str, Any], dict(zip(_SCALARS, row[1:-1], strict=True)))
+    return CurrentWork(work_id=cast(UUID, row[0]), row_version=cast(int, row[-1]), **values)
 
 
 class CanonicalWorkRepository:
@@ -176,9 +181,11 @@ class CanonicalWorkRepository:
         next_cursor = None
         if len(rows) > limit and page:
             next_cursor = self._cursor(
-                criteria, cast(str, page[-1][13]), cast(UUID, page[-1][0])
+                criteria, cast(str, page[-1][len(_COLUMNS)]), cast(UUID, page[-1][0])
             )
-        return CurrentWorkPage(tuple(_item(row[:13]) for row in page), next_cursor)
+        return CurrentWorkPage(
+            tuple(_item(row[:len(_COLUMNS)]) for row in page), next_cursor
+        )
 
     @staticmethod
     def _cursor(criteria: str, title: str, work_id: UUID) -> str:

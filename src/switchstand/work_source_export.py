@@ -291,8 +291,9 @@ async def source_parity_connection(
                 "normalized_title": normalize_title(cast(str, tombstone["title"])),
                 "completed": True, "notes": tombstone["notes"], "assignee": None,
                 "priority": None, "work_type": None, "lifecycle_state": None,
-                "review_next_action": None, "wait_kind": None,
-                "unblock_condition": None, "next_due": None, "row_version": 1,
+                "review_next_action": None, "canonical_root": None, "owner_key": None,
+                "wait_kind": None, "unblock_condition": None, "next_due": None,
+                "next_action_class": None, "next_action_ref": None, "row_version": 1,
             }),
             _record("alias", _identity(gid), {
                 "asana_task_gid": gid, "work_id": str(work_id),
@@ -340,8 +341,11 @@ async def source_parity_connection(
             "normalized_title": normalize_title(work.title), "completed": work.completed,
             "notes": work.notes, "assignee": context.assignee, "priority": routing.priority,
             "work_type": routing.work_type, "lifecycle_state": routing.lifecycle_state,
-            "review_next_action": routing.review_next_action, "wait_kind": routing.wait_kind,
-            "unblock_condition": routing.unblock_condition, "next_due": routing.next_due,
+            "review_next_action": routing.review_next_action,
+            "canonical_root": routing.canonical_root, "owner_key": routing.owner_key,
+            "wait_kind": routing.wait_kind, "unblock_condition": routing.unblock_condition,
+            "next_due": routing.next_due, "next_action_class": routing.next_action_class,
+            "next_action_ref": routing.next_action_ref,
             "row_version": 1,
         }
         records.extend((
