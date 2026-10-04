@@ -61,7 +61,10 @@ human_review_consequences = Table(
     ),
     CheckConstraint(
         "(decision IS NULL AND state = 'PENDING' AND decided_at IS NULL) OR "
-        "(decision IS NOT NULL AND state <> 'PENDING' AND decided_at IS NOT NULL)",
+        "(decision = 'APPROVED' AND state = 'READY_FOR_IMPLEMENTATION' "
+        "AND decided_at IS NOT NULL) OR "
+        "(decision IN ('WAIT', 'HOLD', 'NO_DISPATCH') AND state = decision "
+        "AND decided_at IS NOT NULL)",
         name="ck_human_review_terminal_shape",
     ),
 )
@@ -137,11 +140,17 @@ class HumanReviewResult(ClosedModel):
 
 def _record(row: RowMapping) -> HumanReviewRecord:
     consequence = HumanReviewConsequence.model_validate(row["consequence"])
+    decision = cast(HumanDecision | None, row["decision"])
+    expected_state = (
+        "PENDING" if decision is None
+        else "READY_FOR_IMPLEMENTATION" if decision == "APPROVED" else decision
+    )
     if (
         consequence.digest != row["consequence_digest"]
         or consequence.consequence_id != row["consequence_id"]
         or consequence.package_work_id != row["package_work_id"]
         or consequence.package_revision != row["package_revision"]
+        or row["state"] != expected_state
     ):
         raise ValueError("stored Human Review consequence is inconsistent")
     return HumanReviewRecord(
@@ -150,7 +159,7 @@ def _record(row: RowMapping) -> HumanReviewRecord:
         package_revision=cast(str, row["package_revision"]),
         consequence_digest=cast(str, row["consequence_digest"]),
         consequence=consequence,
-        decision=cast(HumanDecision | None, row["decision"]),
+        decision=decision,
         state=cast(
             Literal["PENDING", "READY_FOR_IMPLEMENTATION", "WAIT", "HOLD", "NO_DISPATCH"],
             row["state"],

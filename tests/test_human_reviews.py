@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import insert, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from switchstand.canonical_work import (
@@ -91,6 +92,12 @@ async def test_approval_binds_exact_consequence_and_only_marks_ready(subject):
         rows = (await connection.execute(human_review_consequences.select())).mappings().all()
     assert len(rows) == 1
     assert rows[0]["state"] == "READY_FOR_IMPLEMENTATION"
+
+    with pytest.raises(IntegrityError):
+        async with engine.begin() as connection:
+            await connection.execute(update(human_review_consequences).values(
+                decision="HOLD", state="READY_FOR_IMPLEMENTATION"
+            ))
 
 
 @pytest.mark.parametrize("decision", ["WAIT", "HOLD", "NO_DISPATCH"])
