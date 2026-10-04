@@ -763,8 +763,8 @@ class AsanaProvider:
         """Read exact dependency identities for the bounded offline migration."""
         return await self._dependency_gids(provider_work_id)
 
-    async def retired_unbound_parent_for_import(self, provider_work_id: str) -> bool:
-        """Prove only the minimal facts needed to omit an outside retired parent."""
+    async def omittable_unbound_parent_for_import(self, provider_work_id: str) -> bool:
+        """Prove only the minimal facts needed to omit an outside unbound parent."""
         first = await self._task(provider_work_id)
         if first is None:
             return False
@@ -785,8 +785,8 @@ class AsanaProvider:
 
         try:
             first_facts = facts(first)
-            _, completed, memberships, _ = first_facts
-            if not completed or memberships:
+            _, _, memberships, _ = first_facts
+            if memberships:
                 return False
             canonical = await self._canonical(first)
             second = await self._task(provider_work_id)

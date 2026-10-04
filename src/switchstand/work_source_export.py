@@ -29,7 +29,7 @@ TOMBSTONE_EVENT_TIME = datetime(1970, 1, 1, tzinfo=UTC)
 class SourceProvider(Protocol):
     async def has_zero_memberships(self, provider_work_id: str) -> bool: ...
 
-    async def retired_unbound_parent_for_import(
+    async def omittable_unbound_parent_for_import(
         self, provider_work_id: str,
     ) -> bool: ...
 
@@ -64,7 +64,7 @@ async def _parent_work_id(
         return None
     if parent_gid in expected:
         return expected[parent_gid]
-    if await provider.retired_unbound_parent_for_import(parent_gid):
+    if await provider.omittable_unbound_parent_for_import(parent_gid):
         return None
     raise ValueError(f"parent is outside the current corpus: {gid}")
 
