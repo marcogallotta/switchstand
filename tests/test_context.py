@@ -555,7 +555,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     assert hook(writer, "git add tracked.txt", environment, coordinator_primary=primary, coordinator_writer=writer) == {}
     for repo, command in (
         (primary, f"env -C{foreign} git commit -m foreign"),
-        (primary, f"env -S '-C{foreign}' git commit -m foreign"),
+        (primary, f"env -vS'-C{foreign}' git commit -m foreign"),
         (primary, f"env -S '--chdir={foreign}' git commit -m foreign"),
     ):
         denied = hook(repo, command, environment, coordinator_primary=primary,

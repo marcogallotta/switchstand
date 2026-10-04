@@ -100,7 +100,7 @@ def inline_alias(tokens: list[str]) -> str | None:
     return command + (" " + shlex.join(tokens[pos + 1:]) if tokens[pos + 1:] else "")
 
 
-def unwrap_env(tokens: list[str], cwd: str) -> tuple[list[str], str]:
+def unwrap_env(tokens: list[str], cwd: str, reject_split: bool = False) -> tuple[list[str], str]:
     if tokens and "=" in tokens[0] and tokens[0].partition("=")[0].isidentifier():
         return tokens[1:], cwd
     if not tokens or Path(tokens[0]).name not in {"env", "command", "exec"}:
@@ -111,6 +111,8 @@ def unwrap_env(tokens: list[str], cwd: str) -> tuple[list[str], str]:
         token = tokens[pos]
         if token == "--":
             return tokens[pos + 1:], cwd
+        if reject_split and (token.startswith("--split-string") or token.startswith("-") and not token.startswith("--") and "S" in token[1:]):
+            raise ValueError("env split-string is denied by the writer-bound guard")
         attached = wrapper == "env" and len(token) > 2 and token[:2] in {"-C", "-S"}
         option = token[:2] if attached else token.split("=", 1)[0]
         if wrapper == "env" and option in {"-C", "--chdir", "-S", "--split-string"}:
@@ -214,9 +216,7 @@ def classify(
 ) -> str | None:
     current = cwd
     for tokens in segments(command):
-        if coordinator_writer and tokens and Path(tokens[0]).name == "env" and any(arg.startswith(("-S", "--split-string")) for arg in tokens[1:]):
-            return "[foreign-worktree] env split-string is denied by the writer-bound guard."
-        unwrapped, wrapped_cwd = unwrap_env(tokens, current)
+        unwrapped, wrapped_cwd = unwrap_env(tokens, current, coordinator_writer is not None)
         if unwrapped != tokens or wrapped_cwd != current:
             if reason := classify(shlex.join(unwrapped), wrapped_cwd,
                                   coordinator_primary, coordinator_writer):
