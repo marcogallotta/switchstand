@@ -86,21 +86,32 @@ else
     ln -s "$friction_store" "$friction_path"
 fi
 
+writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')
+owned_writer=$(
+    cd "$canonical_repo"
+    "$script_dir/switchstand-worktree" "coordinator-$writer_suffix" "$start_commit"
+)
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
-    "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
+    "$canonical_repo" "$owned_writer" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
     "$script_dir/codex-continuity-hook" "$continuity_mode" "$continuity_lifetime" \
     "$continuity_telemetry" \
     "$start_record" "$manifest_record"
 
 "$script_dir/coordinator-control" create \
     --repo "$canonical_repo" --control-root "$script_dir/.." \
+    --writer "$owned_writer" \
     --start-record "$start_record" \
     --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
     --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
     --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
 
+if [ ! -e "$owned_writer/friction.md" ]; then
+    ln -s "$friction_store" "$owned_writer/friction.md"
+fi
+
 unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME
+cd "$owned_writer"
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
         -c 'model_reasoning_effort="medium"' \

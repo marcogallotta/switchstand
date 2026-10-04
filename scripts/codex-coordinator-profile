@@ -42,13 +42,18 @@ def _toml_value(value: Any) -> str:
 def render(
     config: dict[str, Any],
     primary: Path,
+    writer: Path,
     start_record: Path,
     manifest_record: Path,
+    hook: Path,
     continuity_hook: Path,
     continuity_mode: str,
     lifetime: str,
     telemetry: Path,
 ) -> str:
+    guard_command = shlex.join((
+        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
+    ))
     continuity_command = shlex.join((
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
         "--telemetry", str(telemetry),
@@ -58,15 +63,18 @@ def render(
         'default_permissions = "switchstand-coordinator"',
         "developer_instructions = " + json.dumps(
             f"Coordinator start commit is recorded at {start_record}. "
-            f"Its launch-control manifest is {manifest_record}. After context compaction, run "
+            f"This generation's owned linked writer is {writer}; make repository mutations "
+            "only there. Canonical main may advance without changing this generation's exact "
+            "candidate. Its launch-control manifest is "
+            f"{manifest_record}. After context compaction, run "
             f"{primary / 'scripts/coordinator-control'} check {manifest_record} "
             "--trigger post-compaction; reread every returned dependency plus current work, "
-            "open obligations, and the start commit. CONTROL_STALE is permanent for this "
-            "generation: start no new consequential effect; only reconcile already-started "
-            "or ambiguous effects, preserve obligations, reach the smallest safe checkpoint, "
-            "and hand off. CURRENTNESS_UNKNOWN blocks only actions depending on its unknown "
-            "component. After an in-session canonical sync, run the same check with "
-            "--trigger post-sync and reread every returned changed dependency. If the manifest "
+            "open obligations, and the start commit. Changed launch controls require only the "
+            "reported affected-boundary recheck; they do not stale the generation. "
+            "CURRENTNESS_UNKNOWN blocks only actions depending on its unknown component. After "
+            "an in-session canonical sync, run the same check with --trigger post-sync and "
+            "reread every returned changed dependency, then recheck only each returned affected "
+            "boundary. If the manifest "
             "contains a handoff, read its exact obligations file, then run "
             f"{primary / 'scripts/coordinator-control'} acknowledge {manifest_record}. Only its "
             "ACKNOWLEDGED result transfers those obligations and permits the prior generation "
@@ -97,7 +105,10 @@ def render(
         "",
         "[permissions.switchstand-coordinator.filesystem]",
         '":root" = "read"',
-        f'{json.dumps(str(primary.parent))} = "write"',
+        f'{json.dumps(str(writer))} = "write"',
+        f'{json.dumps(str(start_record.parent))} = "write"',
+        f'{json.dumps(str(primary.parent / ".cache/switchstand"))} = "write"',
+        f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction.md"))} = "write"',
         '":tmpdir" = "write"',
         '":slash_tmp" = "write"',
         "",
@@ -108,6 +119,13 @@ def render(
         "[permissions.switchstand-coordinator.network]",
         "enabled = true",
         "dangerously_allow_all_unix_sockets = true",
+        "",
+        "[[hooks.PreToolUse]]",
+        "",
+        "[[hooks.PreToolUse.hooks]]",
+        'type = "command"',
+        f"command = {json.dumps(guard_command)}",
+        "timeout = 10",
     ]
     if continuity_mode == "PILOT":
         for event in ("UserPromptSubmit", "Stop"):
@@ -133,28 +151,14 @@ def render(
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def render_hooks(hook: Path, primary: Path) -> str:
-    command = shlex.join((str(hook), "--coordinator-primary", str(primary)))
-    hooks = {
-        "description": "Switchstand Coordinator shared-primary guard.",
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "^(Bash|apply_patch)$",
-                "hooks": [{"type": "command", "command": command, "timeout": 10}],
-            }],
-        },
-    }
-    return json.dumps(hooks, indent=2) + "\n"
-
-
-def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
+def _write(path: Path, output: str, *, exclusive: bool = False, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as handle:
         temporary = Path(handle.name)
         handle.write(output)
-    os.chmod(temporary, 0o600)
+    os.chmod(temporary, mode)
     try:
         if exclusive:
             os.link(temporary, path)
@@ -164,16 +168,23 @@ def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def render_hooks(hook: Path, primary: Path) -> str:
+    command = shlex.join((str(hook), "--coordinator-primary", str(primary)))
+    return json.dumps({"description": "Switchstand Coordinator shared-primary guard.",
+        "hooks": {"PreToolUse": [{"matcher": "^(Bash|apply_patch)$", "hooks": [
+            {"type": "command", "command": command, "timeout": 10}]}]}}, indent=2) + "\n"
+
+
 def main() -> None:
-    if len(sys.argv) != 13:
+    if len(sys.argv) != 14:
         raise SystemExit(
-            "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY HOOKS HOOK "
+            "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY WRITER HOOKS HOOK "
             "CONTINUITY_HOOK CONTINUITY_MODE LIFETIME TELEMETRY START_RECORD MANIFEST_RECORD"
         )
-    (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook,
+    (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook,
      continuity_mode, lifetime, telemetry, start_record, manifest_record) = sys.argv[1:]
-    source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook = map(
-        Path, (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook)
+    source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook = map(
+        Path, (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook)
     )
     telemetry, start_record, manifest_record = map(Path, (telemetry, start_record, manifest_record))
     if continuity_mode not in {"OFF", "PILOT"}:
@@ -188,12 +199,13 @@ def main() -> None:
         raise SystemExit("Continuity hook is unavailable")
     with source.open("rb") as handle:
         output = render(
-            tomllib.load(handle), primary.resolve(strict=True), start_record, manifest_record,
-            resolved_continuity_hook, continuity_mode, lifetime, telemetry,
+            tomllib.load(handle), primary.resolve(strict=True), writer.resolve(strict=True),
+            start_record, manifest_record, resolved_hook, resolved_continuity_hook,
+            continuity_mode, lifetime, telemetry,
         )
-    _write(snapshot, output, exclusive=True)
+    _write(snapshot, output, exclusive=True, mode=0o400)
     _write(runtime_profile, output, exclusive=True)
-    _write(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
+    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":
