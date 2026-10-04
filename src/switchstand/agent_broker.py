@@ -439,6 +439,7 @@ class Broker:
         cgroup_empty: bool | None,
         observed_monotonic: float | None = None,
         release_state: Literal["completed", "cancelled"] = "completed",
+        require_claim_expiry: bool = False,
     ) -> dict[str, str]:
         """Release a crashed attempt only from positive, identity-bound runtime proof."""
         observed = self.clock() if observed_monotonic is None else observed_monotonic
@@ -459,7 +460,11 @@ class Broker:
                 if isinstance(expires, (int, float)) and observed >= expires:
                     resolved_state = "abandoned"
             if resolved_state is None and unit_terminal is True and cgroup_empty is True:
-                resolved_state = release_state
+                expires = lease.get("claim_expires_monotonic")
+                if not require_claim_expiry or (
+                    isinstance(expires, (int, float)) and observed >= expires
+                ):
+                    resolved_state = release_state
             if resolved_state is None:
                 return {"state": "unknown", "reason": "runtime_ambiguous"}
             if any(

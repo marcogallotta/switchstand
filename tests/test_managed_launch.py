@@ -80,7 +80,9 @@ def prepared(tmp_path: Path) -> tuple[Broker, Path]:
     return broker, manifest
 
 
-def persist_not_started(broker: Broker, path: Path) -> tuple[dict[str, object], float]:
+def persist_execution_receipt(
+    broker: Broker, path: Path, state: str
+) -> tuple[dict[str, object], float]:
     manifest = PreparedLaunchStore(broker).load(path)
     receipt: dict[str, object] = {
         "launch_id": manifest.launch_id,
@@ -101,7 +103,7 @@ def persist_not_started(broker: Broker, path: Path) -> tuple[dict[str, object], 
         receipt=receipt,
         claim_ttl_seconds=5,
     )
-    receipt["state"] = "not_started"
+    receipt["state"] = state
     broker.record_execution(manifest.lease_id, receipt)
     return receipt, float(broker.lease(manifest.lease_id)["claim_expires_monotonic"])
 
@@ -263,9 +265,9 @@ def test_persisted_not_started_executor_can_be_recovered_after_claim_expiry(
     tmp_path: Path,
 ) -> None:
     broker, path = prepared(tmp_path)
-    _, expires = persist_not_started(broker, path)
+    _, expires = persist_execution_receipt(broker, path, "not_started")
 
-    recovered = ManagedExecutor(broker).recover_not_started(
+    recovered = ManagedExecutor(broker).recover_execution(
         path, observed_monotonic=expires
     )
 
@@ -277,21 +279,78 @@ def test_persisted_not_started_executor_can_be_recovered_after_claim_expiry(
     ("changed", "reason"),
     [
         ({"attempt_id": "different-attempt"}, "receipt_identity"),
-        ({"state": "unknown"}, "receipt_not_started"),
+        ({"state": "unknown"}, "receipt_ambiguous"),
     ],
 )
 def test_not_started_recovery_holds_mismatched_or_unknown_receipt(
     tmp_path: Path, changed: dict[str, object], reason: str
 ) -> None:
     broker, path = prepared(tmp_path)
-    receipt, expires = persist_not_started(broker, path)
+    receipt, expires = persist_execution_receipt(broker, path, "not_started")
     broker.record_execution("managed-parent", {**receipt, **changed})
 
-    recovered = ManagedExecutor(broker).recover_not_started(
+    recovered = ManagedExecutor(broker).recover_execution(
         path, observed_monotonic=expires
     )
 
     assert recovered == {"state": "unknown", "reason": reason}
+    assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+def test_lost_executor_recovery_uses_exact_terminal_empty_runtime_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    manifest = PreparedLaunchStore(broker).load(path)
+    units: list[str] = []
+    monkeypatch.setattr(
+        ManagedExecutor,
+        "runtime_proof",
+        staticmethod(lambda unit: units.append(unit) or (True, True)),
+    )
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "released", "reason": "cancelled"}
+    assert units == [manifest.unit]
+    assert broker.status()["leases"]["managed-parent"]["state"] == "cancelled"
+
+
+def test_lost_executor_recovery_holds_unexpired_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    monkeypatch.setattr(
+        ManagedExecutor, "runtime_proof", staticmethod(lambda _unit: (True, True))
+    )
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires - 0.001
+    )
+
+    assert recovered == {"state": "unknown", "reason": "runtime_ambiguous"}
+    assert broker.lease("managed-parent")["state"] == "execution_active"
+
+
+@pytest.mark.parametrize("proof", [(True, None), (False, True), (None, None)])
+def test_lost_executor_recovery_holds_ambiguous_runtime_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    proof: tuple[bool | None, bool | None],
+) -> None:
+    broker, path = prepared(tmp_path)
+    _, expires = persist_execution_receipt(broker, path, "starting")
+    monkeypatch.setattr(ManagedExecutor, "runtime_proof", staticmethod(lambda _unit: proof))
+
+    recovered = ManagedExecutor(broker).recover_execution(
+        path, observed_monotonic=expires
+    )
+
+    assert recovered == {"state": "unknown", "reason": "runtime_ambiguous"}
     assert broker.lease("managed-parent")["state"] == "execution_active"
 
 

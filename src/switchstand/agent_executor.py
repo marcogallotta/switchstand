@@ -284,10 +284,10 @@ class ManagedExecutor:
             receipt["failure_registration"] = registration.value
         return receipt
 
-    def recover_not_started(
+    def recover_execution(
         self, manifest_path: Path, *, observed_monotonic: float | None = None
     ) -> dict[str, str]:
-        """Release one lost executor claim from its exact durable not-started proof."""
+        """Release one lost executor claim from exact durable and runtime proof."""
         manifest = self.manifests.load(manifest_path)
         try:
             receipt = self.broker.execution_receipt(manifest.lease_id)
@@ -305,8 +305,20 @@ class ManagedExecutor:
         }
         if any(receipt.get(key) != value for key, value in expected.items()):
             return {"state": "unknown", "reason": "receipt_identity"}
-        if receipt.get("state") != "not_started":
-            return {"state": "unknown", "reason": "receipt_not_started"}
+        receipt_state = receipt.get("state")
+        if receipt_state == "not_started":
+            execution_started: bool | None = False
+            terminal: bool | None = None
+            empty: bool | None = None
+            release_state: Literal["completed", "cancelled"] = "completed"
+            require_claim_expiry = False
+        elif receipt_state == "starting":
+            execution_started = None
+            terminal, empty = self.runtime_proof(manifest.unit)
+            release_state = "cancelled"
+            require_claim_expiry = True
+        else:
+            return {"state": "unknown", "reason": "receipt_ambiguous"}
         try:
             return self.broker.reconcile_execution(
                 manifest.lease_id,
@@ -314,10 +326,12 @@ class ManagedExecutor:
                 attempt_id=manifest.attempt_id,
                 unit=manifest.unit,
                 observed_boot_id=self.broker.boot_id,
-                execution_started=False,
-                unit_terminal=None,
-                cgroup_empty=None,
+                execution_started=execution_started,
+                unit_terminal=terminal,
+                cgroup_empty=empty,
                 observed_monotonic=observed_monotonic,
+                release_state=release_state,
+                require_claim_expiry=require_claim_expiry,
             )
         except ValueError:
             return {"state": "unknown", "reason": "execution_identity"}
@@ -516,11 +530,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--timeout", type=int, default=RUN_TIMEOUT_SECONDS)
-    parser.add_argument("--recover-not-started", action="store_true")
+    parser.add_argument("--recover", action="store_true")
     args = parser.parse_args()
     executor = ManagedExecutor()
-    if args.recover_not_started:
-        result = executor.recover_not_started(args.manifest)
+    if args.recover:
+        result = executor.recover_execution(args.manifest)
     else:
         result = executor.run(args.manifest, args.timeout)
     print(json.dumps(result))
