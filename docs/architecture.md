@@ -354,12 +354,12 @@ deploy, or activate anything.
 as frozen-control evidence and a uniquely named runtime profile that Codex may persist normal
 session preferences into. The manifest records the snapshot digest and the runtime profile's
 launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
-copy. A changed control reports its affected boundary for bounded recheck instead of permanently staling the generation; missing or corrupt proof remains `CURRENTNESS_UNKNOWN`. It also records the
+copy. This receipt is launch-manifest schema v2; the checker still accepts valid legacy v1
+manifests; changed controls report bounded recheck boundaries instead of permanent stale, while missing or corrupt proof remains `CURRENTNESS_UNKNOWN`. It also records the
 executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's evidence. Its
-comparison reports changed controls and Markdown dependencies independently; each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
+session storage and byte-stable hooks without replacing another generation's evidence. Each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
 identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
@@ -369,15 +369,15 @@ command plus a five-minute timer on the same idempotent repair service. The watc
 manual or non-inheriting installer replacements promptly; the timer catches replacements missed
 during service execution and watch rearm without depending on the checkout. Healthy checks
 preserve launcher identity.
-The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate.
-Repository mutations stay in the writer; the primary remains read-only except for `friction.md` and linked-writer Git metadata. Per-generation and byte-stable shared guards enforce those boundaries. `scripts/codex-coordinator-profile` copies
+The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. The same per-launch renderer defaults role-neutral root continuity to
 `PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
 `scripts/codex-continuity-hook`. The explicit launch-only
 `SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's
 immutable profile freezes and exposes the resolved continuity/lifetime modes, while launch selectors
-are removed before Codex starts. Each profile embeds its writer-bound guard without replacing the shared `hooks.json`. The continuity hook admits only exact terminal deliberate-yield markers, writes minimal
+are removed before Codex starts. The shared `hooks.json` remains the byte-stable destructive guard,
+so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook admits only exact terminal deliberate-yield markers, writes minimal
 private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
 registers `SubagentStop` or changes the destructive-command guard.
 Because the Linux sandbox cannot carve out one writable file below a
