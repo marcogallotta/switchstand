@@ -50,7 +50,8 @@ async def test_committed_source_restart_exact_reference_and_duplicate(subject, s
     assert ids == (delivery_id,)
     cursor, results = await inbound_cycle(
         restarted, mailboxes, mailbox, Projection(home, binding), client)
-    assert cursor is None and set(results.values()) == {"UNKNOWN"}
+    assert cursor is None and set(results.values()) == {"PENDING"}
+    client.consume()
     _, results = await inbound_cycle(
         restarted, mailboxes, mailbox, Projection(home, binding), client)
     assert set(results.values()) == {"ADMITTED"} and len(client.calls) == 1
@@ -136,7 +137,7 @@ async def test_exact_mailbox_session_and_takeover_fence(subject, setup):
 
 
 @pytest.mark.parametrize("state", ["active", "unsupported"])
-async def test_idle_only_and_unsupported_history_remain_pending(subject, setup, state):
+async def test_busy_queue_and_unsupported_history_fail_safely(subject, setup, state):
     home, _, client, binding = setup
     messages, mailboxes, mailbox, delivery_id = await source(subject)
     if state == "active":
@@ -145,9 +146,11 @@ async def test_idle_only_and_unsupported_history_remain_pending(subject, setup, 
         client.thread["historyMode"] = "structured"
     _, results = await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client)
     assert set(results.values()) == ({"PENDING"} if state == "active" else {"UNKNOWN"})
-    assert not client.calls and await messages.pending_delivery_ids(mailbox) == (delivery_id,)
+    assert len(client.calls) == (1 if state == "active" else 0)
+    assert await messages.pending_delivery_ids(mailbox) == (delivery_id,)
     identity = wake_id(binding, WakeSourceRef("switchstand_inbound", str(delivery_id)))
-    assert json.loads((home / "codex-wakeful.json").read_text())[identity]["attempted"] is False
+    assert json.loads((home / "codex-wakeful.json").read_text())[identity]["attempted"] is (
+        state == "active")
 
 
 async def test_default_off_and_stop_before_source_or_host_access(subject, setup):
@@ -170,13 +173,13 @@ async def test_supervised_intake_scans_real_source_without_agent_poll(subject, s
 
     def observed(method, params):
         result = original_call(method, params)
-        if method == "turn/start":
+        if method == "thread/queue/add":
             admitted.set()
         return result
 
     monkeypatch.setattr(client, "call", observed)
     monkeypatch.setattr(client, "close", lambda: None)
-    monkeypatch.setattr("switchstand.codex_wakeful.SharedClient", lambda *_: client)
+    monkeypatch.setattr("switchstand.codex_wakeful.QueueClient", lambda *_: client)
     task = asyncio.create_task(run_inbound(
         messages, mailboxes, mailbox, binding, home, home / "unused", stop, opt_in=True))
     try:

@@ -8,18 +8,18 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import stat
+import subprocess
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
-from websockets.exceptions import WebSocketException
-from websockets.sync.client import ClientConnection, unix_connect
 
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from switchstand.messages import MessageState, PendingMessage
@@ -62,57 +62,127 @@ def wake_id(binding: CodexBinding, source: WakeSourceRef) -> str:
     ], separators=(",", ":")).encode()).hexdigest()
 
 
-class SharedClient:
-    """Explicit second client to an already-existing Codex-owned Unix socket."""
+class QueueClient:
+    """Lazy bounded client for Codex's durable same-home user-message queue."""
 
     def __init__(self, codex: Path, home: Path):
-        endpoint = home / "app-server-control/app-server-control.sock"
-        if not codex.is_file() or not os.access(codex, os.X_OK) or not endpoint.is_socket():
-            raise OSError("UNAVAILABLE: unproved shared endpoint")
         try:
-            self.connection: ClientConnection = unix_connect(
-                path=str(endpoint.resolve(strict=True)), uri="ws://localhost/", open_timeout=10,
-                legacy=True,
-            )
-        except (OSError, TimeoutError, WebSocketException) as exc:
-            raise OSError("UNAVAILABLE: shared endpoint handshake failed") from exc
+            self.codex = codex.resolve(strict=True)
+            self.home = home.resolve(strict=True)
+        except OSError as exc:
+            raise OSError("UNAVAILABLE: unproved Codex runtime") from exc
+        if (not self.codex.is_file() or not os.access(self.codex, os.X_OK)
+                or not self.home.is_dir()):
+            raise OSError("UNAVAILABLE: unproved Codex runtime")
+        self.process: subprocess.Popen[bytes] | None = None
+        self.stdin: BinaryIO | None = None
+        self.stdout: BinaryIO | None = None
+        self.selector: selectors.BaseSelector | None = None
+        self.read_buffer = bytearray()
         self.sequence = 0
+
+    def _start(self) -> None:
+        if self.process is not None:
+            return
+        environment = dict(os.environ)
+        environment["CODEX_HOME"] = str(self.home)
         try:
+            process = subprocess.Popen(
+                [str(self.codex), "app-server", "--listen", "stdio://"],
+                cwd=self.home,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+            self.process = process
+            if process.stdin is None or process.stdout is None:
+                raise OSError("Codex app-server pipes unavailable")
+            self.stdin = cast(BinaryIO, process.stdin)
+            self.stdout = cast(BinaryIO, process.stdout)
+            self.selector = selectors.DefaultSelector()
+            self.selector.register(process.stdout, selectors.EVENT_READ)
             self.call("initialize", {"clientInfo": {"name": "switchstand-wakeful-probe",
                       "version": "1"}, "capabilities": {"experimentalApi": True}})
             self.write({"method": "initialized", "params": {}})
         except Exception as exc:
             self.close()
-            raise OSError("UNAVAILABLE: shared endpoint initialization failed") from exc
+            raise OSError("UNAVAILABLE: Codex queue client initialization failed") from exc
 
     def write(self, message: dict[str, Any]) -> None:
-        self.connection.send(json.dumps(message, separators=(",", ":")))
+        self._start()
+        assert self.stdin is not None
+        try:
+            self.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
+            self.stdin.flush()
+        except (OSError, BrokenPipeError) as exc:
+            raise OSError("UNKNOWN: request send failed") from exc
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._start()
+        assert self.stdout is not None and self.selector is not None
         self.sequence += 1
         deadline = time.monotonic() + 10
         try:
-            self.write({"id": self.sequence, "method": method, "params": params})
+            self.write({"jsonrpc": "2.0", "id": self.sequence,
+                        "method": method, "params": params})
             while time.monotonic() < deadline:
-                frame = self.connection.recv(timeout=max(0, deadline - time.monotonic()))
-                response = json.loads(frame)
+                line = self.read_line(deadline)
+                if not line:
+                    break
+                response = json.loads(line)
+                if isinstance(response.get("method"), str) and "id" in response:
+                    self.write({"jsonrpc": "2.0", "id": response["id"], "error": {
+                        "code": -32601, "message": "Wakeful does not handle server requests"}})
+                    continue
                 if response.get("id") == self.sequence:
                     if "error" in response:
                         raise OSError("UNKNOWN: RPC rejected")
-                    return response["result"]
-        except (TimeoutError, WebSocketException, json.JSONDecodeError, TypeError) as exc:
+                    return cast(dict[str, Any], response["result"])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise OSError("UNKNOWN: response lost") from exc
         raise OSError("UNKNOWN: response lost")
 
+    def read_line(self, deadline: float) -> bytes | None:
+        assert self.stdout is not None and self.selector is not None
+        while True:
+            newline = self.read_buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.read_buffer[:newline])
+                del self.read_buffer[:newline + 1]
+                return line
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.selector.select(remaining):
+                return None
+            chunk = os.read(self.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.read_buffer.extend(chunk)
+
     def close(self) -> None:
-        # This closes only our WebSocket, never the Codex-owned server.
+        selector, process = self.selector, self.process
+        self.selector = None
+        self.process = None
+        self.stdin = None
+        self.stdout = None
+        self.read_buffer.clear()
+        if selector is not None:
+            selector.close()
+        if process is None or process.poll() is not None:
+            return
         try:
-            self.connection.close()
-        except (OSError, WebSocketException):
-            pass
+            process.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
-def bind(client: SharedClient, home: Path, token: Path) -> CodexBinding | str:
+def bind(client: QueueClient, home: Path, token: Path) -> CodexBinding | str:
     if token.parent != home or not token.name.startswith("start-commit."):
         return "NOT_BOUND"
     try:
@@ -147,19 +217,6 @@ def bind(client: SharedClient, home: Path, token: Path) -> CodexBinding | str:
         return CodexBinding(matches[0], str(token), token.name)
     except (OSError, ValueError, KeyError, TypeError):
         return "UNAVAILABLE"
-
-
-def current_state(thread: dict[str, Any]) -> str:
-    status = thread["status"]["type"]
-    if thread.get("canAcceptDirectInput") is False:
-        return "ACTIVE_NOT_STEERABLE"
-    if thread.get("canAcceptDirectInput") is not True:
-        return "UNKNOWN"
-    if status == "idle":
-        return "IDLE"
-    if status == "active":
-        return "ACTIVE_NOT_STEERABLE" if thread["status"]["activeFlags"] else "ACTIVE_STEERABLE"
-    return "UNAVAILABLE"
 
 
 def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
@@ -225,12 +282,31 @@ class Projection:
                                   timestamp=time.time())
                     self.save()
                     return "ADMITTED"
-        # A read cannot fence an in-flight request after a lost response.
-        if record["attempted"] or thread.get("historyMode") != "legacy":
+        if thread.get("historyMode") != "legacy":
             return "UNKNOWN"
         return "PROVEN_ABSENT"
 
-    def admit(self, client: SharedClient, source: WakeSourceRef, *, idle_only: bool = False) -> str:
+    def reconcile_queue(self, client: QueueClient, identity: str) -> str:
+        cursor = None
+        matches: list[dict[str, Any]] = []
+        while True:
+            page = client.call("thread/queue/list", {
+                "threadId": self.binding.thread_id, "cursor": cursor, "limit": 100})
+            matches.extend(item for item in page["data"]
+                           if item.get("clientUserMessageId") == identity)
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+        if len(matches) > 1:
+            return "UNKNOWN"
+        if len(matches) == 1:
+            self.records[identity].update(
+                state="QUEUED", evidence=matches[0]["id"], timestamp=time.time())
+            self.save()
+            return "PENDING"
+        return "PROVEN_ABSENT"
+
+    def admit(self, client: QueueClient, source: WakeSourceRef) -> str:
         identity = wake_id(self.binding, source)
         record = self.records.get(identity)
         if record is None:
@@ -253,24 +329,27 @@ class Projection:
             result = self.reconcile_thread(thread, identity)
             if result != "PROVEN_ABSENT":
                 return result
+            result = self.reconcile_queue(client, identity)
+            if result != "PROVEN_ABSENT":
+                return result
+            # Queue/history absence cannot fence an attempted request whose response was lost.
+            if record["attempted"]:
+                return "UNKNOWN"
             if source.source_kind == "child_completion" and source not in children(thread):
                 return "STALE"
-            state = current_state(thread)
-            if state == "ACTIVE_NOT_STEERABLE":
-                return "PENDING"
-            if state not in {"IDLE", "ACTIVE_STEERABLE"}:
-                return state
-            if idle_only and state != "IDLE":
-                return "PENDING"
             record.update(attempted=True, timestamp=time.time())
             self.save()
-            client.call("turn/start", {"threadId": self.binding.thread_id,
+            queued = client.call("thread/queue/add", {"threadId": self.binding.thread_id,
                 "clientUserMessageId": identity, "input": [{"type": "text",
                 "text": f'{source.source_kind} '
                         + ('delivery_id=' if source.source_kind == 'switchstand_inbound'
                            else 'parent_call_child_terminal=') + source.source_id + '. '
-                        + source.reread_instruction}]})
-            return "UNKNOWN"  # Only persisted clientId readback proves consumption.
+                        + source.reread_instruction}]})["queuedSubmission"]
+            if queued.get("clientUserMessageId") != identity:
+                return "UNKNOWN"
+            record.update(state="QUEUED", evidence=queued["id"], timestamp=time.time())
+            self.save()
+            return "PENDING"
         except (OSError, KeyError, ValueError, TypeError):
             return "UNKNOWN"
 
@@ -296,10 +375,10 @@ def projection_lock(home: Path) -> Generator[None]:
 
 async def inbound_cycle(
     messages: MessageState, mailboxes: AgentMailboxState, mailbox: AgentMailbox,
-    projection: Projection, client: SharedClient, cursor: UUID | None = None,
+    projection: Projection, client: QueueClient, cursor: UUID | None = None,
     stop: asyncio.Event | None = None,
 ) -> tuple[UUID | None, dict[str, str]]:
-    """One metadata-only page with source revalidation before individual idle admission."""
+    """One metadata-only page with source revalidation before durable queue admission."""
     binding = projection.binding
     current = await mailboxes.by_endpoint_id(mailbox.endpoint_id)
     if current.status == "recovery_required":
@@ -320,7 +399,7 @@ async def inbound_cycle(
         if not await messages.pending_delivery(mailbox, delivery_id):
             results[identity] = "STALE"
             continue
-        results[identity] = projection.admit(client, source, idle_only=True)
+        results[identity] = projection.admit(client, source)
     return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
 
 
@@ -338,17 +417,12 @@ async def run_inbound(
         while not stop.is_set():
             client = None
             try:
-                client = SharedClient(codex, home)
-                rebound = bind(client, home, Path(binding.start_record))
-                if rebound != binding:
-                    print("inbound", "STALE" if isinstance(rebound, CodexBinding)
-                          else rebound, flush=True)
-                else:
-                    cursor, results = await inbound_cycle(
-                        messages, mailboxes, mailbox, projection, client, cursor, stop,
-                    )
-                    for identity, result in results.items():
-                        print(identity, result, flush=True)
+                client = QueueClient(codex, home)
+                cursor, results = await inbound_cycle(
+                    messages, mailboxes, mailbox, projection, client, cursor, stop,
+                )
+                for identity, result in results.items():
+                    print(identity, result, flush=True)
             except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
                 print("inbound UNKNOWN", flush=True)
             finally:
@@ -377,7 +451,7 @@ def main() -> None:
             print("UNAVAILABLE: simultaneous probe")
             return
         try:
-            client = SharedClient(args.codex, args.home)
+            client = QueueClient(args.codex, args.home)
         except OSError:
             print("UNAVAILABLE")
             return

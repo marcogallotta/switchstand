@@ -1,20 +1,15 @@
 import json
-import shutil
 import subprocess
-import tempfile
-import threading
+import sys
 from dataclasses import asdict
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from websockets.exceptions import WebSocketException
-from websockets.sync.server import unix_serve
 
 from switchstand.codex_wakeful import (
     CodexBinding,
     Projection,
-    SharedClient,
+    QueueClient,
     WakeSourceRef,
     bind,
     children,
@@ -25,10 +20,11 @@ from switchstand.messages import PendingMessage
 from switchstand.secure_file import atomic_replace_bytes
 
 
-class Client(SharedClient):
+class Client(QueueClient):
     def __init__(self, home, token):
         self.calls = []
         self.lost = False
+        self.queued = []
         self.thread = {"id": "exact", "historyMode": "legacy", "turns": [],
                        "status": {"type": "idle"}, "canAcceptDirectInput": True}
         self.path = home / "rollout.jsonl"
@@ -44,16 +40,25 @@ class Client(SharedClient):
             return {"data": self.listed, "nextCursor": None}
         if method == "thread/read":
             return {"thread": self.thread}
-        assert method == "turn/start"
+        if method == "thread/queue/list":
+            return {"data": list(self.queued), "nextCursor": None}
+        assert method == "thread/queue/add"
         pending = json.loads((self.path.parent / "codex-wakeful.json").read_text())
         assert pending[params["clientUserMessageId"]]["state"] == "PENDING"
         assert pending[params["clientUserMessageId"]]["attempted"] is True
         self.calls.append(params)
-        self.thread["turns"].append({"id": "turn", "items": [{
-            "type": "userMessage", "id": "item", "clientId": params["clientUserMessageId"]}]})
+        queued = {"id": f"queued-{len(self.calls)}", "input": params["input"],
+                  "clientUserMessageId": params["clientUserMessageId"]}
+        self.queued.append(queued)
         if self.lost:
             raise OSError("lost response")
-        return {}
+        return {"queuedSubmission": queued}
+
+    def consume(self):
+        queued = self.queued.pop(0)
+        self.thread["turns"].append({"id": "turn", "items": [{
+            "type": "userMessage", "id": "item",
+            "clientId": queued["clientUserMessageId"]}]})
 
 @pytest.fixture
 def setup(tmp_path):
@@ -94,10 +99,12 @@ def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
     source = WakeSourceRef("switchstand_inbound", str(uuid4()))
     client.lost = lost
     p = Projection(home, binding)
-    assert p.admit(client, source) == "UNKNOWN"
-    assert json.loads(p.path.read_text())[wake_id(binding, source)]["state"] == "PENDING"
-    assert Projection(home, binding).admit(client, source) == "ADMITTED"
+    assert p.admit(client, source) == ("UNKNOWN" if lost else "PENDING")
+    assert json.loads(p.path.read_text())[wake_id(binding, source)]["state"] == (
+        "PENDING" if lost else "QUEUED")
+    assert Projection(home, binding).admit(client, source) == "PENDING"
     assert p.path.stat().st_mode & 0o777 == 0o600
+    client.consume()
     assert Projection(home, binding).admit(client, source) == "ADMITTED"
     assert len(client.calls) == 1
     assert client.calls[0]["clientUserMessageId"] == wake_id(binding, source)
@@ -105,19 +112,28 @@ def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
     replacement = CodexBinding(binding.thread_id, binding.start_record, "new-generation")
     assert wake_id(replacement, source) != wake_id(binding, source)
 
-def test_nonsteerable_pending_and_unresolved_absence_never_resends(setup):
+def test_busy_target_queues_and_unresolved_absence_never_resends(setup):
     home, _, client, binding = setup
     source = WakeSourceRef("switchstand_inbound", str(uuid4()))
     p = Projection(home, binding)
     client.thread.update(status={"type": "active", "activeFlags": []},
                          canAcceptDirectInput=False)
     assert p.admit(client, source) == "PENDING"
-    assert not client.calls
-    client.thread["canAcceptDirectInput"] = True
-    assert p.admit(client, source) == "UNKNOWN"
+    assert len(client.calls) == 1
+    client.queued = []
     client.thread["turns"] = []
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert len(client.calls) == 1
+
+
+def test_duplicate_durable_queue_identity_is_unknown(setup):
+    home, _, client, binding = setup
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    identity = wake_id(binding, source)
+    queued = {"id": "first", "input": [], "clientUserMessageId": identity}
+    client.queued = [queued, {**queued, "id": "second"}]
+    assert Projection(home, binding).admit(client, source) == "UNKNOWN"
+    assert not client.calls
 
 @pytest.mark.parametrize("stale", [["other", "child", "completed"],
     ["call", "other", "completed"], ["call", "child", "errored"]])
@@ -144,7 +160,8 @@ def test_delivery_identity_and_missed_child_latest_parent_oracle(setup, stale):
     assert p.admit(client, WakeSourceRef("child_completion",
         json.dumps(stale, separators=(",", ":")))) == "STALE"
     assert not client.calls
-    assert p.admit(client, source) == "UNKNOWN"
+    assert p.admit(client, source) == "PENDING"
+    client.consume()
     assert Projection(home, binding).admit(client, children(thread)[0]) == "ADMITTED"
     assert len(client.calls) == 1
 
@@ -216,53 +233,49 @@ def test_claude_conformance_fake_only():
     assert fake("exact", "one", [("newest", "two")]) == "UNKNOWN"
     assert fake("exact", "one", [("exact", "one"), ("exact", "two")]) == "UNKNOWN"
 
-def test_shared_client_uses_websocket_control_socket(tmp_path):
+def test_queue_client_uses_exact_same_home_stdio_app_server(tmp_path):
     home = tmp_path / "home"
-    control = home / "app-server-control"
-    control.mkdir(parents=True)
-    endpoint = control / "app-server-control.sock"
-    socket_dir = Path(tempfile.mkdtemp(prefix="cw-", dir="/tmp"))
-    socket = socket_dir / "control.sock"
-    endpoint.symlink_to(socket)
+    home.mkdir()
+    observed = tmp_path / "observed.json"
     codex = tmp_path / "codex"
-    codex.write_text("#!/bin/sh\nexit 99\n")
+    codex.write_text(f"""#!{sys.executable}
+import json, os, sys
+from pathlib import Path
+Path({str(observed)!r}).write_text(json.dumps({{"argv": sys.argv[1:], "home": os.environ.get("CODEX_HOME")}}))
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    if request["method"] == "thread/queue/list":
+        frames = [
+            {{"jsonrpc": "2.0", "id": 999, "method": "fixture/request"}},
+            {{"jsonrpc": "2.0", "id": request["id"],
+              "result": {{"data": [], "nextCursor": None}}}},
+        ]
+        sys.stdout.write("".join(json.dumps(frame) + "\\n" for frame in frames))
+        sys.stdout.flush()
+        rejection = json.loads(sys.stdin.readline())
+        assert rejection["id"] == 999 and rejection["error"]["code"] == -32601
+        continue
+    result = ({{"serverInfo": {{"name": "fixture", "version": "1"}}}}
+              if request["method"] == "initialize"
+              else {{"data": [], "nextCursor": None}})
+    print(json.dumps({{"jsonrpc": "2.0", "id": request["id"], "result": result}}), flush=True)
+""")
     codex.chmod(0o700)
-
-    def handler(connection):
-        for raw in connection:
-            request = json.loads(raw)
-            if "id" not in request:
-                continue
-            connection.send(json.dumps({"method": "test/notification"}))
-            result = ({"userAgent": "boundary-test"} if request["method"] == "initialize"
-                      else {"ok": True})
-            connection.send(json.dumps({"id": request["id"], "result": result}))
-
-    server = unix_serve(handler, path=socket)
-    thread = threading.Thread(target=server.serve_forever)
-    client = None
+    client = QueueClient(codex, home)
+    assert client.process is None
     try:
-        thread.start()
-        client = SharedClient(codex, home)
-        assert client.call("thread/read", {}) == {"ok": True}
+        assert client.call("thread/queue/list", {"threadId": "exact"}) == {
+            "data": [], "nextCursor": None}
     finally:
-        try:
-            if client is not None:
-                client.close()
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
-            shutil.rmtree(socket_dir)
-    assert not thread.is_alive()
+        process = client.process
+        client.close()
+    assert process is not None and process.poll() is not None
+    assert json.loads(observed.read_text()) == {
+        "argv": ["app-server", "--listen", "stdio://"], "home": str(home)}
 
 
-def test_shared_client_normalizes_send_failure_to_unknown():
-    class ClosedConnection:
-        def send(self, _message):
-            raise WebSocketException("closed")
-
-    client = object.__new__(SharedClient)
-    client.connection = ClosedConnection()
-    client.sequence = 0
-    with pytest.raises(OSError, match="UNKNOWN: response lost"):
-        client.call("thread/read", {})
+def test_queue_client_rejects_unproved_runtime(tmp_path):
+    with pytest.raises(OSError, match="unproved Codex runtime"):
+        QueueClient(tmp_path / "missing-codex", tmp_path / "missing-home")
