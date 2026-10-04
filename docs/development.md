@@ -25,6 +25,10 @@ host latency. A source may change after preflight, so a wake is only a reference
 the agent's canonical reread. The 10-second RPC timeout is per call, not a bound on a
 complete page or binding scan. Host latency/capacity remains a
 live qualification obligation. Output contains wake IDs and outcomes, never source payloads.
+The Codex child starts lazily only when a committed pending source reaches admission, uses
+`thread/queue/add` and `thread/queue/list` through stdio in the exact supplied `CODEX_HOME`, and
+terminates after the bounded scan. The existing embedded root consumes that durable queue when
+idle; the pilot never manages or attaches to a daemon.
 `opt_in=False` is inert. Stop/cancel the dedicated process to suspend this pilot; restart with
 the same configuration to reconcile pending admissions. This is not full product suspend,
 replay, escalation, retirement, or service activation; those remain owned follow-up work.
@@ -300,12 +304,13 @@ The default-off Wakeful precursor is invoked explicitly with `python -m switchst
 --opt-in --home <isolated-Coordinator-CODEX_HOME> --codex <exact-binary> --start-record <exact-path>`.
 Use only a disposable committed MessageState delivery readback in a mode-0600 JSON file via
 `--synthetic-delivery-file`, or `--recover-child` for the exact bound parent. Never use live provider
-messages for this probe. The probe owns only its second-client WebSocket; it never starts or
-restarts the server.
-A lost response remains PENDING/UNKNOWN until exact persisted client-ID evidence consumes it;
-absence after an attempted send is insufficient to retry. Unsupported binding/history fails closed.
-Focused fake/private-file tests qualify local semantics only. TUI/backend identity, real runtime
-admission/steering, reconnect and natural-restart qualification are NOT_RUN until separately
+messages for this probe. The probe owns only its bounded stdio app-server child; it never starts,
+stops, restarts, attaches to, or owns a managed daemon. Queue acceptance and root consumption are
+separate readbacks. A lost response remains PENDING/UNKNOWN until the deterministic client ID is
+found in the queue or consumed history; absence after an attempted add is insufficient to retry.
+Unsupported binding/history fails closed. Focused fake/private-file tests qualify local semantics
+only. Exact same-home queue visibility, real root consumption, reconnect and natural-restart
+qualification are NOT_RUN until separately
 approved exact-host proof; Claude resume/concurrency/settings/MCP behavior remains UNKNOWN.
 
 ## Codex shim updater recurrence (2026-10-01 RCA)

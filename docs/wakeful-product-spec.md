@@ -155,11 +155,13 @@ inside the adapter. The neutral event does not contain a Codex prompt or Claude 
 bounded wake instruction tells either client to read `canonical_ref`, recover its durable work and
 owned watches, verify current authority, and continue only authorized work.
 
-The Codex MVP runs its adapter in the host execution namespace, connects only to the host-owned
-Codex shared daemon, and uses the host's supported Codex sign-in without reading or copying
-credential material. Wakeful does not start, stop, restart, or own that daemon. Binding and
-projection state remain private mode-0600 host state. A credential-free setup can qualify listener
-and client transport, but cannot qualify a model-turn delivery.
+The Codex MVP runs its adapter in the host execution namespace and uses the exact host-owned Codex
+state and supported sign-in without reading or copying credential material. A bounded same-home
+stdio app-server child writes deterministic identities through Codex's durable thread queue; the
+already-running embedded root discovers and consumes them when idle. Wakeful does not start, stop,
+restart, attach to, or own a managed daemon. Binding and projection state remain private mode-0600
+host state. A credential-free setup can qualify queue transport, but cannot qualify a model-turn
+delivery.
 
 Claude remains a later, separate adapter behind this unchanged neutral contract. Its exact-host
 resume behavior and its own credential boundary must be proved before implementation or activation;
@@ -278,7 +280,7 @@ system:
 
 1. Use a synthetic/manual event producer to write one event into a disposable outbox.
 2. Deliver it through one disposable, authenticated Codex adapter target using no production
-   authority and the host-owned daemon/sign-in boundary above.
+   authority and the same-home queue/sign-in boundary above.
 3. Demonstrate: idle target receives it; canonical readback is attempted; duplicate delivery does
    not duplicate the workflow; target unavailable remains pending; adapter restart recovers; and an
    explicit suspend prevents delivery without losing the event.
