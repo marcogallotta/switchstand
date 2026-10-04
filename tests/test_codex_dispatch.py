@@ -130,10 +130,18 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert "SubagentStop" not in profile["hooks"]
     assert not (coordinator_home / "AGENTS.md").exists()
     friction_store = home / ".local/state/switchstand/friction.md"
+    friction_root = home / ".local/state/switchstand/friction"
+    current_friction_store = friction_root / "friction.md"
     assert (primary / "friction.md").is_symlink()
     assert (primary / "friction.md").resolve() == friction_store
     assert friction_store.read_text() == "existing friction\n"
     assert friction_store.stat().st_mode & 0o777 == 0o600
+    assert friction_root.stat().st_mode & 0o777 == 0o700
+    assert current_friction_store.read_text() == "existing friction\n"
+    assert current_friction_store.stat().st_mode & 0o777 == 0o600
+    assert (writer / "friction.md").resolve() == current_friction_store
+    assert filesystem[str(friction_root)] == "write"
+    assert str(friction_store) not in filesystem
 
     artifact = home / ".local/state/switchstand/codex/handoffs/handoff-real-successor"
     artifact.mkdir(parents=True)
@@ -175,6 +183,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     )
     assert repeated.returncode == 0, repeated.stderr
     assert friction_store.read_text() == "existing friction\n"
+    assert current_friction_store.read_text() == "existing friction\n"
     profiles = sorted(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     assert len(profiles) == 3
     assert len({path.read_bytes() for path in profiles}) == 3

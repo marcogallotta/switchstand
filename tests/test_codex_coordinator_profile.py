@@ -95,7 +95,7 @@ trusted_hash = "must-not-copy"
         str(tmp_path / "writer"): "write",
         str(tmp_path / "coordinator"): "write",
         str(tmp_path / ".cache/switchstand"): "write",
-        str(tmp_path / ".local/state/switchstand/friction.md"): "write",
+        str(tmp_path / ".local/state/switchstand/friction"): "write",
         ":tmpdir": "write",
         ":slash_tmp": "write",
         str(primary): {".": "read", ".git": "write"},
