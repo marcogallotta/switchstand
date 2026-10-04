@@ -145,16 +145,21 @@ async def test_changed_second_corpus_blocks_continuation_and_final_receipt(tmp_p
         )
     assert not paths.final_receipt.exists() and not connection.committed
 
-def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypatch):
-    assert not hasattr(hold, "deploy")
-    config = Config(
+
+def config(tmp_path):
+    return Config(
         tmp_path / "attempt", tmp_path / "current", "b" * 40,
         tmp_path / "candidate", "c" * 40, tmp_path / "candidate-launcher", "d" * 64,
         tmp_path / "launcher", "e" * 64, tmp_path / "fastmcp", tmp_path / "edge.env",
         "production", lock_path=tmp_path / "exact.lock",
     )
-    config.attempt_dir.mkdir()
-    operations, commands = hold.HostHoldOperations(config), []
+
+
+def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypatch):
+    assert not hasattr(hold, "deploy")
+    subject = config(tmp_path)
+    subject.attempt_dir.mkdir()
+    operations, commands = hold.HostHoldOperations(subject), []
     def run(command, *, check=True):
         del check
         commands.append(command)
@@ -162,22 +167,13 @@ def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypa
             Path(command[command.index("-cf") + 1]).write_bytes(b"snapshot")
         return subprocess.CompletedProcess(command, 0, "inactive\n", "")
     monkeypatch.setattr(hold, "run_host_command", run)
-    operations._systemctl("is-active", config.service, check=False)
-    target = config.attempt_dir / "fastmcp.after-stop.tar"
+    operations._systemctl("is-active", subject.service, check=False)
+    target = subject.attempt_dir / "fastmcp.after-stop.tar"
     operations.snapshot_current(target)
     assert all(f"--machine={hold.HOST_MACHINE}" in command for command in commands)
     with pytest.raises(Failed, match="already exists"):
         operations.snapshot_current(target)
-
-
-def test_host_preflight_rejects_artifact_path_outside_attempt(tmp_path, monkeypatch):
-    config = Config(
-        tmp_path / "attempt", tmp_path / "current", "b" * 40,
-        tmp_path / "candidate", "c" * 40, tmp_path / "candidate-launcher", "d" * 64,
-        tmp_path / "launcher", "e" * 64, tmp_path / "fastmcp", tmp_path / "edge.env",
-        "production", lock_path=tmp_path / "exact.lock",
-    )
     monkeypatch.setattr(hold, "validate_target", lambda _config: None)
-    escaped = replace(hold.HoldPaths.create(config.attempt_dir), final_receipt=tmp_path / "escape")
+    escaped = replace(hold.HoldPaths.create(subject.attempt_dir), final_receipt=tmp_path / "escape")
     with pytest.raises(Failed, match="attempt or source candidate"):
-        hold.HostHoldOperations(config).preflight(escaped, config.candidate_sha)
+        hold.HostHoldOperations(subject).preflight(escaped, subject.candidate_sha)

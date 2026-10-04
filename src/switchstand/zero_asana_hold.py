@@ -71,6 +71,8 @@ class HoldArtifacts:
     source_candidate: str
     corpus_sha256: str
     source_parity_sha256: str
+    corpus_file_sha256: str
+    source_parity_file_sha256: str
     tombstones_sha256: str | None
     fastmcp_snapshot_sha256: str
     database_identity_sha256: str
@@ -100,10 +102,8 @@ class HostHoldOperations:
         )
     def preflight(self, paths: HoldPaths, source_candidate: str) -> None:
         validate_target(self.config)
-        if (
-            paths != HoldPaths.create(self.config.attempt_dir)
-            or source_candidate != self.config.candidate_sha
-        ):
+        exact_paths = HoldPaths.create(self.config.attempt_dir)
+        if paths != exact_paths or source_candidate != self.config.candidate_sha:
             raise Failed("hold attempt or source candidate does not match edge configuration")
         metadata = paths.attempt_dir.stat()
         if (
@@ -195,10 +195,10 @@ def _file_digest(path: Path) -> str:
 
 async def _database_identity(connection: AsyncConnection) -> str:
     rows = (await connection.execute(text("""
-        SELECT 'binding', provider, provider_work_id, id::text, '' FROM work_handles
+        SELECT 'binding', provider, provider_work_id, id::text, '', '' FROM work_handles
         UNION ALL
-        SELECT 'event', provider, provider_work_id, id::text, provider_event_id
-        FROM work_event_handles ORDER BY 1, 2, 3, 4, 5
+        SELECT 'event', provider, provider_work_id, id::text, provider_event_id, work_id::text
+        FROM work_event_handles ORDER BY 1, 2, 3, 4, 5, 6
     """))).all()
     encoded = json.dumps([[str(value) for value in row] for row in rows], separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -230,8 +230,10 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
         "corpus_a": str(artifacts.paths.corpus_a),
         "corpus_b": str(artifacts.paths.corpus_b),
         "corpus_sha256": artifacts.corpus_sha256,
+        "corpus_file_sha256": artifacts.corpus_file_sha256,
         "source_parity": str(artifacts.paths.source_export),
         "source_parity_sha256": artifacts.source_parity_sha256,
+        "source_parity_file_sha256": artifacts.source_parity_file_sha256,
         "tombstones": (
             str(artifacts.paths.tombstones) if artifacts.tombstones_sha256 else None
         ),
@@ -300,6 +302,8 @@ async def production_hold[Result](
                 source_candidate=source_candidate,
                 corpus_sha256=corpus_digest,
                 source_parity_sha256=str(source["sha256"]),
+                corpus_file_sha256=_file_digest(paths.corpus_a),
+                source_parity_file_sha256=_file_digest(paths.source_export),
                 tombstones_sha256=(
                     _file_digest(tombstone_path) if tombstone_path is not None else None
                 ),
