@@ -74,10 +74,15 @@ class Engine:
 class Operations:
     def __init__(self, root: Path):
         self.lock_path = root / "exact.lock"
+        self.restarted = False
     def preflight(self, _paths, _source_candidate): pass
     def install_gate(self): pass
     def prove_gate(self): pass
     def stop_and_prove(self):
+        return self.prove_stopped()
+    def prove_stopped(self):
+        if self.restarted:
+            raise hold.Unknown("host edge service did not remain inactive")
         return {
             "systemd": {
                 "ActiveState": "inactive", "SubState": "dead",
@@ -112,16 +117,16 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def identity(subject):
         assert subject is connection and connection.in_transaction
         return "d" * 64
-    original = hold.write_manifest
+    original = hold._write_terminal_receipt
     def write(path, document):
-        if path == paths.final_receipt:
-            assert connection.committed and state["flock"]
+        assert path == paths.final_receipt
+        assert connection.committed and state["flock"]
         original(path, document)
     monkeypatch.setattr(hold, "exclusive_lock", lock)
     monkeypatch.setattr(hold, "capture_manifest_connection", capture)
     monkeypatch.setattr(hold, "source_parity_connection", source)
     monkeypatch.setattr(hold, "_database_identity", identity)
-    monkeypatch.setattr(hold, "write_manifest", write)
+    monkeypatch.setattr(hold, "_write_terminal_receipt", write)
     return paths, connection, operations, state
 
 async def no_tombstones(_corpus, _path):
@@ -193,18 +198,27 @@ async def test_waiting_writer_before_commit_rolls_back(tmp_path, monkeypatch):
 
 async def test_final_receipt_failure_after_commit_is_unknown(tmp_path, monkeypatch):
     paths, connection, operations, _state = setup(tmp_path, monkeypatch)
-    original = hold.write_manifest
-    def fail_final(path, document):
-        if path == paths.final_receipt:
-            raise OSError("disk failure")
-        original(path, document)
-    monkeypatch.setattr(hold, "write_manifest", fail_final)
+    monkeypatch.setattr(hold, "_write_terminal_receipt", lambda *_args: (_ for _ in ()).throw(
+        OSError("disk failure")
+    ))
     with pytest.raises(hold.Unknown, match="database committed"):
         await hold.production_hold(
             cast(Any, Engine(connection)), cast(Any, object()), SHA,
             paths, operations, no_tombstones, lambda *_args: asyncio.sleep(0),
         )
     assert connection.committed and not paths.final_receipt.exists()
+
+
+async def test_service_restart_before_commit_rolls_back(tmp_path, monkeypatch):
+    paths, connection, operations, _state = setup(tmp_path, monkeypatch)
+    async def restart(_connection, _artifacts):
+        operations.restarted = True
+    with pytest.raises(hold.Unknown, match="did not remain inactive"):
+        await hold.production_hold(
+            cast(Any, Engine(connection)), cast(Any, object()), SHA,
+            paths, operations, no_tombstones, restart,
+        )
+    assert not connection.committed and not paths.final_receipt.exists()
 
 
 def config(tmp_path):
@@ -250,3 +264,27 @@ def test_host_stop_requires_zero_pids_and_absent_listener(tmp_path, monkeypatch)
                         (_ for _ in ()).throw(ConnectionRefusedError()))
     proof = operations.stop_and_prove()
     assert proof["systemd"]["MainPID"] == "0" and proof["listener"] == "ABSENT"
+
+
+def test_host_stop_does_not_misclassify_timeout_as_absence(tmp_path, monkeypatch):
+    operations = hold.HostHoldOperations(config(tmp_path))
+    output = "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n"
+    monkeypatch.setattr(operations, "_systemctl", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], 0, output, ""))
+    monkeypatch.setattr(hold.socket, "create_connection", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(TimeoutError()))
+    with pytest.raises(hold.Unknown, match="absence could not be established"):
+        operations.prove_stopped()
+
+
+async def test_parent_fsync_failure_after_terminal_write_is_unknown(tmp_path, monkeypatch):
+    paths, connection, operations, _state = setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "_fsync_parent", lambda _path: (_ for _ in ()).throw(
+        OSError("parent fsync failed")
+    ))
+    with pytest.raises(hold.Unknown, match="database committed"):
+        await hold.production_hold(
+            cast(Any, Engine(connection)), cast(Any, object()), SHA,
+            paths, operations, no_tombstones, lambda *_args: asyncio.sleep(0),
+        )
+    assert connection.committed and paths.final_receipt.exists()

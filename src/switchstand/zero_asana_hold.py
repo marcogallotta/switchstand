@@ -28,6 +28,7 @@ from .edge_maintenance import (
     run_host_command,
     validate_target,
 )
+from .secure_file import create_new_private_bytes
 from .work_corpus import (
     CorpusProvider,
     capture_manifest_connection,
@@ -86,6 +87,7 @@ class HoldOperations(Protocol):
     def install_gate(self) -> None: ...
     def prove_gate(self) -> None: ...
     def stop_and_prove(self) -> dict[str, object]: ...
+    def prove_stopped(self) -> dict[str, object]: ...
     def snapshot_current(self, target: Path) -> str: ...
 
 class HostHoldOperations:
@@ -137,6 +139,8 @@ class HostHoldOperations:
             raise Unknown("maintenance gate is not exact at public ingress")
     def stop_and_prove(self) -> dict[str, object]:
         self._systemctl("stop", self.config.service, check=False)
+        return self.prove_stopped()
+    def prove_stopped(self) -> dict[str, object]:
         output = self._systemctl(
             "show",
             self.config.service,
@@ -159,8 +163,10 @@ class HostHoldOperations:
         try:
             with socket.create_connection((endpoint.hostname, endpoint.port), timeout=1):
                 pass
-        except OSError:
+        except ConnectionRefusedError:
             return {"systemd": proof, "listener": "ABSENT"}
+        except OSError as error:
+            raise Unknown("edge listener absence could not be established") from error
         raise Unknown("edge listener remains after host service stop")
     def snapshot_current(self, target: Path) -> str:
         temporary = target.with_suffix(".host-tmp")
@@ -316,6 +322,18 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
     }
     return _digested(document)
 
+def _fsync_parent(path: Path) -> None:
+    directory = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+def _write_terminal_receipt(path: Path, document: dict[str, object]) -> None:
+    data = json.dumps(document, sort_keys=True, indent=2).encode() + b"\n"
+    create_new_private_bytes(path, data)
+    _fsync_parent(path)
+
 async def production_hold[Result](
     engine: AsyncEngine,
     provider: HoldProvider,
@@ -383,9 +401,10 @@ async def production_hold[Result](
             artifacts = replace(
                 artifacts,
                 database_hold_proof=await _database_hold_proof(connection),
+                service_stop_proof=operations.prove_stopped(),
             )
         try:
-            write_manifest(paths.final_receipt, _final_receipt(artifacts))
+            _write_terminal_receipt(paths.final_receipt, _final_receipt(artifacts))
         except Exception as error:
             raise Unknown(
                 "database committed but final hold receipt could not be written"
