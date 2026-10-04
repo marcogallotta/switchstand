@@ -530,6 +530,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     for command in (
         "git status --short", "git config --get user.name", "git remote -v", "git notes",
         "git tag", "git tag --list", "git tag -l", "git fetch",
+        "git branch -r --contains HEAD", "git branch -a --merged HEAD",
         f"git worktree add --detach {tmp_path / 'next'}",
         f"git -C {writer} reset --hard HEAD", "rm -rf build", "git push --force scratch",
     ):
@@ -537,6 +538,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
 
     for command in (
         "git add tracked.txt", "git reset --hard HEAD", "git clean -fd",
+        "git branch topic", "git branch -r -d origin/topic", "git branch -a -M main",
         "git config user.name Changed", "git remote set-url origin nowhere",
         "git config --unset user.name", "git maintenance run", "git notes add -m note HEAD",
         "git tag release", "git tag -a release -m release",
