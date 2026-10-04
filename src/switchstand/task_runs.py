@@ -34,6 +34,7 @@ from .run import RunReceipt
 from .state import metadata, work_handles
 
 REQUEST_NAMESPACE = UUID("286bcc60-8887-5b76-97c1-19c18484df74")
+REQUEST_OPERATION_NAMESPACE = UUID("8a598960-f8b0-57f2-95ba-f86fc24c436c")
 
 task_run_requests = Table(
     "task_run_requests",
@@ -224,6 +225,10 @@ class TaskRunRequestResult(ClosedModel):
         "source_revision_changed",
         "continuation_not_bound",
         "operation_identity_conflict",
+        "no_current_grant",
+        "operation_not_granted",
+        "requester_run_superseded",
+        "runtime_currentness_unavailable",
         "state_unavailable",
     ] | None = None
 
@@ -247,6 +252,13 @@ def _digest(requester_work_id: UUID, request: AgentTaskRequest) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
+
+
+def task_request_operation_id(
+    requester_work_id: UUID, request: AgentTaskRequest,
+) -> UUID:
+    """Derive stable server-owned replay identity from the complete semantic request."""
+    return uuid5(REQUEST_OPERATION_NAMESPACE, _digest(requester_work_id, request))
 
 
 def _view(row: RowMapping) -> TaskRunRequest:
