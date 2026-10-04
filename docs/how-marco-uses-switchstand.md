@@ -50,6 +50,8 @@ future or proof that the written process runs reliably:
   implementation and local tooling fixes that arise during that work. He also uses
   separate research agents. These are current use cases; the three technical modes
   above describe available host/launch boundaries rather than this allocation of work.
+- Marco runs only about 2-4 Codex heads (concurrent top-level Codex sessions) at a
+  time. Design for that scale; do not assume dozens of parallel Codex sessions.
 - Codex can fork bounded reviewers and keep working in a comparatively long-lived
   session. Ordinary ChatGPT chats have a shorter active life. Marco repeatedly has
   to tell stopped agents to **resume** and prompt agents to follow up on reviews they
