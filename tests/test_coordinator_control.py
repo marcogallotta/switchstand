@@ -25,6 +25,11 @@ def setup(tmp_path: Path, *, successor_eligible: bool = False) -> tuple[Path, Pa
     (repo / "docs/procedure.md").write_text("current\n")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "start")
+    writer = tmp_path / "writer"
+    subprocess.run(
+        ["git", "-C", repo, "worktree", "add", "-b", "writer", writer, "HEAD"],
+        check=True, capture_output=True,
+    )
     home = tmp_path / "home"
     start = home / ".local/state/switchstand/codex/coordinator/start-commit.test"
     start.parent.mkdir(parents=True)
@@ -38,6 +43,8 @@ def setup(tmp_path: Path, *, successor_eligible: bool = False) -> tuple[Path, Pa
             "create",
             "--repo",
             repo,
+            "--writer",
+            writer,
             "--control-root",
             ROOT,
             "--start-record",
@@ -108,7 +115,9 @@ def test_launch_manifest_records_identity_and_transitive_reread_set(tmp_path: Pa
     }
 
 
-def test_frozen_mismatch_is_monotonic_for_generation(tmp_path: Path) -> None:
+def test_changed_launch_control_requires_bounded_recheck_without_staling_generation(
+    tmp_path: Path,
+) -> None:
     _repo, _start, manifest_path = setup(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     profile = Path(
@@ -122,13 +131,14 @@ def test_frozen_mismatch_is_monotonic_for_generation(tmp_path: Path) -> None:
     profile.write_text("changed\n")
 
     result, status = check(manifest_path, "post-sync")
-    assert result.returncode == 3
-    assert status["state"] == "CONTROL_STALE"
-    assert status["frozen_mismatches"] == ["generated:profile-snapshot"]
+    assert result.returncode == 0
+    assert status["state"] == "CURRENT"
+    assert status["changed_launch_controls"] == ["generated:profile-snapshot"]
 
     profile.write_text(original)
     _result, repeated = check(manifest_path, "post-sync")
-    assert repeated == status
+    assert repeated["state"] == "CURRENT"
+    assert repeated["changed_launch_controls"] == []
 
 
 def test_runtime_model_persistence_does_not_stale_launch_identity(tmp_path: Path) -> None:
@@ -149,16 +159,21 @@ def test_runtime_model_persistence_does_not_stale_launch_identity(tmp_path: Path
 
 def test_post_sync_reports_only_changed_rereadable_dependencies(tmp_path: Path) -> None:
     repo, _start, manifest_path = setup(tmp_path)
+    writer = Path(json.loads(manifest_path.read_text())["session"]["writer"])
+    candidate = git(writer, "rev-parse", "HEAD")
     (repo / "docs/procedure.md").write_text("new\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "advance main")
 
     result, status = check(manifest_path, "post-sync")
 
     assert result.returncode == 0
     assert status["state"] == "CURRENT"
     assert status["reread_required"] == ["docs/procedure.md"]
+    assert git(writer, "rev-parse", "HEAD") == candidate
 
 
-def test_missing_frozen_component_is_unknown_not_stale(tmp_path: Path) -> None:
+def test_missing_launch_component_is_unknown(tmp_path: Path) -> None:
     _repo, _start, manifest_path = setup(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     profile = Path(
@@ -190,7 +205,7 @@ def test_corrupt_launch_profile_receipt_is_currentness_unknown(tmp_path: Path) -
     assert "manifest identity is invalid" in status["reason"]
 
 
-def test_legacy_v1_known_frozen_mismatch_wins_during_upgrade(tmp_path: Path) -> None:
+def test_legacy_v1_mismatch_becomes_bounded_recheck_during_upgrade(tmp_path: Path) -> None:
     _repo, _start, manifest_path = setup(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     manifest["schema_version"] = 1
@@ -209,9 +224,9 @@ def test_legacy_v1_known_frozen_mismatch_wins_during_upgrade(tmp_path: Path) -> 
 
     result, status = check(manifest_path, "post-sync")
 
-    assert result.returncode == 3
-    assert status["state"] == "CONTROL_STALE"
-    assert status["frozen_mismatches"] == ["repository:scripts/coordinator-control"]
+    assert result.returncode == 0
+    assert status["state"] == "CURRENT"
+    assert status["changed_launch_controls"] == ["repository:scripts/coordinator-control"]
 
 
 def test_unresolved_document_dependencies_are_explicit_component_unknowns(
@@ -251,10 +266,12 @@ def test_actual_successor_launch_is_bound_and_must_acknowledge(tmp_path: Path) -
     first.unlink()
     artifact = pending_handoff(start, git(repo, "rev-parse", "HEAD"))
     profile = tmp_path / "profile"
-    command = [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
+    command = [SCRIPT, "create", "--repo", repo, "--writer", tmp_path / "writer",
+               "--control-root", ROOT,
                "--start-record", start, "--profile", profile,
                "--runtime-profile", tmp_path / "runtime-profile",
-               "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
+               "--hooks", tmp_path / "hooks",
+               "--executable", tmp_path / "executable",
                "--shim", tmp_path / "shim", "--invocation-digest", "b" * 64, "--successor-eligible"]
     result = subprocess.run(command, text=True, capture_output=True, check=True)
     manifest_path = Path(result.stdout.strip())
@@ -284,10 +301,12 @@ def test_ineligible_launch_does_not_consume_pending_handoff(tmp_path: Path) -> N
     first.unlink()
     artifact = pending_handoff(start, git(repo, "rev-parse", "HEAD"))
     result = subprocess.run(
-        [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
+        [SCRIPT, "create", "--repo", repo, "--writer", tmp_path / "writer",
+         "--control-root", ROOT,
          "--start-record", start, "--profile", tmp_path / "profile",
          "--runtime-profile", tmp_path / "runtime-profile",
-         "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
+         "--hooks", tmp_path / "hooks",
+         "--executable", tmp_path / "executable",
          "--shim", tmp_path / "shim", "--invocation-digest", "c" * 64],
         text=True, capture_output=True, check=True,
     )

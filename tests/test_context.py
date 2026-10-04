@@ -54,14 +54,17 @@ def git(repo: Path, *arguments: str) -> str:
 def hook(
     repo: Path, command: str, environment: dict[str, str],
     *, tool: str = "Bash", coordinator_primary: Path | None = None,
+    coordinator_writer: Path | None = None,
 ) -> dict:
     arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
     if coordinator_primary is not None:
         arguments += ["--coordinator-primary", str(coordinator_primary)]
+    arguments += ["--coordinator-writer", str(coordinator_writer)] if coordinator_writer else []
     result = subprocess.run(
         arguments,
         input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
-                          "tool_input": {"command": command}, "cwd": str(repo)}),
+                          "tool_input": {"file_path" if tool == "Edit" else "command": command},
+                          "cwd": str(repo)}),
         text=True, capture_output=True, check=True, env=environment,
     )
     return json.loads(result.stdout) if result.stdout else {}
@@ -547,6 +550,27 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    foreign = tmp_path / "foreign"
+    git(primary, "worktree", "add", "-b", "foreign", str(foreign))
+    assert hook(writer, "git add tracked.txt", environment, coordinator_primary=primary, coordinator_writer=writer) == {}
+    for repo, command in (
+        (primary, f"env -C{foreign} git commit -m foreign"),
+        (primary, f"env -vS'-C{foreign}' git commit -m foreign"),
+        (primary, f"env -S '--chdir={foreign}' git commit -m foreign"),
+    ):
+        denied = hook(repo, command, environment, coordinator_primary=primary,
+                      coordinator_writer=writer)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    patch = "*** Begin Patch\n*** Add File: probe\n+x\n*** End Patch"
+    for tool, value in (("apply_patch", patch), ("Edit", str(foreign / "probe"))):
+        denied = hook(foreign, value, environment, tool=tool, coordinator_primary=primary,
+                      coordinator_writer=writer)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    store = tmp_path / ".local/state/switchstand/friction.md"
+    for root in (primary, writer):
+        (root / "friction.md").symlink_to(store)
+        assert hook(root, "*** Update File: friction.md", environment | {"HOME": str(tmp_path)}, tool="apply_patch", coordinator_primary=primary, coordinator_writer=writer) == {}
+        assert hook(root, str(root / "friction.md"), environment | {"HOME": str(tmp_path)}, tool="Edit", coordinator_primary=primary, coordinator_writer=writer) == {}
 
 
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):

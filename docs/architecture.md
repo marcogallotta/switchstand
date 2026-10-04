@@ -355,14 +355,11 @@ as frozen-control evidence and a uniquely named runtime profile that Codex may p
 session preferences into. The manifest records the snapshot digest and the runtime profile's
 launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
 copy. This receipt is launch-manifest schema v2; the checker still accepts valid legacy v1
-manifests so known frozen-control mismatches become permanent `CONTROL_STALE` during upgrade,
-while missing or corrupt v2 proof fails closed as `CURRENTNESS_UNKNOWN`. It also records the
+manifests; changed controls report bounded recheck boundaries instead of permanent stale, while missing or corrupt proof remains `CURRENTNESS_UNKNOWN`. It also records the
 executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's evidence. Its
-comparison keeps proven mismatches monotonically
-`CONTROL_STALE`; each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
+session storage and byte-stable hooks without replacing another generation's evidence. Each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
 identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
@@ -372,12 +369,7 @@ command plus a five-minute timer on the same idempotent repair service. The watc
 manual or non-inheriting installer replacements promptly; the timer catches replacements missed
 during service execution and watch rearm without depending on the checkout. Healthy checks
 preserve launcher identity.
-The repository dispatcher launches Codex with a separate Coordinator home,
-shared authentication, a durable per-launch starting-commit file named in developer context, and
-the repository's fixed Coordinator runtime policy. That policy retains
-promptless host development access while making the shared primary checkout read-only except for `friction.md` and the Git
-metadata needed for fetch and linked-writer operation; a pre-tool guard rejects primary-checkout Git
-mutations and first-class patches outside `friction.md`, and Edit-family writes into Claude auto-memory. `scripts/codex-coordinator-profile` copies
+The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. The same per-launch renderer defaults role-neutral root continuity to
 `PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
