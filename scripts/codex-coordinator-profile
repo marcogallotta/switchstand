@@ -10,7 +10,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 PREFERENCES = (
     ("model_auto_compact_token_limit",),
@@ -19,13 +19,23 @@ PREFERENCES = (
     ("notice", "hide_rate_limit_model_nudge"),
 )
 
+CANONICAL_MCP_FIELDS = (
+    "url",
+    "default_tools_approval_mode",
+    "enabled_tools",
+)
+CONTROL_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _lookup(config: dict[str, Any], path: tuple[str, ...]) -> Any:
     value: Any = config
     for key in path:
-        if not isinstance(value, dict) or key not in value:
+        if not isinstance(value, dict):
             return None
-        value = value[key]
+        mapping = cast(dict[str, Any], value)
+        if key not in mapping:
+            return None
+        value = mapping[key]
     return value
 
 
@@ -37,6 +47,24 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, str):
         return json.dumps(value)
     raise TypeError(f"unsupported preference type: {type(value).__name__}")
+
+
+def _canonical_mcp() -> dict[str, Any]:
+    with (CONTROL_ROOT / ".codex/config.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+    try:
+        source = cast(dict[str, Any], config["mcp_servers"]["switchstand"])
+        selected = {field: source[field] for field in CANONICAL_MCP_FIELDS}
+    except (KeyError, TypeError) as exc:
+        raise SystemExit("canonical Switchstand MCP configuration is unavailable") from exc
+    tools = selected["enabled_tools"]
+    if (not isinstance(selected["url"], str)
+            or selected["default_tools_approval_mode"] != "approve"
+            or not isinstance(tools, list)
+            or not tools
+            or not all(isinstance(tool, str) and tool for tool in cast(list[object], tools))):
+        raise SystemExit("canonical Switchstand MCP configuration is invalid")
+    return selected
 
 
 def render(
@@ -51,6 +79,7 @@ def render(
     lifetime: str,
     telemetry: Path,
 ) -> str:
+    canonical_mcp = _canonical_mcp()
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
     ))
@@ -93,6 +122,12 @@ def render(
         "",
         "[features]",
         "hooks = true",
+        "",
+        "[mcp_servers.switchstand]",
+        f"url = {json.dumps(canonical_mcp['url'])}",
+        "required = true",
+        'default_tools_approval_mode = "approve"',
+        "enabled_tools = " + json.dumps(canonical_mcp["enabled_tools"]),
         "",
         "[mcp_servers.switchstand_coordinator_control]",
         f"command = {json.dumps(str(primary / 'scripts/switchstand-coordinator-control-mcp'))}",

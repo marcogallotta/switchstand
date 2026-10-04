@@ -81,7 +81,11 @@ trusted_hash = "must-not-copy"
     assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert profile["features"] == {"hooks": True}
+    canonical = tomllib.loads((ROOT / ".codex/config.toml").read_text())["mcp_servers"][
+        "switchstand"
+    ]
     assert profile["mcp_servers"] == {
+        "switchstand": canonical | {"required": True},
         "switchstand_coordinator_control": {
             "command": str(primary / "scripts/switchstand-coordinator-control-mcp"),
             "required": True,

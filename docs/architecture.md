@@ -375,7 +375,9 @@ during service execution and watch rearm without depending on the checkout. Heal
 preserve launcher identity.
 The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
-user-level instructions. The same per-launch renderer defaults role-neutral root continuity to
+user-level instructions. It separately copies only the repository-owned canonical `switchstand`
+HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
+Coordinator-control MCP; unrelated user MCP configuration remains excluded. The same per-launch renderer defaults role-neutral root continuity to
 `PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
 `scripts/codex-continuity-hook`. The explicit launch-only
 `SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's
