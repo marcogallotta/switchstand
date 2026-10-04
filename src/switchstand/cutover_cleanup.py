@@ -54,6 +54,70 @@ async def cleanup_snapshot_connection(connection: AsyncConnection) -> dict[str, 
             {"row": row, "sha256": _digest(row)} for row in current["projections"]
         ],
     })
+
+
+def require_cleanup_equality(
+    snapshot: dict[str, object], plan: dict[str, object],
+) -> dict[str, object]:
+    """Require exact cleanup identity and row-digest equality with a reviewed plan."""
+
+    def snapshot_identities(value: object, identity_key: str) -> dict[str, str]:
+        if not isinstance(value, list):
+            raise TypeError("cleanup snapshot collection is invalid")
+        identities: dict[str, str] = {}
+        for raw in cast(list[object], value):
+            if not isinstance(raw, dict):
+                raise TypeError("cleanup snapshot entry is invalid")
+            item = cast(dict[str, object], raw)
+            row_value, digest = item.get("row"), item.get("sha256")
+            if not isinstance(row_value, dict) or not isinstance(digest, str):
+                raise TypeError("cleanup snapshot row is invalid")
+            row = cast(dict[str, object], row_value)
+            identity = row.get(identity_key)
+            if not isinstance(identity, str) or identity in identities:
+                raise ValueError("cleanup snapshot identity is invalid or duplicated")
+            if identity_key == "operation_id":
+                outcome_value = row.get("outcome")
+                outcome = (
+                    cast(dict[str, object], outcome_value)
+                    if isinstance(outcome_value, dict) else {}
+                )
+                if outcome.get("effect") != "unknown":
+                    raise ValueError("cleanup effect is not UNKNOWN")
+            identities[identity] = digest
+        return identities
+
+    def plan_identities(value: object) -> dict[str, str]:
+        if not isinstance(value, list):
+            raise TypeError("cleanup plan collection is invalid")
+        identities: dict[str, str] = {}
+        for raw in cast(list[object], value):
+            if not isinstance(raw, dict):
+                raise TypeError("cleanup plan entry is invalid")
+            item = cast(dict[str, object], raw)
+            identity, digest = item.get("id"), item.get("sha256")
+            if (
+                not isinstance(identity, str)
+                or not isinstance(digest, str)
+                or identity in identities
+            ):
+                raise ValueError("cleanup plan identity is invalid or duplicated")
+            identities[identity] = digest
+        return identities
+
+    effects = snapshot_identities(snapshot.get("effects"), "operation_id")
+    projections = snapshot_identities(snapshot.get("projections"), "projection_id")
+    expected_effects = plan_identities(plan.get("effects"))
+    expected_projections = plan_identities(plan.get("projections"))
+    if effects != expected_effects or projections != expected_projections:
+        raise RuntimeError("copied cleanup rows do not exactly match the reviewed plan")
+    return {
+        "effects": sorted(effects),
+        "projections": sorted(projections),
+        "status": "PASS",
+    }
+
+
 def _actions(plan: dict[str, object], key: str) -> dict[str, dict[str, object]]:
     raw_value = plan.get(key)
     if (not isinstance(raw_value, list) or any(
