@@ -25,6 +25,8 @@ class Client(QueueClient):
         self.calls = []
         self.lost = False
         self.queued = []
+        self.turn_pages = {}
+        self.turn_list_calls = 0
         self.thread = {"id": "exact", "historyMode": "legacy", "turns": [],
                        "status": {"type": "idle"}, "canAcceptDirectInput": True}
         self.path = home / "rollout.jsonl"
@@ -40,6 +42,12 @@ class Client(QueueClient):
             return {"data": self.listed, "nextCursor": None}
         if method == "thread/read":
             return {"thread": self.thread}
+        if method == "thread/turns/list":
+            self.turn_list_calls += 1
+            page = self.turn_pages[params.get("cursor")]
+            if isinstance(page, Exception):
+                raise page
+            return page
         if method == "thread/queue/list":
             return {"data": list(self.queued), "nextCursor": None}
         assert method == "thread/queue/add"
@@ -124,6 +132,80 @@ def test_busy_target_queues_and_unresolved_absence_never_resends(setup):
     client.thread["turns"] = []
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert len(client.calls) == 1
+
+
+def test_paginated_absence_queues_and_legacy_does_not_page(setup):
+    home, _, client, binding = setup
+    legacy = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    assert Projection(home, binding).admit(client, legacy) == "PENDING"
+    assert client.turn_list_calls == 0
+
+    client.thread.update(historyMode="paginated", turns=[])
+    client.turn_pages = {None: {"data": [{"id": "seed", "itemsView": "full", "items": []}],
+                                "nextCursor": None}}
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    assert Projection(home, binding).admit(client, source) == "PENDING"
+    assert client.turn_list_calls == 1
+    assert len(client.calls) == 2
+
+
+def test_paginated_multipage_consumed_identity_is_admitted(setup):
+    home, _, client, binding = setup
+    client.thread.update(historyMode="paginated", turns=[])
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    identity = wake_id(binding, source)
+    client.turn_pages = {
+        None: {"data": [{"id": "first", "itemsView": "full", "items": []}],
+               "nextCursor": "second"},
+        "second": {"data": [{"id": "second", "itemsView": "full", "items": [{
+            "type": "userMessage", "id": "consumed", "clientId": identity}]}],
+                   "nextCursor": None},
+    }
+    assert Projection(home, binding).admit(client, source) == "ADMITTED"
+    assert client.turn_list_calls == 2
+    assert not client.calls
+
+
+def test_paginated_full_turns_feed_child_oracle(setup):
+    home, _, client, binding = setup
+    client.thread.update(historyMode="paginated", turns=[])
+    started = {"type": "subAgentActivity", "id": "call", "kind": "started",
+               "agentThreadId": "child", "agentPath": "/root/child"}
+    completed = {**started, "id": "done", "kind": "completed"}
+    turn = {"id": "turn", "itemsView": "full", "items": [started, completed]}
+    client.turn_pages = {None: {"data": [turn], "nextCursor": None}}
+    source, = children({"turns": [turn]})
+    assert Projection(home, binding).admit(client, source) == "PENDING"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("page", [
+    {"data": [{"id": "partial", "itemsView": "summary", "items": []}],
+     "nextCursor": None},
+    {"data": [{"id": "partial", "itemsView": "full"}], "nextCursor": None},
+    {"data": [], "nextCursor": ""},
+    OSError("lost paginated history response"),
+])
+def test_paginated_incomplete_malformed_or_lost_history_is_unknown(setup, page):
+    home, _, client, binding = setup
+    client.thread.update(historyMode="paginated", turns=[])
+    client.turn_pages = {None: page}
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    assert Projection(home, binding).admit(client, source) == "UNKNOWN"
+    assert not client.calls
+    record = json.loads((home / "codex-wakeful.json").read_text())[wake_id(binding, source)]
+    assert record["attempted"] is False
+
+
+def test_paginated_cursor_cycle_is_unknown(setup):
+    home, _, client, binding = setup
+    client.thread.update(historyMode="paginated", turns=[])
+    page = {"data": [], "nextCursor": "same"}
+    client.turn_pages = {None: page, "same": page}
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    assert Projection(home, binding).admit(client, source) == "UNKNOWN"
+    assert client.turn_list_calls == 2
+    assert not client.calls
 
 
 def test_duplicate_durable_queue_identity_is_unknown(setup):
