@@ -39,6 +39,8 @@ analysis follows mitigation under the canonical
    - Updated: $incident_updated
    - Impact / understood scope: credible live-user failure; exact scope UNKNOWN
    - Difficulty / prognosis: unknown; diagnosis in progress
+   - Causal hypothesis / confidence: UNKNOWN — no supported hypothesis;
+     checking current service state and newest logs
    - Human / agent action: none pending current evidence
    - Service posture: PENDING — not selected until current evidence is assessed
    - Current action / next checkpoint: inspect current service state and newest logs
@@ -122,14 +124,21 @@ private `status.md` path on re-entry. Every update is short and contains:
 
 - **Impact and understood scope** — what is failing, for whom, and fail-open/fail-closed/
   unknown boundaries.
-- **Difficulty / prognosis** — trivial, contained, architectural, or unknown; confidence and
-  expected repair horizon without invented precision.
+- **Difficulty / prognosis** — trivial, contained, architectural, or unknown; expected repair
+  horizon and its factual basis without invented precision.
+- **Causal hypothesis / confidence** — one specific hypothesis and `LOW`/`MEDIUM`/`HIGH`
+  confidence, with supporting and contradicting evidence, credible alternatives, and the next
+  falsifier; otherwise `UNKNOWN` with the first discriminating check.
 - **Human / agent action** — what Marco should do, what agents should be told, or `none`.
 - **Service posture** — `PENDING` before step 8; afterward `RUN`, `GATE`, or `SUSPEND`, with
   the reason.
 - **Current action / next checkpoint** — one action and the next observable result or time.
 - **Coordination changes** — temporary or permanent changes needed in Project Settings,
   `START HERE`, agent guidance, canary state, or HOLD; otherwise `none`.
+
+Causal confidence is advisory inference only. Keep observations, currentness, service posture,
+effect readback, recovery proof, and closeout state deterministic under their existing labels and
+gates; confidence cannot replace or change them.
 
 For every temporary coordination change record its exact surface/value, authority, owner,
 effective time, removal trigger, and state: `PROPOSED`, `ACTIVE`, `SUPERSEDED`, or `REMOVED`.

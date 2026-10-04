@@ -19,7 +19,9 @@ Replace it thereafter from a mode-`0600` temporary file in the same directory.
 - Operator: <one owner>
 - Updated: <RFC3339 timestamp>
 - Impact / understood scope: <users, paths, fail-open/fail-closed/unknown>
-- Difficulty / prognosis: <trivial|contained|architectural|unknown; confidence; horizon>
+- Difficulty / prognosis: <trivial|contained|architectural|unknown; horizon and factual basis>
+- Causal hypothesis / confidence: <specific hypothesis; LOW|MEDIUM|HIGH; supporting and
+  contradicting evidence; credible alternatives; next falsifier, or UNKNOWN with first check>
 - Human / agent action: <what Marco should do/tell agents, or none>
 - Service posture: <PENDING before evidence-backed assessment; then
   RUN|GATE|SUSPEND> — <why and reversal condition>
@@ -42,6 +44,10 @@ Replace it thereafter from a mode-`0600` temporary file in the same directory.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | ... | ... | ... | ... | ... | ... | ROLL_FORWARD/REDEPLOY/RETIRE_EXPLICITLY | ... | OPEN/CLEARED |
 ```
+
+Confidence describes only the named causal hypothesis. Observations, currentness, effect
+readback, service posture, recovery proof, and closeout state keep their deterministic values;
+raw self-confidence cannot change them or satisfy an authority, completion, or closeout gate.
 
 ## Append-only timeline (`timeline.jsonl`)
 
