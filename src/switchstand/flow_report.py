@@ -149,6 +149,7 @@ def render_concise(value: dict[str, object]) -> str:
     """Render only explicit B1 facts and coverage, without deriving new evidence."""
     snapshot = cast(dict[str, object], value["snapshot"])
     admission = cast(dict[str, object], value["admission"])
+    current = cast(dict[str, object], value["current"])
     scope = cast(dict[str, object], value["scope"])
     root = cast(dict[str, object], scope["canonical_root"])
     events = cast(dict[str, object], value["events"])
@@ -159,7 +160,13 @@ def render_concise(value: dict[str, object]) -> str:
          f"read_only={snapshot['read_only']}"),
         (f"admission status={admission['status']} at={admission['at']} "
          f"reason={admission['reason']}"),
+        (f"current completed={current['completed']} lifecycle_state={current['lifecycle_state']} "
+         f"wait_kind={current['wait_kind']} unblock_condition={current['unblock_condition']} "
+         f"next_due={current['next_due']} next_action_class={current['next_action_class']} "
+         f"next_action_ref={current['next_action_ref']} coverage={current['coverage']}"),
         f"root status={root['status']} work_id={root['work_id']} reason={root['reason']}",
+        (f"relations parent_cycle_detected={scope['parent_cycle_detected']} "
+         f"warning={'CORRUPT_CYCLE' if scope['parent_cycle_detected'] else None}"),
         (f"evidence_count={len(cast(list[object], events['items']))} "
          f"events_coverage={events['coverage']}"),
     ]

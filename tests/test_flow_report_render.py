@@ -9,12 +9,18 @@ REPORT = {
     "captured_at": "2026-01-02T03:04:05+00:00",
     "snapshot": {"isolation": "repeatable read", "read_only": "on", "row_version": 7},
     "admission": {"status": "UNKNOWN", "at": None, "reason": "NOT_CAPTURED"},
-    "current": {"completed": False, "coverage": "CURRENT_ONLY"},
+    "current": {
+        "completed": False, "lifecycle_state": "UNKNOWN", "wait_kind": "UNKNOWN",
+        "unblock_condition": "UNKNOWN", "next_due": "UNKNOWN",
+        "next_action_class": "UNKNOWN", "next_action_ref": "UNKNOWN",
+        "coverage": "CURRENT_ONLY",
+    },
     "scope": {
         "canonical_root": {
             "status": "UNKNOWN", "work_id": None, "reason": "EXPLICIT_UNKNOWN",
         },
-        "parent_ancestry": [], "dependencies": [], "coverage": "CURRENT_ONLY",
+        "parent_ancestry": [], "parent_cycle_detected": True,
+        "dependencies": [], "coverage": "CURRENT_ONLY",
     },
     "events": {"coverage": "OBSERVED_ONLY", "items": [{"id": "event"}]},
     "coverage": {
@@ -33,7 +39,9 @@ def test_concise_render_preserves_partial_truth_and_every_coverage_reason() -> N
     assert output == """status=PARTIAL work_id=10000000-0000-4000-8000-000000000001 captured_at=2026-01-02T03:04:05+00:00
 snapshot row_version=7 isolation=repeatable read read_only=on
 admission status=UNKNOWN at=None reason=NOT_CAPTURED
+current completed=False lifecycle_state=UNKNOWN wait_kind=UNKNOWN unblock_condition=UNKNOWN next_due=UNKNOWN next_action_class=UNKNOWN next_action_ref=UNKNOWN coverage=CURRENT_ONLY
 root status=UNKNOWN work_id=None reason=EXPLICIT_UNKNOWN
+relations parent_cycle_detected=True warning=CORRUPT_CYCLE
 evidence_count=1 events_coverage=OBSERVED_ONLY
 coverage canonical_work=INCLUDED:CURRENT_ONLY
 coverage future_source=EXCLUDED:NOT_INCLUDED_B1
