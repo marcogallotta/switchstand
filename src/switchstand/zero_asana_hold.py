@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .edge_maintenance import (
@@ -28,7 +28,6 @@ from .edge_maintenance import (
     run_host_command,
     validate_target,
 )
-from .state import work_event_handles, work_handles
 from .work_corpus import (
     CorpusProvider,
     capture_manifest_connection,
@@ -40,8 +39,7 @@ from .work_source_export import SourceProvider, source_parity_connection
 HOST_MACHINE = "marco@.host"
 TombstoneBuilder = Callable[[dict[str, object], Path], Awaitable[Path | None]]
 
-class HoldProvider(CorpusProvider, SourceProvider, Protocol):
-    """Provider surface required across capture and source export."""
+class HoldProvider(CorpusProvider, SourceProvider, Protocol): ...
 
 @dataclass(frozen=True)
 class HoldPaths:
@@ -73,9 +71,6 @@ class HoldArtifacts:
     source_candidate: str
     corpus_sha256: str
     source_parity_sha256: str
-    corpus_a_file_sha256: str
-    corpus_b_file_sha256: str
-    source_parity_file_sha256: str
     tombstones_sha256: str | None
     fastmcp_snapshot_sha256: str
     database_identity_sha256: str
@@ -140,9 +135,7 @@ class HostHoldOperations:
             raise Unknown("maintenance gate is not exact at public ingress")
     def stop_and_prove(self) -> None:
         self._systemctl("stop", self.config.service, check=False)
-        state = self._systemctl(
-            "is-active", self.config.service, check=False
-        ).stdout.strip()
+        state = self._systemctl("is-active", self.config.service, check=False).stdout.strip()
         if state != "inactive":
             raise Unknown("host edge service did not become inactive")
         endpoint = urlparse(self.config.local_url)
@@ -201,30 +194,13 @@ def _file_digest(path: Path) -> str:
         os.close(descriptor)
 
 async def _database_identity(connection: AsyncConnection) -> str:
-    bindings = (await connection.execute(select(
-        work_handles.c.provider,
-        work_handles.c.provider_work_id,
-        work_handles.c.id,
-    ).order_by(
-        work_handles.c.provider,
-        work_handles.c.provider_work_id,
-    ))).all()
-    events = (await connection.execute(select(
-        work_event_handles.c.provider,
-        work_event_handles.c.provider_work_id,
-        work_event_handles.c.provider_event_id,
-        work_event_handles.c.id,
-        work_event_handles.c.work_id,
-    ).order_by(
-        work_event_handles.c.provider,
-        work_event_handles.c.provider_work_id,
-        work_event_handles.c.provider_event_id,
-    ))).all()
-    document = {
-        "bindings": [[str(value) for value in row] for row in bindings],
-        "events": [[str(value) for value in row] for row in events],
-    }
-    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    rows = (await connection.execute(text("""
+        SELECT 'binding', provider, provider_work_id, id::text, '' FROM work_handles
+        UNION ALL
+        SELECT 'event', provider, provider_work_id, id::text, provider_event_id
+        FROM work_event_handles ORDER BY 1, 2, 3, 4, 5
+    """))).all()
+    encoded = json.dumps([[str(value) for value in row] for row in rows], separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 def _digested(document: dict[str, object]) -> dict[str, object]:
@@ -254,11 +230,8 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
         "corpus_a": str(artifacts.paths.corpus_a),
         "corpus_b": str(artifacts.paths.corpus_b),
         "corpus_sha256": artifacts.corpus_sha256,
-        "corpus_a_file_sha256": artifacts.corpus_a_file_sha256,
-        "corpus_b_file_sha256": artifacts.corpus_b_file_sha256,
         "source_parity": str(artifacts.paths.source_export),
         "source_parity_sha256": artifacts.source_parity_sha256,
-        "source_parity_file_sha256": artifacts.source_parity_file_sha256,
         "tombstones": (
             str(artifacts.paths.tombstones) if artifacts.tombstones_sha256 else None
         ),
@@ -327,9 +300,6 @@ async def production_hold[Result](
                 source_candidate=source_candidate,
                 corpus_sha256=corpus_digest,
                 source_parity_sha256=str(source["sha256"]),
-                corpus_a_file_sha256=_file_digest(paths.corpus_a),
-                corpus_b_file_sha256=_file_digest(paths.corpus_b),
-                source_parity_file_sha256=_file_digest(paths.source_export),
                 tombstones_sha256=(
                     _file_digest(tombstone_path) if tombstone_path is not None else None
                 ),
