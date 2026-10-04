@@ -82,6 +82,6 @@ fi
 
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
-        -m gpt-5.6-sol -c 'model_reasoning_effort="medium"' \
+        -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
         -a never -c 'default_permissions="switchstand-coordinator"' \
         --enable hooks --dangerously-bypass-hook-trust "$@"
