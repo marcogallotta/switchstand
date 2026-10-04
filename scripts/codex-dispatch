@@ -37,6 +37,8 @@ start_commit=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
 start_record=$(mktemp "$coordinator_home/start-commit.XXXXXXXX")
 printf '%s\n' "$start_commit" >"$start_record"
 chmod 600 "$start_record"
+manifest_record="$start_record.manifest.json"
+invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
         echo "Coordinator Codex authentication binding is invalid" >&2
@@ -78,7 +80,27 @@ fi
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_home/$coordinator_profile.config.toml" \
     "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
-    "$start_record"
+    "$start_record" "$manifest_record"
+
+if [ -n "${SWITCHSTAND_COORDINATOR_PROOF_PATH:-}" ]; then
+    "$script_dir/coordinator-control" create \
+        --repo "$canonical_repo" --control-root "$script_dir/.." \
+        --start-record "$start_record" \
+        --profile "$coordinator_home/$coordinator_profile.config.toml" \
+        --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+        --shim "$HOME/.local/bin/codex" \
+        --invocation-digest "$invocation_digest" \
+        --proof-path "$SWITCHSTAND_COORDINATOR_PROOF_PATH" >/dev/null
+else
+    "$script_dir/coordinator-control" create \
+        --repo "$canonical_repo" --control-root "$script_dir/.." \
+        --start-record "$start_record" \
+        --profile "$coordinator_home/$coordinator_profile.config.toml" \
+        --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+        --shim "$HOME/.local/bin/codex" \
+        --invocation-digest "$invocation_digest" >/dev/null
+fi
+unset SWITCHSTAND_COORDINATOR_PROOF_PATH
 
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \

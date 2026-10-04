@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,14 @@ from typing import NoReturn
 SHA = re.compile(r"[0-9a-f]{40}")
 CANARY_STATUS = "SWITCHSTAND_COORDINATOR_CANARY_OK"
 GIT_TIMEOUT_SECONDS = 30
+FROZEN_REPOSITORY_FILES = (
+    ".codex/config.toml",
+    "scripts/codex-dispatch",
+    "scripts/codex-coordinator-profile",
+    "scripts/codex-hook",
+    "scripts/coordinator-control",
+    "scripts/coordinator-handoff",
+)
 _evidence: Path | None = None
 _stage = "startup"
 _repo: Path | None = None
@@ -88,30 +97,69 @@ def require_start_record(home: Path, raw: str) -> tuple[Path, str]:
     return resolved, value
 
 
-def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
+def manifest_digest(payload: dict[str, object]) -> str:
+    unsigned = {key: value for key, value in payload.items() if key != "manifest_digest"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def argv_digest(values: list[str]) -> str:
+    digest = hashlib.sha256()
+    for value in values:
+        encoded = value.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_canary(home: Path, shim: Path, repo: Path, expected: str, artifact: Path) -> None:
     schema = artifact / "schema.json"
     final = artifact / "final.json"
     trace = artifact / "trace.jsonl"
     stderr = artifact / "stderr.log"
-    schema.write_text(json.dumps({
-        "type": "object",
-        "properties": {
-            "status": {"type": "string", "const": CANARY_STATUS},
-            "start_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        },
-        "required": ["status", "start_commit"],
-        "additionalProperties": False,
-    }) + "\n")
+    launch_proof = artifact / "launch-manifest.json"
+    schema.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "const": CANARY_STATUS},
+                    "start_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                    "session_generation": {"type": "string"},
+                    "manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                },
+                "required": ["status", "start_commit", "session_generation", "manifest_digest"],
+                "additionalProperties": False,
+            }
+        )
+        + "\n"
+    )
     prompt = (
         "This is a read-only Switchstand Coordinator launch canary. Read the exact "
         "Coordinator start-commit record path from your developer instructions, read that "
         "file, and compare it with `git rev-parse HEAD` in the current repository. Do not "
         "modify files or perform any other work. Return the required JSON with status "
-        f"{CANARY_STATUS} and start_commit set to the commit you verified."
+        f"{CANARY_STATUS}, start_commit set to the commit you verified, and the session "
+        "generation and manifest digest read from the injected launch-control manifest."
     )
     command = [
-        str(shim), "exec", "--ephemeral", "--json", "--output-schema", str(schema),
-        "--output-last-message", str(final), prompt,
+        str(shim),
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--output-schema",
+        str(schema),
+        "--output-last-message",
+        str(final),
+        prompt,
     ]
     with trace.open("w") as stdout_handle, stderr.open("w") as stderr_handle:
         process = subprocess.Popen(
@@ -121,6 +169,7 @@ def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
             stderr=stderr_handle,
             text=True,
             start_new_session=True,
+            env=os.environ | {"SWITCHSTAND_COORDINATOR_PROOF_PATH": str(launch_proof)},
         )
         try:
             returncode = process.wait(timeout=180)
@@ -135,10 +184,50 @@ def run_canary(shim: Path, repo: Path, expected: str, artifact: Path) -> None:
     if returncode:
         fail(f"fresh-agent canary failed; evidence: {artifact}")
     try:
+        proof = json.loads(launch_proof.read_text())
+        actual_digest = manifest_digest(proof)
+        session = proof["session"]
+        frozen = proof["frozen_controls"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        fail(f"launcher did not produce valid manifest proof ({error}); evidence: {artifact}")
+    if (
+        proof.get("manifest_digest") != actual_digest
+        or session.get("start_commit") != expected
+        or session.get("repository") != str(repo)
+        or session.get("invocation_digest") != argv_digest(command[1:])
+    ):
+        fail(f"launcher manifest did not prove actual inputs for {expected}; evidence: {artifact}")
+    expected_controls = {
+        **{f"repository:{relative}": repo / relative for relative in FROZEN_REPOSITORY_FILES},
+        "host:codex-shim": shim,
+        "host:codex-executable": home / ".codex/packages/standalone/current/bin/codex",
+        "generated:profile": home / ".local/state/switchstand/codex/coordinator/"
+        "switchstand-coordinator-preferences.config.toml",
+        "generated:hooks": home / ".local/state/switchstand/codex/coordinator/hooks.json",
+    }
+    try:
+        observed_controls = {item["id"]: item for item in frozen}
+        controls_match = set(observed_controls) == set(expected_controls) and all(
+            Path(observed_controls[identifier]["path"]).resolve(strict=True)
+            == path.resolve(strict=True)
+            and file_digest(path) == observed_controls[identifier]["sha256"]
+            for identifier, path in expected_controls.items()
+        )
+    except OSError, KeyError, TypeError:
+        controls_match = False
+    if not controls_match:
+        fail(f"launcher manifest control identities do not match host inputs; evidence: {artifact}")
+    try:
         result = json.loads(final.read_text())
     except (OSError, json.JSONDecodeError) as error:
         fail(f"fresh-agent canary returned invalid evidence ({error}); evidence: {artifact}")
-    if result != {"status": CANARY_STATUS, "start_commit": expected}:
+    expected_result = {
+        "status": CANARY_STATUS,
+        "start_commit": expected,
+        "session_generation": session["generation"],
+        "manifest_digest": actual_digest,
+    }
+    if result != expected_result:
         fail(f"fresh-agent canary did not prove {expected}; evidence: {artifact}")
 
 
@@ -179,8 +268,7 @@ def main() -> None:
     stage("fetch-main")
     origin = git(repo, "remote", "get-url", "origin")
     source = fetch_source(origin)
-    git(repo, "fetch", "--quiet", "--no-tags", source,
-        "+refs/heads/main:refs/remotes/origin/main")
+    git(repo, "fetch", "--quiet", "--no-tags", source, "+refs/heads/main:refs/remotes/origin/main")
     stage("validate-fast-forward")
     accepted = git(repo, "rev-parse", "origin/main")
     current = git(repo, "rev-parse", "HEAD")
@@ -194,9 +282,11 @@ def main() -> None:
         stage("fast-forward-main")
         git(repo, "merge", "--ff-only", "--quiet", accepted)
     stage("read-back-main")
-    if (git(repo, "rev-parse", "HEAD") != accepted
-            or git(repo, "branch", "--show-current") != "main"
-            or git(repo, "status", "--porcelain", "--untracked-files=all")):
+    if (
+        git(repo, "rev-parse", "HEAD") != accepted
+        or git(repo, "branch", "--show-current") != "main"
+        or git(repo, "status", "--porcelain", "--untracked-files=all")
+    ):
         fail("handoff could not read back clean main at the fetched revision")
     if subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", started, accepted],
@@ -210,10 +300,18 @@ def main() -> None:
     if shim.is_symlink() or not shim.is_file() or not os.access(shim, os.X_OK):
         fail("materialized Codex shim is unavailable")
     stage("fresh-agent-canary")
-    run_canary(shim, repo, accepted, _evidence)
-    (_evidence / "result.json").write_text(json.dumps({
-        "status": "PASS", "stage": _stage, "known_head": accepted,
-    }, sort_keys=True) + "\n")
+    run_canary(home, shim, repo, accepted, _evidence)
+    (_evidence / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "stage": _stage,
+                "known_head": accepted,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
     print(f"Git boundary: {start_record} {started}..{accepted}")
     print(f"Fresh-agent canary: PASS at {accepted}")

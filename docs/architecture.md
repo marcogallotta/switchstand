@@ -325,13 +325,15 @@ automatic updater maintains its otherwise-unused visible command outside the man
 `scripts/coordinator-handoff` is the sole guarded canonical-main update path for Coordinator
 replacement. It accepts the launch-record path injected by `codex-dispatch`, refuses dirty or
 divergent primary state, fast-forwards to the fetched remote `main`, and then uses the materialized
-shim to launch an ephemeral read-only Codex. The handoff is proven only when that fresh process
-reports the same exact commit from its injected start record and repository HEAD; failure evidence
-is retained in private durable state and never rewinds the safely advanced primary.
-`scripts/coordinator-control` owns the inert launch-manifest schema and comparison mechanics. Given
-exact launcher inputs, it records their identities, makes a proven mismatch monotonically
-`CONTROL_STALE`, and discovers the transitive rereadable Markdown dependencies rooted at
-`AGENTS.md`; unavailable evidence remains component-scoped `CURRENTNESS_UNKNOWN`.
+shim to launch an ephemeral read-only Codex. `codex-dispatch` records a per-generation manifest of
+the actual start commit, privacy-preserving invocation identity, generated policy, executable and
+effective repository-owned frozen controls. `scripts/coordinator-control` compares that manifest,
+makes a proven mismatch monotonically `CONTROL_STALE`, and discovers the transitive rereadable
+Markdown dependencies rooted at `AGENTS.md`; unavailable evidence remains component-scoped
+`CURRENTNESS_UNKNOWN`. The handoff is proven first by host readback of the successor manifest and
+its actual input hashes, then secondarily by the fresh process acknowledging the same generation,
+manifest digest and commit. Failure evidence is retained in private durable state and never rewinds
+the safely advanced primary.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under

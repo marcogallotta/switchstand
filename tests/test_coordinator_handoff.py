@@ -11,6 +11,14 @@ from typing import Any, NoReturn, cast
 import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts/coordinator-handoff"
+FROZEN_REPOSITORY_FILES = (
+    ".codex/config.toml",
+    "scripts/codex-dispatch",
+    "scripts/codex-coordinator-profile",
+    "scripts/codex-hook",
+    "scripts/coordinator-control",
+    "scripts/coordinator-handoff",
+)
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -28,16 +36,20 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
     primary = home / "switchstand"
     remote = tmp_path / "remote.git"
     source = tmp_path / "source"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", remote], check=True,
-                   capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", remote], check=True, capture_output=True
+    )
     primary.mkdir(parents=True)
-    subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
-                   capture_output=True)
+    subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True, capture_output=True)
     for repo in (primary,):
         git(repo, "config", "user.name", "Test")
         git(repo, "config", "user.email", "test@example.invalid")
+    for relative in FROZEN_REPOSITORY_FILES:
+        path = primary / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative + "\n")
     (primary / "tracked.txt").write_text("start\n")
-    git(primary, "add", "tracked.txt")
+    git(primary, "add", ".")
     git(primary, "commit", "-m", "start")
     started = git(primary, "rev-parse", "HEAD")
     git(primary, "remote", "add", "origin", str(remote))
@@ -59,16 +71,45 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
 
 def install_canary(home: Path, output_commit: str, exit_code: int = 0) -> Path:
     calls = home / "canary-calls"
+    executable(home / ".codex/packages/standalone/current/bin/codex", "#!/bin/sh\nexit 0\n")
+    control_home = home / ".local/state/switchstand/codex/coordinator"
+    (control_home / "switchstand-coordinator-preferences.config.toml").write_text("profile\n")
+    (control_home / "hooks.json").write_text("{}\n")
     executable(
         home / ".local/bin/codex",
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$@\" > \"$HOME/canary-calls\"\n"
-        "output=\n"
-        "while [ $# -gt 0 ]; do\n"
-        "  if [ \"$1\" = --output-last-message ]; then output=$2; shift 2; else shift; fi\n"
-        "done\n"
-        f"printf '%s\\n' '{json.dumps({'status': 'SWITCHSTAND_COORDINATOR_CANARY_OK', 'start_commit': output_commit})}' > \"$output\"\n"
-        f"exit {exit_code}\n",
+        "#!/usr/bin/env python3\n"
+        "import hashlib, json, os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "pathlib.Path(os.environ['HOME'], 'canary-calls').write_text('\\n'.join(args) + '\\n')\n"
+        "digest = hashlib.sha256()\n"
+        "for value in args:\n"
+        "    encoded = value.encode()\n"
+        "    digest.update(len(encoded).to_bytes(8, 'big'))\n"
+        "    digest.update(encoded)\n"
+        "proof = {'schema_version': 1, 'session': {"
+        f"'generation': 'test-generation', 'start_commit': {output_commit!r}, "
+        f"'repository': {str(home / 'switchstand')!r}, "
+        "'invocation_digest': digest.hexdigest()}}\n"
+        f"relative = {FROZEN_REPOSITORY_FILES!r}\n"
+        "home = pathlib.Path(os.environ['HOME'])\n"
+        "repo = home / 'switchstand'\n"
+        "paths = {**{'repository:' + name: repo / name for name in relative}, "
+        "'host:codex-shim': pathlib.Path(__file__).resolve(), "
+        "'host:codex-executable': home / '.codex/packages/standalone/current/bin/codex', "
+        "'generated:profile': home / '.local/state/switchstand/codex/coordinator/switchstand-coordinator-preferences.config.toml', "
+        "'generated:hooks': home / '.local/state/switchstand/codex/coordinator/hooks.json'}\n"
+        "proof['frozen_controls'] = [{'id': key, 'path': str(path), "
+        "'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} "
+        "for key, path in paths.items()]\n"
+        "unsigned = json.dumps(proof, sort_keys=True, separators=(',', ':')).encode()\n"
+        "proof['manifest_digest'] = hashlib.sha256(unsigned).hexdigest()\n"
+        "pathlib.Path(os.environ['SWITCHSTAND_COORDINATOR_PROOF_PATH']).write_text(json.dumps(proof))\n"
+        "final = {'status': 'SWITCHSTAND_COORDINATOR_CANARY_OK', "
+        f"'start_commit': {output_commit!r}, 'session_generation': 'test-generation', "
+        "'manifest_digest': proof['manifest_digest']}\n"
+        "output = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
+        "output.write_text(json.dumps(final))\n"
+        f"raise SystemExit({exit_code})\n",
     )
     return calls
 
@@ -78,8 +119,11 @@ def test_fast_forwards_clean_main_and_proves_fresh_agent(tmp_path: Path) -> None
     calls = install_canary(home, final)
 
     result = subprocess.run(
-        [SCRIPT, record], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
+        [SCRIPT, record],
+        env=os.environ | {"HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr
@@ -93,11 +137,17 @@ def test_fast_forwards_clean_main_and_proves_fresh_agent(tmp_path: Path) -> None
     artifact = Path(result.stdout.split("Evidence: ", 1)[1].strip())
     assert artifact.parent.stat().st_mode & 0o777 == 0o700
     assert {path.name for path in artifact.iterdir()} == {
-        "schema.json", "final.json", "trace.jsonl", "stderr.log", "result.json",
+        "schema.json",
+        "final.json",
+        "trace.jsonl",
+        "stderr.log",
+        "result.json",
+        "launch-manifest.json",
     }
     schema = json.loads((artifact / "schema.json").read_text())
     assert schema["properties"]["status"] == {
-        "type": "string", "const": "SWITCHSTAND_COORDINATOR_CANARY_OK",
+        "type": "string",
+        "const": "SWITCHSTAND_COORDINATOR_CANARY_OK",
     }
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in artifact.iterdir())
 
@@ -108,8 +158,11 @@ def test_dirty_main_fails_before_fetch_or_canary(tmp_path: Path) -> None:
     (primary / "untracked.txt").write_text("preserve me\n")
 
     result = subprocess.run(
-        [SCRIPT, record], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
+        [SCRIPT, record],
+        env=os.environ | {"HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert result.returncode != 0
@@ -128,8 +181,11 @@ def test_failed_canary_preserves_updated_main_and_evidence(tmp_path: Path) -> No
     install_canary(home, final, exit_code=7)
 
     result = subprocess.run(
-        [SCRIPT, record], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
+        [SCRIPT, record],
+        env=os.environ | {"HOME": str(home)},
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert result.returncode != 0
