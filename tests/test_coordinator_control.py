@@ -140,3 +140,35 @@ def test_missing_frozen_component_is_unknown_not_stale(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert status["state"] == "CURRENTNESS_UNKNOWN"
     assert status["unknown_components"] == ["generated:profile"]
+
+
+def test_unresolved_document_dependencies_are_explicit_component_unknowns(
+    tmp_path: Path,
+) -> None:
+    repo, _start, manifest_path = setup(tmp_path)
+    (repo / "folder.md").mkdir()
+    (repo / "bad.md").write_bytes(b"\xff")
+    (tmp_path / "outside.md").write_text("outside\n")
+    (repo / "AGENTS.md").write_text(
+        "[missing](missing.md) [outside](../outside.md) [directory](folder.md) "
+        "[unreadable](bad.md) [unsupported](file:control.md)\n"
+    )
+
+    result, status = check(manifest_path, "post-sync")
+
+    assert result.returncode == 2
+    assert status["state"] == "CURRENTNESS_UNKNOWN"
+    assert {
+        (item["target"], item["reason"]) for item in status["unresolved_rereadable_controls"]
+    } == {
+        ("missing.md", "missing"),
+        ("../outside.md", "outside_root"),
+        ("folder.md", "unsupported_file_type"),
+        ("bad.md", "unreadable"),
+        ("file:control.md", "unsupported_scheme"),
+    }
+    assert all(
+        status["component_currentness"][f"rereadable:{item['source']}->{item['target']}"]
+        == "CURRENTNESS_UNKNOWN"
+        for item in status["unresolved_rereadable_controls"]
+    )

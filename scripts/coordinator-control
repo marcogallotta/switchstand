@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 LINK = re.compile(r"\[[^]]*\]\(([^)#]+)(?:#[^)]*)?\)")
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -71,26 +72,61 @@ def repository_head(repo: Path) -> str:
     ).strip()
 
 
-def markdown_dependencies(repo: Path) -> dict[str, str]:
+def markdown_dependencies(
+    repo: Path,
+) -> tuple[dict[str, str], list[dict[str, str]]]:
     pending = [Path("AGENTS.md")]
     found: dict[str, str] = {}
+    visited: set[str] = set()
+    unresolved: list[dict[str, str]] = []
     root = repo.resolve()
     while pending:
         relative = pending.pop()
-        if relative.as_posix() in found:
+        if relative.as_posix() in visited:
             continue
+        visited.add(relative.as_posix())
         candidate = (root / relative).resolve()
-        if not candidate.is_relative_to(root) or not candidate.is_file():
+        identity = relative.as_posix()
+        if not candidate.is_relative_to(root):
+            unresolved.append({"source": identity, "target": identity, "reason": "outside_root"})
             continue
-        found[relative.as_posix()] = digest_file(candidate)
-        for raw in LINK.findall(candidate.read_text(errors="replace")):
+        if not candidate.exists():
+            unresolved.append({"source": identity, "target": identity, "reason": "missing"})
+            continue
+        if not candidate.is_file():
+            unresolved.append(
+                {"source": identity, "target": identity, "reason": "unsupported_file_type"}
+            )
+            continue
+        try:
+            content = candidate.read_text()
+            found[identity] = digest_file(candidate)
+        except OSError, UnicodeError:
+            unresolved.append({"source": identity, "target": identity, "reason": "unreadable"})
+            continue
+        for raw in LINK.findall(content):
             target = raw.split("?", 1)[0]
             if not target.lower().endswith(".md"):
                 continue
-            resolved = (candidate.parent / target).resolve()
-            if resolved.is_relative_to(root):
-                pending.append(resolved.relative_to(root))
-    return dict(sorted(found.items()))
+            parsed = urlsplit(target)
+            if parsed.scheme in {"http", "https"}:
+                continue
+            if parsed.scheme or parsed.netloc:
+                unresolved.append(
+                    {"source": identity, "target": raw, "reason": "unsupported_scheme"}
+                )
+                continue
+            try:
+                resolved = (candidate.parent / parsed.path).resolve()
+            except OSError, RuntimeError:
+                unresolved.append({"source": identity, "target": raw, "reason": "unresolvable"})
+                continue
+            if not resolved.is_relative_to(root):
+                unresolved.append({"source": identity, "target": raw, "reason": "outside_root"})
+                continue
+            pending.append(resolved.relative_to(root))
+    key = lambda item: (item["source"], item["target"], item["reason"])
+    return dict(sorted(found.items())), sorted(unresolved, key=key)
 
 
 def component(identifier: str, path: Path) -> dict[str, str]:
@@ -116,6 +152,7 @@ def create(arguments: argparse.Namespace) -> int:
         component("generated:profile", arguments.profile.resolve(strict=True)),
         component("generated:hooks", arguments.hooks.resolve(strict=True)),
     ]
+    rereadable, unresolved = markdown_dependencies(repo)
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "session": {
@@ -127,7 +164,8 @@ def create(arguments: argparse.Namespace) -> int:
             "invocation_digest": arguments.invocation_digest,
         },
         "frozen_controls": frozen,
-        "rereadable_controls": markdown_dependencies(repo),
+        "rereadable_controls": rereadable,
+        "unresolved_rereadable_controls": unresolved,
         "unproved_frozen_controls": [
             {
                 "id": "runtime:effective-client-tool-surface",
@@ -171,6 +209,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         not isinstance(payload.get("session"), dict)
         or not isinstance(payload.get("frozen_controls"), list)
         or not isinstance(payload.get("rereadable_controls"), dict)
+        or not isinstance(payload.get("unresolved_rereadable_controls"), list)
         or not isinstance(payload.get("unproved_frozen_controls"), list)
     ):
         raise TypeError("launch manifest structure is invalid")
@@ -209,7 +248,7 @@ def check(arguments: argparse.Namespace) -> int:
                 mismatches.append(item["id"])
     repo = Path(manifest["session"]["repository"])
     try:
-        rereadable = markdown_dependencies(repo)
+        rereadable, unresolved = markdown_dependencies(repo)
         current_head = repository_head(repo)
     except (OSError, subprocess.SubprocessError) as error:
         output = {"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}
@@ -234,19 +273,24 @@ def check(arguments: argparse.Namespace) -> int:
         return 3
     required = sorted(rereadable) if arguments.trigger == "post-compaction" else changed
     output = {
-        "state": "CURRENTNESS_UNKNOWN" if unknown else "CURRENT",
+        "state": "CURRENTNESS_UNKNOWN" if unknown or unresolved else "CURRENT",
         "session_generation": manifest["session"]["generation"],
         "current_commit": current_head,
         "unknown_components": sorted(unknown),
+        "unresolved_rereadable_controls": unresolved,
         "reread_required": required,
         "required_live_reads": ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"],
         "unproved_frozen_controls": manifest["unproved_frozen_controls"],
         "component_currentness": {
-            item["id"]: "CURRENTNESS_UNKNOWN" for item in manifest["unproved_frozen_controls"]
+            **{item["id"]: "CURRENTNESS_UNKNOWN" for item in manifest["unproved_frozen_controls"]},
+            **{
+                f"rereadable:{item['source']}->{item['target']}": "CURRENTNESS_UNKNOWN"
+                for item in unresolved
+            },
         },
     }
     print(json.dumps(output, sort_keys=True))
-    return 2 if unknown else 0
+    return 2 if unknown or unresolved else 0
 
 
 def parser() -> argparse.ArgumentParser:
