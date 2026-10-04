@@ -33,6 +33,7 @@ from .oauth_continuity import (
     FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
     SwitchstandGitHubProvider,
 )
+from .observability import CallTimingMiddleware, annotate_target, register_sqlalchemy_timing
 from .principal import RequestPrincipal
 from .stable_auth import (
     REQUIRED_SCOPE,
@@ -140,6 +141,7 @@ class MCPAuthConfig:
 
 
 def _audit(tool: str, target: str | None, status: str) -> None:
+    annotate_target(target)
     token = get_access_token()
     LOG.info(
         "chatgpt_mcp tool=%s issuer=%s subject=%s client_id=%s target=%s status=%s",
@@ -150,6 +152,15 @@ def _audit(tool: str, target: str | None, status: str) -> None:
         target,
         status,
     )
+
+
+def _timing_identity() -> dict[str, str | None]:
+    token = get_access_token()
+    return {
+        "issuer": None if token is None else (token.claims or {}).get("iss"),
+        "subject": None if token is None else token.subject,
+        "client_id": None if token is None else token.client_id,
+    }
 
 
 def runtime_identity_from_meta(meta: dict[str, Any]) -> str:
@@ -238,6 +249,7 @@ def _create_resource_app(
         outcome_state_enabled=service.outcome_state_enabled,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
+    server.add_middleware(CallTimingMiddleware(_timing_identity))
     for name, tool in build_ordinary_tools(
         service, _audit,
         agent_identity=_runtime_identity,
@@ -261,6 +273,7 @@ def _create_resource_app(
 async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
     """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
+    register_sqlalchemy_timing(engine)
     try:
         async def unresolved_principal():
             return None
