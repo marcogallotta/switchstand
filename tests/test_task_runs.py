@@ -200,3 +200,47 @@ async def test_start_bind_is_trusted_exact_and_one_to_one(subject):
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
     with pytest.raises(RuntimeError, match="preserve durable task-run execution evidence"):
         command.downgrade(config, "0014_task_runs")
+
+
+async def test_concurrent_distinct_runs_bind_one_execution(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+
+    outcomes = await asyncio.gather(*(
+        state.bind_start(requested.request.request_id, receipt(execution))
+        for _ in range(2)
+    ))
+
+    assert sorted((item.status, item.reason) for item in outcomes) == [
+        ("denied", "execution_already_bound"),
+        ("ok", None),
+    ]
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_executions)
+        ) == 1
+
+
+async def test_concurrent_shared_run_binds_one_request(subject):
+    state, engine, requester, execution = subject
+    requests = await asyncio.gather(*(
+        state.request(requester, uuid4(), request(execution))
+        for _ in range(2)
+    ))
+    assert all(item.request is not None for item in requests)
+    request_ids = [item.request.request_id for item in requests if item.request]
+    run = receipt(execution)
+
+    outcomes = await asyncio.gather(*(
+        state.bind_start(request_id, run) for request_id in request_ids
+    ))
+
+    assert sorted((item.status, item.reason) for item in outcomes) == [
+        ("conflict", "run_already_bound"),
+        ("ok", None),
+    ]
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_executions)
+        ) == 1
