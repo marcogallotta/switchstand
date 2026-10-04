@@ -499,6 +499,12 @@ async def test_managed_request_uses_exact_launch_grant_receipt_and_semantic_repl
     subject, tmp_path: Path,
 ):
     state, engine, requester, execution = subject
+    await CanonicalWorkRepository(engine).create(CurrentWork(
+        work_id=requester,
+        title="Validate the active managed assignment",
+        completed=False,
+        notes="",
+    ))
     grants = GrantState(engine)
     principal = managed_principal(requester)
     repo, git_dir = tmp_path / "repo", tmp_path / "git"
@@ -562,10 +568,27 @@ async def test_managed_request_uses_exact_launch_grant_receipt_and_semantic_repl
         "status": "denied", "request": None, "reason": "operation_not_granted",
     }
 
-    current = await rotate_managed_grant(
+    default_grant = await rotate_managed_grant(
         grants, LaunchAuthority(active_work_id=requester)
     )
+    assert "agent_task" not in default_grant.operations
+    current = default_grant.model_copy(update={
+        "id": uuid4(),
+        "version": default_grant.version + 1,
+        "operations": default_grant.operations | frozenset({"agent_task"}),
+    })
+    await grants.issue(current, default_grant.version)
     assert "agent_task" in current.operations
+    denied = await server.call_tool("agent_task_request", arguments)
+    assert denied.structured_content == {
+        "status": "denied", "request": None, "reason": "operation_not_granted",
+    }
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_requests)
+        ) == 0
+
+    arguments = request(requester).model_dump(mode="json")
     presented[0] = uuid4()
     stale = await server.call_tool("agent_task_request", arguments)
     assert stale.structured_content == {
