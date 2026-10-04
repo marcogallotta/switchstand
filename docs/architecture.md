@@ -328,6 +328,10 @@ divergent primary state, fast-forwards to the fetched remote `main`, and then us
 shim to launch an ephemeral read-only Codex. The handoff is proven only when that fresh process
 reports the same exact commit from its injected start record and repository HEAD; failure evidence
 is retained in private durable state and never rewinds the safely advanced primary.
+`scripts/coordinator-control` owns the inert launch-manifest schema and comparison mechanics. Given
+exact launcher inputs, it records their identities, makes a proven mismatch monotonically
+`CONTROL_STALE`, and discovers the transitive rereadable Markdown dependencies rooted at
+`AGENTS.md`; unavailable evidence remains component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under
