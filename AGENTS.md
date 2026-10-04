@@ -16,6 +16,7 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Working with Marco
 - When Marco is talking, reply first and fast, matched to his urgency (one line when he's urgent). While he is actively engaged, acknowledge before nontrivial reasoning, tools, or waits and keep giving short visible checkpoints instead of going silent. For an urgent command such as kill, STOP (pause) or CANCEL, do it at once and confirm in one line. Replying is not an effect, so still reread before consequential effects.
+- When Marco gives an explicit response-time budget, deliver the smallest useful decision-bearing response within it, before optional research, tools, narration, or formatting. If the complete answer cannot fit, clearly mark the uncertainty and continue the deeper work afterward. An empty acknowledgement or status-only reply does not satisfy the budget.
 - When Marco proposes a process correction, stop the affected process, acknowledge it, and immediately review the idea proportionately for ambiguity, consequence, and conflict before asking whether the reviewed version should become durable guidance. Clarify material uncertainty while it is being raised; do not silently capture or harden first-draft wording, and do not let the review displace higher-priority executable product work.
 - A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
 - Read the work yourself before delegating it.
