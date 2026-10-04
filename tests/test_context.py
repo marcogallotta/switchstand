@@ -64,7 +64,8 @@ def hook(
     result = subprocess.run(
         arguments,
         input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
-                          "tool_input": {"command": command}, "cwd": str(repo)}),
+                          "tool_input": ({"file_path": command} if tool == "Edit"
+                                         else {"command": command}), "cwd": str(repo)}),
         text=True, capture_output=True, check=True, env=environment,
     )
     return json.loads(result.stdout) if result.stdout else {}
@@ -561,8 +562,7 @@ def test_coordinator_hook_allows_git_mutation_only_in_generation_owned_writer(tm
     (primary / "tracked.txt").write_text("base\n")
     git(primary, "add", "tracked.txt")
     git(primary, "commit", "-m", "base")
-    owned = tmp_path / "owned"
-    foreign = tmp_path / "foreign"
+    owned, foreign = tmp_path / "owned", tmp_path / "foreign"
     git(primary, "worktree", "add", "-b", "owned", str(owned))
     git(primary, "worktree", "add", "-b", "foreign", str(foreign))
     environment = dict(os.environ)
@@ -571,10 +571,12 @@ def test_coordinator_hook_allows_git_mutation_only_in_generation_owned_writer(tm
         owned, "git add tracked.txt", environment,
         coordinator_primary=primary, coordinator_writer=owned,
     ) == {}
+    late = tmp_path / "late"
+    git(primary, "worktree", "add", "-b", "late", str(late))
     for repo, command in (
         (primary, "git add tracked.txt"),
-        (foreign, "git commit -m foreign"),
-        (primary, f"git worktree add --detach {tmp_path / 'extra'}"),
+        (foreign, "command env git update-ref refs/heads/probe HEAD"),
+        (late, "sh -c 'exec env git commit -m foreign'"),
     ):
         denied = hook(
             repo, command, environment,
@@ -582,6 +584,11 @@ def test_coordinator_hook_allows_git_mutation_only_in_generation_owned_writer(tm
         )
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "foreign-worktree" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    patch = "*** Begin Patch\n*** Add File: probe\n+x\n*** End Patch"
+    for tool, value in (("apply_patch", patch), ("Edit", str(foreign / "probe"))):
+        denied = hook(foreign, value, environment, tool=tool,
+                      coordinator_primary=primary, coordinator_writer=owned)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):

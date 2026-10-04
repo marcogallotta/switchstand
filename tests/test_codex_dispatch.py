@@ -43,12 +43,6 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
          "commit", "--allow-empty", "-m", "base"],
         check=True, capture_output=True,
     )
-    foreign = home / ".local/state/switchstand/worktrees/preexisting"
-    foreign.parent.mkdir(parents=True)
-    subprocess.run(
-        ["git", "-C", primary, "worktree", "add", "-b", "foreign", foreign, "HEAD"],
-        check=True, capture_output=True,
-    )
     codex_home = home / ".codex"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text("{}\n")
@@ -106,7 +100,6 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
     assert filesystem[str(writer)] == "write"
-    assert filesystem[str(foreign)] == "read"
     assert profile["approval_policy"] == "never"
     records = [path for path in coordinator_home.glob("start-commit.*")
                if not path.name.endswith(".manifest.json")]
@@ -125,9 +118,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     snapshot = Path(runtime_receipt["snapshot"])
     assert snapshot.read_bytes() == profile_path.read_bytes()
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == runtime_receipt["launch_sha256"]
-    hooks = json.loads((coordinator_home / "hooks.json").read_text())
-    assert set(hooks["hooks"]) == {"PreToolUse"}
-    hook_command = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    hook_command = profile["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     hook_arguments = hook_command.split()
     assert hook_arguments[0] == str(ROOT / "scripts/codex-hook")
     assert hook_arguments[-2:] == ["--coordinator-writer", str(writer)]
@@ -135,7 +126,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         primary / "scripts/switchstand-coordinator-control-mcp"
     )
     assert "mode=PILOT; lifetime=ASSIGNMENT" in profile["developer_instructions"]
-    assert set(profile["hooks"]) == {"UserPromptSubmit", "Stop"}
+    assert set(profile["hooks"]) == {"PreToolUse", "UserPromptSubmit", "Stop"}
     assert "SubagentStop" not in profile["hooks"]
     assert not (coordinator_home / "AGENTS.md").exists()
     friction_store = home / ".local/state/switchstand/friction.md"
@@ -190,7 +181,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
-            item for item in manifest["launch_controls"]
+            item for item in manifest["frozen_controls"]
             if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])
@@ -239,9 +230,7 @@ def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: 
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
     assert "mode=OFF; lifetime=ASSIGNMENT" in profile["developer_instructions"]
-    assert "hooks" not in profile
-    shared = json.loads((coordinator_home / "hooks.json").read_text())
-    assert set(shared["hooks"]) == {"PreToolUse"}
+    assert set(profile["hooks"]) == {"PreToolUse"}
 
 
 def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(
@@ -311,6 +300,8 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
     assert len(profiles) == 1
     first_profile = profiles[0]
     first_bytes = first_profile.read_bytes()
+    shared_hooks = coordinator_home / "hooks.json"
+    shared_bytes = shared_hooks.read_bytes()
 
     second = subprocess.Popen(
         [DISPATCH, "resume", "session-b"], cwd=primary,
@@ -319,14 +310,19 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
     assert first.wait(timeout=5) == 0
     assert second.wait(timeout=5) == 0
     assert first_profile.read_bytes() == first_bytes
+    assert shared_hooks.read_bytes() == shared_bytes
     assert len(list(coordinator_home.glob("switchstand-coordinator-*.config.toml"))) == 2
     for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
-            item for item in manifest["launch_controls"]
+            item for item in manifest["frozen_controls"]
             if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])
         assert hashlib.sha256(generated.read_bytes()).hexdigest() == recorded["sha256"]
         runtime = Path(manifest["runtime_mutable_controls"][0]["path"])
         assert generated.read_bytes() == runtime.read_bytes()
+        profile = tomllib.loads(generated.read_text())
+        assert str(manifest["session"]["writer"]) in (
+            profile["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        )

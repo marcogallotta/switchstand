@@ -100,6 +100,26 @@ def inline_alias(tokens: list[str]) -> str | None:
     return command + (" " + shlex.join(tokens[pos + 1:]) if tokens[pos + 1:] else "")
 
 
+def unwrap_env(tokens: list[str]) -> list[str]:
+    if not tokens or Path(tokens[0]).name not in {"env", "command", "exec"}:
+        return tokens
+    wrapper = Path(tokens[0]).name
+    pos = 1
+    while pos < len(tokens):
+        token = tokens[pos]
+        if token == "--":
+            return tokens[pos + 1:]
+        if wrapper == "env" and token in {
+            "-u", "--unset", "-C", "--chdir", "-S", "--split-string"
+        } or wrapper == "exec" and token == "-a":
+            pos += 2
+        elif token.startswith("-") or wrapper == "env" and "=" in token:
+            pos += 1
+        else:
+            break
+    return tokens[pos:]
+
+
 def _exact_task_writer(root: str, git_dir: str, common: str) -> bool:
     expected = os.environ.get("SWITCHSTAND_TASK_WRITER")
     task = os.environ.get("SWITCHSTAND_TASK_ID")
@@ -185,6 +205,14 @@ def classify(
 ) -> str | None:
     current = cwd
     for tokens in segments(command):
+        unwrapped = unwrap_env(tokens)
+        if unwrapped != tokens:
+            nested = classify(
+                shlex.join(unwrapped), current, coordinator_primary, coordinator_writer
+            )
+            if nested:
+                return nested
+            continue
         if tokens and Path(tokens[0]).name in SHELLS:
             positions = [pos for pos, token in enumerate(tokens[:-1])
                          if token == "-c" or token.startswith("-") and token.endswith("c")]
@@ -279,7 +307,14 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
-def classify_patch(command: str, cwd: str, primary: str) -> str | None:
+def foreign_write(target: str, primary: str, writer: str | None) -> str | None:
+    if (_inside(target, primary) if writer is None else not _inside(target, writer)):
+        scope = "primary-checkout" if writer is None else "foreign-worktree"
+        return f"[{scope}] writing {target} is denied; use the generation-owned writer {writer}."
+    return None
+
+
+def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> str | None:
     friction = os.path.join(primary, "friction.md")
     prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
     for line in command.splitlines():
@@ -288,25 +323,27 @@ def classify_patch(command: str, cwd: str, primary: str) -> str | None:
         if raw is None:
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
-        target = os.path.abspath(candidate)
-        if _inside(target, primary) and target != friction:
-            return (f"[primary-checkout] apply_patch is denied for {target}; "
-                    "use a linked writer worktree.")
+        target = os.path.abspath(candidate) if writer is None else os.path.realpath(candidate)
+        if target != friction:
+            reason = foreign_write(target, primary, writer)
+            if reason:
+                return reason
     return None
 
 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 
 
-def classify_edit(tool_input: dict, cwd: str, primary: str) -> str | None:
+def classify_edit(
+    tool_input: dict, cwd: str, primary: str, writer: str | None
+) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
     target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
-    if _inside(target, primary) and target != os.path.join(primary, "friction.md"):
-        return (f"[primary-checkout] editing {target} is denied; "
-                "use a linked writer worktree.")
-    return None
+    if target == os.path.join(primary, "friction.md"):
+        return None
+    return foreign_write(target, primary, writer)
 
 
 def main() -> int:
@@ -350,13 +387,13 @@ def run() -> int:
             print(json.dumps(deny(f"[memory-write] blocked: auto-memory is not allowed ({target}).", event)))
             return 0
     if tool in EDIT_TOOLS and coordinator_primary is not None:
-        reason = classify_edit(tool_input, cwd, coordinator_primary)
+        reason = classify_edit(tool_input, cwd, coordinator_primary, coordinator_writer)
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
         reason = classify(command, cwd, coordinator_primary, coordinator_writer)
     elif tool == "apply_patch" and coordinator_primary is not None:
-        reason = classify_patch(command, cwd, coordinator_primary)
+        reason = classify_patch(command, cwd, coordinator_primary, coordinator_writer)
     else:
         return 0
     if reason:

@@ -37,11 +37,6 @@ the private writer and supplies the pinned development tools:
 scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>
 ```
 
-A raw repository `codex` launch also creates a unique generation-owned linked writer automatically
-at the recorded canonical-main commit and starts the Coordinator there. Keep all source mutations in
-that writer. Canonical `main` may advance independently; preserve the writer's exact candidate and
-recheck only a dependency or composition boundary affected by later main movement.
-
 For an ordinary Claude Code Coordinator, install the host shim once with
 `scripts/install-claude-shim`, as for `codex`; raw `claude` then delegates to
 `scripts/claude-dispatch` inside the canonical repository and runs plain Claude Code elsewhere. The Coordinator loads only

@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
 import sys
 import tempfile
 import tomllib
@@ -40,44 +39,21 @@ def _toml_value(value: Any) -> str:
     raise TypeError(f"unsupported preference type: {type(value).__name__}")
 
 
-def _linked_worktrees(primary: Path) -> list[Path]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if key not in {
-            "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
-            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-        }
-    }
-    root = subprocess.run(
-        ["git", "-C", str(primary), "rev-parse", "--show-toplevel"],
-        text=True, capture_output=True, check=False, env=environment,
-    )
-    if root.returncode or Path(root.stdout.strip()).resolve() != primary.resolve():
-        return []
-    result = subprocess.run(
-        ["git", "-C", str(primary), "worktree", "list", "--porcelain"],
-        text=True, capture_output=True, check=False, env=environment,
-    )
-    if result.returncode:
-        return []
-    return sorted(
-        Path(line.removeprefix("worktree ")).resolve()
-        for line in result.stdout.splitlines()
-        if line.startswith("worktree ")
-    )
-
-
 def render(
     config: dict[str, Any],
     primary: Path,
     writer: Path,
     start_record: Path,
     manifest_record: Path,
+    hook: Path,
     continuity_hook: Path,
     continuity_mode: str,
     lifetime: str,
     telemetry: Path,
 ) -> str:
+    guard_command = shlex.join((
+        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
+    ))
     continuity_command = shlex.join((
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
         "--telemetry", str(telemetry),
@@ -129,18 +105,12 @@ def render(
         "",
         "[permissions.switchstand-coordinator.filesystem]",
         '":root" = "read"',
-        f'{json.dumps(str(primary.parent))} = "write"',
+        f'{json.dumps(str(writer))} = "write"',
+        f'{json.dumps(str(start_record.parent))} = "write"',
+        f'{json.dumps(str(primary.parent / ".cache/switchstand"))} = "write"',
+        f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction.md"))} = "write"',
         '":tmpdir" = "write"',
         '":slash_tmp" = "write"',
-    ]
-    linked_worktrees = _linked_worktrees(primary)
-    for linked in linked_worktrees:
-        if linked != primary:
-            access = "write" if linked == writer else "read"
-            lines.append(f'{json.dumps(str(linked))} = {json.dumps(access)}')
-    if writer not in linked_worktrees:
-        lines.append(f'{json.dumps(str(writer))} = "write"')
-    lines += [
         "",
         f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
         '"." = "read"',
@@ -149,6 +119,13 @@ def render(
         "[permissions.switchstand-coordinator.network]",
         "enabled = true",
         "dangerously_allow_all_unix_sockets = true",
+        "",
+        "[[hooks.PreToolUse]]",
+        "",
+        "[[hooks.PreToolUse.hooks]]",
+        'type = "command"',
+        f"command = {json.dumps(guard_command)}",
+        "timeout = 10",
     ]
     if continuity_mode == "PILOT":
         for event in ("UserPromptSubmit", "Stop"):
@@ -174,30 +151,14 @@ def render(
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def render_hooks(hook: Path, primary: Path, writer: Path) -> str:
-    command = shlex.join((
-        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
-    ))
-    hooks = {
-        "description": "Switchstand Coordinator shared-primary guard.",
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "^(Bash|apply_patch)$",
-                "hooks": [{"type": "command", "command": command, "timeout": 10}],
-            }],
-        },
-    }
-    return json.dumps(hooks, indent=2) + "\n"
-
-
-def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
+def _write(path: Path, output: str, *, exclusive: bool = False, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as handle:
         temporary = Path(handle.name)
         handle.write(output)
-    os.chmod(temporary, 0o600)
+    os.chmod(temporary, mode)
     try:
         if exclusive:
             os.link(temporary, path)
@@ -207,16 +168,23 @@ def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def render_hooks(hook: Path, primary: Path) -> str:
+    command = shlex.join((str(hook), "--coordinator-primary", str(primary)))
+    return json.dumps({"description": "Switchstand Coordinator shared-primary guard.",
+        "hooks": {"PreToolUse": [{"matcher": "^(Bash|apply_patch)$", "hooks": [
+            {"type": "command", "command": command, "timeout": 10}]}]}}, indent=2) + "\n"
+
+
 def main() -> None:
     if len(sys.argv) != 14:
         raise SystemExit(
             "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY WRITER HOOKS HOOK "
             "CONTINUITY_HOOK CONTINUITY_MODE LIFETIME TELEMETRY START_RECORD MANIFEST_RECORD"
         )
-    (source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook,
+    (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook,
      continuity_mode, lifetime, telemetry, start_record, manifest_record) = sys.argv[1:]
-    source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook = map(
-        Path, (source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook)
+    source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook = map(
+        Path, (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook)
     )
     telemetry, start_record, manifest_record = map(Path, (telemetry, start_record, manifest_record))
     if continuity_mode not in {"OFF", "PILOT"}:
@@ -232,15 +200,12 @@ def main() -> None:
     with source.open("rb") as handle:
         output = render(
             tomllib.load(handle), primary.resolve(strict=True), writer.resolve(strict=True),
-            start_record, manifest_record,
-            resolved_continuity_hook, continuity_mode, lifetime, telemetry,
+            start_record, manifest_record, resolved_hook, resolved_continuity_hook,
+            continuity_mode, lifetime, telemetry,
         )
-    _write(snapshot, output, exclusive=True)
+    _write(snapshot, output, exclusive=True, mode=0o400)
     _write(runtime_profile, output, exclusive=True)
-    _write(
-        hooks_destination,
-        render_hooks(resolved_hook, primary.resolve(strict=True), writer.resolve(strict=True)),
-    )
+    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":

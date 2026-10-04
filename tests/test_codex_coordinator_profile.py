@@ -23,10 +23,11 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     writer = primary.parent / "writer"
     writer.mkdir(exist_ok=True)
+    state = primary.parent / "coordinator"
     subprocess.run(
         [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, hook, continuity_hook,
-         "OFF", "ASSIGNMENT", primary / "telemetry.jsonl", primary / "start-commit",
-         primary / "launch-manifest.json"],
+         "OFF", "ASSIGNMENT", state / "telemetry.jsonl", state / "start-commit",
+         state / "launch-manifest.json"],
         check=True,
     )
     return runtime_profile
@@ -74,8 +75,7 @@ trusted_hash = "must-not-copy"
     assert profile["approval_policy"] == "never"
     assert profile["default_permissions"] == "switchstand-coordinator"
     instructions = profile["developer_instructions"]
-    assert f"Coordinator start commit is recorded at {primary / 'start-commit'}." in instructions
-    assert str(primary / "launch-manifest.json") in instructions
+    assert str(tmp_path / "coordinator/start-commit") in instructions
     assert "--trigger post-compaction" in instructions
     assert f"owned linked writer is {primary.parent / 'writer'}" in instructions
     assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
@@ -92,10 +92,12 @@ trusted_hash = "must-not-copy"
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
         ":root": "read",
-        str(primary.parent): "write",
+        str(tmp_path / "writer"): "write",
+        str(tmp_path / "coordinator"): "write",
+        str(tmp_path / ".cache/switchstand"): "write",
+        str(tmp_path / ".local/state/switchstand/friction.md"): "write",
         ":tmpdir": "write",
         ":slash_tmp": "write",
-        str(primary.parent / "writer"): "write",
         str(primary): {".": "read", ".git": "write"},
     }
     assert profile["permissions"]["switchstand-coordinator"]["network"] == {
@@ -108,23 +110,21 @@ trusted_hash = "must-not-copy"
     assert profile["notice"] == {"hide_rate_limit_model_nudge": True}
     assert set(profile) == {
         "approval_policy", "default_permissions", "developer_instructions", "features", "permissions",
-        "mcp_servers",
+        "mcp_servers", "hooks",
         "model_auto_compact_token_limit", "model_auto_compact_token_limit_scope",
         "tui", "notice",
     }
-    hook_config = json.loads(hooks.read_text())
-    assert hook_config["description"] == "Switchstand Coordinator shared-primary guard."
-    group = hook_config["hooks"]["PreToolUse"][0]
-    assert group["matcher"] == "^(Bash|apply_patch)$"
+    group = profile["hooks"]["PreToolUse"][0]
     assert group["hooks"][0]["command"] == (
         f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary} "
         f"--coordinator-writer {primary.parent / 'writer'}"
     )
-    assert set(hook_config["hooks"]) == {"PreToolUse"}
-    assert destination.stat().st_mode & 0o777 == 0o600
-    assert hooks.stat().st_mode & 0o777 == 0o600
+    assert set(profile["hooks"]) == {"PreToolUse"}
+    assert destination.stat().st_mode & 0o777 == 0o400
     assert runtime_profile.read_bytes() == destination.read_bytes()
     assert runtime_profile.stat().st_mode & 0o777 == 0o600
+    shared = json.loads(hooks.read_text())
+    assert "--coordinator-writer" not in shared["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
 
 def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> None:
@@ -138,6 +138,7 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
     primary.mkdir()
     writer = tmp_path / "writer"
     writer.mkdir()
+    state = tmp_path / "coordinator"
     source.write_text("")
     for script in (guard, continuity):
         script.parent.mkdir(parents=True, exist_ok=True)
@@ -145,23 +146,22 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
 
     subprocess.run(
-        [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, guard, continuity,
-         "PILOT", "STANDING", primary / "telemetry.jsonl", primary / "start-commit",
-         primary / "launch-manifest.json"],
+        [SCRIPT, source, destination, runtime_profile, primary, writer, hooks,
+         guard, continuity,
+         "PILOT", "STANDING", state / "telemetry.jsonl", state / "start-commit",
+         state / "launch-manifest.json"],
         check=True,
     )
 
     rendered = tomllib.loads(destination.read_text())
     assert "mode=PILOT; lifetime=STANDING" in rendered["developer_instructions"]
-    assert set(rendered["hooks"]) == {"UserPromptSubmit", "Stop"}
+    assert set(rendered["hooks"]) == {"PreToolUse", "UserPromptSubmit", "Stop"}
     assert "SubagentStop" not in rendered["hooks"]
     for event in ("UserPromptSubmit", "Stop"):
         command = rendered["hooks"][event][0]["hooks"][0]["command"]
         assert str(continuity) in command
         assert "--mode PILOT --lifetime STANDING" in command
-        assert f"--telemetry {primary / 'telemetry.jsonl'}" in command
-    shared = json.loads(hooks.read_text())
-    assert set(shared["hooks"]) == {"PreToolUse"}
+        assert f"--telemetry {state / 'telemetry.jsonl'}" in command
 
 
 def test_new_profile_omits_removed_preferences_without_replacing_prior_profile(
