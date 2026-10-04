@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -16,10 +17,12 @@ from switchstand.canonical_work import (
     canonical_revision,
     canonical_work,
 )
+from switchstand.run import RunReceipt
 from switchstand.state import PostgresState
 from switchstand.task_runs import (
     AgentTaskRequest,
     TaskRunState,
+    task_run_executions,
     task_run_requests,
 )
 
@@ -33,7 +36,8 @@ async def subject(database_prerequisite):
     sync = create_engine(url)
     with sync.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, task_run_requests, failure_resolutions, "
+            "DROP TABLE IF EXISTS alembic_version, task_run_results, task_run_executions, "
+            "task_run_requests, failure_resolutions, "
             "failure_records, work_migration_receipts, "
             "outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, "
             "work_event_handles, lifecycle_obligations, message_projection, message_deliveries, "
@@ -70,6 +74,18 @@ def request(execution, **changes):
         "result_contract": {"required": ["evidence", "conclusion"]},
     }
     return AgentTaskRequest(**(values | changes))
+
+
+def receipt(execution, run_id=None):
+    return RunReceipt(
+        run_id=run_id or uuid4(),
+        active_work_id=execution,
+        worktree="/tmp/task-run-test",
+        branch="test",
+        pid=1,
+        start_token=1,
+        started_at=datetime.now(UTC),
+    )
 
 
 @pytest.mark.parametrize("change", [
@@ -150,3 +166,37 @@ async def test_concurrent_exact_replay_creates_one_request(subject):
     assert len({result.request.request_id for result in results if result.request}) == 1
     async with engine.connect() as connection:
         assert await connection.scalar(select(func.count()).select_from(task_run_requests)) == 1
+
+
+async def test_start_bind_is_trusted_exact_and_one_to_one(subject):
+    state, engine, requester, execution = subject
+    first = await state.request(requester, uuid4(), request(execution))
+    second = await state.request(requester, uuid4(), request(execution))
+    assert first.request is not None and second.request is not None
+
+    missing = await state.bind_start(uuid4(), receipt(execution))
+    assert (missing.status, missing.reason) == ("denied", "request_not_found")
+    wrong_work = receipt(uuid4())
+    denied = await state.bind_start(first.request.request_id, wrong_work)
+    assert (denied.status, denied.reason) == ("denied", "execution_work_mismatch")
+
+    run = receipt(execution)
+    bound = await state.bind_start(first.request.request_id, run)
+    assert bound.status == "ok" and bound.execution is not None
+    assert bound.execution.run_id == run.run_id
+    assert await state.bind_start(first.request.request_id, run) == bound
+
+    replacement = await state.bind_start(first.request.request_id, receipt(execution))
+    assert (replacement.status, replacement.reason) == (
+        "denied", "execution_already_bound"
+    )
+    reused = await state.bind_start(second.request.request_id, run)
+    assert (reused.status, reused.reason) == ("conflict", "run_already_bound")
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_executions)
+        ) == 1
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
+    with pytest.raises(RuntimeError, match="preserve durable task-run execution evidence"):
+        command.downgrade(config, "0014_task_runs")

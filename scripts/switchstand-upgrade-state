@@ -5,7 +5,7 @@ set -eu
     || { echo "usage: scripts/switchstand-upgrade-state --target production" >&2; exit 2; }
 umask 077
 
-EXPECTED_NEW=0014_task_runs
+EXPECTED_NEW=0015_task_run_executions
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data
@@ -105,8 +105,11 @@ case "$revision" in
     0013_failure_journal)
         counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)||'|'||(SELECT count(*) FROM work_migration_receipts)||'|'||(SELECT count(*) FROM failure_records)||'|'||(SELECT count(*) FROM failure_resolutions)"
         ;;
+    0014_task_runs)
+        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)||'|'||(SELECT count(*) FROM work_migration_receipts)||'|'||(SELECT count(*) FROM failure_records)||'|'||(SELECT count(*) FROM failure_resolutions)||'|'||(SELECT count(*) FROM task_run_requests)"
+        ;;
     *)
-        echo "unsupported shared schema: expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, or $EXPECTED_NEW; actual ${revision:-<none>}" >&2
+        echo "unsupported shared schema: expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, 0014, or $EXPECTED_NEW; actual ${revision:-<none>}" >&2
         exit 1
         ;;
 esac
