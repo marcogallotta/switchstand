@@ -350,11 +350,17 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
-`codex-dispatch` creates an immutable per-launch named profile and records that exact generated
-policy, executable, repository controls and
+`codex-dispatch` creates a byte-identical pair for each launch: an immutable policy snapshot used
+as frozen-control evidence and a uniquely named runtime profile that Codex may persist normal
+session preferences into. The manifest records the snapshot digest and the runtime profile's
+launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
+copy. This receipt is launch-manifest schema v2; the checker still accepts valid legacy v1
+manifests so known frozen-control mismatches become permanent `CONTROL_STALE` during upgrade,
+while missing or corrupt v2 proof fails closed as `CURRENTNESS_UNKNOWN`. It also records the
+executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's profile evidence. Its
+session storage and byte-stable hooks without replacing another generation's evidence. Its
 comparison keeps proven mismatches monotonically
 `CONTROL_STALE`; each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
 identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.

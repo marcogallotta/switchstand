@@ -29,9 +29,9 @@ def setup(tmp_path: Path, *, successor_eligible: bool = False) -> tuple[Path, Pa
     start = home / ".local/state/switchstand/codex/coordinator/start-commit.test"
     start.parent.mkdir(parents=True)
     start.write_text(git(repo, "rev-parse", "HEAD") + "\n")
-    for name in ("profile", "hooks", "executable", "shim"):
+    for name in ("profile", "runtime-profile", "hooks", "executable", "shim"):
         path = tmp_path / name
-        path.write_text(name + "\n")
+        path.write_text(("profile" if name == "runtime-profile" else name) + "\n")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
     command = [
             SCRIPT,
@@ -44,6 +44,8 @@ def setup(tmp_path: Path, *, successor_eligible: bool = False) -> tuple[Path, Pa
             start,
             "--profile",
             tmp_path / "profile",
+            "--runtime-profile",
+            tmp_path / "runtime-profile",
             "--hooks",
             tmp_path / "hooks",
             "--executable",
@@ -113,7 +115,7 @@ def test_frozen_mismatch_is_monotonic_for_generation(tmp_path: Path) -> None:
         next(
             item["path"]
             for item in manifest["frozen_controls"]
-            if item["id"] == "generated:profile"
+            if item["id"] == "generated:profile-snapshot"
         )
     )
     original = profile.read_text()
@@ -122,11 +124,27 @@ def test_frozen_mismatch_is_monotonic_for_generation(tmp_path: Path) -> None:
     result, status = check(manifest_path, "post-sync")
     assert result.returncode == 3
     assert status["state"] == "CONTROL_STALE"
-    assert status["frozen_mismatches"] == ["generated:profile"]
+    assert status["frozen_mismatches"] == ["generated:profile-snapshot"]
 
     profile.write_text(original)
     _result, repeated = check(manifest_path, "post-sync")
     assert repeated == status
+
+
+def test_runtime_model_persistence_does_not_stale_launch_identity(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    runtime_profile = Path(manifest["runtime_mutable_controls"][0]["path"])
+    runtime_profile.write_text(
+        runtime_profile.read_text()
+        + 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n'
+    )
+
+    result, status = check(manifest_path, "post-sync")
+
+    assert result.returncode == 0
+    assert status["state"] == "CURRENT"
+    assert "frozen_mismatches" not in status
 
 
 def test_post_sync_reports_only_changed_rereadable_dependencies(tmp_path: Path) -> None:
@@ -147,7 +165,7 @@ def test_missing_frozen_component_is_unknown_not_stale(tmp_path: Path) -> None:
         next(
             item["path"]
             for item in manifest["frozen_controls"]
-            if item["id"] == "generated:profile"
+            if item["id"] == "generated:profile-snapshot"
         )
     )
     profile.unlink()
@@ -156,7 +174,44 @@ def test_missing_frozen_component_is_unknown_not_stale(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert status["state"] == "CURRENTNESS_UNKNOWN"
-    assert status["unknown_components"] == ["generated:profile"]
+    assert status["unknown_components"] == ["generated:profile-snapshot"]
+
+
+def test_corrupt_launch_profile_receipt_is_currentness_unknown(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runtime_mutable_controls"][0]["launch_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+
+    result, status = check(manifest_path, "post-sync")
+
+    assert result.returncode == 2
+    assert status["state"] == "CURRENTNESS_UNKNOWN"
+    assert "manifest identity is invalid" in status["reason"]
+
+
+def test_legacy_v1_known_frozen_mismatch_wins_during_upgrade(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = 1
+    manifest.pop("runtime_mutable_controls")
+    control = next(
+        item
+        for item in manifest["frozen_controls"]
+        if item["id"] == "repository:scripts/coordinator-control"
+    )
+    control["sha256"] = "0" * 64
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_digest"}
+    manifest["manifest_digest"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    result, status = check(manifest_path, "post-sync")
+
+    assert result.returncode == 3
+    assert status["state"] == "CONTROL_STALE"
+    assert status["frozen_mismatches"] == ["repository:scripts/coordinator-control"]
 
 
 def test_unresolved_document_dependencies_are_explicit_component_unknowns(
@@ -198,6 +253,7 @@ def test_actual_successor_launch_is_bound_and_must_acknowledge(tmp_path: Path) -
     profile = tmp_path / "profile"
     command = [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
                "--start-record", start, "--profile", profile,
+               "--runtime-profile", tmp_path / "runtime-profile",
                "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
                "--shim", tmp_path / "shim", "--invocation-digest", "b" * 64, "--successor-eligible"]
     result = subprocess.run(command, text=True, capture_output=True, check=True)
@@ -230,6 +286,7 @@ def test_ineligible_launch_does_not_consume_pending_handoff(tmp_path: Path) -> N
     result = subprocess.run(
         [SCRIPT, "create", "--repo", repo, "--control-root", ROOT,
          "--start-record", start, "--profile", tmp_path / "profile",
+         "--runtime-profile", tmp_path / "runtime-profile",
          "--hooks", tmp_path / "hooks", "--executable", tmp_path / "executable",
          "--shim", tmp_path / "shim", "--invocation-digest", "c" * 64],
         text=True, capture_output=True, check=True,

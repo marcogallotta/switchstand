@@ -141,12 +141,12 @@ def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         raise SystemExit(
-            "usage: codex-coordinator-profile SOURCE PROFILE PRIMARY HOOKS HOOK "
+            "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY HOOKS HOOK "
             "START_RECORD MANIFEST_RECORD"
         )
-    source, destination, primary, hooks_destination, hook, start_record, manifest_record = map(
+    source, snapshot, runtime_profile, primary, hooks_destination, hook, start_record, manifest_record = map(
         Path, sys.argv[1:]
     )
     with source.open("rb") as handle:
@@ -156,7 +156,8 @@ def main() -> None:
     resolved_hook = hook.resolve(strict=True)
     if not resolved_hook.is_file() or not os.access(resolved_hook, os.X_OK):
         raise SystemExit("Coordinator hook is unavailable")
-    _write(destination, output, exclusive=True)
+    _write(snapshot, output, exclusive=True)
+    _write(runtime_profile, output, exclusive=True)
     _write(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 

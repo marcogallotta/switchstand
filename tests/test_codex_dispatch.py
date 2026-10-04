@@ -96,6 +96,10 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text())
     assert manifest["session"]["start_commit"] == records[0].read_text().strip()
+    runtime_receipt = manifest["runtime_mutable_controls"][0]
+    snapshot = Path(runtime_receipt["snapshot"])
+    assert snapshot.read_bytes() == profile_path.read_bytes()
+    assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == runtime_receipt["launch_sha256"]
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
     assert not (coordinator_home / "AGENTS.md").exists()
@@ -148,11 +152,13 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
             item for item in manifest["frozen_controls"]
-            if item["id"] == "generated:profile"
+            if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])
-        assert generated in profiles
         assert hashlib.sha256(generated.read_bytes()).hexdigest() == recorded["sha256"]
+        receipt = manifest["runtime_mutable_controls"][0]
+        assert Path(receipt["path"]) in profiles
+        assert receipt["snapshot"] == str(generated)
 
 
 def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(
@@ -235,7 +241,9 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
             item for item in manifest["frozen_controls"]
-            if item["id"] == "generated:profile"
+            if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])
         assert hashlib.sha256(generated.read_bytes()).hexdigest() == recorded["sha256"]
+        runtime = Path(manifest["runtime_mutable_controls"][0]["path"])
+        assert generated.read_bytes() == runtime.read_bytes()

@@ -39,6 +39,7 @@ chmod 600 "$start_record"
 manifest_record="$start_record.manifest.json"
 coordinator_profile="switchstand-coordinator-${start_record##*.}"
 coordinator_profile_path="$coordinator_home/$coordinator_profile.config.toml"
+coordinator_profile_snapshot="$coordinator_home/$coordinator_profile.launch.toml"
 invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
@@ -79,14 +80,14 @@ else
 fi
 
 "$script_dir/codex-coordinator-profile" \
-    "$HOME/.codex/config.toml" "$coordinator_profile_path" \
+    "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
     "$canonical_repo" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
     "$start_record" "$manifest_record"
 
 "$script_dir/coordinator-control" create \
     --repo "$canonical_repo" --control-root "$script_dir/.." \
     --start-record "$start_record" \
-    --profile "$coordinator_profile_path" \
+    --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
     --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
     --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
 

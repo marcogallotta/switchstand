@@ -12,16 +12,18 @@ ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "codex-coordinator-profile"
 
 
-def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> None:
+def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path:
     hook = primary / "scripts/codex-hook"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\nexit 0\n")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     subprocess.run(
-        [SCRIPT, source, destination, primary, hooks, hook, primary / "start-commit",
+        [SCRIPT, source, destination, runtime_profile, primary, hooks, hook, primary / "start-commit",
          primary / "launch-manifest.json"],
         check=True,
     )
+    return runtime_profile
 
 
 def test_profile_copies_only_benign_user_preferences(tmp_path: Path) -> None:
@@ -60,7 +62,7 @@ trusted_hash = "must-not-copy"
 """.lstrip()
     )
 
-    prepare(source, destination, primary, hooks)
+    runtime_profile = prepare(source, destination, primary, hooks)
 
     profile = tomllib.loads(destination.read_text())
     assert profile["approval_policy"] == "never"
@@ -110,6 +112,8 @@ trusted_hash = "must-not-copy"
     assert set(hook_config["hooks"]) == {"PreToolUse"}
     assert destination.stat().st_mode & 0o777 == 0o600
     assert hooks.stat().st_mode & 0o777 == 0o600
+    assert runtime_profile.read_bytes() == destination.read_bytes()
+    assert runtime_profile.stat().st_mode & 0o777 == 0o600
 
 
 def test_new_profile_omits_removed_preferences_without_replacing_prior_profile(
