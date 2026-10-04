@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Record and compare the controls loaded by one Coordinator generation."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import tempfile
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+LINK = re.compile(r"\[[^]]*\]\(([^)#]+)(?:#[^)]*)?\)")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+FROZEN_REPOSITORY_FILES = (
+    ".codex/config.toml",
+    "scripts/codex-dispatch",
+    "scripts/codex-coordinator-profile",
+    "scripts/codex-hook",
+    "scripts/coordinator-control",
+    "scripts/coordinator-handoff",
+)
+
+
+def digest_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_digest(payload: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in payload.items() if key != "manifest_digest"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def argv_digest(values: list[str]) -> str:
+    digest = hashlib.sha256()
+    for value in values:
+        encoded = value.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def atomic_json(path: Path, payload: dict[str, Any], *, exclusive: bool = False) -> None:
+    output = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if exclusive:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(output)
+        return
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(output)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def repository_head(repo: Path) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=5
+    ).strip()
+
+
+def markdown_dependencies(repo: Path) -> dict[str, str]:
+    pending = [Path("AGENTS.md")]
+    found: dict[str, str] = {}
+    root = repo.resolve()
+    while pending:
+        relative = pending.pop()
+        if relative.as_posix() in found:
+            continue
+        candidate = (root / relative).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            continue
+        found[relative.as_posix()] = digest_file(candidate)
+        for raw in LINK.findall(candidate.read_text(errors="replace")):
+            target = raw.split("?", 1)[0]
+            if not target.lower().endswith(".md"):
+                continue
+            resolved = (candidate.parent / target).resolve()
+            if resolved.is_relative_to(root):
+                pending.append(resolved.relative_to(root))
+    return dict(sorted(found.items()))
+
+
+def component(identifier: str, path: Path) -> dict[str, str]:
+    return {"id": identifier, "path": str(path), "sha256": digest_file(path)}
+
+
+def create(arguments: argparse.Namespace) -> int:
+    repo = arguments.repo.resolve(strict=True)
+    control_root = arguments.control_root.resolve(strict=True)
+    start_record = arguments.start_record.resolve(strict=True)
+    start_commit = start_record.read_text().strip()
+    if start_commit != repository_head(repo):
+        raise SystemExit("start record and repository HEAD differ")
+    if not SHA256.fullmatch(arguments.invocation_digest):
+        raise SystemExit("invocation digest must be one SHA-256 identity")
+    frozen = [
+        component(f"repository:{relative}", control_root / relative)
+        for relative in FROZEN_REPOSITORY_FILES
+    ]
+    frozen += [
+        component("host:codex-shim", arguments.shim.resolve(strict=True)),
+        component("host:codex-executable", arguments.executable.resolve(strict=True)),
+        component("generated:profile", arguments.profile.resolve(strict=True)),
+        component("generated:hooks", arguments.hooks.resolve(strict=True)),
+    ]
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "session": {
+            "generation": str(uuid.uuid4()),
+            "started_at": datetime.now(UTC).isoformat(),
+            "start_commit": start_commit,
+            "start_record": str(start_record),
+            "repository": str(repo),
+            "invocation_digest": arguments.invocation_digest,
+        },
+        "frozen_controls": frozen,
+        "rereadable_controls": markdown_dependencies(repo),
+        "unproved_frozen_controls": [
+            {
+                "id": "runtime:effective-client-tool-surface",
+                "reason": "negotiated after launcher execution",
+            }
+        ],
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest)
+    proof: Path | None = None
+    if arguments.proof_path:
+        home = Path.home().resolve()
+        root = home / ".local/state/switchstand/codex/handoffs"
+        proof = arguments.proof_path.resolve(strict=False)
+        try:
+            parent = proof.parent.resolve(strict=True)
+            resolved_root = root.resolve(strict=True)
+        except OSError as error:
+            raise SystemExit(f"handoff proof directory is unavailable: {error}") from error
+        if (
+            proof.name != "launch-manifest.json"
+            or parent.parent != resolved_root
+            or not parent.name.startswith("handoff-")
+            or arguments.proof_path.parent.is_symlink()
+        ):
+            raise SystemExit("handoff proof path is outside the exact private artifact")
+    destination = Path(f"{start_record}.manifest.json")
+    atomic_json(destination, manifest, exclusive=True)
+    if proof is not None:
+        atomic_json(proof, manifest, exclusive=True)
+    print(destination)
+    return 0
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
+    if payload.get("schema_version") != 1 or payload.get("manifest_digest") != canonical_digest(
+        payload
+    ):
+        raise ValueError("launch manifest identity is invalid")
+    if (
+        not isinstance(payload.get("session"), dict)
+        or not isinstance(payload.get("frozen_controls"), list)
+        or not isinstance(payload.get("rereadable_controls"), dict)
+        or not isinstance(payload.get("unproved_frozen_controls"), list)
+    ):
+        raise TypeError("launch manifest structure is invalid")
+    return payload
+
+
+def check(arguments: argparse.Namespace) -> int:
+    try:
+        manifest_path = arguments.manifest.resolve(strict=True)
+        manifest = load_manifest(manifest_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        print(json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}, sort_keys=True))
+        return 2
+    state_path = Path(f"{manifest_path}.state.json")
+    if state_path.exists():
+        try:
+            prior = json.loads(state_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            print(
+                json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}, sort_keys=True)
+            )
+            return 2
+        if prior.get("state") == "CONTROL_STALE":
+            print(json.dumps(prior, sort_keys=True))
+            return 3
+    mismatches: list[str] = []
+    unknown: list[str] = []
+    for item in manifest["frozen_controls"]:
+        path = Path(item["path"])
+        try:
+            current = digest_file(path)
+        except OSError:
+            unknown.append(item["id"])
+        else:
+            if current != item["sha256"]:
+                mismatches.append(item["id"])
+    repo = Path(manifest["session"]["repository"])
+    try:
+        rereadable = markdown_dependencies(repo)
+        current_head = repository_head(repo)
+    except (OSError, subprocess.SubprocessError) as error:
+        output = {"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}
+        print(json.dumps(output, sort_keys=True))
+        return 2
+    original = manifest["rereadable_controls"]
+    changed = sorted(
+        path
+        for path in set(original) | set(rereadable)
+        if original.get(path) != rereadable.get(path)
+    )
+    if mismatches:
+        output = {
+            "state": "CONTROL_STALE",
+            "session_generation": manifest["session"]["generation"],
+            "frozen_mismatches": sorted(mismatches),
+            "current_commit": current_head,
+            "allowed_next": "reconcile_started_effects_preserve_obligations_and_handoff",
+        }
+        atomic_json(state_path, output)
+        print(json.dumps(output, sort_keys=True))
+        return 3
+    required = sorted(rereadable) if arguments.trigger == "post-compaction" else changed
+    output = {
+        "state": "CURRENTNESS_UNKNOWN" if unknown else "CURRENT",
+        "session_generation": manifest["session"]["generation"],
+        "current_commit": current_head,
+        "unknown_components": sorted(unknown),
+        "reread_required": required,
+        "required_live_reads": ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"],
+        "unproved_frozen_controls": manifest["unproved_frozen_controls"],
+        "component_currentness": {
+            item["id"]: "CURRENTNESS_UNKNOWN" for item in manifest["unproved_frozen_controls"]
+        },
+    }
+    print(json.dumps(output, sort_keys=True))
+    return 2 if unknown else 0
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser()
+    commands = result.add_subparsers(dest="command", required=True)
+    launch = commands.add_parser("create")
+    launch.add_argument("--repo", type=Path, required=True)
+    launch.add_argument("--control-root", type=Path, required=True)
+    launch.add_argument("--start-record", type=Path, required=True)
+    launch.add_argument("--profile", type=Path, required=True)
+    launch.add_argument("--hooks", type=Path, required=True)
+    launch.add_argument("--executable", type=Path, required=True)
+    launch.add_argument("--shim", type=Path, required=True)
+    launch.add_argument("--proof-path", type=Path)
+    launch.add_argument("--invocation-digest", required=True)
+    launch.set_defaults(function=create)
+    current = commands.add_parser("check")
+    current.add_argument("manifest", type=Path)
+    current.add_argument("--trigger", choices=("post-compaction", "post-sync"), required=True)
+    current.set_defaults(function=check)
+    invocation = commands.add_parser("digest-argv")
+    invocation.add_argument("values", nargs=argparse.REMAINDER)
+    invocation.set_defaults(function=lambda arguments: print(argv_digest(arguments.values)) or 0)
+    return result
+
+
+if __name__ == "__main__":
+    parsed = parser().parse_args()
+    raise SystemExit(parsed.function(parsed))
