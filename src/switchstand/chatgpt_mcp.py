@@ -181,6 +181,7 @@ def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
     agent_identity: Callable[[], str] | None = None,
+    correlate_work: Callable[[UUID | None], None] | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
@@ -193,6 +194,10 @@ def build_ordinary_tools(
     def audited(tool: str, target: str | None, status: str) -> None:
         if audit is not None:
             audit(tool, target, status)
+
+    def correlate(work_id: UUID | None) -> None:
+        if correlate_work is not None:
+            correlate_work(work_id)
 
     async def current_grant_version() -> tuple[int | None, str]:
         result = await service.admission_get()
@@ -274,6 +279,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
         """Read canonical current state, including current notes, routing, and placement context."""
+        correlate(work_id)
         result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
@@ -351,6 +357,7 @@ def build_ordinary_tools(
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> WorkHistoryResult:
         """Exceptional investigation/recovery/legacy history; never normal grounding or polling."""
+        correlate(work_id)
         result = await service.history(
             WorkHistoryRequest(api_version=api_version, work_id=work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
@@ -362,6 +369,7 @@ def build_ordinary_tools(
         work_id: UUID, purpose: HistoryPurpose,
     ) -> WorkEventResult:
         """Exceptional investigation/recovery/legacy event read; never normal grounding or polling."""
+        correlate(work_id)
         result = await service.event(
             WorkEventRequest(api_version=api_version, work_id=work_id,
                              event_id=event_id, observed_revision=observed_revision))
@@ -373,6 +381,7 @@ def build_ordinary_tools(
         observed_revision: str, text: str, purpose: AppendPurpose,
     ) -> GuardOutcome:
         """Append exceptional provenance/history only; never current state, results, or messaging."""
+        correlate(work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_append", work_id, operation_id)
@@ -397,6 +406,7 @@ def build_ordinary_tools(
         next_action_ref: str = "UNKNOWN",
     ) -> GuardOutcome:
         """Create work under one admitted provider-neutral parent or project."""
+        correlate(parent_work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
@@ -419,6 +429,7 @@ def build_ordinary_tools(
         observed_revision: str, patch: ScalarPatch,
     ) -> GuardOutcome:
         """Write canonical current state; use notes for intent, progress, findings, verdicts, and results."""
+        correlate(work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_update", work_id, operation_id)
@@ -456,6 +467,7 @@ def build_ordinary_tools(
         ], items: tuple[OutcomeItem, ...],
     ) -> OutcomeStateUpdateResult:
         """Record AGENT outcome state for one explicit admitted owner at its exact revision."""
+        correlate(owner_work_id)
         del api_version
         result = await service.outcome_state_update(
             operation_id=operation_id, owner_work_id=owner_work_id,
@@ -470,6 +482,7 @@ def build_ordinary_tools(
         observed_revision: str, patch: OrdinaryRelationPatch,
     ) -> GuardOutcome:
         """Apply one bounded relation mutation through current authenticated admission."""
+        correlate(work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("work_relate", work_id, operation_id)
@@ -488,6 +501,7 @@ def build_ordinary_tools(
         observed_revision: str, text: Annotated[str, Field(min_length=1, max_length=8000)],
     ) -> GuardOutcome:
         """Promote one required result into canonical current notes with authoritative readback."""
+        correlate(work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
             return admission_unknown("required_result_save", work_id)

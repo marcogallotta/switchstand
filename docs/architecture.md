@@ -52,6 +52,8 @@ MCP session ID used for message-currentness fencing. Repository MCP configuratio
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
 standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
+`observability.py` owns request-local, redacted terminal timing records and active-request SQL
+interval aggregation; it neither persists records nor establishes journal durability or reliance.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
