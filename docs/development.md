@@ -1,5 +1,32 @@
 # Development
 
+The Wakeful inbound pilot is an explicit host-only composition, not a launcher or edge task.
+After separately authorized host/source qualification, a dedicated supervised Python process
+can reuse `chatgpt_edge.resource_service()` in its existing authorized deployment context:
+
+```python
+async with resource_service() as (service, _):
+    assert service.messages is not None
+    await run_inbound(service.messages, AgentMailboxState(service.messages.engine),
+                      configured_mailbox, configured_binding, coordinator_home,
+                      selected_codex, stop_event, opt_in=True)
+```
+
+Imports are from `switchstand.chatgpt_edge`, `switchstand.agent_mailboxes`, and
+`switchstand.codex_wakeful`. Supply the explicitly frozen `AgentMailbox` and `CodexBinding`
+records from the exact target qualification; intake never registers or takes over a mailbox.
+This reuses the existing source owner and host configuration without exporting credentials
+or creating an MCP impersonation session. Do not run it as a task in the live edge process:
+admission performs synchronous host RPC. Each page reads at most 50 metadata references,
+then the next page follows on the next two-second cycle; a completed scan restarts from the
+beginning so newly committed UUIDs behind a cursor are not lost. Each individual admission
+holds source read locks while binding/readback RPCs execute; the 10-second RPC timeout is
+per call, not a bound on a complete page or binding scan. Host latency/capacity remains a
+live qualification obligation. Output contains wake IDs and outcomes, never source payloads.
+`opt_in=False` is inert. Stop/cancel the dedicated process to suspend this pilot; restart with
+the same configuration to reconcile pending admissions. This is not full product suspend,
+replay, escalation, retirement, or service activation; those remain owned follow-up work.
+
 Governed implementation tasks carry the inline package projection and review handoff
 defined in [Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
 Keep its package base fixed across delivery branches and use its solution disposition

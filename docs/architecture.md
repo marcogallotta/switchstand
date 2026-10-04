@@ -481,3 +481,14 @@ binding, delivery/child source references, client-ID admission and private `code
 projection. Its explicit probe excludes simultaneous probes with a nonblocking generation-token
 lock and connects only by WebSocket to an existing Codex-owned shared endpoint. `wakeful.py` remains the
 neutral SQLite/outbox owner; ordinary launcher behavior does not invoke the precursor.
+The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
+`AgentMailboxState` objects in a dedicated supervised host process. It reads only committed
+delivery references for one explicitly configured mailbox endpoint/generation/session matched
+to the exact Codex root/start record. Each source reread holds shared mailbox/delivery locks
+through its individual admission; the runtime idle check is preflight, not an atomic fence
+against a concurrently starting host turn. Busy targets remain pending; unsupported history
+and ambiguous attempts remain UNKNOWN without resend. A home-wide private lock excludes all
+precursor writers, and the source is never received or dispositioned by intake. Stopping the
+process preserves source records and the private admission projection; restarting the same
+target scans the pending source again. This pilot does not supply the neutral product bridge,
+operator lifecycle, retry/escalation, other sources/clients, or unattended service operation.

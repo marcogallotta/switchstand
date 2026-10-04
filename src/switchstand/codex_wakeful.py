@@ -2,21 +2,32 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import ClientConnection, unix_connect
 
-from switchstand.messages import PendingMessage
-from switchstand.secure_file import atomic_replace_bytes, read_private_bytes
+from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
+from switchstand.messages import MessageState, PendingMessage
+from switchstand.secure_file import (
+    atomic_replace_bytes,
+    create_new_private_bytes,
+    read_private_bytes,
+)
 
 
 @dataclass(frozen=True)
@@ -219,7 +230,7 @@ class Projection:
             return "UNKNOWN"
         return "PROVEN_ABSENT"
 
-    def admit(self, client: SharedClient, source: WakeSourceRef) -> str:
+    def admit(self, client: SharedClient, source: WakeSourceRef, *, idle_only: bool = False) -> str:
         identity = wake_id(self.binding, source)
         record = self.records.get(identity)
         if record is None:
@@ -249,6 +260,8 @@ class Projection:
                 return "PENDING"
             if state not in {"IDLE", "ACTIVE_STEERABLE"}:
                 return state
+            if idle_only and state != "IDLE":
+                return "PENDING"
             record.update(attempted=True, timestamp=time.time())
             self.save()
             client.call("turn/start", {"threadId": self.binding.thread_id,
@@ -262,6 +275,92 @@ class Projection:
             return "UNKNOWN"
 
 
+@contextmanager
+def projection_lock(home: Path) -> Generator[None]:
+    """All precursor writers share one lock, including different root generations."""
+    path = home / "codex-wakeful.lock"
+    try:
+        create_new_private_bytes(path, b"")
+    except FileExistsError:
+        pass
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
+            raise ValueError("not an exact mode-0600 regular lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+async def inbound_cycle(
+    messages: MessageState, mailboxes: AgentMailboxState, mailbox: AgentMailbox,
+    projection: Projection, client: SharedClient, cursor: UUID | None = None,
+    stop: asyncio.Event | None = None,
+) -> tuple[UUID | None, dict[str, str]]:
+    """One metadata-only page; source locks fence each individual idle admission."""
+    binding = projection.binding
+    current = await mailboxes.by_endpoint_id(mailbox.endpoint_id)
+    if current.status == "recovery_required":
+        return None, {"source": "UNKNOWN"}
+    if (current.mailbox != mailbox
+            or mailbox.session_key != chat_session_key(f"codex:{binding.thread_id}")):
+        return None, {"source": "STALE"}
+    delivery_ids = await messages.pending_delivery_ids(mailbox, cursor)
+    if delivery_ids is None:
+        return None, {"source": "STALE"}
+    results: dict[str, str] = {}
+    for delivery_id in delivery_ids:
+        await asyncio.sleep(0)
+        if stop is not None and stop.is_set():
+            break
+        source = WakeSourceRef("switchstand_inbound", str(delivery_id))
+        identity = wake_id(binding, source)
+        async with messages.pending_delivery(mailbox, delivery_id) as pending:
+            if not pending:
+                results[identity] = "STALE"
+                continue
+            results[identity] = projection.admit(client, source, idle_only=True)
+    return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
+
+
+async def run_inbound(
+    messages: MessageState, mailboxes: AgentMailboxState, mailbox: AgentMailbox,
+    binding: CodexBinding, home: Path, codex: Path, stop: asyncio.Event,
+    *, opt_in: bool = False,
+) -> None:
+    """Dedicated supervised host process, never a task on the live edge's event loop."""
+    if not opt_in:
+        return
+    with projection_lock(home):
+        projection = Projection(home, binding)
+        cursor = None
+        while not stop.is_set():
+            client = None
+            try:
+                client = SharedClient(codex, home)
+                rebound = bind(client, home, Path(binding.start_record))
+                if rebound != binding:
+                    print("inbound", "STALE" if isinstance(rebound, CodexBinding)
+                          else rebound, flush=True)
+                else:
+                    cursor, results = await inbound_cycle(
+                        messages, mailboxes, mailbox, projection, client, cursor, stop,
+                    )
+                    for identity, result in results.items():
+                        print(identity, result, flush=True)
+            except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
+                print("inbound UNKNOWN", flush=True)
+            finally:
+                if client is not None:
+                    client.close()
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=2)
+            except TimeoutError:
+                pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--opt-in", action="store_true", required=True)
@@ -272,7 +371,7 @@ def main() -> None:
     parser.add_argument("--recover-child", action="store_true")
     args = parser.parse_args()
     # An exclusive nonblocking lock on the exact existing generation token rejects a second probe.
-    with args.start_record.open("rb") as token:
+    with args.start_record.open("rb") as token, projection_lock(args.home):
         try:
             fcntl.flock(token, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

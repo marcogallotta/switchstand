@@ -2,7 +2,8 @@
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
@@ -353,6 +354,37 @@ def runtime_admission(runtime: RuntimeCurrentness) -> RuntimeAdmissionFailure | 
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
+
+    async def pending_delivery_ids(
+        self, binding: AgentMailbox, cursor: UUID | None = None,
+    ) -> tuple[UUID, ...] | None:
+        """Read bounded committed references, never payloads, for an exact actor binding."""
+        async with self.engine.begin() as connection:
+            if not await self._current_agent_binding(connection, binding):
+                return None
+            query = select(message_deliveries.c.delivery_id).where(
+                message_deliveries.c.recipient_work_id == binding.endpoint_id,
+                message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            )
+            if cursor is not None:
+                query = query.where(message_deliveries.c.delivery_id > cursor)
+            return tuple((await connection.execute(query.order_by(
+                message_deliveries.c.delivery_id
+            ).limit(50))).scalars())
+
+    @asynccontextmanager
+    async def pending_delivery(
+        self, binding: AgentMailbox, delivery_id: UUID,
+    ) -> AsyncGenerator[bool]:
+        """Fence takeover/disposition during one bounded runtime admission, without receiving."""
+        async with self.engine.begin() as connection:
+            current = await self._current_agent_binding(connection, binding)
+            row = (await connection.execute(select(message_deliveries.c.delivery_id).where(
+                message_deliveries.c.delivery_id == delivery_id,
+                message_deliveries.c.recipient_work_id == binding.endpoint_id,
+                message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            ).with_for_update(read=True))).scalar_one_or_none() if current else None
+            yield row is not None
 
     async def reply_context(self, delivery_id: UUID) -> MessageReplyContext | None:
         async with self.engine.connect() as connection:
