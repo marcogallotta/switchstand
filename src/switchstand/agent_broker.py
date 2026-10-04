@@ -17,7 +17,7 @@ from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
@@ -346,6 +346,17 @@ class Broker:
         with self._locked():
             self._atomic_json(self.execution_dir(lease_id) / "status.json", receipt)
 
+    def execution_receipt(self, lease_id: str) -> dict[str, Any]:
+        """Read the durable receipt for an active lease from its private broker store."""
+        if not ID.fullmatch(lease_id):
+            raise ValueError("invalid identifier")
+        with self._locked():
+            self._active_lease(self._read_state(), lease_id)
+            value: object = json.loads(self._read_execution_receipt(lease_id))
+        if not isinstance(value, dict):
+            raise TypeError("invalid execution receipt")
+        return cast(dict[str, Any], value)
+
     def record_canary(self, run_id: str, receipt: Mapping[str, Any]) -> Path:
         if not ID.fullmatch(run_id):
             raise ValueError("invalid identifier")
@@ -600,6 +611,33 @@ class Broker:
             if info.st_mode & 0o022 or info.st_size > 16_384:
                 raise PermissionError("unsafe request permissions or size")
             return os.read(descriptor, 16_385)
+
+    def _read_execution_receipt(self, lease_id: str) -> bytes:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        with ExitStack() as opened:
+            directory: int | None = None
+            for component in (self.root, Path("executions"), Path(lease_id)):
+                directory = os.open(component, directory_flags, dir_fd=directory)
+                opened.callback(os.close, directory)
+                info = os.fstat(directory)
+                if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                    raise PermissionError("unsafe execution directory")
+            descriptor = os.open(
+                "status.json",
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            opened.callback(os.close, descriptor)
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 65_536
+            ):
+                raise PermissionError("unsafe execution receipt")
+            return os.read(descriptor, 65_537)
 
     @contextmanager
     def _locked(self) -> Generator[None]:

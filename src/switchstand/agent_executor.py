@@ -284,6 +284,44 @@ class ManagedExecutor:
             receipt["failure_registration"] = registration.value
         return receipt
 
+    def recover_not_started(
+        self, manifest_path: Path, *, observed_monotonic: float | None = None
+    ) -> dict[str, str]:
+        """Release one lost executor claim from its exact durable not-started proof."""
+        manifest = self.manifests.load(manifest_path)
+        try:
+            receipt = self.broker.execution_receipt(manifest.lease_id)
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return {"state": "unknown", "reason": "receipt_unavailable"}
+        expected: dict[str, object] = {
+            "launch_id": manifest.launch_id,
+            "lease_id": manifest.lease_id,
+            "reservation_id": manifest.reservation_id,
+            "attempt_id": manifest.attempt_id,
+            "unit": manifest.unit,
+            "work_id": str(manifest.work_id),
+            "grant_id": str(manifest.grant_id),
+            "grant_version": manifest.grant_version,
+        }
+        if any(receipt.get(key) != value for key, value in expected.items()):
+            return {"state": "unknown", "reason": "receipt_identity"}
+        if receipt.get("state") != "not_started":
+            return {"state": "unknown", "reason": "receipt_not_started"}
+        try:
+            return self.broker.reconcile_execution(
+                manifest.lease_id,
+                reservation_id=manifest.reservation_id,
+                attempt_id=manifest.attempt_id,
+                unit=manifest.unit,
+                observed_boot_id=self.broker.boot_id,
+                execution_started=False,
+                unit_terminal=None,
+                cgroup_empty=None,
+                observed_monotonic=observed_monotonic,
+            )
+        except ValueError:
+            return {"state": "unknown", "reason": "execution_identity"}
+
     def _finish_and_reconcile(
         self, manifest: PreparedLaunch, receipt: dict[str, Any], returncode: int
     ) -> dict[str, Any]:
@@ -478,5 +516,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--timeout", type=int, default=RUN_TIMEOUT_SECONDS)
+    parser.add_argument("--recover-not-started", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(ManagedExecutor().run(args.manifest, args.timeout)))
+    executor = ManagedExecutor()
+    if args.recover_not_started:
+        result = executor.recover_not_started(args.manifest)
+    else:
+        result = executor.run(args.manifest, args.timeout)
+    print(json.dumps(result))
