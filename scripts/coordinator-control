@@ -203,6 +203,11 @@ def create(arguments: argparse.Namespace) -> int:
         raise SystemExit("start record and repository HEAD differ")
     if not SHA256.fullmatch(arguments.invocation_digest):
         raise SystemExit("invocation digest must be one SHA-256 identity")
+    profile_snapshot = arguments.profile.resolve(strict=True)
+    runtime_profile = arguments.runtime_profile.resolve(strict=True)
+    profile_digest = digest_file(profile_snapshot)
+    if profile_digest != digest_file(runtime_profile):
+        raise SystemExit("launch profile snapshot and runtime profile differ")
     frozen = [
         component(f"repository:{relative}", control_root / relative)
         for relative in FROZEN_REPOSITORY_FILES
@@ -210,7 +215,7 @@ def create(arguments: argparse.Namespace) -> int:
     frozen += [
         component("host:codex-shim", arguments.shim.resolve(strict=True)),
         component("host:codex-executable", arguments.executable.resolve(strict=True)),
-        component("generated:profile", arguments.profile.resolve(strict=True)),
+        component("generated:profile-snapshot", profile_snapshot),
         component("generated:hooks", arguments.hooks.resolve(strict=True)),
     ]
     rereadable, unresolved = markdown_dependencies(repo)
@@ -225,6 +230,14 @@ def create(arguments: argparse.Namespace) -> int:
             "invocation_digest": arguments.invocation_digest,
         },
         "frozen_controls": frozen,
+        "runtime_mutable_controls": [
+            {
+                "id": "generated:runtime-profile",
+                "path": str(runtime_profile),
+                "launch_sha256": profile_digest,
+                "snapshot": str(profile_snapshot),
+            }
+        ],
         "rereadable_controls": rereadable,
         "unresolved_rereadable_controls": unresolved,
         "unproved_frozen_controls": [
@@ -288,6 +301,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if (
         not isinstance(payload.get("session"), dict)
         or not isinstance(payload.get("frozen_controls"), list)
+        or not isinstance(payload.get("runtime_mutable_controls"), list)
         or not isinstance(payload.get("rereadable_controls"), dict)
         or not isinstance(payload.get("unresolved_rereadable_controls"), list)
         or not isinstance(payload.get("unproved_frozen_controls"), list)
@@ -381,6 +395,7 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--control-root", type=Path, required=True)
     launch.add_argument("--start-record", type=Path, required=True)
     launch.add_argument("--profile", type=Path, required=True)
+    launch.add_argument("--runtime-profile", type=Path, required=True)
     launch.add_argument("--hooks", type=Path, required=True)
     launch.add_argument("--executable", type=Path, required=True)
     launch.add_argument("--shim", type=Path, required=True)
