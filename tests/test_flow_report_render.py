@@ -30,7 +30,14 @@ REPORT = {
         "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
         "future_source": {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B1"},
     },
-    "elapsed": "NOT_COMPUTED_B1",
+    "elapsed": {
+        "clock_basis": "RECORDED_WALL_TIME",
+        "wall_status": "UNKNOWN", "wall_reason": "NOT_CAPTURED",
+        "wall_start": None, "wall_end": "2026-01-02T03:04:05+00:00", "wall_ms": None,
+        "projection_status": "UNKNOWN", "projection_reason": "NOT_CAPTURED",
+        "observed_interval_union_ms": None, "unobserved_wall_ms": None,
+        "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
+    },
 }
 
 
@@ -48,7 +55,7 @@ coverage canonical_work=INCLUDED:CURRENT_ONLY
 coverage future_source=EXCLUDED:NOT_INCLUDED_B1
 coverage messages=EXCLUDED:AMBIGUOUS_ENDPOINT_NAMESPACE
 coverage timing_journal=EXCLUDED:RETENTION_NOT_PROVED
-elapsed=NOT_COMPUTED_B1
+elapsed wall_status=UNKNOWN wall_reason=NOT_CAPTURED wall_ms=None projection_status=UNKNOWN projection_reason=NOT_CAPTURED observed_interval_union_ms=None unobserved_wall_ms=None interpretation=NOT_IDLE_OR_CRITICAL_PATH
 """
 
 
@@ -56,7 +63,8 @@ def test_json_remains_the_default_shape_without_renderer_inference() -> None:
     output = render(REPORT, "json")
 
     assert json.loads(output) == REPORT
-    assert "unobserved" not in output and "critical_path" not in output
+    assert "NOT_IDLE_OR_CRITICAL_PATH" in output
+    assert '"critical_path"' not in output
 
 
 def test_concise_render_keeps_github_subjects_separate() -> None:

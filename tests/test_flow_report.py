@@ -1,7 +1,7 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -13,6 +13,7 @@ from switchstand import flow_report
 from switchstand.canonical_relations import work_dependencies, work_parents
 from switchstand.canonical_work import canonical_metadata, canonical_work, normalize_title
 from switchstand.flow_report import report
+from switchstand.human_reviews import human_review_consequences
 from switchstand.work_events import work_events
 
 
@@ -87,7 +88,8 @@ async def test_root_modes_are_explicit_and_report_stays_partial(
     assert result["coverage"]["messages"] == {
         "status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE",
     }
-    assert result["elapsed"] == "NOT_COMPUTED_B1"
+    assert result["elapsed"]["wall_status"] == "UNKNOWN"
+    assert result["elapsed"]["wall_reason"] == "NOT_CAPTURED"
 
 
 async def test_current_relations_and_target_events_are_exact_but_observed_only(
@@ -190,3 +192,77 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
 async def test_unknown_work_fails_without_fabricating_a_report(engine: AsyncEngine) -> None:
     with pytest.raises(LookupError, match="does not exist"):
         await report(engine, uuid4())
+
+
+async def test_review_waits_are_target_only_clipped_unioned_and_observational(
+    engine: AsyncEngine,
+) -> None:
+    target, unrelated = uuid4(), uuid4()
+    admitted = datetime.now(UTC) - timedelta(seconds=30)
+    await add_work(engine, target, admitted_at=admitted)
+    await add_work(engine, unrelated, admitted_at=admitted)
+
+    def review(
+        work_id: UUID, created_at: datetime, decided_at: datetime | None,
+    ) -> dict[str, object]:
+        decision = "APPROVED" if decided_at else None
+        return {
+            "consequence_id": uuid4(), "package_work_id": work_id,
+            "package_revision": "revision", "consequence_digest": "a" * 64,
+            "consequence": {}, "decision": decision,
+            "state": "READY_FOR_IMPLEMENTATION" if decision else "PENDING",
+            "created_at": created_at, "decided_at": decided_at,
+        }
+
+    async with engine.begin() as connection:
+        await connection.execute(insert(human_review_consequences), [
+            review(target, admitted - timedelta(seconds=10),
+                   admitted + timedelta(seconds=10)),
+            review(target, admitted + timedelta(seconds=5),
+                   admitted + timedelta(seconds=15)),
+            review(target, admitted + timedelta(seconds=20), None),
+            review(unrelated, admitted, admitted + timedelta(seconds=25)),
+        ])
+        await connection.execute(insert(work_events).values(
+            id=uuid4(), work_id=target, sequence=1, result_version=1,
+            subtype="point", created_at=admitted + timedelta(seconds=2),
+        ))
+
+    result = await report(engine, target)
+
+    reviews = result["human_review"]
+    assert reviews["coverage"] == "DIRECT_PACKAGE_WORK_ID"
+    assert len(reviews["items"]) == 3
+    assert [item["wait"]["status"] for item in reviews["items"]] == [
+        "CLOSED", "CLOSED", "OPEN",
+    ]
+    assert all(item["wait"]["kind"] == "REVIEW" for item in reviews["items"])
+    assert all(item["wait"]["clock_basis"] == "RECORDED_WALL_TIME"
+               for item in reviews["items"])
+    evidence = result["ordered_evidence"]
+    assert evidence["meaning"] == "OBSERVATIONAL_NOT_CAUSAL"
+    assert len(evidence["items"]) == 6
+    assert all(item["duration_ms"] == 0 for item in evidence["items"])
+    elapsed = result["elapsed"]
+    assert elapsed["wall_status"] == "KNOWN"
+    assert elapsed["wall_start"] == admitted.isoformat()
+    assert elapsed["wall_end"] == result["captured_at"]
+    assert elapsed["projection_status"] == "KNOWN"
+    assert elapsed["observed_interval_union_ms"] == elapsed["wall_ms"] - 5_000
+    assert elapsed["unobserved_wall_ms"] == 5_000
+    assert elapsed["unobserved_interpretation"] == "NOT_IDLE_OR_CRITICAL_PATH"
+    assert result["coverage"]["failures"] == {
+        "status": "EXCLUDED", "reason": "NOT_INCLUDED_B4",
+    }
+
+
+async def test_future_admission_fails_wall_accounting_closed(engine: AsyncEngine) -> None:
+    target = uuid4()
+    await add_work(engine, target, admitted_at=datetime.now(UTC) + timedelta(days=1))
+
+    result = await report(engine, target)
+
+    assert result["elapsed"]["wall_status"] == "UNKNOWN"
+    assert result["elapsed"]["wall_reason"] == "CLOCK_SKEW_OR_FUTURE_START"
+    assert result["elapsed"]["observed_interval_union_ms"] is None
+    assert result["elapsed"]["unobserved_wall_ms"] is None
