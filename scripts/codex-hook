@@ -114,7 +114,7 @@ def _exact_task_writer(root: str, git_dir: str, common: str) -> bool:
         return False
 
 
-def primary_checkout(prefix: list[str], cwd: str) -> str | None:
+def checkout_identity(prefix: list[str], cwd: str) -> tuple[str, str, str] | None:
     try:
         result = subprocess.run(
             ["git", *prefix, "rev-parse", "--path-format=absolute", "--show-toplevel",
@@ -128,7 +128,17 @@ def primary_checkout(prefix: list[str], cwd: str) -> str | None:
         return None
     if _exact_task_writer(lines[0], lines[1], lines[2]):
         return None
-    return lines[0] if os.path.realpath(lines[1]) == os.path.realpath(lines[2]) else None
+    return (
+        os.path.realpath(lines[0]), os.path.realpath(lines[1]), os.path.realpath(lines[2])
+    )
+
+
+def primary_checkout(prefix: list[str], cwd: str) -> str | None:
+    identity = checkout_identity(prefix, cwd)
+    if identity is None:
+        return None
+    root, git_dir, common = identity
+    return root if git_dir == common else None
 
 
 def severe(tokens: list[str], cwd: str) -> str | None:
@@ -167,19 +177,26 @@ def severe(tokens: list[str], cwd: str) -> str | None:
     return None
 
 
-def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> str | None:
+def classify(
+    command: str,
+    cwd: str,
+    coordinator_primary: str | None = None,
+    coordinator_writer: str | None = None,
+) -> str | None:
     current = cwd
     for tokens in segments(command):
         if tokens and Path(tokens[0]).name in SHELLS:
             positions = [pos for pos, token in enumerate(tokens[:-1])
                          if token == "-c" or token.startswith("-") and token.endswith("c")]
             if positions:
-                nested = classify(tokens[positions[0] + 1], current, coordinator_primary)
+                nested = classify(
+                    tokens[positions[0] + 1], current, coordinator_primary, coordinator_writer
+                )
                 if nested:
                     return nested
         alias = inline_alias(tokens)
         if alias:
-            nested = classify(alias, current, coordinator_primary)
+            nested = classify(alias, current, coordinator_primary, coordinator_writer)
             if nested:
                 return nested
         if coordinator_primary is None:
@@ -187,9 +204,12 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
             if danger:
                 return f"[destructive-command] {danger} is forbidden."
         if tokens and Path(tokens[0]).name == "git-commit":
-            root = primary_checkout([], current)
-            if root and (coordinator_primary is None
-                    or os.path.realpath(root) == coordinator_primary):
+            identity = checkout_identity([], current)
+            root = identity[0] if identity else None
+            if root and coordinator_writer is not None and root != coordinator_writer:
+                return (f"[foreign-worktree] git git-commit is denied in {root}; "
+                        f"use the generation-owned writer {coordinator_writer}.")
+            if root and (coordinator_primary is None or root == coordinator_primary):
                 return (f"[primary-checkout] git git-commit is denied in {root}; "
                         "use a linked writer worktree.")
         git = git_parts(tokens, current)
@@ -207,7 +227,9 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
             )
             branch_write = (subcommand == "branch" and bool(args)
                             and (branch_has_unknown_option or not branch_has_read))
-            worktree_write = subcommand == "worktree" and bool(args) and args[0] not in {"add", "list"}
+            worktree_write = subcommand == "worktree" and bool(args) and (
+                args[0] != "list" and (args[0] != "add" or coordinator_writer is not None)
+            )
             tag_read = subcommand == "tag" and (not args or args[0].startswith(("--list", "--contains", "--points-at", "-l", "-n")))
             stash_read = subcommand == "stash" and args[:1] in (["list"], ["show"])
             config_actions = [arg for arg in args if not arg.startswith("-")]
@@ -235,6 +257,11 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
             if ((subcommand in MUTATIONS and not tag_read and not stash_read)
                     or branch_write or worktree_write or config_write or remote_write
                     or notes_write or reflog_write):
+                identity = checkout_identity(prefix, command_cwd)
+                root = identity[0] if identity else None
+                if root and coordinator_writer is not None and root != coordinator_writer:
+                    return (f"[foreign-worktree] git {subcommand} is denied in {root}; "
+                            f"use the generation-owned writer {coordinator_writer}.")
                 root = primary_checkout(prefix, command_cwd)
                 if root and (coordinator_primary is None
                         or os.path.realpath(root) == coordinator_primary):
@@ -286,7 +313,7 @@ def main() -> int:
     try:
         return run()
     except Exception as error:
-        if len(sys.argv) == 3 and sys.argv[1] == "--coordinator-primary":
+        if len(sys.argv) in {3, 5} and sys.argv[1] == "--coordinator-primary":
             print(json.dumps(deny(f"[primary-checkout] guard failed closed: {error}",
                                   "PreToolUse")))
             return 0
@@ -295,10 +322,17 @@ def main() -> int:
 
 def run() -> int:
     coordinator_primary = None
-    if len(sys.argv) == 3 and sys.argv[1] == "--coordinator-primary":
+    coordinator_writer = None
+    if len(sys.argv) == 5 and sys.argv[1] == "--coordinator-primary" \
+            and sys.argv[3] == "--coordinator-writer":
+        coordinator_primary = os.path.realpath(sys.argv[2])
+        coordinator_writer = os.path.realpath(sys.argv[4])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--coordinator-primary":
         coordinator_primary = os.path.realpath(sys.argv[2])
     elif len(sys.argv) != 1:
-        raise SystemExit("usage: codex-hook [--coordinator-primary PATH]")
+        raise SystemExit(
+            "usage: codex-hook [--coordinator-primary PATH [--coordinator-writer PATH]]"
+        )
     payload = json.load(sys.stdin)
     event = str(payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse")
     tool = payload.get("tool_name")
@@ -320,7 +354,7 @@ def run() -> int:
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
-        reason = classify(command, cwd, coordinator_primary)
+        reason = classify(command, cwd, coordinator_primary, coordinator_writer)
     elif tool == "apply_patch" and coordinator_primary is not None:
         reason = classify_patch(command, cwd, coordinator_primary)
     else:

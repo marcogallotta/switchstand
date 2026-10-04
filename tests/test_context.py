@@ -54,10 +54,13 @@ def git(repo: Path, *arguments: str) -> str:
 def hook(
     repo: Path, command: str, environment: dict[str, str],
     *, tool: str = "Bash", coordinator_primary: Path | None = None,
+    coordinator_writer: Path | None = None,
 ) -> dict:
     arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
     if coordinator_primary is not None:
         arguments += ["--coordinator-primary", str(coordinator_primary)]
+    if coordinator_writer is not None:
+        arguments += ["--coordinator-writer", str(coordinator_writer)]
     result = subprocess.run(
         arguments,
         input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
@@ -547,6 +550,38 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_coordinator_hook_allows_git_mutation_only_in_generation_owned_writer(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    (primary / "tracked.txt").write_text("base\n")
+    git(primary, "add", "tracked.txt")
+    git(primary, "commit", "-m", "base")
+    owned = tmp_path / "owned"
+    foreign = tmp_path / "foreign"
+    git(primary, "worktree", "add", "-b", "owned", str(owned))
+    git(primary, "worktree", "add", "-b", "foreign", str(foreign))
+    environment = dict(os.environ)
+
+    assert hook(
+        owned, "git add tracked.txt", environment,
+        coordinator_primary=primary, coordinator_writer=owned,
+    ) == {}
+    for repo, command in (
+        (primary, "git add tracked.txt"),
+        (foreign, "git commit -m foreign"),
+        (primary, f"git worktree add --detach {tmp_path / 'extra'}"),
+    ):
+        denied = hook(
+            repo, command, environment,
+            coordinator_primary=primary, coordinator_writer=owned,
+        )
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "foreign-worktree" in denied["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):

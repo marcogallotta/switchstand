@@ -21,8 +21,10 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     continuity_hook.write_text("#!/bin/sh\nexit 0\n")
     continuity_hook.chmod(continuity_hook.stat().st_mode | stat.S_IXUSR)
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
+    writer = primary.parent / "writer"
+    writer.mkdir(exist_ok=True)
     subprocess.run(
-        [SCRIPT, source, destination, runtime_profile, primary, hooks, hook, continuity_hook,
+        [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, hook, continuity_hook,
          "OFF", "ASSIGNMENT", primary / "telemetry.jsonl", primary / "start-commit",
          primary / "launch-manifest.json"],
         check=True,
@@ -75,7 +77,8 @@ trusted_hash = "must-not-copy"
     assert f"Coordinator start commit is recorded at {primary / 'start-commit'}." in instructions
     assert str(primary / "launch-manifest.json") in instructions
     assert "--trigger post-compaction" in instructions
-    assert "CONTROL_STALE is permanent" in instructions
+    assert f"owned linked writer is {primary.parent / 'writer'}" in instructions
+    assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert profile["features"] == {"hooks": True}
     assert profile["mcp_servers"] == {
@@ -92,6 +95,7 @@ trusted_hash = "must-not-copy"
         str(primary.parent): "write",
         ":tmpdir": "write",
         ":slash_tmp": "write",
+        str(primary.parent / "writer"): "write",
         str(primary): {".": "read", ".git": "write"},
     }
     assert profile["permissions"]["switchstand-coordinator"]["network"] == {
@@ -113,7 +117,8 @@ trusted_hash = "must-not-copy"
     group = hook_config["hooks"]["PreToolUse"][0]
     assert group["matcher"] == "^(Bash|apply_patch)$"
     assert group["hooks"][0]["command"] == (
-        f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary}"
+        f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary} "
+        f"--coordinator-writer {primary.parent / 'writer'}"
     )
     assert set(hook_config["hooks"]) == {"PreToolUse"}
     assert destination.stat().st_mode & 0o777 == 0o600
@@ -131,6 +136,8 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
     guard = primary / "scripts/codex-hook"
     continuity = primary / "scripts/codex-continuity-hook"
     primary.mkdir()
+    writer = tmp_path / "writer"
+    writer.mkdir()
     source.write_text("")
     for script in (guard, continuity):
         script.parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +145,7 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
 
     subprocess.run(
-        [SCRIPT, source, destination, runtime_profile, primary, hooks, guard, continuity,
+        [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, guard, continuity,
          "PILOT", "STANDING", primary / "telemetry.jsonl", primary / "start-commit",
          primary / "launch-manifest.json"],
         check=True,

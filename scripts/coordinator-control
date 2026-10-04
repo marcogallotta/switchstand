@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 LINK = re.compile(r"\[[^]]*\]\(([^)#]+)(?:#[^)]*)?\)")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-FROZEN_REPOSITORY_FILES = (
+LAUNCH_CONTROL_FILES = (
     ".codex/config.toml",
     "scripts/codex-dispatch",
     "scripts/codex-coordinator-profile",
@@ -27,6 +27,7 @@ FROZEN_REPOSITORY_FILES = (
     "scripts/codex-hook",
     "scripts/coordinator-control",
     "scripts/coordinator-handoff",
+    "scripts/switchstand-worktree",
 )
 
 
@@ -72,6 +73,30 @@ def repository_head(repo: Path) -> str:
     return subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=5
     ).strip()
+
+
+def verify_linked_writer(repo: Path, writer: Path, start_commit: str) -> None:
+    def git(path: Path, *arguments: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(path), *arguments], text=True, timeout=5
+        ).strip()
+
+    repo_common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    writer_common = Path(git(writer, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    writer_git = Path(git(writer, "rev-parse", "--absolute-git-dir"))
+    registered = {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in git(repo, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    }
+    if (
+        writer_common.resolve() != repo_common.resolve()
+        or writer_git.resolve() == writer_common.resolve()
+        or writer.resolve() not in registered
+        or repository_head(writer) != start_commit
+        or git(writer, "status", "--porcelain", "--untracked-files=all")
+    ):
+        raise SystemExit("writer must be a clean registered linked worktree at the start commit")
 
 
 def markdown_dependencies(
@@ -200,20 +225,20 @@ def create(arguments: argparse.Namespace) -> int:
     control_root = arguments.control_root.resolve(strict=True)
     start_record = arguments.start_record.resolve(strict=True)
     start_commit = start_record.read_text().strip()
-    if start_commit != repository_head(repo):
-        raise SystemExit("start record and repository HEAD differ")
     if not SHA256.fullmatch(arguments.invocation_digest):
         raise SystemExit("invocation digest must be one SHA-256 identity")
+    writer = arguments.writer.resolve(strict=True)
+    verify_linked_writer(repo, writer, start_commit)
     profile_snapshot = arguments.profile.resolve(strict=True)
     runtime_profile = arguments.runtime_profile.resolve(strict=True)
     profile_digest = digest_file(profile_snapshot)
     if profile_digest != digest_file(runtime_profile):
         raise SystemExit("launch profile snapshot and runtime profile differ")
-    frozen = [
+    launch_controls = [
         component(f"repository:{relative}", control_root / relative)
-        for relative in FROZEN_REPOSITORY_FILES
+        for relative in LAUNCH_CONTROL_FILES
     ]
-    frozen += [
+    launch_controls += [
         component("host:codex-shim", arguments.shim.resolve(strict=True)),
         component("host:codex-executable", arguments.executable.resolve(strict=True)),
         component("generated:profile-snapshot", profile_snapshot),
@@ -221,16 +246,17 @@ def create(arguments: argparse.Namespace) -> int:
     ]
     rereadable, unresolved = markdown_dependencies(repo)
     manifest: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "session": {
             "generation": str(uuid.uuid4()),
             "started_at": datetime.now(UTC).isoformat(),
             "start_commit": start_commit,
             "start_record": str(start_record),
             "repository": str(repo),
+            "writer": str(writer),
             "invocation_digest": arguments.invocation_digest,
         },
-        "frozen_controls": frozen,
+        "launch_controls": launch_controls,
         "runtime_mutable_controls": [
             {
                 "id": "generated:runtime-profile",
@@ -241,7 +267,7 @@ def create(arguments: argparse.Namespace) -> int:
         ],
         "rereadable_controls": rereadable,
         "unresolved_rereadable_controls": unresolved,
-        "unproved_frozen_controls": [
+        "unproved_launch_controls": [
             {
                 "id": "runtime:effective-client-tool-surface",
                 "reason": "negotiated after launcher execution",
@@ -296,16 +322,26 @@ def acknowledge(arguments: argparse.Namespace) -> int:
 def load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     schema_version = payload.get("schema_version")
-    if schema_version not in (1, 2) or payload.get("manifest_digest") != canonical_digest(payload):
+    if schema_version not in (1, 2, 3) or payload.get("manifest_digest") != canonical_digest(payload):
         raise ValueError("launch manifest identity is invalid")
     if (
         not isinstance(payload.get("session"), dict)
-        or not isinstance(payload.get("frozen_controls"), list)
+        or not isinstance(
+            payload.get("launch_controls")
+            if schema_version == 3
+            else payload.get("frozen_controls"),
+            list,
+        )
         or not isinstance(payload.get("rereadable_controls"), dict)
         or not isinstance(payload.get("unresolved_rereadable_controls"), list)
-        or not isinstance(payload.get("unproved_frozen_controls"), list)
+        or not isinstance(
+            payload.get("unproved_launch_controls")
+            if schema_version == 3
+            else payload.get("unproved_frozen_controls"),
+            list,
+        )
         or (
-            schema_version == 2
+            schema_version in (2, 3)
             and not isinstance(payload.get("runtime_mutable_controls"), list)
         )
     ):
@@ -320,21 +356,13 @@ def check(arguments: argparse.Namespace) -> int:
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         print(json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}, sort_keys=True))
         return 2
-    state_path = Path(f"{manifest_path}.state.json")
-    if state_path.exists():
-        try:
-            prior = json.loads(state_path.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            print(
-                json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}, sort_keys=True)
-            )
-            return 2
-        if prior.get("state") == "CONTROL_STALE":
-            print(json.dumps(prior, sort_keys=True))
-            return 3
+    launch_controls = manifest.get("launch_controls", manifest.get("frozen_controls", []))
+    unproved_launch_controls = manifest.get(
+        "unproved_launch_controls", manifest.get("unproved_frozen_controls", [])
+    )
     mismatches: list[str] = []
     unknown: list[str] = []
-    for item in manifest["frozen_controls"]:
+    for item in launch_controls:
         path = Path(item["path"])
         try:
             current = digest_file(path)
@@ -357,29 +385,21 @@ def check(arguments: argparse.Namespace) -> int:
         for path in set(original) | set(rereadable)
         if original.get(path) != rereadable.get(path)
     )
-    if mismatches:
-        output = {
-            "state": "CONTROL_STALE",
-            "session_generation": manifest["session"]["generation"],
-            "frozen_mismatches": sorted(mismatches),
-            "current_commit": current_head,
-            "allowed_next": "reconcile_started_effects_preserve_obligations_and_handoff",
-        }
-        atomic_json(state_path, output)
-        print(json.dumps(output, sort_keys=True))
-        return 3
     required = sorted(rereadable) if arguments.trigger == "post-compaction" else changed
     output = {
         "state": "CURRENTNESS_UNKNOWN" if unknown or unresolved else "CURRENT",
         "session_generation": manifest["session"]["generation"],
         "current_commit": current_head,
+        "changed_launch_controls": sorted(mismatches),
+        "recheck_required": sorted(mismatches),
         "unknown_components": sorted(unknown),
         "unresolved_rereadable_controls": unresolved,
         "reread_required": required,
         "required_live_reads": ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"],
-        "unproved_frozen_controls": manifest["unproved_frozen_controls"],
+        "unproved_launch_controls": unproved_launch_controls,
         "component_currentness": {
-            **{item["id"]: "CURRENTNESS_UNKNOWN" for item in manifest["unproved_frozen_controls"]},
+            **{item["id"]: "CURRENTNESS_UNKNOWN" for item in unproved_launch_controls},
+            **{item: "CHANGED_RECHECK_REQUIRED" for item in mismatches},
             **{
                 f"rereadable:{item['source']}->{item['target']}": "CURRENTNESS_UNKNOWN"
                 for item in unresolved
@@ -395,6 +415,7 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     launch = commands.add_parser("create")
     launch.add_argument("--repo", type=Path, required=True)
+    launch.add_argument("--writer", type=Path, required=True)
     launch.add_argument("--control-root", type=Path, required=True)
     launch.add_argument("--start-record", type=Path, required=True)
     launch.add_argument("--profile", type=Path, required=True)

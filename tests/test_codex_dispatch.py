@@ -43,6 +43,12 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
          "commit", "--allow-empty", "-m", "base"],
         check=True, capture_output=True,
     )
+    foreign = home / ".local/state/switchstand/worktrees/preexisting"
+    foreign.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", primary, "worktree", "add", "-b", "foreign", foreign, "HEAD"],
+        check=True, capture_output=True,
+    )
     codex_home = home / ".codex"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text("{}\n")
@@ -52,16 +58,20 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         'approval_policy = "on-request"\n'
     )
     result_file = tmp_path / "result"
+    pwd_file = tmp_path / "pwd"
     executable(
         codex_home / "packages/standalone/current/bin/codex",
         '#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" > "$RESULT"\n'
+        'pwd > "$PWD_RESULT"\n'
         'printf "%s\\n" "$@" >> "$RESULT"\n',
     )
     executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
 
     result = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
-        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+        },
         text=True, capture_output=True, check=False,
     )
 
@@ -78,11 +88,25 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert "--dangerously-bypass-hook-trust" in arguments
     assert 'default_permissions="switchstand-coordinator"' in arguments
     assert arguments[-2:] == ["resume", "test-session"]
+    writer = Path(pwd_file.read_text().strip())
+    assert writer.parent == home / ".local/state/switchstand/worktrees"
+    assert writer.name.startswith("switchstand-coordinator-")
+    assert subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        text=True,
+    ).strip() == str(primary / ".git")
+    assert subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "HEAD"], text=True
+    ).strip() == subprocess.check_output(
+        ["git", "-C", primary, "rev-parse", "HEAD"], text=True
+    ).strip()
 
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
+    assert filesystem[str(writer)] == "write"
+    assert filesystem[str(foreign)] == "read"
     assert profile["approval_policy"] == "never"
     records = [path for path in coordinator_home.glob("start-commit.*")
                if not path.name.endswith(".manifest.json")]
@@ -96,12 +120,20 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text())
     assert manifest["session"]["start_commit"] == records[0].read_text().strip()
+    assert manifest["session"]["writer"] == str(writer)
     runtime_receipt = manifest["runtime_mutable_controls"][0]
     snapshot = Path(runtime_receipt["snapshot"])
     assert snapshot.read_bytes() == profile_path.read_bytes()
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == runtime_receipt["launch_sha256"]
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
+    hook_command = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    hook_arguments = hook_command.split()
+    assert hook_arguments[0] == str(ROOT / "scripts/codex-hook")
+    assert hook_arguments[-2:] == ["--coordinator-writer", str(writer)]
+    assert profile["mcp_servers"]["switchstand_coordinator_control"]["command"] == str(
+        primary / "scripts/switchstand-coordinator-control-mcp"
+    )
     assert "mode=PILOT; lifetime=ASSIGNMENT" in profile["developer_instructions"]
     assert set(profile["hooks"]) == {"UserPromptSubmit", "Stop"}
     assert "SubagentStop" not in profile["hooks"]
@@ -127,7 +159,9 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     ))
     fresh = subprocess.run(
         [DISPATCH], cwd=primary,
-        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+        },
         text=True, capture_output=True, check=False,
     )
     assert fresh.returncode == 0, fresh.stderr
@@ -143,7 +177,9 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
 
     repeated = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
-        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+        },
         text=True, capture_output=True, check=False,
     )
     assert repeated.returncode == 0, repeated.stderr
@@ -154,7 +190,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
-            item for item in manifest["frozen_controls"]
+            item for item in manifest["launch_controls"]
             if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])
@@ -287,7 +323,7 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
     for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
         manifest = json.loads(manifest_path.read_text())
         recorded = next(
-            item for item in manifest["frozen_controls"]
+            item for item in manifest["launch_controls"]
             if item["id"] == "generated:profile-snapshot"
         )
         generated = Path(recorded["path"])

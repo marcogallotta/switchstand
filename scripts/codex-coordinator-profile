@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -39,9 +40,37 @@ def _toml_value(value: Any) -> str:
     raise TypeError(f"unsupported preference type: {type(value).__name__}")
 
 
+def _linked_worktrees(primary: Path) -> list[Path]:
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key not in {
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        }
+    }
+    root = subprocess.run(
+        ["git", "-C", str(primary), "rev-parse", "--show-toplevel"],
+        text=True, capture_output=True, check=False, env=environment,
+    )
+    if root.returncode or Path(root.stdout.strip()).resolve() != primary.resolve():
+        return []
+    result = subprocess.run(
+        ["git", "-C", str(primary), "worktree", "list", "--porcelain"],
+        text=True, capture_output=True, check=False, env=environment,
+    )
+    if result.returncode:
+        return []
+    return sorted(
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in result.stdout.splitlines()
+        if line.startswith("worktree ")
+    )
+
+
 def render(
     config: dict[str, Any],
     primary: Path,
+    writer: Path,
     start_record: Path,
     manifest_record: Path,
     continuity_hook: Path,
@@ -58,15 +87,18 @@ def render(
         'default_permissions = "switchstand-coordinator"',
         "developer_instructions = " + json.dumps(
             f"Coordinator start commit is recorded at {start_record}. "
-            f"Its launch-control manifest is {manifest_record}. After context compaction, run "
+            f"This generation's owned linked writer is {writer}; make repository mutations "
+            "only there. Canonical main may advance without changing this generation's exact "
+            "candidate. Its launch-control manifest is "
+            f"{manifest_record}. After context compaction, run "
             f"{primary / 'scripts/coordinator-control'} check {manifest_record} "
             "--trigger post-compaction; reread every returned dependency plus current work, "
-            "open obligations, and the start commit. CONTROL_STALE is permanent for this "
-            "generation: start no new consequential effect; only reconcile already-started "
-            "or ambiguous effects, preserve obligations, reach the smallest safe checkpoint, "
-            "and hand off. CURRENTNESS_UNKNOWN blocks only actions depending on its unknown "
-            "component. After an in-session canonical sync, run the same check with "
-            "--trigger post-sync and reread every returned changed dependency. If the manifest "
+            "open obligations, and the start commit. Changed launch controls require only the "
+            "reported affected-boundary recheck; they do not stale the generation. "
+            "CURRENTNESS_UNKNOWN blocks only actions depending on its unknown component. After "
+            "an in-session canonical sync, run the same check with --trigger post-sync and "
+            "reread every returned changed dependency, then recheck only each returned affected "
+            "boundary. If the manifest "
             "contains a handoff, read its exact obligations file, then run "
             f"{primary / 'scripts/coordinator-control'} acknowledge {manifest_record}. Only its "
             "ACKNOWLEDGED result transfers those obligations and permits the prior generation "
@@ -100,6 +132,15 @@ def render(
         f'{json.dumps(str(primary.parent))} = "write"',
         '":tmpdir" = "write"',
         '":slash_tmp" = "write"',
+    ]
+    linked_worktrees = _linked_worktrees(primary)
+    for linked in linked_worktrees:
+        if linked != primary:
+            access = "write" if linked == writer else "read"
+            lines.append(f'{json.dumps(str(linked))} = {json.dumps(access)}')
+    if writer not in linked_worktrees:
+        lines.append(f'{json.dumps(str(writer))} = "write"')
+    lines += [
         "",
         f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
         '"." = "read"',
@@ -133,8 +174,10 @@ def render(
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def render_hooks(hook: Path, primary: Path) -> str:
-    command = shlex.join((str(hook), "--coordinator-primary", str(primary)))
+def render_hooks(hook: Path, primary: Path, writer: Path) -> str:
+    command = shlex.join((
+        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
+    ))
     hooks = {
         "description": "Switchstand Coordinator shared-primary guard.",
         "hooks": {
@@ -165,15 +208,15 @@ def _write(path: Path, output: str, *, exclusive: bool = False) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 13:
+    if len(sys.argv) != 14:
         raise SystemExit(
-            "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY HOOKS HOOK "
+            "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY WRITER HOOKS HOOK "
             "CONTINUITY_HOOK CONTINUITY_MODE LIFETIME TELEMETRY START_RECORD MANIFEST_RECORD"
         )
-    (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook,
+    (source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook,
      continuity_mode, lifetime, telemetry, start_record, manifest_record) = sys.argv[1:]
-    source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook = map(
-        Path, (source, snapshot, runtime_profile, primary, hooks_destination, hook, continuity_hook)
+    source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook = map(
+        Path, (source, snapshot, runtime_profile, primary, writer, hooks_destination, hook, continuity_hook)
     )
     telemetry, start_record, manifest_record = map(Path, (telemetry, start_record, manifest_record))
     if continuity_mode not in {"OFF", "PILOT"}:
@@ -188,12 +231,16 @@ def main() -> None:
         raise SystemExit("Continuity hook is unavailable")
     with source.open("rb") as handle:
         output = render(
-            tomllib.load(handle), primary.resolve(strict=True), start_record, manifest_record,
+            tomllib.load(handle), primary.resolve(strict=True), writer.resolve(strict=True),
+            start_record, manifest_record,
             resolved_continuity_hook, continuity_mode, lifetime, telemetry,
         )
     _write(snapshot, output, exclusive=True)
     _write(runtime_profile, output, exclusive=True)
-    _write(hooks_destination, render_hooks(resolved_hook, primary.resolve(strict=True)))
+    _write(
+        hooks_destination,
+        render_hooks(resolved_hook, primary.resolve(strict=True), writer.resolve(strict=True)),
+    )
 
 
 if __name__ == "__main__":
