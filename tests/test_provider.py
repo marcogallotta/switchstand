@@ -880,29 +880,33 @@ async def test_import_snapshot_exposes_raw_empty_membership_despite_parent_canon
     assert parent_gid == "789" and placements == () and zero_memberships is True
 
 
-async def test_import_parent_proof_ignores_retired_routing_but_is_revision_stable():
+@pytest.mark.parametrize("completed", [True, False])
+async def test_import_parent_proof_ignores_routing_and_completion(completed: bool):
     retired = source_task_payload(canonical=False)
     retired["data"].update(
-        completed=True,
+        completed=completed,
         memberships=[],
         custom_fields=[field(FIELDS["priority"], enabled=False, option="P1", display="P1")],
     )
     subject, api = provider((200, retired), (200, retired))
 
-    assert await subject.retired_unbound_parent_for_import("123") is True
+    assert await subject.omittable_unbound_parent_for_import("123") is True
     assert len(api.requests) == 2
 
+
+async def test_import_parent_proof_is_revision_stable():
+    retired = source_task_payload(canonical=False)
+    retired["data"].update(completed=True, memberships=[])
     changed = source_task_payload(revision="r2", canonical=False)
     changed["data"].update(completed=True, memberships=[])
     subject, _ = provider((200, retired), (200, changed))
     with pytest.raises(ProviderError, match="changed"):
-        await subject.retired_unbound_parent_for_import("123")
+        await subject.omittable_unbound_parent_for_import("123")
 
 
 @pytest.mark.parametrize(("change", "responses"), [
     (lambda data: data.update(gid="different"), 2),
     (lambda data: data.update(modified_at=None), 2),
-    (lambda data: data.update(completed=False), 2),
     (lambda data: data.update(memberships=[
         {"project": {"gid": "outside", "name": "Outside"}, "section": None},
     ]), 2),
@@ -915,9 +919,9 @@ async def test_import_parent_proof_rejects_unproved_retirement(change, responses
 
     if payload["data"].get("gid") != "123" or payload["data"].get("modified_at") is None:
         with pytest.raises(ProviderError, match="provider response invalid"):
-            await subject.retired_unbound_parent_for_import("123")
+            await subject.omittable_unbound_parent_for_import("123")
     else:
-        assert await subject.retired_unbound_parent_for_import("123") is False
+        assert await subject.omittable_unbound_parent_for_import("123") is False
 
 
 async def test_import_parent_proof_rejects_inherited_canonical_parent():
@@ -926,7 +930,7 @@ async def test_import_parent_proof_rejects_inherited_canonical_parent():
     ancestor = source_task_payload(gid="789", canonical=True)
     subject, api = provider((200, child), (200, ancestor), (200, child))
 
-    assert await subject.retired_unbound_parent_for_import("123") is False
+    assert await subject.omittable_unbound_parent_for_import("123") is False
     assert len(api.requests) == 3
 
 
@@ -939,7 +943,7 @@ async def test_import_parent_proof_detects_change_during_canonical_read():
     subject, _ = provider((200, first), (200, ancestor), (200, second))
 
     with pytest.raises(ProviderError, match="changed"):
-        await subject.retired_unbound_parent_for_import("123")
+        await subject.omittable_unbound_parent_for_import("123")
 
 
 @pytest.mark.parametrize("canonical,revision", [(True, "r2"), (False, "r1")])

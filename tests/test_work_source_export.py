@@ -45,7 +45,7 @@ async def test_parent_only_omission_keeps_dependencies_fail_closed() -> None:
         def __init__(self, retired: bool) -> None:
             self.retired = retired
 
-        async def retired_unbound_parent_for_import(self, provider_work_id: str) -> bool:
+        async def omittable_unbound_parent_for_import(self, provider_work_id: str) -> bool:
             assert provider_work_id == "outside"
             return self.retired
 
@@ -140,7 +140,7 @@ class Source:
             False,
         )
 
-    async def retired_unbound_parent_for_import(self, provider_work_id: str) -> bool:
+    async def omittable_unbound_parent_for_import(self, provider_work_id: str) -> bool:
         snapshot = await self.snapshot_for_import(provider_work_id)
         if snapshot is None:
             return False
@@ -358,7 +358,7 @@ async def test_zero_membership_exports_only_identity_tombstone(
                 return snapshot[0], "1218550811313318", snapshot[2], snapshot[3]
             return snapshot
 
-        async def retired_unbound_parent_for_import(self, provider_work_id: str) -> bool:
+        async def omittable_unbound_parent_for_import(self, provider_work_id: str) -> bool:
             return provider_work_id == "1218550811313318"
 
         async def source_stories(self, provider_task_id: str, *args, **kwargs):
