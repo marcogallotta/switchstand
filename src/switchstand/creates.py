@@ -62,6 +62,7 @@ class CreateGateway:
         return (
             request.priority == "UNSET" and request.work_type == "UNKNOWN"
             and request.lifecycle_state == "UNKNOWN" and request.canonical_root is None
+            and request.project_id is None
             and request.owner_key == "UNKNOWN" and request.wait_kind == "UNKNOWN"
             and request.unblock_condition == "UNKNOWN" and request.next_due == "UNKNOWN"
             and request.next_action_class == "UNKNOWN" and request.next_action_ref == "UNKNOWN"

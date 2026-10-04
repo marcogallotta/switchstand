@@ -63,6 +63,24 @@ async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):
     update.assert_not_awaited()
     assert subject.providers["asana"].sends == 0
 
+
+async def test_work_create_routes_provider_neutral_project_target(monkeypatch):
+    subject = service()
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    operation_id, project_id = uuid4(), uuid4()
+
+    result = await dict(build_ordinary_tools(subject))["work_create"](
+        api_version="1", operation_id=operation_id, title="Independent",
+        project_id=project_id, canonical_root=str(ACTIVE),
+    )
+
+    assert result.reason == "probe"
+    request = create.await_args.args[0]
+    assert request.parent_work_id is None and request.project_id == project_id
+    assert request.project_gid is None and request.canonical_root == str(ACTIVE)
+
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()
     subject.outcome_state_enabled = True
@@ -470,7 +488,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
         create = next(tool for tool in tools if tool.name == "work_create")
-        assert "parent_work_id" in create.input_schema["required"]
+        assert "parent_work_id" not in create.input_schema["required"]
+        assert "project_id" in create.input_schema["properties"]
         assert "project_gid" not in create.input_schema["properties"]
         assert {"canonical_root", "owner_key", "next_action_class", "next_action_ref"} <= (
             create.input_schema["properties"].keys()

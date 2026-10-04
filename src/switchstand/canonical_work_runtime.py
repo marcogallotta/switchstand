@@ -378,7 +378,7 @@ class CanonicalWorkRuntime:
                                 request, "denied", "create_not_qualified_for_this_surface"
                             )
                         parent = request.parent_work_id
-                        project_id = None
+                        project_id = request.project_id
                         root = request.canonical_root
                         if parent is not None:
                             if not grant.can_write(parent):
@@ -401,9 +401,10 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "workspace_create_required"
                                 )
-                            project_id = await connection.scalar(select(
-                                projects.c.project_id
-                            ).where(projects.c.asana_project_gid == request.project_gid))
+                            if project_id is None:
+                                project_id = await connection.scalar(select(
+                                    projects.c.project_id
+                                ).where(projects.c.asana_project_gid == request.project_gid))
                             if project_id is None:
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"

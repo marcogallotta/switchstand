@@ -390,27 +390,38 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
         await connection.execute(projects.insert().values(
             project_id=project_id, asana_project_gid="999", name="Switchstand",
         ))
-    request = create(subject, parent_work_id=None, project_gid="999")
+    request = create(subject, parent_work_id=None, project_id=project_id)
 
     applied = await subject.service.create(request)
+    replay = await subject.service.create(request)
+    existing_root = await subject.service.create(create(
+        subject, parent_work_id=None, project_id=project_id,
+        canonical_root=str(subject.work_id),
+    ))
     missing = await subject.service.create(create(
         subject, parent_work_id=None, project_gid="998",
     ))
     missing_root = await subject.service.create(create(
-        subject, parent_work_id=None, project_gid="999", canonical_root=str(uuid4()),
+        subject, parent_work_id=None, project_id=project_id, canonical_root=str(uuid4()),
     ))
 
-    assert applied.effect == "applied" and applied.receipt.project_gid == "999"
+    assert applied == replay and applied.effect == "applied"
+    assert existing_root.effect == "applied"
     assert missing.reason == "project_not_admitted" and missing.effect == "not_sent"
     assert missing_root.reason == "canonical_root_not_bound"
     created = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert created.item is not None
     assert created.item.routing.canonical_root == str(applied.work_id)
+    rooted = await subject.runtime.get(existing_root.work_id)  # type: ignore[arg-type]
+    assert rooted.item is not None
+    assert rooted.item.routing.canonical_root == str(subject.work_id)
     async with subject.engine.connect() as connection:
-        membership = (await connection.execute(select(
+        memberships = (await connection.execute(select(
             project_memberships.c.project_id, project_memberships.c.work_id
-        ))).one()
-        assert membership == (project_id, applied.work_id)
+        ))).all()
+        assert set(memberships) == {
+            (project_id, applied.work_id), (project_id, existing_root.work_id),
+        }
 
 
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:
