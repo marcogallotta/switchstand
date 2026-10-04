@@ -51,7 +51,8 @@ from .state import work_handles
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
-    "review_next_action", "wait_kind", "unblock_condition", "next_due",
+    "review_next_action", "canonical_root", "owner_key", "wait_kind",
+    "unblock_condition", "next_due", "next_action_class", "next_action_ref",
 })
 
 
@@ -65,9 +66,13 @@ def _routing(work: CurrentWork) -> Routing:
         work_type=work.work_type,
         lifecycle_state=work.lifecycle_state,
         review_next_action=work.review_next_action,
+        canonical_root=work.canonical_root,
+        owner_key=work.owner_key,
         wait_kind=work.wait_kind,
         unblock_condition=work.unblock_condition,
         next_due=work.next_due,
+        next_action_class=work.next_action_class,
+        next_action_ref=work.next_action_ref,
     )
 
 

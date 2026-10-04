@@ -109,6 +109,8 @@ def test_contracts_are_closed_and_patch_is_coherent():
     with pytest.raises(ValidationError): WorkPatch()
     with pytest.raises(ValidationError): WorkPatch(notes=None)
     with pytest.raises(ValidationError): WorkPatch(horizon="Stage 3")
+    with pytest.raises(ValidationError, match="canonical root must be"):
+        WorkPatch(canonical_root="not-a-work-id")
 
 
 async def test_reads_bound_handles_and_denies_unbound(setup_controller):

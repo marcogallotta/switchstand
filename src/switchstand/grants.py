@@ -105,6 +105,13 @@ class ScalarPatch(ClosedModel):
             raise ValueError("patch must not be empty")
         if any(getattr(self, field) is None for field in self.model_fields_set):
             raise ValueError("patch values must not be null")
+        if self.canonical_root not in {None, "NONE", "UNKNOWN"}:
+            try:
+                UUID(self.canonical_root)
+            except ValueError as error:
+                raise ValueError(
+                    "canonical root must be NONE, UNKNOWN, or a WorkId"
+                ) from error
         return self
 
 

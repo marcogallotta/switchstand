@@ -5,7 +5,7 @@ set -eu
     || { echo "usage: scripts/switchstand-upgrade-state --target production" >&2; exit 2; }
 umask 077
 
-EXPECTED_NEW=0013_failure_journal
+EXPECTED_NEW=0014_canonical_routing
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data

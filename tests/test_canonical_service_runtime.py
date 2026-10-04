@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import delete, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -271,6 +272,49 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
     assert (await subject.runtime.get(subject.work_id)).item.title == "Changed"  # type: ignore[union-attr]
 
 
+async def test_atomic_update_round_trips_supported_routing_and_preserves_fences(
+    subject: Subject,
+) -> None:
+    root = str(uuid4())
+    request = update(
+        subject,
+        canonical_root=root,
+        owner_key="coordinator",
+        next_action_class="OWNER_CAN_DO",
+        next_action_ref="implement",
+    )
+
+    applied = await subject.service.update(request)
+    replay = await subject.service.update(request)
+    stale = await subject.service.update(update(
+        subject, operation_id=uuid4(), priority="P1",
+    ))
+    readback = await subject.service.get(subject.work_id)
+
+    assert applied == replay
+    assert applied.effect == "applied" and isinstance(applied.receipt, UpdateReceipt)
+    assert applied.receipt.resulting_revision == canonical_revision(subject.work_id, 2)
+    assert (stale.status, stale.effect, stale.reason) == (
+        "stale", "not_sent", "source_revision_changed",
+    )
+    assert readback.status == "ok" and readback.item is not None
+    assert readback.item.revision == canonical_revision(subject.work_id, 2)
+    routing = readback.item.routing.model_dump()
+    assert {
+        field: routing[field]
+        for field in (
+            "canonical_root", "owner_key", "next_action_class", "next_action_ref"
+        )
+    } == {
+        "canonical_root": root,
+        "owner_key": "coordinator",
+        "next_action_class": "OWNER_CAN_DO",
+        "next_action_ref": "implement",
+    }
+    async with subject.engine.connect() as connection:
+        assert len((await connection.execute(select(effect_intents))).all()) == 1
+
+
 async def test_atomic_create_replays_and_persists_parent_without_provider(
     subject: Subject,
 ) -> None:
@@ -456,10 +500,10 @@ async def test_stale_and_ungranted_updates_do_not_write_or_journal(subject: Subj
     stale = await subject.service.update(update(subject, notes="stale").model_copy(update={
         "observed_revision": "old",
     }))
-    denied = await subject.service.update(update(subject, canonical_root="forbidden"))
+    with pytest.raises(ValidationError, match="canonical root must be"):
+        update(subject, canonical_root="forbidden")
 
     assert (stale.status, stale.effect) == ("stale", "not_sent")
-    assert (denied.status, denied.effect) == ("denied", "not_sent")
     async with subject.engine.connect() as connection:
         assert await connection.scalar(select(effect_intents.c.operation_id)) is None
     stored = await subject.runtime.get(subject.work_id)
