@@ -174,27 +174,8 @@ def create(arguments: argparse.Namespace) -> int:
         ],
     }
     manifest["manifest_digest"] = canonical_digest(manifest)
-    proof: Path | None = None
-    if arguments.proof_path:
-        home = Path.home().resolve()
-        root = home / ".local/state/switchstand/codex/handoffs"
-        proof = arguments.proof_path.resolve(strict=False)
-        try:
-            parent = proof.parent.resolve(strict=True)
-            resolved_root = root.resolve(strict=True)
-        except OSError as error:
-            raise SystemExit(f"handoff proof directory is unavailable: {error}") from error
-        if (
-            proof.name != "launch-manifest.json"
-            or parent.parent != resolved_root
-            or not parent.name.startswith("handoff-")
-            or arguments.proof_path.parent.is_symlink()
-        ):
-            raise SystemExit("handoff proof path is outside the exact private artifact")
     destination = Path(f"{start_record}.manifest.json")
     atomic_json(destination, manifest, exclusive=True)
-    if proof is not None:
-        atomic_json(proof, manifest, exclusive=True)
     print(destination)
     return 0
 
@@ -304,7 +285,6 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--hooks", type=Path, required=True)
     launch.add_argument("--executable", type=Path, required=True)
     launch.add_argument("--shim", type=Path, required=True)
-    launch.add_argument("--proof-path", type=Path)
     launch.add_argument("--invocation-digest", required=True)
     launch.set_defaults(function=create)
     current = commands.add_parser("check")
