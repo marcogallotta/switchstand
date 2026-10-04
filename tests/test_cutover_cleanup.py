@@ -195,6 +195,19 @@ def test_cleanup_equality_accepts_current_reviewed_cardinality_and_rejects_stale
         "status": "PASS",
     }
 
+    effects.append({
+        "row": {
+            "operation_id": "operation-21",
+            "outcome": {"effect": "unknown"},
+        },
+        "sha256": "effect-digest-21",
+    })
+    cast(list[dict[str, object]], cleanup_plan["effects"]).append({
+        "id": "operation-21",
+        "sha256": "effect-digest-21",
+    })
+    assert require_cleanup_equality(snapshot, cleanup_plan)["status"] == "PASS"
+
     cast(dict[str, object], cast(list[object], cleanup_plan["effects"])[-1])[
         "sha256"
     ] = "stale-digest"
