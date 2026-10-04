@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 
@@ -78,9 +79,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert 'default_permissions="switchstand-coordinator"' in arguments
     assert arguments[-2:] == ["resume", "test-session"]
 
-    profile = tomllib.loads(
-        (coordinator_home / "switchstand-coordinator-preferences.config.toml").read_text()
-    )
+    profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
+    profile = tomllib.loads(profile_path.read_text())
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
     assert profile["approval_policy"] == "never"
@@ -141,6 +141,18 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     )
     assert repeated.returncode == 0, repeated.stderr
     assert friction_store.read_text() == "existing friction\n"
+    profiles = sorted(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
+    assert len(profiles) == 3
+    assert len({path.read_bytes() for path in profiles}) == 3
+    for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
+        manifest = json.loads(manifest_path.read_text())
+        recorded = next(
+            item for item in manifest["frozen_controls"]
+            if item["id"] == "generated:profile"
+        )
+        generated = Path(recorded["path"])
+        assert generated in profiles
+        assert hashlib.sha256(generated.read_bytes()).hexdigest() == recorded["sha256"]
 
 
 def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(
@@ -173,3 +185,57 @@ def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(
     assert result.returncode == 0, result.stderr
     assert result_file.read_text().splitlines() == ["real", "exec outside"]
     assert not (home / ".local/state/switchstand/codex/coordinator").exists()
+
+
+def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    primary = home / "switchstand"
+    primary.mkdir(parents=True)
+    subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
+                   capture_output=True)
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "--allow-empty", "-m", "base"],
+        check=True, capture_output=True,
+    )
+    codex_home = home / ".codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text("{}\n")
+    (codex_home / "config.toml").write_text("")
+    executable(
+        codex_home / "packages/standalone/current/bin/codex",
+        "#!/bin/sh\nsleep 1\n",
+    )
+    executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
+
+    first = subprocess.Popen(
+        [DISPATCH, "resume", "session-a"], cwd=primary,
+        env=os.environ | {"HOME": str(home)},
+    )
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    profiles: list[Path] = []
+    for _ in range(200):
+        profiles = list(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
+        if profiles:
+            break
+        time.sleep(0.01)
+    assert len(profiles) == 1
+    first_profile = profiles[0]
+    first_bytes = first_profile.read_bytes()
+
+    second = subprocess.Popen(
+        [DISPATCH, "resume", "session-b"], cwd=primary,
+        env=os.environ | {"HOME": str(home)},
+    )
+    assert first.wait(timeout=5) == 0
+    assert second.wait(timeout=5) == 0
+    assert first_profile.read_bytes() == first_bytes
+    assert len(list(coordinator_home.glob("switchstand-coordinator-*.config.toml"))) == 2
+    for manifest_path in coordinator_home.glob("start-commit.*.manifest.json"):
+        manifest = json.loads(manifest_path.read_text())
+        recorded = next(
+            item for item in manifest["frozen_controls"]
+            if item["id"] == "generated:profile"
+        )
+        generated = Path(recorded["path"])
+        assert hashlib.sha256(generated.read_bytes()).hexdigest() == recorded["sha256"]

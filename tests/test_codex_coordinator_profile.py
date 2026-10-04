@@ -6,6 +6,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts" / "codex-coordinator-profile"
 
@@ -110,19 +112,27 @@ trusted_hash = "must-not-copy"
     assert hooks.stat().st_mode & 0o777 == 0o600
 
 
-def test_profile_replaces_removed_preferences(tmp_path: Path) -> None:
+def test_new_profile_omits_removed_preferences_without_replacing_prior_profile(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "config.toml"
     destination = tmp_path / "coordinator.config.toml"
+    successor = tmp_path / "successor.config.toml"
     primary = tmp_path / "primary"
     primary.mkdir()
     hooks = tmp_path / "hooks.json"
     source.write_text('model_auto_compact_token_limit = 200000\n')
     prepare(source, destination, primary, hooks)
+    original = destination.read_bytes()
     source.write_text('[apps.dish.tools.write]\napproval_mode = "approve"\n')
 
-    prepare(source, destination, primary, hooks)
+    with pytest.raises(subprocess.CalledProcessError):
+        prepare(source, destination, primary, hooks)
 
-    profile = tomllib.loads(destination.read_text())
+    prepare(source, successor, primary, hooks)
+
+    profile = tomllib.loads(successor.read_text())
     assert "model_auto_compact_token_limit" not in profile
     assert "apps" not in profile
     assert profile["approval_policy"] == "never"
+    assert destination.read_bytes() == original
