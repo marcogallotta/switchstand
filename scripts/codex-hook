@@ -196,10 +196,17 @@ def classify(command: str, cwd: str, coordinator_primary: str | None = None) -> 
         if git:
             prefix, subcommand, args, command_cwd = git
             branch_reads = {"--show-current", "--list", "-l", "--contains", "--no-contains",
-                            "--merged", "--no-merged", "--points-at", "--format", "--sort"}
-            branch_write = subcommand == "branch" and bool(args) and not any(
-                args[0] == flag or args[0].startswith(flag + "=") for flag in branch_reads
+                            "--merged", "--no-merged", "--points-at", "--format", "--sort",
+                            "--all", "-a", "--remotes", "-r", "--verbose", "-v", "-vv"}
+            branch_options = [arg for arg in args if arg.startswith("-")]
+            branch_has_read = any(arg == flag or arg.startswith(flag + "=")
+                                  for arg in branch_options for flag in branch_reads)
+            branch_has_unknown_option = any(
+                not any(arg == flag or arg.startswith(flag + "=") for flag in branch_reads)
+                for arg in branch_options
             )
+            branch_write = (subcommand == "branch" and bool(args)
+                            and (branch_has_unknown_option or not branch_has_read))
             worktree_write = subcommand == "worktree" and bool(args) and args[0] not in {"add", "list"}
             tag_read = subcommand == "tag" and (not args or args[0].startswith(("--list", "--contains", "--points-at", "-l", "-n")))
             stash_read = subcommand == "stash" and args[:1] in (["list"], ["show"])
