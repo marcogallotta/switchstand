@@ -26,7 +26,6 @@ async def rotate_managed_grant(grants: GrantState, authority: LaunchAuthority) -
         authority=authority, scope="launch",
         operations=frozenset({
             "work_get", "work_append", "work_update", "work_relate", "message",
-            "agent_task",
         }),
         issuer=MANAGED_ISSUER,
         provenance=f"trusted managed owner for WorkId {authority.active_work_id}",
