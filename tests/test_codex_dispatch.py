@@ -102,7 +102,9 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == runtime_receipt["launch_sha256"]
     hooks = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(hooks["hooks"]) == {"PreToolUse"}
-    assert "mode=OFF; lifetime=ASSIGNMENT" in profile["developer_instructions"]
+    assert "mode=PILOT; lifetime=ASSIGNMENT" in profile["developer_instructions"]
+    assert set(profile["hooks"]) == {"UserPromptSubmit", "Stop"}
+    assert "SubagentStop" not in profile["hooks"]
     assert not (coordinator_home / "AGENTS.md").exists()
     friction_store = home / ".local/state/switchstand/friction.md"
     assert (primary / "friction.md").is_symlink()
@@ -162,7 +164,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         assert receipt["snapshot"] == str(generated)
 
 
-def test_dispatch_freezes_opt_in_continuity_and_scrubs_selectors(tmp_path: Path) -> None:
+def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: Path) -> None:
     home = tmp_path / "home"
     primary = home / "switchstand"
     primary.mkdir(parents=True)
@@ -189,8 +191,8 @@ def test_dispatch_freezes_opt_in_continuity_and_scrubs_selectors(tmp_path: Path)
         [DISPATCH], cwd=primary,
         env=os.environ | {
             "HOME": str(home), "RESULT": str(result_file),
-            "SWITCHSTAND_CODEX_CONTINUITY": "PILOT",
-            "SWITCHSTAND_CODEX_LIFETIME": "STANDING",
+            "SWITCHSTAND_CODEX_CONTINUITY": "OFF",
+            "SWITCHSTAND_CODEX_LIFETIME": "ASSIGNMENT",
         },
         text=True, capture_output=True, check=False,
     )
@@ -200,9 +202,8 @@ def test_dispatch_freezes_opt_in_continuity_and_scrubs_selectors(tmp_path: Path)
     coordinator_home = home / ".local/state/switchstand/codex/coordinator"
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
-    assert "mode=PILOT; lifetime=STANDING" in profile["developer_instructions"]
-    assert set(profile["hooks"]) == {"UserPromptSubmit", "Stop"}
-    assert "SubagentStop" not in profile["hooks"]
+    assert "mode=OFF; lifetime=ASSIGNMENT" in profile["developer_instructions"]
+    assert "hooks" not in profile
     shared = json.loads((coordinator_home / "hooks.json").read_text())
     assert set(shared["hooks"]) == {"PreToolUse"}
 
