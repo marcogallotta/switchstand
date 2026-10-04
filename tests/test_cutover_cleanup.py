@@ -8,12 +8,13 @@ from typing import cast
 from uuid import UUID
 
 import pytest
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.cutover_cleanup import (  # pyright: ignore[reportPrivateUsage]
     _receipt_matches,
     apply_cleanup,
+    apply_cleanup_connection,
     cleanup_snapshot,
 )
 from switchstand.grant_state import effect_intents
@@ -167,9 +168,10 @@ async def test_cleanup_archives_and_atomically_applies_exact_plan(
     fsync_modes: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda descriptor: fsync_modes.append(os.fstat(descriptor).st_mode))
 
-    assert await apply_cleanup(engine, plan_path, archive) == {
-        "replaced": 1, "deleted": 1, "projections_deleted": 1,
-    }
+    async with engine.begin() as connection:
+        assert await apply_cleanup_connection(connection, plan_path, archive) == {
+            "replaced": 1, "deleted": 1, "projections_deleted": 1,
+        }
     assert stat.S_IMODE(archive.stat().st_mode) == 0o600
     assert any(stat.S_ISDIR(mode) for mode in fsync_modes)
     assert len(cast(list[object], load_manifest(archive)["effects"])) == 2
@@ -178,6 +180,26 @@ async def test_cleanup_archives_and_atomically_applies_exact_plan(
         outcome = GuardOutcome.model_validate(rows[0]["outcome"])
         assert outcome.operation_id == REPLACE and outcome.effect == "applied"
         assert await connection.scalar(select(message_projection.c.projection_id)) is None
+
+
+async def test_connection_cleanup_is_owned_by_caller_transaction(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    await seed(engine)
+    plan_path, archive = tmp_path / "rollback-plan.json", tmp_path / "rollback-archive.json"
+    write_manifest(plan_path, plan(await cleanup_snapshot(engine)))
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        assert await apply_cleanup_connection(connection, plan_path, archive) == {
+            "replaced": 1, "deleted": 1, "projections_deleted": 1,
+        }
+        await transaction.rollback()
+
+    assert archive.is_file()
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 2
+        assert await connection.scalar(select(func.count()).select_from(message_projection)) == 1
         assert await connection.scalar(select(messages.c.message_id)) == MESSAGE
         assert await connection.scalar(select(message_deliveries.c.delivery_id)) == DELIVERY
 

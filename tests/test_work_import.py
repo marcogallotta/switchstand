@@ -21,7 +21,12 @@ from switchstand.work_corpus import (
     write_manifest,
 )
 from switchstand.work_events import work_events
-from switchstand.work_import import TABLES, import_parity, target_parity
+from switchstand.work_import import (
+    TABLES,
+    import_parity,
+    import_parity_connection,
+    target_parity,
+)
 
 WORK = UUID("10000000-0000-4000-8000-000000000001")
 PARENT = UUID("20000000-0000-4000-8000-000000000002")
@@ -144,6 +149,27 @@ async def test_reordered_source_import_records_receipt_only_after_exact_readback
             MIGRATION_COMPLETE_RECEIPT,
             hashlib.sha256(source.read_bytes()).hexdigest(),
         )
+
+
+async def test_connection_import_is_owned_by_caller_transaction(
+    engine: AsyncEngine, tmp_path: Path,
+):
+    source = tmp_path / "rollback.json"
+    write_manifest(source, parity_manifest(source_records()))
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        assert await import_parity_connection(connection, source) == len(source_records())
+        assert await connection.scalar(select(func.count()).select_from(
+            work_migration_receipts
+        )) == 1
+        await transaction.rollback()
+
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(canonical_work)) == 0
+        assert await connection.scalar(select(func.count()).select_from(
+            work_migration_receipts
+        )) == 0
 
 
 async def test_readback_mismatch_rolls_back_without_migration_receipt(

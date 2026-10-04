@@ -145,61 +145,73 @@ async def import_parity(
     engine: AsyncEngine, source: Path, corpus_path: Path | None = None,
 ) -> int:
     """Fail atomically unless every canonical target table is empty and valid."""
+    async with engine.begin() as connection:
+        return await import_parity_connection(connection, source, corpus_path)
+
+
+async def import_parity_connection(
+    connection: AsyncConnection, source: Path, corpus_path: Path | None = None,
+) -> int:
+    """Import parity inside the caller's already-open transaction."""
     source_document = load_manifest(source)
     grouped = _records(source_document)
     imported = 0
-    async with engine.begin() as connection:
-        for _, table, _ in TABLES:
-            if await connection.scalar(select(func.count()).select_from(table)):
-                raise ValueError(f"import target table is not empty: {table.name}")
-        await _retire_legacy_event_handles(connection, grouped, corpus_path)
-        for kind, table, keys in TABLES:
-            rows: list[dict[str, object]] = []
-            for record in grouped[kind]:
-                values = _values(table, record["fields"])
-                exported = {key: parity_value(value) for key, value in values.items()}
-                if record["id"] != _identity(exported, keys):
-                    raise ValueError(f"{kind} import identity does not match its fields")
-                rows.append(values)
-            if rows:
-                await connection.execute(insert(table), rows)
-                imported += len(rows)
-        records: list[dict[str, object]] = []
-        for kind, table, keys in TABLES:
-            read_rows = (await connection.execute(select(table).order_by(
-                *[table.c[key] for key in keys]
-            ))).mappings()
-            for row in read_rows:
-                fields = {key: parity_value(value) for key, value in row.items()}
-                records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
-        source_records = {
-            (kind, cast(str, record["id"])): record["fields"]
-            for kind, _, _ in TABLES for record in grouped[kind]
-        }
-        readback_records = {
-            (cast(str, record["kind"]), cast(str, record["id"])): record["fields"]
-            for record in records
-        }
-        if readback_records != source_records:
-            raise ValueError("target readback does not match source parity")
-        await connection.execute(insert(work_migration_receipts).values(
-            name=MIGRATION_COMPLETE_RECEIPT,
-            source_digest=hashlib.sha256(source.read_bytes()).hexdigest(),
-        ))
+    for _, table, _ in TABLES:
+        if await connection.scalar(select(func.count()).select_from(table)):
+            raise ValueError(f"import target table is not empty: {table.name}")
+    await _retire_legacy_event_handles(connection, grouped, corpus_path)
+    for kind, table, keys in TABLES:
+        rows: list[dict[str, object]] = []
+        for record in grouped[kind]:
+            values = _values(table, record["fields"])
+            exported = {key: parity_value(value) for key, value in values.items()}
+            if record["id"] != _identity(exported, keys):
+                raise ValueError(f"{kind} import identity does not match its fields")
+            rows.append(values)
+        if rows:
+            await connection.execute(insert(table), rows)
+            imported += len(rows)
+    records: list[dict[str, object]] = []
+    for kind, table, keys in TABLES:
+        read_rows = (await connection.execute(select(table).order_by(
+            *[table.c[key] for key in keys]
+        ))).mappings()
+        for row in read_rows:
+            fields = {key: parity_value(value) for key, value in row.items()}
+            records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
+    source_records = {
+        (kind, cast(str, record["id"])): record["fields"]
+        for kind, _, _ in TABLES for record in grouped[kind]
+    }
+    readback_records = {
+        (cast(str, record["kind"]), cast(str, record["id"])): record["fields"]
+        for record in records
+    }
+    if readback_records != source_records:
+        raise ValueError("target readback does not match source parity")
+    await connection.execute(insert(work_migration_receipts).values(
+        name=MIGRATION_COMPLETE_RECEIPT,
+        source_digest=hashlib.sha256(source.read_bytes()).hexdigest(),
+    ))
     return imported
 
 
 async def target_parity(engine: AsyncEngine) -> dict[str, object]:
     """Export every canonical target row and field for exact source comparison."""
-    records: list[dict[str, object]] = []
     async with engine.connect() as connection:
-        for kind, table, keys in TABLES:
-            rows = (await connection.execute(select(table).order_by(
-                *[table.c[key] for key in keys]
-            ))).mappings()
-            for row in rows:
-                fields = {key: parity_value(value) for key, value in row.items()}
-                records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
+        return await target_parity_connection(connection)
+
+
+async def target_parity_connection(connection: AsyncConnection) -> dict[str, object]:
+    """Export target parity using an already-owned database connection."""
+    records: list[dict[str, object]] = []
+    for kind, table, keys in TABLES:
+        rows = (await connection.execute(select(table).order_by(
+            *[table.c[key] for key in keys]
+        ))).mappings()
+        for row in rows:
+            fields = {key: parity_value(value) for key, value in row.items()}
+            records.append({"kind": kind, "id": _identity(fields, keys), "fields": fields})
     return parity_manifest(records)
 
 

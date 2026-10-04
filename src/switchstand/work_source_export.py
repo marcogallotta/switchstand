@@ -14,7 +14,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .canonical_work import normalize_title
 from .core import ProviderSourceStory, ProviderStoriesPage, ProviderWork
@@ -47,6 +47,32 @@ def _identity(*values: object) -> str:
 
 def _record(kind: str, identity: str, fields: dict[str, object]) -> dict[str, object]:
     return {"kind": kind, "id": identity, "fields": fields}
+
+
+def _parent_work_id(
+    gid: str,
+    parent_gid: str | None,
+    expected: dict[str, UUID],
+    ignored: dict[str, dict[str, object]],
+) -> UUID | None:
+    if parent_gid is None or parent_gid in ignored:
+        return None
+    if parent_gid not in expected:
+        raise ValueError(f"parent is outside the current corpus: {gid}")
+    return expected[parent_gid]
+
+
+def _dependency_work_id(
+    gid: str,
+    dependency: str,
+    expected: dict[str, UUID],
+    ignored: dict[str, dict[str, object]],
+) -> UUID:
+    if dependency in ignored:
+        raise ValueError(f"dependency is retired without memberships: {gid}")
+    if dependency not in expected:
+        raise ValueError(f"dependency is outside the current corpus: {gid}")
+    return expected[dependency]
 
 
 def _current_rows(manifest: dict[str, object]) -> tuple[
@@ -199,6 +225,21 @@ async def source_parity(
     tombstone_path: Path | None = None, *, progress: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     """Export every current source field into the canonical parity schema."""
+    async with engine.connect() as connection:
+        return await source_parity_connection(
+            connection,
+            provider,
+            corpus_path,
+            tombstone_path,
+            progress=progress,
+        )
+
+
+async def source_parity_connection(
+    connection: AsyncConnection, provider: SourceProvider, corpus_path: Path,
+    tombstone_path: Path | None = None, *, progress: Callable[[int], None] | None = None,
+) -> dict[str, object]:
+    """Export source parity using an already-owned database connection."""
     corpus = load_manifest(corpus_path)
     rows, excluded = _current_rows(corpus)
     ignored = await _ignored_zero_memberships(provider, excluded)
@@ -208,14 +249,13 @@ async def source_parity(
         gid: item for gid, item in excluded.items() if gid not in ignored
     }
     tombstones = _tombstones(tombstone_path, corpus, reviewed_excluded)
-    async with engine.connect() as connection:
-        bindings = (await connection.execute(select(
-            work_handles.c.provider_work_id, work_handles.c.id,
-        ).where(work_handles.c.provider == "asana"))).all()
-        event_rows = (await connection.execute(select(
-            work_event_handles.c.id, work_event_handles.c.work_id,
-            work_event_handles.c.provider_work_id, work_event_handles.c.provider_event_id,
-        ).where(work_event_handles.c.provider == "asana"))).all()
+    bindings = (await connection.execute(select(
+        work_handles.c.provider_work_id, work_handles.c.id,
+    ).where(work_handles.c.provider == "asana"))).all()
+    event_rows = (await connection.execute(select(
+        work_event_handles.c.id, work_event_handles.c.work_id,
+        work_event_handles.c.provider_work_id, work_event_handles.c.provider_event_id,
+    ).where(work_event_handles.c.provider == "asana"))).all()
     expected = {gid: UUID(cast(str, row["work_id"])) for gid, row in rows.items()}
     expected.update({
         gid: UUID(cast(str, row["work_id"])) for gid, row in tombstones.items()
@@ -301,21 +341,15 @@ async def source_parity(
             _record("work", _identity(work_id), fields),
             _record("alias", _identity(gid), {"asana_task_gid": gid, "work_id": str(work_id)}),
         ))
-        if parent_gid in ignored:
-            raise ValueError(f"parent is retired without memberships: {gid}")
-        if parent_gid is not None:
-            if parent_gid not in expected:
-                raise ValueError(f"parent is outside the current corpus: {gid}")
+        parent_work_id = _parent_work_id(gid, parent_gid, expected, ignored)
+        if parent_work_id is not None:
             records.append(_record("parent", _identity(work_id), {
-                "child_work_id": str(work_id), "parent_work_id": str(expected[parent_gid]),
+                "child_work_id": str(work_id), "parent_work_id": str(parent_work_id),
             }))
         for dependency in sorted(dependencies):
-            if dependency in ignored:
-                raise ValueError(f"dependency is retired without memberships: {gid}")
-            if dependency not in expected:
-                raise ValueError(f"dependency is outside the current corpus: {gid}")
-            records.append(_record("dependency", _identity(work_id, expected[dependency]), {
-                "work_id": str(work_id), "depends_on_work_id": str(expected[dependency]),
+            dependency_work_id = _dependency_work_id(gid, dependency, expected, ignored)
+            records.append(_record("dependency", _identity(work_id, dependency_work_id), {
+                "work_id": str(work_id), "depends_on_work_id": str(dependency_work_id),
             }))
         for project_gid, name, section in placements:
             project_id = uuid5(NAMESPACE_URL, f"switchstand:asana-project:{project_gid}")
