@@ -16,6 +16,7 @@ from switchstand.cutover_cleanup import (  # pyright: ignore[reportPrivateUsage]
     apply_cleanup,
     apply_cleanup_connection,
     cleanup_snapshot,
+    require_cleanup_equality,
 )
 from switchstand.grant_state import effect_intents
 from switchstand.grants import (
@@ -157,6 +158,48 @@ def redigest(document: dict[str, object]) -> None:
     document["sha256"] = hashlib.sha256(json.dumps(
         body, sort_keys=True, separators=(",", ":")
     ).encode()).hexdigest()
+
+
+def test_cleanup_equality_accepts_current_reviewed_cardinality_and_rejects_stale_rows():
+    effects = [{
+        "row": {
+            "operation_id": f"operation-{index}",
+            "outcome": {"effect": "unknown"},
+        },
+        "sha256": f"effect-digest-{index}",
+    } for index in range(21)]
+    projections = [{
+        "row": {"projection_id": "projection-1"},
+        "sha256": "projection-digest-1",
+    }]
+    snapshot: dict[str, object] = {
+        "effects": effects,
+        "projections": projections,
+    }
+    cleanup_plan: dict[str, object] = {
+        "effects": [{
+            "id": cast(dict[str, object], effect["row"])["operation_id"],
+            "sha256": effect["sha256"],
+        } for effect in effects],
+        "projections": [{
+            "id": "projection-1",
+            "sha256": "projection-digest-1",
+        }],
+    }
+
+    result = require_cleanup_equality(snapshot, cleanup_plan)
+
+    assert result == {
+        "effects": sorted(f"operation-{index}" for index in range(21)),
+        "projections": ["projection-1"],
+        "status": "PASS",
+    }
+
+    cast(dict[str, object], cast(list[object], cleanup_plan["effects"])[-1])[
+        "sha256"
+    ] = "stale-digest"
+    with pytest.raises(RuntimeError, match="do not exactly match"):
+        require_cleanup_equality(snapshot, cleanup_plan)
 
 
 async def test_cleanup_archives_and_atomically_applies_exact_plan(
