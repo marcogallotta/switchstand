@@ -1,5 +1,6 @@
 # pyright: reportPrivateUsage=false
 
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -32,6 +33,7 @@ class Context:
 class Connection:
     def __init__(self):
         self.in_transaction = self.committed = False
+        self.waiting: list[tuple[object, ...]] = []
         self.calls: list[str] = []
     def begin(self):
         def entered():
@@ -41,8 +43,27 @@ class Connection:
             self.committed = error is None
         return Context(None, entered, exited)
     async def execute(self, statement: object):
-        assert "LOCK TABLE work_handles, work_event_handles IN SHARE MODE" in str(statement)
-        self.calls.append("lock")
+        rendered = str(statement)
+        if rendered.startswith("SET LOCAL"):
+            return None
+        if rendered.startswith("LOCK TABLE"):
+            self.calls.append("lock")
+            return None
+        if "current_database()" in rendered:
+            return Rows([("switchstand", "switchstand", 123, "30s", "15min")])
+        if "l.pid = pg_backend_pid()" in rendered:
+            return Rows([
+                ("work_event_handles", "ShareLock", True),
+                ("work_handles", "ShareLock", True),
+            ])
+        if "NOT l.granted" in rendered:
+            return Rows(self.waiting)
+        raise AssertionError(rendered)
+
+class Rows:
+    def __init__(self, rows): self.rows = rows
+    def one(self): return self.rows[0]
+    def all(self): return self.rows
 
 class Engine:
     def __init__(self, connection: Connection):
@@ -56,7 +77,14 @@ class Operations:
     def preflight(self, _paths, _source_candidate): pass
     def install_gate(self): pass
     def prove_gate(self): pass
-    def stop_and_prove(self): pass
+    def stop_and_prove(self):
+        return {
+            "systemd": {
+                "ActiveState": "inactive", "SubState": "dead",
+                "MainPID": "0", "ControlPID": "0",
+            },
+            "listener": "ABSENT",
+        }
     def snapshot_current(self, target):
         target.write_bytes(b"fastmcp")
         return hashlib.sha256(b"fastmcp").hexdigest()
@@ -116,6 +144,9 @@ async def test_hold_uses_one_locked_transaction_and_truthful_receipts(tmp_path, 
     assert load_manifest(paths.final_receipt)["postgres_transaction"].endswith(
         "THROUGH_COMMIT_THEN_RELEASED"
     )
+    receipt = load_manifest(paths.final_receipt)
+    assert receipt["database_hold_proof"]["backend_pid"] == 123
+    assert receipt["service_stop_proof"]["systemd"]["MainPID"] == "0"
 
 async def test_failed_continuation_never_emits_final_receipt(tmp_path, monkeypatch):
     paths, connection, operations, state = setup(tmp_path, monkeypatch)
@@ -144,6 +175,36 @@ async def test_changed_second_corpus_blocks_continuation_and_final_receipt(tmp_p
             paths, operations, no_tombstones, must_not_continue,
         )
     assert not paths.final_receipt.exists() and not connection.committed
+
+
+async def test_waiting_writer_before_commit_rolls_back(tmp_path, monkeypatch):
+    paths, connection, operations, _state = setup(tmp_path, monkeypatch)
+    async def queue_writer(_connection, _artifacts):
+        connection.waiting = [
+            (456, "work_handles", "RowExclusiveLock", "writer", "active", "Lock", "relation")
+        ]
+    with pytest.raises(hold.Unknown, match="writer is waiting"):
+        await hold.production_hold(
+            cast(Any, Engine(connection)), cast(Any, object()), SHA,
+            paths, operations, no_tombstones, queue_writer,
+        )
+    assert not connection.committed and not paths.final_receipt.exists()
+
+
+async def test_final_receipt_failure_after_commit_is_unknown(tmp_path, monkeypatch):
+    paths, connection, operations, _state = setup(tmp_path, monkeypatch)
+    original = hold.write_manifest
+    def fail_final(path, document):
+        if path == paths.final_receipt:
+            raise OSError("disk failure")
+        original(path, document)
+    monkeypatch.setattr(hold, "write_manifest", fail_final)
+    with pytest.raises(hold.Unknown, match="database committed"):
+        await hold.production_hold(
+            cast(Any, Engine(connection)), cast(Any, object()), SHA,
+            paths, operations, no_tombstones, lambda *_args: asyncio.sleep(0),
+        )
+    assert connection.committed and not paths.final_receipt.exists()
 
 
 def config(tmp_path):
@@ -177,3 +238,15 @@ def test_host_commands_use_machine_and_snapshot_is_create_new(tmp_path, monkeypa
     escaped = replace(hold.HoldPaths.create(subject.attempt_dir), final_receipt=tmp_path / "escape")
     with pytest.raises(Failed, match="attempt or source candidate"):
         hold.HostHoldOperations(subject).preflight(escaped, subject.candidate_sha)
+
+
+def test_host_stop_requires_zero_pids_and_absent_listener(tmp_path, monkeypatch):
+    subject = config(tmp_path)
+    operations = hold.HostHoldOperations(subject)
+    output = "ActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n"
+    monkeypatch.setattr(operations, "_systemctl", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], 0, output, ""))
+    monkeypatch.setattr(hold.socket, "create_connection", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(ConnectionRefusedError()))
+    proof = operations.stop_and_prove()
+    assert proof["systemd"]["MainPID"] == "0" and proof["listener"] == "ABSENT"

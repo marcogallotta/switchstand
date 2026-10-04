@@ -9,7 +9,7 @@ import socket
 import stat
 import subprocess
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
@@ -76,6 +76,8 @@ class HoldArtifacts:
     tombstones_sha256: str | None
     fastmcp_snapshot_sha256: str
     database_identity_sha256: str
+    database_hold_proof: dict[str, object]
+    service_stop_proof: dict[str, object]
 
 class HoldOperations(Protocol):
     @property
@@ -83,7 +85,7 @@ class HoldOperations(Protocol):
     def preflight(self, paths: HoldPaths, source_candidate: str) -> None: ...
     def install_gate(self) -> None: ...
     def prove_gate(self) -> None: ...
-    def stop_and_prove(self) -> None: ...
+    def stop_and_prove(self) -> dict[str, object]: ...
     def snapshot_current(self, target: Path) -> str: ...
 
 class HostHoldOperations:
@@ -133,10 +135,23 @@ class HostHoldOperations:
     def prove_gate(self) -> None:
         if not self.edge.gate_exact() or not self.edge.public_gated():
             raise Unknown("maintenance gate is not exact at public ingress")
-    def stop_and_prove(self) -> None:
+    def stop_and_prove(self) -> dict[str, object]:
         self._systemctl("stop", self.config.service, check=False)
-        state = self._systemctl("is-active", self.config.service, check=False).stdout.strip()
-        if state != "inactive":
+        output = self._systemctl(
+            "show",
+            self.config.service,
+            "--property=ActiveState",
+            "--property=SubState",
+            "--property=MainPID",
+            "--property=ControlPID",
+        ).stdout
+        proof = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if proof != {
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "MainPID": "0",
+            "ControlPID": "0",
+        }:
             raise Unknown("host edge service did not become inactive")
         endpoint = urlparse(self.config.local_url)
         if endpoint.hostname is None or endpoint.port is None:
@@ -145,7 +160,7 @@ class HostHoldOperations:
             with socket.create_connection((endpoint.hostname, endpoint.port), timeout=1):
                 pass
         except OSError:
-            return
+            return {"systemd": proof, "listener": "ABSENT"}
         raise Unknown("edge listener remains after host service stop")
     def snapshot_current(self, target: Path) -> str:
         temporary = target.with_suffix(".host-tmp")
@@ -203,6 +218,58 @@ async def _database_identity(connection: AsyncConnection) -> str:
     encoded = json.dumps([[str(value) for value in row] for row in rows], separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
+async def _establish_database_hold(connection: AsyncConnection) -> dict[str, object]:
+    await connection.execute(text("SET LOCAL lock_timeout = '30s'"))
+    await connection.execute(text("SET LOCAL statement_timeout = '15min'"))
+    await connection.execute(text(
+        "LOCK TABLE work_handles, work_event_handles IN SHARE MODE"
+    ))
+    return await _database_hold_proof(connection)
+
+async def _database_hold_proof(connection: AsyncConnection) -> dict[str, object]:
+    database, user, backend_pid, lock_timeout, statement_timeout = (
+        await connection.execute(text("""
+            SELECT current_database(), current_user, pg_backend_pid(),
+                   current_setting('lock_timeout'), current_setting('statement_timeout')
+        """))
+    ).one()
+    locks = (await connection.execute(text("""
+        SELECT c.relname, l.mode, l.granted
+        FROM pg_locks AS l JOIN pg_class AS c ON c.oid = l.relation
+        WHERE l.pid = pg_backend_pid()
+          AND c.relname IN ('work_handles', 'work_event_handles')
+          AND l.mode = 'ShareLock'
+        ORDER BY c.relname
+    """))).all()
+    waiting = (await connection.execute(text("""
+        SELECT l.pid, c.relname, l.mode, a.usename, a.state,
+               a.wait_event_type, a.wait_event
+        FROM pg_locks AS l
+        JOIN pg_class AS c ON c.oid = l.relation
+        JOIN pg_stat_activity AS a ON a.pid = l.pid
+        WHERE NOT l.granted AND l.pid <> pg_backend_pid()
+          AND c.relname IN ('work_handles', 'work_event_handles')
+        ORDER BY l.pid, c.relname, l.mode
+    """))).all()
+    if lock_timeout != "30s" or statement_timeout != "15min":
+        raise Unknown("PostgreSQL hold timeouts are not exact")
+    if locks != [
+        ("work_event_handles", "ShareLock", True),
+        ("work_handles", "ShareLock", True),
+    ]:
+        raise Unknown("PostgreSQL SHARE lock proof is not exact")
+    if waiting:
+        raise Unknown("a PostgreSQL writer is waiting behind the cutover hold")
+    return {
+        "database": str(database),
+        "user": str(user),
+        "backend_pid": int(backend_pid),
+        "lock_timeout": str(lock_timeout),
+        "statement_timeout": str(statement_timeout),
+        "share_locks": [list(row) for row in locks],
+        "waiting_writers": [],
+    }
+
 def _digested(document: dict[str, object]) -> dict[str, object]:
     encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return document | {"sha256": hashlib.sha256(encoded).hexdigest()}
@@ -239,6 +306,8 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
         ),
         "tombstones_sha256": artifacts.tombstones_sha256,
         "database_identity_sha256": artifacts.database_identity_sha256,
+        "database_hold_proof": artifacts.database_hold_proof,
+        "service_stop_proof": artifacts.service_stop_proof,
         "postgres_transaction": "SHARE_LOCKS_HELD_CONTINUOUSLY_THROUGH_COMMIT_THEN_RELEASED",
         "maintenance_flock": "HELD_THROUGH_FINAL_RECEIPT",
         "edge_gate": "PROVEN_EXACT",
@@ -266,12 +335,10 @@ async def production_hold[Result](
         write_manifest(paths.prepared_receipt, _prepared_receipt(source_candidate, paths))
         operations.install_gate()
         operations.prove_gate()
-        operations.stop_and_prove()
+        service_stop_proof = operations.stop_and_prove()
         snapshot_digest = operations.snapshot_current(paths.fastmcp_snapshot)
         async with engine.connect() as connection, connection.begin():
-            await connection.execute(text(
-                "LOCK TABLE work_handles, work_event_handles IN SHARE MODE"
-            ))
+            database_hold_proof = await _establish_database_hold(connection)
             identity_a = await _database_identity(connection)
             corpus_a = await capture_manifest_connection(
                 connection, provider, source_candidate
@@ -309,7 +376,18 @@ async def production_hold[Result](
                 ),
                 fastmcp_snapshot_sha256=snapshot_digest,
                 database_identity_sha256=identity_a,
+                database_hold_proof=database_hold_proof,
+                service_stop_proof=service_stop_proof,
             )
             result = await continuation(connection, artifacts)
-        write_manifest(paths.final_receipt, _final_receipt(artifacts))
+            artifacts = replace(
+                artifacts,
+                database_hold_proof=await _database_hold_proof(connection),
+            )
+        try:
+            write_manifest(paths.final_receipt, _final_receipt(artifacts))
+        except Exception as error:
+            raise Unknown(
+                "database committed but final hold receipt could not be written"
+            ) from error
         return result
