@@ -47,7 +47,8 @@ semantic concern.
 
 Immediately acknowledge the request without pretending to know the answer. Use one of:
 
-- `PRELIMINARY — <specific hypothesis>; confidence <low|medium|high>; next falsifier <check>.`
+- `PRELIMINARY — <specific hypothesis>; confidence <low|medium|high>; evidence <supporting
+  and contradicting evidence>; alternatives <credible alternatives>; next falsifier <check>.`
 - `UNKNOWN — no supported causal hypothesis yet; checking <first discriminating evidence>.`
 
 An acknowledgement is not a conclusion. While Marco is actively engaged, publish short
@@ -63,11 +64,26 @@ Start with current evidence and label mutable claims `CURRENT`, `HISTORICAL`, or
 `UNKNOWN`. Preserve exact time, candidate/runtime/configuration, operation identity, and
 evidence path. Separate observation from inference and effect attempt from readback.
 
+Confidence applies only to a specific causal hypothesis. It is a compact
+`LOW`/`MEDIUM`/`HIGH` judgment of how the current evidence discriminates that hypothesis
+from credible alternatives, not a probability attached to a fact or effect. Every confidence
+report names its supporting and contradicting evidence, credible alternatives, and next
+falsifier or discriminating check. When there is not enough evidence for that structure, report
+`UNKNOWN` and the first clearing check instead of inventing confidence.
+
+Observed facts, currentness, gate results, and effect truth retain their deterministic labels,
+readbacks, and existing failure states. Raw self-confidence cannot establish observed fact or
+effect truth, override `UNKNOWN`, authorize an effect, move an RCA or incident lifecycle state,
+accept a causal model, establish recovery, satisfy completion, or close work. Those transitions
+continue to require their existing evidence, authority, review, and closeout gates. If a separate
+situation-review safeguard applies, evidence-backed confidence may be one advisory input; low
+confidence alone is not a trigger, and this procedure creates no duplicate review trigger.
+
 Maintain a compact hypothesis table on the RCA parent:
 
-| Hypothesis | Mechanism | Supporting evidence | Falsifier / discriminating check | Confidence | Result |
-| --- | --- | --- | --- | --- | --- |
-| ... | ... | ... | ... | ... | OPEN/SUPPORTED/FALSIFIED/UNKNOWN |
+| Hypothesis | Mechanism | Supporting / contradicting evidence | Credible alternatives | Falsifier / discriminating check | Confidence | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| ... | ... | ... | ... | ... | LOW/MEDIUM/HIGH | OPEN/SUPPORTED/FALSIFIED/UNKNOWN |
 
 Test the cheapest safe discriminating boundary first. Credible alternatives stay in the
 table until evidence falsifies them; popularity or narrative fit is not evidence. If the

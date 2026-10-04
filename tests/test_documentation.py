@@ -121,6 +121,11 @@ def test_root_cause_analysis_contract_and_entry_links_are_discoverable():
         "one sanitized RCA parent WorkId",
         "PRELIMINARY —",
         "UNKNOWN —",
+        "Confidence applies only to a specific causal hypothesis",
+        "supporting and contradicting evidence",
+        "credible alternatives, and next falsifier",
+        "Raw self-confidence cannot establish observed fact or effect truth",
+        "low confidence alone is not a trigger",
         "proportional non-interfering evidence lanes",
         "Prior RCAs and recurrences",
         "failure mechanism",
@@ -164,3 +169,26 @@ def test_root_cause_analysis_contract_and_entry_links_are_discoverable():
     working_with_marco = agents.split("## Working with Marco", 1)[1].split("\n## ", 1)[0]
     assert "[root-cause analysis procedure](docs/root-cause-analysis.md)" in working_with_marco
     assert "whether or not it arises from a live incident" in working_with_marco
+
+
+def test_incident_status_separates_causal_confidence_from_deterministic_truth():
+    runbook = (ROOT / "docs/operations-live-incident.md").read_text()
+    record = (ROOT / "docs/operations-incident-record.md").read_text()
+    runbook_normalized = " ".join(runbook.split())
+    record_normalized = " ".join(record.split())
+
+    for document in (runbook_normalized, record_normalized):
+        assert "Causal hypothesis / confidence" in document
+        assert "supporting and contradicting evidence" in document
+        assert "credible alternatives" in document
+        assert "falsifier" in document
+        assert "Difficulty / prognosis" in document
+
+    assert "Causal confidence is advisory inference only" in runbook_normalized
+    assert "confidence cannot replace or change them" in runbook_normalized
+    assert "Confidence describes only the named causal hypothesis" in record_normalized
+    assert "raw self-confidence cannot change them" in record_normalized
+    assert (
+        "Difficulty / prognosis: <trivial|contained|architectural|unknown; confidence"
+        not in record_normalized
+    )
