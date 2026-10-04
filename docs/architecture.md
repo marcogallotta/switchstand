@@ -54,6 +54,10 @@ configuration must expose the same intended inventory, but tool semantics belong
 standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
 interval aggregation; it neither persists records nor establishes journal durability or reliance.
+`flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. B1 is always partial:
+it reports canonical current state and relations plus observed target events from one read-only,
+repeatable-read transaction. It names excluded sources and computes no elapsed time; journal timing
+remains unavailable until cross-restart retention is proved.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
@@ -443,6 +447,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, and `0015_work_admission_time`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
+| Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation and source coverage; no journal reader, external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |

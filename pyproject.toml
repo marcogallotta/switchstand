@@ -35,6 +35,7 @@ switchstand-affected-tests = "switchstand.affected_tests:main"
 switchstand-agent-broker = "switchstand.agent_broker:main"
 switchstand-agent-executor = "switchstand.agent_executor:main"
 switchstand-agent-canary = "switchstand.agent_canary:main"
+switchstand-flow-report = "switchstand.flow_report:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
