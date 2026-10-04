@@ -18,9 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .edge_maintenance import (
-    Config as EdgeConfig,
-)
-from .edge_maintenance import (
+    Config,
     Failed,
     HostOperations,
     Unknown,
@@ -39,10 +37,8 @@ from .work_source_export import SourceProvider, source_parity_connection
 
 HOST_MACHINE = "marco@.host"
 TombstoneBuilder = Callable[[dict[str, object], Path], Awaitable[Path | None]]
-
 class HoldProvider(CorpusProvider, SourceProvider, Protocol):
     """Provider surface required across capture and source export."""
-
 @dataclass(frozen=True)
 class HoldPaths:
     attempt_dir: Path
@@ -53,7 +49,6 @@ class HoldPaths:
     fastmcp_snapshot: Path
     prepared_receipt: Path
     final_receipt: Path
-
     @classmethod
     def create(cls, attempt_dir: Path) -> HoldPaths:
         return cls(
@@ -66,7 +61,6 @@ class HoldPaths:
             prepared_receipt=attempt_dir / "prepared-receipt.json",
             final_receipt=attempt_dir / "production-hold-receipt.json",
         )
-
 @dataclass(frozen=True)
 class HoldArtifacts:
     paths: HoldPaths
@@ -79,7 +73,6 @@ class HoldArtifacts:
     tombstones_sha256: str | None
     fastmcp_snapshot_sha256: str
     database_identity_sha256: str
-
 class HoldOperations(Protocol):
     @property
     def lock_path(self) -> Path: ...
@@ -88,11 +81,10 @@ class HoldOperations(Protocol):
     def prove_gate(self) -> None: ...
     def stop_and_prove(self) -> None: ...
     def snapshot_current(self, target: Path) -> str: ...
-
 class HostHoldOperations:
     """Production host operations routed through the exact host systemd machine."""
 
-    def __init__(self, edge_config: EdgeConfig):
+    def __init__(self, edge_config: Config):
         self.config = edge_config
         self.edge = HostOperations(edge_config)
     @property
@@ -140,9 +132,7 @@ class HostHoldOperations:
             raise Unknown("maintenance gate is not exact at public ingress")
     def stop_and_prove(self) -> None:
         self._systemctl("stop", self.config.service, check=False)
-        state = self._systemctl(
-            "is-active", self.config.service, check=False
-        ).stdout.strip()
+        state = self._systemctl("is-active", self.config.service, check=False).stdout.strip()
         if state != "inactive":
             raise Unknown("host edge service did not become inactive")
         endpoint = urlparse(self.config.local_url)
@@ -188,7 +178,6 @@ class HostHoldOperations:
             raise Failed("current FastMCP snapshot failed") from error
         finally:
             temporary.unlink(missing_ok=True)
-
 def _file_digest(path: Path) -> str:
     descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
@@ -199,7 +188,6 @@ def _file_digest(path: Path) -> str:
             return hashlib.file_digest(stream, "sha256").hexdigest()
     finally:
         os.close(descriptor)
-
 async def _database_identity(connection: AsyncConnection) -> str:
     bindings = (await connection.execute(select(
         work_handles.c.provider,
@@ -226,11 +214,9 @@ async def _database_identity(connection: AsyncConnection) -> str:
     }
     encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
-
 def _digested(document: dict[str, object]) -> dict[str, object]:
     encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return document | {"sha256": hashlib.sha256(encoded).hexdigest()}
-
 def _prepared_receipt(source_candidate: str, paths: HoldPaths) -> dict[str, object]:
     return _digested({
         "schema_version": 1,
@@ -241,7 +227,6 @@ def _prepared_receipt(source_candidate: str, paths: HoldPaths) -> dict[str, obje
         "attempt_dir": str(paths.attempt_dir),
         "direct_asana_writes": "COORDINATION_LIMITATION_NOT_TECHNICALLY_FROZEN",
     })
-
 def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
     document: dict[str, object] = {
         "schema_version": 1,
@@ -259,9 +244,7 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
         "source_parity": str(artifacts.paths.source_export),
         "source_parity_sha256": artifacts.source_parity_sha256,
         "source_parity_file_sha256": artifacts.source_parity_file_sha256,
-        "tombstones": (
-            str(artifacts.paths.tombstones) if artifacts.tombstones_sha256 else None
-        ),
+        "tombstones": str(artifacts.paths.tombstones) if artifacts.tombstones_sha256 else None,
         "tombstones_sha256": artifacts.tombstones_sha256,
         "database_identity_sha256": artifacts.database_identity_sha256,
         "postgres_transaction": "SHARE_LOCKS_HELD_CONTINUOUSLY_THROUGH_COMMIT_THEN_RELEASED",
@@ -271,7 +254,6 @@ def _final_receipt(artifacts: HoldArtifacts) -> dict[str, object]:
         "direct_asana_writes": "COORDINATION_LIMITATION_NOT_TECHNICALLY_FROZEN",
     }
     return _digested(document)
-
 async def production_hold[Result](
     engine: AsyncEngine,
     provider: HoldProvider,
