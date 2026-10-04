@@ -333,9 +333,10 @@ Coordinator's generated local stdio MCP profile. Its read operation observes the
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
 refuses dirty or divergent state, and performs an ancestor-only fast-forward. It accepts no path,
 repository, remote, branch, or ref arguments and is absent from the ordinary ChatGPT MCP surface.
-The control validates the code-owned GitHub origin, uses a fixed HTTPS source, and runs fixed Git
-commands with caller/global configuration, hooks, filters, fsmonitor, pagers, credentials, alternate
-protocols, and recursive submodule fetch disabled or rejected.
+The control validates the code-owned GitHub origin, uses a fixed HTTPS source, admits only a small
+positive allowlist of inert repository configuration, and runs fixed Git commands with caller/global
+configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protocols, and recursive
+submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
