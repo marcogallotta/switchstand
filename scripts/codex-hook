@@ -101,6 +101,8 @@ def inline_alias(tokens: list[str]) -> str | None:
 
 
 def unwrap_env(tokens: list[str], cwd: str) -> tuple[list[str], str]:
+    if tokens and "=" in tokens[0] and tokens[0].partition("=")[0].isidentifier():
+        return tokens[1:], cwd
     if not tokens or Path(tokens[0]).name not in {"env", "command", "exec"}:
         return tokens, cwd
     wrapper = Path(tokens[0]).name
@@ -109,10 +111,11 @@ def unwrap_env(tokens: list[str], cwd: str) -> tuple[list[str], str]:
         token = tokens[pos]
         if token == "--":
             return tokens[pos + 1:], cwd
-        option = token.split("=", 1)[0]
+        attached = wrapper == "env" and len(token) > 2 and token[:2] in {"-C", "-S"}
+        option = token[:2] if attached else token.split("=", 1)[0]
         if wrapper == "env" and option in {"-C", "--chdir", "-S", "--split-string"}:
-            inline = "=" in token
-            value = token.split("=", 1)[1] if inline else tokens[pos + 1]
+            inline = attached or "=" in token
+            value = token[2:] if attached else token.split("=", 1)[1] if inline else tokens[pos + 1]
             pos += 1 if inline else 2
             if option in {"-C", "--chdir"}:
                 cwd = os.path.realpath(os.path.join(cwd, value))
@@ -156,9 +159,7 @@ def checkout_identity(prefix: list[str], cwd: str) -> tuple[str, str, str] | Non
         return None
     if _exact_task_writer(lines[0], lines[1], lines[2]):
         return None
-    return (
-        os.path.realpath(lines[0]), os.path.realpath(lines[1]), os.path.realpath(lines[2])
-    )
+    return os.path.realpath(lines[0]), os.path.realpath(lines[1]), os.path.realpath(lines[2])
 
 
 def primary_checkout(prefix: list[str], cwd: str) -> str | None:
@@ -215,11 +216,9 @@ def classify(
     for tokens in segments(command):
         unwrapped, wrapped_cwd = unwrap_env(tokens, current)
         if unwrapped != tokens or wrapped_cwd != current:
-            nested = classify(
-                shlex.join(unwrapped), wrapped_cwd, coordinator_primary, coordinator_writer
-            )
-            if nested:
-                return nested
+            if reason := classify(shlex.join(unwrapped), wrapped_cwd,
+                                  coordinator_primary, coordinator_writer):
+                return reason
             continue
         if tokens and Path(tokens[0]).name in SHELLS:
             positions = [pos for pos, token in enumerate(tokens[:-1])
