@@ -339,6 +339,9 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
+`scripts/coordinator-control` owns the inert launch-manifest schema and comparison mechanics. It
+keeps proven mismatches monotonically `CONTROL_STALE`; each unresolved local Markdown dependency
+rooted at `AGENTS.md` retains its identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under
