@@ -15,6 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 from .canonical_relations import work_dependencies
 from .canonical_work import canonical_work
+from .repository_candidate import (
+    QualificationGate,
+    RepositoryCandidateQualification,
+    qualify_repository_candidate,
+)
 from .work_events import work_events
 
 
@@ -145,6 +150,103 @@ async def report(engine: AsyncEngine, work_id: UUID) -> dict[str, object]:
             return await _snapshot(connection, work_id)
 
 
+def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
+    try:
+        started = datetime.fromisoformat(cast(str, gate.started_at))
+        completed = datetime.fromisoformat(cast(str, gate.completed_at))
+    except (TypeError, ValueError):
+        return None
+    if started.utcoffset() is None or completed.utcoffset() is None or completed < started:
+        return None
+    return started, completed
+
+
+def _union_ms(intervals: list[tuple[datetime, datetime]]) -> int:
+    total = 0
+    ordered = sorted(intervals)
+    current_start, current_end = ordered[0]
+    for started, completed in ordered[1:]:
+        if started <= current_end:
+            current_end = max(current_end, completed)
+        else:
+            total += int((current_end - current_start).total_seconds() * 1000)
+            current_start, current_end = started, completed
+    return total + int((current_end - current_start).total_seconds() * 1000)
+
+
+def _github_subject(
+    qualification: RepositoryCandidateQualification,
+    kind: Literal["exact_head", "composition"],
+    expected_sha: str | None,
+) -> dict[str, object]:
+    gates = [gate for gate in qualification.gates if gate.subject_kind == kind]
+    valid_reasons = {None, "failed", "cancelled", "skipped"}
+    parsed = [_gate_interval(gate) for gate in gates]
+    if (not expected_sha or not gates or any(gate.subject_sha != expected_sha for gate in gates)
+            or any(gate.reason not in valid_reasons for gate in gates)):
+        return {"status": "UNKNOWN", "reason": "GATE_IDENTITY_UNKNOWN",
+                "subject_sha": expected_sha, "intervals": [], "union_ms": None}
+    if any(interval is None for interval in parsed):
+        return {"status": "UNKNOWN", "reason": "INCOMPLETE_GATE_TIMESTAMPS",
+                "subject_sha": expected_sha, "intervals": [], "union_ms": None}
+    intervals = cast(list[tuple[datetime, datetime]], parsed)
+    return {
+        "status": "OBSERVED", "reason": None, "subject_sha": expected_sha,
+        "intervals": [{
+            "gate": gate.name, "state": gate.state, "conclusion": gate.conclusion,
+            "started_at": gate.started_at, "completed_at": gate.completed_at,
+        } for gate in gates],
+        "union_ms": _union_ms(intervals),
+    }
+
+
+def add_github_evidence(
+    value: dict[str, object], qualification: RepositoryCandidateQualification,
+    expected_head_sha: str,
+) -> dict[str, object]:
+    """Add only exact, caller-correlated GitHub timing evidence."""
+    result = dict(value)
+    reason = None
+    if qualification.status == "UNKNOWN":
+        reason = "PROVIDER_UNAVAILABLE"
+    elif qualification.head_sha != expected_head_sha:
+        reason = "EXPECTED_HEAD_MISMATCH"
+    elif qualification.reason in {"candidate_changed", "composition_mismatch"}:
+        reason = "STALE_OR_MISMATCHED_CANDIDATE"
+    subjects: dict[str, dict[str, object]]
+    if reason:
+        subjects = {
+            kind: {"status": "UNKNOWN", "reason": reason, "subject_sha": None,
+                   "intervals": [], "union_ms": None}
+            for kind in ("exact_head", "composition")
+        }
+    else:
+        subjects = {
+            "exact_head": _github_subject(qualification, "exact_head", expected_head_sha),
+            "composition": _github_subject(
+                qualification, "composition", qualification.composition_sha,
+            ),
+        }
+        reason = next((cast(str, item["reason"]) for item in subjects.values()
+                       if item["status"] == "UNKNOWN"), None)
+    status = "UNKNOWN" if reason else "OBSERVED"
+    result["github"] = {
+        "status": status, "reason": reason, "correlation": "CALLER_SUPPLIED",
+        "pull_request": qualification.pull_request,
+        "expected_head_sha": expected_head_sha,
+        "observed_head_sha": qualification.head_sha,
+        "qualification_status": qualification.status,
+        "subjects": subjects,
+    }
+    coverage = dict(cast(dict[str, object], value["coverage"]))
+    coverage["github"] = {
+        "status": "INCLUDED" if status == "OBSERVED" else "UNKNOWN",
+        "reason": "CALLER_SUPPLIED" if status == "OBSERVED" else reason,
+    }
+    result["coverage"] = coverage
+    return result
+
+
 def render_concise(value: dict[str, object]) -> str:
     """Render only explicit B1 facts and coverage, without deriving new evidence."""
     snapshot = cast(dict[str, object], value["snapshot"])
@@ -170,6 +272,21 @@ def render_concise(value: dict[str, object]) -> str:
         (f"evidence_count={len(cast(list[object], events['items']))} "
          f"events_coverage={events['coverage']}"),
     ]
+    github = cast(dict[str, object] | None, value.get("github"))
+    if github is not None:
+        lines.append(
+            f"github status={github['status']} reason={github['reason']} "
+            f"correlation={github['correlation']} pull_request={github['pull_request']} "
+            f"expected_head_sha={github['expected_head_sha']} "
+            f"observed_head_sha={github['observed_head_sha']}"
+        )
+        subjects = cast(dict[str, dict[str, object]], github["subjects"])
+        lines.extend(
+            f"github_{kind} status={subject['status']} reason={subject['reason']} "
+            f"subject_sha={subject['subject_sha']} intervals="
+            f"{len(cast(list[object], subject['intervals']))} union_ms={subject['union_ms']}"
+            for kind, subject in sorted(subjects.items())
+        )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"
         for name, item in sorted(coverage.items())
@@ -184,10 +301,18 @@ def render(value: dict[str, object], output_format: Literal["json", "concise"]) 
     return json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
 
 
-async def _run(work_id: UUID, output_format: Literal["json", "concise"]) -> None:
+async def _run(
+    work_id: UUID, output_format: Literal["json", "concise"],
+    github_pr: int | None = None, github_head_sha: str | None = None,
+) -> None:
     engine = create_async_engine(os.environ["DATABASE_URL"])
     try:
-        print(render(await report(engine, work_id), output_format), end="")
+        value = await report(engine, work_id)
+        if github_pr is not None and github_head_sha is not None:
+            value = add_github_evidence(
+                value, await qualify_repository_candidate(github_pr), github_head_sha,
+            )
+        print(render(value, output_format), end="")
     finally:
         await engine.dispose()
 
@@ -196,5 +321,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Report exact read-only flow evidence")
     parser.add_argument("--work-id", type=UUID, required=True)
     parser.add_argument("--format", choices=("json", "concise"), default="json")
+    parser.add_argument("--github-pr", type=int)
+    parser.add_argument("--github-head-sha")
     arguments = parser.parse_args()
-    asyncio.run(_run(arguments.work_id, arguments.format))
+    if (arguments.github_pr is None) != (arguments.github_head_sha is None):
+        parser.error("--github-pr and --github-head-sha must be supplied together")
+    if arguments.github_pr is not None and arguments.github_pr < 1:
+        parser.error("--github-pr must be positive")
+    if arguments.github_head_sha is not None and (
+        len(arguments.github_head_sha) != 40
+        or any(character not in "0123456789abcdef" for character in arguments.github_head_sha)
+    ):
+        parser.error("--github-head-sha must be a lowercase 40-character SHA")
+    asyncio.run(_run(
+        arguments.work_id, arguments.format, arguments.github_pr, arguments.github_head_sha,
+    ))

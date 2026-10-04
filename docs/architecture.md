@@ -59,6 +59,11 @@ it reports canonical current state and relations plus observed target events fro
 repeatable-read transaction. It names excluded sources and computes no elapsed time; journal timing
 remains unavailable until cross-restart retention is proved. Its concise format is a deterministic
 projection of the same JSON facts and coverage reasons, not another correlation or inference layer.
+Optional GitHub evidence requires a caller-supplied pull-request number and expected exact head;
+the existing repository-candidate qualifier validates their current identity. Exact-head and
+composition gate intervals remain separate, and overlapping intervals are unioned within each
+subject. Provider, identity, stale-candidate, or incomplete-timestamp uncertainty produces
+`UNKNOWN` rather than an inferred span.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
