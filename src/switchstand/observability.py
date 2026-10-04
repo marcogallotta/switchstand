@@ -81,15 +81,12 @@ _active_call: ContextVar[CallTiming | None] = ContextVar(
 )
 
 
-def annotate_target(value: str | None) -> None:
-    """Attach one exact WorkId already identified by the audited tool seam."""
+def annotate_target(value: UUID | None) -> None:
+    """Attach one exact typed WorkId identified by the ordinary-tool seam."""
     timing = _active_call.get()
-    if timing is None or value is None:
+    if timing is None:
         return
-    try:
-        timing.target_work_id = str(UUID(value))
-    except ValueError:
-        timing.target_work_id = None
+    timing.target_work_id = None if value is None else str(value)
 
 
 class CallTimingMiddleware(Middleware):

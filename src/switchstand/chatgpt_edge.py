@@ -141,7 +141,6 @@ class MCPAuthConfig:
 
 
 def _audit(tool: str, target: str | None, status: str) -> None:
-    annotate_target(target)
     token = get_access_token()
     LOG.info(
         "chatgpt_mcp tool=%s issuer=%s subject=%s client_id=%s target=%s status=%s",
@@ -253,6 +252,7 @@ def _create_resource_app(
     for name, tool in build_ordinary_tools(
         service, _audit,
         agent_identity=_runtime_identity,
+        correlate_work=annotate_target,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
     app = server.http_app(

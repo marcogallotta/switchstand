@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from fastmcp.server.middleware import MiddlewareContext
@@ -140,7 +141,7 @@ async def test_concurrent_calls_do_not_cross_contaminate_child_spans(
     async def run(tool: str, target: str) -> None:
         async def measured(context: MiddlewareContext[Any]) -> ToolResult:
             del context
-            annotate_target(target)
+            annotate_target(UUID(target) if target == work_id else None)
             connection = SimpleNamespace(info={})
             listeners["before_cursor_execute"](connection, None, "", None, None, False)
             await asyncio.sleep(0)

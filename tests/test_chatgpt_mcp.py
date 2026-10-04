@@ -276,6 +276,31 @@ async def test_exceptional_work_purpose_is_preserved_in_audit() -> None:
     )
 
 
+async def test_timing_correlation_uses_typed_work_targets_at_tool_entry(monkeypatch) -> None:
+    subject = service()
+    targets = []
+    tools = dict(build_ordinary_tools(subject, correlate_work=targets.append))
+
+    await tools["work_history"]("1", ACTIVE, "r1", "recovery")
+    await tools["work_event"]("1", uuid4(), "r1", ACTIVE, "legacy_reconciliation")
+    await tools["work_append"]("1", uuid4(), ACTIVE, "r1", "evidence", "provenance")
+    await tools["work_create"](
+        api_version="1", operation_id=uuid4(), title="Project child", project_id=uuid4(),
+    )
+    assert targets == [ACTIVE, ACTIVE, ACTIVE, None]
+
+    for status in ("unknown", "denied"):
+        monkeypatch.setattr(
+            subject, "admission_get",
+            AsyncMock(return_value=GrantResult(status=status, principal=PRINCIPAL)),
+        )
+        result = await tools["work_append"](
+            "1", uuid4(), ACTIVE, "r1", "early return", "investigation",
+        )
+        assert result.status == status
+        assert targets[-1] == ACTIVE
+
+
 async def test_each_call_resolves_the_caller_again_and_does_not_self_take():
     subject = service()
     assert (await subject.get()).status == "ok"
