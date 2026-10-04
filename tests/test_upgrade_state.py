@@ -53,7 +53,7 @@ case "$*" in
     echo "switchstand|postgres-data" ;;
   "exec shared psql "*version_num*)
     if [ -f "$FAKE_STATE/shared-new" ]; then
-      echo 0015_task_run_executions
+      echo 0016_task_run_results
     else
       echo "$FAKE_REVISION"
     fi ;;
@@ -66,7 +66,7 @@ case "$*" in
   "exec switchstand-upgrade-rehearsal-"*" pg_restore "*) : ;;
   "exec switchstand-upgrade-rehearsal-"*" psql "*version_num*)
     if [ -f "$FAKE_STATE/rehearsal-new" ]; then
-      echo 0015_task_run_executions
+      echo 0016_task_run_results
     else
       echo "$FAKE_REVISION"
     fi ;;
@@ -127,7 +127,7 @@ def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 1
-    assert "expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, 0014, or 0015_task_run_executions; actual unexpected" in result.stderr
+    assert "expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, 0014, 0015, or 0016_task_run_results; actual unexpected" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
     assert "build" not in trace
@@ -197,7 +197,7 @@ def test_ambiguous_shared_failure_reports_readback_without_retry(tmp_path):
 
     assert result.returncode == 17
     assert "shared migration outcome UNKNOWN" in result.stderr
-    assert "observed revision 0015_task_run_executions" in result.stderr
+    assert "observed revision 0016_task_run_results" in result.stderr
     assert "no retry or rollback attempted" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert trace.count("run --rm --network container:shared") == 1
@@ -209,7 +209,7 @@ def test_rehearses_before_shared_upgrade_and_preserves_backup(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0002_grants_and_effects -> 0015_task_run_executions" in result.stdout
+    assert "0002_grants_and_effects -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3" in result.stdout
     backups = list((tmp_path / "backups").glob("*.dump"))
     assert len(backups) == 1
@@ -231,7 +231,7 @@ def test_upgrades_existing_0004_and_preserves_all_existing_counts(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0004_required_result_persistence -> 0015_task_run_executions" in result.stdout
+    assert "0004_required_result_persistence -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7" in result.stdout
 
 
@@ -243,7 +243,7 @@ def test_upgrades_existing_0005_and_preserves_all_existing_counts(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0005_work_event_handles -> 0015_task_run_executions" in result.stdout
+    assert "0005_work_event_handles -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7|8" in result.stdout
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "count(*) FROM work_event_handles" in trace
@@ -263,7 +263,7 @@ def test_upgrades_existing_mailbox_schema_and_preserves_agent_mailboxes(
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert f"{revision} -> 0015_task_run_executions" in result.stdout
+    assert f"{revision} -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7|8|9" in result.stdout
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "count(*) FROM agent_mailboxes" in trace
@@ -278,7 +278,7 @@ def test_upgrades_existing_0013_and_preserves_failure_counts(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0013_failure_journal -> 0015_task_run_executions" in result.stdout
+    assert "0013_failure_journal -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7|8|9|10|11|12|13|14|15" in result.stdout
     assert "count(*) FROM failure_resolutions" in Path(env["FAKE_TRACE"]).read_text()
 
@@ -291,21 +291,36 @@ def test_upgrades_existing_0014_and_preserves_task_request_counts(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "0014_task_runs -> 0015_task_run_executions" in result.stdout
+    assert "0014_task_runs -> 0016_task_run_results" in result.stdout
     assert "preserved counts 78|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16" in result.stdout
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "count(*) FROM task_run_requests" in trace
     assert "run --rm --network container:shared" in trace
 
 
-def test_current_0015_is_a_noop(tmp_path):
+def test_upgrades_existing_0015_and_preserves_execution_counts(tmp_path):
     repo, env = _repo(tmp_path)
     env["FAKE_REVISION"] = "0015_task_run_executions"
+    env["FAKE_COUNTS"] = "78|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17"
 
     result = _run(repo, env)
 
     assert result.returncode == 0, result.stderr
-    assert "already at 0015_task_run_executions" in result.stdout
+    assert "0015_task_run_executions -> 0016_task_run_results" in result.stdout
+    assert "preserved counts 78|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17" in result.stdout
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert "count(*) FROM task_run_executions" in trace
+    assert "run --rm --network container:shared" in trace
+
+
+def test_current_0016_is_a_noop(tmp_path):
+    repo, env = _repo(tmp_path)
+    env["FAKE_REVISION"] = "0016_task_run_results"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "already at 0016_task_run_results" in result.stdout
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
     assert "build" not in trace
