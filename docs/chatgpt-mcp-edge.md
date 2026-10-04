@@ -19,6 +19,9 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
   WorkId-addressed `message_*` tools); and
 - required-result persistence.
 
+Canonical work reads expose nullable server admission time. Existing and source-imported rows may
+truthfully remain `null`; landing this schema change does not activate or prove the live client path.
+
 The executable inventory and client policy are owned by
 `build_ordinary_tools` in `src/switchstand/chatgpt_mcp.py`, its edge tests, and
 the repository's `.codex/config.toml`. Do not copy the full tool list into prose:

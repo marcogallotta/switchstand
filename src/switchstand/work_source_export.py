@@ -293,7 +293,8 @@ async def source_parity_connection(
                 "priority": None, "work_type": None, "lifecycle_state": None,
                 "review_next_action": None, "canonical_root": None, "owner_key": None,
                 "wait_kind": None, "unblock_condition": None, "next_due": None,
-                "next_action_class": None, "next_action_ref": None, "row_version": 1,
+                "next_action_class": None, "next_action_ref": None,
+                "admitted_at": None, "row_version": 1,
             }),
             _record("alias", _identity(gid), {
                 "asana_task_gid": gid, "work_id": str(work_id),
@@ -346,6 +347,7 @@ async def source_parity_connection(
             "wait_kind": routing.wait_kind, "unblock_condition": routing.unblock_condition,
             "next_due": routing.next_due, "next_action_class": routing.next_action_class,
             "next_action_ref": routing.next_action_ref,
+            "admitted_at": None,
             "row_version": 1,
         }
         records.extend((

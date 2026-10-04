@@ -4,6 +4,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -51,7 +52,7 @@ def test_compact_schema_has_no_provider_or_authority_columns():
         "work_id", "title", "normalized_title", "completed", "notes", "assignee", "priority",
         "work_type", "lifecycle_state", "review_next_action", "wait_kind",
         "unblock_condition", "next_due", "canonical_root", "owner_key",
-        "next_action_class", "next_action_ref", "row_version",
+        "next_action_class", "next_action_ref", "admitted_at", "row_version",
     }
     assert "horizon" not in canonical_work.c
     assert legacy_work_aliases.primary_key.columns.keys() == ["asana_task_gid"]
@@ -69,24 +70,30 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
         next_action_class="OWNER_CAN_DO", next_action_ref="implement",
     )
     second = CurrentWork(second_id, "Beta Task", True, "done", lifecycle_state="TERMINAL")
+    async with repository.engine.connect() as connection:
+        before = await connection.scalar(select(func.now()))
     await repository.create(first)
     await repository.create(second)
+    async with repository.engine.connect() as connection:
+        after = await connection.scalar(select(func.now()))
     await repository.bind_asana_gid("1218000000000001", first_id)
 
-    assert await repository.get(first_id) == first
+    stored = await repository.get(first_id)
+    assert stored is not None and stored.admitted_at is not None
+    assert before <= stored.admitted_at <= after
+    assert replace(stored, admitted_at=None) == first
     assert await repository.resolve_asana_gid("1218000000000001") == first_id
     assert await repository.asana_gids(first_id) == ("1218000000000001",)
     assert await repository.asana_gids(second_id) == ()
     assert await repository.resolve_asana_gid("missing") is None
-    assert await launch_work(repository, "1218000000000001") == first
-    assert await launch_work(repository, str(first_id)) == first
+    assert await launch_work(repository, "1218000000000001") == stored
+    assert await launch_work(repository, str(first_id)) == stored
     with pytest.raises(LaunchSourceError, match="exact launch work read failed"):
         await launch_work(repository, "1218000000000009")
-    assert (await repository.search("  ALPHA ")).items == (first,)
-    assert (await repository.search(completed=True)).items == (second,)
+    assert (await repository.search("  ALPHA ")).items == (stored,)
 
     changed = await repository.replace(replace(
-        first, title="Gamma Task", notes="changed", completed=True, assignee="Coordinator",
+        stored, title="Gamma Task", notes="changed", completed=True, assignee="Coordinator",
         lifecycle_state="TERMINAL",
     ))
     assert changed.row_version == 2
@@ -94,7 +101,7 @@ async def test_real_postgres_create_get_search_replace_alias_and_stale_rollback(
     assert (await repository.search("gamma", completed=True)).items == (changed,)
 
     with pytest.raises(ValueError, match="stale"):
-        await repository.replace(replace(first, title="must roll back"))
+        await repository.replace(replace(stored, title="must roll back"))
     assert await repository.get(first_id) == changed
 
     with pytest.raises(IntegrityError):
@@ -115,10 +122,12 @@ async def test_search_pages_by_normalized_title_and_binds_cursor_to_criteria(
         await repository.create(row)
 
     first_page = await repository.search(limit=2)
-    assert first_page.items == rows[:2]
+    assert tuple(replace(item, admitted_at=None) for item in first_page.items) == rows[:2]
+    assert all(item.admitted_at is not None for item in first_page.items)
     assert first_page.next_cursor is not None
     second_page = await repository.search(cursor=first_page.next_cursor, limit=2)
-    assert second_page.items == rows[2:]
+    assert tuple(replace(item, admitted_at=None) for item in second_page.items) == rows[2:]
+    assert all(item.admitted_at is not None for item in second_page.items)
     assert second_page.next_cursor is None
 
     with pytest.raises(ValueError, match="invalid canonical work cursor"):

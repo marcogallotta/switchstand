@@ -8,6 +8,7 @@ import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -16,12 +17,14 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    DateTime,
     ForeignKey,
     Index,
     MetaData,
     Table,
     Text,
     and_,
+    func,
     insert,
     or_,
     select,
@@ -50,6 +53,7 @@ canonical_work = Table(
     Column("next_due", Text),
     Column("next_action_class", Text),
     Column("next_action_ref", Text),
+    Column("admitted_at", DateTime(timezone=True)),
     Column("row_version", BigInteger, nullable=False),
     CheckConstraint("title <> ''", name="ck_canonical_work_title"),
     CheckConstraint("normalized_title <> ''", name="ck_canonical_work_normalized_title"),
@@ -105,6 +109,7 @@ class CurrentWork:
     next_due: str | None = None
     next_action_class: str | None = None
     next_action_ref: str | None = None
+    admitted_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -118,12 +123,13 @@ _SCALARS = (
     "review_next_action", "wait_kind", "unblock_condition", "next_due",
     "canonical_root", "owner_key", "next_action_class", "next_action_ref",
 )
-_COLUMNS = (canonical_work.c.work_id, *[canonical_work.c[name] for name in _SCALARS],
+_READ_SCALARS = (*_SCALARS, "admitted_at")
+_COLUMNS = (canonical_work.c.work_id, *[canonical_work.c[name] for name in _READ_SCALARS],
             canonical_work.c.row_version)
 
 
 def _item(row: Sequence[object]) -> CurrentWork:
-    values = cast(dict[str, Any], dict(zip(_SCALARS, row[1:-1], strict=True)))
+    values = cast(dict[str, Any], dict(zip(_READ_SCALARS, row[1:-1], strict=True)))
     return CurrentWork(work_id=cast(UUID, row[0]), row_version=cast(int, row[-1]), **values)
 
 
@@ -254,7 +260,8 @@ class CanonicalWorkRepository:
             raise ValueError("new canonical work must start at version 1")
         await connection.execute(insert(canonical_work).values(
             work_id=item.work_id, normalized_title=normalize_title(item.title),
-            row_version=1, **{name: getattr(item, name) for name in _SCALARS},
+            row_version=1, admitted_at=func.now(),
+            **{name: getattr(item, name) for name in _SCALARS},
         ))
 
     async def replace(self, item: CurrentWork) -> CurrentWork:

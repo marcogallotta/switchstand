@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
@@ -64,6 +65,7 @@ class WorkItem(ClosedModel):
     routing: Routing
     context: WorkContext
     source: WorkSource | None = None
+    admitted_at: datetime | None = None
 
 
 class WorkPatch(ClosedModel):
@@ -125,6 +127,7 @@ class WorkSearchItem(ClosedModel):
     revision: str
     routing: Routing
     context: WorkContext
+    admitted_at: datetime | None = None
 
 
 class WorkSearchResult(ClosedModel):

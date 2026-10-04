@@ -59,6 +59,8 @@ def _values(table: Table, raw: object) -> dict[str, object]:
             value = UUID(cast(str, value))
         elif value is not None and isinstance(column.type, DateTime):
             value = datetime.fromisoformat(cast(str, value))
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{table.name}.{column.name} timestamp requires a timezone")
         values[column.name] = value
     return values
 

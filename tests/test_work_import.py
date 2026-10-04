@@ -56,6 +56,7 @@ def work(work_id: UUID, title: str) -> dict[str, object]:
         "wait_kind": None, "unblock_condition": None, "next_due": None,
         "next_action_class": "OWNER_CAN_DO" if work_id == WORK else None,
         "next_action_ref": "implement" if work_id == WORK else None,
+        "admitted_at": parity_value(NOW) if work_id == WORK else None,
         "row_version": 1,
     })
 
@@ -122,6 +123,9 @@ async def test_one_shot_import_and_exact_target_export(
         assert await connection.scalar(select(canonical_work.c.notes).where(
             canonical_work.c.work_id == WORK
         )) == "notes for Child"
+        assert await connection.scalar(select(canonical_work.c.admitted_at).where(
+            canonical_work.c.work_id == WORK
+        )) == NOW
         assert (await connection.execute(select(
             canonical_work.c.canonical_root,
             canonical_work.c.owner_key,
@@ -290,6 +294,15 @@ async def test_import_rejects_identity_or_schema_drift_before_writing(
     source = tmp_path / "wrong-schema.json"
     write_manifest(source, parity_manifest(records))
     with pytest.raises(ValueError, match="columns"):
+        await import_parity(engine, source)
+
+    records = source_records()
+    fields = records[0]["fields"]
+    assert isinstance(fields, dict)
+    fields["admitted_at"] = "2026-01-02T03:04:05"
+    source = tmp_path / "naive-timestamp.json"
+    write_manifest(source, parity_manifest(records))
+    with pytest.raises(ValueError, match="timestamp requires a timezone"):
         await import_parity(engine, source)
 
 
