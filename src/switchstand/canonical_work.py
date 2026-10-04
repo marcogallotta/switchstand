@@ -148,13 +148,17 @@ class CanonicalWorkRepository:
 
     async def search(
         self, query: str | None = None, *, completed: bool | None = None,
+        lifecycle_state: str | None = None, owner_key: str | None = None,
+        priority: str | None = None, work_type: str | None = None,
+        canonical_root: str | None = None,
         cursor: str | None = None, limit: int = 100,
     ) -> CurrentWorkPage:
         if limit < 1 or limit > 500:
             raise ValueError("limit must be between 1 and 500")
         normalized = normalize_title(query) if query is not None else None
         criteria = hashlib.sha256(json.dumps(
-            [normalized, completed], separators=(",", ":")
+            [normalized, completed, lifecycle_state, owner_key, priority, work_type,
+             canonical_root], separators=(",", ":")
         ).encode()).hexdigest()
         statement = select(*_COLUMNS, canonical_work.c.normalized_title)
         if normalized is not None:
@@ -163,6 +167,13 @@ class CanonicalWorkRepository:
             )
         if completed is not None:
             statement = statement.where(canonical_work.c.completed == completed)
+        for field, value in (
+            ("lifecycle_state", lifecycle_state), ("owner_key", owner_key),
+            ("priority", priority), ("work_type", work_type),
+            ("canonical_root", canonical_root),
+        ):
+            if value is not None:
+                statement = statement.where(canonical_work.c[field] == value)
         if cursor is not None:
             title, work_id = self._decode_cursor(cursor, criteria)
             statement = statement.where(or_(

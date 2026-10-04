@@ -71,13 +71,28 @@ class ProtectedCreate(ClosedModel):
     grant_version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     notes: str = Field(default="", max_length=8000)
+    priority: str = Field(default="UNSET", min_length=1)
+    work_type: str = Field(default="UNKNOWN", min_length=1)
+    lifecycle_state: Literal[
+        "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+    ] = "UNKNOWN"
+    canonical_root: str | None = Field(default=None, min_length=1)
+    owner_key: str = Field(default="UNKNOWN", min_length=1)
+    wait_kind: str = Field(default="UNKNOWN", min_length=1)
+    unblock_condition: str = Field(default="UNKNOWN", min_length=1)
+    next_due: str = Field(default="UNKNOWN", min_length=1)
+    next_action_class: str = Field(default="UNKNOWN", min_length=1)
+    next_action_ref: str = Field(default="UNKNOWN", min_length=1)
     parent_work_id: UUID | None = None
+    project_id: UUID | None = None
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
 
     @model_validator(mode="after")
     def one_target(self) -> Self:
-        if (self.parent_work_id is None) == (self.project_gid is None):
-            raise ValueError("create requires exactly one parent_work_id or project_gid")
+        if sum(value is not None for value in (
+            self.parent_work_id, self.project_id, self.project_gid,
+        )) != 1:
+            raise ValueError("create requires exactly one parent or project target")
         return self
 
 

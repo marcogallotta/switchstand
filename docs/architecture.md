@@ -197,7 +197,9 @@ messaging, and required continuation:
   edge constructs this runtime directly; deployment and cutover remain separate effects.
   Migration `0008` materializes the compact tables; migration `0014_canonical_routing` adds the
   nullable canonical-root, owner, and next-action routing projection without inferring legacy
-  values. The repositories remain outside shared
+  values. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
+  state for semantic writes; legacy incomplete rows remain editable through title/notes-only
+  changes. The repositories remain outside shared
   `state.metadata` and are registered explicitly by the edge.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.

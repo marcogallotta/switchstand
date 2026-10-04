@@ -57,6 +57,7 @@ async def test_search_projects_page_and_cursor() -> None:
     runtime = CanonicalWorkRuntime(works, relations)  # type: ignore[arg-type]
     request = WorkSearchRequest(
         api_version="1", text="task", completed=False, cursor="cursor", limit=7,
+        owner_key="agent:root", lifecycle_state="CURRENT",
     )
 
     result = await runtime.search(request)
@@ -66,6 +67,7 @@ async def test_search_projects_page_and_cursor() -> None:
     assert [item.id for item in result.items] == [work_id]
     works.search.assert_awaited_once_with(
         "task", completed=False, cursor="cursor", limit=7,
+        owner_key="agent:root", lifecycle_state="CURRENT",
     )
 
 
@@ -120,11 +122,61 @@ async def test_update_rejects_stale_and_unsupported_fields_without_writing() -> 
 
 
 @pytest.mark.asyncio
+async def test_update_validates_full_resultant_state_for_semantic_patch() -> None:
+    work_id = uuid4()
+    before = replace(
+        _work(work_id), canonical_root=str(work_id), owner_key="agent:root",
+        next_action_class="NONE", next_action_ref="NONE",
+    )
+    after = replace(before, owner_key="agent:worker", row_version=2)
+    works = SimpleNamespace(
+        get=AsyncMock(side_effect=[before, before, before, after]),
+        replace=AsyncMock(return_value=after),
+    )
+    relations = SimpleNamespace(get=AsyncMock(return_value=_relations()))
+    runtime = CanonicalWorkRuntime(works, relations)  # type: ignore[arg-type]
+
+    result = await runtime.update(WorkUpdateRequest(
+        api_version="1", work_id=work_id,
+        observed_revision=canonical_revision(work_id, 1),
+        patch=WorkPatch(owner_key="agent:worker"),
+    ))
+
+    assert result.status == "ok" and result.item is not None
+    assert result.item.routing.owner_key == "agent:worker"
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_unbound_exact_root_before_replace() -> None:
+    work_id = uuid4()
+    current = replace(
+        _work(work_id), canonical_root=str(work_id), owner_key="agent:root",
+        next_action_class="NONE", next_action_ref="NONE",
+    )
+    works = SimpleNamespace(
+        get=AsyncMock(side_effect=[current, current, None]), replace=AsyncMock(),
+    )
+    relations = SimpleNamespace(get=AsyncMock(return_value=_relations()))
+    runtime = CanonicalWorkRuntime(works, relations)  # type: ignore[arg-type]
+    result = await runtime.update(WorkUpdateRequest(
+        api_version="1", work_id=work_id,
+        observed_revision=canonical_revision(work_id, 1),
+        patch=WorkPatch(canonical_root=str(uuid4())),
+    ))
+    assert result.status == "denied"
+    works.replace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_reports_current_row_when_replace_loses_race() -> None:
     work_id = uuid4()
-    before, latest = _work(work_id), _work(work_id, 2)
+    before = replace(
+        _work(work_id), canonical_root=str(work_id), owner_key="agent:root",
+        next_action_class="NONE", next_action_ref="NONE",
+    )
+    latest = replace(before, row_version=2)
     works = SimpleNamespace(
-        get=AsyncMock(side_effect=[before, before, latest, latest]),
+        get=AsyncMock(side_effect=[before, before, before, latest, latest]),
         replace=AsyncMock(side_effect=ValueError("stale canonical work version")),
     )
     relations = SimpleNamespace(get=AsyncMock(return_value=_relations()))

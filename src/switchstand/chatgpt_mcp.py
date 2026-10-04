@@ -319,11 +319,16 @@ def build_ordinary_tools(
 
     async def work_search(
         api_version: Literal["1"], text: str | None = None,
-        completed: bool | None = None, cursor: str | None = None, limit: int = 50,
+        completed: bool | None = None, lifecycle_state: str | None = None,
+        owner_key: str | None = None, priority: str | None = None,
+        work_type: str | None = None, canonical_root: str | None = None,
+        cursor: str | None = None, limit: int = 50,
     ) -> WorkSearchResult:
         """Search admitted workspace work and return only stable provider-neutral WorkIds."""
         result = await service.search(WorkSearchRequest(
             api_version=api_version, text=text, completed=completed,
+            lifecycle_state=lifecycle_state, owner_key=owner_key, priority=priority,
+            work_type=work_type, canonical_root=canonical_root,
             cursor=cursor, limit=limit,
         ))
         audited("work_search", None, result.status)
@@ -382,19 +387,31 @@ def build_ordinary_tools(
 
     async def work_create(
         api_version: Literal["1"], operation_id: UUID,
-        parent_work_id: UUID, title: str, notes: str = "",
+        title: str, parent_work_id: UUID | None = None, project_id: UUID | None = None,
+        notes: str = "", priority: str = "UNSET",
+        work_type: str = "UNKNOWN", lifecycle_state: Literal[
+            "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
+        ] = "UNKNOWN", canonical_root: str | None = None, owner_key: str = "UNKNOWN",
+        wait_kind: str = "UNKNOWN", unblock_condition: str = "UNKNOWN",
+        next_due: str = "UNKNOWN", next_action_class: str = "UNKNOWN",
+        next_action_ref: str = "UNKNOWN",
     ) -> GuardOutcome:
-        """Create parented work through current authenticated admission."""
+        """Create work under one admitted provider-neutral parent or project."""
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
-            return admission_unknown("work_create", parent_work_id, operation_id)
+            return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
+            project_id=project_id,
             grant_version=grant_version, title=title, notes=notes,
+            priority=priority, work_type=work_type, lifecycle_state=lifecycle_state,
+            canonical_root=canonical_root, owner_key=owner_key, wait_kind=wait_kind,
+            unblock_condition=unblock_condition, next_due=next_due,
+            next_action_class=next_action_class, next_action_ref=next_action_ref,
         ))
-        audited("work_create", str(parent_work_id), result.status)
+        audited("work_create", str(parent_work_id or project_id), result.status)
         return result
 
     async def work_update(

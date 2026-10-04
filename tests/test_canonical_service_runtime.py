@@ -1,6 +1,6 @@
 import os
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -158,13 +158,16 @@ async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Sub
 async def test_service_updates_and_projects_coherent_lifecycle_routing(
     subject: Subject,
 ) -> None:
+    incomplete = await subject.service.update(update(subject, completed=True))
     changed = await subject.service.update(update(
         subject, lifecycle_state="WAITING", wait_kind="DEPENDENCY",
         unblock_condition="dependency completes", next_due="2026-10-05",
+        canonical_root=str(subject.work_id), owner_key="agent:root",
+        next_action_class="NONE", next_action_ref="NONE",
     ))
     readback = await subject.service.get(subject.work_id)
 
-    assert changed.status == "ok" and changed.effect == "applied"
+    assert incomplete.effect == "not_sent" and changed.effect == "applied"
     assert readback.status == "ok" and readback.item is not None
     assert {
         "lifecycle_state": readback.item.routing.lifecycle_state,
@@ -177,6 +180,23 @@ async def test_service_updates_and_projects_coherent_lifecycle_routing(
         "unblock_condition": "dependency completes",
         "next_due": "2026-10-05",
     }
+
+
+async def test_updates_and_inherited_creates_reject_unbound_exact_root(
+    subject: Subject,
+) -> None:
+    missing = uuid4()
+    denied = await subject.service.update(update(
+        subject, lifecycle_state="CURRENT", canonical_root=str(missing),
+        owner_key="agent:root", wait_kind="NONE", unblock_condition="NONE",
+        next_due="NONE", next_action_class="NONE", next_action_ref="NONE",
+    ))
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None and current.row_version == 1
+    await subject.runtime.works.replace(replace(current, canonical_root=str(missing)))
+    inherited = await subject.service.create(create(subject))
+
+    assert denied.reason == inherited.reason == "canonical_root_not_bound"
 
 
 async def test_managed_controller_constructs_db_only_canonical_reads(
@@ -275,11 +295,15 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
 async def test_atomic_update_round_trips_supported_routing_and_preserves_fences(
     subject: Subject,
 ) -> None:
-    root = str(uuid4())
+    root = str(subject.work_id)
     request = update(
         subject,
+        lifecycle_state="CURRENT",
         canonical_root=root,
         owner_key="coordinator",
+        wait_kind="NONE",
+        unblock_condition="NONE",
+        next_due="NONE",
         next_action_class="OWNER_CAN_DO",
         next_action_ref="implement",
     )
@@ -323,14 +347,19 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
     first = await subject.service.create(request)
     replay = await subject.service.create(request)
     conflict = await subject.service.create(request.model_copy(update={"title": "Different"}))
+    root_conflict = await subject.service.create(create(subject, canonical_root="NONE"))
 
     assert first == replay and first.effect == "applied"
     assert isinstance(first.receipt, CreateReceipt)
     assert first.receipt.provider == "postgres" and first.receipt.task_gid == str(first.work_id)
     assert conflict.reason == "operation_identity_conflict"
+    assert root_conflict.reason == "child_root_conflicts_with_parent"
     stored = await subject.runtime.get(first.work_id)  # type: ignore[arg-type]
     assert stored.status == "ok" and stored.item is not None
     assert stored.item.title == "Created" and stored.item.notes == "created notes"
+    assert stored.item.routing.canonical_root == "UNKNOWN"
+    assert stored.item.routing.owner_key == "UNKNOWN"
+    assert stored.item.routing.next_action_class == "UNKNOWN"
     async with subject.engine.connect() as connection:
         assert await connection.scalar(select(work_parents.c.parent_work_id)) == subject.work_id
         handle = (await connection.execute(select(work_handles).where(
@@ -361,20 +390,38 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
         await connection.execute(projects.insert().values(
             project_id=project_id, asana_project_gid="999", name="Switchstand",
         ))
-    request = create(subject, parent_work_id=None, project_gid="999")
+    request = create(subject, parent_work_id=None, project_id=project_id)
 
     applied = await subject.service.create(request)
+    replay = await subject.service.create(request)
+    existing_root = await subject.service.create(create(
+        subject, parent_work_id=None, project_id=project_id,
+        canonical_root=str(subject.work_id),
+    ))
     missing = await subject.service.create(create(
         subject, parent_work_id=None, project_gid="998",
     ))
+    missing_root = await subject.service.create(create(
+        subject, parent_work_id=None, project_id=project_id, canonical_root=str(uuid4()),
+    ))
 
-    assert applied.effect == "applied" and applied.receipt.project_gid == "999"
+    assert applied == replay and applied.effect == "applied"
+    assert existing_root.effect == "applied"
     assert missing.reason == "project_not_admitted" and missing.effect == "not_sent"
+    assert missing_root.reason == "canonical_root_not_bound"
+    created = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
+    assert created.item is not None
+    assert created.item.routing.canonical_root == str(applied.work_id)
+    rooted = await subject.runtime.get(existing_root.work_id)  # type: ignore[arg-type]
+    assert rooted.item is not None
+    assert rooted.item.routing.canonical_root == str(subject.work_id)
     async with subject.engine.connect() as connection:
-        membership = (await connection.execute(select(
+        memberships = (await connection.execute(select(
             project_memberships.c.project_id, project_memberships.c.work_id
-        ))).one()
-        assert membership == (project_id, applied.work_id)
+        ))).all()
+        assert set(memberships) == {
+            (project_id, applied.work_id), (project_id, existing_root.work_id),
+        }
 
 
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:

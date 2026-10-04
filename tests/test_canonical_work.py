@@ -123,3 +123,15 @@ async def test_search_pages_by_normalized_title_and_binds_cursor_to_criteria(
 
     with pytest.raises(ValueError, match="invalid canonical work cursor"):
         await repository.search(completed=False, cursor=first_page.next_cursor, limit=2)
+
+    owned = replace(
+        rows[0], owner_key="agent:root", lifecycle_state="CURRENT", priority="P1",
+        work_type="Implementation", canonical_root=str(first_id),
+    )
+    await repository.replace(owned)
+    assert (await repository.search(
+        owner_key="agent:root", lifecycle_state="CURRENT", priority="P1",
+        work_type="Implementation", canonical_root=str(first_id),
+    )).items[0].work_id == first_id
+    with pytest.raises(ValueError, match="invalid canonical work cursor"):
+        await repository.search(owner_key="different", cursor=first_page.next_cursor)
