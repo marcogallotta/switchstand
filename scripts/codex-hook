@@ -214,6 +214,8 @@ def classify(
 ) -> str | None:
     current = cwd
     for tokens in segments(command):
+        if coordinator_writer and tokens and Path(tokens[0]).name == "env" and any(arg.startswith(("-S", "--split-string")) for arg in tokens[1:]):
+            return "[foreign-worktree] env split-string is denied by the writer-bound guard."
         unwrapped, wrapped_cwd = unwrap_env(tokens, current)
         if unwrapped != tokens or wrapped_cwd != current:
             if reason := classify(shlex.join(unwrapped), wrapped_cwd,
