@@ -330,11 +330,11 @@ automatic updater maintains its otherwise-unused visible command outside the man
 `scripts/coordinator-handoff` is the sole guarded canonical-main update path for Coordinator
 replacement. It accepts the launch-record path injected by `codex-dispatch` and an exact private
 obligations file, refuses dirty or divergent primary state, fast-forwards to fetched remote `main`,
-and registers a pending handoff in private durable state. Only the next plain Coordinator launch
-may consume it: `codex-dispatch` binds the actual generated launch manifest and generation to the
-handoff, then the successor acknowledges that deterministic launcher proof. Obligations do not
-transfer and the old generation does not retire before that acknowledgement. Failure evidence is
-retained and never rewinds the safely advanced primary.
+and registers a pending handoff in private durable state. Plain Coordinator launches remain
+independent and never claim it. Automatic transfer is disabled until a separate explicit addressed
+claim can bind the handoff to a launcher-proven generation. Obligations do not transfer and the old
+generation does not retire before the successor acknowledges that future binding. Failure evidence
+is retained and never rewinds the safely advanced primary.
 `coordinator_sync.py` owns the smaller pre-handoff synchronization control exposed only through the
 Coordinator's generated local stdio MCP profile. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,

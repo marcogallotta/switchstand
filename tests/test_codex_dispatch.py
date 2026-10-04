@@ -124,15 +124,15 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         text=True, capture_output=True, check=False,
     )
     assert fresh.returncode == 0, fresh.stderr
-    successor = next(
+    manifests = [
         json.loads(path.read_text()) for path in coordinator_home.glob("*.manifest.json")
-        if "handoff" in json.loads(path.read_text())
-    )
-    assert successor["session"]["start_commit"] == git_head
-    assert successor["handoff"]["handoff_id"] == "test-handoff"
-    assert json.loads((artifact / "successor-launch.json").read_text())[
-        "session_generation"
-    ] == successor["session"]["generation"]
+    ]
+    assert len(manifests) == 2
+    assert all("handoff" not in manifest for manifest in manifests)
+    assert not (artifact / "successor-launch.json").exists()
+    assert json.loads((coordinator_home / "pending-handoff.json").read_text()) == {
+        "handoff_id": "test-handoff", "artifact": str(artifact)
+    }
 
     repeated = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
