@@ -113,6 +113,7 @@ if [ ! -e "$friction_store" ]; then
     cp "$legacy_friction_store" "$friction_store"
     chmod 600 "$friction_store"
 fi
+ln -sfn "$friction_store" "$friction_path"
 
 writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')
 owned_writer=$(
