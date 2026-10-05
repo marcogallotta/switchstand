@@ -396,12 +396,14 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
     if not assignment:
         raise ValueError("initial assignment must not be empty")
     prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
-              'Obey the managed Worker context contract, then reconcile current history with '
-              "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
-              "before material work. Follow next_cursor until null; if history is stale, "
-              "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Work only in this private task clone. This is ordinary "
-              "development; the exact CONTROL hook remains active.")
+              'Obey the managed Worker context contract. Ground current execution from '
+              'work_get and the exact current bound package. Do not enumerate work_history '
+              'during normal startup or re-entry; use it only for an explicit bounded '
+              'investigation/recovery question that current durable state cannot answer. '
+              'Reconcile any still-current conclusion back into current work before normal '
+              'reliance. Do not resume completed or superseded intent. Work only in this '
+              'private task clone. This is ordinary development; the exact CONTROL hook '
+              'remains active.')
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
