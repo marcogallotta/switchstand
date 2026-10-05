@@ -13,6 +13,7 @@ from switchstand.product_currentness import (
 )
 from switchstand.product_currentness_stateful import (
     LiveStatefulEvidenceReader,
+    StatefulFunctionalProof,
     StatefulPersistenceSnapshot,
     StatefulServerSnapshot,
 )
@@ -42,42 +43,104 @@ class MemoryStatefulEvidenceReader(LiveStatefulEvidenceReader):
 
 def build_reader():
     snapshot = SERVER_SNAPSHOT
+    proof: StatefulFunctionalProof | None = None
 
     async def read_snapshot() -> StatefulServerSnapshot:
         return snapshot
 
+    async def read_proof() -> StatefulFunctionalProof | None:
+        return proof
+
     reader = MemoryStatefulEvidenceReader(
-            cast(AsyncEngine, object()),
-            read_snapshot,
-            expected_migration_revision=EXPECTED_MIGRATION,
-            expected_tools_schema_sha256=SCHEMA_DIGEST,
-        )
+        cast(AsyncEngine, object()),
+        read_snapshot,
+        read_proof,
+        expected_migration_revision=EXPECTED_MIGRATION,
+        expected_tools_schema_sha256=SCHEMA_DIGEST,
+    )
 
     def set_snapshot(value: StatefulServerSnapshot) -> None:
         nonlocal snapshot
         snapshot = value
 
-    return reader, snapshot, set_snapshot
+    def set_proof(value: StatefulFunctionalProof | None) -> None:
+        nonlocal proof
+        proof = value
+
+    return reader, snapshot, set_snapshot, set_proof
 
 
-async def test_live_prerequisites_are_diagnostic_but_cannot_claim_true() -> None:
-    reader, _, _ = build_reader()
+async def passing_proof(
+    reader: MemoryStatefulEvidenceReader,
+    **changes: object,
+) -> StatefulFunctionalProof:
+    values: dict[str, object] = {
+        "evidence_id": "stateful-real-mcp-qualification",
+        "result": "PASS",
+        "binding": await reader.qualification_binding(),
+        "authenticated_mcp_round_trip": True,
+        "admission_enforced": True,
+        "stale_cas_rejected": True,
+        "replay_idempotent": True,
+        "currentness_rechecked": True,
+    }
+    values.update(changes)
+    return StatefulFunctionalProof.model_validate(values)
+
+
+async def test_live_binding_proves_exact_technical_true_boundary() -> None:
+    reader, _, _, set_proof = build_reader()
+    set_proof(await passing_proof(reader))
 
     result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
 
-    assert (result.status, result.current) == ("unknown", "UNKNOWN")
-    assert result.blockers == ("functional_proof",)
+    assert (result.status, result.current) == ("ok", "TRUE")
+    assert result.blockers == ()
     assert {condition.detail for condition in result.conditions} == {
         "runtime_selected",
         "feature_enabled",
         "schema_current",
         "persistence_current",
-        "functional_proof_missing",
+        "functional_proof_pass",
     }
 
 
+async def test_proof_must_cover_mcp_admission_cas_replay_and_currentness() -> None:
+    for missing_check in (
+        "authenticated_mcp_round_trip",
+        "admission_enforced",
+        "stale_cas_rejected",
+        "replay_idempotent",
+        "currentness_rechecked",
+    ):
+        reader, _, _, set_proof = build_reader()
+        set_proof(await passing_proof(reader, **{missing_check: False}))
+        result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+        proof = next(item for item in result.conditions if item.name == "functional_proof")
+        assert result.current == "FALSE"
+        assert proof.result == "FALSE" and proof.detail == "functional_proof_failed"
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["wrong_binding", "restart"])
+async def test_missing_wrong_or_restarted_proof_never_claims_true(restart: bool) -> None:
+    reader, snapshot, set_snapshot, set_proof = build_reader()
+    assert (await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)).current == "UNKNOWN"
+
+    valid_proof = await passing_proof(reader)
+    if restart:
+        set_proof(valid_proof)
+        set_snapshot(snapshot.model_copy(update={"run_id": "run-2"}))
+    else:
+        wrong = valid_proof.binding.model_copy(update={"runtime_sha": "d" * 40})
+        set_proof(valid_proof.model_copy(update={"binding": wrong}))
+    result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+    proof = next(item for item in result.conditions if item.name == "functional_proof")
+    assert (result.status, result.current) == ("conflict", "CONFLICT")
+    assert proof.detail == "functional_proof_basis_mismatch"
+
+
 async def test_expected_schema_and_persistence_are_contract_inputs() -> None:
-    reader, snapshot, set_snapshot = build_reader()
+    reader, snapshot, set_snapshot, _ = build_reader()
     set_snapshot(snapshot.model_copy(update={"tools_schema_sha256": "e" * 64}))
     schema = await reader.read("schema_surface")
     assert schema.result == "FALSE" and schema.detail == "schema_mismatch"
@@ -88,6 +151,8 @@ async def test_expected_schema_and_persistence_are_contract_inputs() -> None:
     persistence = await reader.read("persistence_ready")
     assert persistence.result == "FALSE"
     assert persistence.detail == "persistence_prerequisite_missing"
+
+
 async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
     database_url = os.getenv("TEST_DATABASE_URL")
     if database_url is None:
@@ -96,6 +161,9 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
 
     async def read_snapshot() -> StatefulServerSnapshot:
         return SERVER_SNAPSHOT
+
+    async def read_proof() -> StatefulFunctionalProof | None:
+        return None
 
     try:
         async with engine.begin() as connection:
@@ -114,6 +182,7 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
         reader = LiveStatefulEvidenceReader(
             engine,
             read_snapshot,
+            read_proof,
             expected_migration_revision=actual_migration,
             expected_tools_schema_sha256=SCHEMA_DIGEST,
         )
