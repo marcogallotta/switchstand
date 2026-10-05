@@ -188,7 +188,7 @@ def test_hostile_git_execution_config_is_sanitized_during_real_fast_forward(
 def test_filter_command_and_noncanonical_remote_are_rejected_before_execution(
     tmp_path: Path,
 ) -> None:
-    home, primary, source, started, target = setup(tmp_path)
+    home, primary, source, started, _target = setup(tmp_path)
     marker = tmp_path / "escaped"
     helper = tmp_path / "helper"
     executable(helper, marker, passthrough=True)
