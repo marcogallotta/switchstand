@@ -96,6 +96,20 @@ trusted_hash = "must-not-copy"
     assert "synchronous compact-session hook" in instructions
     assert f"owned linked writer is {primary.parent / 'writer'}" in instructions
     assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
+    assert (
+        'before any agent_message_* mailbox operation, call agent_takeover(api_version="1", '
+        'name="/root") through the canonical Switchstand MCP. Continue to mailbox operations '
+        'only after status=ok.'
+    ) in instructions
+    assert (
+        'If takeover returns mailbox_not_found, call agent_register(api_version="1", '
+        'name="/root") once as first registration and continue only after status=ok.'
+    ) in instructions
+    assert (
+        "Treat principal_mismatch, any required host approval or transfer, and every other "
+        "non-ok or ambiguous result as an explicit mailbox blocker; do not retry, request a "
+        "transfer, or read the mailbox."
+    ) in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert profile["features"] == {"hooks": True}
     canonical = tomllib.loads((ROOT / ".codex/config.toml").read_text())["mcp_servers"][
