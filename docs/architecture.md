@@ -221,7 +221,7 @@ messaging, and required continuation:
   exact-principal launch grant. It never derives or rotates authority from provider content and is
   disabled by an authenticated migration-complete receipt.
 
-- `canonical_work.py`, `canonical_relations.py`, and `work_events.py` own the explicit, inert
+- `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, and `work_events.py` own the explicit, inert
   compact zero-Asana schema definitions and repositories for current rows, stable title/completion
   search pages, legacy task aliases,
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
@@ -233,7 +233,8 @@ messaging, and required continuation:
   edge constructs this runtime directly; deployment and cutover remain separate effects.
   Migration `0008` materializes the compact tables; migration `0014_canonical_routing` adds the
   nullable canonical-root, owner, and next-action routing projection without inferring legacy
-  values, and `0015_work_admission_time` adds nullable admission time. Native PostgreSQL creates
+  values, `0015_work_admission_time` adds nullable admission time, and `0017_priority_claims`
+  adds inert, occurrence-based priority provenance without replacing the legacy scalar. Native PostgreSQL creates
   set it from the server clock; preexisting and source-imported rows retain explicit `NULL` unless
   the import carries a trustworthy timestamp. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
   state for semantic writes; legacy incomplete rows remain editable through title/notes-only
@@ -250,6 +251,8 @@ messaging, and required continuation:
   deleting persisted revisions. This state does not own Stage 2 waits, dependencies, authorization,
   scheduling, activation, or implicit owner inference.
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
+  Internal typed proposal admission binds one immutable consequence to an exact canonical package
+  revision; a changed proposal requires a new package revision and human decision.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
@@ -271,8 +274,10 @@ messaging, and required continuation:
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
-  changed. Ordinary same-principal `agent_takeover` remains unchanged; there is no public approval
-  tool. `agent_messages.py` supplies
+  changed. Ordinary same-principal `agent_takeover` is replay-safe for the exact replacement session;
+  its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
+  arguments and requires an actor-binding readback before returning success. Explicit denial or
+  conflict is not retried. There is no public approval tool. `agent_messages.py` supplies
   public name-based views over `MessageState`; migration `0016_agent_mailbox_transfers` owns audit.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
@@ -432,7 +437,7 @@ command plus a five-minute timer on the same idempotent repair service. The watc
 manual or non-inheriting installer replacements promptly; the timer catches replacements missed
 during service execution and watch rearm without depending on the checkout. Healthy checks
 preserve launcher identity.
-The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
+The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; normal repository implementation stays in the writer while per-generation and byte-stable shared guards protect the primary. The profile grants user-level filesystem writes needed for diagnosis and repair, while the hook denies canonical-primary source mutation and permits adjacent repair worktrees rather than treating directory containment as effect authority. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. It separately copies only the repository-owned canonical `switchstand`
 HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
@@ -454,7 +459,9 @@ Because an exact writable file root can be misclassified as a directory by sandb
 handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory and
 binds their repository `friction.md` path to its mode-0600 file with a validated symlink. The first
 new launch copies a valid legacy local-state `friction.md` into that directory without moving or
-deleting the legacy file, so already-running agents remain undisturbed. Outside the canonical repository,
+deleting the legacy file, so already-running agents remain undisturbed. Malformed legacy, current,
+or binding nodes move to a generation-specific private quarantine; dispatch recreates the bounded
+friction state, reports the degradation, and continues launch. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
@@ -503,7 +510,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, and `0015_work_admission_time`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
+| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation and source coverage; no journal reader, external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
