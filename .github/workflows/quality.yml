@@ -31,14 +31,14 @@ jobs:
           QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           QUALITY_COMPOSITION_SHA: ${{ github.sha }}
-          STACK_BASE_SHA: ${{ github.event.pull_request.stack.base.sha }}
+          STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
           STACK_POSITION: ${{ github.event.pull_request.stack.position }}
         run: |
           checked_out_sha="$(git rev-parse HEAD)"
           if test "$QUALITY_SUBJECT_KIND" = composition; then
             scripts/verify-quality-composition \
               "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
-              "$STACK_BASE_SHA" "$STACK_POSITION"
+              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else
@@ -124,14 +124,14 @@ jobs:
           QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           QUALITY_COMPOSITION_SHA: ${{ github.sha }}
-          STACK_BASE_SHA: ${{ github.event.pull_request.stack.base.sha }}
+          STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
           STACK_POSITION: ${{ github.event.pull_request.stack.position }}
         run: |
           checked_out_sha="$(git rev-parse HEAD)"
           if test "$QUALITY_SUBJECT_KIND" = composition; then
             scripts/verify-quality-composition \
               "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
-              "$STACK_BASE_SHA" "$STACK_POSITION"
+              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else
