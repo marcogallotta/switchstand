@@ -14,9 +14,11 @@ from switchstand.canonical_work import canonical_metadata, canonical_work, legac
 from switchstand.database import validate_test_database_url
 from switchstand.human_reviews import human_review_consequences
 from switchstand.priority_claims import priority_claims
+from switchstand.task_runs import task_run_requests
 from switchstand.work_events import work_events
 
 CANONICAL_TABLES = (
+    task_run_requests,
     priority_claims,
     human_review_consequences,
     canonical_work, legacy_work_aliases, work_dependencies, work_parents,
