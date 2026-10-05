@@ -451,7 +451,9 @@ fallback during qualification of the semantic path.
 GitHub-native stacked delivery. It can preserve a focused layer verdict only across an
 unchanged layer diff and reviewed dependency/interface contract, applies proportional
 inert/runtime proof, and requires fresh exact-top cumulative review and quality before
-landing. Stack discovery, CI execution, review storage, and merge effects remain outside it.
+landing. `scripts/verify-quality-composition` binds an Actions checkout either to the
+ordinary PR merge parents or to the exact native-stack first-parent composition chain.
+Stack discovery, CI execution, review storage, and merge effects remain outside it.
 
 ## Launch, candidate, and host control
 

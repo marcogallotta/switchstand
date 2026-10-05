@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+composition_sha="$1"
+subject_sha="$2"
+direct_base_sha="$3"
+stack_base_sha="${4:-}"
+stack_position="${5:-}"
+
+test "$(git rev-parse HEAD)" = "$composition_sha"
+mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+test "${#parents[@]}" -eq 2
+test "${parents[1]}" = "$subject_sha"
+
+if test -z "$stack_position"; then
+  test "${parents[0]}" = "$direct_base_sha"
+  exit
+fi
+
+case "$stack_position" in
+  *[!0-9]*|'') exit 1 ;;
+esac
+test "$stack_position" -ge 1
+test -n "$stack_base_sha"
+
+cursor="${parents[0]}"
+remaining=$((stack_position - 1))
+first_prefix=true
+while test "$remaining" -gt 0; do
+  mapfile -t prefix_parents < <(git cat-file -p "$cursor" | sed -n 's/^parent //p')
+  test "${#prefix_parents[@]}" -eq 2
+  if test "$first_prefix" = true; then
+    test "${prefix_parents[1]}" = "$direct_base_sha"
+    first_prefix=false
+  fi
+  cursor="${prefix_parents[0]}"
+  remaining=$((remaining - 1))
+done
+test "$cursor" = "$stack_base_sha"
