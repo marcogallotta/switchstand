@@ -464,6 +464,15 @@ class TaskRunState:
                     return TaskRunResultResult(
                         status="denied", reason="execution_not_bound"
                     )
+                execution_count = await connection.scalar(
+                    select(func.count()).select_from(task_run_executions).where(
+                        task_run_executions.c.request_id == request_id
+                    )
+                )
+                if execution_count != 1:
+                    return TaskRunResultResult(
+                        status="unknown", reason="state_unavailable"
+                    )
                 existing = (await connection.execute(
                     select(task_run_results).where(
                         task_run_results.c.result_id == result_id
@@ -495,6 +504,14 @@ class TaskRunState:
                         status="stale", result=view, reason="run_superseded"
                     )
                 terminal = cast(UUID | None, request["terminal_result_id"])
+                if terminal is not None:
+                    terminal_request_id = await connection.scalar(
+                        select(task_run_results.c.request_id).where(
+                            task_run_results.c.result_id == terminal
+                        )
+                    )
+                    if terminal_request_id != request_id:
+                        return TaskRunResultResult(status="unknown", reason="state_unavailable")
                 if terminal not in {None, result_id}:
                     return TaskRunResultResult(
                         status="conflict",
