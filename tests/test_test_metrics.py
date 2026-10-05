@@ -93,6 +93,7 @@ def test_workflow_preserves_authority_and_attempts():
     assert '-v "$PWD:/workspace:ro"' in authoritative
     assert '-v "$RUNNER_TEMP/test-metrics:/metrics"' in authoritative
     assert '--junitxml=/metrics/junit.xml' in authoritative
+    assert authoritative.split('--junitxml=/metrics/junit.xml', 1)[0].rstrip().endswith('\\')
     assert 'shift 1 &&' in authoritative
     assert 'needs.plan.outputs.selected_tests' in authoritative
     assert '--planner "$METRICS_DIR/planner.json"' in execution
