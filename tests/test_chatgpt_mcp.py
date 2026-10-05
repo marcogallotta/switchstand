@@ -33,6 +33,7 @@ from switchstand.grants import (
     ProtectedAppend,
     ProtectedCreate,
 )
+from switchstand.implementation_requests import ImplementationRequestResult
 from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
 from switchstand.repository_candidate import RepositoryCandidateQualification
 
@@ -43,6 +44,21 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == set()
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+async def test_implementation_request_is_default_off_and_delegates_exact_identity():
+    subject = service()
+    assert "implementation_request" not in dict(build_ordinary_tools(subject))
+    subject.implementation_requests = AsyncMock()
+    expected = ImplementationRequestResult(status="DENIED", reason="probe")
+    subject.implementation_requests.request.return_value = expected
+    operation_id = uuid4()
+    tool = dict(build_ordinary_tools(subject))["implementation_request"]
+    result = await tool("1", operation_id, ACTIVE, "pg_exact")
+    assert result == expected
+    subject.implementation_requests.request.assert_awaited_once_with(
+        PRINCIPAL, operation_id, ACTIVE, "pg_exact"
+    )
 
 
 async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):

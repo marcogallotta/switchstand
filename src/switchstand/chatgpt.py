@@ -45,6 +45,7 @@ from .grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from .implementation_requests import ImplementationRequestResult, ImplementationRequestState
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
     MessagePendingRequest,
@@ -93,6 +94,7 @@ class ChatGPTService:
         canonical_events: CanonicalEventReader | None = None,
         canonical_work_active: bool = False,
         outcome_state_enabled: bool = False,
+        implementation_requests: ImplementationRequestState | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -114,6 +116,22 @@ class ChatGPTService:
         self.canonical_events = canonical_events
         self.canonical_work_active = canonical_work_active
         self.outcome_state_enabled = outcome_state_enabled
+        self.implementation_requests = implementation_requests
+
+    async def implementation_request(
+        self, operation_id: UUID, package_work_id: UUID, observed_revision: str,
+    ) -> ImplementationRequestResult:
+        """Admit one exact reviewed package without exposing server-owned intent fields."""
+        if self.implementation_requests is None:
+            return ImplementationRequestResult(status="DENIED", reason="feature_default_off")
+        principal = await self.principal()
+        if principal is None:
+            return ImplementationRequestResult(
+                status="DENIED", reason="authenticated_principal_required"
+            )
+        return await self.implementation_requests.request(
+            principal, operation_id, package_work_id, observed_revision
+        )
 
     @staticmethod
     def denied(
