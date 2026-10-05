@@ -197,6 +197,17 @@ def authorized(contract: ActivationContract, actor_work_id: UUID, transition: Tr
     }
 
 
+def next_action(value: Obligation) -> str | None:
+    if value.state == "VERIFYING":
+        return "VERIFY_NOW" if value.acceptance == "NOT_RUN" else "REMEDIATE_REVERIFY"
+    return {
+        "WAITING_ACTIVATION": "WAIT_ACTIVATION_CONDITION",
+        "VERIFY_NOW": "VERIFY_NOW",
+        "BLOCKED": "WAIT_CLEARING_EVENT",
+        "ACCEPTED": "COMPLETE_ADOPTION" if value.adoption == "PENDING" else "FINALIZE_DELIVERY",
+    }.get(value.state)
+
+
 def open_obligation(
     contract: ActivationContract,
     intent: TransitionIntent,
