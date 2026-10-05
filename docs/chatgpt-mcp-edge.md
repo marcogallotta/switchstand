@@ -161,6 +161,14 @@ and retains or reinstalls the maintenance route. An interrupt after gate inserti
 same fail-closed path. Never blindly rerun an UNKNOWN;
 inspect its receipt and live gate/service/launcher state first.
 
+One narrow recovery mode exists only for an exact `UNKNOWN / UPGRADE_PENDING`
+receipt whose shared-state effect can be disproved. With the ordinary edge lock and
+the state-upgrade lock both held, it requires the exact old launcher and healthy
+local/public service, database revision `0013_failure_journal`, absence of
+`agent_mailbox_transfer_requests`, and an unchanged receipt preimage. It then writes
+the terminal `FAIL / NO_EFFECT` receipt. Any mismatch remains `UNKNOWN`; this mode
+does not retry the upgrade or change the service, launcher, database, or Caddy.
+
 The retained snapshot, failed candidate state (when applicable), launcher backup,
 and receipt stay in the attempt directory as recovery evidence. The tool does not
 prepare candidates, launchers, authorization, client reinstall, or activation
