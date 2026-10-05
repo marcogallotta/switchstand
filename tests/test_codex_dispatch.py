@@ -221,6 +221,50 @@ def test_dispatch_rejects_invalid_current_friction_paths_without_mutating_legacy
         assert os.readlink(binding) == binding_before
 
 
+def test_dispatch_refreshes_friction_binding_without_replacing_current_link(
+    tmp_path: Path,
+) -> None:
+    for initial_target in ("current", "legacy"):
+        case = tmp_path / initial_target
+        home, primary, marker, env = dispatch_fixture(case)
+        state = home / ".local/state/switchstand"
+        friction_root = state / "friction"
+        friction_root.mkdir(parents=True)
+        legacy = state / "friction.md"
+        legacy.write_text("legacy friction\n")
+        current = friction_root / "friction.md"
+        current.write_text("current friction\n")
+        binding = primary / "friction.md"
+        binding.symlink_to(current if initial_target == "current" else legacy)
+
+        real_ln = subprocess.check_output(
+            ["sh", "-c", "command -v ln"], text=True,
+        ).strip()
+        test_bin = case / "bin"
+        executable(
+            test_bin / "ln",
+            "#!/bin/sh\n"
+            "if [ \"${1-}\" = -sfn ] && "
+            "[ \"$(readlink -f \"${2-}\")\" = \"$(readlink -f \"${3-}\")\" ]; then\n"
+            "    echo 'ln: Already exists' >&2\n"
+            "    exit 1\n"
+            "fi\n"
+            f'exec "{real_ln}" "$@"\n',
+        )
+
+        result = subprocess.run(
+            [DISPATCH], cwd=primary,
+            env=env | {"PATH": f"{test_bin}:{env['PATH']}"},
+            text=True, capture_output=True, check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert marker.exists()
+        assert binding.is_symlink()
+        assert binding.resolve() == current
+        assert current.read_text() == "current friction\n"
+
+
 def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     tmp_path: Path,
 ) -> None:
