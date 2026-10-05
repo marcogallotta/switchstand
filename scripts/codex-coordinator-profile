@@ -110,6 +110,7 @@ def render(
     compact_command = shlex.join((
         str(compact_hook), str(manifest_record),
     ))
+    frozen_control = compact_hook.with_name("coordinator-control")
     lines = [
         'approval_policy = "never"',
         'default_permissions = "switchstand-coordinator"',
@@ -120,10 +121,13 @@ def render(
             "candidate. Its launch-control manifest is "
             f"{manifest_record}. After context compaction, the synchronous compact-session hook "
             "runs the post-compaction currentness check and injects the bounded reread set; obey "
-            "that immediate context before continuing. Changed launch controls require only the "
+            "that immediate context before continuing. Any manual post-compaction retry must run "
+            f"{frozen_control} check {manifest_record} --trigger post-compaction. Never substitute "
+            "writer-relative scripts/coordinator-control. Changed launch controls require only the "
             "reported affected-boundary recheck; they do not stale the generation. "
             "CURRENTNESS_UNKNOWN blocks only actions depending on its unknown component. After "
-            "an in-session canonical sync, run the same check with --trigger post-sync and "
+            "an in-session canonical sync, run "
+            f"{frozen_control} check {manifest_record} --trigger post-sync and "
             "reread every returned changed dependency, then recheck only each returned affected "
             "boundary. If the manifest "
             "contains a handoff, read its exact obligations file, then run "
