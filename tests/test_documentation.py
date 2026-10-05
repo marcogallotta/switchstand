@@ -70,8 +70,8 @@ def test_agents_coordination_contract_is_discoverable():
     agents = (ROOT / "AGENTS.md").read_text()
 
     required_rules = (
-        "meaningful investigation, implementation, review, migration, activation, or operational task requires one exact WorkId",
-        "live mitigation must not wait for WorkId creation or resolution",
+        "Meaningful work needs an exact WorkId",
+        "live mitigation attaches it when safe",
         "acknowledge before nontrivial reasoning, tools, or waits",
         "explicit response-time budget",
         "smallest useful decision-bearing response within it",
@@ -101,6 +101,139 @@ def test_agents_coordination_contract_is_discoverable():
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+
+def test_authority_bootstrap_preserves_effect_and_grounding_boundaries():
+    agents = (ROOT / "AGENTS.md").read_text()
+    authority = agents.split("## Authority and grounding", 1)[1].split(
+        "\n## Working with Marco", 1
+    )[0]
+    normalized = " ".join(authority.split())
+
+    required = (
+        "Marco's direct active assignment or an explicit `CURRENT` grant bound to exact WorkId, writable surface and effect",
+        "current human-reviewed position controls until superseded",
+        "steering authorizes only its exact package/revision/effect",
+        "Role, docs, placement, readability, login/tools and procedures never grant authority",
+        "needs an exact WorkId; live mitigation attaches it when safe",
+        "start/re-enter with `work_get(api_version=\"1\")` without a WorkId",
+        "verify the exact green repository SHA",
+        "write only the active WorkId",
+        "references are read-only",
+        "unavailable managed `work_get` does not block ordinary editing",
+        "Preserve role/work identity across re-entry",
+        "messages, adjacent reads, context, capability and placement do not reassign them",
+        "current routed procedure/Contract/Plan and applicable canary",
+        "Canary never expands authority; RED suspends only its experimental delta",
+        "blocks only its path; unrelated authorized work continues",
+        "implementation assignment conditionally authorizes commit/branch/PR",
+        "Landing requires current independent review and exact-head/composition gates",
+        "deployment, activation, migration, credentials and provider-production effects are separate",
+        "reread exact current work/grant and reconcile direction",
+        "`STALE/DENIED/UNKNOWN/NOT_RUN/SKIP/MISSING_CAPABILITY`",
+        "never blindly retry ambiguity",
+        "full `CallToolResult`: `isError` and content before `structuredContent`",
+        "Retain exact arguments/preimage for ambiguous/replacement writes",
+        "never send diagnostic payloads or reuse an OperationId with changed arguments",
+        "Never infer success from readability, status or partial output",
+        "Check authorized capabilities before declaring a blocker",
+        "Surface disproportion early",
+    )
+
+    assert [rule for rule in required if rule not in normalized] == []
+
+
+def test_agents_keeps_first_minute_incident_contract_before_routed_detail():
+    agents = (ROOT / "AGENTS.md").read_text()
+    incident = agents.split("### Live incidents", 1)[1].split("\n- ", 1)[0]
+    normalized = " ".join(incident.split())
+
+    required = (
+        "credible live-user failure enters incident mode; `CODE RED` is optional",
+        "Immediately acknowledge, use one operator, inspect current service state and newest logs",
+        "`CURRENT` / `HISTORICAL` / `UNKNOWN` truth before broad delegation",
+        "smallest safe reversible mitigation before RCA",
+        "without bypassing authority or ambiguous-effect safeguards",
+        "If local `main` cannot be proved current",
+        "always-loaded rules in this **Live incidents** subsection remain the minimum incident procedure",
+        "do not delay mitigation for repository synchronization",
+        "do not trust a possibly stale routed copy",
+        "[live-incident operations](docs/operations-live-incident.md)",
+        "[root-cause analysis](docs/root-cause-analysis.md) and never delays incident mitigation",
+    )
+    assert [rule for rule in required if rule not in normalized] == []
+    assert "known-edge-maintenance-window" not in incident
+    assert "Close the incident only after" not in incident
+
+
+def test_agents_keeps_exact_watch_and_authenticated_entry_invariants():
+    agents = (ROOT / "AGENTS.md").read_text()
+    routing = agents.split("## Work, messages, and routing", 1)[1].split(
+        "\n## Codex roles", 1
+    )[0]
+    normalized = " ".join(routing.split())
+
+    required = (
+        "Current meaning lives on the exact WorkId/current notes",
+        "between bounded work batches, after blocking calls, on re-entry, and before consequential effects or completion",
+        "terminal result, explicit transfer with attributable pickup, human stop/pause/reassignment, or a real access/execution blocker",
+        "exact WorkId/message identity, owner/purpose, state, next check, and terminal condition",
+        "`poll` or `keep polling` means continue that exact watch in the current active session",
+        "Do not convert active polling into a ChatGPT Scheduled task or condition watch",
+        "Send/registration is not pickup or completion",
+        "inactive sessions do not poll or wake",
+        "ambiguous effects remain `UNKNOWN` until reconciled",
+        "`START HERE` `1218327002478382`",
+        "authenticated provider-neutral Switchstand HTTP/OAuth MCP",
+        "Project Settings may point there but is not parallel authority",
+    )
+    assert [rule for rule in required if rule not in normalized] == []
+
+
+def test_repository_safety_routes_detail_without_dropping_bootstrap_invariants():
+    agents = (ROOT / "AGENTS.md").read_text()
+    usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text()
+    safety = agents.split("## Repository bootstrap and safety", 1)[1].split(
+        "\n## Work, messages, and routing", 1
+    )[0]
+    usage = " ".join(usage.split())
+
+    direct = (
+        "Shared canonical `main` is read-only except Git reads/fetches",
+        "Source edits, staging, commits, and worktree mutation stay in that writer",
+        "never reset, clean, or switch primary to fit a task",
+        "Tool/login/capability/readable credentials never grant authority",
+        "Ordinary ChatGPT without a checkout uses `repository_bundle_get`; Codex/Claude with a repository use Git",
+        "Do not inject raw provider/database credentials or broaden permissions",
+        "`~/.local/state/switchstand`",
+        "`~/.cache/switchstand`",
+        "not `/tmp`",
+        "Before replacement writes, reread the exact target and preserve user changes",
+        "repo-local Git-ignored `friction.md`",
+        "Missing feedback capability does not block assigned work",
+    )
+    friction_owner = (
+        "attempted claim, observed result, state-change truth, and smallest clearing action",
+        "current remaining-priority view without erasing append-only evidence",
+        "Before Coordinator handoff, reconcile that view against current truth",
+        "preserve it intact in a dated sibling beside the durable local-state backing file",
+        "restart `friction.md` with the current priorities",
+        "If the path is not writable",
+        "authorized work result or handoff",
+        "Missing feedback capability does not block assigned work",
+        "Before any replacement write",
+        "reread the exact target and preserve user changes",
+    )
+    bundle_owner = (
+        "`repository_bundle_get`, accepts only `current`",
+        "verifies the advertised SHA-256",
+        "retries `refresh_pending` and never substitutes stale cache",
+        "Use bundled current `main`, or prove and check out the exact requested SHA for review",
+    )
+
+    assert [rule for rule in direct if rule not in safety] == []
+    assert [rule for rule in friction_owner if rule not in usage] == []
+    assert [rule for rule in bundle_owner if rule not in usage] == []
 
 
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
