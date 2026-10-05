@@ -30,7 +30,8 @@ FROZEN_REPOSITORY_FILES = (
     "scripts/coordinator-handoff",
     "scripts/switchstand-worktree",
 )
-POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md", "docs/coordinator-tracker-contract.md")\nLEGACY_POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
+POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md", "docs/coordinator-tracker-contract.md")
+LEGACY_POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
 
 
 def digest_file(path: Path) -> str:
