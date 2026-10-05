@@ -221,7 +221,7 @@ messaging, and required continuation:
   exact-principal launch grant. It never derives or rotates authority from provider content and is
   disabled by an authenticated migration-complete receipt.
 
-- `canonical_work.py`, `canonical_relations.py`, and `work_events.py` own the explicit, inert
+- `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, and `work_events.py` own the explicit, inert
   compact zero-Asana schema definitions and repositories for current rows, stable title/completion
   search pages, legacy task aliases,
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
@@ -233,7 +233,8 @@ messaging, and required continuation:
   edge constructs this runtime directly; deployment and cutover remain separate effects.
   Migration `0008` materializes the compact tables; migration `0014_canonical_routing` adds the
   nullable canonical-root, owner, and next-action routing projection without inferring legacy
-  values, and `0015_work_admission_time` adds nullable admission time. Native PostgreSQL creates
+  values, `0015_work_admission_time` adds nullable admission time, and `0017_priority_claims`
+  adds inert, occurrence-based priority provenance without replacing the legacy scalar. Native PostgreSQL creates
   set it from the server clock; preexisting and source-imported rows retain explicit `NULL` unless
   the import carries a trustworthy timestamp. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
   state for semantic writes; legacy incomplete rows remain editable through title/notes-only
@@ -509,7 +510,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, and `0015_work_admission_time`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
+| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation and source coverage; no journal reader, external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
