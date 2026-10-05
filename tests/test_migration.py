@@ -13,9 +13,8 @@ from switchstand.canonical_relations import (
     work_dependencies,
     work_parents,
 )
-from switchstand.canonical_work import canonical_metadata, canonical_work, legacy_work_aliases
+from switchstand.canonical_work import canonical_work, legacy_work_aliases
 from switchstand.provision import require_current_schema
-from switchstand.task_runs import task_run_requests
 from switchstand.work_events import work_events
 
 
@@ -55,7 +54,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0017_task_runs; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0018_task_run_executions; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -81,7 +80,7 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
         "canonical_work", "legacy_work_aliases", "work_dependencies", "work_parents",
         "projects", "project_memberships", "work_events",
         "work_migration_receipts", "failure_records", "failure_resolutions",
-        "task_run_requests",
+        "task_run_requests", "task_run_executions",
     }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
     database = inspect(engine)
@@ -115,8 +114,13 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     with engine.begin() as connection:
-        canonical_metadata.create_all(connection)
-        task_run_requests.create(connection, checkfirst=True)
+        connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, agent_mailbox_transfer_requests, "
+            "outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, "
+            "work_event_handles, lifecycle_obligations, message_projection, "
+            "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
+        ))
+    command.upgrade(config, "head")
     command.downgrade(config, "0013_failure_journal")
     work_id = uuid4()
     with engine.begin() as connection:
@@ -144,7 +148,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0013_failure_journal")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
         assert connection.scalar(text(
             "SELECT owner_key FROM canonical_work WHERE work_id = :work_id"
         ), {"work_id": work_id}) == "coordinator"
@@ -156,7 +160,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0014_canonical_routing")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
 
 
 def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequisite):
@@ -186,7 +190,7 @@ def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequ
     } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
         assert connection.execute(text(
             "SELECT name, source_digest FROM work_migration_receipts"
         )).one() == ("work-identity-migration-complete-v1", "a" * 64)
@@ -243,7 +247,7 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "recipient_grant_version, state FROM message_deliveries"
         )).one()
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
     assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
     assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
     assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
@@ -296,7 +300,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
         assert connection.execute(text(
             "SELECT endpoint_id, principal_key, session_key, generation FROM agent_mailboxes"
         )).one() == (endpoint_id, "owner", "session", 4)
@@ -332,7 +336,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
         >= {"endpoint_id", "principal_key", "session_key", "generation"}
 
@@ -362,7 +366,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0017_task_runs"
+            == "0018_task_run_executions"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite):
