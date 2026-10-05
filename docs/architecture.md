@@ -273,8 +273,10 @@ messaging, and required continuation:
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
-  changed. Ordinary same-principal `agent_takeover` remains unchanged; there is no public approval
-  tool. `agent_messages.py` supplies
+  changed. Ordinary same-principal `agent_takeover` is replay-safe for the exact replacement session;
+  its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
+  arguments and requires an actor-binding readback before returning success. Explicit denial or
+  conflict is not retried. There is no public approval tool. `agent_messages.py` supplies
   public name-based views over `MessageState`; migration `0016_agent_mailbox_transfers` owns audit.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
