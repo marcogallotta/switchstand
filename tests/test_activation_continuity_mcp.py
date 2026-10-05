@@ -36,11 +36,16 @@ def technical(bound: ActivationContract) -> TechnicalBasis:
 
 class Continuity:
     def __init__(self, bound: ActivationContract):
-        self.bound, self.seen = bound, None
+        self.bound, self.seen, self.current = bound, None, None
 
     async def transition(self, principal, selected, intent, basis):
         self.seen = principal, selected, intent, basis
-        return open_obligation(self.bound, intent, "private-actor-ref", basis)
+        result = open_obligation(self.bound, intent, "private-actor-ref", basis)
+        self.current = result.obligation
+        return result
+
+    async def for_owner(self, owner_work_id):
+        return () if self.current is None or owner_work_id != ACTIVE else (self.current,)
 
 
 async def test_tool_is_absent_without_server_owned_continuity() -> None:
@@ -58,7 +63,9 @@ async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence(
         return technical(bound)
 
     subject.activation_technical = resolve_technical
-    subject.admission_grants.grant = grant(operations=frozenset({"activation_continuity"}))
+    subject.admission_grants.grant = grant(
+        operations=frozenset({"activation_continuity", "work_get"})
+    )
     server, operation_id = build_chatgpt_server(subject), uuid4()
     result = await server.call_tool("activation_obligation_transition", {
         "api_version": "1", "operation_id": str(operation_id),
@@ -69,6 +76,11 @@ async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence(
     assert (payload["status"], payload["state"]) == ("APPLIED", "VERIFY_NOW")
     assert continuity.seen[0] == PRINCIPAL and continuity.seen[2].operation_id == operation_id
     assert "private-actor-ref" not in str(payload) and "technical_basis_ref" not in str(payload)
+    projected = await server.call_tool("work_get", {"api_version": "1", "work_id": str(ACTIVE)})
+    obligation = projected.structured_content["activation_obligations"][0]
+    assert (obligation["target_revision"], obligation["next_action"]) == (
+        "git:abc", "VERIFY_NOW"
+    )
 
 
 async def test_missing_grant_denies_and_internal_fields_are_closed() -> None:
