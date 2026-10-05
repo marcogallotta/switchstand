@@ -1,4 +1,4 @@
-"""Add inert investigation and validation task-run state."""
+"""Add inert task-run request state."""
 
 import sqlalchemy as sa
 from alembic import op
@@ -33,13 +33,23 @@ def upgrade() -> None:
         sa.Column("candidate_ref", sa.Text()),
         sa.Column("objective", sa.Text(), nullable=False),
         sa.Column("result_contract", postgresql.JSONB(), nullable=False),
+        sa.Column("authorization_ref", sa.Text()),
+        sa.Column("send_authority_ref", sa.Text()),
         sa.Column("content_digest", sa.Text(), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
         sa.CheckConstraint("observed_revision <> ''", name="ck_task_run_request_revision"),
         sa.CheckConstraint(
-            "task_kind IN ('INVESTIGATION', 'VALIDATION')", name="ck_task_run_request_kind"
+            "task_kind IN ('INVESTIGATION', 'VALIDATION', 'IMPLEMENTATION')",
+            name="ck_task_run_request_kind",
+        ),
+        sa.CheckConstraint(
+            "(task_kind = 'IMPLEMENTATION' AND authorization_ref IS NOT NULL "
+            "AND send_authority_ref IS NOT NULL) OR "
+            "(task_kind <> 'IMPLEMENTATION' AND authorization_ref IS NULL "
+            "AND send_authority_ref IS NULL)",
+            name="ck_task_run_request_authority",
         ),
         sa.CheckConstraint(
             "continuation IN ('START', 'CONTINUE', 'TAKEOVER')",
