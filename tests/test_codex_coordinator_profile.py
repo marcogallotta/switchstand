@@ -136,14 +136,7 @@ trusted_hash = "must-not-copy"
     }
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
-        ":root": "read",
-        str(tmp_path / "writer"): "write",
-        str(primary / ".git/worktrees/writer"): "write",
-        str(tmp_path / "coordinator"): "write",
-        str(tmp_path / ".cache/switchstand"): "write",
-        str(tmp_path / ".local/state/switchstand/friction"): "write",
-        ":tmpdir": "write",
-        ":slash_tmp": "write",
+        ":root": "write",
         str(primary): {".": "read", ".git": "write"},
     }
     assert profile["permissions"]["switchstand-coordinator"]["network"] == {
