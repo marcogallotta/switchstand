@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
 import shutil
 import stat
 import subprocess
@@ -149,6 +150,22 @@ def test_launch_manifest_tracks_transitive_graph_but_compact_reread_is_bounded(
     assert status["component_currentness"] == {
         "runtime:effective-client-tool-surface": "CURRENTNESS_UNKNOWN"
     }
+
+
+def test_markdown_dependency_graph_fails_closed_at_a_fixed_bound(tmp_path: Path) -> None:
+    script = runpy.run_path(SCRIPT)
+    limit = script["MAX_MARKDOWN_DEPENDENCIES"]
+    (tmp_path / "AGENTS.md").write_text(
+        "\n".join(f"[owner {index}](owner-{index}.md)" for index in range(limit))
+    )
+    for index in range(limit):
+        (tmp_path / f"owner-{index}.md").write_text("owner\n")
+
+    found, unresolved = script["markdown_dependencies"](tmp_path)
+
+    assert len(found) == limit
+    assert len(unresolved) == 1
+    assert unresolved[0]["reason"] == "dependency_limit"
 
 
 def test_changed_launch_control_requires_bounded_recheck_without_staling_generation(

@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 import httpx
+import pytest
 from chatgpt_fixture import service
 from mcp.types import ResourceLink
 
@@ -11,6 +12,7 @@ from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.repository_bundle import (
     BUNDLE_NAME,
     CHECKSUM_NAME,
+    GITHUB_TOKEN_ENV,
     MANIFEST_NAME,
     REFS_API,
     RELEASE_API,
@@ -24,21 +26,34 @@ REFS = {
     "refs/heads/review": "b" * 40,
 }
 CHECKSUM = "c" * 64
+TOKEN = "repository-bundle-token"
+
+
+@pytest.fixture(autouse=True)
+def repository_bundle_token(monkeypatch):
+    monkeypatch.setenv(GITHUB_TOKEN_ENV, TOKEN)
 
 
 def client_for(
     refs=REFS,
     bundle_digest=f"sha256:{CHECKSUM}",
+    manifest_digest=None,
+    manifest_checksum=CHECKSUM,
+    downloaded_checksum=CHECKSUM,
     authoritative_pages=None,
+    foreign_next_url=None,
+    redirect_manifest=False,
+    seen=None,
 ):
     manifest_url = "https://example.invalid/manifest"
+    redirected_manifest_url = "https://objects.example.invalid/manifest"
     checksum_url = "https://example.invalid/checksum"
     bundle_url = "https://example.invalid/bundle"
     manifest = {
         "repository": "marcogallotta/switchstand",
         "refs": refs,
-        "snapshot_digest": canonical_ref_map_digest(refs),
-        "bundle_sha256": CHECKSUM,
+        "snapshot_digest": manifest_digest or canonical_ref_map_digest(refs),
+        "bundle_sha256": manifest_checksum,
     }
     release = {
         "assets": [
@@ -51,22 +66,28 @@ def client_for(
     refs_urls = [REFS_API, *(f"{REFS_API}?page={page}" for page in range(2, len(pages) + 1))]
 
     def handle(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
         if str(request.url) == RELEASE_API:
+            assert request.headers["Authorization"] == f"Bearer {TOKEN}"
             return httpx.Response(200, json=release)
         if str(request.url) == manifest_url:
+            assert "Authorization" not in request.headers
+            if redirect_manifest:
+                return httpx.Response(302, headers={"Location": redirected_manifest_url})
+            return httpx.Response(200, json=manifest)
+        if str(request.url) == redirected_manifest_url:
+            assert "Authorization" not in request.headers
             return httpx.Response(200, json=manifest)
         if str(request.url) == checksum_url:
-            return httpx.Response(200, text=f"{CHECKSUM}  {BUNDLE_NAME}\n")
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, text=f"{downloaded_checksum}  {BUNDLE_NAME}\n")
         if str(request.url) in refs_urls:
+            assert request.headers["Authorization"] == f"Bearer {TOKEN}"
             page = refs_urls.index(str(request.url))
-            payload = [
-                {"ref": ref, "object": {"sha": sha}} for ref, sha in pages[page].items()
-            ]
-            headers = (
-                {"Link": f'<{refs_urls[page + 1]}>; rel="next"'}
-                if page + 1 < len(refs_urls)
-                else None
-            )
+            payload = [{"ref": ref, "object": {"sha": sha}} for ref, sha in pages[page].items()]
+            next_url = refs_urls[page + 1] if page + 1 < len(refs_urls) else foreign_next_url
+            headers = {"Link": f'<{next_url}>; rel="next"'} if next_url else None
             return httpx.Response(200, json=payload, headers=headers)
         raise AssertionError(str(request.url))
 
@@ -92,7 +113,7 @@ async def test_resolver_returns_current_only_on_exact_ref_and_asset_match():
 
     async with client_for() as client:
         non_head = await resolve_repository_bundle("d" * 40, client)
-    assert non_head.status == "current"
+    assert (non_head.status, non_head.reason) == ("refresh_pending", "required_sha_unproved")
     assert non_head.required_sha_is_head is None
 
 
@@ -107,6 +128,47 @@ async def test_resolver_rejects_stale_refs_and_asset_race():
     assert (result.status, result.reason) == ("refresh_pending", "bundle_transition")
 
 
+async def test_resolver_rejects_manifest_and_checksum_transitions():
+    async with client_for(manifest_digest="d" * 64) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == (
+        "refresh_pending",
+        "manifest_digest_mismatch",
+    )
+
+    async with client_for(downloaded_checksum="d" * 64) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("refresh_pending", "checksum_transition")
+
+
+async def test_resolver_accepts_unrelated_branch_drift_for_current_main():
+    authoritative = {
+        "refs/heads/main": REFS["refs/heads/main"],
+        "refs/heads/review": "d" * 40,
+        "refs/heads/new-review": "e" * 40,
+    }
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert result.status == "current"
+    assert result.refs == REFS
+
+
+async def test_resolver_requires_requested_sha_on_an_unchanged_authoritative_ref():
+    authoritative = {
+        "refs/heads/main": "d" * 40,
+        "refs/heads/review": REFS["refs/heads/review"],
+    }
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(REFS["refs/heads/review"], client)
+    assert result.status == "current"
+    assert result.required_sha_is_head is True
+
+    authoritative["refs/heads/review"] = "e" * 40
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(REFS["refs/heads/review"], client)
+    assert (result.status, result.reason) == ("refresh_pending", "required_sha_unproved")
+
+
 async def test_resolver_consumes_every_ref_page_before_accepting_current():
     pages = [
         {"refs/heads/main": REFS["refs/heads/main"]},
@@ -118,14 +180,66 @@ async def test_resolver_consumes_every_ref_page_before_accepting_current():
     assert result.refs == REFS
 
 
-async def test_resolver_rejects_drift_on_later_ref_page():
+async def test_resolver_accepts_unrelated_drift_on_later_ref_page():
     pages = [
         {"refs/heads/main": REFS["refs/heads/main"]},
         {"refs/heads/review": "d" * 40},
     ]
     async with client_for(authoritative_pages=pages) as client:
         result = await resolve_repository_bundle(client=client)
-    assert (result.status, result.reason) == ("refresh_pending", "refs_advanced")
+    assert result.status == "current"
+
+
+@pytest.mark.parametrize("token", [None, " \t"])
+async def test_resolver_fails_before_network_without_dedicated_token(monkeypatch, token):
+    if token is None:
+        monkeypatch.delenv(GITHUB_TOKEN_ENV)
+    else:
+        monkeypatch.setenv(GITHUB_TOKEN_ENV, token)
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("unavailable", "github_unavailable")
+    assert requests == []
+
+
+async def test_resolver_rejects_foreign_ref_pagination_without_leaking_token():
+    requests: list[httpx.Request] = []
+    foreign = "https://example.invalid/refs?page=2"
+    async with client_for(foreign_next_url=foreign, seen=requests) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("unavailable", "github_unavailable")
+    assert all(str(request.url) != foreign for request in requests)
+
+
+async def test_resolver_does_not_follow_authenticated_api_redirect():
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(302, headers={"Location": "https://example.invalid/token-leak"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("unavailable", "github_unavailable")
+    assert [str(request.url) for request in requests] == [RELEASE_API]
+
+
+async def test_asset_redirects_remain_unauthenticated():
+    requests: list[httpx.Request] = []
+    async with client_for(redirect_manifest=True, seen=requests) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert result.status == "current"
+    assert all(
+        "Authorization" not in request.headers
+        for request in requests
+        if request.url.host != "api.github.com"
+    )
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:

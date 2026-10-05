@@ -50,8 +50,10 @@ async def run_update_or_relation(
     principal: PrincipalContext,
     request: MutationRequest,
     fingerprint: str,
-    operation: Literal["work_update", "work_relate"],
-    qualification_field: Literal["update_qualification", "relation_qualification"],
+    operation: Literal["work_update", "work_relate", "priority_claim"],
+    qualification_field: Literal[
+        "update_qualification", "relation_qualification", "priority_claim_qualification",
+    ],
     qualification_denial: str,
     guard: Guard,
     prepare: Prepare,
