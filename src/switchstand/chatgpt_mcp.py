@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import repository_bundle, repository_candidate
-from .activation_continuity import ContinuityResult, Transition
+from .activation_continuity import ContinuityResult, Transition, next_action
 from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
@@ -84,12 +84,34 @@ class OpenFailureAction(ClosedModel):
     effect_state: str
 
 
+class ActivationContinuityResult(ClosedModel):
+    """Public state omits stored binding, actor/grant evidence, and technical basis."""
+    status: Literal[
+        "APPLIED", "REPLAYED", "CURRENT", "STALE", "CONFLICT", "DENIED", "MISSING", "UNKNOWN"
+    ]
+    observed_revision: str | None = None
+    state: str | None = None
+    acceptance: str | None = None
+    adoption: str | None = None
+    target_revision: str | None = None
+    target_phase: str | None = None
+    owner_work_id: UUID | None = None
+    blocker_ref: str | None = None
+    clearing_event_ref: str | None = None
+    next_action: str | None = None
+    terminal: bool | None = None
+    reason: str | None = None
+
+
 class StatefulOrdinaryWorkResult(ClosedModel):
     """Exact ordinary work read enriched with owner-local actionable state."""
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
     open_failures: tuple[OpenFailureAction, ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    activation_obligations: tuple[ActivationContinuityResult, ...] | ActionSummaryUnavailable | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
     item: PublicWorkItem | None = None
@@ -101,23 +123,14 @@ class OrdinaryUpdateResult(GuardOutcome):
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    activation_obligations: tuple[ActivationContinuityResult, ...] | ActionSummaryUnavailable | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class OutcomeStateUpdateResult(ClosedModel):
     status: Literal["APPLIED", "REPLAYED", "STALE", "CONFLICT", "DENIED", "UNKNOWN"]
     state_id: UUID | None = None
-
-
-class ActivationContinuityResult(ClosedModel):
-    """Public state omits stored binding, actor/grant evidence, and technical basis."""
-    status: Literal[
-        "APPLIED", "REPLAYED", "CURRENT", "STALE", "CONFLICT", "DENIED", "MISSING", "UNKNOWN"
-    ]
-    observed_revision: str | None = None
-    state: str | None = None
-    acceptance: str | None = None
-    adoption: str | None = None
-    reason: str | None = None
 
 
 def project_activation_continuity(result: ContinuityResult) -> ActivationContinuityResult:
@@ -128,6 +141,13 @@ def project_activation_continuity(result: ContinuityResult) -> ActivationContinu
         state=None if value is None else value.state,
         acceptance=None if value is None else value.acceptance,
         adoption=None if value is None else value.adoption,
+        target_revision=None if value is None else str(value.binding["target_revision"]),
+        target_phase=None if value is None else str(value.binding["target_phase"]),
+        owner_work_id=None if value is None else UUID(str(value.binding["return_owner_work_id"])),
+        blocker_ref=None if value is None else value.blocker_ref,
+        clearing_event_ref=None if value is None else value.clearing_event_ref,
+        next_action=None if value is None else next_action(value),
+        terminal=None if value is None else value.state in {"DELIVERED", "DEFERRED", "RETIRED"},
         reason=result.reason,
     )
 
@@ -345,6 +365,18 @@ def build_ordinary_tools(
             return ActionSummaryUnavailable()
         return ActionSummaryUnavailable() if summary == "UNKNOWN" else summary
 
+    async def activation_projection(
+        owner_work_id: UUID,
+    ) -> tuple[ActivationContinuityResult, ...] | ActionSummaryUnavailable | None:
+        if service.activation_continuity is None:
+            return None
+        values = await service.activation_continuity.for_owner(owner_work_id)
+        if values == "UNKNOWN":
+            return ActionSummaryUnavailable()
+        return tuple(project_activation_continuity(
+            ContinuityResult(status="CURRENT", obligation=value)
+        ) for value in values)
+
     async def enriched_work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> StatefulOrdinaryWorkResult:
@@ -352,9 +384,11 @@ def build_ordinary_tools(
         result = await work_get(api_version, work_id)
         summary = None
         failures = None
+        activation = None
         if result.status == "ok" and result.item is not None:
             owner_work_id = result.item.id
             summary = await action_summary(owner_work_id, result.item.revision)
+            activation = await activation_projection(owner_work_id)
             engine = getattr(service.state, "engine", None)
             if engine is not None:
                 try:
@@ -368,7 +402,8 @@ def build_ordinary_tools(
                 except (SQLAlchemyError, KeyError, TypeError, ValueError):
                     failures = None
         return StatefulOrdinaryWorkResult(
-            action_summary=summary, open_failures=failures, item=result.item,
+            action_summary=summary, activation_obligations=activation,
+            open_failures=failures, item=result.item,
             status=result.status, guard=result.guard,
         )
 
@@ -500,13 +535,15 @@ def build_ordinary_tools(
             api_version, operation_id, work_id, observed_revision, patch,
         )
         summary = None
+        activation = None
         if result.status != "unknown" and result.effect != "unknown":
             current = await service.get(work_id)
             if current.status == "ok" and current.item is not None:
                 summary = await action_summary(work_id, current.item.revision)
+                activation = await activation_projection(work_id)
         return OrdinaryUpdateResult(
             **{name: getattr(result, name) for name in GuardOutcome.model_fields},
-            action_summary=summary,
+            action_summary=summary, activation_obligations=activation,
         )
 
     async def outcome_state_update(
@@ -1026,14 +1063,18 @@ def build_ordinary_tools(
     return (
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
-        ("work_get", enriched_work_get if service.outcome_state_enabled else work_get),
+        ("work_get", enriched_work_get if (
+            service.outcome_state_enabled or service.activation_continuity is not None
+        ) else work_get),
         ("work_search", work_search),
         ("work_resolve_reference", work_resolve_reference),
         ("work_history", work_history),
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
-        ("work_update", enriched_work_update if service.outcome_state_enabled else work_update),
+        ("work_update", enriched_work_update if (
+            service.outcome_state_enabled or service.activation_continuity is not None
+        ) else work_update),
         *((("outcome_state_update", outcome_state_update),)
           if service.outcome_state_enabled else ()),
         *((
