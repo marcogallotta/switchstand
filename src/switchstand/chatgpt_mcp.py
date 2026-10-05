@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import repository_bundle, repository_candidate
-from .agent_mailboxes import AgentMailboxState
+from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
     AgentMessagePendingResult,
@@ -56,6 +56,9 @@ from .messages import (
     disposition_digest,
 )
 from .outcome_state import ActionSummary, OutcomeItem
+from .priority_claim_service import PriorityClaimReadResult, PriorityClaimWrite
+from .priority_claims import PriorityBand, RelationKind, SubjectKind
+from .priority_context import PriorityContextResult
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -156,11 +159,16 @@ ORDINARY_EFFECT_TOOLS = frozenset({
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
+PRIORITY_CLAIM_TOOLS = frozenset({"priority_claim_get", "priority_claim_record"})
+PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     """Emit private-host approval metadata; reject unreviewed surface growth."""
-    if name not in ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS | OUTCOME_STATE_TOOLS:
+    if name not in (
+        ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS
+        | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS | PRIORITY_CONTEXT_TOOLS
+    ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
         # ChatGPT prompts for ordinary effects even when this private app allows all tools.
@@ -222,7 +230,13 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         required_sha: Annotated[str | None, Field(pattern=r"^[0-9a-f]{40}$")] = None,
     ) -> CallToolResult:
-        """Return the verified current public repository bundle as an MCP resource link."""
+        """Use this when substantive Switchstand repository content is needed and no verified local checkout is available.
+
+        Returns the verified current public repository bundle as an MCP resource link. Do not use
+        when a verified local checkout is already available. On ``refresh_pending``, retry boundedly
+        rather than reconstructing the repository through repeated remote file/tree reads. Pass
+        ``required_sha`` only as the exact local checkout target; it never selects another bundle.
+        """
         del api_version
         result = await repository_bundle.resolve_repository_bundle(required_sha)
         structured = {
@@ -479,6 +493,44 @@ def build_ordinary_tools(
         audited("outcome_state_update", str(owner_work_id), result.status)
         return OutcomeStateUpdateResult(status=result.status, state_id=result.state_id)
 
+    async def priority_claim_get(
+        api_version: Literal["1"], subject_kind: SubjectKind, subject_id: UUID,
+    ) -> PriorityClaimReadResult:
+        """Read current priority claims for one exact WorkId or project."""
+        del api_version
+        return await service.priority_claim_get(subject_kind, subject_id)
+
+    async def priority_claim_record(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1)],
+        relation_kind: RelationKind,
+        rationale: Annotated[str, Field(min_length=1, max_length=300)],
+        relation_target_id: UUID | None = None, band: PriorityBand | None = None,
+        supersedes_claim_id: UUID | None = None,
+    ) -> GuardOutcome:
+        """Record an AGENT recommendation for the caller's exact launch-bound WorkId."""
+        correlate(work_id)
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("priority_claim_record", work_id, operation_id)
+        if grant_version is None:
+            return service.denied("priority_claim_record", "no_current_grant")
+        return await service.priority_claim_record(PriorityClaimWrite(
+            api_version=api_version, operation_id=operation_id, work_id=work_id,
+            grant_version=grant_version, observed_revision=observed_revision,
+            relation_kind=relation_kind, rationale=rationale,
+            relation_target_id=relation_target_id, band=band,
+            supersedes_claim_id=supersedes_claim_id,
+        ))
+
+    async def priority_context_get(
+        api_version: Literal["1"],
+        work_ids: Annotated[tuple[UUID, ...], Field(min_length=1, max_length=50)],
+    ) -> PriorityContextResult:
+        """Project context for explicit WorkIds without ranking or inheritance."""
+        del api_version
+        return await service.priority_context_get(work_ids)
+
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: OrdinaryRelationPatch,
@@ -657,6 +709,17 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             stored = await mailboxes.takeover(name, principal.key, chat_session)
+            if stored.status == "recovery_required" and stored.reason == "state_unavailable":
+                # Same-principal takeover is replay-safe for this exact replacement session.
+                # Retry only the ambiguous state result, with the already-captured identity
+                # and unchanged arguments, then require an authoritative binding readback.
+                stored = await mailboxes.takeover(name, principal.key, chat_session)
+                if stored.status == "ok" and stored.mailbox is not None:
+                    observed = await mailboxes.for_actor(principal.key, chat_session)
+                    if observed.status != "ok" or observed.mailbox != stored.mailbox:
+                        stored = AgentMailboxResult(
+                            status="recovery_required", reason="state_unavailable"
+                        )
             result = (
                 AgentRegistrationResult(status="ok", name=stored.mailbox.name)
                 if stored.status == "ok" and stored.mailbox is not None
@@ -901,6 +964,12 @@ def build_ordinary_tools(
         ("work_update", enriched_work_update if service.outcome_state_enabled else work_update),
         *((("outcome_state_update", outcome_state_update),)
           if service.outcome_state_enabled else ()),
+        *((
+            ("priority_claim_get", priority_claim_get),
+            ("priority_claim_record", priority_claim_record),
+        ) if service.priority_claims_enabled and service.priority_claims is not None else ()),
+        *((("priority_context_get", priority_context_get),)
+          if service.priority_context_enabled and service.priority_context is not None else ()),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
