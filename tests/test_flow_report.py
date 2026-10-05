@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -234,6 +234,31 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
 async def test_unknown_work_fails_without_fabricating_a_report(engine: AsyncEngine) -> None:
     with pytest.raises(LookupError, match="does not exist"):
         await report(engine, uuid4())
+
+
+async def test_uninstalled_human_review_source_is_explicitly_unknown(
+    engine: AsyncEngine,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP TABLE human_review_consequences"))
+
+    result = await report(engine, target)
+
+    assert result["status"] == "PARTIAL"
+    assert result["human_review"] == {
+        "coverage": "UNKNOWN",
+        "reason": "SOURCE_TABLE_UNAVAILABLE",
+        "items": [],
+    }
+    assert result["coverage"]["human_review"] == {
+        "status": "UNKNOWN",
+        "reason": "SOURCE_TABLE_UNAVAILABLE",
+    }
+    assert "human_review_count=0 coverage=UNKNOWN reason=SOURCE_TABLE_UNAVAILABLE" in (
+        flow_report.render_concise(result)
+    )
 
 
 async def test_review_waits_are_target_only_clipped_unioned_and_observational(
