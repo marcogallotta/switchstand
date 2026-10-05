@@ -13,9 +13,13 @@ from switchstand.canonical_relations import (
 from switchstand.canonical_work import canonical_metadata, canonical_work, legacy_work_aliases
 from switchstand.database import validate_test_database_url
 from switchstand.human_reviews import human_review_consequences
+from switchstand.priority_claims import priority_claims
+from switchstand.task_runs import task_run_requests
 from switchstand.work_events import work_events
 
 CANONICAL_TABLES = (
+    task_run_requests,
+    priority_claims,
     human_review_consequences,
     canonical_work, legacy_work_aliases, work_dependencies, work_parents,
     projects, project_memberships, work_events,
@@ -54,10 +58,5 @@ def database_prerequisite() -> None:
                     "work_migration_receipts CASCADE"
                 )
             canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
-            yield
-            with engine.begin() as connection:
-                connection.exec_driver_sql("DROP TABLE IF EXISTS task_run_requests CASCADE")
         finally:
             engine.dispose()
-    else:
-        yield

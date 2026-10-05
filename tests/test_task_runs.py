@@ -91,9 +91,6 @@ async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
     assert first.request.requester_work_id == requester
     assert first.request.execution_work_id == execution
     assert await state.request(requester, operation_id, intent) == first
-    assert await TaskRunState(engine, CanonicalWorkRepository(engine)).get(
-        first.request.request_id
-    ) == first
     async with engine.connect() as connection:
         assert await connection.scalar(select(func.count()).select_from(task_run_requests)) == 1
     config = Config("alembic.ini")

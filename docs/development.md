@@ -87,6 +87,12 @@ For an ordinary Claude Code Coordinator, install the host shim once with
 `scripts/codex-hook --coordinator-primary` on Bash, Edit, MultiEdit, Write and NotebookEdit. It uses your
 normal Claude login. Tool access grants no authority.
 
+The ordinary Codex Coordinator profile likewise grants practical user-level filesystem writes while
+the same hook keeps the canonical primary source checkout read-only. It permits mutation in adjacent
+repair worktrees and local operational state; the filesystem sandbox is not a substitute for effect
+authority. Malformed auxiliary friction state is quarantined and regenerated visibly so launch and
+unrelated diagnosis remain usable.
+
 The detailed lifecycle, recovery, and isolated-candidate routes remain below.
 
 ## Match evidence to the claim

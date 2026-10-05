@@ -105,14 +105,6 @@ class TaskRunRequestResult(ClosedModel):
         "state_unavailable",
     ] | None = None
 
-    @model_validator(mode="after")
-    def exact_shape(self) -> Self:
-        if self.status == "ok" and (self.request is None or self.reason is not None):
-            raise ValueError("successful request result requires only the request")
-        if self.status != "ok" and (self.request is not None or self.reason is None):
-            raise ValueError("failed request result requires only its reason")
-        return self
-
 
 _REQUEST_COLUMNS = tuple(task_run_requests.c)
 
@@ -211,17 +203,5 @@ class TaskRunState:
                         status="conflict", reason="operation_identity_conflict"
                     )
                 return TaskRunRequestResult(status="ok", request=_view(replay))
-        except (SQLAlchemyError, TypeError, ValueError):
-            return TaskRunRequestResult(status="unknown", reason="state_unavailable")
-
-    async def get(self, request_id: UUID) -> TaskRunRequestResult:
-        try:
-            async with self.engine.connect() as connection:
-                row = (await connection.execute(select(task_run_requests).where(
-                    task_run_requests.c.request_id == request_id
-                ))).mappings().one_or_none()
-            if row is None:
-                return TaskRunRequestResult(status="denied", reason="request_not_found")
-            return TaskRunRequestResult(status="ok", request=_view(row))
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
