@@ -87,6 +87,32 @@ async def test_implementation_request_is_default_off_and_delegates_exact_identit
     )
 
 
+async def test_product_currentness_tool_is_default_off_and_server_owned():
+    subject = service()
+    assert "product_currentness_get" not in dict(build_ordinary_tools(subject))
+    expected = object()
+    callback = AsyncMock(return_value=expected)
+    subject.product_currentness_enabled = True
+    subject.product_currentness = callback  # type: ignore[assignment]
+    tool = dict(build_ordinary_tools(subject))["product_currentness_get"]
+
+    assert set(signature(tool).parameters) == {"api_version"}
+    assert await tool(api_version="1") is expected
+    callback.assert_awaited_once_with(PRINCIPAL)
+
+
+async def test_product_currentness_tool_requires_authenticated_principal():
+    subject = service()
+    callback = AsyncMock()
+    subject.principal = AsyncMock(return_value=None)
+    subject.product_currentness_enabled = True
+    subject.product_currentness = callback  # type: ignore[assignment]
+
+    with pytest.raises(PermissionError, match="authenticated principal"):
+        await dict(build_ordinary_tools(subject))["product_currentness_get"](api_version="1")
+    callback.assert_not_awaited()
+
+
 async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):
     subject = service()
     update = AsyncMock(side_effect=AssertionError("invalid patch reached update handler"))
