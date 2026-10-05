@@ -4,6 +4,7 @@ import os
 from typing import cast
 
 import pytest
+from chatgpt_fixture import PRINCIPAL
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -23,6 +24,7 @@ SERVER_SNAPSHOT = StatefulServerSnapshot(
     runtime_sha="a" * 40,
     selected_runtime_sha="a" * 40,
     run_id="run-1",
+    principal_key=PRINCIPAL.key,
     outcome_actions_enabled=True,
     tool_names=("work_get", "work_update", "outcome_state_update"),
     tools_schema_sha256=SCHEMA_DIGEST,
@@ -43,15 +45,19 @@ class MemoryStatefulEvidenceReader(LiveStatefulEvidenceReader):
 def build_reader():
     snapshot = SERVER_SNAPSHOT
 
+    async def read_principal():
+        return PRINCIPAL
+
     async def read_snapshot() -> StatefulServerSnapshot:
         return snapshot
 
     reader = MemoryStatefulEvidenceReader(
-            cast(AsyncEngine, object()),
-            read_snapshot,
-            expected_migration_revision=EXPECTED_MIGRATION,
-            expected_tools_schema_sha256=SCHEMA_DIGEST,
-        )
+        cast(AsyncEngine, object()),
+        read_principal,
+        read_snapshot,
+        expected_migration_revision=EXPECTED_MIGRATION,
+        expected_tools_schema_sha256=SCHEMA_DIGEST,
+    )
 
     def set_snapshot(value: StatefulServerSnapshot) -> None:
         nonlocal snapshot
@@ -88,6 +94,17 @@ async def test_expected_schema_and_persistence_are_contract_inputs() -> None:
     persistence = await reader.read("persistence_ready")
     assert persistence.result == "FALSE"
     assert persistence.detail == "persistence_prerequisite_missing"
+
+
+async def test_snapshot_must_match_authenticated_principal() -> None:
+    reader, snapshot, set_snapshot = build_reader()
+    set_snapshot(snapshot.model_copy(update={"principal_key": "d" * 64}))
+    result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+    assert (result.status, result.current, result.reason) == (
+        "unknown", "UNKNOWN", "acceptance_contract_unbound",
+    )
+
+
 async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
     database_url = os.getenv("TEST_DATABASE_URL")
     if database_url is None:
@@ -96,6 +113,9 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
 
     async def read_snapshot() -> StatefulServerSnapshot:
         return SERVER_SNAPSHOT
+
+    async def read_principal():
+        return PRINCIPAL
 
     try:
         async with engine.begin() as connection:
@@ -113,6 +133,7 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
             )
         reader = LiveStatefulEvidenceReader(
             engine,
+            read_principal,
             read_snapshot,
             expected_migration_revision=actual_migration,
             expected_tools_schema_sha256=SCHEMA_DIGEST,

@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ClosedModel
+from .grants import PrincipalContext
 from .product_currentness import SourceEvidence, SourceName, StatefulAcceptanceBinding
 
 STATEFUL_CONTRACT_REVISION = "stateful-technical-currentness-v1"
@@ -30,6 +31,7 @@ class StatefulServerSnapshot(ClosedModel):
     runtime_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     selected_runtime_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     run_id: str = Field(min_length=1)
+    principal_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     outcome_actions_enabled: bool
     tool_names: tuple[str, ...]
     tools_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -42,6 +44,7 @@ class StatefulPersistenceSnapshot(ClosedModel):
 
 
 SnapshotReader = Callable[[], Awaitable[StatefulServerSnapshot]]
+PrincipalReader = Callable[[], Awaitable[PrincipalContext | None]]
 
 
 def _digest(value: object) -> str:
@@ -63,6 +66,7 @@ class LiveStatefulEvidenceReader:
     def __init__(
         self,
         engine: AsyncEngine,
+        principal: PrincipalReader,
         snapshot: SnapshotReader,
         *,
         expected_migration_revision: str,
@@ -75,6 +79,7 @@ class LiveStatefulEvidenceReader:
         if len(expected_tools_schema_sha256) != 64:
             raise ValueError("expected_tools_schema_sha256 must be a SHA-256 digest")
         self._engine = engine
+        self._principal = principal
         self._snapshot = snapshot
         self._expected_migration_revision = expected_migration_revision
         self._expected_tools_schema_sha256 = expected_tools_schema_sha256
@@ -127,7 +132,9 @@ class LiveStatefulEvidenceReader:
 
     @staticmethod
     def _runtime_token(value: StatefulServerSnapshot) -> str:
-        return _digest((value.runtime_sha, value.selected_runtime_sha, value.run_id))
+        return _digest(
+            (value.runtime_sha, value.selected_runtime_sha, value.run_id, value.principal_key)
+        )
 
     @classmethod
     def _snapshot_token(cls, source: SourceName, value: StatefulServerSnapshot) -> str:
@@ -143,7 +150,10 @@ class LiveStatefulEvidenceReader:
     async def _basis_state(
         self,
     ) -> tuple[StatefulServerSnapshot, StatefulPersistenceSnapshot, str]:
+        principal = await self._principal()
         snapshot = await self._snapshot()
+        if principal is None or snapshot.principal_key != principal.key:
+            raise ValueError("snapshot is not bound to the authenticated principal")
         persistence = await self._persistence()
         basis = _digest(
             {

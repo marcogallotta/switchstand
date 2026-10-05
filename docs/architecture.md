@@ -52,6 +52,14 @@ MCP session ID used for message-currentness fencing. Repository MCP configuratio
 configuration must expose the same intended inventory, but tool semantics belong in
 `build_ordinary_tools`. The edge also owns the narrow HTTP lifecycle integration that completes a
 standalone Streamable HTTP GET when the SSE dependency returns during shutdown.
+`product_currentness_get` is the default-off Semantic MCP projection of the code-owned Stateful
+acceptance contract. Its live evidence adapter binds the verified request principal, selected
+runtime/run, exact ordinary-tool schema and PostgreSQL prerequisites into one reconciliation basis.
+The first diagnostic layer deliberately has no functional-proof reader and therefore cannot return
+TRUE. A later proof layer may consume only an attributable external qualification receipt bound to
+that same principal/runtime/basis; MCP arguments never supply evidence or acceptance booleans.
+Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
+on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
 interval aggregation; it neither persists records nor establishes journal durability or reliance.
 `flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. B1 is always partial:
