@@ -105,7 +105,7 @@ class ChatGPTService:
         priority_claims_enabled: bool = False,
         priority_context: PriorityContextProjection | None = None,
         priority_context_enabled: bool = False,
-        product_currentness: Callable[[], Awaitable[ProductCurrentness]] | None = None,
+        product_currentness: Callable[[PrincipalContext], Awaitable[ProductCurrentness]] | None = None,
         product_currentness_enabled: bool = False,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers

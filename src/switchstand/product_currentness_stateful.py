@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .contracts import ClosedModel
 from .grants import PrincipalContext
 from .product_currentness import SourceEvidence, SourceName, StatefulAcceptanceBinding
+from .secure_file import read_private_bytes
 
 STATEFUL_CONTRACT_REVISION = "stateful-technical-currentness-v1"
 STATEFUL_REQUIRED_SOURCES: tuple[SourceName, ...] = (
@@ -43,13 +47,40 @@ class StatefulPersistenceSnapshot(ClosedModel):
     outcome_state_table: str | None
 
 
+class StatefulQualificationReceipt(ClosedModel):
+    """Sealed output from the real Stateful qualification runner."""
+
+    schema_version: Literal[2] = Field(alias="schema")
+    issuer: Literal["switchstand-stateful-qualifier"]
+    qualification: Literal["real:authenticated-stateful-currentness-v1"]
+    result: Literal["PASS"]
+    runtime_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    selected_runtime_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    run_id: str = Field(min_length=1)
+    principal_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tools_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    persistence_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    basis_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authenticated_mcp: Literal["PASS"]
+    admission: Literal["DENIED"]
+    stale_cas: Literal["STALE"]
+    replay: Literal["REPLAYED"]
+    currentness: Literal["RECHECKED"]
+    observed_at: datetime
+    seal: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 SnapshotReader = Callable[[], Awaitable[StatefulServerSnapshot]]
 PrincipalReader = Callable[[], Awaitable[PrincipalContext | None]]
 
 
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
 def _digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return hashlib.sha256(_canonical(value)).hexdigest()
 
 
 class LiveStatefulEvidenceReader:
@@ -73,11 +104,15 @@ class LiveStatefulEvidenceReader:
         expected_tools_schema_sha256: str,
         contract_revision: str = STATEFUL_CONTRACT_REVISION,
         migration_receipt_name: str = "work-identity-migration-complete-v1",
+        qualification_receipt: Path | None = None,
+        qualification_key: Path | None = None,
     ) -> None:
         if not expected_migration_revision:
             raise ValueError("expected_migration_revision must be nonempty")
         if len(expected_tools_schema_sha256) != 64:
             raise ValueError("expected_tools_schema_sha256 must be a SHA-256 digest")
+        if (qualification_receipt is None) != (qualification_key is None):
+            raise ValueError("qualification receipt and key must be configured together")
         self._engine = engine
         self._principal = principal
         self._snapshot = snapshot
@@ -85,6 +120,8 @@ class LiveStatefulEvidenceReader:
         self._expected_tools_schema_sha256 = expected_tools_schema_sha256
         self._contract_revision = contract_revision
         self._migration_receipt_name = migration_receipt_name
+        self._qualification_receipt = qualification_receipt
+        self._qualification_key = qualification_key
 
     @property
     def _contract_token(self) -> str:
@@ -178,17 +215,64 @@ class LiveStatefulEvidenceReader:
         _, _, basis = await self._basis_state()
         return basis
 
+    def _qualification(self) -> tuple[StatefulQualificationReceipt, str]:
+        if self._qualification_receipt is None or self._qualification_key is None:
+            raise ValueError("functional proof is not configured")
+        raw = read_private_bytes(self._qualification_receipt)
+        if len(raw) > 64 * 1024:
+            raise ValueError("qualification receipt is too large")
+        receipt = StatefulQualificationReceipt.model_validate_json(raw)
+        key = read_private_bytes(self._qualification_key)
+        if len(key) != 32:
+            raise ValueError("qualification key must contain exactly 32 bytes")
+        payload = receipt.model_dump(mode="json", by_alias=True, exclude={"seal"})
+        expected = hmac.new(key, _canonical(payload), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(receipt.seal, expected):
+            raise ValueError("qualification receipt seal is invalid")
+        return receipt, hashlib.sha256(raw).hexdigest()
+
+    def _functional_proof(
+        self,
+        snapshot: StatefulServerSnapshot,
+        persistence: StatefulPersistenceSnapshot,
+        basis: str,
+        observed_at: datetime,
+    ) -> SourceEvidence:
+        try:
+            receipt, token = self._qualification()
+        except (OSError, ValueError, ValidationError):
+            return SourceEvidence(
+                source="functional_proof",
+                result="UNKNOWN",
+                evidence_id="unavailable:functional_proof",
+                observed_at=observed_at,
+                detail="functional_proof_missing_or_invalid",
+            )
+        bound = (
+            receipt.runtime_sha == snapshot.runtime_sha
+            and receipt.selected_runtime_sha == snapshot.selected_runtime_sha
+            and receipt.run_id == snapshot.run_id
+            and receipt.principal_key == snapshot.principal_key
+            and receipt.tools_schema_sha256 == snapshot.tools_schema_sha256
+            and receipt.persistence_token == self.persistence_token(persistence)
+            and receipt.basis_token == basis
+            and receipt.contract_token == self._contract_token
+        )
+        return SourceEvidence(
+            source="functional_proof",
+            result="TRUE" if bound else "CONFLICT",
+            evidence_id=f"stateful-qualification:{token}",
+            currentness_token=token,
+            basis_token=basis,
+            observed_at=observed_at,
+            detail="qualification_current" if bound else "qualification_binding_mismatch",
+        )
+
     async def read(self, source: SourceName) -> SourceEvidence:
         snapshot, persistence, basis = await self._basis_state()
         observed_at = datetime.now().astimezone()
         if source == "functional_proof":
-            return SourceEvidence(
-                source=source,
-                result="UNKNOWN",
-                evidence_id="unavailable:functional_proof",
-                observed_at=observed_at,
-                detail="functional_proof_missing",
-            )
+            return self._functional_proof(snapshot, persistence, basis, observed_at)
         if source == "persistence_ready":
             ready = self._persistence_ready(persistence)
             token = self.persistence_token(persistence)
@@ -227,9 +311,12 @@ class LiveStatefulEvidenceReader:
         )
 
     async def currentness_token(self, source: SourceName) -> str | None:
-        snapshot, persistence, _ = await self._basis_state()
+        snapshot, persistence, basis = await self._basis_state()
         if source == "functional_proof":
-            return None
+            proof = self._functional_proof(
+                snapshot, persistence, basis, datetime.now().astimezone()
+            )
+            return proof.currentness_token
         if source == "persistence_ready":
             return self.persistence_token(persistence)
         return self._snapshot_token(source, snapshot)

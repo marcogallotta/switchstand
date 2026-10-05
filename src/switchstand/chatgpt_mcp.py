@@ -538,7 +538,10 @@ def build_ordinary_tools(
         """Reconcile Stateful technical currentness from server-owned live evidence."""
         del api_version
         assert service.product_currentness is not None
-        return await service.product_currentness()
+        principal = await service.principal()
+        if principal is None:
+            raise PermissionError("authenticated principal is unavailable")
+        return await service.product_currentness(principal)
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
