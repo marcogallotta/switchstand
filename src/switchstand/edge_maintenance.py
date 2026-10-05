@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import http.client
+import io
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import signal
 import socket
 import stat
 import subprocess
+import tokenize
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -199,11 +202,75 @@ def atomic_copy(source: Path, target: Path, mode: int) -> None:
 def _validate_launch_mapping(config: Config) -> None:
     current = config.launcher.read_bytes()
     old_runtime = os.fsencode(config.current_runtime)
-    if current.count(old_runtime) != 1:
-        raise Failed("current launcher does not bind exactly one runtime")
-    expected = current.replace(old_runtime, os.fsencode(config.candidate_runtime), 1)
-    if config.candidate_launcher.read_bytes() != expected:
-        raise Failed("candidate launcher is not the exact runtime retarget")
+    candidate = config.candidate_launcher.read_bytes()
+    if current.count(old_runtime) == 1:
+        expected = current.replace(old_runtime, os.fsencode(config.candidate_runtime), 1)
+        if candidate == expected:
+            return
+    elif _normalized_launcher(current, config.current_runtime) == _normalized_launcher(
+        candidate, config.candidate_runtime
+    ):
+        return
+    raise Failed("candidate launcher is not the exact runtime retarget")
+
+
+def _normalized_launcher(source: bytes, runtime: Path) -> str | None:
+    """Redact only the exact `RUNTIME = Path(...)` literal of an ASCII launcher."""
+    try:
+        text = source.decode("ascii")
+        tree = ast.parse(text)
+    except (SyntaxError, UnicodeDecodeError):
+        return None
+    matches: list[ast.Constant] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "RUNTIME"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "Path"
+            and len(node.value.args) == 1
+            and not node.value.keywords
+            and isinstance(node.value.args[0], ast.Constant)
+            and node.value.args[0].value == str(runtime)
+        ):
+            continue
+        matches.append(node.value.args[0])
+    if len(matches) != 1:
+        return None
+    runtime_literal = matches[0]
+    if runtime_literal.end_lineno is None or runtime_literal.end_col_offset is None:
+        return None
+    lines = text.splitlines(keepends=True)
+    start = sum(len(line) for line in lines[:runtime_literal.lineno - 1]) + runtime_literal.col_offset
+    end = sum(len(line) for line in lines[:runtime_literal.end_lineno - 1]) + runtime_literal.end_col_offset
+    payloads: list[tuple[int, int]] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token in tokens:
+            token_start = sum(len(line) for line in lines[:token.start[0] - 1]) + token.start[1]
+            token_end = sum(len(line) for line in lines[:token.end[0] - 1]) + token.end[1]
+            if token.type != tokenize.STRING or not (start <= token_start and token_end <= end):
+                continue
+            raw = token.string
+            if (
+                len(raw) < 2
+                or raw[0] not in "\"'"
+                or raw[-1] != raw[0]
+                or raw[0] in raw[1:-1]
+                or "\\" in raw[1:-1]
+            ):
+                return None
+            payloads.append((token_start + 1, token_end - 1))
+    except tokenize.TokenError:
+        return None
+    if len(payloads) < 2:
+        return None
+    for payload_start, payload_end in reversed(payloads):
+        text = text[:payload_start] + "<switchstand-runtime>" + text[payload_end:]
+    return text
 
 
 def exclusive_lock(path: Path = LOCK) -> TextIO:
