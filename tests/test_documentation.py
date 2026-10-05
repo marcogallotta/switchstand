@@ -123,6 +123,7 @@ def test_agents_routes_only_current_role_function_context():
         "delegated Coordinator owns only its lane",
         "**Implementation Worker:** exact task + current Implementation Specification + current Design Specification",
         "**Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate",
+        "for substantive code/config/test review also load [code quality](docs/code-quality.md)",
         "**Integration/landing Coordinator:** exact candidate/current target",
         "Coordinator challenge of scope growth, review overreach, test ratcheting",
         "Managed Workers use only procedures/references in their bound current package",
