@@ -120,10 +120,13 @@ def _sha(path: Path) -> str:
 
 
 def run_host_command(
-    command: list[str], *, check: bool = True, timeout: int = 45
+    command: list[str], *, check: bool = True, timeout: int = 45,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one bounded host command for a maintenance operation."""
-    return subprocess.run(command, check=check, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(
+        command, check=check, capture_output=True, text=True, timeout=timeout, env=env
+    )
 
 
 def validate_target(config: Config) -> None:
@@ -728,12 +731,13 @@ class HostOperations:
             or not self.public_gated()
         ):
             raise Unknown("state upgrade boundary is no longer exact")
+        control_env = self._candidate_control_environment()
         command = [
             str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
             "--target", "production",
         ]
         try:
-            result = run_host_command(command, check=False, timeout=1800)
+            result = run_host_command(command, check=False, timeout=1800, env=control_env)
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unknown("shared state upgrade outcome is unreadable") from exc
         if result.returncode:
@@ -741,6 +745,54 @@ class HostOperations:
             # shared migration without rolling it back.  Its nonzero exit cannot
             # prove that the shared-state authority boundary was not crossed.
             raise Unknown("shared state upgrade did not complete")
+
+    def _candidate_control_environment(self) -> dict[str, str]:
+        """Bind the upgrader to the detached, preflighted candidate checkout."""
+        runtime = self.c.candidate_runtime
+        try:
+            if (
+                not runtime.is_absolute()
+                or runtime.is_symlink()
+                or not runtime.is_dir()
+                or runtime.resolve(strict=True) != runtime
+            ):
+                raise OSError
+            head = run_host_command(
+                ["git", "-C", str(runtime), "rev-parse", "HEAD"]
+            ).stdout.strip()
+            dirty = run_host_command(
+                ["git", "-C", str(runtime), "status", "--porcelain"]
+            ).stdout
+            branch = run_host_command(
+                ["git", "-C", str(runtime), "branch", "--show-current"]
+            ).stdout.strip()
+            common = run_host_command(
+                [
+                    "git", "-C", str(runtime), "rev-parse", "--path-format=absolute",
+                    "--git-common-dir",
+                ]
+            ).stdout.strip()
+            common_path = Path(common)
+            if (
+                not common_path.is_absolute()
+                or common_path.is_symlink()
+                or not common_path.is_dir()
+                or common_path.resolve(strict=True) != common_path
+            ):
+                raise OSError
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise Unknown("candidate upgrade control identity is unreadable") from exc
+        if head != self.c.candidate_sha or dirty or branch:
+            raise Unknown("candidate upgrade control identity is not exact")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SWITCHSTAND_CONTROL_PATH": str(runtime),
+                "SWITCHSTAND_CONTROL_SHA": self.c.candidate_sha,
+                "SWITCHSTAND_CONTROL_COMMON": common,
+            }
+        )
+        return environment
 
     def start(self) -> None:
         self._service("start", "active")
@@ -798,7 +850,7 @@ class HostOperations:
 
     def _doctor(self, runtime: Path, expected_sha: str, public: bool) -> bool:
         command = [
-            str(runtime / "scripts/switchstand-edge-doctor"),
+            str(self.c.candidate_runtime / "scripts/switchstand-edge-doctor"),
             "--env-file",
             str(self.c.env_file),
             "--repo",

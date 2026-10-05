@@ -596,6 +596,7 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
     monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
     monkeypatch.setattr(operations, "gate_exact", lambda: True)
     monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(operations, "_candidate_control_environment", dict)
     monkeypatch.setattr(
         maintenance,
         "run_host_command",
@@ -619,6 +620,7 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
     monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
     monkeypatch.setattr(operations, "gate_exact", lambda: True)
     monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(operations, "_candidate_control_environment", dict)
     monkeypatch.setattr(
         maintenance,
         "run_host_command",
@@ -627,6 +629,148 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
 
     with pytest.raises(Unknown, match="did not complete"):
         operations.upgrade_state()
+
+
+def test_state_upgrade_passes_exact_detached_candidate_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    common = tmp_path / "git-common"
+    common.mkdir()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "git":
+            if command[-1] == "HEAD":
+                output = subject.candidate_sha + "\n"
+            elif command[3] == "status":
+                output = ""
+            elif command[3] == "branch":
+                output = ""  # Detached candidate checkout.
+            else:
+                output = str(common) + "\n"
+        else:
+            output = ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    operations.upgrade_state()
+
+    command, kwargs = calls[-1]
+    assert command == [
+        str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+        "--target", "production",
+    ]
+    assert kwargs["env"] is not None
+    environment = kwargs["env"]
+    assert isinstance(environment, dict)
+    assert environment["SWITCHSTAND_CONTROL_PATH"] == str(subject.candidate_runtime)
+    assert environment["SWITCHSTAND_CONTROL_SHA"] == subject.candidate_sha
+    assert environment["SWITCHSTAND_CONTROL_COMMON"] == str(common)
+
+
+def test_state_upgrade_overwrites_inherited_control_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    common = tmp_path / "git-common"
+    common.mkdir()
+    command_env: dict[str, str] | None = None
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    for key in (
+        "SWITCHSTAND_CONTROL_PATH",
+        "SWITCHSTAND_CONTROL_SHA",
+        "SWITCHSTAND_CONTROL_COMMON",
+    ):
+        monkeypatch.setenv(key, "inherited-wrong-selector")
+
+    def run(command, **kwargs):
+        nonlocal command_env
+        if command[0] == "git":
+            if command[-1] == "HEAD":
+                output = subject.candidate_sha + "\n"
+            elif command[3] == "status" or command[3] == "branch":
+                output = ""
+            else:
+                output = str(common) + "\n"
+        else:
+            command_env = kwargs["env"]
+            output = ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    operations.upgrade_state()
+
+    assert command_env is not None
+    assert command_env["SWITCHSTAND_CONTROL_PATH"] == str(subject.candidate_runtime)
+    assert command_env["SWITCHSTAND_CONTROL_SHA"] == subject.candidate_sha
+    assert command_env["SWITCHSTAND_CONTROL_COMMON"] == str(common)
+
+
+def test_state_upgrade_rejects_candidate_control_mismatch_before_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    common = tmp_path / "git-common"
+    common.mkdir()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[0] == "git":
+            if command[-1] == "HEAD":
+                output = "not-the-candidate\n"
+            elif command[3] == "status" or command[3] == "branch":
+                output = ""
+            else:
+                output = str(common) + "\n"
+        else:
+            pytest.fail("the upgrader must not run after a control mismatch")
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    with pytest.raises(Unknown, match="control identity is not exact"):
+        operations.upgrade_state()
+
+    assert all("switchstand-upgrade-state" not in command[0] for command in commands)
+
+
+def test_rollback_doctor_uses_candidate_tool_for_old_runtime_without_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    commands: list[list[str]] = []
+    assert not (subject.current_runtime / ".venv").exists()
+    monkeypatch.setattr(
+        maintenance,
+        "run_host_command",
+        lambda command, **_kwargs: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+
+    assert operations._doctor(subject.current_runtime, subject.current_sha, False)
+
+    assert commands == [[
+        str(subject.candidate_runtime / "scripts" / "switchstand-edge-doctor"),
+        "--env-file", str(subject.env_file),
+        "--repo", str(subject.current_runtime),
+        "--expected-sha", subject.current_sha,
+        "--local-url", subject.local_url,
+        "--public-url", subject.local_url,
+    ]]
 
 
 def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):
