@@ -220,7 +220,7 @@ async def test_start_bind_is_trusted_exact_and_one_to_one(subject):
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
     with pytest.raises(RuntimeError, match="preserve durable task-run execution evidence"):
-        command.downgrade(config, "0017_task_runs")
+        command.downgrade(config, "0018_task_runs")
 
 
 async def test_concurrent_distinct_runs_bind_one_execution(subject):
@@ -376,7 +376,7 @@ async def test_result_currentness_unknown_then_current_and_stale_evidence(subjec
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
     with pytest.raises(RuntimeError, match="preserve durable task-run result evidence"):
-        command.downgrade(config, "0018_task_run_executions")
+        command.downgrade(config, "0019_task_run_executions")
 
 
 async def test_concurrent_current_results_select_one_terminal(subject):

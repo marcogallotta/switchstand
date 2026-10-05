@@ -37,6 +37,9 @@ def repository_bundle_token(monkeypatch):
 def client_for(
     refs=REFS,
     bundle_digest=f"sha256:{CHECKSUM}",
+    manifest_digest=None,
+    manifest_checksum=CHECKSUM,
+    downloaded_checksum=CHECKSUM,
     authoritative_pages=None,
     foreign_next_url=None,
     redirect_manifest=False,
@@ -49,8 +52,8 @@ def client_for(
     manifest = {
         "repository": "marcogallotta/switchstand",
         "refs": refs,
-        "snapshot_digest": canonical_ref_map_digest(refs),
-        "bundle_sha256": CHECKSUM,
+        "snapshot_digest": manifest_digest or canonical_ref_map_digest(refs),
+        "bundle_sha256": manifest_checksum,
     }
     release = {
         "assets": [
@@ -78,7 +81,7 @@ def client_for(
             return httpx.Response(200, json=manifest)
         if str(request.url) == checksum_url:
             assert "Authorization" not in request.headers
-            return httpx.Response(200, text=f"{CHECKSUM}  {BUNDLE_NAME}\n")
+            return httpx.Response(200, text=f"{downloaded_checksum}  {BUNDLE_NAME}\n")
         if str(request.url) in refs_urls:
             assert request.headers["Authorization"] == f"Bearer {TOKEN}"
             page = refs_urls.index(str(request.url))
@@ -110,7 +113,7 @@ async def test_resolver_returns_current_only_on_exact_ref_and_asset_match():
 
     async with client_for() as client:
         non_head = await resolve_repository_bundle("d" * 40, client)
-    assert non_head.status == "current"
+    assert (non_head.status, non_head.reason) == ("refresh_pending", "required_sha_unproved")
     assert non_head.required_sha_is_head is None
 
 
@@ -125,6 +128,47 @@ async def test_resolver_rejects_stale_refs_and_asset_race():
     assert (result.status, result.reason) == ("refresh_pending", "bundle_transition")
 
 
+async def test_resolver_rejects_manifest_and_checksum_transitions():
+    async with client_for(manifest_digest="d" * 64) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == (
+        "refresh_pending",
+        "manifest_digest_mismatch",
+    )
+
+    async with client_for(downloaded_checksum="d" * 64) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert (result.status, result.reason) == ("refresh_pending", "checksum_transition")
+
+
+async def test_resolver_accepts_unrelated_branch_drift_for_current_main():
+    authoritative = {
+        "refs/heads/main": REFS["refs/heads/main"],
+        "refs/heads/review": "d" * 40,
+        "refs/heads/new-review": "e" * 40,
+    }
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(client=client)
+    assert result.status == "current"
+    assert result.refs == REFS
+
+
+async def test_resolver_requires_requested_sha_on_an_unchanged_authoritative_ref():
+    authoritative = {
+        "refs/heads/main": "d" * 40,
+        "refs/heads/review": REFS["refs/heads/review"],
+    }
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(REFS["refs/heads/review"], client)
+    assert result.status == "current"
+    assert result.required_sha_is_head is True
+
+    authoritative["refs/heads/review"] = "e" * 40
+    async with client_for(authoritative_pages=[authoritative]) as client:
+        result = await resolve_repository_bundle(REFS["refs/heads/review"], client)
+    assert (result.status, result.reason) == ("refresh_pending", "required_sha_unproved")
+
+
 async def test_resolver_consumes_every_ref_page_before_accepting_current():
     pages = [
         {"refs/heads/main": REFS["refs/heads/main"]},
@@ -136,14 +180,14 @@ async def test_resolver_consumes_every_ref_page_before_accepting_current():
     assert result.refs == REFS
 
 
-async def test_resolver_rejects_drift_on_later_ref_page():
+async def test_resolver_accepts_unrelated_drift_on_later_ref_page():
     pages = [
         {"refs/heads/main": REFS["refs/heads/main"]},
         {"refs/heads/review": "d" * 40},
     ]
     async with client_for(authoritative_pages=pages) as client:
         result = await resolve_repository_bundle(client=client)
-    assert (result.status, result.reason) == ("refresh_pending", "refs_advanced")
+    assert result.status == "current"
 
 
 @pytest.mark.parametrize("token", [None, " \t"])

@@ -140,13 +140,13 @@ printf 'writer=%s\nhead=%s\n' "$PWD" "$(git rev-parse HEAD)" > "$MARKER"
         coordinator_home.glob("switchstand-coordinator-*.config.toml")
     ).read_text())
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
-    writer_git_dir = subprocess.check_output(
-        ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
-    ).strip()
-    assert filesystem[writer_git_dir] == "write"
+    assert filesystem == {
+        ":root": "write",
+        str(primary): {".": "read", ".git": "write"},
+    }
 
 
-def test_dispatch_rejects_invalid_legacy_friction_store_before_codex(
+def test_dispatch_quarantines_invalid_legacy_friction_and_launches_codex(
     tmp_path: Path,
 ) -> None:
     for kind in ("directory", "symlink"):
@@ -167,14 +167,23 @@ def test_dispatch_rejects_invalid_legacy_friction_store_before_codex(
             capture_output=True, check=False,
         )
 
-        assert result.returncode != 0
-        assert "Coordinator legacy friction store is invalid" in result.stderr
-        assert not marker.exists()
-        assert legacy.is_dir() if kind == "directory" else legacy.is_symlink()
-        assert not (primary / "friction.md").exists()
+        assert result.returncode == 0, result.stderr
+        assert "quarantined legacy-store; launch continues" in result.stderr
+        assert marker.exists()
+        assert legacy.is_file() and not legacy.is_symlink()
+        assert (primary / "friction.md").resolve() == state / "friction/friction.md"
+        quarantined = list(
+            (state / "codex/coordinator/friction-quarantine").glob("*/legacy-store")
+        )
+        assert len(quarantined) == 1
+        if kind == "directory":
+            assert quarantined[0].is_dir()
+        else:
+            assert quarantined[0].is_symlink()
+            assert target.read_text() == "external unchanged\n"
 
 
-def test_dispatch_rejects_invalid_current_friction_paths_without_mutating_legacy(
+def test_dispatch_quarantines_invalid_current_friction_and_launches_codex(
     tmp_path: Path,
 ) -> None:
     cases = ("root-file", "root-symlink", "store-directory", "store-symlink")
@@ -191,12 +200,12 @@ def test_dispatch_rejects_invalid_current_friction_paths_without_mutating_legacy
         root = state / "friction"
         if kind == "root-file":
             root.write_text("invalid root\n")
-            expected = "Coordinator friction root is invalid"
+            label = "current-root"
         elif kind == "root-symlink":
             target = case / "external-root"
             target.mkdir()
             root.symlink_to(target)
-            expected = "Coordinator friction root is invalid"
+            label = "current-root"
         else:
             root.mkdir()
             store = root / "friction.md"
@@ -206,19 +215,28 @@ def test_dispatch_rejects_invalid_current_friction_paths_without_mutating_legacy
                 target = case / "external-current-friction"
                 target.write_text("external unchanged\n")
                 store.symlink_to(target)
-            expected = "Coordinator friction store is invalid"
+            label = "current-store"
 
         result = subprocess.run(
             [DISPATCH], cwd=primary, env=env, text=True,
             capture_output=True, check=False,
         )
 
-        assert result.returncode != 0
-        assert expected in result.stderr
-        assert not marker.exists()
+        assert result.returncode == 0, result.stderr
+        assert f"quarantined {label}; launch continues" in result.stderr
+        assert marker.exists()
         assert legacy.read_text() == "legacy unchanged\n"
         assert binding.is_symlink()
-        assert os.readlink(binding) == binding_before
+        assert os.readlink(binding) != binding_before
+        assert binding.resolve() == root / "friction.md"
+        quarantined = list(
+            (state / "codex/coordinator/friction-quarantine").glob(f"*/{label}")
+        )
+        assert len(quarantined) == 1
+        if kind.endswith("symlink"):
+            assert quarantined[0].is_symlink()
+            if kind == "store-symlink":
+                assert target.read_text() == "external unchanged\n"
 
 
 def test_dispatch_refreshes_friction_binding_without_replacing_current_link(
@@ -338,8 +356,9 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
     ).strip())
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
-    assert filesystem[str(writer)] == "write"
-    assert filesystem[str(writer_git_dir)] == "write"
+    assert filesystem[":root"] == "write"
+    assert str(writer) not in filesystem
+    assert str(writer_git_dir) not in filesystem
     assert profile["approval_policy"] == "never"
     assert profile["features"]["multi_agent"] is True
     records = [path for path in coordinator_home.glob("start-commit.*")
@@ -384,7 +403,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert current_friction_store.read_text() == "existing friction\n"
     assert current_friction_store.stat().st_mode & 0o777 == 0o600
     assert (writer / "friction.md").resolve() == current_friction_store
-    assert filesystem[str(friction_root)] == "write"
+    assert filesystem[":root"] == "write"
     assert str(friction_store) not in filesystem
 
     artifact = home / ".local/state/switchstand/codex/handoffs/handoff-real-successor"
