@@ -58,12 +58,15 @@ and UNKNOWN/readback rules reject invalid effects without relying on a prompt.
 ## Private configuration
 
 The authorized host keeps OAuth client credentials, allowed immutable identity,
-public resource URL, bind settings, and database URL
+public resource URL, bind settings, database URL, and the purpose-specific read-only GitHub token
+used by repository bundle resolution
 outside the repository and logs. The public resource URL uses HTTPS and ends in
 `/mcp`; the process binds only to loopback behind its reverse proxy. OAuth
 metadata, authorization, callback, consent, registration, token, and MCP routes
 must reach that same process. OAuth establishes client identity; Switchstand's
 current workspace admission remains the authority for each read or effect.
+The repository-bundle token is a fine-grained token restricted to
+`marcogallotta/switchstand` with read-only Contents access; it is not the OAuth client credential.
 
 FastMCP owns encrypted OAuth client registrations and token mappings in its
 user-data directory. This is transport session state, not Switchstand authority
@@ -239,12 +242,14 @@ FASTMCP_HOME=/absolute/stable/auth/state
 ```
 
 The delegated-edge file contains the resource URL, numeric GitHub user ID, and database
-configuration, but **not** the GitHub client secret, signing material, or `FASTMCP_HOME`:
+configuration and its purpose-specific repository-bundle GitHub read token, but **not** the GitHub
+OAuth client secret, signing material, or `FASTMCP_HOME`:
 
 ```dotenv
 SWITCHSTAND_MCP_GITHUB_USER_ID=192548
 SWITCHSTAND_MCP_RESOURCE_URL=https://public.example/switchstand/mcp
 DATABASE_URL=...
+SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN=...
 ```
 
 Delegated-edge startup fails closed if GitHub client ID/secret or `FASTMCP_HOME` is present, catching
