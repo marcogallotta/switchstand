@@ -26,6 +26,7 @@ from switchstand.edge_maintenance import (
     _validate_launch_mapping,
     deploy,
     exclusive_lock,
+    recover_upgrade_no_effect,
     validate_target,
 )
 from switchstand.edge_monitor import HttpObservation
@@ -139,6 +140,9 @@ class FakeOperations:
 
     def restore_launcher(self):
         self._event("restore_launcher")
+
+    def prove_upgrade_no_effect(self):
+        self._event("prove_upgrade_no_effect")
 
 
 def receipt(subject: Config) -> dict[str, object]:
@@ -517,6 +521,92 @@ def test_pending_state_upgrade_receipt_never_retries_after_reentry(tmp_path: Pat
     assert "swap" not in operations.events
 
 
+def test_recovery_terminalizes_only_exact_pending_upgrade_as_no_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject = config(tmp_path)
+    subject = replace(subject, lock_path=tmp_path / "edge.lock")
+    seed_receipt(subject, "UPGRADE_PENDING")
+    monkeypatch.setattr(maintenance, "LOCK", subject.lock_path)
+    monkeypatch.setattr(maintenance, "STATE_UPGRADE_LOCK", tmp_path / "state-upgrade.lock")
+    operations = FakeOperations()
+
+    assert recover_upgrade_no_effect(subject, operations) == "FAIL"
+
+    assert operations.events == ["prove_upgrade_no_effect"]
+    assert receipt(subject)["error"] == "UpgradeProvenNotApplied"
+    assert receipt(subject)["phase"] == "NO_EFFECT"
+    assert receipt(subject)["status"] == "FAIL"
+    assert receipt(subject)["state_upgrade"] == "NOT_STARTED"
+    assert not maintenance.STATE_UPGRADE_LOCK.exists()
+    assert maintenance.Receipt(subject).value["phase"] == "NO_EFFECT"
+    recorded = subject.attempt_dir.joinpath("receipt.json").read_bytes()
+    replay = FakeOperations()
+    assert recover_upgrade_no_effect(subject, replay) == "FAIL"
+    assert replay.events == []
+    assert subject.attempt_dir.joinpath("receipt.json").read_bytes() == recorded
+
+
+@pytest.mark.parametrize("phase", ["PREFLIGHT", "STOPPED", "UPGRADED"])
+def test_recovery_refuses_any_other_receipt_without_proof_or_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+):
+    subject = replace(config(tmp_path), lock_path=tmp_path / "edge.lock")
+    seed_receipt(subject, phase)
+    before = receipt(subject)
+    monkeypatch.setattr(maintenance, "LOCK", subject.lock_path)
+    monkeypatch.setattr(maintenance, "STATE_UPGRADE_LOCK", tmp_path / "state-upgrade.lock")
+    operations = FakeOperations()
+
+    assert recover_upgrade_no_effect(subject, operations) == "UNKNOWN"
+
+    assert operations.events == []
+    assert receipt(subject) == before
+
+
+def test_recovery_refuses_active_or_stale_state_upgrade_lock_without_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject = replace(config(tmp_path), lock_path=tmp_path / "edge.lock")
+    seed_receipt(subject, "UPGRADE_PENDING")
+    before = receipt(subject)
+    monkeypatch.setattr(maintenance, "LOCK", subject.lock_path)
+    state_lock = tmp_path / "state-upgrade.lock"
+    state_lock.mkdir()
+    monkeypatch.setattr(maintenance, "STATE_UPGRADE_LOCK", state_lock)
+    operations = FakeOperations()
+
+    assert recover_upgrade_no_effect(subject, operations) == "UNKNOWN"
+
+    assert operations.events == []
+    assert receipt(subject) == before
+
+
+def test_recovery_refuses_receipt_change_during_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject = replace(config(tmp_path), lock_path=tmp_path / "edge.lock")
+    seed_receipt(subject, "UPGRADE_PENDING")
+    before = receipt(subject)
+    monkeypatch.setattr(maintenance, "LOCK", subject.lock_path)
+    monkeypatch.setattr(maintenance, "STATE_UPGRADE_LOCK", tmp_path / "state-upgrade.lock")
+
+    class RacingOperations(FakeOperations):
+        def prove_upgrade_no_effect(self):
+            super().prove_upgrade_no_effect()
+            changed = receipt(subject)
+            changed["error"] = "changed-concurrently"
+            subject.attempt_dir.joinpath("receipt.json").write_text(json.dumps(changed))
+
+    operations = RacingOperations()
+
+    assert recover_upgrade_no_effect(subject, operations) == "UNKNOWN"
+
+    assert operations.events == ["prove_upgrade_no_effect"]
+    assert receipt(subject) != before
+    assert receipt(subject)["phase"] == "UPGRADE_PENDING"
+
+
 def test_definite_post_upgrade_failure_keeps_gate_and_does_not_restart_old_runtime(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(fail_at="snapshot")
@@ -629,6 +719,76 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
 
     with pytest.raises(Unknown, match="did not complete"):
         operations.upgrade_state()
+
+
+def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(operations, "_resume_trust", lambda: None)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "ABSENT")
+    monkeypatch.setattr(operations, "_service_state", lambda: "ACTIVE")
+    monkeypatch.setattr(operations, "rollback_ready", lambda: True)
+    monkeypatch.setattr(operations, "public_ready", lambda: True)
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[:2] == ["docker", "ps"]:
+            output = "database-container\n"
+        elif command[:2] == ["docker", "inspect"] and "Mounts" in command[3]:
+            output = "switchstand_postgres-data|true\n"
+        elif command[:2] == ["docker", "inspect"]:
+            output = "switchstand|postgres|postgres:18-alpine|healthy\n"
+        elif command[:3] == ["docker", "volume", "inspect"]:
+            output = "switchstand|postgres-data\n"
+        elif command[:2] == ["docker", "exec"]:
+            output = "0013_failure_journal|ABSENT\n"
+        else:
+            pytest.fail(f"unexpected command: {command}")
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    operations.prove_upgrade_no_effect()
+
+    assert commands[-1][:2] == ["docker", "exec"]
+    assert "agent_mailbox_transfer_requests" in commands[-1][-1]
+
+
+@pytest.mark.parametrize(
+    "database", [
+        "0014_canonical_routing|ABSENT",
+        "0013_failure_journal|agent_mailbox_transfer_requests",
+    ],
+)
+def test_no_effect_proof_rejects_revision_or_table_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_resume_trust", lambda: None)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "ABSENT")
+    monkeypatch.setattr(operations, "_service_state", lambda: "ACTIVE")
+    monkeypatch.setattr(operations, "rollback_ready", lambda: True)
+    monkeypatch.setattr(operations, "public_ready", lambda: True)
+
+    def run(command, **_kwargs):
+        if command[:2] == ["docker", "ps"]:
+            output = "database-container\n"
+        elif command[:2] == ["docker", "inspect"] and "Mounts" in command[3]:
+            output = "switchstand_postgres-data|true\n"
+        elif command[:2] == ["docker", "inspect"]:
+            output = "switchstand|postgres|postgres:18-alpine|healthy\n"
+        elif command[:3] == ["docker", "volume", "inspect"]:
+            output = "switchstand|postgres-data\n"
+        else:
+            output = database + "\n"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    with pytest.raises(Unknown, match="exact pre-upgrade state"):
+        operations.prove_upgrade_no_effect()
 
 
 def test_state_upgrade_passes_exact_detached_candidate_selectors(

@@ -52,6 +52,7 @@ GATE_ID = "switchstand_edge_maintenance"
 LOCK = Path("/home/marco/.local/state/switchstand/edge-maintenance.lock")
 FASTMCP_STATE = Path("/home/marco/.local/share/fastmcp")
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
+STATE_UPGRADE_LOCK = Path("/home/marco/.local/state/switchstand/state-upgrade.lock")
 
 
 class Failed(RuntimeError):
@@ -112,6 +113,7 @@ class Operations(Protocol):
     def reconcile_phase(
         self, phase: str, proof: dict[str, object]
     ) -> tuple[str, dict[str, str]]: ...
+    def prove_upgrade_no_effect(self) -> None: ...
 
 
 def _sha(path: Path) -> str:
@@ -903,6 +905,82 @@ class HostOperations:
         if _sha(self.c.launcher) != self.c.current_launcher_sha:
             atomic_copy(self.backup, self.c.launcher, 0o700)
 
+    def prove_upgrade_no_effect(self) -> None:
+        """Prove the exact old runtime is healthy and the shared upgrade did not run."""
+        self._resume_trust()
+        if (
+            self._artifact_digest(self.c.launcher, 0o700)
+            != self.c.current_launcher_sha
+            or os.path.lexists(self.backup)
+            or os.path.lexists(self.snapshot_file)
+            or self._gate_state() != "ABSENT"
+            or self._service_state() != "ACTIVE"
+            or not self.rollback_ready()
+            or not self.public_ready()
+        ):
+            raise Unknown("old edge runtime is not exactly healthy")
+        containers = self._observe(
+            [
+                "docker", "ps",
+                "--filter", "label=com.docker.compose.project=switchstand",
+                "--filter", "label=com.docker.compose.service=postgres",
+                "--format", "{{.ID}}",
+            ]
+        ).stdout.splitlines()
+        if len(containers) != 1:
+            raise Unknown("production database container is not exact")
+        container = containers[0]
+        identity = self._observe(
+            [
+                "docker", "inspect", "--format",
+                (
+                    "{{index .Config.Labels \"com.docker.compose.project\"}}|"
+                    "{{index .Config.Labels \"com.docker.compose.service\"}}|"
+                    "{{.Config.Image}}|{{.State.Health.Status}}"
+                ),
+                container,
+            ]
+        ).stdout.strip()
+        mounts = self._observe(
+            [
+                "docker", "inspect", "--format",
+                (
+                    "{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql\"}}"
+                    "{{.Name}}|{{.RW}}{{end}}{{end}}"
+                ),
+                container,
+            ]
+        ).stdout.strip()
+        volume = self._observe(
+            [
+                "docker", "volume", "inspect", "--format",
+                (
+                    "{{index .Labels \"com.docker.compose.project\"}}|"
+                    "{{index .Labels \"com.docker.compose.volume\"}}"
+                ),
+                "switchstand_postgres-data",
+            ]
+        ).stdout.strip()
+        if (
+            identity != "switchstand|postgres|postgres:18-alpine|healthy"
+            or mounts != "switchstand_postgres-data|true"
+            or volume != "switchstand|postgres-data"
+        ):
+            raise Unknown("production database identity is not exact")
+        database = self._observe(
+            [
+                "docker", "exec", container, "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "switchstand", "-d", "switchstand", "-At", "-c",
+                (
+                    "SELECT version_num || '|' || COALESCE("
+                    "to_regclass('public.agent_mailbox_transfer_requests')::text, "
+                    "'ABSENT') FROM alembic_version"
+                ),
+            ]
+        ).stdout.strip()
+        if database != "0013_failure_journal|ABSENT":
+            raise Unknown("shared state is not the exact pre-upgrade state")
+
 
 class Receipt:
     def __init__(self, config: Config):
@@ -951,7 +1029,7 @@ class Receipt:
         phases = {
             "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
             "SNAPSHOTTED", "SWAPPED",
-            "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK",
+            "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK", "NO_EFFECT",
         }
         fixed = {"status", "phase", "state_upgrade", "error", "fastmcp_snapshot"}
         if (
@@ -968,15 +1046,19 @@ class Receipt:
         phase, status = value["phase"], value["status"]
         state_upgrade = value.get("state_upgrade")
         expected_upgrade = (
-            "NOT_STARTED" if phase in {"PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK"}
+            "NOT_STARTED" if phase in {
+                "PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK", "NO_EFFECT"
+            }
             else "PENDING" if phase == "UPGRADE_PENDING"
             else "APPLIED"
         )
         if (status == "PASS") != (phase == "COMPLETE") or (
             status == "FAIL"
-        ) != (phase == "ROLLED_BACK") or state_upgrade != expected_upgrade:
+        ) != (phase in {"ROLLED_BACK", "NO_EFFECT"}) or state_upgrade != expected_upgrade:
             raise Unknown("host receipt terminal state is inconsistent")
-        if phase not in {"PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED"} and not re.fullmatch(
+        if phase not in {
+            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED", "NO_EFFECT"
+        } and not re.fullmatch(
             r"[0-9a-f]{64}", cast(str, value.get("fastmcp_snapshot", ""))
         ):
             raise Unknown("host receipt phase proof is incomplete")
@@ -1117,6 +1199,51 @@ def deploy(config: Config, operations: Operations) -> str:
         return "FAIL"
 
 
+def recover_upgrade_no_effect(config: Config, operations: Operations) -> str:
+    """Terminalize one exact ambiguous pre-upgrade receipt after proof of no effect."""
+    try:
+        validate_target(config)
+        if config.target != "production":
+            raise Unknown("no-effect recovery is production-only")
+        with exclusive_lock(config.lock_path):
+            try:
+                STATE_UPGRADE_LOCK.mkdir(mode=0o700)
+            except FileExistsError as exc:
+                raise Unknown("state upgrader may still be active") from exc
+            try:
+                receipt = Receipt(config)
+                expected = dict(receipt.value)
+                if (
+                    receipt.existing
+                    and expected.get("status") == "FAIL"
+                    and expected.get("phase") == "NO_EFFECT"
+                    and expected.get("state_upgrade") == "NOT_STARTED"
+                    and expected.get("error") == "UpgradeProvenNotApplied"
+                ):
+                    return "FAIL"
+                if (
+                    not receipt.existing
+                    or expected.get("status") != "UNKNOWN"
+                    or expected.get("phase") != "UPGRADE_PENDING"
+                    or expected.get("state_upgrade") != "PENDING"
+                ):
+                    raise Unknown("receipt is not the exact recoverable state")
+                operations.prove_upgrade_no_effect()
+                current = Receipt(config)
+                if not current.existing or current.value != expected:
+                    raise Unknown("receipt changed during recovery proof")
+                current.value["state_upgrade"] = "NOT_STARTED"
+                current.write("NO_EFFECT", "FAIL", "UpgradeProvenNotApplied")
+            finally:
+                try:
+                    STATE_UPGRADE_LOCK.rmdir()
+                except OSError as exc:
+                    raise Unknown("state-upgrade lock cleanup failed") from exc
+        return "FAIL"
+    except (Failed, Unknown, OSError, subprocess.SubprocessError):
+        return "UNKNOWN"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
@@ -1137,6 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--retry-after", type=int, default=60)
+    parser.add_argument("--recover-upgrade-no-effect", action="store_true")
     args = parser.parse_args(argv)
     if (
         not re.fullmatch(r"[0-9a-f]{40}", args.current_sha)
@@ -1144,21 +1272,26 @@ def main(argv: list[str] | None = None) -> int:
         or args.retry_after < 1
     ):
         parser.error("candidate SHA or retry interval is invalid")
-    config = Config(**vars(args), target="production")
+    recover = args.recover_upgrade_no_effect
+    config_values = vars(args).copy()
+    config_values.pop("recover_upgrade_no_effect")
+    config = Config(**config_values, target="production")
     validate_target(config)
-    args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-    with exclusive_lock(config.lock_path):
+    def interrupted(signum: int, _frame: object) -> None:
+        raise Interrupted(f"maintenance interrupted by signal {signum}")
 
-        def interrupted(signum: int, _frame: object) -> None:
-            raise Interrupted(f"maintenance interrupted by signal {signum}")
-
-        previous_int = signal.signal(signal.SIGINT, interrupted)
-        previous_term = signal.signal(signal.SIGTERM, interrupted)
-        try:
-            result = deploy(config, HostOperations(config))
-        finally:
-            signal.signal(signal.SIGINT, previous_int)
-            signal.signal(signal.SIGTERM, previous_term)
+    previous_int = signal.signal(signal.SIGINT, interrupted)
+    previous_term = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if recover:
+            result = recover_upgrade_no_effect(config, HostOperations(config))
+        else:
+            args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
+            with exclusive_lock(config.lock_path):
+                result = deploy(config, HostOperations(config))
+    finally:
+        signal.signal(signal.SIGINT, previous_int)
+        signal.signal(signal.SIGTERM, previous_term)
     print(result)
     return {"PASS": 0, "FAIL": 1, "UNKNOWN": 2}[result]
 

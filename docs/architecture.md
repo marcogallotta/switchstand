@@ -128,8 +128,11 @@ fact after success, so migration ambiguity remains gated rather than being retri
 It swaps the launcher atomically, verifies locally
 before ungating, and preserves `UNKNOWN` behind the gate. Its exact receipt runner consumes a
 read-only host-phase reconciler that revalidates runtime and artifact trust boundaries and accepts
-only the durable phase or one exactly proven next state. It does not own tool semantics, OAuth state
-format, host installation, or activation authority.
+only the durable phase or one exactly proven next state. Its production-only no-effect recovery can
+terminalize one exact `UNKNOWN / UPGRADE_PENDING` receipt only while both maintenance locks are
+held and the old healthy runtime, unchanged receipt, exact pre-upgrade revision, and absent target
+table all agree; it performs no retry or host/database mutation beyond the terminal receipt. It
+does not own tool semantics, OAuth state format, host installation, or activation authority.
 
 `wakeful.py` is an inert, agent-system-neutral event persistence prototype. It owns the sanitized
 event envelope and local SQLite cursor, transition, bounded lease, and durable outbox state. It has
