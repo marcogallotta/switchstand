@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState
+from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
@@ -175,6 +175,90 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
     assert stale.next_action is None
+
+
+async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
+    agent_messaging, monkeypatch,
+):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    session[0] = "replacement"
+    original_takeover = AgentMailboxState.takeover
+    original_for_actor = AgentMailboxState.for_actor
+    calls: list[tuple[str, str, str]] = []
+    readbacks = 0
+
+    async def ambiguous_once(self, name, principal_key, replacement_session):
+        calls.append((name, principal_key, replacement_session))
+        stored = await original_takeover(self, name, principal_key, replacement_session)
+        if len(calls) == 1:
+            assert stored.status == "ok"  # The commit happened; its response was lost.
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+        return stored
+
+    async def observed(self, principal_key, chat_session):
+        nonlocal readbacks
+        readbacks += 1
+        return await original_for_actor(self, principal_key, chat_session)
+
+    monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
+    monkeypatch.setattr(AgentMailboxState, "for_actor", observed)
+
+    result = await tools["agent_takeover"]("1", "Root")
+
+    assert (result.status, result.name) == ("ok", "Root")
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert readbacks == 1
+
+
+async def test_takeover_does_not_retry_explicit_denial(agent_messaging, monkeypatch):
+    tools, actor, session, _owner, other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    actor[0], session[0] = other, "other-session"
+    original = AgentMailboxState.takeover
+    calls = 0
+
+    async def counted(self, name, principal_key, replacement_session):
+        nonlocal calls
+        calls += 1
+        return await original(self, name, principal_key, replacement_session)
+
+    monkeypatch.setattr(AgentMailboxState, "takeover", counted)
+
+    result = await tools["agent_takeover"]("1", "Root")
+
+    assert (result.status, result.reason) == ("denied", "principal_mismatch")
+    assert calls == 1
+
+
+async def test_takeover_retry_does_not_claim_success_without_binding_readback(
+    agent_messaging, monkeypatch,
+):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    session[0] = "replacement"
+    original = AgentMailboxState.takeover
+    calls = 0
+
+    async def ambiguous_once(self, name, principal_key, replacement_session):
+        nonlocal calls
+        calls += 1
+        stored = await original(self, name, principal_key, replacement_session)
+        if calls == 1:
+            assert stored.status == "ok"
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+        return stored
+
+    async def unavailable_readback(self, principal_key, chat_session):
+        return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
+    monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
+    monkeypatch.setattr(AgentMailboxState, "for_actor", unavailable_readback)
+
+    result = await tools["agent_takeover"]("1", "Root")
+
+    assert (result.status, result.reason) == ("recovery_required", "state_unavailable")
+    assert calls == 2
 
 
 async def test_host_approved_transfer_preserves_delivery_and_fences_old_owner(agent_messaging):

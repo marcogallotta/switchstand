@@ -271,8 +271,10 @@ messaging, and required continuation:
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
-  changed. Ordinary same-principal `agent_takeover` remains unchanged; there is no public approval
-  tool. `agent_messages.py` supplies
+  changed. Ordinary same-principal `agent_takeover` is replay-safe for the exact replacement session;
+  its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
+  arguments and requires an actor-binding readback before returning success. Explicit denial or
+  conflict is not retried. There is no public approval tool. `agent_messages.py` supplies
   public name-based views over `MessageState`; migration `0016_agent_mailbox_transfers` owns audit.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
@@ -432,7 +434,7 @@ command plus a five-minute timer on the same idempotent repair service. The watc
 manual or non-inheriting installer replacements promptly; the timer catches replacements missed
 during service execution and watch rearm without depending on the checkout. Healthy checks
 preserve launcher identity.
-The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
+The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; normal repository implementation stays in the writer while per-generation and byte-stable shared guards protect the primary. The profile grants user-level filesystem writes needed for diagnosis and repair, while the hook denies canonical-primary source mutation and permits adjacent repair worktrees rather than treating directory containment as effect authority. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. It separately copies only the repository-owned canonical `switchstand`
 HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
@@ -454,7 +456,9 @@ Because an exact writable file root can be misclassified as a directory by sandb
 handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory and
 binds their repository `friction.md` path to its mode-0600 file with a validated symlink. The first
 new launch copies a valid legacy local-state `friction.md` into that directory without moving or
-deleting the legacy file, so already-running agents remain undisturbed. Outside the canonical repository,
+deleting the legacy file, so already-running agents remain undisturbed. Malformed legacy, current,
+or binding nodes move to a generation-specific private quarantine; dispatch recreates the bounded
+friction state, reports the degradation, and continues launch. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
