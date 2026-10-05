@@ -4,14 +4,16 @@ import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
 
-BASE, HEAD, COMPOSITION = "a" * 40, "b" * 40, "c" * 40
+BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
+    "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
+)
 
 
 def client(*, omitted: str | None = None, mismatch: bool = False,
            overrides: dict[str, tuple[str, str | None]] | None = None,
            malformed: bool = False, wrong_head: str | None = None,
            bad_run: bool = False, changed: bool = False,
-           job_failure: bool = False) -> httpx.AsyncClient:
+           job_failure: bool = False, stacked: bool = False) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
     def response(request: httpx.Request) -> httpx.Response:
@@ -26,8 +28,17 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                 "head": {"sha": "d" * 40 if changed and pr_reads > 1 else HEAD},
                 "merge_commit_sha": COMPOSITION,
             }
+            if stacked:
+                payload["stack"] = {"base": {"ref": "main"}, "position": 2, "size": 2}
         elif path.endswith(f"/commits/{COMPOSITION}") and "check-runs" not in path:
-            payload = {"parents": [{"sha": BASE}, {"sha": "d" * 40 if mismatch else HEAD}]}
+            payload = {"parents": [
+                {"sha": PREFIX if stacked else BASE},
+                {"sha": "d" * 40 if mismatch else HEAD},
+            ]}
+        elif path.endswith(f"/commits/{PREFIX}"):
+            payload = {"parents": [{"sha": TARGET}, {"sha": BASE}]}
+        elif path.endswith("/branches/main"):
+            payload = {"commit": {"sha": TARGET}}
         elif path.endswith("/check-runs"):
             checks = []
             for index, (name, kind) in enumerate(GATES, 1):
@@ -80,6 +91,13 @@ async def test_four_current_green_gates_are_ready_with_exact_identity_and_timing
     assert [gate.name for gate in result.gates] == [name for name, _ in GATES]
     assert all(gate.attempt == 2 and gate.duration_ms == 2000 for gate in result.gates)
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
+
+
+async def test_native_stack_composition_is_bound_through_prefix_to_current_target():
+    async with client(stacked=True) as http:
+        result = await qualify_repository_candidate(7, client=http)
+    assert result.status == "READY"
+    assert result.composition_parents == [PREFIX, HEAD]
 
 
 async def test_missing_gate_and_old_composition_fail_closed():
