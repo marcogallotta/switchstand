@@ -1,6 +1,6 @@
 import asyncio
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
@@ -154,8 +154,13 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
 
     actor[0] = other
     session[0] = "other-chat"
-    denied = await tools["agent_takeover"]("1", "Beta")
-    assert (denied.status, denied.reason) == ("denied", "principal_mismatch")
+    requested = await tools["agent_takeover"]("1", "Beta")
+    assert requested.status == "recovery_required"
+    assert requested.reason is not None
+    assert requested.reason.startswith("host_approval_required:")
+    UUID(requested.reason.removeprefix("host_approval_required:"))
+    replay = await tools["agent_takeover"]("1", "Beta")
+    assert replay == requested
 
     actor[0] = _owner
     session[0] = "replacement"
@@ -188,10 +193,15 @@ async def test_host_approved_transfer_preserves_delivery_and_fences_old_owner(ag
     delivery = sent.message.delivery_id
 
     actor[0], session[0] = other, "new-root-chat"
-    request = await tools["agent_transfer_request"]("1", "Root")
-    assert request.status == "ok" and request.request_id is not None
+    takeover = await tools["agent_takeover"]("1", "Root")
+    assert takeover.status == "recovery_required" and takeover.reason is not None
+    assert takeover.reason.startswith("host_approval_required:")
+    request_id = UUID(takeover.reason.removeprefix("host_approval_required:"))
+    assert await tools["agent_takeover"]("1", "Root") == takeover
+    explicit = await tools["agent_transfer_request"]("1", "Root")
+    assert explicit.status == "ok" and explicit.request_id == request_id
     assert service.messages is not None
-    approval = await AgentMailboxState(service.messages.engine).approve_transfer(request.request_id)
+    approval = await AgentMailboxState(service.messages.engine).approve_transfer(request_id)
     assert approval.status == "approved"
 
     recovered = await tools["agent_message_receive"]("1", delivery)

@@ -657,11 +657,25 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             stored = await mailboxes.takeover(name, principal.key, chat_session)
-            result = (
-                AgentRegistrationResult(status="ok", name=stored.mailbox.name)
-                if stored.status == "ok" and stored.mailbox is not None
-                else AgentRegistrationResult(status=stored.status, reason=stored.reason)
-            )
+            if stored.status == "ok" and stored.mailbox is not None:
+                result = AgentRegistrationResult(status="ok", name=stored.mailbox.name)
+            elif stored.reason == "principal_mismatch":
+                transfer = await mailboxes.request_transfer(name, principal.key, chat_session)
+                if transfer.status in ("pending", "approved") and transfer.request_id is not None:
+                    result = AgentRegistrationResult(
+                        status="recovery_required",
+                        reason=f"host_approval_required:{transfer.request_id}",
+                    )
+                elif transfer.status in ("conflict", "denied", "stale", "recovery_required"):
+                    result = AgentRegistrationResult(
+                        status=transfer.status, reason=transfer.reason
+                    )
+                else:
+                    result = AgentRegistrationResult(
+                        status="recovery_required", reason="state_unavailable"
+                    )
+            else:
+                result = AgentRegistrationResult(status=stored.status, reason=stored.reason)
         audited("agent_takeover", name, result.status)
         return result
 
