@@ -103,6 +103,53 @@ def test_agents_coordination_contract_is_discoverable():
     assert [rule for rule in required_rules if rule not in agents] == []
 
 
+def test_agents_keeps_first_minute_incident_contract_before_routed_detail():
+    agents = (ROOT / "AGENTS.md").read_text()
+    incident = agents.split("### Live incidents", 1)[1].split("\n- In the canonical", 1)[0]
+    normalized = " ".join(incident.split())
+
+    required = (
+        "credible live-user failure enters incident mode; `CODE RED` is optional",
+        "Immediately acknowledge, use one operator, inspect current service state and newest logs",
+        "`CURRENT` / `HISTORICAL` / `UNKNOWN` truth before broad delegation",
+        "smallest safe reversible mitigation before RCA",
+        "without bypassing authority or ambiguous-effect safeguards",
+        "If local `main` cannot be proved current",
+        "always-loaded rules in this **Live incidents** subsection remain the minimum incident procedure",
+        "do not delay mitigation for repository synchronization",
+        "do not trust a possibly stale routed copy",
+        "[live-incident operations](docs/operations-live-incident.md)",
+        "[root-cause analysis](docs/root-cause-analysis.md) and never delays incident mitigation",
+    )
+    assert [rule for rule in required if rule not in normalized] == []
+    assert "known-edge-maintenance-window" not in incident
+    assert "Close the incident only after" not in incident
+
+
+def test_agents_keeps_exact_watch_and_authenticated_entry_invariants():
+    agents = (ROOT / "AGENTS.md").read_text()
+    routing = agents.split("## Work, messages, and routing", 1)[1].split(
+        "\n## Codex roles", 1
+    )[0]
+    normalized = " ".join(routing.split())
+
+    required = (
+        "Current meaning lives on the exact WorkId/current notes",
+        "between bounded work batches, after blocking calls, on re-entry, and before consequential effects or completion",
+        "terminal result, explicit transfer with attributable pickup, human stop/pause/reassignment, or a real access/execution blocker",
+        "exact WorkId/message identity, owner/purpose, state, next check, and terminal condition",
+        "`poll` or `keep polling` means continue that exact watch in the current active session",
+        "Do not convert active polling into a ChatGPT Scheduled task or condition watch",
+        "Send/registration is not pickup or completion",
+        "inactive sessions do not poll or wake",
+        "ambiguous effects remain `UNKNOWN` until reconciled",
+        "`START HERE` `1218327002478382`",
+        "authenticated provider-neutral Switchstand HTTP/OAuth MCP",
+        "Project Settings may point there but is not parallel authority",
+    )
+    assert [rule for rule in required if rule not in normalized] == []
+
+
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
     interaction = (ROOT / "docs/human-interaction.md").read_text()
