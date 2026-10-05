@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Self, cast
 from uuid import UUID, uuid5
 
-from pydantic import Field
+from pydantic import Field, JsonValue, model_validator
 from sqlalchemy import and_, insert, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -15,9 +17,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .canonical_relations import work_parents
-from .canonical_work import CanonicalWorkRepository, canonical_work, normalize_title
+from .canonical_work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+    normalize_title,
+)
 from .contracts import ClosedModel
-from .messages import PendingMessage, message_deliveries, messages
+from .messages import (
+    MessageRoute,
+    MessageState,
+    MessageSubmitRequest,
+    PendingMessage,
+    message_deliveries,
+    messages,
+)
 from .state import work_handles
 
 REVIEW_NAMESPACE = UUID("d966cd4f-9994-4f6f-99cc-6ccca873542d")
@@ -26,8 +41,35 @@ ReviewKind = Literal["CODE", "DESIGN", "IMPLEMENTATION", "PROCESS", "OPERATIONS"
 ReviewMode = Literal["FULL", "FOCUSED"]
 
 
+def _digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
 def _stable(label: str, *parts: object) -> UUID:
     return uuid5(REVIEW_NAMESPACE, "\0".join((label, *(str(part) for part in parts))))
+
+
+class ReviewRequest(ClosedModel):
+    subject_work_id: UUID
+    observed_revision: str = Field(min_length=1)
+    review_kind: ReviewKind
+    candidate_ref: str | None = Field(default=None, min_length=1, max_length=500)
+    mode: ReviewMode = "FULL"
+    prior_review_id: UUID | None = None
+    finding_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def exact_mode(self) -> Self:
+        if self.mode == "FULL":
+            if self.finding_ids:
+                raise ValueError("FULL review cannot select prior findings")
+        elif self.prior_review_id is None or not self.finding_ids:
+            raise ValueError("FOCUSED review requires prior_review_id and finding_ids")
+        if len(set(self.finding_ids)) != len(self.finding_ids):
+            raise ValueError("finding_ids must be distinct")
+        return self
 class ReviewBasis(ClosedModel):
     protocol: Literal["switchstand.review.v1"] = REVIEW_PROTOCOL
     review_id: UUID
@@ -57,6 +99,39 @@ class ReviewEnvelope(ClosedModel):
     brief: CanonicalReviewBrief
     requester_name: str
     requester_endpoint_id: UUID
+
+
+class ReviewResult(ClosedModel):
+    status: Literal["SENT", "WAITING_REVIEWER", "STALE", "DENIED", "UNKNOWN"]
+    review_id: UUID | None = None
+    delivery_id: UUID | None = None
+    reason: Literal[
+        "subject_not_found", "subject_revision_changed", "prior_review_not_found",
+        "requester_not_current", "reviewer_not_available", "reviewer_not_eligible",
+        "occurrence_conflict", "message_conflict",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def exact_result(self) -> Self:
+        if self.status == "SENT":
+            if self.review_id is None or self.delivery_id is None or self.reason is not None:
+                raise ValueError("successful review result requires identities")
+        elif self.status == "WAITING_REVIEWER":
+            if self.review_id is None or self.reason is None:
+                raise ValueError("waiting result requires occurrence and reason")
+        elif self.reason is None:
+            raise ValueError("failed review result requires reason")
+        return self
+
+
+@dataclass(frozen=True)
+class ReviewGuidelines:
+    version: str
+    digest: str
+
+    def __post_init__(self) -> None:
+        if not self.version or len(self.digest) != 64:
+            raise ValueError("review guidelines require version and sha256 digest")
 
 
 
@@ -223,3 +298,123 @@ class ReviewOccurrenceState:
             if subject_revision is None or envelope.brief.basis.subject_revision == subject_revision:
                 return delivery, envelope
         return None
+
+
+class ReviewService:
+    def __init__(
+        self, occurrences: ReviewOccurrenceState, mailboxes: AgentMailboxState,
+        message_state: MessageState, policy: ReviewPolicy, guidelines: ReviewGuidelines,
+    ):
+        self.occurrences, self.works = occurrences, occurrences.works
+        self.mailboxes, self.messages = mailboxes, message_state
+        self.policy, self.guidelines = policy, guidelines
+
+    @property
+    def policy(self) -> ReviewPolicy:
+        return self.occurrences.policy
+
+    @policy.setter
+    def policy(self, value: ReviewPolicy) -> None:
+        self.occurrences.policy = value
+
+    def _basis(self, request: ReviewRequest, requester: AgentMailbox) -> ReviewBasis:
+        identity = _digest({
+            "protocol": REVIEW_PROTOCOL, "subject": str(request.subject_work_id),
+            "revision": request.observed_revision, "kind": request.review_kind,
+            "candidate": request.candidate_ref, "requester": str(requester.endpoint_id),
+        })
+        return ReviewBasis(
+            review_id=request.prior_review_id or _stable("occurrence", identity),
+            subject_work_id=request.subject_work_id,
+            subject_revision=request.observed_revision, review_kind=request.review_kind,
+            candidate_ref=request.candidate_ref, mode=request.mode,
+            finding_ids=request.finding_ids, requester_endpoint_id=requester.endpoint_id,
+            requester_generation=requester.generation, policy_version=self.policy.version,
+            guidelines_version=self.guidelines.version,
+            guidelines_digest=self.guidelines.digest,
+        )
+
+    @staticmethod
+    def _brief(basis: ReviewBasis, subject: CurrentWork) -> CanonicalReviewBrief:
+        return CanonicalReviewBrief(
+            basis=basis, subject_title=subject.title, material_claim=subject.notes,
+            instructions=(
+                "Independently falsify the material claim; choose your own review path.",
+                (
+                    "Report material findings with defect, evidence, consequence, affected "
+                    "claim, and minimum clearing condition."
+                ),
+                "Do not treat a preferred remedy as required unless the contract requires it.",
+            ),
+            named_evidence=(() if basis.candidate_ref is None else (basis.candidate_ref,)),
+        )
+
+    async def _send(
+        self, sender: AgentMailbox, recipient: AgentMailbox, message_id: UUID,
+        payload: JsonValue,
+    ) -> PendingMessage | None:
+        route = MessageRoute(
+            recipient_work_id=recipient.endpoint_id,
+            recipient_grant_version=recipient.generation,
+        )
+        submitted = await self.messages.submit_admitted(
+            sender.endpoint_id, route,
+            MessageSubmitRequest(
+                api_version="1", message_id=message_id, grant_version=sender.generation,
+                route_ref="review.request", kind="request", payload=payload,
+            ),
+            agent_binding=sender,
+        )
+        return submitted.message if submitted.status == "ok" else None
+
+    async def request(self, request: ReviewRequest, requester: AgentMailbox) -> ReviewResult:
+        current = await self.mailboxes.by_endpoint_id(requester.endpoint_id)
+        if current.status != "ok" or current.mailbox != requester:
+            return ReviewResult(status="DENIED", reason="requester_not_current")
+        subject = await self.works.get(request.subject_work_id)
+        if subject is None:
+            return ReviewResult(status="UNKNOWN", reason="subject_not_found")
+        basis = self._basis(request, requester)
+        if canonical_revision(subject.work_id, subject.row_version) != request.observed_revision:
+            return ReviewResult(status="STALE", review_id=basis.review_id,
+                                reason="subject_revision_changed")
+        if request.mode != "FULL":
+            return ReviewResult(status="DENIED", reason="prior_review_not_found")
+        brief = self._brief(basis, subject)
+        if not await self.occurrences.ensure(brief):
+            return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
+                                reason="occurrence_conflict")
+        reviewer_name = self.policy.reviewer_name(request.review_kind)
+        result = None if reviewer_name is None else await self.mailboxes.by_name(reviewer_name)
+        reviewer = None if result is None else result.mailbox
+        if reviewer is None:
+            return ReviewResult(status="WAITING_REVIEWER", review_id=basis.review_id,
+                                reason="reviewer_not_available")
+        if not self.policy.eligible(requester, reviewer):
+            return ReviewResult(status="DENIED", review_id=basis.review_id,
+                                reason="reviewer_not_eligible")
+        existing = await self.occurrences.request_delivery(
+            basis.review_id, subject_revision=basis.subject_revision,
+        )
+        if existing is not None:
+            delivery, envelope = existing
+            if envelope.brief.basis != basis:
+                return ReviewResult(status="DENIED", review_id=basis.review_id,
+                                    reason="occurrence_conflict")
+            return ReviewResult(status="SENT", review_id=basis.review_id,
+                                delivery_id=delivery.delivery_id)
+        envelope = ReviewEnvelope(
+            type="REVIEW_REQUEST", brief=brief, requester_name=requester.name,
+            requester_endpoint_id=requester.endpoint_id,
+        )
+        delivery = await self._send(
+            requester, reviewer,
+            _stable("reviewer-request", basis.review_id, request.observed_revision,
+                    reviewer.endpoint_id),
+            cast(JsonValue, envelope.model_dump(mode="json")),
+        )
+        if delivery is None:
+            return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
+                                reason="message_conflict")
+        return ReviewResult(status="SENT", review_id=basis.review_id,
+                            delivery_id=delivery.delivery_id)
