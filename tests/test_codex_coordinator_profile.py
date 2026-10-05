@@ -36,6 +36,14 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     return runtime_profile
 
 
+def test_coordinator_control_mcp_launcher_is_tracked_executable() -> None:
+    entry = subprocess.run(
+        ["git", "ls-files", "-s", "scripts/switchstand-coordinator-control-mcp"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    ).stdout
+    assert entry.startswith("100755 "), "Codex spawns this MCP command directly; it must be executable"
+
+
 def test_profile_copies_only_benign_user_preferences(tmp_path: Path) -> None:
     source = tmp_path / "config.toml"
     destination = tmp_path / "coordinator.config.toml"
