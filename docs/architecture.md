@@ -265,13 +265,14 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
+  `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
-- `task_runs.py` owns inert investigation/validation requests and their trusted START-to-RunReceipt
+- `task_runs.py` owns inert INVESTIGATION, VALIDATION, and server-derived IMPLEMENTATION requests; its managed public adapter remains INVESTIGATION/VALIDATION-only, with trusted START-to-RunReceipt
   bindings. Its managed MCP adapter can admit only a current launch-bound `agent_task` grant and
   exact requester RunReceipt to create a server-identified request; default grant issuance and
   launch wiring, result submission, continuation/takeover, runtime launch, ordinary HTTP exposure,
