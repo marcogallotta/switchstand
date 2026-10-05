@@ -94,6 +94,15 @@ def script_main() -> Any:
     return runpy.run_path(str(SCRIPT), run_name="coordinator_handoff_test")["main"]
 
 
+def run_handoff(arguments: list[str], synchronize: Any) -> None:
+    previous = os.umask(0o077)
+    os.umask(previous)
+    try:
+        script_main()(arguments, synchronize=synchronize)
+    finally:
+        os.umask(previous)
+
+
 def synchronizer(home: Path) -> Any:
     remote = home.parent / "remote.git"
     subject = CoordinatorSync(
@@ -116,8 +125,8 @@ def test_fast_forwards_clean_main_and_prepares_actual_successor(
     home, primary, record, started, final = setup(tmp_path)
     monkeypatch.setenv("HOME", str(home))
 
-    script_main()(
-        [str(record), str(obligations(home))], synchronize=synchronizer(home)
+    run_handoff(
+        [str(record), str(obligations(home))], synchronizer(home)
     )
 
     output = capsys.readouterr().out
@@ -146,8 +155,8 @@ def test_dirty_main_fails_before_fetch_or_pending_handoff(
     (primary / "untracked.txt").write_text("preserve me\n")
 
     with pytest.raises(SystemExit, match="refuses dirty main") as raised:
-        script_main()(
-            [str(record), str(obligations(home))], synchronize=synchronizer(home)
+        run_handoff(
+            [str(record), str(obligations(home))], synchronizer(home)
         )
 
     assert (primary / "untracked.txt").read_text() == "preserve me\n"
@@ -167,8 +176,8 @@ def test_existing_pending_handoff_fails_before_sync(
     (record.parent / "pending-handoff.json").write_text("{}")
 
     with pytest.raises(SystemExit, match="prior Coordinator handoff is still pending"):
-        script_main()(
-            [str(record), str(obligations(home))], synchronize=synchronizer(home)
+        run_handoff(
+            [str(record), str(obligations(home))], synchronizer(home)
         )
 
     assert git(primary, "rev-parse", "HEAD") == started
