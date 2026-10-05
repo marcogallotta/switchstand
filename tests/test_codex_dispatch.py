@@ -103,6 +103,7 @@ git fetch origin
 record=
 for candidate in "$CODEX_HOME"/start-commit.*; do
     case "$candidate" in *.manifest.json) continue;; esac
+    [ -f "$candidate" ] || continue
     record=$candidate
 done
 [ -n "$record" ]
@@ -297,13 +298,13 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert filesystem[str(writer_git_dir)] == "write"
     assert profile["approval_policy"] == "never"
     records = [path for path in coordinator_home.glob("start-commit.*")
-               if not path.name.endswith(".manifest.json")]
+               if path.is_file() and not path.name.endswith(".manifest.json")]
     assert len(records) == 1
     assert records[0].read_text() == subprocess.check_output(
         ["git", "-C", primary, "rev-parse", "HEAD"], text=True
     )
     assert str(records[0]) in profile["developer_instructions"]
-    assert "--trigger post-compaction" in profile["developer_instructions"]
+    assert "synchronous compact-session hook" in profile["developer_instructions"]
     manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text())
@@ -321,7 +322,9 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         primary / "scripts/switchstand-coordinator-control-mcp"
     )
     assert "mode=PILOT; lifetime=ASSIGNMENT" in profile["developer_instructions"]
-    assert set(profile["hooks"]) == {"PreToolUse", "UserPromptSubmit", "Stop"}
+    assert set(profile["hooks"]) == {
+        "PreToolUse", "SessionStart", "UserPromptSubmit", "Stop"
+    }
     assert "SubagentStop" not in profile["hooks"]
     assert not (coordinator_home / "AGENTS.md").exists()
     friction_store = home / ".local/state/switchstand/friction.md"
@@ -434,7 +437,7 @@ def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: 
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
     assert "mode=OFF; lifetime=ASSIGNMENT" in profile["developer_instructions"]
-    assert set(profile["hooks"]) == {"PreToolUse"}
+    assert set(profile["hooks"]) == {"PreToolUse", "SessionStart"}
 
 
 def test_dispatch_outside_repo_ignores_ambient_git_repository_selection(

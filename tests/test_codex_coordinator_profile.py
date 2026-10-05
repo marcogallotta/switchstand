@@ -16,11 +16,17 @@ SCRIPT = ROOT / "scripts" / "codex-coordinator-profile"
 def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path:
     hook = primary / "scripts/codex-hook"
     continuity_hook = primary / "scripts/codex-continuity-hook"
+    compact_hook = primary / "scripts/codex-compact-hook"
+    coordinator_control = primary / "scripts/coordinator-control"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\nexit 0\n")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
     continuity_hook.write_text("#!/bin/sh\nexit 0\n")
     continuity_hook.chmod(continuity_hook.stat().st_mode | stat.S_IXUSR)
+    compact_hook.write_text("#!/bin/sh\nexit 0\n")
+    compact_hook.chmod(compact_hook.stat().st_mode | stat.S_IXUSR)
+    coordinator_control.write_text("#!/bin/sh\nexit 0\n")
+    coordinator_control.chmod(coordinator_control.stat().st_mode | stat.S_IXUSR)
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     writer = primary.parent / "writer"
     writer.mkdir(exist_ok=True)
@@ -28,10 +34,12 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     writer_git_dir.mkdir(parents=True, exist_ok=True)
     (writer / ".git").write_text(f"gitdir: {writer_git_dir}\n")
     state = primary.parent / "coordinator"
+    start_record = state / f"start-commit.{destination.stem}"
+    manifest_record = state / f"launch-manifest.{destination.stem}.json"
     subprocess.run(
         [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, hook, continuity_hook,
-         "OFF", "ASSIGNMENT", state / "telemetry.jsonl", state / "start-commit",
-         state / "launch-manifest.json"],
+         compact_hook, coordinator_control,
+         "OFF", "ASSIGNMENT", state / "telemetry.jsonl", start_record, manifest_record],
         check=True,
     )
     return runtime_profile
@@ -84,8 +92,8 @@ trusted_hash = "must-not-copy"
     assert profile["approval_policy"] == "never"
     assert profile["default_permissions"] == "switchstand-coordinator"
     instructions = profile["developer_instructions"]
-    assert str(tmp_path / "coordinator/start-commit") in instructions
-    assert "--trigger post-compaction" in instructions
+    assert str(tmp_path / "coordinator/start-commit.coordinator.config") in instructions
+    assert "synchronous compact-session hook" in instructions
     assert f"owned linked writer is {primary.parent / 'writer'}" in instructions
     assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
@@ -133,7 +141,18 @@ trusted_hash = "must-not-copy"
         f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary} "
         f"--coordinator-writer {primary.parent / 'writer'}"
     )
-    assert set(profile["hooks"]) == {"PreToolUse"}
+    compact = profile["hooks"]["SessionStart"][0]
+    assert compact["matcher"] == "^compact$"
+    assert compact["hooks"][0] == {
+        "type": "command",
+        "command": (
+            f"{tmp_path / 'coordinator/start-commit.coordinator.config.compact-controls/codex-compact-hook'} "
+            f"{tmp_path / 'coordinator/launch-manifest.coordinator.config.json'}"
+        ),
+        "timeout": 10,
+        "additionalContextLimit": 1200,
+    }
+    assert set(profile["hooks"]) == {"PreToolUse", "SessionStart"}
     assert destination.stat().st_mode & 0o777 == 0o400
     assert runtime_profile.read_bytes() == destination.read_bytes()
     assert runtime_profile.stat().st_mode & 0o777 == 0o600
@@ -161,10 +180,13 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/sh\nexit 0\n")
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    (primary / "scripts/codex-compact-hook").write_text("#!/bin/sh\nexit 0\n")
+    (primary / "scripts/coordinator-control").write_text("#!/bin/sh\nexit 0\n")
 
     subprocess.run(
         [SCRIPT, source, destination, runtime_profile, primary, writer, hooks,
-         guard, continuity,
+         guard, continuity, primary / "scripts/codex-compact-hook",
+         primary / "scripts/coordinator-control",
          "PILOT", "STANDING", state / "telemetry.jsonl", state / "start-commit",
          state / "launch-manifest.json"],
         check=True,
@@ -172,7 +194,9 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
 
     rendered = tomllib.loads(destination.read_text())
     assert "mode=PILOT; lifetime=STANDING" in rendered["developer_instructions"]
-    assert set(rendered["hooks"]) == {"PreToolUse", "UserPromptSubmit", "Stop"}
+    assert set(rendered["hooks"]) == {
+        "PreToolUse", "SessionStart", "UserPromptSubmit", "Stop"
+    }
     assert "SubagentStop" not in rendered["hooks"]
     for event in ("UserPromptSubmit", "Stop"):
         command = rendered["hooks"][event][0]["hooks"][0]["command"]

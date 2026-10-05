@@ -399,13 +399,18 @@ deploy, or activate anything.
 as frozen-control evidence and a uniquely named runtime profile that Codex may persist normal
 session preferences into. The manifest records the snapshot digest and the runtime profile's
 launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
-copy. This receipt is launch-manifest schema v2; the checker still accepts valid legacy v1
+copy. This receipt is launch-manifest schema v3; the checker still accepts valid legacy v1/v2
 manifests; changed controls report bounded recheck boundaries instead of permanent stale, while missing or corrupt proof remains `CURRENTNESS_UNKNOWN`. It also records the
 executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's evidence. Each unresolved local Markdown dependency rooted at `AGENTS.md` retains its
-identity and reason as component-scoped `CURRENTNESS_UNKNOWN`.
+session storage and byte-stable hooks without replacing another generation's evidence. The full
+local Markdown dependency graph rooted at `AGENTS.md` remains tracked for post-sync change
+detection, while schema v3 records a separate bounded post-compaction reread set. A synchronous
+`SessionStart` hook for `source=compact` runs generation-private launch-time snapshots of both the
+wrapper and checker, then injects the result as immediate developer context before the continuation;
+the snapshotted checker still compares the tracked canonical controls. Each unresolved tracked dependency retains its identity and reason
+as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under

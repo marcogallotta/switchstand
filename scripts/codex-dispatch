@@ -122,7 +122,8 @@ owned_writer=$(
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
     "$canonical_repo" "$owned_writer" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
-    "$script_dir/codex-continuity-hook" "$continuity_mode" "$continuity_lifetime" \
+    "$script_dir/codex-continuity-hook" "$script_dir/codex-compact-hook" \
+    "$script_dir/coordinator-control" "$continuity_mode" "$continuity_lifetime" \
     "$continuity_telemetry" \
     "$start_record" "$manifest_record"
 
@@ -132,6 +133,8 @@ owned_writer=$(
     --start-record "$start_record" \
     --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
     --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+    --compact-hook-snapshot "$start_record.compact-controls/codex-compact-hook" \
+    --coordinator-control-snapshot "$start_record.compact-controls/coordinator-control" \
     --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
 
 if [ ! -e "$owned_writer/friction.md" ]; then
