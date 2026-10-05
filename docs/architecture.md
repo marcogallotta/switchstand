@@ -265,6 +265,9 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
+  `implementation_requests.py` converts that exact approved revision into one inert managed task
+  request. Its ordinary MCP adapter exposes only caller-owned identity fields and remains absent
+  unless `SWITCHSTAND_IMPLEMENTATION_REQUESTS=1`; it does not activate worker pickup or execution.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
