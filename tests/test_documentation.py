@@ -70,8 +70,8 @@ def test_agents_coordination_contract_is_discoverable():
     agents = (ROOT / "AGENTS.md").read_text()
 
     required_rules = (
-        "meaningful investigation, implementation, review, migration, activation, or operational task requires one exact WorkId",
-        "live mitigation must not wait for WorkId creation or resolution",
+        "Meaningful work needs an exact WorkId",
+        "live mitigation attaches it when safe",
         "acknowledge before nontrivial reasoning, tools, or waits",
         "explicit response-time budget",
         "smallest useful decision-bearing response within it",
@@ -101,6 +101,46 @@ def test_agents_coordination_contract_is_discoverable():
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+
+def test_authority_bootstrap_preserves_effect_and_grounding_boundaries():
+    agents = (ROOT / "AGENTS.md").read_text()
+    authority = agents.split("## Authority and grounding", 1)[1].split(
+        "\n## Working with Marco", 1
+    )[0]
+    normalized = " ".join(authority.split())
+
+    required = (
+        "Marco's direct active assignment or an explicit `CURRENT` grant bound to exact WorkId, writable surface and effect",
+        "current human-reviewed position controls until superseded",
+        "steering authorizes only its exact package/revision/effect",
+        "Role, docs, placement, readability, login/tools and procedures never grant authority",
+        "needs an exact WorkId; live mitigation attaches it when safe",
+        "start/re-enter with `work_get(api_version=\"1\")` without a WorkId",
+        "verify the exact green repository SHA",
+        "write only the active WorkId",
+        "references are read-only",
+        "unavailable managed `work_get` does not block ordinary editing",
+        "Preserve role/work identity across re-entry",
+        "messages, adjacent reads, context, capability and placement do not reassign them",
+        "current routed procedure/Contract/Plan and applicable canary",
+        "Canary never expands authority; RED suspends only its experimental delta",
+        "blocks only its path; unrelated authorized work continues",
+        "implementation assignment conditionally authorizes commit/branch/PR",
+        "Landing requires current independent review and exact-head/composition gates",
+        "deployment, activation, migration, credentials and provider-production effects are separate",
+        "reread exact current work/grant and reconcile direction",
+        "`STALE/DENIED/UNKNOWN/NOT_RUN/SKIP/MISSING_CAPABILITY`",
+        "never blindly retry ambiguity",
+        "full `CallToolResult`: `isError` and content before `structuredContent`",
+        "Retain exact arguments/preimage for ambiguous/replacement writes",
+        "never send diagnostic payloads or reuse an OperationId with changed arguments",
+        "Never infer success from readability, status or partial output",
+        "Check authorized capabilities before declaring a blocker",
+        "Surface disproportion early",
+    )
+
+    assert [rule for rule in required if rule not in normalized] == []
 
 
 def test_agents_keeps_first_minute_incident_contract_before_routed_detail():
