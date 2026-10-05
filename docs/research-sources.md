@@ -15,9 +15,9 @@ individual posts; search inside a source for the current task.
    question is purely about one authoritative specification; when a genuine opposing position exists,
    include a source capable of contradicting the favored design. One confirming source is not a
    completed search — do not stop at the first source that supports the hypothesis you already hold.
-3. If you cannot find enough on something important, request a deeper search by Claude Code, seeded
-   from this list; a ChatGPT or Codex agent should not keep searching badly. A direct
-   agent-to-Claude-Code route is not established yet (see the roadmap), so make the request to Marco.
+3. If evidence for an important question is still insufficient, deepen the bounded search with
+   current web-research capability, directly or through an authorized Worker. Keep the source
+   dispositions; do not involve Marco merely to choose a research provider.
 4. If a source matters and you cannot reach it, ask Marco to retrieve it.
 
 Whether something is important, "enough," or genuinely uncontested is your judgment; when unsure,

@@ -89,18 +89,37 @@ def test_agents_coordination_contract_is_discoverable():
         "safe option-preserving work that can continue",
         "continues that safe work while waiting",
         "only the parent/Coordinator may raise a Marco-facing question",
-        "Root must use forked Workers by default",
-        "safely independent substantive lanes already assigned, claimed, or in flight",
-        "keeping Root focused on coordination and integration",
-        "Never select or dispatch merely-ready unassigned substantive work",
+        "Root coordinates and integrates",
+        "Proactively fork bounded, safely independent substantive work already assigned, claimed, or in flight",
+        "keep tracking and integration at Root",
+        "Never dispatch unassigned work or filler",
         "use every safe slot, count product-gate review as product work",
-        "`STOP` immediately pauses new dispatch and re-grounds",
+        "`STOP` pauses new dispatch and re-grounds",
         "terminal result as an immediate coordination interrupt",
         "Slice mutations by writable surface and semantic concern",
         "suspend the later mutation, reconcile any effects, then re-slice or serialize it",
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+
+def test_research_escalation_uses_current_capability_without_provider_routing():
+    sources = " ".join((ROOT / "docs/research-sources.md").read_text().split())
+
+    required = (
+        "deepen the bounded search with",
+        "current web-research capability",
+        "directly or through an authorized Worker",
+        "Keep the source dispositions",
+        "do not involve Marco merely to choose a research provider",
+    )
+    stale = (
+        "request a deeper search by Claude Code",
+        "agent-to-Claude-Code route",
+    )
+
+    assert [rule for rule in required if rule not in sources] == []
+    assert [rule for rule in stale if rule in sources] == []
 
 
 def test_authority_bootstrap_preserves_effect_and_grounding_boundaries():
