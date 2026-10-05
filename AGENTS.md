@@ -77,32 +77,28 @@ exact WorkId. Project Settings may point there but is not parallel authority.
 
 ## Codex roles and shared engineering process
 
-Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordinator that owns the overall assigned portfolio and cross-lane integration; a Coordinator operating inside a delegated lane owns only that lane. Research, design, implementation, and review are bounded functions, not additional roles. Role or function never grants product/effect authority.
+Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordinator for the overall assigned portfolio/integration; a Coordinator in a delegated lane owns only that lane. Research, design, implementation, and review are bounded functions, not roles. Role/function never grants authority.
 
-- A Worker owns one bounded task/work item at a time, stays inside its current governing package, and does not self-expand scope.
-- Worker questions go to the parent Coordinator; only the appropriate parent/Root raises Marco-facing questions.
-- Review independence depends on actual authorship, design, implementation, and disposition participation, not the Coordinator/Worker label.
-- Keep one mutation owner per writable surface and one integration owner for shared surfaces. Overlapping writers serialize or reconcile before continuing.
-- Every child/Worker/delegated obligation is terminal, explicitly stopped, or transferred with attributable pickup before its parent claims completion.
-- Once an authorized implementation-through-landing candidate exists, continue review, CI, correction, and landing to a terminal outcome unless current `HOLD`, `DENIED`, or a real blocker stops that path.
+- A Worker owns one bounded task/work item and does not self-expand scope. Worker questions go to its parent Coordinator; only the appropriate parent/Root asks Marco.
+- Review independence depends on actual authorship/design/implementation/disposition participation, not role label.
+- Keep one mutation owner per writable surface and one integration owner for shared surfaces. Every child/delegated obligation is terminal, explicitly stopped, or transferred with attributable pickup before parent completion.
+- Once an authorized implementation-through-landing candidate exists, continue review, CI, correction, and landing until terminal unless current `HOLD`, `DENIED`, or a real blocker stops that path.
 
-### Route only the current role/function
+### Route only the current function
 
-- **Root Coordinator:** follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md). Do not preload implementation or review procedure detail merely because Root coordinates it.
-- **Delegated-lane Coordinator:** load the exact lane work, parent obligations, and only the procedures required by that lane. Coordinator role alone does not grant Root portfolio authority or require the Root tracker.
-- **Research/design Worker:** load the exact assigned work and its current bound research/design package; [research sources](docs/research-sources.md) owns web-research mechanics.
-- **Implementation Worker:** load the exact implementation task, current Implementation Specification, current Design Specification, and [code quality](docs/code-quality.md) at the exact current candidate/control SHA; add only named/currently relevant dependencies. Do not routinely load Root/Coordinator/review owners.
-- **Review Worker or eligible Coordinator reviewer:** load the exact review occurrence/candidate, the current bound review procedure/owner, and claim-specific evidence. Do not preload implementation choreography except where needed to evaluate the candidate.
-- **Incident:** keep the first-minute incident core above, then load [live-incident operations](docs/operations-live-incident.md).
-- **Activation/deployment:** load only the exact current activation/runbook owner for that effect.
-- **Human Input / Human Review:** load [Human Input](docs/human-input.md) or [Human Review](docs/human-review.md) only when its trigger is reached.
+- **Root Coordinator:** [Root tracking](docs/coordinator-tracker-contract.md) + [human interaction](docs/human-interaction.md); do not preload implementation/review detail.
+- **Delegated-lane Coordinator:** exact lane work/parent obligations and only lane-required procedures; Coordinator role alone does not grant Root portfolio authority.
+- **Research/design Worker:** exact assigned work + current bound research/design package; use [research sources](docs/research-sources.md) when researching.
+- **Implementation Worker:** exact implementation task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
+- **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + current bound review procedure/owner + claim-specific evidence; no implementation choreography unless needed to judge the candidate.
+- **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
-A managed Worker uses only procedures/references carried by its bound current package. If required current guidance is not bound/readable, only that governed action is `UNKNOWN`/unavailable; never broaden discovery to compensate. On a real role/function/phase change, load only the newly applicable package.
+Managed Workers use only procedures/references carried by the bound current package. Missing required current guidance makes only that governed action `UNKNOWN`/unavailable; never broaden discovery. On a real role/function/phase change, load only the newly applicable package.
 
-### Review and effect triggers
+### Always-loaded triggers
 
-Before a consequential choice hardens, follow Human Input. Every material implementation gets final live Human Review before dispatch; approval covers only the reviewed package, not later effects. After approval stop and report exactly `Human Review approved. Dispatch ready: <WorkId>.`
+Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only the reviewed package. After approval stop and report exactly `Human Review approved. Dispatch ready: <WorkId>.`
 
-A mechanically established required-currentness/applicable-invariant contradiction or evidence of an ambiguous consequential effect requires one bounded situation review under the current review owner. Low confidence alone does not trigger it. Detailed finding schemas, reviewer acquisition, correction/rereview choreography, rebase/composition rules, evidence tiers, and code-review mechanics live behind their current routed owners rather than in this bootstrap.
+A mechanically established required-currentness/applicable-invariant contradiction or evidence of an ambiguous consequential effect requires one bounded situation review under the current review owner; low confidence alone does not. Detailed review lifecycle/findings/rereview, code-quality/rebase/testing, activation, canary, documentation-impact, research, and portfolio mechanics live behind their routed owners rather than in this bootstrap.
 
-Repository implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detailed repository owners include [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns current status and priority; these references constrain execution and never grant authority.
+Repository implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detailed owners include [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; these references constrain execution and never grant authority.
