@@ -430,7 +430,12 @@ The repository dispatcher creates a generation-owned linked writer and launches 
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. It separately copies only the repository-owned canonical `switchstand`
 HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
-Coordinator-control MCP; unrelated user MCP configuration remains excluded. The same per-launch renderer defaults role-neutral root continuity to
+Coordinator-control MCP; unrelated user MCP configuration remains excluded. Its injected bootstrap
+instructions preserve the ordinary/managed authority split: mailbox takeover permits mailbox use
+only, a raw Coordinator reads work by an exact WorkId from direct assignment or an acknowledged
+addressed handoff, and missing trusted identity is `COVERAGE_GAP / UNKNOWN`. It never treats bare
+`work_get` as focus recovery for an unbound Coordinator; that shorthand belongs only to trusted
+launch-bound managed MCP. The same per-launch renderer defaults role-neutral root continuity to
 `PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
 `scripts/codex-continuity-hook`. The explicit launch-only
 `SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's

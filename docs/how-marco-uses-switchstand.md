@@ -21,6 +21,13 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 
 From the canonical repository, raw `codex` enters through a materialized host shim that delegates to `scripts/codex-dispatch`; outside the repository the same shim directly launches the real Codex binary without depending on checkout health. `scripts/install-codex-shim` installs or updates that host-owned file. The in-repository result is an ordinary, unbound Coordinator session with the isolated Coordinator environment and canonical Switchstand MCP. Its shared primary checkout is read-only except for the Git metadata needed for fetch and linked writers; implementation happens in owned linked writers. New-generation Coordinators maintain `friction.md` through the validated symlink in their generation-owned writer, backed by the dedicated writable local-state directory. Pre-existing generations may retain the legacy primary-checkout binding during migration; that does not grant new sessions primary-checkout write access. It has no launch-bound WorkId and gains no provider effect authority from its execution environment. Raw `claude` behaves the same way through `scripts/install-claude-shim` and `scripts/claude-dispatch`.
 
+Mailbox registration or same-principal `/root` takeover restores only the durable messaging
+address; it does not recover or grant a WorkId. An ordinary Coordinator grounds work by reading
+the exact WorkId in Marco's direct assignment or in an acknowledged addressed handoff. It must
+not call bare `work_get` to guess a current focus. If neither trusted source supplies an exact
+WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
+`work_get` remains the launch-bound managed-worker behavior described below.
+
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
 #### Setup and workflow failure journal

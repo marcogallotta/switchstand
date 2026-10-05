@@ -301,6 +301,22 @@ def test_coordinator_handoff_docs_preserve_no_claim_semantics():
     assert "must update `AGENTS.md`, `docs/architecture.md`, and this owner together" in usage
 
 
+def test_unbound_coordinator_grounding_never_derives_work_from_mailbox_identity():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    architecture = " ".join((ROOT / "docs/architecture.md").read_text().split())
+    usage = " ".join((ROOT / "docs/how-marco-uses-switchstand.md").read_text().split())
+
+    assert "ordinary unbound Coordinator never uses bare `work_get` to infer focus" in agents
+    assert "mailbox registration or takeover does not supply work identity or authority" in agents
+    assert "missing trusted identity is `COVERAGE_GAP / UNKNOWN`" in architecture
+    assert (
+        "Mailbox registration or same-principal `/root` takeover restores only the durable "
+        "messaging address"
+    ) in usage
+    assert "It must not call bare `work_get` to guess a current focus" in usage
+    assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
+
+
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
     interaction = " ".join((ROOT / "docs/human-interaction.md").read_text().split())
