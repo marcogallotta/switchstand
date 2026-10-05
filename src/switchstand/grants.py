@@ -31,7 +31,7 @@ class WorkGrant(ClosedModel):
     scope: Literal["launch", "workspace"] = "launch"
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
-        "work_relate", "message", "agent_task"
+        "work_relate", "priority_claim", "message", "agent_task"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -41,6 +41,7 @@ class WorkGrant(ClosedModel):
     create_qualification: str | None = Field(default=None, min_length=1)
     update_qualification: str | None = Field(default=None, min_length=1)
     relation_qualification: str | None = Field(default=None, min_length=1)
+    priority_claim_qualification: str | None = Field(default=None, min_length=1)
 
     def current(self) -> bool:
         return self.state == "active" and self.expires_at > datetime.now(UTC)
@@ -249,6 +250,18 @@ class UpdateReceipt(ClosedModel):
     qualification: str
 
 
+class PriorityClaimReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    claim_id: UUID
+    supersedes_claim_id: UUID | None = None
+    source_observed_revision: str
+    qualification: str
+
+
 class EffectOutcomeView(ClosedModel):
     """Sanitized effect truth without provider or principal internals."""
     status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
@@ -274,7 +287,10 @@ class GuardOutcome(ClosedModel):
     effect: Literal["not_sent", "applied", "unknown"] = "not_sent"
     retry: Literal["none", "refresh", "reconcile"] = "none"
     next_action: str
-    receipt: EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt | None = None
+    receipt: (
+        EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt
+        | PriorityClaimReceipt | None
+    ) = None
     blocked_by: EffectBlocker | None = None
 
     @model_validator(mode="after")

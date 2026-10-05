@@ -65,55 +65,59 @@ friction_state="$HOME/.local/state/switchstand"
 legacy_friction_store="$friction_state/friction.md"
 friction_root="$friction_state/friction"
 friction_store="$friction_root/friction.md"
+friction_quarantine="$coordinator_home/friction-quarantine/${start_record##*.}"
+quarantine_friction() {
+    invalid=$1
+    label=$2
+    mkdir -p "$friction_quarantine"
+    chmod 700 "$coordinator_home/friction-quarantine" "$friction_quarantine"
+    destination="$friction_quarantine/$label"
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+        echo "Coordinator friction quarantine destination is not empty" >&2
+        exit 1
+    fi
+    mv "$invalid" "$destination"
+    echo "Coordinator friction state degraded: quarantined $label; launch continues" >&2
+}
+
 if [ -L "$friction_path" ]; then
-    friction_target=$(readlink -f "$friction_path")
+    friction_target=$(readlink -f "$friction_path" || :)
     if [ "$friction_target" != "$legacy_friction_store" ] && \
             [ "$friction_target" != "$friction_store" ]; then
-        echo "Coordinator friction binding is invalid" >&2
-        exit 1
+        quarantine_friction "$friction_path" primary-binding
     fi
 elif [ -f "$friction_path" ]; then
-    if [ -e "$legacy_friction_store" ]; then
-        echo "Coordinator friction migration would overwrite existing state" >&2
-        exit 1
-    fi
-    cp "$friction_path" "$legacy_friction_store"
-    chmod 600 "$legacy_friction_store"
-    rm "$friction_path"
-    ln -s "$legacy_friction_store" "$friction_path"
-elif [ -e "$friction_path" ]; then
-    echo "Coordinator friction binding is invalid" >&2
-    exit 1
-else
-    if [ ! -e "$legacy_friction_store" ]; then
-        touch "$legacy_friction_store"
+    if [ -e "$legacy_friction_store" ] || [ -L "$legacy_friction_store" ]; then
+        quarantine_friction "$friction_path" primary-file
+    else
+        mv "$friction_path" "$legacy_friction_store"
         chmod 600 "$legacy_friction_store"
-    elif [ ! -f "$legacy_friction_store" ] || [ -L "$legacy_friction_store" ]; then
-        echo "Coordinator legacy friction store is invalid" >&2
-        exit 1
     fi
-    ln -s "$legacy_friction_store" "$friction_path"
+elif [ -e "$friction_path" ]; then
+    quarantine_friction "$friction_path" primary-binding
 fi
+
 if [ -L "$legacy_friction_store" ] || \
         { [ -e "$legacy_friction_store" ] && [ ! -f "$legacy_friction_store" ]; }; then
-    echo "Coordinator legacy friction store is invalid" >&2
-    exit 1
+    quarantine_friction "$legacy_friction_store" legacy-store
+fi
+if [ ! -e "$legacy_friction_store" ]; then
+    touch "$legacy_friction_store"
+    chmod 600 "$legacy_friction_store"
 fi
 if [ -L "$friction_root" ] || { [ -e "$friction_root" ] && [ ! -d "$friction_root" ]; }; then
-    echo "Coordinator friction root is invalid" >&2
-    exit 1
+    quarantine_friction "$friction_root" current-root
 fi
 mkdir -p "$friction_root"
 chmod 700 "$friction_root"
 if [ -L "$friction_store" ] || { [ -e "$friction_store" ] && [ ! -f "$friction_store" ]; }; then
-    echo "Coordinator friction store is invalid" >&2
-    exit 1
+    quarantine_friction "$friction_store" current-store
 fi
 if [ ! -e "$friction_store" ]; then
     cp "$legacy_friction_store" "$friction_store"
     chmod 600 "$friction_store"
 fi
-if [ "$(readlink -f "$friction_path")" != "$friction_store" ]; then
+if [ "$(readlink -f "$friction_path" || :)" != "$friction_store" ]; then
     ln -sfn "$friction_store" "$friction_path"
 fi
 

@@ -99,7 +99,7 @@ def render(
     compact_hook: Path,
 ) -> str:
     canonical_mcp = _canonical_mcp()
-    writer_git_dir = _linked_worktree_git_dir(primary, writer)
+    _linked_worktree_git_dir(primary, writer)
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
     ))
@@ -169,17 +169,10 @@ def render(
         'enabled_tools = ["coordinator_currentness_get", "coordinator_main_sync"]',
         "",
         "[permissions.switchstand-coordinator]",
-        'description = "Coordinator host access with the shared primary checkout read-only."',
+        'description = "Coordinator user access with the shared primary checkout read-only."',
         "",
         "[permissions.switchstand-coordinator.filesystem]",
-        '":root" = "read"',
-        f'{json.dumps(str(writer))} = "write"',
-        f'{json.dumps(str(writer_git_dir))} = "write"',
-        f'{json.dumps(str(start_record.parent))} = "write"',
-        f'{json.dumps(str(primary.parent / ".cache/switchstand"))} = "write"',
-        f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction"))} = "write"',
-        '":tmpdir" = "write"',
-        '":slash_tmp" = "write"',
+        '":root" = "write"',
         "",
         f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
         '"." = "read"',
