@@ -139,7 +139,12 @@ def render(
             "as an explicit mailbox blocker; do not retry, request a transfer, or read the "
             "mailbox. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
-            f"lifetime={lifetime}."
+            f"lifetime={lifetime}. "
+            "For safely independent substantive lanes already assigned, claimed, or in flight, "
+            "use forked Workers by default and keep the Root Coordinator focused on coordination "
+            "and integration. Never select or dispatch a merely-ready unassigned substantive item. "
+            "STOP immediately pauses new dispatch and requires re-grounding on the user's latest "
+            "direction."
         ),
     ]
     section: tuple[str, ...] = ()

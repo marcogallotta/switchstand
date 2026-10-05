@@ -306,6 +306,11 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     )
     assert str(records[0]) in profile["developer_instructions"]
     assert "synchronous compact-session hook" in profile["developer_instructions"]
+    assert "use forked Workers by default" in profile["developer_instructions"]
+    assert "Never select or dispatch a merely-ready unassigned substantive item" in profile[
+        "developer_instructions"
+    ]
+    assert "STOP immediately pauses new dispatch" in profile["developer_instructions"]
     manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text())
