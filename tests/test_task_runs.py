@@ -17,13 +17,16 @@ from switchstand.canonical_work import (
     canonical_revision,
     canonical_work,
 )
+from switchstand.messages import RuntimeCurrentness
 from switchstand.run import RunReceipt
 from switchstand.state import PostgresState
 from switchstand.task_runs import (
     AgentTaskRequest,
+    AgentTaskResult,
     TaskRunState,
     task_run_executions,
     task_run_requests,
+    task_run_results,
 )
 
 
@@ -39,7 +42,8 @@ async def subject(database_prerequisite):
             "DROP TABLE IF EXISTS alembic_version, task_run_results, task_run_executions, "
             "task_run_requests, failure_resolutions, "
             "failure_records, work_migration_receipts, "
-            "outcome_state_revisions, human_trajectory_revisions, agent_mailbox_transfer_requests, agent_mailboxes, "
+            "outcome_state_revisions, human_trajectory_revisions, "
+            "agent_mailbox_transfer_requests, agent_mailboxes, "
             "work_event_handles, lifecycle_obligations, message_projection, message_deliveries, "
             "messages, effect_intents, work_grants, work_handles CASCADE"
         ))
@@ -88,6 +92,16 @@ def receipt(execution, run_id=None):
     )
 
 
+def result(**changes):
+    values = {
+        "api_version": "1",
+        "outcome": "PASS",
+        "summary": "The bounded investigation completed.",
+        "evidence_refs": ("evidence://task-run/1",),
+    }
+    return AgentTaskResult(**(values | changes))
+
+
 @pytest.mark.parametrize("change", [
     {"task_kind": "IMPLEMENTATION"},
     {"target_runtime": "codex"},
@@ -96,6 +110,16 @@ def receipt(execution, run_id=None):
 def test_public_contract_rejects_implementation_routing_and_unbounded_result(change):
     with pytest.raises(ValidationError):
         request(uuid4(), **change)
+
+
+@pytest.mark.parametrize("change", [
+    {"run_id": str(uuid4())},
+    {"evidence_refs": ("",)},
+    {"evidence_refs": ("x" * 2049,)},
+])
+def test_public_result_contract_rejects_runtime_identity_and_bad_evidence(change):
+    with pytest.raises(ValidationError):
+        result(**change)
 
 
 async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
@@ -241,3 +265,150 @@ async def test_concurrent_shared_run_binds_one_request(subject):
         assert await connection.scalar(
             select(func.count()).select_from(task_run_executions)
         ) == 1
+
+
+async def test_current_result_is_durable_terminal_and_replays_exactly(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+    run = receipt(execution)
+    unbound = await state.submit_result(
+        requested.request.request_id,
+        uuid4(),
+        RuntimeCurrentness(
+            generation=str(run.run_id), current_generation=str(run.run_id)
+        ),
+        result(),
+    )
+    assert (unbound.status, unbound.reason) == ("denied", "execution_not_bound")
+    assert (await state.bind_start(requested.request.request_id, run)).status == "ok"
+    current = RuntimeCurrentness(
+        generation=str(run.run_id), current_generation=str(run.run_id)
+    )
+    result_id = uuid4()
+    payload = result()
+
+    first = await state.submit_result(
+        requested.request.request_id, result_id, current, payload
+    )
+    assert first.status == "ok" and first.terminal and first.result is not None
+    assert first.result.run_id == run.run_id
+    assert await state.submit_result(
+        requested.request.request_id, result_id, current, payload
+    ) == first
+    readback = await state.get(requested.request.request_id)
+    assert readback.request is not None
+    assert readback.request.terminal_result_id == result_id
+
+    changed = await state.submit_result(
+        requested.request.request_id,
+        result_id,
+        current,
+        payload.model_copy(update={"summary": "Different evidence."}),
+    )
+    assert (changed.status, changed.reason) == (
+        "conflict", "result_identity_conflict"
+    )
+    second = await state.submit_result(
+        requested.request.request_id, uuid4(), current, result(summary="Second result.")
+    )
+    assert (second.status, second.reason, second.terminal) == (
+        "conflict", "terminal_result_conflict", False
+    )
+    assert second.result is not None
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_results)
+        ) == 2
+
+
+async def test_result_currentness_unknown_then_current_and_stale_evidence(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+    run = receipt(execution)
+    assert (await state.bind_start(requested.request.request_id, run)).status == "ok"
+    result_id = uuid4()
+    payload = result()
+
+    unknown = await state.submit_result(
+        requested.request.request_id,
+        result_id,
+        RuntimeCurrentness(generation=str(run.run_id)),
+        payload,
+    )
+    assert (unknown.status, unknown.reason, unknown.terminal) == (
+        "unknown", "runtime_currentness_unavailable", False
+    )
+    assert unknown.result is not None
+    readback = await state.get(requested.request.request_id)
+    assert readback.request is not None and readback.request.terminal_result_id is None
+
+    current = RuntimeCurrentness(
+        generation=str(run.run_id), current_generation=str(run.run_id)
+    )
+    promoted = await state.submit_result(
+        requested.request.request_id, result_id, current, payload
+    )
+    assert promoted.status == "ok" and promoted.terminal
+
+    other_requested = await state.request(requester, uuid4(), request(execution))
+    assert other_requested.request is not None
+    other_run = receipt(execution)
+    assert (await state.bind_start(other_requested.request.request_id, other_run)).status == "ok"
+    stale = await state.submit_result(
+        other_requested.request.request_id,
+        uuid4(),
+        RuntimeCurrentness(
+            generation=str(other_run.run_id), current_generation=str(uuid4())
+        ),
+        result(summary="Superseded evidence."),
+    )
+    assert (stale.status, stale.reason, stale.terminal) == (
+        "stale", "run_superseded", False
+    )
+    assert stale.result is not None
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_results)
+        ) == 2
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
+    with pytest.raises(RuntimeError, match="preserve durable task-run result evidence"):
+        command.downgrade(config, "0018_task_run_executions")
+
+
+async def test_concurrent_current_results_select_one_terminal(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+    run = receipt(execution)
+    assert (await state.bind_start(requested.request.request_id, run)).status == "ok"
+    current = RuntimeCurrentness(
+        generation=str(run.run_id), current_generation=str(run.run_id)
+    )
+    result_ids = (uuid4(), uuid4())
+
+    outcomes = await asyncio.gather(*(
+        state.submit_result(
+            requested.request.request_id,
+            result_id,
+            current,
+            result(summary=f"Result {result_id}"),
+        )
+        for result_id in result_ids
+    ))
+
+    assert sorted((item.status, item.reason) for item in outcomes) == [
+        ("conflict", "terminal_result_conflict"),
+        ("ok", None),
+    ]
+    selected = next(item for item in outcomes if item.status == "ok")
+    readback = await state.get(requested.request.request_id)
+    assert selected.result is not None and readback.request is not None
+    assert readback.request.terminal_result_id == selected.result.result_id
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_results)
+        ) == 2
