@@ -255,8 +255,13 @@ messaging, and required continuation:
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
-  unreferenced legacy residue. `agent_messages.py` supplies public name-based views over the
-  existing `MessageState` records.
+  unreferenced legacy residue. For cross-principal recovery, the destination authenticated session
+  records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
+  command approves it in one transaction. It preserves the endpoint and deliveries, increments
+  generation, fences the old principal/session, and fails closed if the mailbox or destination
+  changed. Ordinary same-principal `agent_takeover` remains unchanged; there is no public approval
+  tool. `agent_messages.py` supplies
+  public name-based views over `MessageState`; migration `0016_agent_mailbox_transfers` owns audit.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
