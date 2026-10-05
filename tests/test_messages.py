@@ -50,7 +50,7 @@ async def subject(database_prerequisite):
     with sync.begin() as connection:
         connection.execute(text(
             "DROP TABLE IF EXISTS alembic_version, outcome_state_revisions, "
-            "human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, "
+            "human_trajectory_revisions, agent_mailbox_transfer_requests, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))

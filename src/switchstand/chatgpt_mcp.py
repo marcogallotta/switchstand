@@ -15,6 +15,7 @@ from .agent_messages import (
     AgentMessageSubmitResult,
     AgentPendingMessage,
     AgentRegistrationResult,
+    AgentTransferRequestResult,
     public_message,
 )
 from .chatgpt import ChatGPTService, RequiredResultSaveRequest
@@ -145,6 +146,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "required_result_save",
     "agent_register",
     "agent_takeover",
+    "agent_transfer_request",
     "agent_message_send",
     "agent_message_receive",
     "agent_message_recover",
@@ -663,6 +665,39 @@ def build_ordinary_tools(
         audited("agent_takeover", name, result.status)
         return result
 
+    async def agent_transfer_request(
+        api_version: Literal["1"],
+        name: Annotated[str, Field(min_length=1, max_length=80)],
+    ) -> AgentTransferRequestResult:
+        """Request host approval to take over a name owned by another authenticated identity."""
+        del api_version
+        try:
+            principal = await service.principal()
+            chat_session = chat_identity()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            principal, chat_session = None, ""
+        if principal is None:
+            result = AgentTransferRequestResult(status="denied", reason="no_current_grant")
+        elif not chat_session:
+            result = AgentTransferRequestResult(
+                status="recovery_required", reason="runtime_identity_unavailable"
+            )
+        elif mailboxes is None:
+            result = AgentTransferRequestResult(
+                status="recovery_required", reason="state_unavailable"
+            )
+        else:
+            stored = await mailboxes.request_transfer(name, principal.key, chat_session)
+            if stored.status in ("pending", "approved"):
+                assert stored.request_id is not None and stored.name is not None
+                result = AgentTransferRequestResult(
+                    status="ok", request_id=stored.request_id, name=stored.name
+                )
+            else:
+                result = AgentTransferRequestResult(status=stored.status, reason=stored.reason)
+        audited("agent_transfer_request", name, result.status)
+        return result
+
     async def agent_message_send(
         api_version: Literal["1"], recipient_name: str,
         message_id: UUID, payload: JsonValue,
@@ -870,6 +905,7 @@ def build_ordinary_tools(
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
         ("agent_takeover", agent_takeover),
+        ("agent_transfer_request", agent_transfer_request),
         ("agent_message_send", agent_message_send),
         ("agent_message_pending", agent_message_pending),
         ("agent_message_receive", agent_message_receive),

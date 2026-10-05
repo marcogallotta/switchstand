@@ -16,7 +16,8 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 - work discovery, exact legacy-reference resolution, reads, history, and events;
 - grant-checked work creation, update, relation, and append operations;
 - registered-name `agent_message_*` messaging (managed task-bound runtimes separately retain
-  WorkId-addressed `message_*` tools); and
+  WorkId-addressed `message_*` tools), plus an exact destination-side request for host-approved
+  cross-principal dead-name transfer; and
 - required-result persistence.
 
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may

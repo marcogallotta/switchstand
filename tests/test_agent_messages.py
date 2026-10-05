@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
@@ -174,6 +175,30 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
     assert stale.next_action is None
+
+
+async def test_host_approved_transfer_preserves_delivery_and_fences_old_owner(agent_messaging):
+    tools, actor, session, _owner, other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Root", uuid4(), {"request": "handoff"})
+    assert sent.status == "ok" and sent.message is not None
+    delivery = sent.message.delivery_id
+
+    actor[0], session[0] = other, "new-root-chat"
+    request = await tools["agent_transfer_request"]("1", "Root")
+    assert request.status == "ok" and request.request_id is not None
+    assert service.messages is not None
+    approval = await AgentMailboxState(service.messages.engine).approve_transfer(request.request_id)
+    assert approval.status == "approved"
+
+    recovered = await tools["agent_message_receive"]("1", delivery)
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
+    session[0] = "chat-b"
+    old = await tools["agent_message_pending"]("1")
+    assert (old.status, old.reason) == ("denied", "agent_not_registered")
 
 
 async def test_takeover_atomically_fences_every_inflight_message_operation(

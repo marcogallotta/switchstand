@@ -33,6 +33,22 @@ class AgentRegistrationResult(ClosedModel):
         return self
 
 
+class AgentTransferRequestResult(ClosedModel):
+    status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
+    request_id: UUID | None = None
+    name: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self):
+        if self.status == "ok":
+            if self.request_id is None or self.name is None or self.reason is not None:
+                raise ValueError("successful transfer request requires identity and name")
+        elif self.request_id is not None or self.name is not None or self.reason is None:
+            raise ValueError("failed transfer request requires only reason")
+        return self
+
+
 class AgentPendingMessage(ClosedModel):
     delivery_id: UUID
     message_id: UUID
