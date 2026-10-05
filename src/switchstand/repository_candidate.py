@@ -202,11 +202,17 @@ async def qualify_repository_candidate(
         target_ref: str | None = None
         target_sha: str | None = None
         if isinstance(stack, dict):
-            target_ref = str(stack["base"]["ref"])
+            stack = cast(dict[str, Any], stack)
+            stack_base = stack.get("base")
+            position = stack.get("position")
+            if not isinstance(stack_base, dict) or not isinstance(position, int):
+                raise TypeError("GitHub stack identity must include base and position")
+            stack_base = cast(dict[str, Any], stack_base)
+            target_ref = str(stack_base["ref"])
             branch = await _json(http, f"/branches/{quote(target_ref, safe='')}")
             target_sha = str(branch["commit"]["sha"])
             composition_reason = await _stack_composition_reason(
-                http, parents, base, head, target_sha, int(stack["position"]),
+                http, parents, base, head, target_sha, position,
             )
         else:
             composition_reason = _composition_reason(parents, base, head)
