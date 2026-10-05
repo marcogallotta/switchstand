@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -25,9 +26,7 @@ from switchstand.state import PostgresState
 from switchstand.task_runs import task_run_requests
 
 PACKAGE = UUID("45000000-0000-4000-8000-000000000001")
-PRINCIPAL = PrincipalContext(
-    issuer="fixture", subject="implementation-owner", client_id="codex", assurance="test"
-)
+PRINCIPAL = PrincipalContext(issuer="fixture", subject="implementation-owner", client_id="codex", assurance="test")
 
 
 @pytest.fixture
@@ -58,9 +57,7 @@ async def subject(database_prerequisite):
     state = PostgresState(engine)
     await state.bind_reserved(PACKAGE, "local", str(PACKAGE))
     works = CanonicalWorkRepository(engine)
-    await works.create(CurrentWork(
-        PACKAGE, "Approved package", False, "exact package", lifecycle_state="CURRENT"
-    ))
+    await works.create(CurrentWork(PACKAGE, "Approved package", False, "exact package", lifecycle_state="CURRENT"))
     grant = WorkGrant(
         id=uuid4(),
         version=1,
@@ -72,7 +69,9 @@ async def subject(database_prerequisite):
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     await GrantState(engine).issue(grant, None)
-    yield ImplementationRequestState(engine, works), HumanReviewState(engine, works), engine, grant
+    occurrences = AsyncMock()
+    occurrences.pass_status_in_transaction.return_value = "PASS"
+    yield ImplementationRequestState(engine, works, occurrences), HumanReviewState(engine, works), engine, grant, occurrences
     await engine.dispose()
 
 
@@ -103,7 +102,7 @@ async def request_count(engine) -> int:
 
 
 async def test_approved_current_send_authority_creates_one_inert_request(subject):
-    facade, reviews, engine, grant = subject
+    facade, reviews, engine, grant, occurrences = subject
     approved = await approve(reviews)
     operation_id = uuid4()
 
@@ -114,6 +113,9 @@ async def test_approved_current_send_authority_creates_one_inert_request(subject
 
     assert {applied.status, recovered.status} == {"APPLIED", "REPLAYED"}
     assert applied.task_run_request_id == recovered.task_run_request_id
+    assert occurrences.pass_status_in_transaction.call_args.args[1:] == (
+        PACKAGE, approved.package_revision
+    )
     assert applied.delivery_state == "PENDING"
     assert applied.next_action == "await managed worker pickup"
     assert await request_count(engine) == 1
@@ -141,7 +143,7 @@ async def test_approved_current_send_authority_creates_one_inert_request(subject
 
 
 async def test_no_approval_or_other_principal_creates_zero_requests(subject):
-    facade, reviews, engine, _ = subject
+    facade, reviews, engine, _, occurrences = subject
     denied = await facade.request(
         PRINCIPAL, uuid4(), PACKAGE, canonical_revision(PACKAGE, 1)
     )
@@ -153,11 +155,18 @@ async def test_no_approval_or_other_principal_creates_zero_requests(subject):
         other, uuid4(), PACKAGE, canonical_revision(PACKAGE, 1)
     )
     assert (unauthorized.status, unauthorized.reason) == ("DENIED", "no_send_authority")
+    for review_status, expected in (
+        ("NOT_PASS", ("DENIED", "independent_review_not_passed")),
+        ("UNKNOWN", ("UNKNOWN", "independent_review_unavailable")),
+    ):
+        occurrences.pass_status_in_transaction.return_value = review_status
+        denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, canonical_revision(PACKAGE, 1))
+        assert (denied.status, denied.reason) == expected
     assert await request_count(engine) == 0
 
 
 async def test_exact_replay_survives_revoke_but_changed_replay_conflicts(subject):
-    facade, reviews, engine, grant = subject
+    facade, reviews, engine, grant, _ = subject
     approved = await approve(reviews)
     operation_id = uuid4()
     first = await facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision)
@@ -176,7 +185,7 @@ async def test_exact_replay_survives_revoke_but_changed_replay_conflicts(subject
 
 
 async def test_stale_package_or_revoked_authority_creates_zero_requests(subject):
-    facade, reviews, engine, grant = subject
+    facade, reviews, engine, grant, _ = subject
     approved = await approve(reviews)
     stale = await facade.request(PRINCIPAL, uuid4(), PACKAGE, "pg_stale")
     assert (stale.status, stale.reason) == ("STALE", "package_revision_changed")
@@ -204,7 +213,7 @@ async def test_stale_package_or_revoked_authority_creates_zero_requests(subject)
 
 
 async def test_hold_review_creates_zero_requests(subject):
-    facade, reviews, engine, _ = subject
+    facade, reviews, engine, _, _ = subject
     value = consequence()
     proposed = await reviews.propose(value)
     assert proposed.record is not None

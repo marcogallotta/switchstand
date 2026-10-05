@@ -15,6 +15,7 @@ from .contracts import ClosedModel
 from .grant_state import work_grants
 from .grants import PrincipalContext, WorkGrant
 from .human_reviews import human_review_consequences, human_review_record
+from .reviews import ReviewOccurrenceState
 from .task_runs import ImplementationTaskRequest, TaskRunRequest, TaskRunState
 
 
@@ -45,9 +46,13 @@ class ImplementationRequestResult(ClosedModel):
 class ImplementationRequestState:
     """Validate current authorization and atomically reuse task-run admission."""
 
-    def __init__(self, engine: AsyncEngine, works: CanonicalWorkRepository):
+    def __init__(
+        self, engine: AsyncEngine, works: CanonicalWorkRepository,
+        review_occurrences: ReviewOccurrenceState,
+    ):
         self.engine = engine
         self.works = works
+        self.review_occurrences = review_occurrences
         self.tasks = TaskRunState(engine, works)
 
     @staticmethod
@@ -154,6 +159,17 @@ class ImplementationRequestState:
                 ):
                     return ImplementationRequestResult(status="DENIED", reason="no_send_authority")
 
+                pass_status = await self.review_occurrences.pass_status_in_transaction(
+                    connection, package_work_id, observed_revision
+                )
+                if pass_status == "UNKNOWN":
+                    return ImplementationRequestResult(
+                        status="UNKNOWN", reason="independent_review_unavailable"
+                    )
+                if pass_status != "PASS":
+                    return ImplementationRequestResult(
+                        status="DENIED", reason="independent_review_not_passed"
+                    )
                 authorization_ref = (
                     f"human-review/{review.consequence_id}/{review.consequence_digest}"
                 )
