@@ -115,7 +115,9 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
     yield value
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
-        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+        ))
         await connection.run_sync(canonical_metadata.drop_all)
     await engine.dispose()
 

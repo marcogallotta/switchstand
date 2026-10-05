@@ -24,7 +24,7 @@ def clean_postgres_tables(database_prerequisite):
     engine = create_engine(disposable_url())
     with engine.begin() as connection:
         connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, task_run_requests, agent_mailbox_transfer_requests, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, "
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions, task_run_requests, agent_mailbox_transfer_requests, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, "
             "message_projection, message_deliveries, messages, effect_intents, work_grants, work_handles, priority_claims, work_events, project_memberships, projects, work_parents, work_dependencies, "
             "legacy_work_aliases, canonical_work, failure_resolutions, failure_records, work_migration_receipts CASCADE"
         ))
@@ -55,6 +55,29 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
+
+
+def test_activation_continuity_downgrade_preserves_durable_truth(database_prerequisite):
+    url = disposable_url()
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO activation_obligation_revisions "
+            "(obligation_id, operation_id, generation, record) "
+            "VALUES (:obligation, :operation, 1, '{}'::jsonb)"
+        ), {"obligation": uuid4(), "operation": uuid4()})
+
+    with pytest.raises(RuntimeError, match="preserve durable activation obligations"):
+        command.downgrade(config, "0022_implementation_requests")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0023_activation_continuity"
+        assert connection.scalar(text(
+            "SELECT count(*) FROM activation_obligation_revisions"
+        )) == 1
 
 
 def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequisite):

@@ -40,7 +40,8 @@ async def store(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, human_review_consequences, "
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions, "
+            "human_review_consequences, "
             "task_run_results, task_run_executions, task_run_requests, priority_claims, "
             "outcome_state_revisions, human_trajectory_revisions, "
             "agent_mailbox_transfer_requests, agent_mailboxes, work_event_handles, "
