@@ -26,6 +26,7 @@ from switchstand.reviews import (
     CanonicalReviewBrief,
     ReviewBasis,
     ReviewEnvelope,
+    ReviewFinding,
     ReviewGuidelines,
     ReviewOccurrenceState,
     ReviewPolicy,
@@ -274,3 +275,68 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
             connection, subject_id,
             canonical_revision(subject.work_id, subject.row_version),
         ) == "PASS"
+
+
+async def test_focused_rereview_requires_authoritative_named_finding(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b"
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    initial = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert initial.review_id is not None and initial.delivery_id is not None
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(
+            generation=str(reviewer.generation), current_generation=str(reviewer.generation),
+        ),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=initial.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    finding = ReviewFinding(
+        finding_id="F-1", defect="Missing proof", evidence="No boundary result",
+        consequence="Claim is unsafe", affected_claim="landing",
+        minimum_clearing_condition="Supply boundary proof",
+    )
+    submitted = await service.submit(ReviewSubmit(
+        review_id=initial.review_id, verdict="FINDINGS", findings=(finding,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET notes = 'corrected', row_version = row_version + 1 "
+            "WHERE work_id = :id"
+        ), {"id": subject_id})
+    corrected = await occurrences.works.get(subject_id)
+    assert corrected is not None
+    focused = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(corrected.work_id, corrected.row_version),
+        review_kind="CODE", mode="FOCUSED", prior_review_id=initial.review_id,
+        finding_ids=("F-1",),
+    ), requester)
+    assert focused.status == "SENT"
+    delivery = await occurrences.request_delivery(
+        initial.review_id,
+        subject_revision=canonical_revision(corrected.work_id, corrected.row_version),
+    )
+    assert delivery is not None
+    assert "secondary/global-impact" in delivery[1].brief.instructions[-1]

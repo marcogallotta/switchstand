@@ -514,6 +514,10 @@ class ReviewService:
 
     @staticmethod
     def _brief(basis: ReviewBasis, subject: CurrentWork) -> CanonicalReviewBrief:
+        focused = () if basis.mode == "FULL" else (
+            "Recheck only the named findings and the directly affected boundary.",
+            "Perform a bounded secondary/global-impact check; report if impact cannot be bounded.",
+        )
         return CanonicalReviewBrief(
             basis=basis, subject_title=subject.title, material_claim=subject.notes,
             instructions=(
@@ -523,7 +527,7 @@ class ReviewService:
                     "claim, and minimum clearing condition."
                 ),
                 "Do not treat a preferred remedy as required unless the contract requires it.",
-            ),
+            ) + focused,
             named_evidence=(() if basis.candidate_ref is None else (basis.candidate_ref,)),
         )
 
@@ -562,8 +566,26 @@ class ReviewService:
         if canonical_revision(subject.work_id, subject.row_version) != request.observed_revision:
             return ReviewResult(status="STALE", review_id=basis.review_id,
                                 reason="subject_revision_changed")
-        if request.mode != "FULL":
-            return ReviewResult(status="DENIED", reason="prior_review_not_found")
+        if request.mode == "FOCUSED":
+            prior_matches = False
+            for prior in await self.occurrences.outcome_envelopes(basis.review_id):
+                prior_basis = prior.brief.basis
+                if (
+                    prior.outcome.review_id == basis.review_id
+                    and prior_basis.subject_work_id == basis.subject_work_id
+                    and prior_basis.review_kind == basis.review_kind
+                    and prior_basis.requester_endpoint_id == basis.requester_endpoint_id
+                    and prior_basis.policy_version == basis.policy_version
+                    and prior_basis.guidelines_version == basis.guidelines_version
+                    and prior_basis.guidelines_digest == basis.guidelines_digest
+                    and set(request.finding_ids).issubset({
+                        finding.finding_id for finding in prior.outcome.findings
+                    })
+                ):
+                    prior_matches = True
+                    break
+            if not prior_matches:
+                return ReviewResult(status="DENIED", reason="prior_review_not_found")
         brief = self._brief(basis, subject)
         if not await self.occurrences.ensure(brief):
             return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
