@@ -63,6 +63,7 @@ from .priority_claim_service import (
 )
 from .priority_claims import SubjectKind
 from .priority_context import PriorityContextProjection, PriorityContextResult
+from .product_currentness import ProductCurrentness
 from .relations import RelationGateway
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
@@ -104,6 +105,8 @@ class ChatGPTService:
         priority_claims_enabled: bool = False,
         priority_context: PriorityContextProjection | None = None,
         priority_context_enabled: bool = False,
+        product_currentness: Callable[[PrincipalContext], Awaitable[ProductCurrentness]] | None = None,
+        product_currentness_enabled: bool = False,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -129,6 +132,8 @@ class ChatGPTService:
         self.priority_claims_enabled = priority_claims_enabled
         self.priority_context = priority_context
         self.priority_context_enabled = priority_context_enabled
+        self.product_currentness = product_currentness
+        self.product_currentness_enabled = product_currentness_enabled
 
     @staticmethod
     def denied(
