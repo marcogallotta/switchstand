@@ -59,6 +59,8 @@ task_run_requests = Table(
     Column("candidate_ref", Text),
     Column("objective", Text, nullable=False),
     Column("result_contract", JSONB, nullable=False),
+    Column("authorization_ref", Text),
+    Column("send_authority_ref", Text),
     Column("content_digest", Text, nullable=False),
     Column(
         "terminal_result_id",
@@ -72,7 +74,17 @@ task_run_requests = Table(
     ),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     CheckConstraint("observed_revision <> ''", name="ck_task_run_request_revision"),
-    CheckConstraint("task_kind IN ('INVESTIGATION', 'VALIDATION')", name="ck_task_run_request_kind"),
+    CheckConstraint(
+        "task_kind IN ('INVESTIGATION', 'VALIDATION', 'IMPLEMENTATION')",
+        name="ck_task_run_request_kind",
+    ),
+    CheckConstraint(
+        "(task_kind = 'IMPLEMENTATION' AND authorization_ref IS NOT NULL "
+        "AND send_authority_ref IS NOT NULL) OR "
+        "(task_kind <> 'IMPLEMENTATION' AND authorization_ref IS NULL "
+        "AND send_authority_ref IS NULL)",
+        name="ck_task_run_request_authority",
+    ),
     CheckConstraint(
         "continuation IN ('START', 'CONTINUE', 'TAKEOVER')",
         name="ck_task_run_request_continuation",
@@ -139,14 +151,40 @@ class AgentTaskRequest(ClosedModel):
         return self
 
 
+class ImplementationTaskRequest(ClosedModel):
+    """Server-derived implementation intent; never accepted as a public caller payload."""
+
+    api_version: ApiVersion = "1"
+    execution_work_id: UUID
+    observed_revision: str = Field(min_length=1, max_length=512)
+    task_kind: Literal["IMPLEMENTATION"] = "IMPLEMENTATION"
+    objective: str = Field(min_length=1, max_length=8000)
+    result_contract: dict[str, JsonValue]
+    authorization_ref: str = Field(min_length=1, max_length=1024)
+    send_authority_ref: str = Field(min_length=1, max_length=1024)
+    continuation: Literal["START"] = "START"
+    candidate_ref: str | None = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def bounded_contract(self) -> Self:
+        encoded = json.dumps(
+            self.result_contract, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+        if len(encoded) > 16_384:
+            raise ValueError("result contract exceeds 16384 bytes")
+        return self
+
+
 class TaskRunRequest(ClosedModel):
     request_id: UUID
     requester_work_id: UUID
     execution_work_id: UUID
     observed_revision: str
-    task_kind: Literal["INVESTIGATION", "VALIDATION"]
+    task_kind: Literal["INVESTIGATION", "VALIDATION", "IMPLEMENTATION"]
     objective: str
     result_contract: dict[str, JsonValue]
+    authorization_ref: str | None = None
+    send_authority_ref: str | None = None
     continuation: Literal["START", "CONTINUE", "TAKEOVER"]
     candidate_ref: str | None = None
     terminal_result_id: UUID | None = None
@@ -244,7 +282,9 @@ class TaskRunRequestResult(ClosedModel):
 _REQUEST_COLUMNS = tuple(task_run_requests.c)
 
 
-def _digest(requester_work_id: UUID, request: AgentTaskRequest) -> str:
+def _digest(
+    requester_work_id: UUID, request: AgentTaskRequest | ImplementationTaskRequest
+) -> str:
     value = {
         "requester_work_id": str(requester_work_id),
         "request": request.model_dump(mode="json"),
@@ -265,16 +305,32 @@ async def _verified_request(
     connection: AsyncConnection, row: RowMapping
 ) -> TaskRunRequest:
     requester_work_id = cast(UUID, row["requester_work_id"])
-    payload = AgentTaskRequest(
-        api_version="1",
-        execution_work_id=cast(UUID, row["execution_work_id"]),
-        observed_revision=cast(str, row["observed_revision"]),
-        task_kind=cast(Literal["INVESTIGATION", "VALIDATION"], row["task_kind"]),
-        continuation=cast(Literal["START", "CONTINUE", "TAKEOVER"], row["continuation"]),
-        candidate_ref=cast(str | None, row["candidate_ref"]),
-        objective=cast(str, row["objective"]),
-        result_contract=cast(dict[str, JsonValue], row["result_contract"]),
-    )
+    if row["task_kind"] == "IMPLEMENTATION":
+        payload = ImplementationTaskRequest(
+            api_version="1",
+            execution_work_id=cast(UUID, row["execution_work_id"]),
+            observed_revision=cast(str, row["observed_revision"]),
+            candidate_ref=cast(str | None, row["candidate_ref"]),
+            objective=cast(str, row["objective"]),
+            result_contract=cast(dict[str, JsonValue], row["result_contract"]),
+            authorization_ref=cast(str, row["authorization_ref"]),
+            send_authority_ref=cast(str, row["send_authority_ref"]),
+        )
+    else:
+        if row["authorization_ref"] is not None or row["send_authority_ref"] is not None:
+            raise ValueError("stored generic task-run request has authority references")
+        payload = AgentTaskRequest(
+            api_version="1",
+            execution_work_id=cast(UUID, row["execution_work_id"]),
+            observed_revision=cast(str, row["observed_revision"]),
+            candidate_ref=cast(str | None, row["candidate_ref"]),
+            objective=cast(str, row["objective"]),
+            result_contract=cast(dict[str, JsonValue], row["result_contract"]),
+            task_kind=cast(Literal["INVESTIGATION", "VALIDATION"], row["task_kind"]),
+            continuation=cast(
+                Literal["START", "CONTINUE", "TAKEOVER"], row["continuation"]
+            ),
+        )
     if row["content_digest"] != _digest(requester_work_id, payload):
         raise ValueError("stored task-run request digest mismatch")
     request_id = cast(UUID, row["request_id"])
@@ -342,73 +398,86 @@ class TaskRunState:
         operation_id: UUID,
         request: AgentTaskRequest,
     ) -> TaskRunRequestResult:
-        digest = _digest(requester_work_id, request)
-        request_id = uuid5(REQUEST_NAMESPACE, str(operation_id))
         try:
             async with self.engine.begin() as connection:
-                replay = (await connection.execute(select(task_run_requests).where(
-                    task_run_requests.c.operation_id == operation_id
-                ).with_for_update())).mappings().one_or_none()
-                if replay is not None:
-                    verified = await _verified_request(connection, replay)
-                    if replay["content_digest"] != digest:
-                        return TaskRunRequestResult(
-                            status="conflict", reason="operation_identity_conflict"
-                        )
-                    return TaskRunRequestResult(status="ok", request=verified)
-                requester = (await connection.execute(select(work_handles.c.id).where(
-                    work_handles.c.id == requester_work_id
-                ).with_for_update(read=True))).scalar_one_or_none()
-                if requester is None:
-                    return TaskRunRequestResult(
-                        status="denied", reason="requester_work_not_found"
-                    )
-                execution = await self.works.get_locked(connection, request.execution_work_id)
-                if execution is None:
-                    return TaskRunRequestResult(
-                        status="denied", reason="execution_work_not_found"
-                    )
-                if canonical_revision(execution.work_id, execution.row_version) != (
-                    request.observed_revision
-                ):
-                    return TaskRunRequestResult(
-                        status="stale", reason="source_revision_changed"
-                    )
-                if request.continuation != "START":
-                    return TaskRunRequestResult(
-                        status="denied", reason="continuation_not_bound"
-                    )
-                values = {
-                    "request_id": request_id,
-                    "operation_id": operation_id,
-                    "requester_work_id": requester_work_id,
-                    "content_digest": digest,
-                    **request.model_dump(mode="json", exclude={"api_version"}),
-                }
-                inserted = (await connection.execute(
-                    insert(task_run_requests).values(values).on_conflict_do_nothing().returning(
-                        *_REQUEST_COLUMNS
-                    )
-                )).mappings().one_or_none()
-                if inserted is not None:
-                    return TaskRunRequestResult(
-                        status="ok", request=await _verified_request(connection, inserted)
-                    )
-                replay = (await connection.execute(select(task_run_requests).where(
-                    task_run_requests.c.operation_id == operation_id
-                ))).mappings().one_or_none()
-                if replay is None:
-                    return TaskRunRequestResult(
-                        status="conflict", reason="operation_identity_conflict"
-                    )
-                verified = await _verified_request(connection, replay)
-                if replay["content_digest"] != digest:
-                    return TaskRunRequestResult(
-                        status="conflict", reason="operation_identity_conflict"
-                    )
-                return TaskRunRequestResult(status="ok", request=verified)
+                return await self.request_in_transaction(
+                    connection, requester_work_id, operation_id, request
+                )
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
+
+    async def request_in_transaction(
+        self,
+        connection: AsyncConnection,
+        requester_work_id: UUID,
+        operation_id: UUID,
+        request: AgentTaskRequest | ImplementationTaskRequest,
+    ) -> TaskRunRequestResult:
+        """Admit one request inside a caller-owned atomic currentness transaction."""
+        digest = _digest(requester_work_id, request)
+        request_id = uuid5(REQUEST_NAMESPACE, str(operation_id))
+        replay = (await connection.execute(select(task_run_requests).where(
+                    task_run_requests.c.operation_id == operation_id
+                ).with_for_update())).mappings().one_or_none()
+        if replay is not None:
+            verified = await _verified_request(connection, replay)
+            if replay["content_digest"] != digest:
+                return TaskRunRequestResult(
+                    status="conflict", reason="operation_identity_conflict"
+                )
+            return TaskRunRequestResult(status="ok", request=verified)
+        requester = (await connection.execute(select(work_handles.c.id).where(
+            work_handles.c.id == requester_work_id
+        ).with_for_update(read=True))).scalar_one_or_none()
+        if requester is None:
+            return TaskRunRequestResult(status="denied", reason="requester_work_not_found")
+        execution = await self.works.get_locked(connection, request.execution_work_id)
+        if execution is None:
+            return TaskRunRequestResult(status="denied", reason="execution_work_not_found")
+        if canonical_revision(execution.work_id, execution.row_version) != request.observed_revision:
+            return TaskRunRequestResult(status="stale", reason="source_revision_changed")
+        if request.continuation != "START":
+            return TaskRunRequestResult(status="denied", reason="continuation_not_bound")
+        values = {
+            "request_id": request_id,
+            "operation_id": operation_id,
+            "requester_work_id": requester_work_id,
+            "content_digest": digest,
+            **request.model_dump(mode="json", exclude={"api_version"}),
+        }
+        inserted = (await connection.execute(
+            insert(task_run_requests).values(values).on_conflict_do_nothing().returning(
+                *_REQUEST_COLUMNS
+            )
+        )).mappings().one_or_none()
+        if inserted is not None:
+            return TaskRunRequestResult(
+                status="ok", request=await _verified_request(connection, inserted)
+            )
+        replay = (await connection.execute(select(task_run_requests).where(
+            task_run_requests.c.operation_id == operation_id
+        ))).mappings().one_or_none()
+        if replay is None:
+            return TaskRunRequestResult(status="conflict", reason="operation_identity_conflict")
+        verified = await _verified_request(connection, replay)
+        if replay["content_digest"] != digest:
+            return TaskRunRequestResult(status="conflict", reason="operation_identity_conflict")
+        return TaskRunRequestResult(status="ok", request=verified)
+
+    async def get_operation_in_transaction(
+        self, connection: AsyncConnection, operation_id: UUID
+    ) -> TaskRunRequestResult:
+        """Lock and verify an admitted operation inside its caller-owned transaction."""
+        row = (await connection.execute(
+            select(task_run_requests).where(
+                task_run_requests.c.operation_id == operation_id
+            ).with_for_update()
+        )).mappings().one_or_none()
+        if row is None:
+            return TaskRunRequestResult(status="denied", reason="request_not_found")
+        return TaskRunRequestResult(
+            status="ok", request=await _verified_request(connection, row)
+        )
 
     async def get(self, request_id: UUID) -> TaskRunRequestResult:
         try:
