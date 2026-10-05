@@ -14,7 +14,6 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
            job_failure: bool = False) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
-
     def response(request: httpx.Request) -> httpx.Response:
         nonlocal pr_reads
         path = request.url.path
