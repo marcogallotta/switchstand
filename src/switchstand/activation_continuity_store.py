@@ -12,8 +12,10 @@ from .activation_continuity import (
     ActivationContract,
     ContinuityResult,
     Obligation,
+    RuntimeBinding,
     TechnicalBasis,
     TransitionIntent,
+    TransitionProof,
     actor_ref,
     advance_obligation,
     authorized,
@@ -107,17 +109,24 @@ class ActivationContinuity:
         self,
         principal: PrincipalContext,
         grant: WorkGrant,
+        runtime: RuntimeBinding,
         intent: TransitionIntent,
         technical: TechnicalBasis | None = None,
+        proof: TransitionProof | None = None,
     ) -> ContinuityResult:
         contract = self.contracts.get(intent.obligation_id)
         if contract is None:
             return ContinuityResult(status="DENIED", reason="contract_not_installed")
         if grant.principal != principal or not grant.current():
             return ContinuityResult(status="STALE", reason="actor_binding_not_current")
-        if not authorized(contract, grant.authority.active_work_id, intent.transition):
+        if (
+            runtime.currentness != "CURRENT"
+            or runtime.actor_work_id != grant.authority.active_work_id
+        ):
+            return ContinuityResult(status="STALE", reason="runtime_binding_not_current")
+        if not authorized(contract, runtime.actor_work_id, intent.transition):
             return ContinuityResult(status="DENIED", reason="transition_not_authorized")
-        actor = actor_ref(principal, grant)
+        actor = actor_ref(principal, grant, runtime)
         try:
             async with self.engine.begin() as connection:
                 rows = (
@@ -139,9 +148,14 @@ class ActivationContinuity:
                 if chain and chain[-1].binding != contract.stored():
                     return ContinuityResult(status="CONFLICT", reason="stored_binding_mismatch")
                 decision = (
-                    open_obligation(contract, intent, actor, technical)
+                    open_obligation(
+                        contract, intent, actor, runtime.binding_token, technical
+                    )
                     if not chain
-                    else advance_obligation(contract, chain[-1], intent, actor, technical)
+                    else advance_obligation(
+                        contract, chain[-1], intent, actor,
+                        runtime.binding_token, technical, proof,
+                    )
                 )
                 if decision.status != "APPLIED" or decision.obligation is None:
                     return decision

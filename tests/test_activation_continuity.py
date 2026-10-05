@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.activation_continuity import (
     ActivationContract,
+    RuntimeBinding,
     TechnicalBasis,
     TransitionIntent,
+    TransitionProof,
 )
 from switchstand.activation_continuity_store import ActivationContinuity
 from switchstand.contracts import LaunchAuthority
@@ -88,6 +90,31 @@ def intent(bound: ActivationContract, transition: str, observed: str, **values) 
     )
 
 
+def proof(bound: ActivationContract, operation: TransitionIntent) -> TransitionProof | None:
+    kind = (
+        "ACCEPTANCE" if operation.transition.startswith("ACCEPTANCE_")
+        else "ADOPTION" if operation.transition == "ADOPTION_ADOPTED"
+        else "CLEARING" if operation.transition == "CLEAR_BLOCKER"
+        else None
+    )
+    if kind is None:
+        return None
+    return TransitionProof(
+        kind=kind,
+        obligation_id=bound.obligation_id,
+        product_work_id=bound.product_work_id,
+        target_revision=bound.target_revision,
+        target_phase=bound.target_phase,
+        acceptance_contract_id=bound.acceptance_contract_id,
+        contract_revision=bound.contract_revision,
+        currentness="CURRENT",
+        evidence_refs=operation.evidence_refs or ("clearing-proof",),
+        clearing_event_ref=(
+            operation.clearing_event_ref if kind == "CLEARING" else None
+        ),
+    )
+
+
 @pytest.fixture
 async def subject(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL") or pytest.skip("TEST_DATABASE_URL is required")
@@ -110,11 +137,18 @@ async def subject(database_prerequisite):
 
 async def apply(subject, bound, actor, transition, observed, technical_basis=None, **values):
     who = principal(str(actor))
+    operation = intent(bound, transition, observed, **values)
     return await subject.transition(
         who,
         grant(actor, who),
-        intent(bound, transition, observed, **values),
+        RuntimeBinding(
+            actor_work_id=actor,
+            binding_token=f"runtime/{actor}",
+            currentness="CURRENT",
+        ),
+        operation,
         technical_basis,
+        proof(bound, operation),
     )
 
 
@@ -173,7 +207,7 @@ async def test_fail_closed_target_currentness_blocker_and_lifecycle_authority(su
         blocked.obligation.digest,
         clearing_event_ref="other",
     )
-    assert (wrong.status, wrong.reason) == ("DENIED", "clearing_event_mismatch")
+    assert (wrong.status, wrong.reason) == ("DENIED", "clearing_proof_invalid")
     denied = await apply(state, bound, OWNER, "RETIRE", blocked.obligation.digest)
     retired = await apply(state, bound, LIFECYCLE, "RETIRE", blocked.obligation.digest)
     assert denied.status == "DENIED" and retired.obligation.state == "RETIRED"
@@ -190,14 +224,23 @@ async def test_concurrent_replay_and_corruption_fail_closed(subject):
     )
     current_grant = grant(PRODUCT, who)
     first, replay = await asyncio.gather(
-        *(
-            state.transition(who, current_grant, first_intent, technical(bound))
-            for _ in range(2)
-        )
+        *(state.transition(
+            who, current_grant,
+            RuntimeBinding(
+                actor_work_id=PRODUCT, binding_token="runtime/product",
+                currentness="CURRENT",
+            ),
+            first_intent, technical(bound),
+        ) for _ in range(2))
     )
     assert {first.status, replay.status} == {"APPLIED", "REPLAYED"}
     changed = await state.transition(
-        who, grant(PRODUCT, who), first_intent.model_copy(update={"transition": "RETIRE"})
+        who, grant(PRODUCT, who),
+        RuntimeBinding(
+            actor_work_id=PRODUCT, binding_token="runtime/product",
+            currentness="CURRENT",
+        ),
+        first_intent.model_copy(update={"transition": "RETIRE"}),
     )
     assert changed.status in {"CONFLICT", "DENIED"}
     async with state.engine.begin() as connection:
@@ -209,3 +252,48 @@ async def test_concurrent_replay_and_corruption_fail_closed(subject):
     corrupt = await state.get(bound.obligation_id)
     assert (corrupt.status, corrupt.reason) == ("UNKNOWN", "corrupt_revision_chain")
     assert await state.for_owner(OWNER) == "UNKNOWN"
+
+
+async def test_runtime_replacement_and_installed_authority_binding_are_fenced(subject):
+    state, bound = subject
+    opened = await apply(
+        state, bound, PRODUCT, "ACTIVATED", "MISSING", technical(bound)
+    )
+    who = principal("owner")
+    # Use one principal object for the grant and call so only runtime currentness is at issue.
+    selected = grant(OWNER, who)
+    pickup = intent(bound, "ACKNOWLEDGED", opened.obligation.digest)
+    stale = await state.transition(
+        who, selected,
+        RuntimeBinding(
+            actor_work_id=OWNER, binding_token="runtime/old", currentness="STALE"
+        ),
+        pickup,
+    )
+    assert (stale.status, stale.reason) == ("STALE", "runtime_binding_not_current")
+    replacement = await state.transition(
+        who, selected,
+        RuntimeBinding(
+            actor_work_id=OWNER, binding_token="runtime/replacement",
+            currentness="CURRENT",
+        ),
+        pickup,
+    )
+    assert replacement.status == "APPLIED"
+    assert replacement.obligation.runtime_binding_token == "runtime/replacement"
+
+    state.contracts[bound.obligation_id] = bound.model_copy(
+        update={"lifecycle_authority_work_id": OWNER}
+    )
+    conflict = await state.transition(
+        who, selected,
+        RuntimeBinding(
+            actor_work_id=OWNER, binding_token="runtime/replacement",
+            currentness="CURRENT",
+        ),
+        intent(
+            bound, "BLOCK", replacement.obligation.digest,
+            blocker_ref="incident", clearing_event_ref="fixed",
+        ),
+    )
+    assert (conflict.status, conflict.reason) == ("CONFLICT", "stored_binding_mismatch")

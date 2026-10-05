@@ -8,7 +8,14 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
-from .activation_continuity import ContinuityResult, TechnicalBasis, Transition, TransitionIntent
+from .activation_continuity import (
+    ContinuityResult,
+    RuntimeBinding,
+    TechnicalBasis,
+    Transition,
+    TransitionIntent,
+    TransitionProof,
+)
 from .activation_continuity_store import ActivationContinuity
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_work_runtime import CanonicalWorkRuntime
@@ -74,6 +81,12 @@ from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 ActivationTechnicalResolver = Callable[[UUID], Awaitable[TechnicalBasis | None]]
+ActivationRuntimeResolver = Callable[
+    [PrincipalContext, WorkGrant], Awaitable[RuntimeBinding | None]
+]
+ActivationProofResolver = Callable[
+    [PrincipalContext, WorkGrant, TransitionIntent], Awaitable[TransitionProof | None]
+]
 REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
 REQUIRED_RESULT_HEADING = "## Current required result"
 
@@ -114,6 +127,8 @@ class ChatGPTService:
         product_currentness_enabled: bool = False,
         activation_continuity: ActivationContinuity | None = None,
         activation_technical: ActivationTechnicalResolver | None = None,
+        activation_runtime: ActivationRuntimeResolver | None = None,
+        activation_proof: ActivationProofResolver | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -144,6 +159,8 @@ class ChatGPTService:
         self.product_currentness_enabled = product_currentness_enabled
         self.activation_continuity = activation_continuity
         self.activation_technical = activation_technical
+        self.activation_runtime = activation_runtime
+        self.activation_proof = activation_proof
 
     async def activation_continuity_transition(
         self, operation_id: UUID, obligation_id: UUID, observed_revision: str,
@@ -166,12 +183,26 @@ class ChatGPTService:
             async with self.admission_grants.locked(principal.key) as grant:
                 if grant is None or "activation_continuity" not in grant.operations:
                     return ContinuityResult(status="DENIED", reason="work_not_granted")
+                if self.activation_runtime is None:
+                    return ContinuityResult(status="UNKNOWN", reason="runtime_binding_unavailable")
+                runtime = await self.activation_runtime(principal, grant)
+                if runtime is None:
+                    return ContinuityResult(status="UNKNOWN", reason="runtime_binding_unavailable")
                 technical = (None if self.activation_technical is None
                              else await self.activation_technical(obligation_id))
+                proof = None
+                if transition.startswith("ACCEPTANCE_") or transition in {
+                    "ADOPTION_ADOPTED", "CLEAR_BLOCKER",
+                }:
+                    if self.activation_proof is None:
+                        return ContinuityResult(status="UNKNOWN", reason="proof_unavailable")
+                    proof = await self.activation_proof(principal, grant, intent)
+                    if proof is None:
+                        return ContinuityResult(status="UNKNOWN", reason="proof_unavailable")
                 return await self.activation_continuity.transition(
-                    principal, grant, intent, technical
+                    principal, grant, runtime, intent, technical, proof
                 )
-        except (SQLAlchemyError, ValueError, KeyError):
+        except (SQLAlchemyError, ValueError, KeyError, RuntimeError, TypeError):
             return ContinuityResult(status="UNKNOWN", reason="admission_unavailable")
 
     async def implementation_request(
