@@ -45,6 +45,7 @@ from .grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from .implementation_requests import ImplementationRequestResult, ImplementationRequestState
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
     MessagePendingRequest,
@@ -105,6 +106,7 @@ class ChatGPTService:
         priority_claims_enabled: bool = False,
         priority_context: PriorityContextProjection | None = None,
         priority_context_enabled: bool = False,
+        implementation_requests: ImplementationRequestState | None = None,
         product_currentness: Callable[[PrincipalContext], Awaitable[ProductCurrentness]] | None = None,
         product_currentness_enabled: bool = False,
     ):
@@ -132,8 +134,24 @@ class ChatGPTService:
         self.priority_claims_enabled = priority_claims_enabled
         self.priority_context = priority_context
         self.priority_context_enabled = priority_context_enabled
+        self.implementation_requests = implementation_requests
         self.product_currentness = product_currentness
         self.product_currentness_enabled = product_currentness_enabled
+
+    async def implementation_request(
+        self, operation_id: UUID, package_work_id: UUID, observed_revision: str,
+    ) -> ImplementationRequestResult:
+        """Admit one exact reviewed package without exposing server-owned intent fields."""
+        if self.implementation_requests is None:
+            return ImplementationRequestResult(status="DENIED", reason="feature_default_off")
+        principal = await self.principal()
+        if principal is None:
+            return ImplementationRequestResult(
+                status="DENIED", reason="authenticated_principal_required"
+            )
+        return await self.implementation_requests.request(
+            principal, operation_id, package_work_id, observed_revision
+        )
 
     @staticmethod
     def denied(

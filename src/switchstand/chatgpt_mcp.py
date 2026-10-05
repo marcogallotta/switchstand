@@ -41,6 +41,7 @@ from .grants import (
     RelationPatch,
     ScalarPatch,
 )
+from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
     DispositionEvidence,
@@ -162,6 +163,7 @@ ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
 PRIORITY_CLAIM_TOOLS = frozenset({"priority_claim_get", "priority_claim_record"})
 PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
+IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 
 
@@ -170,6 +172,7 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     if name not in (
         ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS
         | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS | PRIORITY_CONTEXT_TOOLS
+        | IMPLEMENTATION_REQUEST_TOOLS
         | PRODUCT_CURRENTNESS_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
@@ -533,6 +536,19 @@ def build_ordinary_tools(
         """Project context for explicit WorkIds without ranking or inheritance."""
         del api_version
         return await service.priority_context_get(work_ids)
+
+    async def implementation_request(
+        api_version: Literal["1"], operation_id: UUID,
+        package_work_id: UUID, observed_revision: Annotated[str, Field(min_length=1)],
+    ) -> ImplementationRequestResult:
+        """Create or replay one authorized implementation request for an exact package."""
+        del api_version
+        correlate(package_work_id)
+        result = await service.implementation_request(
+            operation_id, package_work_id, observed_revision
+        )
+        audited("implementation_request", str(package_work_id), result.status)
+        return result
 
     async def product_currentness_get(api_version: Literal["1"]) -> ProductCurrentness:
         """Reconcile Stateful technical currentness from server-owned live evidence."""
@@ -982,6 +998,8 @@ def build_ordinary_tools(
         ) if service.priority_claims_enabled and service.priority_claims is not None else ()),
         *((("priority_context_get", priority_context_get),)
           if service.priority_context_enabled and service.priority_context is not None else ()),
+        *((("implementation_request", implementation_request),)
+          if service.implementation_requests is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
         ("work_relate", work_relate),
