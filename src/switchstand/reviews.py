@@ -66,8 +66,8 @@ class ReviewRequest(ClosedModel):
     @model_validator(mode="after")
     def exact_mode(self) -> Self:
         if self.mode == "FULL":
-            if self.finding_ids:
-                raise ValueError("FULL review cannot select prior findings")
+            if self.prior_review_id is not None or self.finding_ids:
+                raise ValueError("FULL review cannot select a prior review or findings")
         elif self.prior_review_id is None or not self.finding_ids:
             raise ValueError("FOCUSED review requires prior_review_id and finding_ids")
         if len(set(self.finding_ids)) != len(self.finding_ids):
@@ -114,12 +114,19 @@ class ReviewBasis(ClosedModel):
     guidelines_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class FocusedReviewTransition(ClosedModel):
+    prior_basis: ReviewBasis
+    prior_verdict_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    changed_basis_fields: tuple[Literal["subject_revision", "candidate_ref"], ...]
+
+
 class CanonicalReviewBrief(ClosedModel):
     basis: ReviewBasis
     subject_title: str
     material_claim: str
     instructions: tuple[str, ...]
     named_evidence: tuple[str, ...] = ()
+    focused_from: FocusedReviewTransition | None = None
 
 
 class ReviewEnvelope(ClosedModel):
@@ -472,6 +479,7 @@ class ReviewOccurrenceState:
             outcomes = [
                 outcome for value in review_ids if value
                 for outcome in await self.outcome_envelopes(UUID(value), connection)
+                if outcome.brief.basis.subject_revision == subject_revision
             ]
             return "PASS" if any(value.outcome.verdict == "PASS" for value in outcomes) else "NOT_PASS"
         except (SQLAlchemyError, TypeError, ValueError):
@@ -513,7 +521,10 @@ class ReviewService:
         )
 
     @staticmethod
-    def _brief(basis: ReviewBasis, subject: CurrentWork) -> CanonicalReviewBrief:
+    def _brief(
+        basis: ReviewBasis, subject: CurrentWork,
+        focused_from: FocusedReviewTransition | None = None,
+    ) -> CanonicalReviewBrief:
         focused = () if basis.mode == "FULL" else (
             "Recheck only the named findings and the directly affected boundary.",
             "Perform a bounded secondary/global-impact check; report if impact cannot be bounded.",
@@ -529,6 +540,7 @@ class ReviewService:
                 "Do not treat a preferred remedy as required unless the contract requires it.",
             ) + focused,
             named_evidence=(() if basis.candidate_ref is None else (basis.candidate_ref,)),
+            focused_from=focused_from,
         )
 
     async def _send(
@@ -566,8 +578,8 @@ class ReviewService:
         if canonical_revision(subject.work_id, subject.row_version) != request.observed_revision:
             return ReviewResult(status="STALE", review_id=basis.review_id,
                                 reason="subject_revision_changed")
+        focused_from = None
         if request.mode == "FOCUSED":
-            prior_matches = False
             for prior in await self.occurrences.outcome_envelopes(basis.review_id):
                 prior_basis = prior.brief.basis
                 if (
@@ -578,15 +590,25 @@ class ReviewService:
                     and prior_basis.policy_version == basis.policy_version
                     and prior_basis.guidelines_version == basis.guidelines_version
                     and prior_basis.guidelines_digest == basis.guidelines_digest
+                    and prior_basis.subject_revision != basis.subject_revision
                     and set(request.finding_ids).issubset({
                         finding.finding_id for finding in prior.outcome.findings
                     })
                 ):
-                    prior_matches = True
+                    changed: tuple[Literal["subject_revision", "candidate_ref"], ...] = (
+                        ("subject_revision", "candidate_ref")
+                        if prior_basis.candidate_ref != basis.candidate_ref
+                        else ("subject_revision",)
+                    )
+                    focused_from = FocusedReviewTransition(
+                        prior_basis=prior_basis,
+                        prior_verdict_digest=prior.outcome.verdict_digest,
+                        changed_basis_fields=changed,
+                    )
                     break
-            if not prior_matches:
+            if focused_from is None:
                 return ReviewResult(status="DENIED", reason="prior_review_not_found")
-        brief = self._brief(basis, subject)
+        brief = self._brief(basis, subject, focused_from)
         if not await self.occurrences.ensure(brief):
             return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
                                 reason="occurrence_conflict")
@@ -742,20 +764,29 @@ class ReviewService:
             return ReviewResult(status="DENIED", reason="reviewer_binding_changed")
         sources = await self.occurrences.request_sources(request.review_id)
         found = None
+        stale_subject = False
         for record, envelope, bound in sources:
             subject = await self.works.get(envelope.brief.basis.subject_work_id)
-            if (
-                subject is not None
-                and canonical_revision(subject.work_id, subject.row_version)
-                == envelope.brief.basis.subject_revision
-                and record.delivery.recipient_work_id == reviewer.endpoint_id
+            delivery_matches = (
+                record.delivery.recipient_work_id == reviewer.endpoint_id
                 and record.delivery.state == "RECEIVED"
                 and record.delivery.receiving_generation == str(reviewer.generation)
                 and (bound is None or bound.reviewer_name == reviewer.name)
-            ):
+            )
+            if not delivery_matches:
+                continue
+            if subject is not None and canonical_revision(
+                subject.work_id, subject.row_version
+            ) != envelope.brief.basis.subject_revision:
+                stale_subject = True
+                continue
+            if subject is not None:
                 found = record.delivery, envelope
                 break
         if found is None:
+            if stale_subject:
+                return ReviewResult(status="STALE", review_id=request.review_id,
+                                    reason="subject_revision_changed")
             return ReviewResult(
                 status="DENIED", review_id=request.review_id,
                 reason=("review_delivery_not_received" if sources
