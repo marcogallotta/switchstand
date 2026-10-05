@@ -360,9 +360,12 @@ change, and causal tests for both layers.
 `repository_bundle.py` resolves the ordinary `repository_bundle_get` transport. The rolling GitHub
 release is only a cache: it contains a bundle, manifest, and checksum published by
 `.github/workflows/repository-bundle.yml` after the Quality workflow. Resolution independently reads
-the repository's current branch refs and returns `current` only when the authoritative ref map,
-manifest digest, release asset digest, and checksum agree. A transition returns `refresh_pending`;
-provider failure returns `unavailable`. Those release and ref API reads use only the dedicated
+the repository's current branch refs and scopes currentness to the requested grounding claim: the
+published and authoritative `main` refs must agree when no SHA is requested, while a requested SHA
+must be the value of the same branch ref in both maps. Unrelated branch movement does not invalidate
+that proof. The manifest digest, release asset digest, and checksum must still agree. An unproved
+grounding claim or cache transition returns `refresh_pending`; provider failure returns
+`unavailable`. Those release and ref API reads use only the dedicated
 server-side `SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN`; missing configuration fails before network
 access. The bearer is attached only to validated exact `https://api.github.com` bundle endpoints,
 authenticated redirects and foreign pagination origins are rejected, and release asset downloads
