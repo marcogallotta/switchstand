@@ -54,6 +54,7 @@ def test_quality_composition_verifier_accepts_native_stack_chain(tmp_path: Path)
         [ROOT / "scripts/verify-quality-composition", composition, layer_b, layer_a,
          "f" * 40, "2"],
         cwd=tmp_path,
+        check=False,
     )
     assert rejected.returncode != 0
 
