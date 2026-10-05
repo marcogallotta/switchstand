@@ -72,35 +72,37 @@ def test_agents_coordination_contract_is_discoverable():
     required_rules = (
         "Meaningful work needs an exact WorkId",
         "live mitigation attaches it when safe",
-        "acknowledge before nontrivial reasoning, tools, or waits",
+        "Acknowledge before nontrivial reasoning, tools, or waits",
         "explicit response-time budget",
         "smallest useful decision-bearing response within it",
-        "clearly mark the uncertainty and continue the deeper work afterward",
+        "clearly mark uncertainty and continue",
         "empty acknowledgement or status-only reply does not satisfy the budget",
         "[human interaction](docs/human-interaction.md)",
-        "item update only for a material semantic transition",
-        "activity, elapsed time, or worker reassignment alone is not one",
-        "portfolio snapshot when Marco asks, at a coordination handoff",
-        "time is only a bounded silence watchdog",
-        "Major completion/activation remains visible until the human explicitly acknowledges it",
-        "review the idea proportionately for ambiguity, consequence, and conflict",
-        "Worker or child agent must not invoke Marco's question widget or ask Marco directly",
-        "question, supporting evidence, recommendation, actual blocking consequence",
-        "safe option-preserving work that can continue",
-        "continues that safe work while waiting",
-        "only the parent/Coordinator may raise a Marco-facing question",
+        "review ambiguity, consequence, and conflict",
+        "Worker or child sends its parent the question, evidence, recommendation, actual blocking consequence",
+        "safe option-preserving work",
+        "continues that work while waiting",
+        "only the parent/Coordinator asks Marco",
         "Root coordinates and integrates",
         "Proactively fork bounded, safely independent substantive work already assigned, claimed, or in flight",
         "keep tracking and integration at Root",
         "Never dispatch unassigned work or filler",
         "use every safe slot, count product-gate review as product work",
         "`STOP` pauses new dispatch and re-grounds",
-        "terminal result as an immediate coordination interrupt",
+        "Disposition each Worker terminal result immediately",
+        "A lower-priority question never interrupts higher-priority work",
+        "rejecting a question does not reject the work",
+        "Continue executable authorized work",
         "Slice mutations by writable surface and semantic concern",
         "suspend the later mutation, reconcile any effects, then re-slice or serialize it",
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+    working_with_marco = agents.split("## Working with Marco", 1)[1].split(
+        "\n## Repository bootstrap", 1
+    )[0]
+    assert len(working_with_marco.encode()) <= 2500
 
 
 def test_research_escalation_uses_current_capability_without_provider_routing():
