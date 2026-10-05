@@ -7,7 +7,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -320,6 +320,73 @@ async def test_current_result_is_durable_terminal_and_replays_exactly(subject):
         assert await connection.scalar(
             select(func.count()).select_from(task_run_results)
         ) == 2
+
+
+async def test_result_replay_rejects_corrupt_stored_payload(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+    run = receipt(execution)
+    assert (await state.bind_start(requested.request.request_id, run)).status == "ok"
+    current = RuntimeCurrentness(generation=str(run.run_id), current_generation=str(run.run_id))
+    result_id = uuid4()
+    payload = result()
+    accepted = await state.submit_result(requested.request.request_id, result_id, current, payload)
+    assert accepted.status == "ok" and accepted.terminal
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(task_run_results)
+            .where(task_run_results.c.result_id == result_id)
+            .values(summary="Corrupt stored evidence.")
+        )
+
+    replay = await state.submit_result(requested.request.request_id, result_id, current, payload)
+    assert (replay.status, replay.reason, replay.result, replay.terminal) == (
+        "unknown",
+        "state_unavailable",
+        None,
+        False,
+    )
+
+
+async def test_result_replay_rejects_cross_request_terminal_pointer(subject):
+    state, engine, requester, execution = subject
+    first = await state.request(requester, uuid4(), request(execution))
+    second = await state.request(requester, uuid4(), request(execution))
+    assert first.request is not None and second.request is not None
+    first_run, second_run = receipt(execution), receipt(execution)
+    assert (await state.bind_start(first.request.request_id, first_run)).status == "ok"
+    assert (await state.bind_start(second.request.request_id, second_run)).status == "ok"
+    first_id, second_id = uuid4(), uuid4()
+    first_current = RuntimeCurrentness(
+        generation=str(first_run.run_id), current_generation=str(first_run.run_id)
+    )
+    second_current = RuntimeCurrentness(
+        generation=str(second_run.run_id), current_generation=str(second_run.run_id)
+    )
+    payload = result()
+    assert (
+        await state.submit_result(first.request.request_id, first_id, first_current, payload)
+    ).status == "ok"
+    assert (
+        await state.submit_result(second.request.request_id, second_id, second_current, payload)
+    ).status == "ok"
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(task_run_requests)
+            .where(task_run_requests.c.request_id == first.request.request_id)
+            .values(terminal_result_id=second_id)
+        )
+
+    replay = await state.submit_result(first.request.request_id, first_id, first_current, payload)
+    assert (replay.status, replay.reason, replay.result, replay.terminal) == (
+        "unknown",
+        "state_unavailable",
+        None,
+        False,
+    )
 
 
 async def test_result_currentness_unknown_then_current_and_stale_evidence(subject):
