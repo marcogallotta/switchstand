@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -69,6 +70,15 @@ class HumanTrajectoryRevision:
 
 
 @dataclass(frozen=True)
+class HumanTrajectoryHeader:
+    trajectory_id: UUID
+    work_id: UUID
+    generation: int
+    source_kind: SourceKind
+    created_at: datetime
+
+
+@dataclass(frozen=True)
 class TrajectoryRead:
     status: Literal["CURRENT", "MISSING", "UNKNOWN"]
     head: HumanTrajectoryRevision | None = None
@@ -91,13 +101,16 @@ _COLUMNS = tuple(human_trajectory_revisions.c)
 
 
 def _row(value: tuple[object, ...]) -> HumanTrajectoryRevision:
+    created_at = value[10]
+    if not isinstance(created_at, datetime):
+        raise TypeError("trajectory created_at must be a datetime")
     return HumanTrajectoryRevision(
         trajectory_id=cast(UUID, value[0]), append_request_id=cast(UUID, value[1]),
         work_id=cast(UUID, value[2]), generation=cast(int, value[3]),
         predecessor_id=cast(UUID | None, value[4]), source_kind=SourceKind(cast(str, value[5])),
         source_ref=cast(str, value[6]), source_revision=cast(str | None, value[7]),
         content_digest=cast(str, value[8]), data=HumanTrajectoryData.model_validate(value[9]),
-        created_at=cast(datetime, value[10]),
+        created_at=created_at,
     )
 
 
@@ -130,6 +143,19 @@ def _chain(values: list[tuple[object, ...]]) -> tuple[HumanTrajectoryRevision, .
         return rows
     except (TypeError, ValueError, ValidationError):
         return None
+
+
+def validated_trajectory_headers(
+    values: Sequence[tuple[object, ...]],
+) -> tuple[HumanTrajectoryHeader, ...] | None:
+    """Validate the complete payload/digest chain and return privacy-safe headers."""
+    chain = _chain(list(values))
+    if chain is None:
+        return None
+    return tuple(HumanTrajectoryHeader(
+        trajectory_id=row.trajectory_id, work_id=row.work_id, generation=row.generation,
+        source_kind=row.source_kind, created_at=row.created_at,
+    ) for row in chain)
 
 
 class HumanTrajectoryStore:

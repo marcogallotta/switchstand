@@ -17,16 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from .canonical_relations import work_dependencies
 from .canonical_work import canonical_revision, canonical_work
 from .human_reviews import human_review_consequences
+from .human_trajectory import validated_trajectory_headers
 from .outcome_state import validated_revision_headers
 from .repository_candidate import (
     QualificationGate,
     RepositoryCandidateQualification,
     qualify_repository_candidate,
 )
-from .state import outcome_state_revisions
+from .state import human_trajectory_revisions, outcome_state_revisions
 from .work_events import work_events
 
 OUTCOME_REVISION_LIMIT = 64
+TRAJECTORY_REVISION_LIMIT = 64
 
 
 def _time(value: datetime | None) -> str | None:
@@ -85,6 +87,35 @@ def _outcome_projection(
         "status": "KNOWN", "reason": None, "correlation": "DIRECT_OWNER_WORK_ID",
         "total_revisions": len(chain), "truncated": len(chain) > len(revisions),
         "revisions": revisions,
+    }
+
+
+def _trajectory_projection(
+    values: list[tuple[object, ...]], work_id: UUID, captured_at: datetime,
+) -> dict[str, object]:
+    chain = validated_trajectory_headers(values)
+    if chain is None or any(row.work_id != work_id for row in chain):
+        return {"status": "UNKNOWN", "reason": "CORRUPT_OR_MISMATCHED_CHAIN",
+                "chain_status": "UNKNOWN", "correlation": "DIRECT_WORK_ID_REF",
+                "total_revisions": None, "truncated": None, "revisions": []}
+    if any(row.created_at.utcoffset() is None for row in chain):
+        return {"status": "UNKNOWN", "reason": "UNSAFE_CREATED_AT",
+                "chain_status": "UNKNOWN", "correlation": "DIRECT_WORK_ID_REF",
+                "total_revisions": None, "truncated": None, "revisions": []}
+    if any(row.created_at > captured_at for row in chain):
+        return {"status": "UNKNOWN", "reason": "CLOCK_SKEW_OR_FUTURE_CREATED_AT",
+                "chain_status": "UNKNOWN", "correlation": "DIRECT_WORK_ID_REF",
+                "total_revisions": None, "truncated": None, "revisions": []}
+    selected = chain[-TRAJECTORY_REVISION_LIMIT:]
+    return {
+        "status": "KNOWN" if chain else "NONE",
+        "reason": None if chain else "NO_REVISIONS",
+        "chain_status": "VALIDATED", "correlation": "DIRECT_WORK_ID_REF",
+        "total_revisions": len(chain), "truncated": len(chain) > len(selected),
+        "revisions": [{
+            "trajectory_id": str(row.trajectory_id), "generation": row.generation,
+            "source_kind": row.source_kind.value, "created_at": _time(row.created_at),
+        } for row in selected],
     }
 
 
@@ -148,6 +179,9 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     outcome_values = (await connection.execute(select(outcome_state_revisions).where(
         outcome_state_revisions.c.owner_work_id == work_id
     ).order_by(outcome_state_revisions.c.generation))).mappings().all()
+    trajectory_values = (await connection.execute(select(human_trajectory_revisions).where(
+        human_trajectory_revisions.c.work_id_ref == work_id
+    ).order_by(human_trajectory_revisions.c.generation))).all()
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -178,6 +212,9 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         canonical_revision(work_id, cast(int, work.row_version)),
         captured_at,
     )
+    trajectory = _trajectory_projection(
+        [tuple(value) for value in trajectory_values], work_id, captured_at,
+    )
     review_items = [{
         "consequence_id": str(row.consequence_id),
         "state": row.state, "decision": row.decision,
@@ -202,6 +239,11 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         ordered_evidence.append({
             "source": "outcome_state", "kind": "REVISION",
             "id": revision["state_id"], "at": revision["created_at"], "duration_ms": 0,
+        })
+    for revision in cast(list[dict[str, object]], trajectory["revisions"]):
+        ordered_evidence.append({
+            "source": "human_trajectory", "kind": "REVISION",
+            "id": revision["trajectory_id"], "at": revision["created_at"], "duration_ms": 0,
         })
     ordered_evidence.sort(key=lambda item: (cast(str, item["at"]),
                                             cast(str, item["source"]),
@@ -240,6 +282,7 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
             "items": review_items,
         },
         "outcome_state": outcome,
+        "human_trajectory": trajectory,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,
@@ -254,10 +297,15 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
                 "reason": outcome["reason"] if outcome["status"] == "UNKNOWN"
                 else "DIRECT_OWNER_WORK_ID",
             },
+            "human_trajectory": {
+                "status": "UNKNOWN" if trajectory["status"] == "UNKNOWN" else "INCLUDED",
+                "reason": trajectory["reason"] if trajectory["status"] == "UNKNOWN"
+                else "DIRECT_WORK_ID_REF",
+            },
             "messages": {"status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE"},
             "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
             **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B4"} for name in (
-                "human_trajectory", "failures",
+                "failures",
                 "lifecycle_timing", "github", "run_receipts",
             )},
         },
@@ -542,6 +590,19 @@ def render_concise(value: dict[str, object]) -> str:
                 f"counts=NOT_STARTED:{counts['NOT_STARTED']},READY:{counts['READY']},"
                 f"IN_PROGRESS:{counts['IN_PROGRESS']},DONE:{counts['DONE']}"
             )
+    trajectory = cast(dict[str, object] | None, value.get("human_trajectory"))
+    if trajectory is not None:
+        lines.append(
+            f"human_trajectory status={trajectory['status']} reason={trajectory['reason']} "
+            f"chain_status={trajectory['chain_status']} correlation={trajectory['correlation']} "
+            f"total_revisions={trajectory['total_revisions']} truncated={trajectory['truncated']}"
+        )
+        lines.extend(
+            f"trajectory_revision generation={revision['generation']} "
+            f"trajectory_id={revision['trajectory_id']} source_kind={revision['source_kind']} "
+            f"created_at={revision['created_at']}"
+            for revision in cast(list[dict[str, object]], trajectory["revisions"])
+        )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"
         for name, item in sorted(coverage.items())

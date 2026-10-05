@@ -171,3 +171,34 @@ def test_concise_render_preserves_outcome_currentness_and_unknown() -> None:
     }
     unknown = render(value, "concise")
     assert "outcome_state status=UNKNOWN reason=CORRUPT_REVISION_CHAIN" in unknown
+
+
+def test_concise_render_preserves_safe_trajectory_headers_and_unknown() -> None:
+    value = deepcopy(REPORT)
+    value["human_trajectory"] = {
+        "status": "KNOWN", "reason": None, "chain_status": "VALIDATED",
+        "correlation": "DIRECT_WORK_ID_REF", "total_revisions": 1,
+        "truncated": False,
+        "revisions": [{
+            "trajectory_id": "safe-id", "generation": 3,
+            "source_kind": "HUMAN_REVIEW",
+            "created_at": "2026-01-02T02:00:00+00:00",
+        }],
+    }
+
+    output = render(value, "concise")
+
+    assert "human_trajectory status=KNOWN reason=None chain_status=VALIDATED" in output
+    assert "trajectory_revision generation=3 trajectory_id=safe-id" in output
+    assert "source_kind=HUMAN_REVIEW created_at=2026-01-02T02:00:00+00:00" in output
+    assert "CURRENT" not in "\n".join(
+        line for line in output.splitlines() if "trajectory" in line
+    )
+
+    value["human_trajectory"] = {
+        "status": "UNKNOWN", "reason": "CLOCK_SKEW_OR_FUTURE_CREATED_AT",
+        "chain_status": "UNKNOWN", "correlation": "DIRECT_WORK_ID_REF",
+        "total_revisions": None, "truncated": None, "revisions": [],
+    }
+    unknown = render(value, "concise")
+    assert "human_trajectory status=UNKNOWN reason=CLOCK_SKEW_OR_FUTURE_CREATED_AT" in unknown
