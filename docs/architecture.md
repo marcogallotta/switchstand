@@ -406,9 +406,13 @@ privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
 session storage and byte-stable hooks without replacing another generation's evidence. The full
 local Markdown dependency graph rooted at `AGENTS.md` remains tracked for post-sync change
-detection, while schema v3 records a separate bounded post-compaction reread set. A synchronous
-`SessionStart` hook for `source=compact` runs generation-private launch-time snapshots of both the
-wrapper and checker, then injects the result as immediate developer context before the continuation;
+detection, while schema v3 records a separate bounded post-compaction reread set. Fresh Coordinator
+manifests include both `AGENTS.md` and `docs/coordinator-tracker-contract.md`; an already-created
+schema-v3 manifest retains its launch-time set, and legacy v1/v2 manifests fall back to
+`AGENTS.md` only. The two-document reread contract therefore becomes active only for a fresh
+Coordinator generation whose manifest/readback proves that set. A synchronous `SessionStart` hook
+for `source=compact` runs generation-private launch-time snapshots of both the wrapper and checker,
+then injects the result as immediate developer context before the continuation;
 the snapshotted checker still compares the tracked canonical controls. Each unresolved tracked dependency retains its identity and reason
 as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
