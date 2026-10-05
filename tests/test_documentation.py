@@ -77,29 +77,12 @@ def test_agents_coordination_contract_is_discoverable():
         "smallest useful decision-bearing response within it",
         "clearly mark the uncertainty and continue the deeper work afterward",
         "empty acknowledgement or status-only reply does not satisfy the budget",
-        "Root reports the portfolio",
-        "a non-root agent reports only its assigned work and explicitly named children",
-        "item-only update when a material semantic transition changes that item's outcome",
-        "activity, elapsed time, or worker reassignment alone is not a material transition",
-        "major completion or activation notification as persistent",
-        "until Marco explicitly acknowledges it; silence or unrelated progress never clears it",
-        "full in-flight snapshot when Marco asks, at a coordination handoff",
-        "material portfolio, critical-path, dependency, effect, or human-attention change",
-        "time is only a bounded silence watchdog, never the primary trigger",
-        "each worker's purpose, comparable stable milestones, constraints/blockers",
-        "stable milestone denominator and relevant calibration evidence",
-        "Raise graded human attention immediately, outside the normal status cadence",
-        "`ACTION REQUIRED` when Marco must act or a hard human gate blocks the path",
-        "`HELP COULD UNBLOCK` when breakage is likely Marco-fixable",
-        "`INPUT VALUABLE` when his input matters before consequential hardening",
-        "what is blocked, what continues, and what his response will cause",
-        "repeat it at a frequency proportionate to urgency while other work continues",
-        "until Marco acknowledges or defers it",
-        "ownership is explicitly transferred with pickup",
-        "unrelated progress never clears or resets it",
-        "Wakeful may later own timers and deduplicated delivery for these rules",
-        "owns neither status truth nor authority",
-        "creates no parallel work-management store",
+        "[human interaction](docs/human-interaction.md)",
+        "item update only for a material semantic transition",
+        "activity, elapsed time, or worker reassignment alone is not one",
+        "portfolio snapshot when Marco asks, at a coordination handoff",
+        "time is only a bounded silence watchdog",
+        "Major completion/activation and unresolved human attention remain visible",
         "review the idea proportionately for ambiguity, consequence, and conflict",
         "Worker or child agent must not invoke Marco's question widget or ask Marco directly",
         "question, supporting evidence, recommendation, actual blocking consequence",
@@ -122,24 +105,40 @@ def test_agents_coordination_contract_is_discoverable():
     assert [rule for rule in required_rules if rule not in agents] == []
 
 
-def test_agents_inline_human_attention_contract_is_discoverable():
+def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
-    required_surface = (
-        "`ACTION REQUIRED` when human action is required",
-        "`HELP COULD UNBLOCK` when help could materially accelerate recovery",
-        "`INPUT VALUABLE` when judgment is needed before a consequential choice hardens",
+    interaction = (ROOT / "docs/human-interaction.md").read_text()
+    human_input = (ROOT / "docs/human-input.md").read_text()
+    human_review = (ROOT / "docs/human-review.md").read_text()
+
+    assert "[human interaction](docs/human-interaction.md)" in agents
+    assert "[Human Input](docs/human-input.md)" in agents
+    assert "[Human Review](docs/human-review.md)" in agents
+    assert "Human Review approved. Dispatch ready: <WorkId>." in agents
+
+    interaction_rules = (
+        "Root reports the portfolio",
+        "Other agents report only their assigned work and explicitly named children",
+        "<Work> — <state>",
+        "Changed: <material change>",
+        "Constraint: <gate/blocker/none>",
+        "Next: <next observable checkpoint>",
+        "Effect: none / not sent / applied / unknown",
+        "ACTION REQUIRED — human action is required.",
+        "HELP COULD UNBLOCK — help could materially accelerate recovery.",
+        "INPUT VALUABLE — judgment is needed before a consequential choice hardens.",
         "<LABEL> — <subject>",
         "Ask: <exact action/decision>",
         "Why now: <why it matters now>",
         "Blocked: <what cannot proceed, or none>",
         "Continuing: <what still proceeds>",
         "If answered: <what changes>",
-        "[human interaction](docs/human-interaction.md)",
-        "[Human Input](docs/human-input.md)",
-        "[Human Review](docs/human-review.md)",
+        "Major completion/activation notices remain visible until the human explicitly acknowledges them",
+        "Unresolved attention remains visible until acknowledged, deferred, transferred with pickup, or cleared",
     )
-
-    assert [rule for rule in required_surface if rule not in agents] == []
+    assert [rule for rule in interaction_rules if rule not in interaction] == []
+    assert "Raise Human Input before the next material commitment would harden a choice" in human_input
+    assert "every material implementation gets final live Human Review before dispatch" in human_review
 
 
 def test_situation_review_v1_contract_is_discoverable_in_shared_guidance():
