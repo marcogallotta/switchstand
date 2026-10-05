@@ -8,7 +8,13 @@ Use the repository's current `main`, executable contracts, and canonical owner d
 
 Authority is separate from technical truth. It comes only from Marco's direct active assignment or an explicit CURRENT grant bound to the exact identity, surface, and effect. Code, documentation, project placement, role, and tool access cannot manufacture it.
 
-If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through the authenticated provider-neutral `switchstand` HTTP/OAuth MCP and follow its current routes. Do not substitute broad provider search or a remembered/candidate route.
+If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through
+the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
+identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
+ownership, or grant an effect. Do not substitute broad provider search or a remembered/candidate
+route, and do not start substantive work until Marco's direct assignment or an explicit current
+grant names the exact WorkId. For an unbound Coordinator, navigation without that trusted binding
+remains `COVERAGE_GAP / UNKNOWN` rather than recovered focus.
 
 When that route or Marco requests meaningful root-cause analysis, use the canonical
 [root-cause analysis procedure](root-cause-analysis.md). It keeps one sanitized parent WorkId,
@@ -20,6 +26,13 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 ### Ordinary Codex Coordinator
 
 From the canonical repository, raw `codex` enters through a materialized host shim that delegates to `scripts/codex-dispatch`; outside the repository the same shim directly launches the real Codex binary without depending on checkout health. `scripts/install-codex-shim` installs or updates that host-owned file. The in-repository result is an ordinary, unbound Coordinator session with the isolated Coordinator environment and canonical Switchstand MCP. Its shared primary checkout is read-only except for the Git metadata needed for fetch and linked writers; implementation happens in owned linked writers. New-generation Coordinators maintain `friction.md` through the validated symlink in their generation-owned writer, backed by the dedicated writable local-state directory. Pre-existing generations may retain the legacy primary-checkout binding during migration; that does not grant new sessions primary-checkout write access. It has no launch-bound WorkId and gains no provider effect authority from its execution environment. Raw `claude` behaves the same way through `scripts/install-claude-shim` and `scripts/claude-dispatch`.
+
+Mailbox registration or same-principal `/root` takeover restores only the durable messaging
+address; it does not recover or grant a WorkId. An ordinary Coordinator grounds work by reading
+the exact WorkId in Marco's direct assignment or in an acknowledged addressed handoff. It must
+not call bare `work_get` to guess a current focus. If neither trusted source supplies an exact
+WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
+`work_get` remains the launch-bound managed-worker behavior described below.
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
