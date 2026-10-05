@@ -58,6 +58,7 @@ from .messages import (
 from .outcome_state import ActionSummary, OutcomeItem
 from .priority_claim_service import PriorityClaimReadResult, PriorityClaimWrite
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
+from .priority_context import PriorityContextResult
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -159,13 +160,14 @@ ORDINARY_EFFECT_TOOLS = frozenset({
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
 PRIORITY_CLAIM_TOOLS = frozenset({"priority_claim_get", "priority_claim_record"})
+PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     """Emit private-host approval metadata; reject unreviewed surface growth."""
     if name not in (
         ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS
-        | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS
+        | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS | PRIORITY_CONTEXT_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
@@ -520,6 +522,14 @@ def build_ordinary_tools(
             relation_target_id=relation_target_id, band=band,
             supersedes_claim_id=supersedes_claim_id,
         ))
+
+    async def priority_context_get(
+        api_version: Literal["1"],
+        work_ids: Annotated[tuple[UUID, ...], Field(min_length=1, max_length=50)],
+    ) -> PriorityContextResult:
+        """Project context for explicit WorkIds without ranking or inheritance."""
+        del api_version
+        return await service.priority_context_get(work_ids)
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
@@ -958,6 +968,8 @@ def build_ordinary_tools(
             ("priority_claim_get", priority_claim_get),
             ("priority_claim_record", priority_claim_record),
         ) if service.priority_claims_enabled and service.priority_claims is not None else ()),
+        *((("priority_context_get", priority_context_get),)
+          if service.priority_context_enabled and service.priority_context is not None else ()),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),

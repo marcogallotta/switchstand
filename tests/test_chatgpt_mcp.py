@@ -62,6 +62,15 @@ def test_priority_claim_tools_are_default_off_and_agent_work_only():
     assert "source_label" not in parameters
 
 
+def test_priority_context_tool_is_default_off_and_explicitly_bounded():
+    subject = service()
+    assert "priority_context_get" not in dict(build_ordinary_tools(subject))
+    subject.priority_context_enabled = True
+    subject.priority_context = object()  # type: ignore[assignment]
+    tool = dict(build_ordinary_tools(subject))["priority_context_get"]
+    assert set(signature(tool).parameters) == {"api_version", "work_ids"}
+
+
 async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):
     subject = service()
     update = AsyncMock(side_effect=AssertionError("invalid patch reached update handler"))
