@@ -59,6 +59,7 @@ from .outcome_state import ActionSummary, OutcomeItem
 from .priority_claim_service import PriorityClaimReadResult, PriorityClaimWrite
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
+from .product_currentness import ProductCurrentness
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -161,6 +162,7 @@ ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
 PRIORITY_CLAIM_TOOLS = frozenset({"priority_claim_get", "priority_claim_record"})
 PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
+PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
@@ -168,6 +170,7 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     if name not in (
         ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS
         | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS | PRIORITY_CONTEXT_TOOLS
+        | PRODUCT_CURRENTNESS_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
@@ -530,6 +533,15 @@ def build_ordinary_tools(
         """Project context for explicit WorkIds without ranking or inheritance."""
         del api_version
         return await service.priority_context_get(work_ids)
+
+    async def product_currentness_get(api_version: Literal["1"]) -> ProductCurrentness:
+        """Reconcile Stateful technical currentness from server-owned live evidence."""
+        del api_version
+        assert service.product_currentness is not None
+        principal = await service.principal()
+        if principal is None:
+            raise PermissionError("authenticated principal is unavailable")
+        return await service.product_currentness(principal)
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
@@ -970,6 +982,8 @@ def build_ordinary_tools(
         ) if service.priority_claims_enabled and service.priority_claims is not None else ()),
         *((("priority_context_get", priority_context_get),)
           if service.priority_context_enabled and service.priority_context is not None else ()),
+        *((("product_currentness_get", product_currentness_get),)
+          if service.product_currentness_enabled and service.product_currentness is not None else ()),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
