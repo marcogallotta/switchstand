@@ -331,7 +331,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     friction_root = home / ".local/state/switchstand/friction"
     current_friction_store = friction_root / "friction.md"
     assert (primary / "friction.md").is_symlink()
-    assert (primary / "friction.md").resolve() == friction_store
+    assert (primary / "friction.md").resolve() == current_friction_store
     assert friction_store.read_text() == "existing friction\n"
     assert friction_store.stat().st_mode & 0o777 == 0o600
     assert friction_root.stat().st_mode & 0o777 == 0o700
