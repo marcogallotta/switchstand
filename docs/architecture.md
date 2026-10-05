@@ -277,8 +277,9 @@ messaging, and required continuation:
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
   per installed product/revision/phase contract after technical activation. The server derives
-  transition actors from current grants, rechecks exact product currentness before delivery, and
-  enforces separate acceptance and adoption authorities. Its MCP transition and owner-local
+  transition actors from current grants plus a current exact-WorkId runtime binding, accepts only
+  server-resolved target/phase/contract-bound acceptance, adoption, and clearing proofs, rechecks
+  exact product currentness before delivery, and enforces separate authorities. Its MCP transition and owner-local
   `work_get`/`work_update` projection exist only when the store and immutable contracts are
   injected; the production edge does not construct them. Migration `0023_activation_continuity`
   persists revisions and refuses a downgrade that would discard any obligation. Landing remains

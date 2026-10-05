@@ -7,6 +7,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from switchstand.activation_continuity import (
     ActivationContract,
+    RuntimeBinding,
     TechnicalBasis,
     open_obligation,
 )
@@ -38,9 +39,11 @@ class Continuity:
     def __init__(self, bound: ActivationContract):
         self.bound, self.seen, self.current = bound, None, None
 
-    async def transition(self, principal, selected, intent, basis):
-        self.seen = principal, selected, intent, basis
-        result = open_obligation(self.bound, intent, "private-actor-ref", basis)
+    async def transition(self, principal, selected, runtime, intent, basis, proof):
+        self.seen = principal, selected, runtime, intent, basis, proof
+        result = open_obligation(
+            self.bound, intent, "private-actor-ref", runtime.binding_token, basis
+        )
         self.current = result.obligation
         return result
 
@@ -63,6 +66,15 @@ async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence(
         return technical(bound)
 
     subject.activation_technical = resolve_technical
+
+    async def resolve_runtime(_principal, selected):
+        return RuntimeBinding(
+            actor_work_id=selected.authority.active_work_id,
+            binding_token="runtime/current",
+            currentness="CURRENT",
+        )
+
+    subject.activation_runtime = resolve_runtime
     subject.admission_grants.grant = grant(
         operations=frozenset({"activation_continuity", "work_get"})
     )
@@ -74,7 +86,7 @@ async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence(
     })
     payload: dict[str, Any] = result.structured_content
     assert (payload["status"], payload["state"]) == ("APPLIED", "VERIFY_NOW")
-    assert continuity.seen[0] == PRINCIPAL and continuity.seen[2].operation_id == operation_id
+    assert continuity.seen[0] == PRINCIPAL and continuity.seen[3].operation_id == operation_id
     assert "private-actor-ref" not in str(payload) and "technical_basis_ref" not in str(payload)
     projected = await server.call_tool("work_get", {"api_version": "1", "work_id": str(ACTIVE)})
     obligation = projected.structured_content["activation_obligations"][0]
@@ -100,3 +112,30 @@ async def test_missing_grant_denies_and_internal_fields_are_closed() -> None:
         await server.call_tool("activation_obligation_transition", {
             **arguments, "actor_work_id": str(ACTIVE),
         })
+
+
+async def test_unresolved_runtime_and_proof_fail_closed_before_transition() -> None:
+    subject, bound = service(), contract()
+    continuity = Continuity(bound)
+    subject.activation_continuity = continuity
+    subject.admission_grants.grant = grant(
+        operations=frozenset({"activation_continuity"})
+    )
+    missing_runtime = await subject.activation_continuity_transition(
+        uuid4(), bound.obligation_id, "MISSING", "ACTIVATED", (), None, None
+    )
+    assert (missing_runtime.status, continuity.seen) == ("UNKNOWN", None)
+
+    async def resolve_runtime(_principal, selected):
+        return RuntimeBinding(
+            actor_work_id=selected.authority.active_work_id,
+            binding_token="runtime/current",
+            currentness="CURRENT",
+        )
+
+    subject.activation_runtime = resolve_runtime
+    missing_proof = await subject.activation_continuity_transition(
+        uuid4(), bound.obligation_id, "revision", "ACCEPTANCE_PASS",
+        ("opaque-ref",), None, None,
+    )
+    assert (missing_proof.status, continuity.seen) == ("UNKNOWN", None)
