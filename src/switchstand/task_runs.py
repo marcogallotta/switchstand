@@ -25,7 +25,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ApiVersion, ClosedModel
@@ -261,10 +261,12 @@ def task_request_operation_id(
     return uuid5(REQUEST_OPERATION_NAMESPACE, _digest(requester_work_id, request))
 
 
-def _view(row: RowMapping) -> TaskRunRequest:
-    return TaskRunRequest(
-        request_id=cast(UUID, row["request_id"]),
-        requester_work_id=cast(UUID, row["requester_work_id"]),
+async def _verified_request(
+    connection: AsyncConnection, row: RowMapping
+) -> TaskRunRequest:
+    requester_work_id = cast(UUID, row["requester_work_id"])
+    payload = AgentTaskRequest(
+        api_version="1",
         execution_work_id=cast(UUID, row["execution_work_id"]),
         observed_revision=cast(str, row["observed_revision"]),
         task_kind=cast(Literal["INVESTIGATION", "VALIDATION"], row["task_kind"]),
@@ -272,7 +274,24 @@ def _view(row: RowMapping) -> TaskRunRequest:
         candidate_ref=cast(str | None, row["candidate_ref"]),
         objective=cast(str, row["objective"]),
         result_contract=cast(dict[str, JsonValue], row["result_contract"]),
-        terminal_result_id=cast(UUID | None, row["terminal_result_id"]),
+    )
+    if row["content_digest"] != _digest(requester_work_id, payload):
+        raise ValueError("stored task-run request digest mismatch")
+    request_id = cast(UUID, row["request_id"])
+    terminal_result_id = cast(UUID | None, row["terminal_result_id"])
+    if terminal_result_id is not None:
+        terminal_owner = await connection.scalar(
+            select(task_run_results.c.request_id).where(
+                task_run_results.c.result_id == terminal_result_id
+            )
+        )
+        if terminal_owner != request_id:
+            raise ValueError("stored task-run terminal result owner mismatch")
+    return TaskRunRequest(
+        request_id=request_id,
+        requester_work_id=requester_work_id,
+        terminal_result_id=terminal_result_id,
+        **payload.model_dump(mode="python", exclude={"api_version"}),
     )
 
 
@@ -331,11 +350,12 @@ class TaskRunState:
                     task_run_requests.c.operation_id == operation_id
                 ).with_for_update())).mappings().one_or_none()
                 if replay is not None:
+                    verified = await _verified_request(connection, replay)
                     if replay["content_digest"] != digest:
                         return TaskRunRequestResult(
                             status="conflict", reason="operation_identity_conflict"
                         )
-                    return TaskRunRequestResult(status="ok", request=_view(replay))
+                    return TaskRunRequestResult(status="ok", request=verified)
                 requester = (await connection.execute(select(work_handles.c.id).where(
                     work_handles.c.id == requester_work_id
                 ).with_for_update(read=True))).scalar_one_or_none()
@@ -371,15 +391,22 @@ class TaskRunState:
                     )
                 )).mappings().one_or_none()
                 if inserted is not None:
-                    return TaskRunRequestResult(status="ok", request=_view(inserted))
+                    return TaskRunRequestResult(
+                        status="ok", request=await _verified_request(connection, inserted)
+                    )
                 replay = (await connection.execute(select(task_run_requests).where(
                     task_run_requests.c.operation_id == operation_id
                 ))).mappings().one_or_none()
-                if replay is None or replay["content_digest"] != digest:
+                if replay is None:
                     return TaskRunRequestResult(
                         status="conflict", reason="operation_identity_conflict"
                     )
-                return TaskRunRequestResult(status="ok", request=_view(replay))
+                verified = await _verified_request(connection, replay)
+                if replay["content_digest"] != digest:
+                    return TaskRunRequestResult(
+                        status="conflict", reason="operation_identity_conflict"
+                    )
+                return TaskRunRequestResult(status="ok", request=verified)
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
 
@@ -389,9 +416,11 @@ class TaskRunState:
                 row = (await connection.execute(select(task_run_requests).where(
                     task_run_requests.c.request_id == request_id
                 ))).mappings().one_or_none()
-            if row is None:
-                return TaskRunRequestResult(status="denied", reason="request_not_found")
-            return TaskRunRequestResult(status="ok", request=_view(row))
+                if row is None:
+                    return TaskRunRequestResult(status="denied", reason="request_not_found")
+                return TaskRunRequestResult(
+                    status="ok", request=await _verified_request(connection, row)
+                )
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
 
@@ -407,11 +436,12 @@ class TaskRunState:
                 )).mappings().one_or_none()
                 if request is None:
                     return TaskRunBindResult(status="denied", reason="request_not_found")
-                if request["execution_work_id"] != receipt.active_work_id:
+                verified = await _verified_request(connection, request)
+                if verified.execution_work_id != receipt.active_work_id:
                     return TaskRunBindResult(
                         status="denied", reason="execution_work_mismatch"
                     )
-                if request["continuation"] != "START":
+                if verified.continuation != "START":
                     return TaskRunBindResult(
                         status="denied", reason="continuation_not_bound"
                     )
@@ -466,6 +496,7 @@ class TaskRunState:
                 )).mappings().one_or_none()
                 if request is None:
                     return TaskRunResultResult(status="denied", reason="request_not_found")
+                verified = await _verified_request(connection, request)
                 execution = (await connection.execute(
                     select(task_run_executions).where(
                         task_run_executions.c.request_id == request_id,
@@ -515,15 +546,7 @@ class TaskRunState:
                     return TaskRunResultResult(
                         status="stale", result=view, reason="run_superseded"
                     )
-                terminal = cast(UUID | None, request["terminal_result_id"])
-                if terminal is not None:
-                    terminal_request_id = await connection.scalar(
-                        select(task_run_results.c.request_id).where(
-                            task_run_results.c.result_id == terminal
-                        )
-                    )
-                    if terminal_request_id != request_id:
-                        return TaskRunResultResult(status="unknown", reason="state_unavailable")
+                terminal = verified.terminal_result_id
                 if terminal not in {None, result_id}:
                     return TaskRunResultResult(
                         status="conflict",

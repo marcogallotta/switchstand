@@ -162,6 +162,40 @@ async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
     assert (conflict.status, conflict.reason) == ("conflict", "operation_identity_conflict")
 
 
+async def test_tampered_request_cannot_replay_read_or_bind(subject):
+    state, engine, requester, execution = subject
+    payload_operation, requester_operation = uuid4(), uuid4()
+    payload = await state.request(requester, payload_operation, request(execution))
+    identity = await state.request(requester, requester_operation, request(execution))
+    assert payload.request is not None and identity.request is not None
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(task_run_requests)
+            .where(task_run_requests.c.request_id == payload.request.request_id)
+            .values(objective="Corrupt stored intent.")
+        )
+        await connection.execute(
+            update(task_run_requests)
+            .where(task_run_requests.c.request_id == identity.request.request_id)
+            .values(requester_work_id=execution)
+        )
+
+    for accepted, operation_id in (
+        (payload, payload_operation),
+        (identity, requester_operation),
+    ):
+        assert accepted.request is not None
+        replay = await state.request(requester, operation_id, request(execution))
+        readback = await state.get(accepted.request.request_id)
+        bound = await state.bind_start(accepted.request.request_id, receipt(execution))
+        assert (replay.status, replay.reason) == ("unknown", "state_unavailable")
+        assert (readback.status, readback.reason) == ("unknown", "state_unavailable")
+        assert (bound.status, bound.reason) == ("unknown", "state_unavailable")
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(task_run_executions)) == 0
+
+
 async def test_request_revision_and_continuation_fail_closed_without_writes(subject):
     state, engine, requester, execution = subject
     unbound_requester = await state.request(uuid4(), uuid4(), request(execution))
@@ -394,6 +428,8 @@ async def test_result_replay_rejects_cross_request_terminal_pointer(subject):
             .values(terminal_result_id=second_id)
         )
 
+    readback = await state.get(first.request.request_id)
+    assert (readback.status, readback.reason) == ("unknown", "state_unavailable")
     replay = await state.submit_result(first.request.request_id, first_id, first_current, payload)
     assert (replay.status, replay.reason, replay.result, replay.terminal) == (
         "unknown",
