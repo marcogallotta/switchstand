@@ -132,7 +132,7 @@ class HumanReviewResult(ClosedModel):
         return self
 
 
-def _record(row: RowMapping) -> HumanReviewRecord:
+def human_review_record(row: RowMapping) -> HumanReviewRecord:
     consequence = HumanReviewConsequence.model_validate(row["consequence"])
     decision = cast(HumanDecision | None, row["decision"])
     expected_state = (
@@ -209,7 +209,7 @@ class HumanReviewState:
                 if len(rows) > 1:
                     return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
                 if rows:
-                    existing = _record(rows[0])
+                    existing = human_review_record(rows[0])
                     if existing.consequence_digest != consequence.digest:
                         return HumanReviewResult(status="CONFLICT", reason="consequence_changed")
                     return HumanReviewResult(status="REPLAYED", record=existing)
@@ -226,7 +226,7 @@ class HumanReviewState:
                         *human_review_consequences.c
                     )
                 )).mappings().one()
-                return HumanReviewResult(status="PREPARED", record=_record(row))
+                return HumanReviewResult(status="PREPARED", record=human_review_record(row))
         except (SQLAlchemyError, TypeError, ValueError):
             return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
 
@@ -248,7 +248,7 @@ class HumanReviewState:
                     return HumanReviewResult(status="UNKNOWN", reason="consequence_unavailable")
                 if len(rows) > 1:
                     return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
-                return HumanReviewResult(status="REPLAYED", record=_record(rows[0]))
+                return HumanReviewResult(status="REPLAYED", record=human_review_record(rows[0]))
         except (SQLAlchemyError, TypeError, ValueError):
             return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
 
@@ -281,13 +281,13 @@ class HumanReviewState:
                 if row["decision"] is not None:
                     if row["decision"] != decision:
                         return HumanReviewResult(status="CONFLICT", reason="decision_conflict")
-                    return HumanReviewResult(status="REPLAYED", record=_record(row))
+                    return HumanReviewResult(status="REPLAYED", record=human_review_record(row))
                 state = "READY_FOR_IMPLEMENTATION" if decision == "APPROVED" else decision
                 decided = (await connection.execute(update(human_review_consequences).where(
                     human_review_consequences.c.consequence_id == consequence_id
                 ).values(decision=decision, state=state, decided_at=func.now()).returning(
                     *human_review_consequences.c
                 ))).mappings().one()
-                return HumanReviewResult(status="RECORDED", record=_record(decided))
+                return HumanReviewResult(status="RECORDED", record=human_review_record(decided))
         except (SQLAlchemyError, TypeError, ValueError):
             return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")

@@ -5,7 +5,7 @@ set -eu
     || { echo "usage: scripts/switchstand-upgrade-state --target production" >&2; exit 2; }
 umask 077
 
-EXPECTED_NEW=0021_human_reviews
+EXPECTED_NEW=0022_implementation_requests
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data
@@ -119,6 +119,9 @@ case "$revision" in
         ;;
     0020_task_run_results)
         counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)||'|'||(SELECT count(*) FROM work_migration_receipts)||'|'||(SELECT count(*) FROM failure_records)||'|'||(SELECT count(*) FROM failure_resolutions)||'|'||(SELECT count(*) FROM agent_mailbox_transfer_requests)||'|'||(SELECT count(*) FROM priority_claims)||'|'||(SELECT count(*) FROM task_run_requests)||'|'||(SELECT count(*) FROM task_run_executions)||'|'||(SELECT count(*) FROM task_run_results)"
+        ;;
+    0021_human_reviews)
+        counts_sql="SELECT (SELECT count(*) FROM work_handles)||'|'||(SELECT count(*) FROM work_grants)||'|'||(SELECT count(*) FROM effect_intents)||'|'||(SELECT count(*) FROM messages)||'|'||(SELECT count(*) FROM message_deliveries)||'|'||(SELECT count(*) FROM message_projection)||'|'||(SELECT count(*) FROM lifecycle_obligations)||'|'||(SELECT count(*) FROM work_event_handles)||'|'||(SELECT count(*) FROM agent_mailboxes)||'|'||(SELECT count(*) FROM canonical_work)||'|'||(SELECT count(*) FROM human_trajectory_revisions)||'|'||(SELECT count(*) FROM outcome_state_revisions)||'|'||(SELECT count(*) FROM work_migration_receipts)||'|'||(SELECT count(*) FROM failure_records)||'|'||(SELECT count(*) FROM failure_resolutions)||'|'||(SELECT count(*) FROM agent_mailbox_transfer_requests)||'|'||(SELECT count(*) FROM priority_claims)||'|'||(SELECT count(*) FROM task_run_requests)||'|'||(SELECT count(*) FROM task_run_executions)||'|'||(SELECT count(*) FROM task_run_results)||'|'||(SELECT count(*) FROM human_review_consequences)"
         ;;
     *)
         echo "unsupported shared schema: expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, 0014, 0015, 0016, 0017, 0018, 0019, 0020, or $EXPECTED_NEW; actual ${revision:-<none>}" >&2

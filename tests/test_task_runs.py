@@ -34,6 +34,7 @@ from switchstand.state import PostgresState
 from switchstand.task_runs import (
     AgentTaskRequest,
     AgentTaskResult,
+    ImplementationTaskRequest,
     TaskRunState,
     task_run_executions,
     task_run_requests,
@@ -160,6 +161,28 @@ async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
         intent.model_copy(update={"objective": "A different operation."}),
     )
     assert (conflict.status, conflict.reason) == ("conflict", "operation_identity_conflict")
+
+
+async def test_server_implementation_request_uses_verified_atomic_admission(subject):
+    state, engine, requester, execution = subject
+    intent = ImplementationTaskRequest(
+        execution_work_id=execution,
+        observed_revision=canonical_revision(execution, 1),
+        objective="Implement the exact approved package.",
+        result_contract={"return_to_work_id": str(requester)},
+        authorization_ref="human-review/exact",
+        send_authority_ref="grant/current",
+    )
+    async with engine.begin() as connection:
+        admitted = await state.request_in_transaction(
+            connection, requester, uuid4(), intent
+        )
+
+    assert admitted.status == "ok" and admitted.request is not None
+    assert admitted.request.task_kind == "IMPLEMENTATION"
+    assert admitted.request.authorization_ref == "human-review/exact"
+    assert admitted.request.send_authority_ref == "grant/current"
+    assert await state.get(admitted.request.request_id) == admitted
 
 
 async def test_tampered_request_cannot_replay_read_or_bind(subject):
