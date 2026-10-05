@@ -192,9 +192,6 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
     database_url = os.getenv("TEST_DATABASE_URL")
     if database_url is None:
         pytest.skip("TEST_DATABASE_URL is required for the PostgreSQL adapter test")
-    migration = Config("alembic.ini")
-    migration.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(migration, "head")
     engine = create_async_engine(database_url)
 
     async def read_snapshot() -> StatefulServerSnapshot:
@@ -204,6 +201,11 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
         return PRINCIPAL
 
     try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+        migration = Config("alembic.ini")
+        migration.set_main_option("sqlalchemy.url", database_url)
+        command.upgrade(migration, "head")
         async with engine.begin() as connection:
             actual_migration = str(
                 (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()

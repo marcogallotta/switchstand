@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .agent_mailboxes import AgentMailboxState
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
 from .canonical_work import CanonicalWorkRepository
@@ -27,6 +28,7 @@ from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
+from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
 from .oauth_continuity import (
@@ -35,6 +37,7 @@ from .oauth_continuity import (
 )
 from .observability import CallTimingMiddleware, annotate_target, register_sqlalchemy_timing
 from .principal import RequestPrincipal
+from .reviews import ReviewOccurrenceState, ReviewPolicy
 from .stable_auth import (
     REQUIRED_SCOPE,
     IntrospectionTokenVerifier,
@@ -246,6 +249,7 @@ def _create_resource_app(
         canonical_events=service.canonical_events,
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
+        implementation_requests=service.implementation_requests,
         product_currentness=service.product_currentness,
         product_currentness_enabled=service.product_currentness_enabled,
     )
@@ -289,11 +293,22 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
         canonical_events = CanonicalEventReader(
             canonical_repository, WorkEventRepository(engine)
         )
+        messages = MessageState(engine, grants)
+        implementation_requests = None
+        if os.getenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS") == "1":
+            reviews = ReviewOccurrenceState(
+                canonical_repository, AgentMailboxState(engine),
+                ReviewPolicy(version="review-policy-v1", reviewer_by_kind={}),
+            )
+            implementation_requests = ImplementationRequestState(
+                engine, canonical_repository, reviews
+            )
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {},
-            MessageState(engine, grants), RequiredResultPersistence(LifecycleRepository(engine)),
+            messages, RequiredResultPersistence(LifecycleRepository(engine)),
             canonical_work=canonical_work, canonical_events=canonical_events,
             canonical_work_active=True,
-            outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1")
+            outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1",
+            implementation_requests=implementation_requests)
         runtime = None
         if marker:
             runtime = (

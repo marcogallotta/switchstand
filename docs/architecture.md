@@ -274,12 +274,18 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
+  `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
+- `task_runs.py` owns inert INVESTIGATION, VALIDATION, and server-derived IMPLEMENTATION requests; its managed public adapter remains INVESTIGATION/VALIDATION-only, with trusted START-to-RunReceipt
+  bindings. Its managed MCP adapter can admit only a current launch-bound `agent_task` grant and
+  exact requester RunReceipt to create a server-identified request; default grant issuance and
+  launch wiring, result submission, continuation/takeover, runtime launch, ordinary HTTP exposure,
+  and activation remain absent.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
@@ -369,9 +375,12 @@ change, and causal tests for both layers.
 `repository_bundle.py` resolves the ordinary `repository_bundle_get` transport. The rolling GitHub
 release is only a cache: it contains a bundle, manifest, and checksum published by
 `.github/workflows/repository-bundle.yml` after the Quality workflow. Resolution independently reads
-the repository's current branch refs and returns `current` only when the authoritative ref map,
-manifest digest, release asset digest, and checksum agree. A transition returns `refresh_pending`;
-provider failure returns `unavailable`. Those release and ref API reads use only the dedicated
+the repository's current branch refs and scopes currentness to the requested grounding claim: the
+published and authoritative `main` refs must agree when no SHA is requested, while a requested SHA
+must be the value of the same branch ref in both maps. Unrelated branch movement does not invalidate
+that proof. The manifest digest, release asset digest, and checksum must still agree. An unproved
+grounding claim or cache transition returns `refresh_pending`; provider failure returns
+`unavailable`. Those release and ref API reads use only the dedicated
 server-side `SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN`; missing configuration fails before network
 access. The bearer is attached only to validated exact `https://api.github.com` bundle endpoints,
 authenticated redirects and foreign pagination origins are rejected, and release asset downloads

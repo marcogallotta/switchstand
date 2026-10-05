@@ -34,6 +34,7 @@ from switchstand.grants import (
     ProtectedAppend,
     ProtectedCreate,
 )
+from switchstand.implementation_requests import ImplementationRequestResult
 from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
 from switchstand.repository_candidate import RepositoryCandidateQualification
 
@@ -69,6 +70,21 @@ def test_priority_context_tool_is_default_off_and_explicitly_bounded():
     subject.priority_context = object()  # type: ignore[assignment]
     tool = dict(build_ordinary_tools(subject))["priority_context_get"]
     assert set(signature(tool).parameters) == {"api_version", "work_ids"}
+
+
+async def test_implementation_request_is_default_off_and_delegates_exact_identity():
+    subject = service()
+    assert "implementation_request" not in dict(build_ordinary_tools(subject))
+    subject.implementation_requests = AsyncMock()
+    expected = ImplementationRequestResult(status="DENIED", reason="probe")
+    subject.implementation_requests.request.return_value = expected
+    operation_id = uuid4()
+    tool = dict(build_ordinary_tools(subject))["implementation_request"]
+    result = await tool("1", operation_id, ACTIVE, "pg_exact")
+    assert result == expected
+    subject.implementation_requests.request.assert_awaited_once_with(
+        PRINCIPAL, operation_id, ACTIVE, "pg_exact"
+    )
 
 
 async def test_product_currentness_tool_is_default_off_and_server_owned():
