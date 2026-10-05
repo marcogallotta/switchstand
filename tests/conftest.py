@@ -54,7 +54,8 @@ def database_prerequisite() -> None:
             # database at the fixture boundary instead.
             with engine.begin() as connection:
                 connection.exec_driver_sql(
-                    "DROP TABLE IF EXISTS task_run_executions, task_run_requests, failure_resolutions, failure_records, "
+                    "DROP TABLE IF EXISTS task_run_results, task_run_executions, "
+                    "task_run_requests, failure_resolutions, failure_records, "
                     "work_migration_receipts CASCADE"
                 )
             canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
