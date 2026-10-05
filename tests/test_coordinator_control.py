@@ -28,8 +28,12 @@ def setup(
     git(repo, "config", "user.name", "Test")
     git(repo, "config", "user.email", "test@example.invalid")
     (repo / "docs").mkdir()
-    (repo / "AGENTS.md").write_text("Read [procedure](docs/procedure.md).\n")
+    (repo / "AGENTS.md").write_text(
+        "Read [procedure](docs/procedure.md) and "
+        "[tracking](docs/coordinator-tracker-contract.md).\n"
+    )
     (repo / "docs/procedure.md").write_text("current\n")
+    (repo / "docs/coordinator-tracker-contract.md").write_text("tracking\n")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "start")
     writer = tmp_path / "writer"
@@ -128,13 +132,19 @@ def test_launch_manifest_tracks_transitive_graph_but_compact_reread_is_bounded(
     manifest = json.loads(manifest_path.read_text())
 
     assert manifest["session"]["start_commit"] == git(repo, "rev-parse", "HEAD")
-    assert set(manifest["rereadable_controls"]) == {"AGENTS.md", "docs/procedure.md"}
-    assert manifest["post_compaction_reread_controls"] == ["AGENTS.md"]
+    assert set(manifest["rereadable_controls"]) == {
+        "AGENTS.md", "docs/procedure.md", "docs/coordinator-tracker-contract.md"
+    }
+    assert manifest["post_compaction_reread_controls"] == [
+        "AGENTS.md", "docs/coordinator-tracker-contract.md"
+    ]
 
     result, status = check(manifest_path, "post-compaction")
     assert result.returncode == 0
     assert status["state"] == "CURRENT"
-    assert status["reread_required"] == ["AGENTS.md"]
+    assert status["reread_required"] == [
+        "AGENTS.md", "docs/coordinator-tracker-contract.md"
+    ]
     assert status["required_live_reads"] == ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"]
     assert status["component_currentness"] == {
         "runtime:effective-client-tool-surface": "CURRENTNESS_UNKNOWN"
@@ -172,6 +182,22 @@ def test_legacy_v2_post_compaction_uses_bounded_compatibility_reread(tmp_path: P
     manifest = json.loads(manifest_path.read_text())
     manifest["schema_version"] = 2
     manifest.pop("post_compaction_reread_controls")
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_digest"}
+    manifest["manifest_digest"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    result, status = check(manifest_path, "post-compaction")
+
+    assert result.returncode == 0
+    assert status["reread_required"] == ["AGENTS.md"]
+
+
+def test_existing_v3_manifest_keeps_launch_time_post_compaction_set(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["post_compaction_reread_controls"] = ["AGENTS.md"]
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_digest"}
     manifest["manifest_digest"] = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
