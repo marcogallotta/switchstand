@@ -222,7 +222,13 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         required_sha: Annotated[str | None, Field(pattern=r"^[0-9a-f]{40}$")] = None,
     ) -> CallToolResult:
-        """Return the verified current public repository bundle as an MCP resource link."""
+        """Use this when substantive Switchstand repository content is needed and no verified local checkout is available.
+
+        Returns the verified current public repository bundle as an MCP resource link. Do not use
+        when a verified local checkout is already available. On ``refresh_pending``, retry boundedly
+        rather than reconstructing the repository through repeated remote file/tree reads. Pass
+        ``required_sha`` only as the exact local checkout target; it never selects another bundle.
+        """
         del api_version
         result = await repository_bundle.resolve_repository_bundle(required_sha)
         structured = {

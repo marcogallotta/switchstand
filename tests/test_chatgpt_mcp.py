@@ -476,6 +476,31 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
             forbidden.add("role")
             assert not forbidden.intersection(tool.input_schema.get("properties", {}))
+        repository_bundle = next(
+            tool for tool in tools if tool.name == "repository_bundle_get"
+        )
+        repository_bundle_description = " ".join(
+            (repository_bundle.description or "").split()
+        )
+        assert (
+            "Use this when substantive Switchstand repository content is needed and "
+            "no verified local checkout is available."
+            in repository_bundle_description
+        )
+        assert (
+            "Do not use when a verified local checkout is already available."
+            in repository_bundle_description
+        )
+        assert (
+            "Pass ``required_sha`` only as the exact local checkout target; "
+            "it never selects another bundle."
+            in repository_bundle_description
+        )
+        assert (
+            "On ``refresh_pending``, retry boundedly rather than reconstructing "
+            "the repository through repeated remote file/tree reads."
+            in repository_bundle_description
+        )
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
         ).annotations.read_only_hint is True
