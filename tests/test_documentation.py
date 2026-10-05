@@ -64,6 +64,16 @@ def test_architecture_separates_managed_worker_and_root_compact_controls():
     assert "does not reuse Root Coordinator manifest, currentness, tracker, or compact-hook controls" in architecture
 
 
+def test_managed_history_is_exceptional_not_normal_grounding():
+    development = " ".join((ROOT / "docs/development.md").read_text().split())
+    history_owner = " ".join((ROOT / "docs/source-history-feedback.md").read_text().split())
+
+    assert "Do not page `work_history` during normal startup, re-entry, review, polling, or implementation" in development
+    assert "read-only bounded investigation/recovery capability" in development
+    assert "History and exact-event reads are exceptional" in history_owner
+    assert "are not for normal grounding, re-entry, current-work discovery, or routine polling" in history_owner
+
+
 def test_claude_bootstrap_imports_canonical_agents_file():
     imports = {
         match.group("path")
