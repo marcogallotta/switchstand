@@ -4,6 +4,8 @@ import os
 from typing import cast
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from chatgpt_fixture import PRINCIPAL
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -109,6 +111,9 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
     database_url = os.getenv("TEST_DATABASE_URL")
     if database_url is None:
         pytest.skip("TEST_DATABASE_URL is required for the PostgreSQL adapter test")
+    migration = Config("alembic.ini")
+    migration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(migration, "head")
     engine = create_async_engine(database_url)
 
     async def read_snapshot() -> StatefulServerSnapshot:
