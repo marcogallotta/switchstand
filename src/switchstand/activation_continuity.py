@@ -27,6 +27,7 @@ Transition = Literal[
     "DEFER",
     "RETIRE",
 ]
+ProofKind = Literal["ACCEPTANCE", "ADOPTION", "CLEARING"]
 TERMINAL = frozenset({"DELIVERED", "DEFERRED", "RETIRED"})
 
 
@@ -61,9 +62,7 @@ class ActivationContract(ClosedModel):
         return uuid5(NAMESPACE, identity)
 
     def stored(self) -> dict[str, object]:
-        value = self.model_dump(
-            mode="json", exclude={"adoption_actor_work_id", "lifecycle_authority_work_id"}
-        )
+        value = self.model_dump(mode="json")
         return {"obligation_id": str(self.obligation_id), **value}
 
 
@@ -95,6 +94,39 @@ class TechnicalBasis(ClosedModel):
     result: ProductCurrentness
 
 
+class RuntimeBinding(ClosedModel):
+    """Server-resolved current runtime assignment for one transition actor."""
+
+    actor_work_id: UUID
+    binding_token: str = Field(min_length=1, max_length=512)
+    currentness: Literal["CURRENT", "STALE", "UNKNOWN"]
+
+
+class TransitionProof(ClosedModel):
+    """Server-resolved proof bound to the exact installed activation contract."""
+
+    kind: ProofKind
+    obligation_id: UUID
+    product_work_id: UUID
+    target_revision: str = Field(min_length=1, max_length=512)
+    target_phase: str = Field(min_length=1, max_length=120)
+    acceptance_contract_id: str = Field(min_length=1, max_length=240)
+    contract_revision: str = Field(min_length=1, max_length=240)
+    currentness: Literal["CURRENT", "STALE", "UNKNOWN"]
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=16)
+    clearing_event_ref: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def bounded_unique_evidence(self) -> Self:
+        if len(set(self.evidence_refs)) != len(self.evidence_refs) or any(
+            not value or len(value) > 1000 for value in self.evidence_refs
+        ):
+            raise ValueError("evidence refs must be unique bounded strings")
+        if (self.kind == "CLEARING") != (self.clearing_event_ref is not None):
+            raise ValueError("only clearing proof carries a clearing event")
+        return self
+
+
 class Obligation(ClosedModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     binding: dict[str, object]
@@ -116,6 +148,7 @@ class Obligation(ClosedModel):
     acceptance_proof: tuple[str, ...] = ()
     adoption_proof: tuple[str, ...] = ()
     actor_ref: str
+    runtime_binding_token: str
     technical_basis_ref: str | None = None
     generation: int = Field(ge=1)
     predecessor: str | None = None
@@ -156,8 +189,15 @@ def seal_obligation(value: Obligation) -> Obligation:
     return value.model_copy(update={"digest": _digest(payload)})
 
 
-def actor_ref(principal: PrincipalContext, grant: WorkGrant) -> str:
-    return _digest({"principal": principal.key, "grant": str(grant.id), "version": grant.version})
+def actor_ref(
+    principal: PrincipalContext, grant: WorkGrant, runtime: RuntimeBinding,
+) -> str:
+    return _digest({
+        "principal": principal.key,
+        "grant": str(grant.id),
+        "version": grant.version,
+        "runtime": runtime.model_dump(mode="json"),
+    })
 
 
 def intent_digest(intent: TransitionIntent, actor: str) -> str:
@@ -173,6 +213,25 @@ def _technical_true(contract: ActivationContract, basis: TechnicalBasis | None) 
         and basis.result.status == "ok"
         and basis.result.current == "TRUE"
         and not basis.result.blockers
+    )
+
+
+def _proof_matches(
+    contract: ActivationContract,
+    intent: TransitionIntent,
+    proof: TransitionProof | None,
+    kind: ProofKind,
+) -> bool:
+    return proof is not None and (
+        proof.kind == kind
+        and proof.currentness == "CURRENT"
+        and proof.obligation_id == contract.obligation_id
+        and proof.product_work_id == contract.product_work_id
+        and proof.target_revision == contract.target_revision
+        and proof.target_phase == contract.target_phase
+        and proof.acceptance_contract_id == contract.acceptance_contract_id
+        and proof.contract_revision == contract.contract_revision
+        and proof.clearing_event_ref == intent.clearing_event_ref
     )
 
 
@@ -212,6 +271,7 @@ def open_obligation(
     contract: ActivationContract,
     intent: TransitionIntent,
     actor: str,
+    runtime_binding_token: str,
     technical: TechnicalBasis | None,
 ) -> ContinuityResult:
     if intent.transition != "ACTIVATED" or intent.observed_revision != "MISSING":
@@ -225,6 +285,7 @@ def open_obligation(
         acceptance="NOT_RUN",
         adoption="NOT_REQUIRED" if contract.adoption_requirement == "NOT_REQUIRED" else "PENDING",
         actor_ref=actor,
+        runtime_binding_token=runtime_binding_token,
         technical_basis_ref=str(technical.result.reconciliation_id),
         generation=1,
         operation_id=intent.operation_id,
@@ -239,7 +300,9 @@ def advance_obligation(
     current: Obligation,
     intent: TransitionIntent,
     actor_ref: str,
+    runtime_binding_token: str,
     technical: TechnicalBasis | None,
+    proof: TransitionProof | None = None,
 ) -> ContinuityResult:
     if current.operation_id == intent.operation_id:
         status = (
@@ -280,9 +343,12 @@ def advance_obligation(
             "clearing_event_ref": intent.clearing_event_ref,
         }
     elif transition == "CLEAR_BLOCKER" and state == "BLOCKED":
-        if intent.clearing_event_ref != current.clearing_event_ref:
+        if (
+            intent.clearing_event_ref != current.clearing_event_ref
+            or not _proof_matches(contract, intent, proof, "CLEARING")
+        ):
             return ContinuityResult(
-                status="DENIED", obligation=current, reason="clearing_event_mismatch"
+                status="DENIED", obligation=current, reason="clearing_proof_invalid"
             )
         changes = {
             "state": current.blocker_phase,
@@ -292,15 +358,20 @@ def advance_obligation(
         }
     elif transition.startswith("ACCEPTANCE_") and state in {"VERIFY_NOW", "VERIFYING", "ACCEPTED"}:
         result = transition.removeprefix("ACCEPTANCE_")
-        if not intent.evidence_refs:
-            return ContinuityResult(status="DENIED", obligation=current, reason="proof_required")
+        if not _proof_matches(contract, intent, proof, "ACCEPTANCE"):
+            return ContinuityResult(status="DENIED", obligation=current, reason="proof_invalid")
+        assert proof is not None
         changes = {
             "acceptance": result,
-            "acceptance_proof": intent.evidence_refs,
+            "acceptance_proof": proof.evidence_refs,
             "state": "ACCEPTED" if result == "PASS" else "VERIFYING",
         }
-    elif transition == "ADOPTION_ADOPTED" and intent.evidence_refs:
-        changes = {"adoption": "ADOPTED", "adoption_proof": intent.evidence_refs}
+    elif (
+        transition == "ADOPTION_ADOPTED"
+        and _proof_matches(contract, intent, proof, "ADOPTION")
+    ):
+        assert proof is not None
+        changes = {"adoption": "ADOPTED", "adoption_proof": proof.evidence_refs}
     elif transition == "FINALIZE_DELIVERY" and state == "ACCEPTED":
         changes = {}
     elif transition in {"DEFER", "RETIRE"}:
@@ -318,6 +389,7 @@ def advance_obligation(
         update={
             **changes,
             "actor_ref": actor_ref,
+            "runtime_binding_token": runtime_binding_token,
             "generation": current.generation + 1,
             "predecessor": current.digest,
             "operation_id": intent.operation_id,
