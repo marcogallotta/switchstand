@@ -105,39 +105,29 @@ async def test_approved_current_send_authority_creates_one_inert_request(subject
     facade, reviews, engine, grant, occurrences = subject
     approved = await approve(reviews)
     operation_id = uuid4()
-
     applied, recovered = await asyncio.gather(
         facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision),
         facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision),
     )
-
     assert {applied.status, recovered.status} == {"APPLIED", "REPLAYED"}
     assert applied.task_run_request_id == recovered.task_run_request_id
-    assert occurrences.pass_status_in_transaction.call_args.args[1:] == (
-        PACKAGE, approved.package_revision
-    )
+    assert occurrences.pass_status_in_transaction.call_args.args[1:] == (PACKAGE, approved.package_revision)
     assert applied.delivery_state == "PENDING"
     assert applied.next_action == "await managed worker pickup"
     assert await request_count(engine) == 1
     async with engine.connect() as connection:
         row = (await connection.execute(select(task_run_requests))).mappings().one()
     assert row["task_kind"] == "IMPLEMENTATION"
-    assert row["authorization_ref"] == (
-        f"human-review/{approved.consequence_id}/{approved.digest}"
-    )
+    assert row["authorization_ref"] == f"human-review/{approved.consequence_id}/{approved.digest}"
     assert row["send_authority_ref"] == f"grant/{grant.id}/1/{PRINCIPAL.key}"
     assert row["execution_work_id"] == PACKAGE
     assert row["result_contract"]["return_to_work_id"] == str(PACKAGE)
-    assert row["result_contract"]["implementation_scope"] == list(
-        approved.implementation_scope
-    )
+    assert row["result_contract"]["implementation_scope"] == list(approved.implementation_scope)
     assert row["result_contract"]["excluded_effects"] == list(approved.excluded_effects)
     assert row["result_contract"]["milestones"] == ["IMPLEMENTED", "MERGED", "ACTIVATED"]
 
     async with engine.begin() as connection:
-        await connection.execute(
-            update(task_run_requests).values(objective="Corrupt stored implementation intent.")
-        )
+        await connection.execute(update(task_run_requests).values(objective="Corrupt stored implementation intent."))
     corrupt = await facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision)
     assert (corrupt.status, corrupt.reason) == ("UNKNOWN", "state_unavailable")
 
@@ -148,7 +138,6 @@ async def test_no_approval_or_other_principal_creates_zero_requests(subject):
         PRINCIPAL, uuid4(), PACKAGE, canonical_revision(PACKAGE, 1)
     )
     assert (denied.status, denied.reason) == ("DENIED", "human_review_not_approved")
-
     await approve(reviews)
     other = PRINCIPAL.model_copy(update={"subject": "other-agent"})
     unauthorized = await facade.request(
@@ -170,14 +159,10 @@ async def test_exact_replay_survives_revoke_but_changed_replay_conflicts(subject
     approved = await approve(reviews)
     operation_id = uuid4()
     first = await facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision)
-    revoked = grant.model_copy(
-        update={"id": uuid4(), "version": 2, "state": "revoked"}
-    )
+    revoked = grant.model_copy(update={"id": uuid4(), "version": 2, "state": "revoked"})
     await GrantState(engine).issue(revoked, 1)
-
     replay = await facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision)
     changed = await facade.request(PRINCIPAL, operation_id, uuid4(), approved.package_revision)
-
     assert replay.status == "REPLAYED"
     assert replay.task_run_request_id == first.task_run_request_id
     assert (changed.status, changed.reason) == ("CONFLICT", "operation_identity_conflict")
@@ -189,7 +174,6 @@ async def test_stale_package_or_revoked_authority_creates_zero_requests(subject)
     approved = await approve(reviews)
     stale = await facade.request(PRINCIPAL, uuid4(), PACKAGE, "pg_stale")
     assert (stale.status, stale.reason) == ("STALE", "package_revision_changed")
-
     async with engine.begin() as connection:
         await connection.execute(update(canonical_work).values(completed=True))
     terminal = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
@@ -202,10 +186,7 @@ async def test_stale_package_or_revoked_authority_creates_zero_requests(subject)
     assert (terminal.status, terminal.reason) == ("DENIED", "package_not_active")
     async with engine.begin() as connection:
         await connection.execute(update(canonical_work).values(lifecycle_state="CURRENT"))
-
-    revoked = grant.model_copy(
-        update={"id": uuid4(), "version": 2, "state": "revoked"}
-    )
+    revoked = grant.model_copy(update={"id": uuid4(), "version": 2, "state": "revoked"})
     await GrantState(engine).issue(revoked, 1)
     denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
     assert (denied.status, denied.reason) == ("STALE", "send_authority_not_current")

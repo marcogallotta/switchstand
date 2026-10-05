@@ -41,6 +41,7 @@ from .grants import (
     RelationPatch,
     ScalarPatch,
 )
+from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
     DispositionEvidence,
@@ -156,11 +157,15 @@ ORDINARY_EFFECT_TOOLS = frozenset({
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
 OUTCOME_STATE_TOOLS = frozenset({"outcome_state_update"})
+IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     """Emit private-host approval metadata; reject unreviewed surface growth."""
-    if name not in ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS | OUTCOME_STATE_TOOLS:
+    if name not in (
+        ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS | OUTCOME_STATE_TOOLS
+        | IMPLEMENTATION_REQUEST_TOOLS
+    ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
         # ChatGPT prompts for ordinary effects even when this private app allows all tools.
@@ -484,6 +489,19 @@ def build_ordinary_tools(
         )
         audited("outcome_state_update", str(owner_work_id), result.status)
         return OutcomeStateUpdateResult(status=result.status, state_id=result.state_id)
+
+    async def implementation_request(
+        api_version: Literal["1"], operation_id: UUID,
+        package_work_id: UUID, observed_revision: Annotated[str, Field(min_length=1)],
+    ) -> ImplementationRequestResult:
+        """Create or replay one authorized implementation request for an exact package."""
+        del api_version
+        correlate(package_work_id)
+        result = await service.implementation_request(
+            operation_id, package_work_id, observed_revision
+        )
+        audited("implementation_request", str(package_work_id), result.status)
+        return result
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
@@ -907,6 +925,8 @@ def build_ordinary_tools(
         ("work_update", enriched_work_update if service.outcome_state_enabled else work_update),
         *((("outcome_state_update", outcome_state_update),)
           if service.outcome_state_enabled else ()),
+        *((("implementation_request", implementation_request),)
+          if service.implementation_requests is not None else ()),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
