@@ -20,8 +20,11 @@ from switchstand.reviews import (
     CanonicalReviewBrief,
     ReviewBasis,
     ReviewEnvelope,
+    ReviewGuidelines,
     ReviewOccurrenceState,
     ReviewPolicy,
+    ReviewRequest,
+    ReviewService,
     _stable,
 )
 from switchstand.state import work_handles
@@ -111,3 +114,38 @@ async def test_occurrence_store_accepts_only_authenticated_direct_request(occurr
     assert len(deliveries) == 1
     assert deliveries[0][1] == envelope
     assert deliveries[0][0].sender_work_id == requester.endpoint_id
+
+
+async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
+    occurrence_runtime,
+):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester_result = await mailboxes.register_agent("Requester", "principal-a", "chat-a")
+    reviewer_result = await mailboxes.register_agent("Reviewer", "principal-b", "chat-b")
+    requester, reviewer = requester_result.mailbox, reviewer_result.mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+    request = ReviewRequest(
+        subject_work_id=subject_id, observed_revision=revision,
+        review_kind="CODE", candidate_ref="git:exact",
+    )
+    sent = await service.request(request, requester)
+    assert sent.status == "SENT" and sent.delivery_id is not None
+    assert await service.request(request, requester) == sent
+    delivery, envelope = (await occurrences.request_deliveries(sent.review_id))[0]
+    assert delivery.delivery_id == sent.delivery_id
+    assert envelope.brief.material_claim == "Material claim"
+    assert envelope.brief.named_evidence == ("git:exact",)
+
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+    stale = await service.request(request, requester)
+    assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
