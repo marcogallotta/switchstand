@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +16,7 @@ MANIFEST_NAME = "switchstand-current.manifest.json"
 CHECKSUM_NAME = "switchstand-current.bundle.sha256"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{RELEASE_TAG}"
 REFS_API = f"https://api.github.com/repos/{REPOSITORY}/git/matching-refs/heads/"
+GITHUB_TOKEN_ENV = "SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN"
 
 
 class RepositoryBundleResolution(BaseModel):
@@ -46,7 +49,28 @@ def _pending(required_sha: str | None, reason: str) -> RepositoryBundleResolutio
     )
 
 
-async def _authoritative_refs(http: httpx.AsyncClient) -> dict[str, str]:
+def _is_bundle_api_url(url: str, *, release: bool = False) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com" or parsed.fragment:
+        return False
+    if release:
+        return parsed.path == urlsplit(RELEASE_API).path and not parsed.query
+    return parsed.path == urlsplit(REFS_API).path
+
+
+async def _api_get(
+    http: httpx.AsyncClient,
+    url: str,
+    token: str,
+    *,
+    release: bool = False,
+) -> httpx.Response:
+    if not _is_bundle_api_url(url, release=release):
+        raise ValueError("foreign GitHub API URL")
+    return await http.get(url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=False)
+
+
+async def _authoritative_refs(http: httpx.AsyncClient, token: str) -> dict[str, str]:
     refs: dict[str, str] = {}
     next_url: str | None = REFS_API
     seen_urls: set[str] = set()
@@ -54,7 +78,7 @@ async def _authoritative_refs(http: httpx.AsyncClient) -> dict[str, str]:
         if next_url in seen_urls:
             raise ValueError("cyclic refs pagination")
         seen_urls.add(next_url)
-        response = await http.get(next_url)
+        response = await _api_get(http, next_url, token)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):
@@ -72,11 +96,17 @@ async def _authoritative_refs(http: httpx.AsyncClient) -> dict[str, str]:
 
 
 async def resolve_repository_bundle(
-    required_sha: str | None = None, client: httpx.AsyncClient | None = None,
+    required_sha: str | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> RepositoryBundleResolution:
+    token = os.getenv(GITHUB_TOKEN_ENV, "").strip()
+    if not token:
+        return RepositoryBundleResolution(
+            status="unavailable", required_sha=required_sha, reason="github_unavailable"
+        )
     owned = client is None
     http = client or httpx.AsyncClient(
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=10.0,
         trust_env=False,
         headers={
@@ -85,7 +115,7 @@ async def resolve_repository_bundle(
         },
     )
     try:
-        release_response = await http.get(RELEASE_API)
+        release_response = await _api_get(http, RELEASE_API, token, release=True)
         if release_response.status_code == 404:
             return _pending(required_sha, "cache_missing")
         release_response.raise_for_status()
@@ -96,14 +126,18 @@ async def resolve_repository_bundle(
         if bundle_asset is None or manifest_asset is None or checksum_asset is None:
             return _pending(required_sha, "cache_transition")
 
-        manifest_response = await http.get(str(manifest_asset["browser_download_url"]))
+        manifest_response = await http.get(
+            str(manifest_asset["browser_download_url"]), follow_redirects=True
+        )
         manifest_response.raise_for_status()
         manifest = manifest_response.json()
-        checksum_response = await http.get(str(checksum_asset["browser_download_url"]))
+        checksum_response = await http.get(
+            str(checksum_asset["browser_download_url"]), follow_redirects=True
+        )
         checksum_response.raise_for_status()
         checksum = checksum_response.text.strip().split()[0]
 
-        authoritative = await _authoritative_refs(http)
+        authoritative = await _authoritative_refs(http, token)
         manifest_refs = {str(k): str(v) for k, v in manifest.get("refs", {}).items()}
         snapshot_digest = canonical_ref_map_digest(manifest_refs)
         expected_checksum = str(manifest.get("bundle_sha256", ""))
@@ -131,7 +165,7 @@ async def resolve_repository_bundle(
                 True if required_sha and required_sha in manifest_refs.values() else None
             ),
         )
-    except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError:
         return RepositoryBundleResolution(
             status="unavailable", required_sha=required_sha, reason="github_unavailable"
         )

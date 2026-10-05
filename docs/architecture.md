@@ -345,7 +345,11 @@ release is only a cache: it contains a bundle, manifest, and checksum published 
 `.github/workflows/repository-bundle.yml` after the Quality workflow. Resolution independently reads
 the repository's current branch refs and returns `current` only when the authoritative ref map,
 manifest digest, release asset digest, and checksum agree. A transition returns `refresh_pending`;
-provider failure returns `unavailable`.
+provider failure returns `unavailable`. Those release and ref API reads use only the dedicated
+server-side `SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN`; missing configuration fails before network
+access. The bearer is attached only to validated exact `https://api.github.com` bundle endpoints,
+authenticated redirects and foreign pagination origins are rejected, and release asset downloads
+remain unauthenticated.
 
 The bundle can transport branch objects and allow an exact requested SHA to be checked out, but the
 release tag and manifest do not become source authority. GitHub branch refs remain authoritative,
