@@ -7,6 +7,7 @@ import ast
 import fcntl
 import hashlib
 import http.client
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import signal
 import socket
 import stat
 import subprocess
+import tokenize
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -212,7 +214,7 @@ def _validate_launch_mapping(config: Config) -> None:
     raise Failed("candidate launcher is not the exact runtime retarget")
 
 
-def _normalized_launcher(source: bytes, runtime: Path) -> tuple[str, str] | None:
+def _normalized_launcher(source: bytes, runtime: Path) -> str | None:
     """Redact only the exact `RUNTIME = Path(...)` literal of an ASCII launcher."""
     try:
         text = source.decode("ascii")
@@ -244,8 +246,31 @@ def _normalized_launcher(source: bytes, runtime: Path) -> tuple[str, str] | None
     lines = text.splitlines(keepends=True)
     start = sum(len(line) for line in lines[:runtime_literal.lineno - 1]) + runtime_literal.col_offset
     end = sum(len(line) for line in lines[:runtime_literal.end_lineno - 1]) + runtime_literal.end_col_offset
-    runtime_literal.value = "<switchstand-runtime>"
-    return ast.dump(tree, include_attributes=False), text[:start] + text[end:]
+    payloads: list[tuple[int, int]] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token in tokens:
+            token_start = sum(len(line) for line in lines[:token.start[0] - 1]) + token.start[1]
+            token_end = sum(len(line) for line in lines[:token.end[0] - 1]) + token.end[1]
+            if token.type != tokenize.STRING or not (start <= token_start and token_end <= end):
+                continue
+            raw = token.string
+            if (
+                len(raw) < 2
+                or raw[0] not in "\"'"
+                or raw[-1] != raw[0]
+                or raw[0] in raw[1:-1]
+                or "\\" in raw[1:-1]
+            ):
+                return None
+            payloads.append((token_start + 1, token_end - 1))
+    except tokenize.TokenError:
+        return None
+    if len(payloads) < 2:
+        return None
+    for payload_start, payload_end in reversed(payloads):
+        text = text[:payload_start] + "<switchstand-runtime>" + text[payload_end:]
+    return text
 
 
 def exclusive_lock(path: Path = LOCK) -> TextIO:

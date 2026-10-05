@@ -682,6 +682,28 @@ def test_launch_mapping_rejects_non_runtime_edit_with_split_literal(tmp_path: Pa
         _validate_launch_mapping(subject)
 
 
+def test_launch_mapping_rejects_split_literal_interstitial_comment_edit(tmp_path: Path):
+    subject = config(tmp_path)
+
+    def launcher(runtime: Path, comment: str) -> str:
+        return (
+            "from pathlib import Path\n"
+            "RUNTIME = Path(\n"
+            f"    {(str(runtime.parent) + '/')!r}\n"
+            f"    # {comment}\n"
+            f"    {runtime.name!r}\n"
+            ")\n"
+        )
+
+    subject.launcher.write_text(launcher(subject.current_runtime, "current runtime"))
+    subject.candidate_launcher.write_text(
+        launcher(subject.candidate_runtime, "candidate runtime")
+    )
+
+    with pytest.raises(Failed, match="exact runtime retarget"):
+        _validate_launch_mapping(subject)
+
+
 def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
