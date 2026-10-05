@@ -23,6 +23,18 @@ From the canonical repository, raw `codex` enters through a materialized host sh
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
+#### Setup and workflow failure journal
+
+Immediately record every newly observed setup or workflow failure through the repo-local,
+Git-ignored `friction.md` entrypoint. Each entry states the attempted claim, observed result,
+state-change truth, and smallest clearing action. Keep a current remaining-priority view without
+erasing append-only evidence. Before Coordinator handoff, reconcile that view against current
+truth. When the append-only section becomes too long for quick use, preserve it intact in a dated
+sibling beside the durable local-state backing file, then restart `friction.md` with the current
+priorities. If the path is not writable, preserve the same facts in the authorized work result or
+handoff. Missing feedback capability does not block assigned work. Before any replacement write,
+reread the exact target and preserve user changes.
+
 #### Coordinator handoff
 
 The launcher records the canonical repository commit and control manifest at Coordinator start and injects their exact paths into developer context. Reread them after compaction and before handoff. The outgoing Coordinator first preserves its exact open obligations in private durable state, then runs `scripts/coordinator-handoff <that-exact-start-commit-path> <obligations-file>`. The command refuses dirty or divergent canonical `main`, fetches through the canonical remote identity, fast-forwards and reads back the exact revision, and registers a pending handoff. The next plain raw `codex` launch binds the actual successor generation and generated manifest to that handoff; resumed and subcommand launches cannot consume it. The successor reads the obligations and acknowledges the deterministic launcher proof. Until that acknowledgement, obligations have not transferred and the old generation must not retire. Failures retain private evidence under `~/.local/state/switchstand/codex/handoffs`.
@@ -37,7 +49,7 @@ The managed surface is not general workspace discovery and is not interchangeabl
 
 ### Ordinary ChatGPT
 
-ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works with admitted provider-neutral WorkIds, durable messages, and protected operations. A chat without a repository obtains the current repository bundle through `repository_bundle_get`; a chat with a normal checkout uses Git normally.
+ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works with admitted provider-neutral WorkIds, durable messages, and protected operations. A chat without a repository uses `repository_bundle_get`, accepts only `current`, verifies the advertised SHA-256, and materializes the bundle as a normal repository. It retries `refresh_pending` and never substitutes stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. A chat with a normal checkout uses Git normally.
 
 The desired user model is one chat equals one stable named agent identity. The visible name, authenticated OAuth principal, hidden ChatGPT chat identity, MCP session generation, and any WorkId are distinct. The HTTP edge reads `openai/session` from MCP call metadata; the mailbox stores a hash of that value and binds one visible name to each principal-and-chat pair. Distinct chats under the same OAuth principal can register distinct names, while one chat cannot register multiple names. The agent does not supply or see the hidden chat value. An unavailable chat identity yields a recovery result; explicit same-principal takeover of a name fences the old chat. When Marco declares an agent under another authenticated identity dead, the replacement session uses `agent_transfer_request` and reports its request ID. A host operator then runs `switchstand-agent-mailbox-transfer <request-id>` with the edge database environment. That command approves only the exact recorded mailbox preimage and destination session; it preserves the endpoint and pending deliveries, increments generation, and blocks the old owner. A stale request or a destination session already bound elsewhere is terminal and must not be retried under a new ID without rereading current state. This describes the code contract, not a claim that the live client journey has been accepted. Because `agent_transfer_request` changes the client-visible MCP schema, activation still requires app reinstall, a fresh chat, and exact schema/behavior verification.
 
