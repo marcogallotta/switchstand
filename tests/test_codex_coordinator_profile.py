@@ -102,6 +102,16 @@ trusted_hash = "must-not-copy"
     assert "agent_takeover" not in instructions
     assert "agent_register" not in instructions
     assert "agent_transfer_request" not in instructions
+    assert (
+        "This raw Coordinator launch is ordinary and unbound: never call "
+        'work_get(api_version="1") without a WorkId to infer current focus.'
+    ) in instructions
+    assert (
+        "Ground work through an exact WorkId from Marco's direct assignment or an acknowledged "
+        "addressed handoff, and call work_get with that exact ID. If neither trusted source "
+        "supplies one, report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted "
+        "launch-bound managed runs."
+    ) in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert "forked Workers" not in instructions
     assert profile["features"] == {"hooks": True, "multi_agent": True}
