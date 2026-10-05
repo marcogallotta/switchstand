@@ -62,9 +62,9 @@ def test_human_review_migration_enforces_shape_and_preserves_decisions(
     engine = create_engine(url)
     _empty_database(engine)
     config = _config(url)
-    command.upgrade(config, "0019_task_run_results")
+    command.upgrade(config, "0020_task_run_results")
     package_work_id = _insert_package(engine)
-    command.upgrade(config, "0020_human_reviews")
+    command.upgrade(config, "0021_human_reviews")
 
     database = inspect(engine)
     assert {column["name"] for column in database.get_columns("human_review_consequences")} == {
@@ -127,11 +127,11 @@ def test_human_review_migration_enforces_shape_and_preserves_decisions(
         )
 
     with pytest.raises(RuntimeError, match="preserve durable Human Review decisions"):
-        command.downgrade(config, "0019_task_run_results")
+        command.downgrade(config, "0020_task_run_results")
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0020_human_reviews"
+            == "0021_human_reviews"
         )
         assert connection.scalar(text("SELECT count(*) FROM human_review_consequences")) == 1
     engine.dispose()
@@ -144,14 +144,14 @@ def test_empty_human_review_downgrade_and_reupgrade_recovers_schema(
     engine = create_engine(url)
     _empty_database(engine)
     config = _config(url)
-    command.upgrade(config, "0020_human_reviews")
-    command.downgrade(config, "0019_task_run_results")
+    command.upgrade(config, "0021_human_reviews")
+    command.downgrade(config, "0020_task_run_results")
     assert "human_review_consequences" not in inspect(engine).get_table_names()
-    command.upgrade(config, "0020_human_reviews")
+    command.upgrade(config, "0021_human_reviews")
     assert "human_review_consequences" in inspect(engine).get_table_names()
     with engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0020_human_reviews"
+            == "0021_human_reviews"
         )
     engine.dispose()

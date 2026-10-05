@@ -151,7 +151,11 @@ Author/reviewer agreement does not defeat the correction-ratchet reset. If cumul
 
 ## Refresh check
 
-When the current bootstrap/routed procedure calls for a quality refresh, reopen this exact candidate/control-SHA version and re-ground only these questions:
+For substantive code/config/test implementation, refresh on entry/re-entry/context replacement, before the first material commitment, between distinct material slices, after failed hypotheses/material failures/findings/accepted corrections, before material shape changes, and before readiness/handoff/completion claims.
+
+For substantive Code Review, refresh on entry/re-entry/context replacement, before substantive review, after candidate/evidence/currentness or focused-correction changes, and before verdict/handoff.
+
+At each refresh, reopen this exact candidate/control-SHA version and re-ground only these questions:
 1. What exact outcome/non-goals and current canonical owner/reuse seam/Execution Plan shape govern the next work?
 2. Has the solution shape materially changed, and is there now a smaller delete/reuse/reframe route?
 3. What claim-specific oracle/evidence is still missing, NOT_RUN, SKIPPED, MISSING_CAPABILITY, or UNKNOWN?
