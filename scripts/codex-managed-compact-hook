@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import sys
 
-
 CONTEXT = (
     "MANAGED WORKER POST-COMPACTION RE-ENTRY. Call work_get(api_version=\"1\") "
     "without a WorkId and recover the launch-bound assignment, its current revision/routing, "
