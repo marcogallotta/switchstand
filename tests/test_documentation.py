@@ -119,13 +119,13 @@ def test_agents_routes_only_current_role_function_context():
 
     required = (
         "Codex has exactly two roles: **Coordinator** and **Worker**",
-        "Root is the Coordinator for the overall assigned portfolio/integration",
-        "Coordinator in a delegated lane owns only that lane",
+        "Root owns the overall assigned portfolio/integration",
+        "delegated Coordinator owns only its lane",
         "**Implementation Worker:** exact task + current Implementation Specification + current Design Specification",
         "**Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate",
         "**Integration/landing Coordinator:** exact candidate/current target",
-        "Coordinator challenge of scope growth, review overreach, test/qualification ratcheting",
-        "Managed Workers use only procedures/references carried by their bound current package",
+        "Coordinator challenge of scope growth, review overreach, test ratcheting",
+        "Managed Workers use only procedures/references in their bound current package",
         "Missing required guidance makes only that action `UNKNOWN`/unavailable",
         "Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch",
         "mechanically established required-currentness/applicable-invariant contradiction",
