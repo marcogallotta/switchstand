@@ -8,20 +8,26 @@ individual posts; search inside a source for the current task.
 
 ## How to use it
 
-1. For each material question the task depends on, name the two or three closest sources before you
-   start searching. Do not read the whole list.
-2. On completion, disposition every named source as USED, REJECTED, or UNREACHABLE, each with a
+1. Bind research to a decision before searching: state the question, desired outcome, timeframe,
+   decision it will inform, and evidence standard.
+2. Search broad and short first, then narrow on the strongest leads. Follow a lead only while it can
+   change the answer; set an explicit stop condition and stop when it is met.
+3. For each material question, name the two or three closest sources before searching. Do not read
+   the whole list. Verify that every material citation is current, reachable, and supports the claim;
+   surface meaningful disagreement rather than hiding or averaging it.
+4. On completion, disposition every named source as USED, REJECTED, or UNREACHABLE, each with a
    reason. A consequential conclusion needs at least two independently-sourced dispositions unless the
    question is purely about one authoritative specification; when a genuine opposing position exists,
    include a source capable of contradicting the favored design. One confirming source is not a
    completed search — do not stop at the first source that supports the hypothesis you already hold.
-3. If evidence for an important question is still insufficient, deepen the bounded search with
+5. If evidence for an important question is still insufficient, deepen the bounded search with
    current web-research capability, directly or through an authorized Worker. Keep the source
    dispositions; do not involve Marco merely to choose a research provider.
-4. If a source matters and you cannot reach it, ask Marco to retrieve it.
+6. Workers return compact cited evidence and source dispositions; Root synthesizes the decision.
+   If a source matters and you cannot reach it, ask Marco to retrieve it.
 
 Whether something is important, "enough," or genuinely uncontested is your judgment; when unsure,
-escalate. The disposition in step 2 is the completion condition for research on a material question —
+escalate. The disposition in step 4 is the completion condition for research on a material question —
 record it with the conclusion it supports (task, chat, or PR description), not only in this file.
 
 This is enforced the same way everything else non-mechanical in this repo is: at review, not by a

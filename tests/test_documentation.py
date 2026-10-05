@@ -132,6 +132,24 @@ def test_research_escalation_uses_current_capability_without_provider_routing():
     assert [rule for rule in stale if rule in sources] == []
 
 
+def test_research_owner_preserves_the_decision_bound_loop():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    sources = " ".join((ROOT / "docs/research-sources.md").read_text().split())
+
+    required = (
+        "state the question, desired outcome, timeframe, decision it will inform, and evidence standard",
+        "Search broad and short first, then narrow on the strongest leads",
+        "Follow a lead only while it can change the answer",
+        "set an explicit stop condition and stop when it is met",
+        "every material citation is current, reachable, and supports the claim",
+        "surface meaningful disagreement rather than hiding or averaging it",
+        "Workers return compact cited evidence and source dispositions; Root synthesizes the decision",
+    )
+
+    assert [rule for rule in required if rule not in sources] == []
+    assert [rule for rule in required if rule in agents] == []
+
+
 def test_authority_bootstrap_preserves_effect_and_grounding_boundaries():
     agents = (ROOT / "AGENTS.md").read_text()
     authority = agents.split("## Authority and grounding", 1)[1].split(
@@ -285,7 +303,7 @@ def test_coordinator_handoff_docs_preserve_no_claim_semantics():
 
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
-    interaction = (ROOT / "docs/human-interaction.md").read_text()
+    interaction = " ".join((ROOT / "docs/human-interaction.md").read_text().split())
     human_input = (ROOT / "docs/human-input.md").read_text()
     human_review = (ROOT / "docs/human-review.md").read_text()
 
@@ -297,6 +315,7 @@ def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     interaction_rules = (
         "Root reports the portfolio",
         "Other agents report only their assigned work and explicitly named children",
+        "state in plain language the outcome, exact change, consequence, size, and recommendation",
         "<Work> — <state>",
         "Changed: <material change>",
         "Constraint: <gate/blocker/none>",
@@ -326,6 +345,7 @@ def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
         "creates no parallel work-management store",
     )
     assert [rule for rule in interaction_rules if rule not in interaction] == []
+    assert "exact change, consequence, size, and recommendation" not in agents
     assert "Raise Human Input before the next material commitment would harden a choice" in human_input
     assert "every material implementation gets final live Human Review before dispatch" in human_review
 
