@@ -81,7 +81,7 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
     return httpx.AsyncClient(transport=httpx.MockTransport(response))
 
 
-async def test_four_current_green_gates_are_ready_with_exact_identity_and_timing():
+async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timing():
     async with client() as http:
         result = await qualify_repository_candidate(7, client=http)
     assert (result.status, result.base_sha, result.head_sha, result.composition_sha) == (
@@ -110,7 +110,7 @@ async def test_missing_gate_and_old_composition_fail_closed():
         stale = await qualify_repository_candidate(7, client=http)
     assert stale.status == "NOT_READY" and stale.reason == "composition_mismatch"
     assert [g.reason for g in stale.gates if g.subject_kind == "composition"] == [
-        "wrong-head", "wrong-head",
+        "wrong-head",
     ]
 
     async with client(wrong_head="d" * 40) as http:
@@ -127,7 +127,6 @@ async def test_missing_gate_and_old_composition_fail_closed():
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     overrides = {
         "Exact-head Quality": ("in_progress", None),
-        "Exact-head Docker lifecycle": ("completed", "skipped"),
         "PR composition Quality": ("completed", "cancelled"),
     }
     async with client(overrides=overrides) as http:
@@ -137,7 +136,6 @@ async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     assert compact.status == "NOT_READY"
     assert running.reason == "running" and running.running_for_ms is not None
     assert cancelled.reason == "cancelled" and cancelled.duration_ms == 2000
-    assert next(g for g in compact.gates if g.name == "Exact-head Docker lifecycle").reason == "skipped"
     assert cancelled.failed_steps == [] and cancelled.failure_excerpt is None
 
     async with client(overrides=overrides) as http:

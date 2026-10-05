@@ -50,7 +50,81 @@ class Plan:
     selected_tests: tuple[str, ...]
     reasons_by_test: dict[str, tuple[str, ...]]
     fallback_reasons: tuple[str, ...]
+    destructive: bool = False
     planner_revision: str = PLANNER_REVISION
+
+
+@dataclass(frozen=True)
+class ForegroundAuthority:
+    mode: Literal["PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"]
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BroadQualityRun:
+    event: Literal["push", "schedule"]
+    head_sha: str
+    conclusion: str
+    workflow_blob: str | None
+
+
+def selector_health_clear(
+    *, history_complete: bool, current_workflow_blob: str,
+    default_sha: str, runs: Sequence[BroadQualityRun],
+) -> bool:
+    """Keep the promoted rule demoted after any broad failure in its generation."""
+
+    if (
+        not history_complete
+        or not current_workflow_blob
+        or not default_sha
+        or any(run.workflow_blob is None for run in runs)
+    ):
+        return False
+    generation = tuple(run for run in runs if run.workflow_blob == current_workflow_blob)
+    return (
+        any(
+            run.event == "push"
+            and run.head_sha == default_sha
+            and run.conclusion == "success"
+            for run in generation
+        )
+        and all(run.conclusion == "success" for run in generation)
+    )
+
+
+def foreground_authority(
+    plan: Plan,
+    *,
+    subject_verified: bool,
+    selector_health_clear: bool,
+    cumulative_stack_top: bool = False,
+) -> ForegroundAuthority:
+    """Promote only the reviewed direct test-module class; fail closed otherwise."""
+
+    reasons: list[str] = []
+    direct_test = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
+    if plan.basis_kind != "exact" or not subject_verified:
+        reasons.append("subject-not-exact-current")
+    if plan.planner_revision != PLANNER_REVISION:
+        reasons.append("planner-revision-not-promoted")
+    if not selector_health_clear:
+        reasons.append("selector-health-not-clear")
+    if cumulative_stack_top:
+        reasons.append("cumulative-stack-top-requires-full")
+    if plan.mode != "SELECTED" or plan.fallback_reasons:
+        reasons.append("planner-did-not-select-cleanly")
+    if plan.destructive:
+        reasons.append("delete-or-rename")
+    if not plan.changed_paths or any(direct_test(path) is None for path in plan.changed_paths):
+        reasons.append("changed-path-outside-direct-test-modules")
+    if not plan.selected_tests or any(direct_test(path) is None for path in plan.selected_tests):
+        reasons.append("selected-path-outside-direct-test-modules")
+    if not set(plan.changed_paths).issubset(plan.selected_tests):
+        reasons.append("changed-test-module-not-selected")
+    if reasons:
+        return ForegroundAuthority("FULL_FALLBACK", tuple(sorted(set(reasons))))
+    return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -236,6 +310,7 @@ def _plan(
         selected,
         {test: tuple(sorted(entries)) for test, entries in sorted(reasons.items())},
         tuple(sorted(set(fallback))),
+        destructive,
     )
 
 
@@ -251,7 +326,9 @@ def plan_exact(repo: Path, base: str, head: str) -> Plan:
             if path
         )
     except RuntimeError:
-        return Plan("NO_PLAN", "exact", base, head, (), (), {}, ("exact basis unavailable",))
+        return Plan(
+            "NO_PLAN", "exact", base, head, (), (), {}, ("exact basis unavailable",), False
+        )
     try:
         changed, destructive = _changed(repo, base_sha, head_sha)
     except RuntimeError:
@@ -268,6 +345,7 @@ def plan_exact(repo: Path, base: str, head: str) -> Plan:
             tests,
             {},
             ("exact diff unavailable",),
+            False,
         )
     return _plan(
         basis_kind="exact",
