@@ -141,6 +141,30 @@ def test_agents_routes_only_current_role_function_context():
     assert len(roles.encode()) <= 4000
 
 
+def test_code_quality_owner_carries_role_specific_refresh_cadence():
+    agents = (ROOT / "AGENTS.md").read_text()
+    quality = " ".join((ROOT / "docs/code-quality.md").read_text().split())
+
+    implementer = (
+        "refresh on entry/re-entry/context replacement",
+        "before the first material commitment",
+        "between distinct material slices",
+        "after failed hypotheses/material failures/findings/accepted corrections",
+        "before material shape changes",
+        "before readiness/handoff/completion claims",
+    )
+    reviewer = (
+        "before substantive review",
+        "after candidate/evidence/currentness or focused-correction changes",
+        "before verdict/handoff",
+    )
+
+    assert [rule for rule in implementer if rule not in quality] == []
+    assert [rule for rule in reviewer if rule not in quality] == []
+    assert "between distinct material slices" not in agents
+    assert "before verdict/handoff" not in agents
+
+
 def test_research_escalation_uses_current_capability_without_provider_routing():
     sources = " ".join((ROOT / "docs/research-sources.md").read_text().split())
 
