@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 from .canonical_relations import work_dependencies
 from .canonical_work import canonical_work
+from .human_reviews import human_review_consequences
 from .repository_candidate import (
     QualificationGate,
     RepositoryCandidateQualification,
@@ -25,6 +26,22 @@ from .work_events import work_events
 
 def _time(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(UTC).isoformat()
+
+
+def _review_wait(
+    created_at: datetime, decided_at: datetime | None, captured_at: datetime,
+) -> dict[str, object]:
+    end = decided_at or captured_at
+    valid = (created_at.utcoffset() is not None and end.utcoffset() is not None
+             and end >= created_at)
+    return {
+        "kind": "REVIEW",
+        "status": ("CLOSED" if decided_at is not None else "OPEN") if valid else "UNKNOWN",
+        "reason": None if valid else "CLOCK_SKEW_OR_NAIVE_TIMESTAMP",
+        "start": _time(created_at), "end": _time(end),
+        "duration_ms": int((end - created_at).total_seconds() * 1000) if valid else None,
+        "clock_basis": "RECORDED_WALL_TIME",
+    }
 
 
 async def _relations(
@@ -74,6 +91,16 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         work_events.c.id, work_events.c.sequence, work_events.c.subtype,
         work_events.c.result_version, work_events.c.created_at,
     ).where(work_events.c.work_id == work_id).order_by(work_events.c.sequence))).all()
+    reviews = (await connection.execute(select(
+        human_review_consequences.c.consequence_id,
+        human_review_consequences.c.state,
+        human_review_consequences.c.decision,
+        human_review_consequences.c.created_at,
+        human_review_consequences.c.decided_at,
+    ).where(human_review_consequences.c.package_work_id == work_id).order_by(
+        human_review_consequences.c.created_at,
+        human_review_consequences.c.consequence_id,
+    ))).all()
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -99,7 +126,30 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     else:
         root_status, root_reason = "EXACT", None
     admission = cast(datetime | None, work.admitted_at)
-    return {
+    review_items = [{
+        "consequence_id": str(row.consequence_id),
+        "state": row.state, "decision": row.decision,
+        "prepared_at": _time(row.created_at), "decided_at": _time(row.decided_at),
+        "wait": _review_wait(row.created_at, row.decided_at, captured_at),
+    } for row in reviews]
+    ordered_evidence = [{
+        "source": "work_events", "kind": row.subtype, "id": str(row.id),
+        "at": _time(row.created_at), "duration_ms": 0,
+    } for row in events]
+    for row in reviews:
+        ordered_evidence.append({
+            "source": "human_review", "kind": "PREPARED",
+            "id": str(row.consequence_id), "at": _time(row.created_at), "duration_ms": 0,
+        })
+        if row.decided_at is not None:
+            ordered_evidence.append({
+                "source": "human_review", "kind": "DECIDED",
+                "id": str(row.consequence_id), "at": _time(row.decided_at), "duration_ms": 0,
+            })
+    ordered_evidence.sort(key=lambda item: (cast(str, item["at"]),
+                                            cast(str, item["source"]),
+                                            cast(str, item["id"])))
+    value: dict[str, object] = {
         "schema": "switchstand.flow_report.v1", "status": "PARTIAL",
         "work_id": str(work_id), "captured_at": _time(captured_at),
         "snapshot": {"isolation": isolation, "read_only": read_only,
@@ -128,19 +178,28 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
                 "at": _time(row.created_at),
             } for row in events],
         },
+        "human_review": {
+            "coverage": "DIRECT_PACKAGE_WORK_ID",
+            "items": review_items,
+        },
+        "ordered_evidence": {
+            "meaning": "OBSERVATIONAL_NOT_CAUSAL",
+            "items": ordered_evidence,
+        },
         "coverage": {
             "canonical_work": {"status": "INCLUDED", "reason": "CURRENT_ONLY"},
             "relations": {"status": "INCLUDED", "reason": "CURRENT_ONLY"},
             "work_events": {"status": "INCLUDED", "reason": "OBSERVED_ONLY"},
+            "human_review": {"status": "INCLUDED", "reason": "DIRECT_PACKAGE_WORK_ID"},
             "messages": {"status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE"},
             "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
-            **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B1"} for name in (
-                "human_trajectory", "outcome_state", "failures", "human_review",
+            **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B4"} for name in (
+                "human_trajectory", "outcome_state", "failures",
                 "lifecycle_timing", "github", "run_receipts",
             )},
         },
-        "elapsed": "NOT_COMPUTED_B1",
     }
+    return project_wall(value)
 
 
 async def report(engine: AsyncEngine, work_id: UUID) -> dict[str, object]:
@@ -172,6 +231,90 @@ def _union_ms(intervals: list[tuple[datetime, datetime]]) -> int:
             total += int((current_end - current_start).total_seconds() * 1000)
             current_start, current_end = started, completed
     return total + int((current_end - current_start).total_seconds() * 1000)
+
+
+def _aware(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.utcoffset() is not None else None
+
+
+def _unknown_elapsed(reason: str, start: object = None, end: object = None) -> dict[str, object]:
+    return {
+        "clock_basis": "RECORDED_WALL_TIME",
+        "wall_status": "UNKNOWN", "wall_reason": reason,
+        "wall_start": start, "wall_end": end, "wall_ms": None,
+        "projection_status": "UNKNOWN", "projection_reason": reason,
+        "observed_interval_union_ms": None, "unobserved_wall_ms": None,
+        "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
+    }
+
+
+def project_wall(value: dict[str, object]) -> dict[str, object]:
+    """Project only validated recorded-wall intervals into the admission window."""
+    result = dict(value)
+    admission = cast(dict[str, object], value["admission"])
+    start, end = _aware(admission.get("at")), _aware(value.get("captured_at"))
+    if admission.get("status") != "KNOWN" or start is None or end is None:
+        result["elapsed"] = _unknown_elapsed(
+            "NOT_CAPTURED", admission.get("at"), value.get("captured_at"),
+        )
+        return result
+    if start > end:
+        result["elapsed"] = _unknown_elapsed(
+            "CLOCK_SKEW_OR_FUTURE_START", admission.get("at"), value.get("captured_at"),
+        )
+        return result
+
+    raw_intervals: list[tuple[object, object]] = []
+    reviews = cast(dict[str, object], value.get("human_review", {}))
+    for item in cast(list[dict[str, object]], reviews.get("items", [])):
+        wait = cast(dict[str, object], item["wait"])
+        raw_intervals.append(
+            (wait.get("start"), wait.get("end"))
+            if wait.get("status") in {"OPEN", "CLOSED"} else (None, None)
+        )
+    github = cast(dict[str, object] | None, value.get("github"))
+    if github is not None and github.get("status") == "OBSERVED":
+        subjects = cast(dict[str, dict[str, object]], github["subjects"])
+        for subject in subjects.values():
+            for interval in cast(list[dict[str, object]], subject["intervals"]):
+                raw_intervals.append((interval.get("started_at"), interval.get("completed_at")))
+
+    clipped: list[tuple[datetime, datetime]] = []
+    for raw_start, raw_end in raw_intervals:
+        interval_start, interval_end = _aware(raw_start), _aware(raw_end)
+        if interval_start is None or interval_end is None or interval_end < interval_start:
+            result["elapsed"] = {
+                "clock_basis": "RECORDED_WALL_TIME",
+                "wall_status": "KNOWN", "wall_reason": None,
+                "wall_start": admission["at"], "wall_end": value["captured_at"],
+                "wall_ms": int((end - start).total_seconds() * 1000),
+                "projection_status": "UNKNOWN", "projection_reason": "UNSAFE_INTERVAL",
+                "observed_interval_union_ms": None, "unobserved_wall_ms": None,
+                "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
+            }
+            return result
+        clipped_start, clipped_end = max(start, interval_start), min(end, interval_end)
+        if clipped_start < clipped_end:
+            clipped.append((clipped_start, clipped_end))
+    wall_ms = int((end - start).total_seconds() * 1000)
+    union_ms = _union_ms(clipped) if clipped else 0
+    result["elapsed"] = {
+        "clock_basis": "RECORDED_WALL_TIME",
+        "wall_status": "KNOWN", "wall_reason": None,
+        "wall_start": admission["at"], "wall_end": value["captured_at"],
+        "wall_ms": wall_ms,
+        "projection_status": "KNOWN", "projection_reason": None,
+        "observed_interval_union_ms": union_ms,
+        "unobserved_wall_ms": wall_ms - union_ms,
+        "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
+    }
+    return result
 
 
 def _github_subject(
@@ -244,7 +387,7 @@ def add_github_evidence(
         "reason": "CALLER_SUPPLIED" if status == "OBSERVED" else reason,
     }
     result["coverage"] = coverage
-    return result
+    return project_wall(result) if "admission" in result else result
 
 
 def render_concise(value: dict[str, object]) -> str:
@@ -272,6 +415,39 @@ def render_concise(value: dict[str, object]) -> str:
         (f"evidence_count={len(cast(list[object], events['items']))} "
          f"events_coverage={events['coverage']}"),
     ]
+    human_review = cast(dict[str, object] | None, value.get("human_review"))
+    if human_review is not None:
+        review_items = sorted(
+            cast(list[dict[str, object]], human_review["items"]),
+            key=lambda item: (cast(str, item["prepared_at"]),
+                              cast(str, item["consequence_id"])),
+        )
+        lines.append(
+            f"human_review_count={len(review_items)} "
+            f"coverage={human_review['coverage']}"
+        )
+        for item in review_items:
+            identifier = item["consequence_id"]
+            lines.append(
+                f"human_review_record id={identifier} state={item['state']} "
+                f"decision={item['decision']}"
+            )
+            lines.append(
+                f"human_review_point id={identifier} kind=PREPARED "
+                f"at={item['prepared_at']} duration_ms=0"
+            )
+            if item["decided_at"] is not None:
+                lines.append(
+                    f"human_review_point id={identifier} kind=DECIDED "
+                    f"at={item['decided_at']} duration_ms=0"
+                )
+            wait = cast(dict[str, object], item["wait"])
+            lines.append(
+                f"human_review_wait id={identifier} kind={wait['kind']} "
+                f"status={wait['status']} reason={wait['reason']} start={wait['start']} "
+                f"end={wait['end']} duration_ms={wait['duration_ms']} "
+                f"clock_basis={wait['clock_basis']}"
+            )
     github = cast(dict[str, object] | None, value.get("github"))
     if github is not None:
         lines.append(
@@ -291,7 +467,15 @@ def render_concise(value: dict[str, object]) -> str:
         f"coverage {name}={item['status']}:{item['reason']}"
         for name, item in sorted(coverage.items())
     )
-    lines.append(f"elapsed={value['elapsed']}")
+    elapsed = cast(dict[str, object], value["elapsed"])
+    lines.append(
+        f"elapsed wall_status={elapsed['wall_status']} wall_reason={elapsed['wall_reason']} "
+        f"wall_ms={elapsed['wall_ms']} projection_status={elapsed['projection_status']} "
+        f"projection_reason={elapsed['projection_reason']} "
+        f"observed_interval_union_ms={elapsed['observed_interval_union_ms']} "
+        f"unobserved_wall_ms={elapsed['unobserved_wall_ms']} "
+        f"interpretation={elapsed['unobserved_interpretation']}"
+    )
     return "\n".join(lines) + "\n"
 
 

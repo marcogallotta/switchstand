@@ -64,6 +64,10 @@ the existing repository-candidate qualifier validates their current identity. Ex
 composition gate intervals remain separate, and overlapping intervals are unioned within each
 subject. Provider, identity, stale-candidate, or incomplete-timestamp uncertainty produces
 `UNKNOWN` rather than an inferred span.
+Direct `package_work_id` Human Review rows add prepared/decided point evidence and recorded review
+waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
+overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
+explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI

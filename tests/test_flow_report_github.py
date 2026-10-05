@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 
 from switchstand import flow_report
-from switchstand.flow_report import add_github_evidence
+from switchstand.flow_report import add_github_evidence, project_wall
 from switchstand.repository_candidate import QualificationGate, RepositoryCandidateQualification
 
 HEAD = "a" * 40
@@ -53,6 +53,39 @@ def test_caller_supplied_exact_subjects_union_overlaps_without_cross_subject_sum
     assert result["coverage"]["github"] == {
         "status": "INCLUDED", "reason": "CALLER_SUPPLIED",
     }
+
+
+def test_wall_projection_unions_github_subjects_instead_of_summing_them() -> None:
+    value: dict[str, object] = {
+        **BASE,
+        "captured_at": "2026-01-01T00:00:20+00:00",
+        "admission": {"status": "KNOWN", "at": "2026-01-01T00:00:00+00:00"},
+    }
+    result = add_github_evidence(value, qualification(
+        gate("head", "exact_head", "2026-01-01T00:00:00+00:00",
+             "2026-01-01T00:00:10+00:00"),
+        gate("composition", "composition", "2026-01-01T00:00:05+00:00",
+             "2026-01-01T00:00:15+00:00"),
+    ), HEAD)
+
+    assert result["elapsed"]["observed_interval_union_ms"] == 15_000
+    assert result["elapsed"]["unobserved_wall_ms"] == 5_000
+
+
+def test_unsafe_interval_makes_union_and_remainder_unknown() -> None:
+    result = project_wall({
+        "captured_at": "2026-01-01T00:00:20+00:00",
+        "admission": {"status": "KNOWN", "at": "2026-01-01T00:00:00+00:00"},
+        "human_review": {"items": [{"wait": {
+            "start": "2026-01-01T00:00:01", "end": "2026-01-01T00:00:02+00:00",
+        }}]},
+    })
+
+    assert result["elapsed"]["wall_status"] == "KNOWN"
+    assert result["elapsed"]["projection_status"] == "UNKNOWN"
+    assert result["elapsed"]["projection_reason"] == "UNSAFE_INTERVAL"
+    assert result["elapsed"]["observed_interval_union_ms"] is None
+    assert result["elapsed"]["unobserved_wall_ms"] is None
 
 
 def test_head_mismatch_makes_source_unknown_without_a_span() -> None:
