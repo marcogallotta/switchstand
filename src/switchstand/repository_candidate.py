@@ -4,6 +4,7 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,6 +92,28 @@ def _composition_reason(parents: list[str], base: str, head: str) -> str | None:
     return "wrong-head" if parents[1] != head else None
 
 
+async def _stack_composition_reason(
+    http: httpx.AsyncClient, parents: list[str], base: str, head: str,
+    target: str, position: int,
+) -> str | None:
+    if len(parents) != 2:
+        return "wrong-composition"
+    if parents[1] != head:
+        return "wrong-head"
+    if position < 1:
+        return "wrong-composition"
+    cursor = parents[0]
+    for offset in range(position - 1):
+        commit = await _json(http, f"/commits/{cursor}")
+        prefix = [str(parent["sha"]) for parent in commit["parents"]]
+        if len(prefix) != 2:
+            return "wrong-composition"
+        if offset == 0 and prefix[1] != base:
+            return "wrong-base"
+        cursor = prefix[0]
+    return "wrong-base" if cursor != target else None
+
+
 def _missing_gates(reason: str, head: str | None, composition: str | None) -> list[QualificationGate]:
     return [QualificationGate(
         name=name, subject_kind=cast(Literal["exact_head", "composition"], kind),
@@ -175,7 +198,18 @@ async def qualify_repository_candidate(
         composition = str(pr["merge_commit_sha"])
         commit = await _json(http, f"/commits/{composition}")
         parents = [str(parent["sha"]) for parent in commit["parents"]]
-        composition_reason = _composition_reason(parents, base, head)
+        stack = pr.get("stack")
+        target_ref: str | None = None
+        target_sha: str | None = None
+        if isinstance(stack, dict):
+            target_ref = str(stack["base"]["ref"])
+            branch = await _json(http, f"/branches/{quote(target_ref, safe='')}")
+            target_sha = str(branch["commit"]["sha"])
+            composition_reason = await _stack_composition_reason(
+                http, parents, base, head, target_sha, int(stack["position"]),
+            )
+        else:
+            composition_reason = _composition_reason(parents, base, head)
         now = datetime.now(UTC)
         checks_payload = await _json(
             http, f"/commits/{head}/check-runs", filter="latest", per_page=100,
@@ -259,7 +293,11 @@ async def qualify_repository_candidate(
                 str(current["base"]["sha"]), str(current["head"]["sha"]),
                 str(current["merge_commit_sha"]),
             )
-            if current_identity != (base, head, composition):
+            target_changed = False
+            if target_ref is not None:
+                current_branch = await _json(http, f"/branches/{quote(target_ref, safe='')}")
+                target_changed = str(current_branch["commit"]["sha"]) != target_sha
+            if current_identity != (base, head, composition) or target_changed:
                 ready, result_reason = False, "candidate_changed"
                 for gate in gates:
                     gate.reason = "stale"
