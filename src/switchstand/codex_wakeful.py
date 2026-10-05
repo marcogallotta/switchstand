@@ -467,6 +467,28 @@ async def run_inbound(
                 pass
 
 
+async def run_inbound_service(path: Path) -> None:
+    config = json.loads(read_private_bytes(path))
+    if set(config) != {"mailbox", "binding", "codex_home", "codex"}:
+        raise ValueError("invalid inbound configuration")
+    mailbox = AgentMailbox.model_validate(config["mailbox"])
+    binding = CodexBinding(**config["binding"])
+    home, codex = Path(config["codex_home"]), Path(config["codex"])
+    if not home.is_absolute() or not codex.is_absolute() or Path(binding.start_record).parent != home:
+        raise ValueError("invalid inbound binding paths")
+    from switchstand.chatgpt_edge import resource_service
+    async with resource_service() as (service, _runtime):
+        assert service.messages is not None
+        await run_inbound(service.messages, AgentMailboxState(service.messages.engine), mailbox,
+                          binding, home, codex, asyncio.Event(), opt_in=True)
+
+
+def inbound_main() -> None:
+    parser = argparse.ArgumentParser(description="Run committed-message intake continuously")
+    parser.add_argument("--config", type=Path, required=True)
+    asyncio.run(run_inbound_service(parser.parse_args().config))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--opt-in", action="store_true", required=True)
