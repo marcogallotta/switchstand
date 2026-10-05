@@ -167,7 +167,7 @@ def test_changed_launch_control_requires_bounded_recheck_without_staling_generat
     assert repeated["changed_launch_controls"] == []
 
 
-def test_legacy_v2_post_compaction_preserves_full_transitive_reread(tmp_path: Path) -> None:
+def test_legacy_v2_post_compaction_uses_bounded_compatibility_reread(tmp_path: Path) -> None:
     _repo, _start, manifest_path = setup(tmp_path)
     manifest = json.loads(manifest_path.read_text())
     manifest["schema_version"] = 2
@@ -181,7 +181,7 @@ def test_legacy_v2_post_compaction_preserves_full_transitive_reread(tmp_path: Pa
     result, status = check(manifest_path, "post-compaction")
 
     assert result.returncode == 0
-    assert status["reread_required"] == ["AGENTS.md", "docs/procedure.md"]
+    assert status["reread_required"] == ["AGENTS.md"]
 
 
 def test_runtime_model_persistence_does_not_stale_launch_identity(tmp_path: Path) -> None:
