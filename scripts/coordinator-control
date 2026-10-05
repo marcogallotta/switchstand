@@ -30,7 +30,7 @@ FROZEN_REPOSITORY_FILES = (
     "scripts/coordinator-handoff",
     "scripts/switchstand-worktree",
 )
-POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
+POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md", "docs/coordinator-tracker-contract.md")\nLEGACY_POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
 
 
 def digest_file(path: Path) -> str:
@@ -390,7 +390,10 @@ def check(arguments: argparse.Namespace) -> int:
     )
     if arguments.trigger == "post-compaction":
         required = sorted(
-            manifest.get("post_compaction_reread_controls", POST_COMPACTION_REREAD_CONTROLS)
+            manifest.get(
+                "post_compaction_reread_controls",
+                LEGACY_POST_COMPACTION_REREAD_CONTROLS,
+            )
         )
     else:
         required = changed
