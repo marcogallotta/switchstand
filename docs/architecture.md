@@ -250,6 +250,8 @@ messaging, and required continuation:
   deleting persisted revisions. This state does not own Stage 2 waits, dependencies, authorization,
   scheduling, activation, or implicit owner inference.
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
+  Internal typed proposal admission binds one immutable consequence to an exact canonical package
+  revision; a changed proposal requires a new package revision and human decision.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
@@ -434,7 +436,7 @@ command plus a five-minute timer on the same idempotent repair service. The watc
 manual or non-inheriting installer replacements promptly; the timer catches replacements missed
 during service execution and watch rearm without depending on the checkout. Healthy checks
 preserve launcher identity.
-The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; repository mutations stay in the writer while per-generation and byte-stable shared guards protect the primary. `scripts/codex-coordinator-profile` copies
+The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; normal repository implementation stays in the writer while per-generation and byte-stable shared guards protect the primary. The profile grants user-level filesystem writes needed for diagnosis and repair, while the hook denies canonical-primary source mutation and permits adjacent repair worktrees rather than treating directory containment as effect authority. `scripts/codex-coordinator-profile` copies
 only the allowlisted benign user preferences into that isolated profile and installs no conventional
 user-level instructions. It separately copies only the repository-owned canonical `switchstand`
 HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
@@ -456,7 +458,9 @@ Because an exact writable file root can be misclassified as a directory by sandb
 handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory and
 binds their repository `friction.md` path to its mode-0600 file with a validated symlink. The first
 new launch copies a valid legacy local-state `friction.md` into that directory without moving or
-deleting the legacy file, so already-running agents remain undisturbed. Outside the canonical repository,
+deleting the legacy file, so already-running agents remain undisturbed. Malformed legacy, current,
+or binding nodes move to a generation-specific private quarantine; dispatch recreates the bounded
+friction state, reports the degradation, and continues launch. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
