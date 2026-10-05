@@ -180,6 +180,26 @@ def test_cli_json_binds_basis_and_revision(tmp_path: Path, capsys: CaptureFixtur
     assert missing.selected_tests == ()
 
 
+def test_pr_composition_basis_excludes_changes_added_only_to_new_base(tmp_path: Path) -> None:
+    repo, original_base = fixture_repo(tmp_path)
+    git(repo, "checkout", "-qb", "candidate")
+    write(repo, "docs/candidate.md", "candidate only\n")
+    candidate_head = commit(repo, "candidate")
+    git(repo, "checkout", "-qb", "advanced-base", original_base)
+    write(repo, "src/switchstand/base_only.py", "VALUE = 1\n")
+    advanced_base = commit(repo, "advance base")
+    git(repo, "merge", "--no-ff", "-m", "composition", candidate_head)
+    composition = git(repo, "rev-parse", "HEAD")
+
+    contaminated = plan_exact(repo, advanced_base, candidate_head)
+    actual = plan_exact(repo, advanced_base, composition)
+
+    assert "src/switchstand/base_only.py" in contaminated.changed_paths
+    assert any("deleted or renamed" in reason for reason in contaminated.fallback_reasons)
+    assert actual.changed_paths == ("docs/candidate.md",)
+    assert not any("deleted or renamed" in reason for reason in actual.fallback_reasons)
+
+
 def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
     workflow = Path(".github/workflows/affected-test-shadow.yml").read_text()
 
@@ -196,3 +216,31 @@ def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
     assert '--execution-tree "$EXECUTION_SHA"' in workflow
     assert "GIT_CONFIG_KEY_0=safe.directory" in workflow
     assert "GIT_CONFIG_VALUE_0=/workspace" in workflow
+
+
+def test_shadow_pr_uses_verified_composition_and_records_small_truthful_artifact() -> None:
+    workflow = Path(".github/workflows/affected-test-shadow.yml").read_text()
+
+    assert 'planner_head_sha="$candidate_composition_sha"' in workflow
+    assert 'test "${parents[0]}" = "$candidate_base_sha"' in workflow
+    assert 'test "${parents[1]}" = "$candidate_head_sha"' in workflow
+    assert "identity_mode=STALE" in workflow
+    assert 'selected = plan["selected_tests"] if effective_mode == "SELECTED" else []' in workflow
+    assert 'planner_head_sha="$EVENT_SHA"' in workflow
+    for field in (
+        "planner_revision",
+        "candidate_base_sha",
+        "candidate_head_sha",
+        "candidate_composition_sha",
+        "planner_mode",
+        "effective_mode",
+        "changed_paths",
+        "selected_tests",
+        "selected_count",
+        "selected_result",
+        "selected_duration_ms",
+        "fallback_reasons",
+    ):
+        assert f'"{field}"' in workflow
+    assert "actions/upload-artifact@" in workflow
+    assert 'exit "$status"' in workflow
