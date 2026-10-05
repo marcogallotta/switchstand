@@ -77,11 +77,11 @@ exact WorkId. Project Settings may point there but is not parallel authority.
 
 ## Codex roles and shared engineering process
 
-Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordinator for the overall assigned portfolio/integration; a Coordinator in a delegated lane owns only that lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
+Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overall assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
 
 - A Worker owns one bounded task/work item and does not self-expand scope. Worker questions go to its parent; only the appropriate parent/Root asks Marco.
 - Review independence depends on actual authorship/design/implementation/disposition participation, not role label.
-- Coordinator challenge of scope growth, review overreach, test/qualification ratcheting, or unnecessary machinery is supervision, not a second substantive review or new authority.
+- Coordinator challenge of scope growth, review overreach, test ratcheting, or unnecessary machinery is supervision, not a second review or new authority.
 - Keep one mutation owner per writable surface and one integration owner for shared surfaces. Every child/delegated obligation is terminal, stopped, or transferred with attributable pickup before parent completion.
 - An authorized implementation-through-landing candidate continues through review, CI, correction, and landing until terminal unless current `HOLD`, `DENIED`, or a real blocker stops that path.
 
@@ -95,7 +95,7 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordin
 - **Integration/landing Coordinator:** exact candidate/current target + [code quality](docs/code-quality.md) landing/composition guidance; do not preload implementation execution detail unless needed to resolve the integration.
 - **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
-Managed Workers use only procedures/references carried by their bound current package. Missing required guidance makes only that action `UNKNOWN`/unavailable; never broaden discovery. On a real role/function/phase change, load only the newly applicable package.
+Managed Workers use only procedures/references in their bound current package. Missing required guidance makes only that action `UNKNOWN`/unavailable; never broaden discovery. On role/function/phase change, load only the newly applicable package.
 
 ### Always-loaded triggers
 
@@ -103,4 +103,4 @@ Before a consequential choice hardens, follow [Human Input](docs/human-input.md)
 
 A mechanically established required-currentness/applicable-invariant contradiction or evidence of an ambiguous consequential effect requires one bounded situation review under the current review owner; low confidence alone does not. Detailed review, code-quality/rebase/testing, activation, canary, documentation-impact, research, and portfolio mechanics stay behind their routed owners.
 
-Repository implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Repository/detail owners include [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; references constrain execution and never grant authority.
+Implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detail lives in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; references never grant authority.
