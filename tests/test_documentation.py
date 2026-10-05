@@ -101,8 +101,8 @@ def test_agents_coordination_contract_is_discoverable():
         "A lower-priority question never interrupts higher-priority work",
         "rejecting a question does not reject the work",
         "Continue executable authorized work",
-        "Slice mutations by writable surface and semantic concern",
-        "suspend the later mutation, reconcile any effects, then re-slice or serialize it",
+        "Keep one mutation owner per writable surface and one integration owner for shared surfaces",
+        "Every child/delegated obligation is terminal, stopped, or transferred with attributable pickup",
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
@@ -111,6 +111,34 @@ def test_agents_coordination_contract_is_discoverable():
         "\n## Repository bootstrap", 1
     )[0]
     assert len(working_with_marco.encode()) <= 2500
+
+
+def test_agents_routes_only_current_role_function_context():
+    agents = (ROOT / "AGENTS.md").read_text()
+    roles = agents.split("## Codex roles and shared engineering process", 1)[1]
+
+    required = (
+        "Codex has exactly two roles: **Coordinator** and **Worker**",
+        "Root is the Coordinator for the overall assigned portfolio/integration",
+        "Coordinator in a delegated lane owns only that lane",
+        "**Implementation Worker:** exact task + current Implementation Specification + current Design Specification",
+        "**Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate",
+        "Managed Workers use only procedures/references carried by their bound current package",
+        "Missing required guidance makes only that action `UNKNOWN`/unavailable",
+        "Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch",
+        "mechanically established required-currentness/applicable-invariant contradiction",
+    )
+    moved_detail = (
+        "missed expected checkpoint",
+        "explicit low confidence about a named consequential decision",
+        "Target advancement alone does not require rebasing",
+        "Activating any client-visible ChatGPT MCP schema",
+        "When changing canary behavior/lifecycle",
+    )
+
+    assert [rule for rule in required if rule not in roles] == []
+    assert [rule for rule in moved_detail if rule in roles] == []
+    assert len(roles.encode()) <= 4000
 
 
 def test_research_escalation_uses_current_capability_without_provider_routing():
@@ -389,28 +417,10 @@ def test_situation_review_v1_contract_is_discoverable_in_shared_guidance():
     agents = (ROOT / "AGENTS.md").read_text().lower()
     usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text().lower()
     required_agents = (
-        "raw confidence alone never triggers a situation review",
-        "mechanically established contradiction in required currentness or an applicable invariant",
-        "evidence that a consequential effect is ambiguous",
-        "other conditions are advisory warnings which require owner acceptance before review",
-        "explicit low confidence about a named consequential decision",
-        "decision, affected path, specific uncertainty, supporting evidence and next falsifier",
-        "exact workid/run/review/operation",
-        "expected observable condition or next-check time",
-        "evidence of last material progress and current owner",
-        "exact attempts, outcomes, shared objective and recurring blocker",
-        "exact current claim and revision plus the contradictory evidence and its currentness",
-        "missing evidence is `unknown`/`insufficient_data`, never \"stalled\"",
-        "deduplicate by exact situation identity plus evidence set",
-        "reviewer has no effect authority",
-        "may not request or trigger another situation review",
-        "verdict, current truth labeled `current`, `historical` or `unknown`",
-        "causal challenge, the smallest safe next action, the affected path",
-        "remaining unknowns and the exact marco decision needed, if any",
-        "owner takes an authorized action, records a material challenge with counterevidence",
-        "pause only the affected consequential path",
-        "live mitigation and unrelated authorized work continue",
-        "never recursively triggers another situation review",
+        "mechanically established required-currentness/applicable-invariant contradiction",
+        "evidence of an ambiguous consequential effect",
+        "requires one bounded situation review under the current review owner",
+        "low confidence alone does not",
     )
     required_usage = (
         "exactly one independent bounded situation review",
