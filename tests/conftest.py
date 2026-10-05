@@ -54,5 +54,10 @@ def database_prerequisite() -> None:
                     "work_migration_receipts CASCADE"
                 )
             canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
+            yield
+            with engine.begin() as connection:
+                connection.exec_driver_sql("DROP TABLE IF EXISTS task_run_requests CASCADE")
         finally:
             engine.dispose()
+    else:
+        yield
