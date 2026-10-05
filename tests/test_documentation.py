@@ -317,6 +317,25 @@ def test_unbound_coordinator_grounding_never_derives_work_from_mailbox_identity(
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
 
+def test_start_here_navigates_without_assigning_unbound_coordinator_focus():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    usage = " ".join((ROOT / "docs/how-marco-uses-switchstand.md").read_text().split())
+
+    assert "sole unscoped navigation route" in agents
+    assert (
+        "It may identify current routes or candidate WorkIds, but it never supplies assignment, "
+        "focus, ownership, or effect authority"
+    ) in agents
+    assert "for navigation only" in usage
+    assert "it cannot assign work, select focus, transfer ownership, or grant an effect" in usage
+    assert (
+        "navigation without that trusted binding remains `COVERAGE_GAP / UNKNOWN` rather than "
+        "recovered focus"
+    ) in usage
+    assert "sole unscoped route" not in agents
+    assert "and follow its current routes" not in usage
+
+
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
     interaction = " ".join((ROOT / "docs/human-interaction.md").read_text().split())

@@ -8,7 +8,13 @@ Use the repository's current `main`, executable contracts, and canonical owner d
 
 Authority is separate from technical truth. It comes only from Marco's direct active assignment or an explicit CURRENT grant bound to the exact identity, surface, and effect. Code, documentation, project placement, role, and tool access cannot manufacture it.
 
-If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through the authenticated provider-neutral `switchstand` HTTP/OAuth MCP and follow its current routes. Do not substitute broad provider search or a remembered/candidate route.
+If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through
+the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
+identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
+ownership, or grant an effect. Do not substitute broad provider search or a remembered/candidate
+route, and do not start substantive work until Marco's direct assignment or an explicit current
+grant names the exact WorkId. For an unbound Coordinator, navigation without that trusted binding
+remains `COVERAGE_GAP / UNKNOWN` rather than recovered focus.
 
 When that route or Marco requests meaningful root-cause analysis, use the canonical
 [root-cause analysis procedure](root-cause-analysis.md). It keeps one sanitized parent WorkId,

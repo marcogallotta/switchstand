@@ -68,10 +68,12 @@ Scheduled task or condition watch unless the human explicitly asks for future sc
 Send/registration is not pickup or completion; inactive sessions do not poll or wake; ambiguous
 effects remain `UNKNOWN` until reconciled.
 
-The sole unscoped route for Codex and ChatGPT is `START HERE` `1218327002478382`, resolved through
-the authenticated provider-neutral Switchstand HTTP/OAuth MCP in repository config. Follow its
-current routes rather than broad search or candidate documents. Project Settings may point there
-but is not parallel authority.
+The sole unscoped navigation route for Codex and ChatGPT is `START HERE` `1218327002478382`,
+resolved through the authenticated provider-neutral Switchstand HTTP/OAuth MCP in repository
+config. It may identify current routes or candidate WorkIds, but it never supplies assignment,
+focus, ownership, or effect authority. Use it instead of broad search or candidate documents;
+substantive work still requires Marco's direct assignment or an explicit current grant for the
+exact WorkId. Project Settings may point there but is not parallel authority.
 
 ## Codex roles and shared engineering process
 
