@@ -13,11 +13,13 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Table,
     Text,
     UniqueConstraint,
     func,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -27,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ApiVersion, ClosedModel
+from .messages import RuntimeCurrentness
 from .run import RunReceipt
 from .state import metadata, work_handles
 
@@ -56,6 +59,16 @@ task_run_requests = Table(
     Column("objective", Text, nullable=False),
     Column("result_contract", JSONB, nullable=False),
     Column("content_digest", Text, nullable=False),
+    Column(
+        "terminal_result_id",
+        PGUUID(as_uuid=True),
+        ForeignKey(
+            "task_run_results.result_id",
+            name="fk_task_run_terminal_result",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+    ),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     CheckConstraint("observed_revision <> ''", name="ck_task_run_request_revision"),
     CheckConstraint("task_kind IN ('INVESTIGATION', 'VALIDATION')", name="ck_task_run_request_kind"),
@@ -80,6 +93,27 @@ task_run_executions = Table(
     Column("run_id", PGUUID(as_uuid=True), primary_key=True),
     Column("bound_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     UniqueConstraint("run_id", name="uq_task_run_execution_run"),
+)
+
+task_run_results = Table(
+    "task_run_results",
+    metadata,
+    Column("result_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("request_id", PGUUID(as_uuid=True), nullable=False),
+    Column("run_id", PGUUID(as_uuid=True), nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("evidence_refs", JSONB, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    ForeignKeyConstraint(
+        ("request_id", "run_id"),
+        ("task_run_executions.request_id", "task_run_executions.run_id"),
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("outcome <> ''", name="ck_task_run_result_outcome"),
+    CheckConstraint("summary <> ''", name="ck_task_run_result_summary"),
+    CheckConstraint("length(content_digest) = 64", name="ck_task_run_result_digest"),
 )
 
 class AgentTaskRequest(ClosedModel):
@@ -114,6 +148,20 @@ class TaskRunRequest(ClosedModel):
     result_contract: dict[str, JsonValue]
     continuation: Literal["START", "CONTINUE", "TAKEOVER"]
     candidate_ref: str | None = None
+    terminal_result_id: UUID | None = None
+
+
+class AgentTaskResult(ClosedModel):
+    api_version: ApiVersion
+    outcome: str = Field(min_length=1, max_length=128)
+    summary: str = Field(min_length=1, max_length=8000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=64)
+
+    @model_validator(mode="after")
+    def bounded_evidence(self) -> Self:
+        if any(not value or len(value) > 2048 for value in self.evidence_refs):
+            raise ValueError("evidence references must contain 1..2048 characters")
+        return self
 
 
 class TaskRunExecution(ClosedModel):
@@ -140,6 +188,30 @@ class TaskRunBindResult(ClosedModel):
         if self.status != "ok" and (self.execution is not None or self.reason is None):
             raise ValueError("failed bind requires only its reason")
         return self
+
+
+class TaskRunResult(ClosedModel):
+    result_id: UUID
+    request_id: UUID
+    run_id: UUID
+    outcome: str
+    summary: str
+    evidence_refs: tuple[str, ...]
+
+
+class TaskRunResultResult(ClosedModel):
+    status: Literal["ok", "stale", "denied", "conflict", "unknown"]
+    result: TaskRunResult | None = None
+    terminal: bool = False
+    reason: Literal[
+        "request_not_found",
+        "execution_not_bound",
+        "result_identity_conflict",
+        "terminal_result_conflict",
+        "run_superseded",
+        "runtime_currentness_unavailable",
+        "state_unavailable",
+    ] | None = None
 
 
 class TaskRunRequestResult(ClosedModel):
@@ -180,6 +252,41 @@ def _view(row: RowMapping) -> TaskRunRequest:
         candidate_ref=cast(str | None, row["candidate_ref"]),
         objective=cast(str, row["objective"]),
         result_contract=cast(dict[str, JsonValue], row["result_contract"]),
+        terminal_result_id=cast(UUID | None, row["terminal_result_id"]),
+    )
+
+
+def _result_digest(
+    request_id: UUID, run_id: UUID, result: AgentTaskResult
+) -> str:
+    value = {
+        "request_id": str(request_id),
+        "run_id": str(run_id),
+        "result": result.model_dump(mode="json"),
+    }
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+
+
+def _result_view(row: RowMapping) -> TaskRunResult:
+    request_id = cast(UUID, row["request_id"])
+    run_id = cast(UUID, row["run_id"])
+    payload = AgentTaskResult(
+        api_version="1",
+        outcome=cast(str, row["outcome"]),
+        summary=cast(str, row["summary"]),
+        evidence_refs=tuple(cast(list[str], row["evidence_refs"])),
+    )
+    if row["content_digest"] != _result_digest(request_id, run_id, payload):
+        raise ValueError("stored task-run result digest mismatch")
+    return TaskRunResult(
+        result_id=cast(UUID, row["result_id"]),
+        request_id=request_id,
+        run_id=run_id,
+        outcome=payload.outcome,
+        summary=payload.summary,
+        evidence_refs=payload.evidence_refs,
     )
 
 
@@ -320,3 +427,78 @@ class TaskRunState:
                 )
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunBindResult(status="unknown", reason="state_unavailable")
+
+    async def submit_result(
+        self,
+        request_id: UUID,
+        result_id: UUID,
+        runtime: RuntimeCurrentness,
+        result: AgentTaskResult,
+    ) -> TaskRunResultResult:
+        try:
+            run_id = UUID(runtime.generation)
+            digest = _result_digest(request_id, run_id, result)
+            async with self.engine.begin() as connection:
+                request = (await connection.execute(
+                    select(task_run_requests).where(
+                        task_run_requests.c.request_id == request_id
+                    ).with_for_update()
+                )).mappings().one_or_none()
+                if request is None:
+                    return TaskRunResultResult(status="denied", reason="request_not_found")
+                execution = (await connection.execute(
+                    select(task_run_executions).where(
+                        task_run_executions.c.request_id == request_id,
+                        task_run_executions.c.run_id == run_id,
+                    )
+                )).mappings().one_or_none()
+                if execution is None:
+                    return TaskRunResultResult(
+                        status="denied", reason="execution_not_bound"
+                    )
+                existing = (await connection.execute(
+                    select(task_run_results).where(
+                        task_run_results.c.result_id == result_id
+                    )
+                )).mappings().one_or_none()
+                if existing is not None and existing["content_digest"] != digest:
+                    return TaskRunResultResult(
+                        status="conflict", reason="result_identity_conflict"
+                    )
+                if existing is None:
+                    existing = (await connection.execute(
+                        insert(task_run_results).values(
+                            result_id=result_id,
+                            request_id=request_id,
+                            run_id=run_id,
+                            content_digest=digest,
+                            **result.model_dump(mode="json", exclude={"api_version"}),
+                        ).returning(*tuple(task_run_results.c))
+                    )).mappings().one()
+                view = _result_view(existing)
+                if runtime.current_generation is None:
+                    return TaskRunResultResult(
+                        status="unknown",
+                        result=view,
+                        reason="runtime_currentness_unavailable",
+                    )
+                if runtime.current_generation != runtime.generation:
+                    return TaskRunResultResult(
+                        status="stale", result=view, reason="run_superseded"
+                    )
+                terminal = cast(UUID | None, request["terminal_result_id"])
+                if terminal not in {None, result_id}:
+                    return TaskRunResultResult(
+                        status="conflict",
+                        result=view,
+                        reason="terminal_result_conflict",
+                    )
+                if terminal is None:
+                    await connection.execute(
+                        update(task_run_requests).where(
+                            task_run_requests.c.request_id == request_id
+                        ).values(terminal_result_id=result_id)
+                    )
+                return TaskRunResultResult(status="ok", result=view, terminal=True)
+        except (SQLAlchemyError, TypeError, ValueError):
+            return TaskRunResultResult(status="unknown", reason="state_unavailable")
