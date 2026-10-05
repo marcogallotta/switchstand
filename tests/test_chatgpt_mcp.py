@@ -479,11 +479,24 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         repository_bundle = next(
             tool for tool in tools if tool.name == "repository_bundle_get"
         )
-        assert "Use this when" in (repository_bundle.description or "")
-        assert "no verified local checkout" in (repository_bundle.description or "")
-        assert "Do not use" in (repository_bundle.description or "")
-        assert "refresh_pending" in (repository_bundle.description or "")
-        assert "required_sha" in (repository_bundle.description or "")
+        repository_bundle_description = " ".join(
+            (repository_bundle.description or "").split()
+        )
+        assert (
+            "Use this when substantive Switchstand repository content is needed and "
+            "no verified local checkout is available."
+            in repository_bundle_description
+        )
+        assert (
+            "Do not use when a verified local checkout is already available."
+            in repository_bundle_description
+        )
+        assert (
+            "Pass ``required_sha`` only as the exact local checkout target; "
+            "it never selects another bundle."
+            in repository_bundle_description
+        )
+        assert "On ``refresh_pending``, retry boundedly" in repository_bundle_description
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
         ).annotations.read_only_hint is True
