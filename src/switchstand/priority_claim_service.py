@@ -211,7 +211,9 @@ class PriorityClaimService:
         expected = self._new(request, record.grant_id)
         prior = await self.repository.provenance(expected.claim_id, limit=1)
         if not prior:
-            return self.guard(request, "unknown", "effect_readback_unconfirmed", possible=True)
+            outcome = self.guard(request, "not_applied", "claim_absence_confirmed")
+            await grants.finish(outcome)
+            return outcome
         if not self._same(prior[0], expected):
             return self.guard(request, "denied", "claim_identity_conflict")
         outcome = self._applied(request, principal, record.grant_id, qualification, prior[0])

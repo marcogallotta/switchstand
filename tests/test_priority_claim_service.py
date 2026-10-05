@@ -142,6 +142,21 @@ async def test_journal_read_failure_is_fail_closed_unknown(subject):
     assert (outcome.status, outcome.effect, outcome.retry) == ("unknown", "unknown", "reconcile")
 
 
+async def test_prepared_without_claim_is_terminal_and_unfences_target(subject):
+    service, _repository, grants, principal, grant, work, *_ = subject
+    prepared = request(work)
+    await grants.prepare({"request": prepared.model_dump(mode="json"),
+                          "qualification": "test:launch-owner"}, grant,
+                         service._fingerprint(principal, prepared),
+                         service.guard(prepared, "unknown", "prepared", possible=True))
+    recovered = await service.record(grants, principal, prepared)
+    assert (recovered.status, recovered.effect, recovered.reason) == (
+        "not_applied", "not_sent", "claim_absence_confirmed",
+    )
+    assert await service.record(grants, principal, prepared) == recovered
+    assert (await service.record(grants, principal, request(work))).effect == "applied"
+
+
 async def test_project_read_does_not_propagate_and_human_write_is_not_a_contract(subject):
     service, repository, _grants, _principal, _grant, work, _target, project = subject
     await repository.record(NewPriorityClaim(
