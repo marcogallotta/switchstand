@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+import switchstand.state
 from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
@@ -46,6 +47,7 @@ async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
         pytest.skip("TEST_DATABASE_URL is required")
     engine = create_async_engine(url)
     async with engine.begin() as connection:
+        await connection.run_sync(switchstand.state.metadata.create_all)
         await connection.run_sync(canonical_metadata.create_all)
         await connection.execute(text(
             "TRUNCATE TABLE work_handles, agent_mailboxes, messages RESTART IDENTITY CASCADE"
