@@ -373,6 +373,31 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
         )
 
 
+async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_current(
+    subject: Subject,
+) -> None:
+    invalid = await subject.service.create(create(
+        subject,
+        lifecycle_state="CURRENT",
+        wait_kind="NONE",
+        unblock_condition="NONE",
+    ))
+    coherent = await subject.service.create(create(
+        subject,
+        lifecycle_state="CURRENT",
+        wait_kind="NONE",
+        unblock_condition="NONE",
+        next_due="NONE",
+        next_action_class="NONE",
+        next_action_ref="NONE",
+    ))
+
+    assert (invalid.status, invalid.effect, invalid.reason) == (
+        "denied", "not_sent", "invalid_resultant_state",
+    )
+    assert coherent.effect == "applied"
+
+
 async def test_active_service_routes_append_to_canonical_events(subject: Subject) -> None:
     request = ProtectedAppend(
         api_version="1", operation_id=uuid4(), work_id=subject.work_id,
