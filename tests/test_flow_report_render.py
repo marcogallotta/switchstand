@@ -90,3 +90,49 @@ def test_concise_render_keeps_github_subjects_separate() -> None:
     assert "intervals=2 union_ms=15000" in output
     assert "github_composition status=OBSERVED reason=None" in output
     assert "intervals=1 union_ms=5000" in output
+
+
+def test_concise_render_exposes_each_review_point_and_truthful_wait() -> None:
+    value = deepcopy(REPORT)
+    value["human_review"] = {
+        "coverage": "DIRECT_PACKAGE_WORK_ID",
+        "items": [
+            {
+                "consequence_id": "closed", "state": "READY_FOR_IMPLEMENTATION",
+                "decision": "APPROVED", "prepared_at": "2026-01-02T01:00:00+00:00",
+                "decided_at": "2026-01-02T02:00:00+00:00",
+                "wait": {"kind": "REVIEW", "status": "CLOSED", "reason": None,
+                         "start": "2026-01-02T01:00:00+00:00",
+                         "end": "2026-01-02T02:00:00+00:00", "duration_ms": 3_600_000,
+                         "clock_basis": "RECORDED_WALL_TIME"},
+            },
+            {
+                "consequence_id": "open", "state": "PENDING", "decision": None,
+                "prepared_at": "2026-01-02T02:00:00+00:00", "decided_at": None,
+                "wait": {"kind": "REVIEW", "status": "OPEN", "reason": None,
+                         "start": "2026-01-02T02:00:00+00:00",
+                         "end": "2026-01-02T03:04:05+00:00", "duration_ms": 3_845_000,
+                         "clock_basis": "RECORDED_WALL_TIME"},
+            },
+            {
+                "consequence_id": "skew", "state": "HOLD", "decision": "HOLD",
+                "prepared_at": "2026-01-02T04:00:00+00:00",
+                "decided_at": "2026-01-02T03:00:00+00:00",
+                "wait": {"kind": "REVIEW", "status": "UNKNOWN",
+                         "reason": "CLOCK_SKEW_OR_NAIVE_TIMESTAMP",
+                         "start": "2026-01-02T04:00:00+00:00",
+                         "end": "2026-01-02T03:00:00+00:00", "duration_ms": None,
+                         "clock_basis": "RECORDED_WALL_TIME"},
+            },
+        ],
+    }
+
+    output = render(value, "concise")
+
+    assert "human_review_count=3 coverage=DIRECT_PACKAGE_WORK_ID" in output
+    assert "human_review_point id=closed kind=PREPARED at=2026-01-02T01:00:00+00:00 duration_ms=0" in output
+    assert "human_review_point id=closed kind=DECIDED at=2026-01-02T02:00:00+00:00 duration_ms=0" in output
+    assert "human_review_wait id=closed kind=REVIEW status=CLOSED reason=None" in output
+    assert "human_review_wait id=open kind=REVIEW status=OPEN reason=None" in output
+    assert "human_review_wait id=skew kind=REVIEW status=UNKNOWN reason=CLOCK_SKEW_OR_NAIVE_TIMESTAMP" in output
+    assert "duration_ms=None clock_basis=RECORDED_WALL_TIME" in output

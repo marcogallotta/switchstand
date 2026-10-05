@@ -417,10 +417,37 @@ def render_concise(value: dict[str, object]) -> str:
     ]
     human_review = cast(dict[str, object] | None, value.get("human_review"))
     if human_review is not None:
+        review_items = sorted(
+            cast(list[dict[str, object]], human_review["items"]),
+            key=lambda item: (cast(str, item["prepared_at"]),
+                              cast(str, item["consequence_id"])),
+        )
         lines.append(
-            f"human_review_count={len(cast(list[object], human_review['items']))} "
+            f"human_review_count={len(review_items)} "
             f"coverage={human_review['coverage']}"
         )
+        for item in review_items:
+            identifier = item["consequence_id"]
+            lines.append(
+                f"human_review_record id={identifier} state={item['state']} "
+                f"decision={item['decision']}"
+            )
+            lines.append(
+                f"human_review_point id={identifier} kind=PREPARED "
+                f"at={item['prepared_at']} duration_ms=0"
+            )
+            if item["decided_at"] is not None:
+                lines.append(
+                    f"human_review_point id={identifier} kind=DECIDED "
+                    f"at={item['decided_at']} duration_ms=0"
+                )
+            wait = cast(dict[str, object], item["wait"])
+            lines.append(
+                f"human_review_wait id={identifier} kind={wait['kind']} "
+                f"status={wait['status']} reason={wait['reason']} start={wait['start']} "
+                f"end={wait['end']} duration_ms={wait['duration_ms']} "
+                f"clock_basis={wait['clock_basis']}"
+            )
     github = cast(dict[str, object] | None, value.get("github"))
     if github is not None:
         lines.append(
