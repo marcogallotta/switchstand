@@ -81,6 +81,7 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordin
 
 - A Worker owns one bounded task/work item and does not self-expand scope. Worker questions go to its parent; only the appropriate parent/Root asks Marco.
 - Review independence depends on actual authorship/design/implementation/disposition participation, not role label.
+- Coordinator challenge of scope growth, review overreach, test/qualification ratcheting, or unnecessary machinery is supervision, not a second substantive review or new authority.
 - Keep one mutation owner per writable surface and one integration owner for shared surfaces. Every child/delegated obligation is terminal, stopped, or transferred with attributable pickup before parent completion.
 - An authorized implementation-through-landing candidate continues through review, CI, correction, and landing until terminal unless current `HOLD`, `DENIED`, or a real blocker stops that path.
 
@@ -91,6 +92,7 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root is the Coordin
 - **Research/design Worker:** exact work + current bound research/design package; use [research sources](docs/research-sources.md) when researching.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
 - **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + current bound review procedure/owner + claim-specific evidence; no implementation choreography unless needed to judge the candidate.
+- **Integration/landing Coordinator:** exact candidate/current target + [code quality](docs/code-quality.md) landing/composition guidance; do not preload implementation execution detail unless needed to resolve the integration.
 - **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
 Managed Workers use only procedures/references carried by their bound current package. Missing required guidance makes only that action `UNKNOWN`/unavailable; never broaden discovery. On a real role/function/phase change, load only the newly applicable package.
