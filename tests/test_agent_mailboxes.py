@@ -79,3 +79,41 @@ async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
 
     replay = await endpoints.takeover("Lifecycle", "owner", winner)
     assert replay.status == "ok" and replay.mailbox == current
+
+
+async def test_cross_principal_transfer_requires_exact_host_approval(endpoints):
+    created = await endpoints.register_agent("Root", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    assert requested.status == "pending" and requested.request_id is not None
+    first, replay = await asyncio.gather(
+        endpoints.approve_transfer(requested.request_id),
+        endpoints.approve_transfer(requested.request_id),
+    )
+    assert first.status == replay.status == "approved" and first.generation == replay.generation == 2
+    assert (await endpoints.for_actor("old-owner", "old-chat")).reason == "agent_not_registered"
+    current = await endpoints.for_actor("new-owner", "new-chat")
+    assert current.status == "ok" and current.mailbox.endpoint_id == created.mailbox.endpoint_id
+
+
+async def test_cross_principal_transfer_rejects_stale_preimage(endpoints):
+    await endpoints.register_agent("Root", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    assert requested.request_id is not None
+    assert (await endpoints.takeover("Root", "old-owner", "replacement")).status == "ok"
+    stale = await endpoints.approve_transfer(requested.request_id)
+    replay = await endpoints.approve_transfer(requested.request_id)
+    assert (stale.status, stale.reason, replay) == ("stale", "mailbox_changed", stale)
+    assert (await endpoints.for_actor("new-owner", "new-chat")).reason == "agent_not_registered"
+
+
+async def test_cross_principal_transfer_rejects_destination_session_collision(endpoints):
+    await endpoints.register_agent("Root", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    assert requested.request_id is not None
+    assert (await endpoints.register_agent("Other", "new-owner", "new-chat")).status == "ok"
+    conflict = await endpoints.approve_transfer(requested.request_id)
+    replay = await endpoints.approve_transfer(requested.request_id)
+    assert (conflict.status, conflict.reason, replay) == (
+        "conflict", "session_already_registered", conflict,
+    )
+    assert (await endpoints.for_actor("old-owner", "old-chat")).status == "ok"
