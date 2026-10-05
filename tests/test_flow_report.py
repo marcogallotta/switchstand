@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
@@ -11,9 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand import flow_report
 from switchstand.canonical_relations import work_dependencies, work_parents
-from switchstand.canonical_work import canonical_metadata, canonical_work, normalize_title
+from switchstand.canonical_work import (
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+    normalize_title,
+)
 from switchstand.flow_report import report
 from switchstand.human_reviews import human_review_consequences
+from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
+from switchstand.state import metadata as state_metadata
+from switchstand.state import outcome_state_revisions, work_handles
 from switchstand.work_events import work_events
 
 
@@ -30,6 +39,7 @@ async def engine(database_prerequisite: None) -> AsyncGenerator[AsyncEngine]:
     subject = create_async_engine(database)
     async with subject.begin() as connection:
         await connection.run_sync(canonical_metadata.create_all)
+        await connection.run_sync(state_metadata.create_all)
     try:
         yield subject
     finally:
@@ -165,6 +175,10 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
     target, dependency = uuid4(), uuid4()
     await add_work(engine, target)
     await add_work(engine, dependency)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles).values(
+            id=target, provider="test", provider_work_id=str(target),
+        ))
     entered, committed = asyncio.Event(), asyncio.Event()
     original = flow_report._relations
 
@@ -180,11 +194,22 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
         await connection.execute(insert(work_dependencies).values(
             work_id=target, depends_on_work_id=dependency,
         ))
+    store = OutcomeStateStore(engine)
+    await store.record(
+        owner_work_id=target, active_work_id=target, operation_id=uuid4(),
+        expected_state_id=None, owner_currentness_token=canonical_revision(target, 1),
+        items=(OutcomeItem(
+            item_key="late", description="late", kind="DELIVERABLE", status="READY",
+            who_acts="OWNER",
+        ),),
+    )
     committed.set()
 
     result = await pending
 
     assert result["scope"]["dependencies"] == []
+    assert result["outcome_state"]["status"] == "NONE"
+    assert (await report(engine, target))["outcome_state"]["status"] == "KNOWN"
     async with engine.connect() as connection:
         assert await connection.scalar(select(work_dependencies.c.work_id)) == target
 
@@ -266,3 +291,81 @@ async def test_future_admission_fails_wall_accounting_closed(engine: AsyncEngine
     assert result["elapsed"]["wall_reason"] == "CLOCK_SKEW_OR_FUTURE_START"
     assert result["elapsed"]["observed_interval_union_ms"] is None
     assert result["elapsed"]["unobserved_wall_ms"] is None
+
+
+async def test_outcome_revisions_are_exact_current_privacy_safe_and_fail_closed(
+    engine: AsyncEngine,
+) -> None:
+    target, unrelated = uuid4(), uuid4()
+    await add_work(engine, target)
+    await add_work(engine, unrelated)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "test", "provider_work_id": str(target)},
+            {"id": unrelated, "provider": "test", "provider_work_id": str(unrelated)},
+        ])
+    store = OutcomeStateStore(engine)
+    secret = "private description must not escape"
+    ready = OutcomeItem(
+        item_key="ready", description=secret, kind="DELIVERABLE", status="READY",
+        who_acts="OWNER",
+    )
+    done = OutcomeItem(
+        item_key="done", description="also private", kind="DELIVERABLE", status="DONE",
+        who_acts="OWNER",
+    )
+    first = await store.record(
+        owner_work_id=target, active_work_id=target, operation_id=uuid4(),
+        expected_state_id=None, owner_currentness_token="stale-token", items=(ready, done),
+    )
+    assert first.state_id is not None
+    current_token = canonical_revision(target, 1)
+    second = await store.record(
+        owner_work_id=target, active_work_id=target, operation_id=uuid4(),
+        expected_state_id=first.state_id, owner_currentness_token=current_token,
+        items=(ready.model_copy(update={"status": "IN_PROGRESS"}), done),
+    )
+    unrelated_revision = await store.record(
+        owner_work_id=unrelated, active_work_id=unrelated, operation_id=uuid4(),
+        expected_state_id=None, owner_currentness_token=canonical_revision(unrelated, 1),
+        items=(ready,),
+    )
+
+    result = await report(engine, target)
+
+    outcome = result["outcome_state"]
+    assert outcome["status"] == "KNOWN"
+    assert outcome["correlation"] == "DIRECT_OWNER_WORK_ID"
+    assert outcome["total_revisions"] == 2 and outcome["truncated"] is False
+    assert [item["currentness"] for item in outcome["revisions"]] == ["STALE", "CURRENT"]
+    assert outcome["revisions"][0]["item_status_counts"] == {
+        "NOT_STARTED": 0, "READY": 1, "IN_PROGRESS": 0, "DONE": 1,
+    }
+    assert unrelated_revision.state_id not in {
+        UUID(item["state_id"]) for item in outcome["revisions"]
+    }
+    encoded = json.dumps(outcome)
+    assert secret not in encoded and "also private" not in encoded
+    assert "stale-token" not in encoded and current_token not in encoded
+    assert all(item["duration_ms"] == 0 for item in result["ordered_evidence"]["items"]
+               if item["source"] == "outcome_state")
+
+    async with engine.begin() as connection:
+        await connection.execute(update(outcome_state_revisions).where(
+            outcome_state_revisions.c.state_id == second.state_id
+        ).values(predecessor_id=unrelated_revision.state_id))
+    corrupt_predecessor = await report(engine, target)
+    assert corrupt_predecessor["outcome_state"]["status"] == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(outcome_state_revisions).where(
+            outcome_state_revisions.c.state_id == second.state_id
+        ).values(predecessor_id=first.state_id, content_digest="0" * 64))
+    corrupt_digest = await report(engine, target)
+    assert corrupt_digest["outcome_state"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+        "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
+        "truncated": None, "revisions": [],
+    }
+    assert corrupt_digest["coverage"]["outcome_state"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+    }

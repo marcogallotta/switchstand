@@ -68,6 +68,10 @@ Direct `package_work_id` Human Review rows add prepared/decided point evidence a
 waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
 overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
 explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
+Outcome-state evidence is target-only through exact `owner_work_id` equality and is validated with
+the existing revision-chain oracle against the canonical row revision. Reports expose at most 64
+privacy-safe revision headers and item-status counts; payload text is excluded, corrupt chains are
+`UNKNOWN`, and revision timestamps remain zero-duration observational points.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI

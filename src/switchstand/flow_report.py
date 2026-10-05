@@ -6,22 +6,27 @@ import argparse
 import asyncio
 import json
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .canonical_relations import work_dependencies
-from .canonical_work import canonical_work
+from .canonical_work import canonical_revision, canonical_work
 from .human_reviews import human_review_consequences
+from .outcome_state import validated_revision_headers
 from .repository_candidate import (
     QualificationGate,
     RepositoryCandidateQualification,
     qualify_repository_candidate,
 )
+from .state import outcome_state_revisions
 from .work_events import work_events
+
+OUTCOME_REVISION_LIMIT = 64
 
 
 def _time(value: datetime | None) -> str | None:
@@ -41,6 +46,40 @@ def _review_wait(
         "start": _time(created_at), "end": _time(end),
         "duration_ms": int((end - created_at).total_seconds() * 1000) if valid else None,
         "clock_basis": "RECORDED_WALL_TIME",
+    }
+
+
+def _outcome_projection(
+    values: list[Mapping[Any, Any]], work_id: UUID, currentness_token: str,
+) -> dict[str, object]:
+    chain = validated_revision_headers(values, currentness_token)
+    if chain is None or any(row.owner_work_id != work_id for row in chain):
+        return {"status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+                "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
+                "truncated": None, "revisions": []}
+    if not chain:
+        return {"status": "NONE", "reason": "NO_REVISIONS",
+                "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": 0,
+                "truncated": False, "revisions": []}
+    if any(not isinstance(value.get("created_at"), datetime)
+           or cast(datetime, value["created_at"]).utcoffset() is None for value in values):
+        return {"status": "UNKNOWN", "reason": "UNSAFE_CREATED_AT",
+                "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
+                "truncated": None, "revisions": []}
+    selected = list(zip(values, chain, strict=True))[-OUTCOME_REVISION_LIMIT:]
+    revisions: list[dict[str, object]] = []
+    for value, row in selected:
+        revisions.append({
+            "state_id": str(row.state_id), "generation": row.generation,
+            "schema_version": value["schema_version"],
+            "created_at": _time(cast(datetime, value["created_at"])),
+            "currentness": row.currentness,
+            "item_status_counts": dict(row.item_status_counts),
+        })
+    return {
+        "status": "KNOWN", "reason": None, "correlation": "DIRECT_OWNER_WORK_ID",
+        "total_revisions": len(chain), "truncated": len(chain) > len(revisions),
+        "revisions": revisions,
     }
 
 
@@ -101,6 +140,9 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         human_review_consequences.c.created_at,
         human_review_consequences.c.consequence_id,
     ))).all()
+    outcome_values = (await connection.execute(select(outcome_state_revisions).where(
+        outcome_state_revisions.c.owner_work_id == work_id
+    ).order_by(outcome_state_revisions.c.generation))).mappings().all()
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -126,6 +168,10 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     else:
         root_status, root_reason = "EXACT", None
     admission = cast(datetime | None, work.admitted_at)
+    outcome = _outcome_projection(
+        list(outcome_values), work_id,
+        canonical_revision(work_id, cast(int, work.row_version)),
+    )
     review_items = [{
         "consequence_id": str(row.consequence_id),
         "state": row.state, "decision": row.decision,
@@ -146,6 +192,11 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
                 "source": "human_review", "kind": "DECIDED",
                 "id": str(row.consequence_id), "at": _time(row.decided_at), "duration_ms": 0,
             })
+    for revision in cast(list[dict[str, object]], outcome["revisions"]):
+        ordered_evidence.append({
+            "source": "outcome_state", "kind": "REVISION",
+            "id": revision["state_id"], "at": revision["created_at"], "duration_ms": 0,
+        })
     ordered_evidence.sort(key=lambda item: (cast(str, item["at"]),
                                             cast(str, item["source"]),
                                             cast(str, item["id"])))
@@ -182,6 +233,7 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
             "coverage": "DIRECT_PACKAGE_WORK_ID",
             "items": review_items,
         },
+        "outcome_state": outcome,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,
@@ -191,10 +243,15 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
             "relations": {"status": "INCLUDED", "reason": "CURRENT_ONLY"},
             "work_events": {"status": "INCLUDED", "reason": "OBSERVED_ONLY"},
             "human_review": {"status": "INCLUDED", "reason": "DIRECT_PACKAGE_WORK_ID"},
+            "outcome_state": {
+                "status": "UNKNOWN" if outcome["status"] == "UNKNOWN" else "INCLUDED",
+                "reason": outcome["reason"] if outcome["status"] == "UNKNOWN"
+                else "DIRECT_OWNER_WORK_ID",
+            },
             "messages": {"status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE"},
             "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
             **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B4"} for name in (
-                "human_trajectory", "outcome_state", "failures",
+                "human_trajectory", "failures",
                 "lifecycle_timing", "github", "run_receipts",
             )},
         },
@@ -463,6 +520,22 @@ def render_concise(value: dict[str, object]) -> str:
             f"{len(cast(list[object], subject['intervals']))} union_ms={subject['union_ms']}"
             for kind, subject in sorted(subjects.items())
         )
+    outcome = cast(dict[str, object] | None, value.get("outcome_state"))
+    if outcome is not None:
+        lines.append(
+            f"outcome_state status={outcome['status']} reason={outcome['reason']} "
+            f"correlation={outcome['correlation']} total_revisions={outcome['total_revisions']} "
+            f"truncated={outcome['truncated']}"
+        )
+        for revision in cast(list[dict[str, object]], outcome["revisions"]):
+            counts = cast(dict[str, int], revision["item_status_counts"])
+            lines.append(
+                f"outcome_revision generation={revision['generation']} "
+                f"state_id={revision['state_id']} created_at={revision['created_at']} "
+                f"currentness={revision['currentness']} schema_version={revision['schema_version']} "
+                f"counts=NOT_STARTED:{counts['NOT_STARTED']},READY:{counts['READY']},"
+                f"IN_PROGRESS:{counts['IN_PROGRESS']},DONE:{counts['DONE']}"
+            )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"
         for name, item in sorted(coverage.items())

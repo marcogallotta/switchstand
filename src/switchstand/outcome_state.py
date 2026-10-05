@@ -81,6 +81,15 @@ class _Revision:
     content_digest: str
 
 
+@dataclass(frozen=True)
+class OutcomeRevisionHeader:
+    state_id: UUID
+    owner_work_id: UUID
+    generation: int
+    currentness: Literal["CURRENT", "STALE"]
+    item_status_counts: Mapping[str, int]
+
+
 _COLUMNS = tuple(outcome_state_revisions.c)
 
 
@@ -127,6 +136,29 @@ def _chain(values: Sequence[Mapping[Any, Any]]) -> tuple[_Revision, ...] | None:
         return rows
     except (TypeError, ValueError, ValidationError):
         return None
+
+
+def validated_revision_headers(
+    values: Sequence[Mapping[Any, Any]], currentness_token: str,
+) -> tuple[OutcomeRevisionHeader, ...] | None:
+    """Validate the complete chain and project privacy-safe semantic headers."""
+    chain = _chain(values)
+    if chain is None:
+        return None
+    headers: list[OutcomeRevisionHeader] = []
+    for row in chain:
+        counts = {status: 0 for status in ("NOT_STARTED", "READY", "IN_PROGRESS", "DONE")}
+        for item in row.items:
+            counts[item.status] += 1
+        headers.append(OutcomeRevisionHeader(
+            state_id=row.state_id, owner_work_id=row.owner_work_id,
+            generation=row.generation,
+            currentness=(
+                "CURRENT" if row.owner_currentness_token == currentness_token else "STALE"
+            ),
+            item_status_counts=counts,
+        ))
+    return tuple(headers)
 
 
 def _summary(row: _Revision, token: str) -> ActionSummary:
