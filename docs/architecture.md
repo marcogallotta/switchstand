@@ -416,7 +416,9 @@ schema-v3 manifest retains its launch-time set, and legacy v1/v2 manifests fall 
 Coordinator generation whose manifest/readback proves that set. A synchronous `SessionStart` hook
 for `source=compact` runs generation-private launch-time snapshots of both the wrapper and checker,
 then injects the result as immediate developer context before the continuation;
-the snapshotted checker still compares the tracked canonical controls. Each unresolved tracked dependency retains its identity and reason
+the snapshotted checker still compares the tracked canonical controls. Manual post-compaction
+retries and post-sync checks use that same generation-private checker and never a mutable
+writer-relative `scripts/coordinator-control`. Each unresolved tracked dependency retains its identity and reason
 as component-scoped `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.

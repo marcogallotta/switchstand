@@ -284,6 +284,54 @@ def test_compact_snapshots_survive_canonical_control_mutation_and_removal(
     assert "State: CURRENTNESS_UNKNOWN" in context
 
 
+def test_compact_snapshot_ignores_hostile_writer_relative_v2_checker(tmp_path: Path) -> None:
+    _repo, _start, manifest_path = setup(tmp_path, real_compact_snapshots=True)
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["schema_version"] == 3
+
+    hostile_writer = tmp_path / "hostile-writer"
+    hostile_scripts = hostile_writer / "scripts"
+    hostile_scripts.mkdir(parents=True)
+    hostile_control = hostile_scripts / "coordinator-control"
+    hostile_control.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+manifest = json.loads(open(sys.argv[2]).read())
+if manifest.get("schema_version") not in (1, 2):
+    print(json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": "launch manifest identity is invalid"}))
+    raise SystemExit(2)
+raise SystemExit(99)
+"""
+    )
+    hostile_control.chmod(hostile_control.stat().st_mode | stat.S_IXUSR)
+    hostile_result = subprocess.run(
+        ["scripts/coordinator-control", "check", manifest_path, "--trigger", "post-compaction"],
+        cwd=hostile_writer,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert hostile_result.returncode == 2
+    assert "launch manifest identity is invalid" in hostile_result.stdout
+
+    frozen_hook = tmp_path / "compact-controls/codex-compact-hook"
+    result = subprocess.run(
+        [frozen_hook, manifest_path],
+        cwd=hostile_writer,
+        input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "State: CURRENT" in context
+    assert "reread repository controls: AGENTS.md, docs/coordinator-tracker-contract.md" in context
+
+
 def test_missing_launch_component_is_unknown(tmp_path: Path) -> None:
     _repo, _start, manifest_path = setup(tmp_path)
     manifest = json.loads(manifest_path.read_text())

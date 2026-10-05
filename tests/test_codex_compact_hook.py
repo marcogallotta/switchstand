@@ -62,6 +62,8 @@ exit 2
     assert "reread repository controls: AGENTS.md" in context
     assert "exact start record: /state/start-commit.x" in context
     assert "affected currentness boundary: rereadable:AGENTS.md->missing.md" in context
+    assert f"rerun {hook.with_name('coordinator-control')} check {manifest}" in context
+    assert "never substitute writer-relative scripts/coordinator-control" in context
 
 
 def test_compact_hook_injects_currentness_unknown_when_checker_fails(tmp_path: Path) -> None:
@@ -73,7 +75,11 @@ def test_compact_hook_injects_currentness_unknown_when_checker_fails(tmp_path: P
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "CURRENTNESS_UNKNOWN" in context
     assert "mechanical check failed: broken" in context
-    assert f"check {manifest} --trigger post-compaction" in context
+    assert (
+        f"rerun {hook.with_name('coordinator-control')} check {manifest} "
+        "--trigger post-compaction"
+    ) in context
+    assert "never substitute writer-relative scripts/coordinator-control" in context
 
 
 def test_compact_hook_injects_currentness_unknown_for_non_object_event(tmp_path: Path) -> None:
@@ -114,4 +120,8 @@ def test_compact_hook_preserves_checker_owned_unknown_reason(tmp_path: Path) -> 
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "Reason: manifest identity is invalid" in context
     assert "affected currentness boundary: launch-control-currentness" in context
-    assert f"rerun coordinator-control check {manifest} --trigger post-compaction" in context
+    assert (
+        f"rerun {hook.with_name('coordinator-control')} check {manifest} "
+        "--trigger post-compaction"
+    ) in context
+    assert "never substitute writer-relative scripts/coordinator-control" in context

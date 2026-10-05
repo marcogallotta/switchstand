@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any
 
 
-def context_for(status: dict[str, Any], manifest: Path) -> str:
+def retry_command(control: Path, manifest: Path) -> str:
+    return f"{control} check {manifest} --trigger post-compaction"
+
+
+def context_for(status: dict[str, Any], manifest: Path, control: Path) -> str:
     state = status.get("state")
     if state not in {"CURRENT", "CURRENTNESS_UNKNOWN"}:
         raise ValueError("coordinator-control output has an invalid state")
@@ -32,8 +36,9 @@ def context_for(status: dict[str, Any], manifest: Path) -> str:
         "launch-control-currentness" if state == "CURRENTNESS_UNKNOWN" else "none"
     )
     recovery = (
-        f" Hold actions depending on {affected} and rerun coordinator-control check {manifest} "
-        "--trigger post-compaction."
+        f" Hold actions depending on {affected} and rerun {retry_command(control, manifest)}. "
+        "Use only this generation-frozen checker; never substitute writer-relative "
+        "scripts/coordinator-control."
         if state == "CURRENTNESS_UNKNOWN"
         else ""
     )
@@ -54,13 +59,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
     arguments = parser.parse_args()
+    control = Path(__file__).with_name("coordinator-control")
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
             raise TypeError("SessionStart hook input must be a JSON object")
         if event.get("hook_event_name") != "SessionStart" or event.get("source") != "compact":
             raise ValueError("expected SessionStart source=compact")
-        control = Path(__file__).with_name("coordinator-control")
         result = subprocess.run(
             [control, "check", arguments.manifest, "--trigger", "post-compaction"],
             text=True,
@@ -73,7 +78,7 @@ def main() -> int:
         status = json.loads(result.stdout)
         if not isinstance(status, dict):
             raise TypeError("coordinator-control output must be a JSON object")
-        context = context_for(status, arguments.manifest)
+        context = context_for(status, arguments.manifest, control)
     except (
         AttributeError,
         OSError,
@@ -86,7 +91,8 @@ def main() -> int:
         context = (
             "POST-COMPACTION RE-GROUNDING is CURRENTNESS_UNKNOWN because the mechanical check "
             f"failed: {error}. Do not continue actions that depend on launch-control currentness; "
-            f"rerun coordinator-control check {arguments.manifest} --trigger post-compaction."
+            f"rerun {retry_command(control, arguments.manifest)}. Use only this generation-frozen "
+            "checker; never substitute writer-relative scripts/coordinator-control."
         )
     print(json.dumps({
         "hookSpecificOutput": {
