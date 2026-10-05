@@ -136,3 +136,38 @@ def test_concise_render_exposes_each_review_point_and_truthful_wait() -> None:
     assert "human_review_wait id=open kind=REVIEW status=OPEN reason=None" in output
     assert "human_review_wait id=skew kind=REVIEW status=UNKNOWN reason=CLOCK_SKEW_OR_NAIVE_TIMESTAMP" in output
     assert "duration_ms=None clock_basis=RECORDED_WALL_TIME" in output
+
+
+def test_concise_render_preserves_outcome_currentness_and_unknown() -> None:
+    value = deepcopy(REPORT)
+    value["outcome_state"] = {
+        "status": "KNOWN", "reason": None, "correlation": "DIRECT_OWNER_WORK_ID",
+        "total_revisions": 2, "truncated": False,
+        "revisions": [
+            {"state_id": "first", "generation": 1, "schema_version": 1,
+             "created_at": "2026-01-02T01:00:00+00:00", "currentness": "STALE",
+             "item_status_counts": {
+                 "NOT_STARTED": 0, "READY": 1, "IN_PROGRESS": 0, "DONE": 0,
+             }},
+            {"state_id": "second", "generation": 2, "schema_version": 1,
+             "created_at": "2026-01-02T02:00:00+00:00", "currentness": "CURRENT",
+             "item_status_counts": {
+                 "NOT_STARTED": 0, "READY": 0, "IN_PROGRESS": 1, "DONE": 1,
+             }},
+        ],
+    }
+
+    output = render(value, "concise")
+
+    assert "outcome_state status=KNOWN reason=None correlation=DIRECT_OWNER_WORK_ID" in output
+    assert "outcome_revision generation=1 state_id=first" in output
+    assert "currentness=STALE" in output and "currentness=CURRENT" in output
+    assert "counts=NOT_STARTED:0,READY:0,IN_PROGRESS:1,DONE:1" in output
+
+    value["outcome_state"] = {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+        "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
+        "truncated": None, "revisions": [],
+    }
+    unknown = render(value, "concise")
+    assert "outcome_state status=UNKNOWN reason=CORRUPT_REVISION_CHAIN" in unknown
