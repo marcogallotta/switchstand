@@ -175,8 +175,10 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
         )
 
     _work_history.__doc__ = (
-        "Read one revision-checked page of the exact launch-bound work history. "
-        "Follow next_cursor until null; on stale, call work_get again and restart."
+        "Read one revision-checked page of exact launch-bound history for an explicit bounded "
+        "investigation or recovery. Do not use history for normal grounding, re-entry, "
+        "current-work discovery, or routine polling. If that bounded purpose needs pagination, "
+        "follow next_cursor until null; on stale, call work_get again and restart only that read."
     )
     closed_tool(server, "work_history", _work_history, ToolAnnotations(
         read_only_hint=True,
@@ -212,7 +214,7 @@ def build_server(
         api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> WorkHistoryResult:
-        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        """Read bounded history only for explicit investigation/recovery; on stale, repeat work_get and restart that bounded pagination."""
         return await service.history(  # type: ignore[attr-defined]
             WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
