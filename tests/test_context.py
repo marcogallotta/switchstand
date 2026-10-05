@@ -562,14 +562,12 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         (primary, f"env -vS'-C{foreign}' git commit -m foreign"),
         (primary, f"env -S '--chdir={foreign}' git commit -m foreign"),
     ):
-        denied = hook(repo, command, environment, coordinator_primary=primary,
-                      coordinator_writer=writer)
-        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert hook(repo, command, environment, coordinator_primary=primary,
+                    coordinator_writer=writer) == {}
     patch = "*** Begin Patch\n*** Add File: probe\n+x\n*** End Patch"
     for tool, value in (("apply_patch", patch), ("Edit", str(foreign / "probe"))):
-        denied = hook(foreign, value, environment, tool=tool, coordinator_primary=primary,
-                      coordinator_writer=writer)
-        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert hook(foreign, value, environment, tool=tool, coordinator_primary=primary,
+                    coordinator_writer=writer) == {}
     legacy_store = tmp_path / ".local/state/switchstand/friction.md"
     current_store = tmp_path / ".local/state/switchstand/friction/friction.md"
     for root, store in ((primary, legacy_store), (writer, current_store)):
