@@ -97,6 +97,13 @@ trusted_hash = "must-not-copy"
     instructions = profile["developer_instructions"]
     assert str(tmp_path / "coordinator/start-commit.coordinator.config") in instructions
     assert "synchronous compact-session hook" in instructions
+    frozen_control = (
+        tmp_path / "coordinator/start-commit.coordinator.config.compact-controls/coordinator-control"
+    )
+    manifest = tmp_path / "coordinator/launch-manifest.coordinator.config.json"
+    assert f"{frozen_control} check {manifest} --trigger post-compaction" in instructions
+    assert f"{frozen_control} check {manifest} --trigger post-sync" in instructions
+    assert "Never substitute writer-relative scripts/coordinator-control" in instructions
     assert f"owned linked writer is {primary.parent / 'writer'}" in instructions
     assert "Changed launch controls require only the reported affected-boundary recheck" in instructions
     assert "agent_takeover" not in instructions

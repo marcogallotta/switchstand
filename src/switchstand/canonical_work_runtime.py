@@ -424,7 +424,12 @@ class CanonicalWorkRuntime:
                             next_action_class=request.next_action_class,
                             next_action_ref=request.next_action_ref,
                         )
-                        _validate_semantic_write(created, SEMANTIC_FIELDS)
+                        try:
+                            _validate_semantic_write(created, SEMANTIC_FIELDS)
+                        except ValueError:
+                            return CreateGateway.guard(
+                                request, "denied", "invalid_resultant_state"
+                            )
                         root_id = _exact_root(root)
                         if (root_id is not None
                                 and not (parent is None and root_id == work_id)
