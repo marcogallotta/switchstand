@@ -182,7 +182,9 @@ class QueueClient:
             process.wait(timeout=5)
 
 
-def bind(client: QueueClient, home: Path, token: Path) -> CodexBinding | str:
+def bind(
+    client: QueueClient, home: Path, token: Path, expected_thread_id: str | None = None,
+) -> CodexBinding | str:
     if token.parent != home or not token.name.startswith("start-commit."):
         return "NOT_BOUND"
     try:
@@ -192,6 +194,8 @@ def bind(client: QueueClient, home: Path, token: Path) -> CodexBinding | str:
         while True:
             page = client.call("thread/list", {"cursor": cursor, "limit": 100})
             for thread in page["data"]:
+                if expected_thread_id is not None and thread.get("id") != expected_thread_id:
+                    continue
                 path = Path(thread["path"])
                 if not path.resolve().is_relative_to(home.resolve()):
                     return "UNAVAILABLE"
@@ -349,7 +353,9 @@ class Projection:
         if record["state"] == "CONSUMED":
             return "ADMITTED"
         try:
-            rebound = bind(client, self.path.parent, Path(self.binding.start_record))
+            rebound = bind(
+                client, self.path.parent, Path(self.binding.start_record), self.binding.thread_id,
+            )
             if rebound != self.binding:
                 return "STALE" if isinstance(rebound, CodexBinding) else "UNKNOWN"
             thread = client.call("thread/read", {"threadId": self.binding.thread_id,

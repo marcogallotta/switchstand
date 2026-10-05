@@ -84,11 +84,15 @@ def test_binding_exact_zero_multiple_and_reconnect(setup):
     assert bind(client, home, other) == "NOT_BOUND"
     client.listed.append({"id": "other", "path": str(client.path)})
     assert bind(client, home, token) == "CONFLICT"
+    assert bind(client, home, token, binding.thread_id) == binding
+    client.listed[-1]["path"] = "/outside/exact-home"
+    assert bind(client, home, token, binding.thread_id) == binding
+    assert bind(client, home, token, "missing") == "NOT_BOUND"
     client.listed.pop()
     assert bind(client, home, token) == binding
     client.listed[0]["id"] = "replacement"
     p = Projection(home, binding)
-    assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "STALE"
+    assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "UNKNOWN"
 
 @pytest.mark.parametrize("suffix,expected", [(". Reread", True), (", next", True),
     (".suffix", False), ("/child", False), ("longer", False), (".suffix next", False)])
