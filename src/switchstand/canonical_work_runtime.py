@@ -292,7 +292,10 @@ class CanonicalWorkRuntime:
                         return self._guard(request, "denied", "invalid_database_metadata")
                     values = {field: getattr(request.patch, field) for field in fields}
                     candidate = replace(current, **values)
-                    _validate_semantic_write(candidate, fields)
+                    try:
+                        _validate_semantic_write(candidate, fields)
+                    except ValueError:
+                        return self._guard(request, "denied", "invalid_resultant_state")
                     root_id = _exact_root(candidate.canonical_root)
                     if root_id is not None and await self.works.get_locked(
                         connection, root_id
