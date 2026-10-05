@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +15,16 @@ from _pytest.monkeypatch import MonkeyPatch
 from switchstand.coordinator_sync import CoordinatorSync
 
 SCRIPT = Path(__file__).parents[1] / "scripts/coordinator-handoff"
+
+
+@pytest.fixture(autouse=True)
+def preserve_process_umask() -> Iterator[None]:
+    current = os.umask(0o077)
+    os.umask(current)
+    try:
+        yield
+    finally:
+        os.umask(current)
 
 
 def git(repo: Path, *arguments: str) -> str:
