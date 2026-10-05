@@ -353,7 +353,18 @@ async def test_outcome_revisions_are_exact_current_privacy_safe_and_fail_closed(
     async with engine.begin() as connection:
         await connection.execute(update(outcome_state_revisions).where(
             outcome_state_revisions.c.state_id == second.state_id
-        ).values(predecessor_id=unrelated_revision.state_id))
+        ).values(created_at=datetime.now(UTC) + timedelta(days=1)))
+    future = await report(engine, target)
+    assert future["outcome_state"]["status"] == "UNKNOWN"
+    assert future["outcome_state"]["reason"] == "CLOCK_SKEW_OR_FUTURE_CREATED_AT"
+    assert not any(item["source"] == "outcome_state"
+                   for item in future["ordered_evidence"]["items"])
+
+    async with engine.begin() as connection:
+        await connection.execute(update(outcome_state_revisions).where(
+            outcome_state_revisions.c.state_id == second.state_id
+        ).values(created_at=datetime.now(UTC) - timedelta(seconds=1),
+                 predecessor_id=unrelated_revision.state_id))
     corrupt_predecessor = await report(engine, target)
     assert corrupt_predecessor["outcome_state"]["status"] == "UNKNOWN"
     async with engine.begin() as connection:

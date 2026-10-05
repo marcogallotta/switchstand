@@ -51,6 +51,7 @@ def _review_wait(
 
 def _outcome_projection(
     values: list[Mapping[Any, Any]], work_id: UUID, currentness_token: str,
+    captured_at: datetime,
 ) -> dict[str, object]:
     chain = validated_revision_headers(values, currentness_token)
     if chain is None or any(row.owner_work_id != work_id for row in chain):
@@ -64,6 +65,10 @@ def _outcome_projection(
     if any(not isinstance(value.get("created_at"), datetime)
            or cast(datetime, value["created_at"]).utcoffset() is None for value in values):
         return {"status": "UNKNOWN", "reason": "UNSAFE_CREATED_AT",
+                "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
+                "truncated": None, "revisions": []}
+    if any(cast(datetime, value["created_at"]) > captured_at for value in values):
+        return {"status": "UNKNOWN", "reason": "CLOCK_SKEW_OR_FUTURE_CREATED_AT",
                 "correlation": "DIRECT_OWNER_WORK_ID", "total_revisions": None,
                 "truncated": None, "revisions": []}
     selected = list(zip(values, chain, strict=True))[-OUTCOME_REVISION_LIMIT:]
@@ -171,6 +176,7 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     outcome = _outcome_projection(
         list(outcome_values), work_id,
         canonical_revision(work_id, cast(int, work.row_version)),
+        captured_at,
     )
     review_items = [{
         "consequence_id": str(row.consequence_id),
