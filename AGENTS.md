@@ -15,6 +15,20 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 - Check authorized capabilities before declaring a blocker. Surface material disproportion early: expected versus observed cost, fastest safe smaller route, deferred guarantees, and any small causal fix. Do not ask Marco background, routine permission, or preselected-choice questions while safe assigned work remains executable.
 
 ## Working with Marco
+
+Before requesting human attention, or before yielding or declaring a blocker when further progress requires human action, use exactly one of these labels: `ACTION REQUIRED` when human action is required, `HELP COULD UNBLOCK` when help could materially accelerate recovery, or `INPUT VALUABLE` when judgment is needed before a consequential choice hardens. Use this exact minimal surface so a fresh agent does not depend on following a documentation link:
+
+```text
+<LABEL> — <subject>
+Ask: <exact action/decision>
+Why now: <why it matters now>
+Blocked: <what cannot proceed, or none>
+Continuing: <what still proceeds>
+If answered: <what changes>
+```
+
+Read [human interaction](docs/human-interaction.md) for the full status and attention contract before status, portfolio, major-completion, or activation messages.
+
 - When Marco is talking, reply first and fast, matched to his urgency (one line when he's urgent). While he is actively engaged, acknowledge before nontrivial reasoning, tools, or waits and keep giving short visible checkpoints instead of going silent. For an urgent command such as kill, STOP (pause) or CANCEL, do it at once and confirm in one line. Replying is not an effect, so still reread before consequential effects.
 - When Marco gives an explicit response-time budget, deliver the smallest useful decision-bearing response within it, before optional research, tools, narration, or formatting. If the complete answer cannot fit, clearly mark the uncertainty and continue the deeper work afterward. An empty acknowledgement or status-only reply does not satisfy the budget.
 - Scope every status surface by role: Root reports the portfolio; a non-root agent reports only its assigned work and explicitly named children, never unrelated global work.
@@ -100,8 +114,14 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Research, design, a
 - **Worker:** exactly one bounded task/work item at a time. A Worker performs the assigned research/design/implementation/review function inside that task's authority and current governing package; it does not self-expand scope or convert reviewer suggestions into requirements.
 
 Shared process semantics apply across Codex and ChatGPT even when host mechanics differ:
-- **Human Input before hardening:** before materially expanding beyond the smallest credible route or hardening a consequential product/architecture/scope/risk choice, surface the choice to Marco while it is still cheap to change. Technical solvability does not waive Human Input. Option-preserving work may continue; option-consuming/materially hardening work holds only the affected branch.
-- **Human Review boundary:** Human Review approval covers only the exact reviewed design/package. It is not implementation or landing authority, assignment, or routing. On approval, stop and report exactly `Human Review approved. Dispatch ready: <WorkId>.`; Marco routes the next work.
+
+### Human Input and Human Review
+
+For consequential work, follow [Human Input](docs/human-input.md): research enough to understand the real choices, involve the human before a material product, architecture, scope, scale, cost, risk, workflow, or durable operating-policy decision hardens, continue option-preserving work, and raise Human Input again only when the choice materially changes.
+
+Every material implementation gets final live Human Review before dispatch. For any required Human Review, follow [Human Review](docs/human-review.md): treat it as the concise end of the material decision trajectory, expose the meaningful delta, size, consequence, recommendation, and exact effect of yes, and never write the human's decision. Approval covers only the exact reviewed package and does not authorize later effects. On approval, stop and report exactly `Human Review approved. Dispatch ready: <WorkId>.`; the human routes the next work.
+
+Implementation-review completeness and partial-slice-versus-whole-product coverage belong to Review Guidelines and code quality, not these docs.
 - **Review lifecycle:** the exact source work owner/requester owns the review outcome watch through terminal verdict unless ownership is explicitly transferred with attributable pickup. A mechanical router/Coordinator may own reviewer acquisition/routing, but SENT/registration/readback is not completion. While the runtime can read/wait/read, poll the exact review until terminal verdict, Marco stop/pause/reassignment, or a real access/execution blocker.
 - **Findings are evidence:** a material finding must establish defect, evidence, consequence, affected claim/path, and minimum clearing condition. Reviewer remedies are advisory unless independently required by the governing contract. Challenge unsupported or disproportionate findings/remedies rather than adopting them mechanically.
 - **Situation-review triggers (V1):** raw confidence alone never triggers a situation review. Exactly one independent bounded review is mandatory for an exact situation only after a mechanically established contradiction in required currentness or an applicable invariant, or evidence that a consequential effect is ambiguous. Other conditions are advisory warnings which require owner acceptance before review: (1) explicit low confidence about a named consequential decision must identify the decision, affected path, specific uncertainty, supporting evidence and next falsifier; (2) a missed expected checkpoint must identify the exact WorkId/run/review/operation, expected observable condition or next-check time, evidence of last material progress and current owner; (3) repeated failed attempts must identify the exact attempts, outcomes, shared objective and recurring blocker; and (4) evidence conflicting with active plan/status must identify the exact current claim and revision plus the contradictory evidence and its currentness. Missing evidence is `UNKNOWN`/`INSUFFICIENT_DATA`, never "stalled". Deduplicate by exact situation identity plus evidence set.

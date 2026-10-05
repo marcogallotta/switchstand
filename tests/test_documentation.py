@@ -122,6 +122,26 @@ def test_agents_coordination_contract_is_discoverable():
     assert [rule for rule in required_rules if rule not in agents] == []
 
 
+def test_agents_inline_human_attention_contract_is_discoverable():
+    agents = (ROOT / "AGENTS.md").read_text()
+    required_surface = (
+        "`ACTION REQUIRED` when human action is required",
+        "`HELP COULD UNBLOCK` when help could materially accelerate recovery",
+        "`INPUT VALUABLE` when judgment is needed before a consequential choice hardens",
+        "<LABEL> — <subject>",
+        "Ask: <exact action/decision>",
+        "Why now: <why it matters now>",
+        "Blocked: <what cannot proceed, or none>",
+        "Continuing: <what still proceeds>",
+        "If answered: <what changes>",
+        "[human interaction](docs/human-interaction.md)",
+        "[Human Input](docs/human-input.md)",
+        "[Human Review](docs/human-review.md)",
+    )
+
+    assert [rule for rule in required_surface if rule not in agents] == []
+
+
 def test_situation_review_v1_contract_is_discoverable_in_shared_guidance():
     agents = (ROOT / "AGENTS.md").read_text().lower()
     usage = (ROOT / "docs/how-marco-uses-switchstand.md").read_text().lower()
