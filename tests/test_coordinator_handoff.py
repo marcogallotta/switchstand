@@ -94,6 +94,13 @@ def script_main() -> Any:
     return runpy.run_path(str(SCRIPT), run_name="coordinator_handoff_test")["main"]
 
 
+def test_repository_script_is_directly_executable() -> None:
+    result = subprocess.run([SCRIPT], text=True, capture_output=True, check=False)
+
+    assert result.returncode == 1
+    assert result.stderr.startswith("usage: scripts/coordinator-handoff ")
+
+
 def synchronizer(home: Path) -> Any:
     remote = home.parent / "remote.git"
     subject = CoordinatorSync(
