@@ -440,8 +440,11 @@ and consumers must verify the advertised SHA-256 before materializing the bundle
 
 `repository_candidate.py` owns the ordinary read-only GitHub candidate qualification. It binds the
 current public pull-request base and head to the merge-ref commit's ordered parents, then evaluates
-the four exact-head/composition job names in its versioned code-owned catalogue. Missing, stale,
-ambiguous, skipped, or wrong-subject evidence fails closed; provider failure is `UNKNOWN`. Compact
+the stable exact-head/composition terminal Quality evidence in its versioned code-owned catalogue.
+Each terminal job is the trusted workflow's fail-closed aggregation of exact planning, the selected
+or full Quality execution, and Docker when the reviewed policy requires it; its check name never
+varies by internal mode. Missing, stale, ambiguous, skipped, or wrong-subject terminal evidence
+fails closed; provider failure is `UNKNOWN`. Compact
 gate identity, reason, and timing are returned by default, while bounded failed-step and check-output
 detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic

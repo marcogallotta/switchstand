@@ -397,5 +397,19 @@ so ordinary source changes do not invalidate comparisons. Unknown environment fi
 comparison key; mismatched/unknown environments require INSUFFICIENT_DATA in future
 trend analysis. GitHub job metadata supplies CI duration; JUnit supplies suite/test
 time. `python src/switchstand/test_metrics.py --help` describes the shared formatter;
-optional planner selections count files, never JUnit cases. No selector or qualification
-policy changes, telemetry service, trend enforcement or selected CI are introduced.
+optional planner selections count files, never JUnit cases. The authoritative foreground Quality
+job promotes only `PROMOTE_TEST_MODULE_ONLY_V1`: every changed path and selected path must be a
+direct `tests/test_*.py` module on an exact current subject, with no delete/rename, planner fallback,
+selector-health warning, or cumulative native-stack-top obligation. Every other change runs the
+full fallback, including all production, helper, configuration, documentation, workflow, migration,
+and unknown changes. Default-branch pushes and the nightly schedule always run the full suite; a
+missing or unsuccessful current default-branch Quality result, or any failed default/scheduled broad
+result in the same workflow generation, demotes the sole promoted rule to full fallback. Unresolved
+run identity or a provider result cap also fails closed. A later green run cannot clear that
+generation's demotion; correction changes the reviewed workflow generation. Docker lifecycle
+evidence is omitted only for the exact promoted class. One stable
+terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the
+mode-required Docker result are all valid; internal mode never changes its required check name.
+Planner identity,
+mode, selected membership, JUnit, and timings are retained with the authoritative result. There is
+no telemetry service or second test scheduler.

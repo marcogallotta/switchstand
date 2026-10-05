@@ -11,12 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 REPOSITORY = "marcogallotta/switchstand"
 API = f"https://api.github.com/repos/{REPOSITORY}"
-CATALOGUE = "switchstand-quality-v1"
+CATALOGUE = "switchstand-quality-v2"
 GATES = (
     ("Exact-head Quality", "exact_head"),
-    ("Exact-head Docker lifecycle", "exact_head"),
     ("PR composition Quality", "composition"),
-    ("PR composition Docker lifecycle", "composition"),
 )
 DETAILS_RE = re.compile(r"/actions/runs/(?P<run>[0-9]+)(?:/job/(?P<job>[0-9]+))?")
 

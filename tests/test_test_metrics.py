@@ -77,23 +77,45 @@ def test_environment_key_ignores_source_image_but_changes_with_runtime_packages(
 
 def test_workflow_preserves_authority_and_attempts():
     text = (ROOT / '.github/workflows/quality.yml').read_text()
-    quality, lifecycle = text.split('  docker-lifecycle:')
+    execution, remainder = text.split('  docker_lifecycle:')
+    lifecycle, terminal = remainder.split('\n  quality:\n')
     assert 'schedule:\n    - cron:' in text
     assert "github.event_name == 'schedule' && 'scheduled exact-head'" in text
-    assert "github.event_name == 'schedule' && 'Scheduled exact-head Quality'" in quality
+    assert "github.event_name == 'schedule' && 'Scheduled exact-head Quality'" in terminal
     assert "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle'" in lifecycle
-    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in quality
+    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in execution
     assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in lifecycle
-    assert quality.count('if: always()') == quality.count('continue-on-error: true') == 2
-    authoritative = quality.split('      - name: Authoritative Quality')[1].split('      - name: Collect')[0]
+    assert execution.count('if: always()') == execution.count('continue-on-error: true') == 2
+    authoritative = execution.split(
+        '      - name: Authoritative proportional or full-fallback Quality'
+    )[1].split('      - name: Collect')[0]
     assert 'continue-on-error' not in authoritative
     assert '-v "$PWD:/workspace:ro"' in authoritative
     assert '-v "$RUNNER_TEMP/test-metrics:/metrics"' in authoritative
     assert '--junitxml=/metrics/junit.xml' in authoritative
-    assert 'github.run_id }}-${{ github.run_attempt }}-quality' in quality
-    assert 'retention-days: 90' in quality
+    assert 'shift 1 &&' in authoritative
+    assert 'needs.plan.outputs.selected_tests' in authoritative
+    assert '--planner "$METRICS_DIR/planner.json"' in execution
+    assert '--method GET' in execution
+    assert 'selector_health_clear(' in execution
+    assert 'history_complete=history_complete' in execution
+    assert 'test "${push_count:-1000}" -lt 1000' in execution
+    assert 'test "${schedule_count:-1000}" -lt 1000' in execution
+    assert 'test "$push_complete" = true' in execution
+    assert 'test "$schedule_complete" = true' in execution
+    assert '--paginate' in execution
+    assert "if: needs.plan.outputs.mode != 'PROMOTE_TEST_MODULE_ONLY_V1'" in lifecycle
+    assert 'if: always()' in terminal
+    assert 'test "$PLAN_RESULT" = success' in terminal
+    assert 'test "$QUALITY_RESULT" = success' in terminal
+    assert 'test "$DOCKER_RESULT" = skipped' in terminal
+    assert 'test "$DOCKER_RESULT" = success' in terminal
+    assert "&& 'PR composition Quality'" in terminal
+    assert "|| 'Exact-head Quality'" in terminal
+    assert 'github.run_id }}-${{ github.run_attempt }}-quality' in execution
+    assert 'retention-days: 90' in execution
     identity = ('scripts/verify-quality-composition', 'QUALITY_COMPOSITION_SHA',
                 'QUALITY_SUBJECT_SHA', 'QUALITY_BASE_SHA', 'STACK_BASE_REF', 'STACK_POSITION')
-    assert all(token in quality for token in identity)
+    assert all(token in execution for token in identity)
     assert all(token in lifecycle for token in identity)
     assert 'SWITCHSTAND_REAL_DOCKER=1' in lifecycle
