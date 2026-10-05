@@ -1,11 +1,13 @@
 import asyncio
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import make_url
@@ -17,8 +19,17 @@ from switchstand.canonical_work import (
     canonical_revision,
     canonical_work,
 )
+from switchstand.contracts import LaunchAuthority
+from switchstand.grant_state import GrantState
+from switchstand.managed_identity import managed_principal, rotate_managed_grant
+from switchstand.mcp import build_server
 from switchstand.messages import RuntimeCurrentness
-from switchstand.run import RunReceipt
+from switchstand.run import (
+    RECEIPT,
+    RunReceipt,
+    managed_runtime_currentness,
+    process_start_token,
+)
 from switchstand.state import PostgresState
 from switchstand.task_runs import (
     AgentTaskRequest,
@@ -126,6 +137,7 @@ async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
     state, engine, requester, execution = subject
     operation_id = uuid4()
     intent = request(execution)
+
     first = await state.request(requester, operation_id, intent)
     assert first.status == "ok" and first.request is not None
     assert first.request.requester_work_id == requester
@@ -134,18 +146,54 @@ async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
     assert await TaskRunState(engine, CanonicalWorkRepository(engine)).get(
         first.request.request_id
     ) == first
+
     async with engine.connect() as connection:
         assert await connection.scalar(select(func.count()).select_from(task_run_requests)) == 1
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
     with pytest.raises(RuntimeError, match="preserve durable task-run evidence"):
         command.downgrade(config, "0016_agent_mailbox_transfers")
+
     conflict = await state.request(
         requester,
         operation_id,
         intent.model_copy(update={"objective": "A different operation."}),
     )
     assert (conflict.status, conflict.reason) == ("conflict", "operation_identity_conflict")
+
+
+async def test_tampered_request_cannot_replay_read_or_bind(subject):
+    state, engine, requester, execution = subject
+    payload_operation, requester_operation = uuid4(), uuid4()
+    payload = await state.request(requester, payload_operation, request(execution))
+    identity = await state.request(requester, requester_operation, request(execution))
+    assert payload.request is not None and identity.request is not None
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(task_run_requests)
+            .where(task_run_requests.c.request_id == payload.request.request_id)
+            .values(objective="Corrupt stored intent.")
+        )
+        await connection.execute(
+            update(task_run_requests)
+            .where(task_run_requests.c.request_id == identity.request.request_id)
+            .values(requester_work_id=execution)
+        )
+
+    for accepted, operation_id in (
+        (payload, payload_operation),
+        (identity, requester_operation),
+    ):
+        assert accepted.request is not None
+        replay = await state.request(requester, operation_id, request(execution))
+        readback = await state.get(accepted.request.request_id)
+        bound = await state.bind_start(accepted.request.request_id, receipt(execution))
+        assert (replay.status, replay.reason) == ("unknown", "state_unavailable")
+        assert (readback.status, readback.reason) == ("unknown", "state_unavailable")
+        assert (bound.status, bound.reason) == ("unknown", "state_unavailable")
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(task_run_executions)) == 0
 
 
 async def test_request_revision_and_continuation_fail_closed_without_writes(subject):
@@ -380,6 +428,8 @@ async def test_result_replay_rejects_cross_request_terminal_pointer(subject):
             .values(terminal_result_id=second_id)
         )
 
+    readback = await state.get(first.request.request_id)
+    assert (readback.status, readback.reason) == ("unknown", "state_unavailable")
     replay = await state.submit_result(first.request.request_id, first_id, first_current, payload)
     assert (replay.status, replay.reason, replay.result, replay.terminal) == (
         "unknown",
@@ -479,3 +529,142 @@ async def test_concurrent_current_results_select_one_terminal(subject):
         assert await connection.scalar(
             select(func.count()).select_from(task_run_results)
         ) == 2
+
+
+async def test_managed_request_uses_exact_launch_grant_receipt_and_semantic_replay(
+    subject, tmp_path: Path,
+):
+    state, engine, requester, execution = subject
+    await CanonicalWorkRepository(engine).create(CurrentWork(
+        work_id=requester,
+        title="Validate the active managed assignment",
+        completed=False,
+        notes="",
+    ))
+    grants = GrantState(engine)
+    principal = managed_principal(requester)
+    repo, git_dir = tmp_path / "repo", tmp_path / "git"
+    repo.mkdir()
+    git_dir.mkdir()
+    run = RunReceipt(
+        run_id=uuid4(),
+        active_work_id=requester,
+        worktree=str(repo),
+        branch="task-request",
+        pid=os.getpid(),
+        start_token=process_start_token(os.getpid()),
+        started_at=datetime.now(UTC),
+    )
+    (git_dir / RECEIPT).write_text(run.model_dump_json() + "\n")
+    presented = [run.run_id]
+    available = [True]
+
+    def currentness():
+        if not available[0]:
+            return None
+        return managed_runtime_currentness(
+            str(presented[0]), requester, repo, run.branch, git_dir,
+        )
+
+    server = build_server(
+        object(), requester, grants=grants, principal=principal,
+        currentness=currentness, task_runs=state,
+    )
+    intent = request(execution)
+    arguments = intent.model_dump(mode="json")
+
+    absent = await server.call_tool("agent_task_request", arguments)
+    assert absent.structured_content == {
+        "status": "denied", "request": None, "reason": "no_current_grant",
+    }
+
+    granted = await rotate_managed_grant(
+        grants, LaunchAuthority(active_work_id=requester)
+    )
+    without_operation = granted.model_copy(update={
+        "id": uuid4(),
+        "version": granted.version + 1,
+        "operations": frozenset({"work_get"}),
+    })
+    await grants.issue(without_operation, granted.version)
+    denied = await server.call_tool("agent_task_request", arguments)
+    assert denied.structured_content == {
+        "status": "denied", "request": None, "reason": "operation_not_granted",
+    }
+
+    wrong_work = without_operation.model_copy(update={
+        "id": uuid4(),
+        "version": without_operation.version + 1,
+        "authority": LaunchAuthority(active_work_id=uuid4()),
+        "operations": frozenset({"agent_task"}),
+    })
+    await grants.issue(wrong_work, without_operation.version)
+    denied = await server.call_tool("agent_task_request", arguments)
+    assert denied.structured_content == {
+        "status": "denied", "request": None, "reason": "operation_not_granted",
+    }
+
+    default_grant = await rotate_managed_grant(
+        grants, LaunchAuthority(active_work_id=requester)
+    )
+    assert "agent_task" not in default_grant.operations
+    current = default_grant.model_copy(update={
+        "id": uuid4(),
+        "version": default_grant.version + 1,
+        "operations": default_grant.operations | frozenset({"agent_task"}),
+    })
+    await grants.issue(current, default_grant.version)
+    assert "agent_task" in current.operations
+    denied = await server.call_tool("agent_task_request", arguments)
+    assert denied.structured_content == {
+        "status": "denied", "request": None, "reason": "operation_not_granted",
+    }
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_requests)
+        ) == 0
+
+    arguments = request(requester).model_dump(mode="json")
+    presented[0] = uuid4()
+    stale = await server.call_tool("agent_task_request", arguments)
+    assert stale.structured_content == {
+        "status": "stale", "request": None, "reason": "requester_run_superseded",
+    }
+    available[0] = False
+    unknown = await server.call_tool("agent_task_request", arguments)
+    assert unknown.structured_content == {
+        "status": "unknown", "request": None,
+        "reason": "runtime_currentness_unavailable",
+    }
+
+    available[0] = True
+    presented[0] = run.run_id
+    first = await server.call_tool("agent_task_request", arguments)
+    replay = await server.call_tool("agent_task_request", arguments)
+    assert not first.is_error and replay.structured_content == first.structured_content
+    assert first.structured_content["status"] == "ok"
+    assert first.structured_content["request"]["requester_work_id"] == str(requester)
+    changed = await server.call_tool(
+        "agent_task_request",
+        arguments | {"objective": "Validate a distinct semantic basis."},
+    )
+    assert changed.structured_content["status"] == "ok"
+    assert changed.structured_content["request"]["request_id"] != (
+        first.structured_content["request"]["request_id"]
+    )
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_requests)
+        ) == 2
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_executions)
+        ) == 0
+
+    for forbidden in (
+        {"operation_id": str(uuid4())},
+        {"requester_work_id": str(requester)},
+        {"runtime": "codex"},
+        {"task_kind": "IMPLEMENTATION"},
+    ):
+        with pytest.raises(ToolError, match="Error executing tool agent_task_request"):
+            await server.call_tool("agent_task_request", arguments | forbidden)
