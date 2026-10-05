@@ -59,7 +59,7 @@ def test_required_documentation_entry_points_exist():
 def test_architecture_separates_managed_worker_and_root_compact_controls():
     architecture = " ".join((ROOT / "docs/architecture.md").read_text().split())
 
-    assert "Managed Codex uses its own `SessionStart(compact)` hook" in architecture
+    assert "Managed Codex carries an always-on developer-instruction contract" in architecture
     assert "only its current role/phase package" in architecture
     assert "does not reuse Root Coordinator manifest, currentness, tracker, or compact-hook controls" in architecture
 

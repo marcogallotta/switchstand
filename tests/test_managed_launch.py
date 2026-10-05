@@ -14,6 +14,7 @@ from switchstand.managed_launch import (
     ManagedParentLauncher,
     PreparedLaunchStore,
 )
+from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 
 WORK_ID = UUID("11111111-1111-4111-8111-111111111111")
 GRANT_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -118,10 +119,14 @@ def test_prepared_manifest_is_exact_sealed_and_has_only_canonical_command(tmp_pa
     assert manifest.reservation_id == broker.lease("managed-parent")["reservation_id"]
     assert manifest.command[:4] == (str(tmp_path / "codex"), "exec", "-C", str(tmp_path / "writer"))
     assert "--dangerously-bypass-approvals-and-sandbox" not in manifest.command
-    assert "features.hooks=true" in manifest.command
-    hook = next(value for value in manifest.command if value.startswith("hooks.SessionStart="))
-    assert str(tmp_path / "control/scripts/codex-managed-compact-hook") in hook
-    assert "exact current review/message/watch obligation" in manifest.command[-1]
+    instructions = next(
+        value for value in manifest.command if value.startswith("developer_instructions=")
+    )
+    assert instructions == "developer_instructions=" + json.dumps(
+        MANAGED_DEVELOPER_INSTRUCTIONS
+    )
+    assert "review uses its current review procedure" in instructions
+    assert not any(value.startswith("hooks.SessionStart=") for value in manifest.command)
     assert "--json" in manifest.command
     assert "command" not in inspect.signature(PreparedLaunchStore.prepare).parameters
 

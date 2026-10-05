@@ -16,6 +16,7 @@ from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
 from .launch_source import repository_marker
 from .managed_launch import ManagedParentLauncher
+from .managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 from .pending_failures import PendingFailureRegistry, failure_queue_root
 
 
@@ -350,18 +351,10 @@ def managed_codex_home(control: Path, writer: Path, work_id: UUID | str, env: di
     _write_managed(managed / "hooks.json", json.dumps(hooks, indent=2) + "\n")
     config = f'''approval_policy = "never"
 default_permissions = "switchstand-task"
+developer_instructions = {json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS)}
 
 [features]
 hooks = true
-
-[[hooks.SessionStart]]
-matcher = "^compact$"
-
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "{control / "scripts/codex-managed-compact-hook"}"
-timeout = 10
-additionalContextLimit = 1200
 
 [projects."{writer}"]
 trust_level = "untrusted"
@@ -403,14 +396,12 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
     if not assignment:
         raise ValueError("initial assignment must not be empty")
     prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
-              'Ground this assignment with work_get(api_version="1") '
-              "without a WorkId, then reconcile its current history with "
+              'Obey the managed Worker context contract, then reconcile current history with '
               "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
               "before material work. Follow next_cursor until null; if history is stale, "
               "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Recover each exact current review/message/watch obligation "
-              "rather than reconstructing a generic inbox. Work only in this private task "
-              "clone. This is ordinary development; the exact CONTROL hook remains active.")
+              "superseded intent. Work only in this private task clone. This is ordinary "
+              "development; the exact CONTROL hook remains active.")
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
@@ -421,6 +412,7 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
         "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
         "-c", "mcp_servers.switchstand.required=true",
+        "-c", "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS),
         prompt,
     ]
 

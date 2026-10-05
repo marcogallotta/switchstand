@@ -179,9 +179,9 @@ mismatched, or ambiguous recovery evidence is `UNKNOWN`; cgroup absence is also 
 expired lost-executor claim with an exact persisted starting receipt may release only after its
 exact unit is terminal and its exact cgroup is positively empty; that unknown execution outcome is
 released as cancelled.
-Managed Codex uses its own `SessionStart(compact)` hook to recover the launch-bound work, exact open
-obligations, and only its current role/phase package; it does not reuse Root Coordinator manifest,
-currentness, tracker, or compact-hook controls.
+Managed Codex carries an always-on developer-instruction contract that recovers launch-bound work,
+exact open obligations, and only its current role/phase package across re-entry and compaction; it
+does not reuse Root Coordinator manifest, currentness, tracker, or compact-hook controls.
 Expired unattached reservations require positive proof that no launch was prepared. Native children
 inherit the parent's aggregate cgroup but are not individually admitted.
 The canary owns the bounded live qualification proof. Live qualification still requires that

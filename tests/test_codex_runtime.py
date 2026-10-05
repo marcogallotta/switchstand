@@ -14,6 +14,7 @@ from switchstand.codex_runtime import (
     readback,
     validate_codex_args,
 )
+from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 
 
 def test_real_stdio_app_server_boundary_returns_managed_profile(tmp_path: Path) -> None:
@@ -117,21 +118,25 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
         "-c", "mcp_servers.switchstand_managed.required=true",
         "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
         "-c", "mcp_servers.switchstand_development.required=true",
-        "-c", "features.hooks=true",
-        "-c", (
-            'hooks.SessionStart=[{matcher="^compact$",hooks=[{type="command",command='
-            '"/control/scripts/codex-managed-compact-hook",timeout=10,'
-            'additionalContextLimit=1200}]}]'
-        ),
+        "-c", "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS),
     ]
-    assert 'work_get(api_version="1")' in command[-1]
     assert "Active inbox" not in command[-1]
-    assert "each exact current review/message/watch obligation" in command[-1]
-    assert "generic inbox" in command[-1]
-    assert "features.hooks=true" in command
-    hook = next(value for value in command if value.startswith("hooks.SessionStart="))
-    assert "/control/scripts/codex-managed-compact-hook" in hook
-    assert 'matcher="^compact$"' in hook
+    assert "managed Worker context contract" in command[-1]
+    instructions = next(
+        value for value in command if value.startswith("developer_instructions=")
+    )
+    assert instructions == "developer_instructions=" + json.dumps(
+        MANAGED_DEVELOPER_INSTRUCTIONS
+    )
+    assert 'work_get(api_version="1") without a WorkId' in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "after compaction" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "each exact open review/message/watch obligation" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "exact CURRENT package" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "missing or stale role/phase binding" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "only the affected path UNKNOWN" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "Never load the Root Coordinator tracking contract" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "Markdown dependency graph" in MANAGED_DEVELOPER_INSTRUCTIONS
+    assert not any(value.startswith("hooks.SessionStart=") for value in command)
 
 
 @pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
