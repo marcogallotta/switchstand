@@ -476,6 +476,14 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             forbidden = {"principal", "grant_id", "issuer", "allowed_operations"}
             forbidden.add("role")
             assert not forbidden.intersection(tool.input_schema.get("properties", {}))
+        repository_bundle = next(
+            tool for tool in tools if tool.name == "repository_bundle_get"
+        )
+        assert "Use this when" in (repository_bundle.description or "")
+        assert "no verified local checkout" in (repository_bundle.description or "")
+        assert "Do not use" in (repository_bundle.description or "")
+        assert "refresh_pending" in (repository_bundle.description or "")
+        assert "required_sha" in (repository_bundle.description or "")
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
         ).annotations.read_only_hint is True
