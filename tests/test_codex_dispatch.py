@@ -61,9 +61,21 @@ def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) ->
     home, primary, marker, env = dispatch_fixture(tmp_path)
     handoff = primary / "scripts/coordinator-handoff"
     executable(handoff, (ROOT / "scripts/coordinator-handoff").read_text())
+    control = primary / "scripts/switchstand-coordinator-control-mcp"
+    executable(
+        control,
+        """#!/bin/sh
+set -eu
+head=$(git -C "$HOME/switchstand" rev-parse HEAD)
+printf '{"status":"ready","effect":"not_sent","previous_sha":"%s","target_sha":"%s","resulting_sha":"%s","reason":"test-owner"}\\n' "$head" "$head" "$head"
+""",
+    )
     (primary / ".gitignore").write_text("friction.md\n")
     subprocess.run(
-        ["git", "-C", primary, "add", "scripts/coordinator-handoff", ".gitignore"],
+        [
+            "git", "-C", primary, "add", "scripts/coordinator-handoff",
+            "scripts/switchstand-coordinator-control-mcp", ".gitignore",
+        ],
         check=True,
     )
     subprocess.run(
