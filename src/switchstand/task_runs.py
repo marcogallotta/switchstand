@@ -479,6 +479,27 @@ class TaskRunState:
             status="ok", request=await _verified_request(connection, row)
         )
 
+    async def get_implementation_in_transaction(
+        self,
+        connection: AsyncConnection,
+        package_work_id: UUID,
+        observed_revision: str,
+        authorization_ref: str,
+    ) -> TaskRunRequestResult:
+        """Lock and verify the stable implementation request for one consequence."""
+        row = (await connection.execute(
+            select(task_run_requests).where(
+                task_run_requests.c.requester_work_id == package_work_id,
+                task_run_requests.c.execution_work_id == package_work_id,
+                task_run_requests.c.observed_revision == observed_revision,
+                task_run_requests.c.task_kind == "IMPLEMENTATION",
+                task_run_requests.c.authorization_ref == authorization_ref,
+            ).with_for_update()
+        )).mappings().one_or_none()
+        if row is None:
+            return TaskRunRequestResult(status="denied", reason="request_not_found")
+        return TaskRunRequestResult(status="ok", request=await _verified_request(connection, row))
+
     async def get(self, request_id: UUID) -> TaskRunRequestResult:
         try:
             async with self.engine.connect() as connection:
