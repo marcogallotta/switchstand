@@ -24,11 +24,13 @@ FROZEN_REPOSITORY_FILES = (
     "scripts/codex-dispatch",
     "scripts/codex-coordinator-profile",
     "scripts/codex-continuity-hook",
+    "scripts/codex-compact-hook",
     "scripts/codex-hook",
     "scripts/coordinator-control",
     "scripts/coordinator-handoff",
     "scripts/switchstand-worktree",
 )
+POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
 
 
 def digest_file(path: Path) -> str:
@@ -243,10 +245,18 @@ def create(arguments: argparse.Namespace) -> int:
         component("host:codex-executable", arguments.executable.resolve(strict=True)),
         component("generated:profile-snapshot", profile),
         component("generated:hooks", arguments.hooks.resolve(strict=True)),
+        component(
+            "generated:compact-hook-snapshot",
+            arguments.compact_hook_snapshot.resolve(strict=True),
+        ),
+        component(
+            "generated:coordinator-control-snapshot",
+            arguments.coordinator_control_snapshot.resolve(strict=True),
+        ),
     ]
     rereadable, unresolved = markdown_dependencies(repo)
     manifest: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "session": {
             "generation": str(uuid.uuid4()),
             "started_at": datetime.now(UTC).isoformat(),
@@ -262,6 +272,7 @@ def create(arguments: argparse.Namespace) -> int:
             "launch_sha256": profile_digest, "snapshot": str(profile),
         }],
         "rereadable_controls": rereadable,
+        "post_compaction_reread_controls": list(POST_COMPACTION_REREAD_CONTROLS),
         "unresolved_rereadable_controls": unresolved,
         "unproved_frozen_controls": [
             {
@@ -318,7 +329,7 @@ def acknowledge(arguments: argparse.Namespace) -> int:
 def load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     schema_version = payload.get("schema_version")
-    if schema_version not in (1, 2) or payload.get("manifest_digest") != canonical_digest(payload):
+    if schema_version not in (1, 2, 3) or payload.get("manifest_digest") != canonical_digest(payload):
         raise ValueError("launch manifest identity is invalid")
     if (
         not isinstance(payload.get("session"), dict)
@@ -327,8 +338,18 @@ def load_manifest(path: Path) -> dict[str, Any]:
         or not isinstance(payload.get("unresolved_rereadable_controls"), list)
         or not isinstance(payload.get("unproved_frozen_controls"), list)
         or (
-            schema_version == 2
+            schema_version >= 2
             and not isinstance(payload.get("runtime_mutable_controls"), list)
+        )
+        or (
+            schema_version >= 3
+            and (
+                not isinstance(payload.get("post_compaction_reread_controls"), list)
+                or not all(
+                    isinstance(item, str) and item
+                    for item in payload["post_compaction_reread_controls"]
+                )
+            )
         )
     ):
         raise TypeError("launch manifest structure is invalid")
@@ -367,11 +388,19 @@ def check(arguments: argparse.Namespace) -> int:
         for path in set(original) | set(rereadable)
         if original.get(path) != rereadable.get(path)
     )
-    required = sorted(rereadable) if arguments.trigger == "post-compaction" else changed
+    if arguments.trigger == "post-compaction":
+        required = (
+            sorted(manifest["post_compaction_reread_controls"])
+            if manifest["schema_version"] >= 3
+            else sorted(rereadable)
+        )
+    else:
+        required = changed
     output = {
         "state": "CURRENTNESS_UNKNOWN" if unknown or unresolved else "CURRENT",
         "session_generation": manifest["session"]["generation"],
         "current_commit": current_head,
+        "start_record": manifest["session"]["start_record"],
         "changed_launch_controls": sorted(mismatches),
         "unknown_components": sorted(unknown),
         "unresolved_rereadable_controls": unresolved,
@@ -401,6 +430,8 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--profile", type=Path, required=True)
     launch.add_argument("--runtime-profile", type=Path, required=True)
     launch.add_argument("--hooks", type=Path, required=True)
+    launch.add_argument("--compact-hook-snapshot", type=Path, required=True)
+    launch.add_argument("--coordinator-control-snapshot", type=Path, required=True)
     launch.add_argument("--executable", type=Path, required=True)
     launch.add_argument("--shim", type=Path, required=True)
     launch.add_argument("--invocation-digest", required=True)

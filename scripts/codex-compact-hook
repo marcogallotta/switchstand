@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Inject bounded Coordinator re-grounding immediately after Codex compaction."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+def context_for(status: dict[str, Any], manifest: Path) -> str:
+    state = status.get("state")
+    if state not in {"CURRENT", "CURRENTNESS_UNKNOWN"}:
+        raise ValueError("coordinator-control output has an invalid state")
+    rereads = ", ".join(status.get("reread_required", [])) or "none"
+    live = ", ".join(status.get("required_live_reads", [])) or "none"
+    changed = ", ".join(status.get("changed_launch_controls", [])) or "none"
+    unknown = ", ".join(status.get("unknown_components", [])) or "none"
+    component_unknowns = [
+        identifier
+        for identifier, component_state in status.get("component_currentness", {}).items()
+        if component_state == "CURRENTNESS_UNKNOWN"
+    ]
+    reason = status.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise TypeError("coordinator-control reason must be a string")
+    named_boundaries = list(status.get("unknown_components", [])) + component_unknowns
+    affected = ", ".join(named_boundaries) or (
+        "launch-control-currentness" if state == "CURRENTNESS_UNKNOWN" else "none"
+    )
+    recovery = (
+        f" Hold actions depending on {affected} and rerun coordinator-control check {manifest} "
+        "--trigger post-compaction."
+        if state == "CURRENTNESS_UNKNOWN"
+        else ""
+    )
+    return (
+        "POST-COMPACTION RE-GROUNDING (mechanically checked). "
+        f"Manifest: {manifest}. State: {state}. Reason: {reason or 'none'}. "
+        f"Before continuing, reread repository controls: {rereads}; live state: {live}; "
+        f"exact start record: {status.get('start_record', 'UNKNOWN')}. "
+        f"Changed launch controls requiring affected-boundary recheck: {changed}. "
+        f"Unknown components: {unknown}; affected currentness boundary: {affected}. "
+        "CURRENTNESS_UNKNOWN blocks only actions depending "
+        "on the unknown component. Preserve the current assignment and open obligations."
+        f"{recovery}"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("manifest", type=Path)
+    arguments = parser.parse_args()
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise TypeError("SessionStart hook input must be a JSON object")
+        if event.get("hook_event_name") != "SessionStart" or event.get("source") != "compact":
+            raise ValueError("expected SessionStart source=compact")
+        control = Path(__file__).with_name("coordinator-control")
+        result = subprocess.run(
+            [control, "check", arguments.manifest, "--trigger", "post-compaction"],
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        if result.returncode not in (0, 2):
+            raise RuntimeError(result.stderr.strip() or f"checker exited {result.returncode}")
+        status = json.loads(result.stdout)
+        if not isinstance(status, dict):
+            raise TypeError("coordinator-control output must be a JSON object")
+        context = context_for(status, arguments.manifest)
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+    ) as error:
+        context = (
+            "POST-COMPACTION RE-GROUNDING is CURRENTNESS_UNKNOWN because the mechanical check "
+            f"failed: {error}. Do not continue actions that depend on launch-control currentness; "
+            f"rerun coordinator-control check {arguments.manifest} --trigger post-compaction."
+        )
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

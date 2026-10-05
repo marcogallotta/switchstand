@@ -96,6 +96,7 @@ def render(
     continuity_mode: str,
     lifetime: str,
     telemetry: Path,
+    compact_hook: Path,
 ) -> str:
     canonical_mcp = _canonical_mcp()
     writer_git_dir = _linked_worktree_git_dir(primary, writer)
@@ -106,6 +107,9 @@ def render(
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
         "--telemetry", str(telemetry),
     ))
+    compact_command = shlex.join((
+        str(compact_hook), str(manifest_record),
+    ))
     lines = [
         'approval_policy = "never"',
         'default_permissions = "switchstand-coordinator"',
@@ -114,10 +118,9 @@ def render(
             f"This generation's owned linked writer is {writer}; make repository mutations "
             "only there. Canonical main may advance without changing this generation's exact "
             "candidate. Its launch-control manifest is "
-            f"{manifest_record}. After context compaction, run "
-            f"{primary / 'scripts/coordinator-control'} check {manifest_record} "
-            "--trigger post-compaction; reread every returned dependency plus current work, "
-            "open obligations, and the start commit. Changed launch controls require only the "
+            f"{manifest_record}. After context compaction, the synchronous compact-session hook "
+            "runs the post-compaction currentness check and injects the bounded reread set; obey "
+            "that immediate context before continuing. Changed launch controls require only the "
             "reported affected-boundary recheck; they do not stale the generation. "
             "CURRENTNESS_UNKNOWN blocks only actions depending on its unknown component. After "
             "an in-session canonical sync, run the same check with --trigger post-sync and "
@@ -181,6 +184,15 @@ def render(
         'type = "command"',
         f"command = {json.dumps(guard_command)}",
         "timeout = 10",
+        "",
+        "[[hooks.SessionStart]]",
+        'matcher = "^compact$"',
+        "",
+        "[[hooks.SessionStart.hooks]]",
+        'type = "command"',
+        f"command = {json.dumps(compact_command)}",
+        "timeout = 10",
+        "additionalContextLimit = 1200",
     ]
     if continuity_mode == "PILOT":
         for event in ("UserPromptSubmit", "Stop"):
@@ -231,15 +243,21 @@ def render_hooks(hook: Path, primary: Path) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 14:
+    if len(sys.argv) != 16:
         raise SystemExit(
             "usage: codex-coordinator-profile SOURCE SNAPSHOT RUNTIME_PROFILE PRIMARY WRITER HOOKS HOOK "
-            "CONTINUITY_HOOK CONTINUITY_MODE LIFETIME TELEMETRY START_RECORD MANIFEST_RECORD"
+            "CONTINUITY_HOOK COMPACT_HOOK COORDINATOR_CONTROL CONTINUITY_MODE LIFETIME TELEMETRY "
+            "START_RECORD MANIFEST_RECORD"
         )
     (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook,
+     compact_hook, coordinator_control,
      continuity_mode, lifetime, telemetry, start_record, manifest_record) = sys.argv[1:]
-    source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook = map(
-        Path, (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook)
+    (source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook,
+     compact_hook, coordinator_control) = map(
+        Path, (
+            source, snapshot, runtime_profile, primary, writer, hooks, hook, continuity_hook,
+            compact_hook, coordinator_control,
+        )
     )
     telemetry, start_record, manifest_record = map(Path, (telemetry, start_record, manifest_record))
     if continuity_mode not in {"OFF", "PILOT"}:
@@ -252,11 +270,27 @@ def main() -> None:
     resolved_continuity_hook = continuity_hook.resolve(strict=True)
     if not resolved_continuity_hook.is_file() or not os.access(resolved_continuity_hook, os.X_OK):
         raise SystemExit("Continuity hook is unavailable")
+    compact_controls = Path(f"{start_record}.compact-controls")
+    compact_controls.mkdir(mode=0o700, parents=True)
+    compact_hook_snapshot = compact_controls / "codex-compact-hook"
+    control_snapshot = compact_controls / "coordinator-control"
+    _write(
+        compact_hook_snapshot,
+        compact_hook.resolve(strict=True).read_text(),
+        exclusive=True,
+        mode=0o500,
+    )
+    _write(
+        control_snapshot,
+        coordinator_control.resolve(strict=True).read_text(),
+        exclusive=True,
+        mode=0o500,
+    )
     with source.open("rb") as handle:
         output = render(
             tomllib.load(handle), primary.resolve(strict=True), writer.resolve(strict=True),
             start_record, manifest_record, resolved_hook, resolved_continuity_hook,
-            continuity_mode, lifetime, telemetry,
+            continuity_mode, lifetime, telemetry, compact_hook_snapshot,
         )
     _write(snapshot, output, exclusive=True, mode=0o400)
     _write(runtime_profile, output, exclusive=True)
