@@ -102,6 +102,9 @@ class FakeOperations:
     def stop(self):
         self._event("stop")
 
+    def upgrade_state(self):
+        self._event("upgrade_state")
+
     def snapshot(self):
         self._event("snapshot")
 
@@ -144,7 +147,11 @@ def receipt(subject: Config) -> dict[str, object]:
 
 def seed_receipt(subject: Config, phase: str) -> None:
     durable = maintenance.Receipt(subject)
-    if phase not in {"PREFLIGHT", "GATED", "STOPPED"}:
+    if phase == "UPGRADE_PENDING":
+        durable.value["state_upgrade"] = "PENDING"
+    elif phase not in {"PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK"}:
+        durable.value["state_upgrade"] = "APPLIED"
+    if phase not in {"PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED"}:
         durable.value["fastmcp_snapshot"] = "a" * 64
     durable.write(phase, "UNKNOWN")
 
@@ -190,7 +197,7 @@ def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     [
         ("PREFLIGHT", "APPLIED", "ACTIVE", "GATED"),
         ("GATED", "APPLIED", "INACTIVE", "STOPPED"),
-        ("STOPPED", "APPLIED", "INACTIVE", "SNAPSHOTTED"),
+        ("UPGRADED", "APPLIED", "INACTIVE", "SNAPSHOTTED"),
         ("SNAPSHOTTED", "APPLIED", "INACTIVE", "SWAPPED"),
         ("SWAPPED", "APPLIED", "ACTIVE", "STARTED"),
         ("STARTED", "ABSENT", "ACTIVE", "UNGATED"),
@@ -207,11 +214,11 @@ def test_reconcile_classifies_effect_completed_before_phase_receipt(
     monkeypatch.setattr(operations, "local_ready", lambda: True)
     monkeypatch.setattr(operations, "public_ready", lambda: True)
     proof: dict[str, object] = {}
-    if phase in {"STOPPED", "SNAPSHOTTED", "SWAPPED", "STARTED"}:
+    if phase in {"UPGRADED", "SNAPSHOTTED", "SWAPPED", "STARTED"}:
         operations.snapshot_file.write_bytes(b"snapshot")
         operations.snapshot_file.chmod(0o600)
-        if phase != "STOPPED":
-            proof["fastmcp_snapshot"] = hashlib.sha256(b"snapshot").hexdigest()
+    if phase in {"SNAPSHOTTED", "SWAPPED", "STARTED"}:
+        proof["fastmcp_snapshot"] = hashlib.sha256(b"snapshot").hexdigest()
     if phase in {"SNAPSHOTTED", "SWAPPED", "STARTED"}:
         operations.backup.write_bytes(b"current launcher")
         operations.backup.chmod(0o600)
@@ -363,6 +370,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
         "gate",
         "public_gated",
         "stop",
+        "upgrade_state",
         "snapshot",
         "swap",
         "start",
@@ -378,7 +386,8 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     [
         ("PREFLIGHT", "GATED", "gate"),
         ("GATED", "STOPPED", "stop"),
-        ("STOPPED", "SNAPSHOTTED", "snapshot"),
+        ("STOPPED", "UPGRADED", "upgrade_state"),
+        ("UPGRADED", "SNAPSHOTTED", "snapshot"),
         ("SNAPSHOTTED", "SWAPPED", "swap"),
         ("SWAPPED", "STARTED", "start"),
         ("STARTED", "UNGATED", "ungate"),
@@ -448,22 +457,28 @@ def test_unproved_public_gate_is_unknown_and_service_is_not_stopped(tmp_path: Pa
     }
 
 
-def test_candidate_failure_restores_old_launcher_before_ungating(tmp_path: Path):
+def test_definite_pre_upgrade_failure_restarts_old_runtime_and_ungates(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(local=False)
+    operations = FakeOperations(fail_at="stop")
 
     assert deploy(subject, operations) == "FAIL"
 
-    assert operations.events[-6:] == [
-        "stop",
-        "restore_launcher",
-        "start",
-        "rollback_ready",
-        "ungate",
-        "public_ready",
-    ]
+    assert operations.events[-3:] == ["stop", "ungate", "public_ready"]
     assert not operations.gated
     assert receipt(subject)["phase"] == "ROLLED_BACK"
+    assert receipt(subject)["state_upgrade"] == "NOT_STARTED"
+
+
+def test_candidate_failure_after_state_upgrade_keeps_gate_and_reports_unknown(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(local=False)
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.gated
+    assert "restore_launcher" not in operations.events
+    assert "ungate" not in operations.events
+    assert receipt(subject)["phase"] == "STARTED"
 
 
 def test_rollback_ambiguity_keeps_maintenance_gate_and_reports_unknown(tmp_path: Path):
@@ -476,13 +491,52 @@ def test_rollback_ambiguity_keeps_maintenance_gate_and_reports_unknown(tmp_path:
     assert receipt(subject)["error"] == "RollbackUnknown"
 
 
-def test_interrupted_rollback_public_check_reinstalls_gate(tmp_path: Path):
+def test_ambiguous_state_upgrade_retains_gate_without_retry_or_launcher_effects(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(unknown_at="upgrade_state")
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.gated
+    assert "swap" not in operations.events
+    assert "start" not in operations.events
+    assert "restore_launcher" not in operations.events
+    assert receipt(subject)["phase"] == "UPGRADE_PENDING"
+    assert receipt(subject)["state_upgrade"] == "PENDING"
+
+
+def test_pending_state_upgrade_receipt_never_retries_after_reentry(tmp_path: Path):
+    subject = config(tmp_path)
+    seed_receipt(subject, "UPGRADE_PENDING")
+    operations = FakeOperations()
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.gated
+    assert "upgrade_state" not in operations.events
+    assert "swap" not in operations.events
+
+
+def test_definite_post_upgrade_failure_keeps_gate_and_does_not_restart_old_runtime(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(fail_at="snapshot")
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.gated
+    assert "restore_launcher" not in operations.events
+    assert "start" not in operations.events
+    assert "ungate" not in operations.events
+    assert receipt(subject)["state_upgrade"] == "APPLIED"
+
+
+def test_post_upgrade_candidate_failure_retains_gate_after_local_check(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(local=False, unknown_at="public_ready")
 
     assert deploy(subject, operations) == "UNKNOWN"
 
-    assert operations.events[-4:] == ["gate_exact", "gate", "gate_exact", "public_gated"]
+    assert operations.events[-3:] == ["gate_exact", "gate_exact", "public_gated"]
     assert operations.gated
     assert receipt(subject)["error"] == "RollbackUnknown"
 
@@ -531,6 +585,48 @@ def test_rollback_restores_launcher_without_rewinding_oauth_state(tmp_path: Path
 
     assert subject.launcher.read_text() == "old"
     assert (oauth / "rotated-token").read_text() == "new-state"
+
+
+def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(
+        maintenance,
+        "run_host_command",
+        lambda command, **_kwargs: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+    )
+
+    operations.upgrade_state()
+
+    assert commands == [
+        [str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+         "--target", "production"]
+    ]
+
+
+def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(
+        maintenance,
+        "run_host_command",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 1, "", ""),
+    )
+
+    with pytest.raises(Unknown, match="did not complete"):
+        operations.upgrade_state()
 
 
 def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):

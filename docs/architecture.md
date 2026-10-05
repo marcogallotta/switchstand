@@ -121,11 +121,14 @@ ordinary tool until that classification is extended.
 
 `edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
 edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
-transport state only while the service is offline, swaps the launcher atomically, verifies locally
+transport state only while the service is offline, and runs the existing shared-state upgrade only
+after the gate is public and the systemd service is confirmed stopped. Its receipt persists an
+`UPGRADE_PENDING` boundary before that forward-only operation and the irreversible upgraded-state
+fact after success, so migration ambiguity remains gated rather than being retried or rolled back.
+It swaps the launcher atomically, verifies locally
 before ungating, and preserves `UNKNOWN` behind the gate. Its exact receipt runner consumes a
 read-only host-phase reconciler that revalidates runtime and artifact trust boundaries and accepts
-only the durable phase or one exactly proven next state. The receipt keeps the irreversible
-Postgres-authority fact across later host phases. It does not own tool semantics, OAuth state
+only the durable phase or one exactly proven next state. It does not own tool semantics, OAuth state
 format, host installation, or activation authority.
 
 `wakeful.py` is an inert, agent-system-neutral event persistence prototype. It owns the sanitized

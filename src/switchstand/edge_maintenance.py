@@ -96,6 +96,7 @@ class Operations(Protocol):
     def gate_exact(self) -> bool: ...
     def public_gated(self) -> bool: ...
     def stop(self) -> None: ...
+    def upgrade_state(self) -> None: ...
     def snapshot(self) -> None: ...
     def swap(self) -> None: ...
     def start(self) -> None: ...
@@ -115,9 +116,11 @@ def _sha(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def run_host_command(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_host_command(
+    command: list[str], *, check: bool = True, timeout: int = 45
+) -> subprocess.CompletedProcess[str]:
     """Run one bounded host command for a maintenance operation."""
-    return subprocess.run(command, check=check, capture_output=True, text=True, timeout=45)
+    return subprocess.run(command, check=check, capture_output=True, text=True, timeout=timeout)
 
 
 def validate_target(config: Config) -> None:
@@ -421,7 +424,8 @@ class HostOperations:
     ) -> tuple[str, dict[str, str]]:
         """Classify a durable host phase or its one proven next state without effects."""
         phases = (
-            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "SWAPPED",
+            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
+            "SNAPSHOTTED", "SWAPPED",
             "STARTED", "UNGATED", "COMPLETE",
         )
         if phase not in phases:
@@ -457,13 +461,22 @@ class HostOperations:
             raise Unknown("stop outcome is ambiguous")
         if phase not in {"SWAPPED", "STARTED", "UNGATED", "COMPLETE"} and service != "INACTIVE":
             raise Unknown("service is not proven stopped")
+        if phase == "UPGRADE_PENDING":
+            # The state-upgrade command can have crossed its shared-state authority
+            # boundary before its receipt transition.  Its outcome is therefore not
+            # safely resumable from host observations alone.
+            raise Unknown("shared state upgrade outcome is ambiguous")
         snapshot = proof.get("fastmcp_snapshot")
         if phase == "STOPPED":
             if not os.path.lexists(self.snapshot_file):
                 return phase, {}
+            raise Unknown("snapshot exists before state upgrade receipt")
+        if phase == "UPGRADED":
+            if not os.path.lexists(self.snapshot_file):
+                return phase, {}
             digest = self._artifact_digest(self.snapshot_file, 0o600)
             return "SNAPSHOTTED", {"fastmcp_snapshot": digest}
-        if phase in phases[3:] and (
+        if phase in phases[5:] and (
             not isinstance(snapshot, str)
             or snapshot != self._artifact_digest(self.snapshot_file, 0o600)
         ):
@@ -640,6 +653,28 @@ class HostOperations:
             return
         raise Unknown("edge listener remains after service stop")
 
+    def upgrade_state(self) -> None:
+        """Run the existing rehearsal-and-upgrade only behind a proven offline gate."""
+        if (
+            self._service_state() != "INACTIVE"
+            or not self.gate_exact()
+            or not self.public_gated()
+        ):
+            raise Unknown("state upgrade boundary is no longer exact")
+        command = [
+            str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+            "--target", "production",
+        ]
+        try:
+            result = run_host_command(command, check=False, timeout=1800)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise Unknown("shared state upgrade outcome is unreadable") from exc
+        if result.returncode:
+            # The script deliberately leaves a backup and reports an ambiguous
+            # shared migration without rolling it back.  Its nonzero exit cannot
+            # prove that the shared-state authority boundary was not crossed.
+            raise Unknown("shared state upgrade did not complete")
+
     def start(self) -> None:
         self._service("start", "active")
         restarts = run_host_command(
@@ -773,6 +808,7 @@ class Receipt:
             "current_launcher_sha": config.current_launcher_sha,
             "candidate_launcher_sha": config.candidate_launcher_sha,
             "retry_after": config.retry_after,
+            "state_upgrade": "NOT_STARTED",
             "status": "RUNNING",
             "phase": "PREFLIGHT",
         }
@@ -794,10 +830,11 @@ class Receipt:
             raise Unknown("host receipt is malformed")
         value = cast(dict[str, object], loaded)
         phases = {
-            "PREFLIGHT", "GATED", "STOPPED", "SNAPSHOTTED", "SWAPPED",
+            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
+            "SNAPSHOTTED", "SWAPPED",
             "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK",
         }
-        fixed = {"status", "phase", "error", "fastmcp_snapshot"}
+        fixed = {"status", "phase", "state_upgrade", "error", "fastmcp_snapshot"}
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.getuid()
@@ -810,11 +847,17 @@ class Receipt:
         ):
             raise Unknown("host receipt is malformed or belongs to another attempt")
         phase, status = value["phase"], value["status"]
+        state_upgrade = value.get("state_upgrade")
+        expected_upgrade = (
+            "NOT_STARTED" if phase in {"PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK"}
+            else "PENDING" if phase == "UPGRADE_PENDING"
+            else "APPLIED"
+        )
         if (status == "PASS") != (phase == "COMPLETE") or (
             status == "FAIL"
-        ) != (phase == "ROLLED_BACK"):
+        ) != (phase == "ROLLED_BACK") or state_upgrade != expected_upgrade:
             raise Unknown("host receipt terminal state is inconsistent")
-        if phase not in {"PREFLIGHT", "GATED", "STOPPED"} and not re.fullmatch(
+        if phase not in {"PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED"} and not re.fullmatch(
             r"[0-9a-f]{64}", cast(str, value.get("fastmcp_snapshot", ""))
         ):
             raise Unknown("host receipt phase proof is incomplete")
@@ -870,6 +913,8 @@ def deploy(config: Config, operations: Operations) -> str:
         else:
             receipt.write(phase)
             operations.preflight()
+        if phase == "UPGRADE_PENDING":
+            raise Unknown("shared state upgrade outcome is ambiguous")
         if phase == "PREFLIGHT":
             gate_attempted = True
             operations.gate()
@@ -882,6 +927,16 @@ def deploy(config: Config, operations: Operations) -> str:
             phase = "STOPPED"
             receipt.write(phase)
         if phase == "STOPPED":
+            # Persist intent before running a command that can advance shared
+            # state.  A crash in that interval is UNKNOWN, never an implicit retry.
+            phase = "UPGRADE_PENDING"
+            receipt.value["state_upgrade"] = "PENDING"
+            receipt.write(phase)
+            operations.upgrade_state()
+            phase = "UPGRADED"
+            receipt.value["state_upgrade"] = "APPLIED"
+            receipt.write(phase)
+        if phase == "UPGRADED":
             operations.snapshot()
             receipt.value["fastmcp_snapshot"] = operations.snapshot_digest()
             phase = "SNAPSHOTTED"
@@ -915,6 +970,10 @@ def deploy(config: Config, operations: Operations) -> str:
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
         try:
+            # An applied shared-state migration is forward-only.  The old runtime
+            # is restarted and publicly exposed only before that authority boundary.
+            if receipt.value["state_upgrade"] != "NOT_STARTED":
+                raise Unknown("shared state upgrade prevents automatic rollback")
             if phase in {"SWAPPED", "STARTED", "UNGATED"}:
                 operations.stop()
                 operations.restore_launcher()

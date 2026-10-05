@@ -139,13 +139,20 @@ and after each start, it binds the systemd `MainPID` command line to that launch
 the process's effective FastMCP path from its initial environment; a mismatch cannot pass.
 It proves the current four Caddy proxy handlers, inserts and publicly verifies a
 first-priority `503 Retry-After` route covering every Switchstand MCP, OAuth and
-metadata path, and only then stops the edge. While offline it snapshots the exact
-FastMCP state directory without parsing or logging its secret contents, atomically
-swaps the launcher, starts the edge, runs the edge doctor locally, removes the
-gate, and runs the public doctor. A definite failure rolls back according to the
-last completed phase: after a launcher swap this includes stopping the candidate,
-restoring the launcher and verifying the old edge against the current OAuth state
-before ungating. It never restores the OAuth snapshot automatically because doing
+metadata path, and only then stops the edge. While that gate remains publicly proven
+and the systemd service is confirmed stopped, it runs the existing
+`switchstand-upgrade-state --target production` rehearsal, backup, and shared-state
+upgrade before any launcher swap or start. The receipt records `UPGRADE_PENDING`
+before that forward-only command and `UPGRADED` only after it completes, so an
+interrupted or failed migration remains gated and `UNKNOWN`, never a blind retry or
+old-runtime rollback. It then snapshots the exact FastMCP state directory without
+parsing or logging its secret contents, atomically swaps the launcher, starts the edge, runs the edge doctor locally, removes the
+gate, and runs the public doctor. A definite failure before `UPGRADE_PENDING`
+retains the existing safe recovery: when stop is definitely complete, it restarts
+and verifies the compatible old runtime before ungating. Every failure or
+ambiguity at or after `UPGRADE_PENDING` returns `UNKNOWN`, retains or reinstalls
+the gate, and performs no automatic old-runtime restart. It never restores the
+OAuth snapshot automatically because doing
 so could discard registrations or token rotations accepted after the snapshot.
 Snapshot restoration is a separate offline corruption-recovery action with explicit
 session-loss consequences. Ambiguous mutation/readback or ambiguous rollback returns `UNKNOWN`
