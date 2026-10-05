@@ -537,7 +537,7 @@ and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owne
 launcher behavior does not invoke the precursor.
 The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. `wakeful_runner.py` is its
-production supervision composition: a default-off process loads one private frozen
+production supervision composition: an explicitly invoked process loads one private frozen
 mailbox/binding configuration, reuses `chatgpt_edge.resource_service()`, and stops through
 SIGINT/SIGTERM. Its user-systemd renderer is inert and does not install, enable, start, register,
 or take over anything. The runner creates no database or service owner and leaves the probe CLI

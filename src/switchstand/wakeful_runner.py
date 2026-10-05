@@ -1,4 +1,4 @@
-"""Default-off supervised runner for the Wakeful inbound loop."""
+"""Explicit supervised runner for the Wakeful inbound loop."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ def systemd_user_unit(runtime_python: Path, environment_file: Path, config: Path
         "[Unit]\nAfter=network-online.target\nWants=network-online.target\n\n"
         "[Service]\nType=simple\n"
         f"EnvironmentFile={environment}\n"
-        f"ExecStart={python} -m switchstand.wakeful_runner --enable --config={frozen_config}\n"
+        f"ExecStart={python} -m switchstand.wakeful_runner --config={frozen_config}\n"
         "Restart=on-failure\nRestartSec=2\nTimeoutStopSec=45\n\n"
         "[Install]\nWantedBy=default.target\n"
     )
@@ -127,7 +127,6 @@ def systemd_user_unit(runtime_python: Path, environment_file: Path, config: Path
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--enable", action="store_true", required=True)
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args(argv)
     asyncio.run(serve(load_config(args.config)))

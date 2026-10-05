@@ -1,12 +1,13 @@
 # Development
 
 The Wakeful inbound pilot is an explicit host-only composition, not a launcher or edge task.
-`switchstand-wakeful-inbound --enable --config=/absolute/private/runner.json` is the dedicated
+`switchstand-wakeful-inbound --config=/absolute/private/runner.json` is the dedicated
 continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
-authorized deployment context and requires both the explicit `--enable` flag and a complete,
-mode-0600 frozen JSON configuration containing exactly one `mailbox`, `binding`, `codex_home`,
-and `codex` path. Merely installing Switchstand or launching its ordinary services does not
-start the runner.
+authorized deployment context and requires a complete, mode-0600 frozen JSON configuration
+containing exactly one `mailbox`, `binding`, `codex_home`, and `codex` path. Direct invocation is
+the explicit action. Merely installing Switchstand or launching its ordinary services does not
+start the runner; the rendered unit remains default-off because nothing installs, enables, or
+starts it.
 
 The process composes the existing owners as follows:
 

@@ -13,7 +13,6 @@ from switchstand.wakeful_runner import (
     RunnerConfig,
     install_stop_handlers,
     load_config,
-    main,
     run,
     serve,
     systemd_user_unit,
@@ -45,20 +44,6 @@ def private_config(tmp_path: Path, body: dict[str, object]) -> Path:
     path.write_text(json.dumps(body))
     path.chmod(0o600)
     return path
-
-
-def test_runner_is_default_off_before_config_or_source_access(tmp_path, monkeypatch):
-    accessed = False
-
-    def forbidden(_path):
-        nonlocal accessed
-        accessed = True
-        raise AssertionError("configuration accessed")
-
-    monkeypatch.setattr("switchstand.wakeful_runner.load_config", forbidden)
-    with pytest.raises(SystemExit):
-        main(["--config", str(tmp_path / "missing")])
-    assert not accessed
 
 
 def test_config_is_complete_exact_private_and_frozen(tmp_path):
@@ -140,7 +125,7 @@ def test_signal_stop_and_supervisor_restart_posture(tmp_path):
         Path("/etc/switchstand/wakeful.env"),
         tmp_path / "runner.json",
     )
-    assert "--enable --config=" in unit
+    assert "--config=" in unit and "--enable" not in unit
     assert "EnvironmentFile=/etc/switchstand/wakeful.env" in unit
     assert "Restart=on-failure" in unit and "TimeoutStopSec=45" in unit
     assert "WantedBy=default.target" in unit
