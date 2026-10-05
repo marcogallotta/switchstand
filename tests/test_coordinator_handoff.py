@@ -5,9 +5,13 @@ import os
 import runpy
 import subprocess
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, cast
 
 import pytest
+from _pytest.capture import CaptureFixture
+from _pytest.monkeypatch import MonkeyPatch
+
+from switchstand.coordinator_sync import CoordinatorSync
 
 SCRIPT = Path(__file__).parents[1] / "scripts/coordinator-handoff"
 
@@ -21,14 +25,16 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
     primary = home / "switchstand"
     remote = tmp_path / "remote.git"
     source = tmp_path / "source"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", remote], check=True,
-                   capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", remote],
+        check=True, capture_output=True,
+    )
     primary.mkdir(parents=True)
-    subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
-                   capture_output=True)
-    for repo in (primary,):
-        git(repo, "config", "user.name", "Test")
-        git(repo, "config", "user.email", "test@example.invalid")
+    subprocess.run(
+        ["git", "-C", primary, "init", "-b", "main"], check=True, capture_output=True
+    )
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
     (primary / "tracked.txt").write_text("start\n")
     git(primary, "add", "tracked.txt")
     git(primary, "commit", "-m", "start")
@@ -49,10 +55,15 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
     record.chmod(0o600)
     manifest = {
         "schema_version": 1,
-        "session": {"generation": "outgoing-generation", "start_commit": started,
-                    "start_record": str(record)},
-        "frozen_controls": [], "rereadable_controls": {},
-        "unresolved_rereadable_controls": [], "unproved_frozen_controls": [],
+        "session": {
+            "generation": "outgoing-generation",
+            "start_commit": started,
+            "start_record": str(record),
+        },
+        "frozen_controls": [],
+        "rereadable_controls": {},
+        "unresolved_rereadable_controls": [],
+        "unproved_frozen_controls": [],
     }
     unsigned = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     import hashlib
@@ -68,22 +79,46 @@ def obligations(home: Path) -> Path:
     return path
 
 
-def test_fast_forwards_clean_main_and_prepares_actual_successor(tmp_path: Path) -> None:
-    home, primary, record, started, final = setup(tmp_path)
+def script_main() -> Any:
+    return runpy.run_path(str(SCRIPT), run_name="coordinator_handoff_test")["main"]
 
-    result = subprocess.run(
-        [SCRIPT, record, obligations(home)], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
+
+def synchronizer(home: Path) -> Any:
+    remote = home.parent / "remote.git"
+    subject = CoordinatorSync(
+        home,
+        remote_source=str(remote),
+        accepted_origins=frozenset({str(remote)}),
+        remote_protocol="file",
     )
 
-    assert result.returncode == 0, result.stderr
+    def run(observed_home: Path, started: str) -> dict[str, object]:
+        assert observed_home == home
+        return cast(dict[str, object], subject.handoff(started).model_dump())
+
+    return run
+
+
+def test_fast_forwards_clean_main_and_prepares_actual_successor(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str],
+) -> None:
+    home, primary, record, started, final = setup(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+
+    script_main()(
+        [str(record), str(obligations(home))], synchronize=synchronizer(home)
+    )
+
+    output = capsys.readouterr().out
     assert git(primary, "rev-parse", "HEAD") == final
     assert git(primary, "status", "--porcelain") == ""
-    assert f"{started}..{final}" in result.stdout
-    assert "WAITING_FOR_SUCCESSOR" in result.stdout
-    artifact = Path(result.stdout.split("Evidence: ", 1)[1].strip())
+    assert f"{started}..{final}" in output
+    assert "WAITING_FOR_SUCCESSOR" in output
+    artifact = Path(output.split("Evidence: ", 1)[1].strip())
     assert artifact.parent.stat().st_mode & 0o777 == 0o700
-    assert {path.name for path in artifact.iterdir()} == {"obligations", "handoff.json", "result.json"}
+    assert {path.name for path in artifact.iterdir()} == {
+        "obligations", "handoff.json", "result.json",
+    }
     handoff = json.loads((artifact / "handoff.json").read_text())
     assert handoff["state"] == "AWAITING_SUCCESSOR"
     assert handoff["target_commit"] == final
@@ -92,57 +127,53 @@ def test_fast_forwards_clean_main_and_prepares_actual_successor(tmp_path: Path) 
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in artifact.iterdir())
 
 
-def test_dirty_main_fails_before_fetch_or_pending_handoff(tmp_path: Path) -> None:
+def test_dirty_main_fails_before_fetch_or_pending_handoff(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
     home, primary, record, _started, _final = setup(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
     (primary / "untracked.txt").write_text("preserve me\n")
 
-    result = subprocess.run(
-        [SCRIPT, record, obligations(home)], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
-    )
+    with pytest.raises(SystemExit, match="refuses dirty main") as raised:
+        script_main()(
+            [str(record), str(obligations(home))], synchronize=synchronizer(home)
+        )
 
-    assert result.returncode != 0
-    assert "refuses dirty main" in result.stderr
     assert (primary / "untracked.txt").read_text() == "preserve me\n"
     assert not (record.parent / "pending-handoff.json").exists()
-    artifact = Path(result.stderr.strip().rsplit("evidence: ", 1)[1])
+    artifact = Path(str(raised.value).rsplit("evidence: ", 1)[1])
     evidence = json.loads((artifact / "result.json").read_text())
     assert evidence["status"] == "FAILED"
-    assert evidence["stage"] == "validate-inputs"
+    assert evidence["stage"] == "sync-main"
     assert evidence["known_head"] == git(primary, "rev-parse", "HEAD")
 
 
-def test_existing_pending_handoff_fails_before_fetch(tmp_path: Path) -> None:
+def test_existing_pending_handoff_fails_before_sync(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
     home, primary, record, started, _final = setup(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
     (record.parent / "pending-handoff.json").write_text("{}")
 
-    result = subprocess.run(
-        [SCRIPT, record, obligations(home)], env=os.environ | {"HOME": str(home)},
-        text=True, capture_output=True, check=False,
-    )
+    with pytest.raises(SystemExit, match="prior Coordinator handoff is still pending"):
+        script_main()(
+            [str(record), str(obligations(home))], synchronize=synchronizer(home)
+        )
 
-    assert result.returncode != 0
-    assert "prior Coordinator handoff is still pending" in result.stderr
     assert git(primary, "rev-parse", "HEAD") == started
 
 
-def test_git_is_noninteractive_and_timeout_is_reported(
-    monkeypatch: pytest.MonkeyPatch,
+def test_sync_control_timeout_is_reported(
+    monkeypatch: MonkeyPatch, tmp_path: Path,
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT), run_name="coordinator_handoff_test")
-    git_function = namespace["git"]
-    seen: dict[str, Any] = {}
+    synchronize_main = namespace["synchronize_main"]
 
-    def timeout_run(*args: Any, **kwargs: Any) -> NoReturn:
-        seen.update(kwargs)
+    def timeout_run(*args: Any, **kwargs: Any) -> Any:
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr(git_function.__globals__["subprocess"], "run", timeout_run)
-    try:
-        git_function(Path("/repo"), "fetch", "origin")
-    except SystemExit as error:
-        assert "git fetch origin timed out after 30s" in str(error)
-    else:
-        raise AssertionError("timeout must fail the handoff")
-    assert seen["timeout"] == 30
-    assert cast(dict[str, str], seen["env"])["GIT_TERMINAL_PROMPT"] == "0"
+    monkeypatch.setattr(synchronize_main.__globals__["subprocess"], "run", timeout_run)
+    with pytest.raises(
+        SystemExit, match="Coordinator sync control unavailable: TimeoutExpired"
+    ):
+        synchronize_main(tmp_path, "a" * 40)

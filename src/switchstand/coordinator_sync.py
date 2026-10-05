@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -47,6 +49,15 @@ class SyncResult(ClosedModel):
     effect: Literal["applied", "not_sent", "unknown"]
     previous_sha: str | None = None
     target_sha: str
+    resulting_sha: str | None = None
+    reason: str
+
+
+class HandoffSyncResult(ClosedModel):
+    status: Literal["ready", "blocked", "unknown"]
+    effect: Literal["applied", "not_sent", "unknown"]
+    previous_sha: str | None = None
+    target_sha: str | None = None
     resulting_sha: str | None = None
     reason: str
 
@@ -226,6 +237,77 @@ class CoordinatorSync:
                 reason=str(error) if isinstance(error, GitFailure) else "sync_lock_unavailable",
             )
 
+    def handoff(self, started_sha: str) -> HandoffSyncResult:
+        """Synchronize canonical main and validate one outgoing generation boundary."""
+        if not SHA.fullmatch(started_sha):
+            return HandoffSyncResult(
+                status="blocked", effect="not_sent", reason="invalid_start_sha"
+            )
+        if (self.repo.is_symlink() or not self.repo.is_dir()
+                or not (self.repo / ".git").is_dir()):
+            return HandoffSyncResult(
+                status="blocked", effect="not_sent", reason="canonical_checkout_unavailable"
+            )
+        lock_path = self.repo / ".git" / "switchstand-coordinator-sync.lock"
+        current: str | None = None
+        target: str | None = None
+        synced: SyncResult | None = None
+        try:
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                with self._config_guard():
+                    self._validate_local_config()
+                    current = self._validate_repo()
+                    if not self._clean():
+                        return HandoffSyncResult(
+                            status="blocked", effect="not_sent", previous_sha=current,
+                            resulting_sha=current, reason="dirty_canonical_checkout",
+                        )
+                    if self._git(
+                        "cat-file", "-e", f"{started_sha}^{{commit}}", check=False
+                    ).returncode:
+                        return HandoffSyncResult(
+                            status="blocked", effect="not_sent", previous_sha=current,
+                            resulting_sha=current, reason="recorded_start_commit_unavailable",
+                        )
+                    target = self._remote_main()
+                    synced = self._sync_locked(current, target)
+                    if synced.status == "unknown":
+                        return HandoffSyncResult(
+                            status="unknown", effect=synced.effect,
+                            previous_sha=synced.previous_sha, target_sha=target,
+                            resulting_sha=synced.resulting_sha, reason=synced.reason,
+                        )
+                    if synced.status != "ok":
+                        return HandoffSyncResult(
+                            status="blocked", effect=synced.effect,
+                            previous_sha=synced.previous_sha, target_sha=target,
+                            resulting_sha=synced.resulting_sha, reason=synced.reason,
+                        )
+                    resulting = synced.resulting_sha or current
+                    if self._git(
+                        "merge-base", "--is-ancestor", started_sha, resulting, check=False
+                    ).returncode:
+                        return HandoffSyncResult(
+                            status="blocked", effect=synced.effect,
+                            previous_sha=synced.previous_sha, target_sha=target,
+                            resulting_sha=resulting,
+                            reason="recorded_start_commit_is_not_ancestor",
+                        )
+                    return HandoffSyncResult(
+                        status="ready", effect=synced.effect,
+                        previous_sha=synced.previous_sha, target_sha=target,
+                        resulting_sha=resulting, reason="handoff_git_boundary_ready",
+                    )
+        except (OSError, GitFailure) as error:
+            effect = "not_sent" if synced is None else synced.effect
+            return HandoffSyncResult(
+                status="unknown" if effect != "not_sent" else "blocked",
+                effect=effect, previous_sha=current, target_sha=target,
+                resulting_sha=None if synced is None else synced.resulting_sha,
+                reason=str(error) if isinstance(error, GitFailure) else "sync_lock_unavailable",
+            )
+
     def _sync_locked(self, observed_current: str, target_sha: str) -> SyncResult:
         merge_attempted = False
         try:
@@ -329,12 +411,21 @@ def build_server(control: CoordinatorSync) -> MCPServer:
     return server
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     home = Path(os.environ["HOME"])
     if not home.is_absolute():
         raise SystemExit("HOME must be absolute")
-    build_server(CoordinatorSync(home.resolve())).run()
+    control = CoordinatorSync(home.resolve())
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments:
+        if len(arguments) != 2 or arguments[0] != "handoff":
+            raise SystemExit("usage: coordinator_sync [handoff <start-sha>]")
+        result = control.handoff(arguments[1])
+        print(json.dumps(result.model_dump(), sort_keys=True))
+        return 0 if result.status == "ready" else 2
+    build_server(control).run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
