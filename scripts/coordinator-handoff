@@ -11,64 +11,28 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
 SHA = re.compile(r"[0-9a-f]{40}")
-GIT_TIMEOUT_SECONDS = 30
 _evidence: Path | None = None
 _stage = "startup"
-_repo: Path | None = None
+_known_head: str | None = None
 
 
 def fail(message: str) -> NoReturn:
     if _evidence is not None:
         payload = {"status": "FAILED", "stage": _stage, "message": message}
-        if _repo is not None:
-            result = subprocess.run(
-                ["git", "-C", str(_repo), "rev-parse", "HEAD"],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=5,
-                env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
-            )
-            if result.returncode == 0:
-                payload["known_head"] = result.stdout.strip()
+        if _known_head is not None:
+            payload["known_head"] = _known_head
         (_evidence / "result.json").write_text(json.dumps(payload, sort_keys=True) + "\n")
         message = f"{message}; evidence: {_evidence}"
     raise SystemExit(message)
 
-
 def stage(name: str) -> None:
     global _stage
     _stage = name
-
-
-def git(repo: Path, *arguments: str, check: bool = True) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *arguments],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=GIT_TIMEOUT_SECONDS,
-            env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
-        )
-    except subprocess.TimeoutExpired:
-        fail(f"git {' '.join(arguments)} timed out after {GIT_TIMEOUT_SECONDS}s")
-    if check and result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
-        fail(detail)
-    return result.stdout.strip()
-
-
-def fetch_source(origin: str) -> str:
-    prefixes = ("git@github.com:", "ssh://git@github.com/")
-    for prefix in prefixes:
-        if origin.startswith(prefix):
-            return "https://github.com/" + origin.removeprefix(prefix)
-    return origin
 
 
 def require_start_record(home: Path, raw: str) -> tuple[Path, str]:
@@ -144,9 +108,33 @@ def write_json(path: Path, payload: dict[str, object], *, exclusive: bool = Fals
         temporary.unlink(missing_ok=True)
 
 
-def main() -> None:
-    global _evidence, _repo
-    if len(sys.argv) != 3:
+def synchronize_main(home: Path, started: str) -> dict[str, object]:
+    command = home / "switchstand/scripts/switchstand-coordinator-control-mcp"
+    try:
+        result = subprocess.run(
+            [str(command), "handoff", started],
+            text=True, capture_output=True, check=False, timeout=60,
+            env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f"Coordinator sync control unavailable: {type(error).__name__}")
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        detail = result.stderr.strip() or "invalid structured response"
+        fail(f"Coordinator sync control failed: {detail}")
+    if not isinstance(payload, dict):
+        fail("Coordinator sync control returned invalid structured response")
+    return payload
+
+
+def main(
+    argv: list[str] | None = None,
+    synchronize: Callable[[Path, str], dict[str, object]] = synchronize_main,
+) -> None:
+    global _evidence, _known_head
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) != 2:
         fail("usage: scripts/coordinator-handoff <start-commit-record> <obligations-file>")
     home_raw = os.environ.get("HOME")
     if not home_raw or not Path(home_raw).is_absolute():
@@ -159,58 +147,40 @@ def main() -> None:
     os.chmod(artifact_root, 0o700)
     _evidence = Path(tempfile.mkdtemp(prefix="handoff-", dir=artifact_root))
     os.chmod(_evidence, 0o700)
-    _repo = repo
     stage("validate-inputs")
     if not repo.is_dir():
         fail("canonical Switchstand checkout is unavailable")
-    start_record, started = require_start_record(home, sys.argv[1])
+    start_record, started = require_start_record(home, arguments[0])
     outgoing_manifest = require_launch_manifest(start_record, started)
-    obligations = require_obligations(home, sys.argv[2])
+    obligations = require_obligations(home, arguments[1])
     pending = start_record.parent / "pending-handoff.json"
     if pending.exists():
         fail("a prior Coordinator handoff is still pending")
-    if git(repo, "rev-parse", "--path-format=absolute", "--show-toplevel") != str(repo):
-        fail("handoff requires the canonical primary checkout")
-    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    if common != repo / ".git" or git(repo, "branch", "--show-current") != "main":
-        fail("handoff requires the canonical primary main checkout")
-    if git(repo, "status", "--porcelain", "--untracked-files=all"):
-        fail("handoff refuses dirty main; local work is intact")
-    if subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{started}^{{commit}}"],
-        capture_output=True,
-        check=False,
-    ).returncode:
-        fail("start record commit is unavailable in canonical history")
-
-    stage("fetch-main")
-    origin = git(repo, "remote", "get-url", "origin")
-    source = fetch_source(origin)
-    git(repo, "fetch", "--quiet", "--no-tags", source,
-        "+refs/heads/main:refs/remotes/origin/main")
-    stage("validate-fast-forward")
-    accepted = git(repo, "rev-parse", "origin/main")
-    current = git(repo, "rev-parse", "HEAD")
-    if subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", current, accepted],
-        capture_output=True,
-        check=False,
-    ).returncode:
-        fail("handoff refuses divergent main; local commits are intact")
-    if current != accepted:
-        stage("fast-forward-main")
-        git(repo, "merge", "--ff-only", "--quiet", accepted)
-    stage("read-back-main")
-    if (git(repo, "rev-parse", "HEAD") != accepted
-            or git(repo, "branch", "--show-current") != "main"
-            or git(repo, "status", "--porcelain", "--untracked-files=all")):
-        fail("handoff could not read back clean main at the fetched revision")
-    if subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", started, accepted],
-        capture_output=True,
-        check=False,
-    ).returncode:
-        fail("recorded Coordinator start commit is not an ancestor of final main")
+    stage("sync-main")
+    sync = synchronize(home, started)
+    known = sync.get("resulting_sha") or sync.get("previous_sha")
+    if isinstance(known, str) and SHA.fullmatch(known):
+        _known_head = known
+    if sync.get("status") != "ready":
+        reason = str(sync.get("reason") or "unknown")
+        messages = {
+            "dirty_canonical_checkout": "handoff refuses dirty main; local work is intact",
+            "canonical_main_is_not_ancestor": (
+                "handoff refuses divergent main; local commits are intact"
+            ),
+            "canonical_remote_identity_mismatch": "handoff refuses noncanonical origin",
+            "recorded_start_commit_unavailable": (
+                "start record commit is unavailable in canonical history"
+            ),
+            "recorded_start_commit_is_not_ancestor": (
+                "recorded Coordinator start commit is not an ancestor of final main"
+            ),
+        }
+        fail(messages.get(reason, f"handoff Git boundary rejected: {reason}"))
+    accepted = sync.get("resulting_sha")
+    if not isinstance(accepted, str) or not SHA.fullmatch(accepted):
+        fail("handoff Git boundary returned invalid final main identity")
+    _known_head = accepted
 
     stage("prepare-successor")
     handoff_id = str(uuid.uuid4())

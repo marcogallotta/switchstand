@@ -372,19 +372,20 @@ binary, even when the checkout is missing or broken; inside that Git common dire
 to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
 mutable checkout. The launcher exports a private `CODEX_INSTALL_DIR` before either route, so Codex's
 automatic updater maintains its otherwise-unused visible command outside the managed launcher path.
-`scripts/coordinator-handoff` is the sole guarded canonical-main update path for Coordinator
-replacement. It accepts the launch-record path injected by `codex-dispatch` and an exact private
-obligations file, refuses dirty or divergent primary state, fast-forwards to fetched remote `main`,
-and registers a pending handoff in private durable state. Plain Coordinator launches remain
-independent and never claim it. Automatic transfer is disabled until a separate explicit addressed
-claim can bind the handoff to a launcher-proven generation. Obligations do not transfer and the old
-generation does not retire before the successor acknowledges that future binding. Failure evidence
-is retained and never rewinds the safely advanced primary.
-`coordinator_sync.py` owns the smaller pre-handoff synchronization control exposed only through the
-Coordinator's generated local stdio MCP profile. Its read operation observes the fixed canonical
+`coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
+synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
-refuses dirty or divergent state, and performs an ancestor-only fast-forward. It accepts no path,
-repository, remote, branch, or ref arguments and is absent from the ordinary ChatGPT MCP surface.
+refuses dirty or divergent state, and performs an ancestor-only fast-forward. The private handoff
+operation holds the same serialization/config boundary through final start-commit ancestry proof.
+It accepts no caller-selected repository, remote, branch, or ref and is absent from the ordinary
+ChatGPT MCP surface.
+`scripts/coordinator-handoff` owns only replacement orchestration around that Git boundary: it
+validates the exact launch-record and obligations inputs, delegates canonical-main synchronization
+to `coordinator_sync.py`, and registers a pending handoff in private durable state. Plain
+Coordinator launches remain independent and never claim it. Automatic transfer is disabled until a
+separate explicit addressed claim can bind the handoff to a launcher-proven generation. Obligations
+do not transfer and the old generation does not retire before the successor acknowledges that
+future binding. Failure evidence is retained and never rewinds the safely advanced primary.
 The control validates the code-owned GitHub origin, uses a fixed HTTPS source, admits only a small
 positive allowlist of inert repository configuration, and runs fixed Git commands with caller/global
 configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protocols, and recursive

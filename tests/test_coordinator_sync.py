@@ -165,7 +165,7 @@ def executable(path: Path, marker: Path, *, passthrough: bool = False) -> None:
 def test_hostile_git_execution_config_is_sanitized_during_real_fast_forward(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    home, primary, source, _started, target = setup(tmp_path)
+    home, primary, source, started, target = setup(tmp_path)
     marker = tmp_path / "escaped"
     helper = tmp_path / "helper"
     executable(helper, marker)
@@ -178,9 +178,9 @@ def test_hostile_git_execution_config_is_sanitized_during_real_fast_forward(
     monkeypatch.setenv("GIT_SSH_COMMAND", str(helper))
     monkeypatch.setenv("GIT_EXEC_PATH", str(tmp_path))
 
-    result = control(home, source.parent / "remote.git").sync(target)
+    result = control(home, source.parent / "remote.git").handoff(started)
 
-    assert result.status == "ok" and result.effect == "applied"
+    assert result.status == "ready" and result.effect == "applied"
     assert git(primary, "rev-parse", "HEAD") == target
     assert not marker.exists()
 
@@ -188,7 +188,7 @@ def test_hostile_git_execution_config_is_sanitized_during_real_fast_forward(
 def test_filter_command_and_noncanonical_remote_are_rejected_before_execution(
     tmp_path: Path,
 ) -> None:
-    home, primary, source, started, target = setup(tmp_path)
+    home, primary, source, started, _target = setup(tmp_path)
     marker = tmp_path / "escaped"
     helper = tmp_path / "helper"
     executable(helper, marker, passthrough=True)
@@ -197,16 +197,16 @@ def test_filter_command_and_noncanonical_remote_are_rejected_before_execution(
     git(primary, "config", "filter.evil.smudge", str(helper))
     subject = control(home, source.parent / "remote.git")
 
-    filtered = subject.sync(target)
+    filtered = subject.handoff(started)
 
-    assert filtered.status == "not_applied" and filtered.reason == "unsafe_local_git_config"
+    assert filtered.status == "blocked" and filtered.reason == "unsafe_local_git_config"
     assert git(primary, "rev-parse", "HEAD") == started
     assert not marker.exists()
 
     git(primary, "config", "--remove-section", "filter.evil")
     git(primary, "remote", "set-url", "origin", f"ext::{helper}")
-    wrong_remote = subject.sync(target)
-    assert wrong_remote.status == "not_applied"
+    wrong_remote = subject.handoff(started)
+    assert wrong_remote.status == "blocked"
     assert wrong_remote.reason == "canonical_remote_identity_mismatch"
     assert git(primary, "rev-parse", "HEAD") == started
     assert not marker.exists()

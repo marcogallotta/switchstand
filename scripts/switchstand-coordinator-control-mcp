@@ -7,4 +7,4 @@ if [ ! -x "$python" ]; then
     echo "run scripts/bootstrap before starting Coordinator control" >&2
     exit 1
 fi
-PYTHONPATH="$repo/src" exec "$python" -m switchstand.coordinator_sync
+PYTHONPATH="$repo/src" exec "$python" -m switchstand.coordinator_sync "$@"
