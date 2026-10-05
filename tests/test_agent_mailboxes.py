@@ -17,12 +17,16 @@ async def endpoints(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
-        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+        ))
         await connection.run_sync(metadata.create_all)
     yield AgentMailboxState(engine)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
-        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+        ))
     await engine.dispose()
 
 
