@@ -247,6 +247,11 @@ messaging, and required continuation:
   can mint `HUMAN_PRIORITY`, because no installed attributable human-confirmation seam exists.
   The production edge does not construct, propagate, or register this projection. Activation must
   add that wiring under separate authority, then reinstall and verify the client-visible MCP schema.
+- `priority_context.py` composes a deterministic read-only view for at most 50 explicit WorkIds
+  from canonical work, relations, and priority claims. It keeps project claims contextual, labels
+  agent claims advisory, exposes stale/conflicting/unknown evidence, and never parses notes or
+  stores ranking, attention, or inherited claims. Its MCP/service seam is injectable, default-off,
+  and unconstructed by the production edge; exact-scope completeness is not portfolio completeness.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic
