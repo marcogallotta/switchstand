@@ -389,10 +389,8 @@ def check(arguments: argparse.Namespace) -> int:
         if original.get(path) != rereadable.get(path)
     )
     if arguments.trigger == "post-compaction":
-        required = (
-            sorted(manifest["post_compaction_reread_controls"])
-            if manifest["schema_version"] >= 3
-            else sorted(rereadable)
+        required = sorted(
+            manifest.get("post_compaction_reread_controls", POST_COMPACTION_REREAD_CONTROLS)
         )
     else:
         required = changed
