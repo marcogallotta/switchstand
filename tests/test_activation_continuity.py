@@ -105,6 +105,8 @@ async def subject(database_prerequisite):
         )
     bound = contract()
     yield ActivationContinuity(engine, {bound.obligation_id: bound}), bound
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP TABLE IF EXISTS activation_obligation_revisions"))
     await engine.dispose()
 
 
