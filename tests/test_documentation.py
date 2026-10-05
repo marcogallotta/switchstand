@@ -257,6 +257,24 @@ def test_repository_safety_routes_detail_without_dropping_bootstrap_invariants()
     assert [rule for rule in bundle_owner if rule not in usage] == []
 
 
+def test_coordinator_handoff_docs_preserve_no_claim_semantics():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    architecture = " ".join((ROOT / "docs/architecture.md").read_text().split())
+    usage = " ".join((ROOT / "docs/how-marco-uses-switchstand.md").read_text().split())
+
+    assert "plain raw `codex` launch always creates an independent session and never claims" in agents
+    assert "Plain Coordinator launches remain independent and never claim it" in architecture
+    assert "Plain raw `codex` launches remain independent and never claim it" in usage
+    assert "Automatic transfer is disabled until a separate explicit addressed-claim" in agents
+    assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
+    assert "Automatic transfer is disabled until a separate explicit addressed-claim" in usage
+    assert "outgoing generation retains its obligations" in agents
+    assert "old generation does not retire before the successor acknowledges" in architecture
+    assert "obligations have not transferred and the outgoing Coordinator must not retire" in usage
+    assert "registration and a later plain launch are not pickup" in usage
+    assert "must update `AGENTS.md`, `docs/architecture.md`, and this owner together" in usage
+
+
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
     interaction = (ROOT / "docs/human-interaction.md").read_text()
