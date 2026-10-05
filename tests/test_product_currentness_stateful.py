@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -17,6 +22,7 @@ from switchstand.product_currentness import (
 from switchstand.product_currentness_stateful import (
     LiveStatefulEvidenceReader,
     StatefulPersistenceSnapshot,
+    StatefulQualificationReceipt,
     StatefulServerSnapshot,
 )
 
@@ -44,7 +50,7 @@ class MemoryStatefulEvidenceReader(LiveStatefulEvidenceReader):
         return self.persistence
 
 
-def build_reader():
+def build_reader(*, receipt: Path | None = None, key: Path | None = None):
     snapshot = SERVER_SNAPSHOT
 
     async def read_principal():
@@ -59,6 +65,8 @@ def build_reader():
         read_snapshot,
         expected_migration_revision=EXPECTED_MIGRATION,
         expected_tools_schema_sha256=SCHEMA_DIGEST,
+        qualification_receipt=receipt,
+        qualification_key=key,
     )
 
     def set_snapshot(value: StatefulServerSnapshot) -> None:
@@ -66,6 +74,47 @@ def build_reader():
         snapshot = value
 
     return reader, snapshot, set_snapshot
+
+
+async def qualified_reader(
+    tmp_path: Path, **updates: object,
+) -> tuple[MemoryStatefulEvidenceReader, StatefulQualificationReceipt]:
+    diagnostic, _, _ = build_reader()
+    binding = await diagnostic.acceptance_binding()
+    receipt = StatefulQualificationReceipt(
+        schema=2,
+        issuer="switchstand-stateful-qualifier",
+        qualification="real:authenticated-stateful-currentness-v1",
+        result="PASS",
+        runtime_sha=SERVER_SNAPSHOT.runtime_sha,
+        selected_runtime_sha=SERVER_SNAPSHOT.selected_runtime_sha,
+        run_id=SERVER_SNAPSHOT.run_id,
+        principal_key=SERVER_SNAPSHOT.principal_key,
+        tools_schema_sha256=SERVER_SNAPSHOT.tools_schema_sha256,
+        persistence_token=diagnostic.persistence_token(diagnostic.persistence),
+        basis_token=binding.basis_token,
+        contract_token=binding.currentness_token,
+        authenticated_mcp="PASS",
+        admission="DENIED",
+        stale_cas="STALE",
+        replay="REPLAYED",
+        currentness="RECHECKED",
+        observed_at=datetime.now(UTC),
+        seal="0" * 64,
+    ).model_copy(update=updates)
+    key = tmp_path / "qualification.key"
+    key.write_bytes(b"q" * 32)
+    key.chmod(0o600)
+    payload = receipt.model_dump(mode="json", by_alias=True, exclude={"seal"})
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    receipt = receipt.model_copy(
+        update={"seal": hmac.new(key.read_bytes(), canonical, hashlib.sha256).hexdigest()}
+    )
+    path = tmp_path / "qualification.json"
+    path.write_text(receipt.model_dump_json(by_alias=True))
+    path.chmod(0o600)
+    reader, _, _ = build_reader(receipt=path, key=key)
+    return reader, receipt
 
 
 async def test_live_prerequisites_are_diagnostic_but_cannot_claim_true() -> None:
@@ -80,7 +129,7 @@ async def test_live_prerequisites_are_diagnostic_but_cannot_claim_true() -> None
         "feature_enabled",
         "schema_current",
         "persistence_current",
-        "functional_proof_missing",
+        "functional_proof_missing_or_invalid",
     }
 
 
@@ -105,6 +154,38 @@ async def test_snapshot_must_match_authenticated_principal() -> None:
     assert (result.status, result.current, result.reason) == (
         "unknown", "UNKNOWN", "acceptance_contract_unbound",
     )
+
+
+async def test_sealed_real_qualification_completes_true_boundary(tmp_path: Path) -> None:
+    reader, _ = await qualified_reader(tmp_path)
+
+    result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+
+    assert (result.status, result.current, result.blockers) == ("ok", "TRUE", ())
+    assert result.conditions[-1].detail == "qualification_current"
+
+
+@pytest.mark.parametrize("field", ["run_id", "principal_key"])
+async def test_qualification_for_wrong_run_or_principal_conflicts(
+    tmp_path: Path, field: str,
+) -> None:
+    update = "another-run" if field == "run_id" else "d" * 64
+    reader, _ = await qualified_reader(tmp_path, **{field: update})
+
+    result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+
+    assert (result.status, result.current) == ("conflict", "CONFLICT")
+    assert result.conditions[-1].detail == "qualification_binding_mismatch"
+
+
+async def test_unsealed_or_legacy_assertions_cannot_claim_true(tmp_path: Path) -> None:
+    reader, receipt = await qualified_reader(tmp_path)
+    path = tmp_path / "qualification.json"
+    path.write_text(receipt.model_copy(update={"seal": "f" * 64}).model_dump_json())
+    assert (await reader.read("functional_proof")).result == "UNKNOWN"
+
+    path.write_text(json.dumps({"schema": 1, "result": "PASS", "principal_proof": "NOT_RUN"}))
+    assert (await reader.read("functional_proof")).result == "UNKNOWN"
 
 
 async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
