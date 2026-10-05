@@ -92,6 +92,8 @@ def test_workflow_preserves_authority_and_attempts():
     assert '--junitxml=/metrics/junit.xml' in authoritative
     assert 'github.run_id }}-${{ github.run_attempt }}-quality' in quality
     assert 'retention-days: 90' in quality
-    assert 'test "${parents[1]}" = "$QUALITY_SUBJECT_SHA"' in quality
-    assert 'test "${parents[1]}" = "$QUALITY_SUBJECT_SHA"' in lifecycle
+    identity = ('scripts/verify-quality-composition', 'QUALITY_COMPOSITION_SHA',
+                'QUALITY_SUBJECT_SHA', 'QUALITY_BASE_SHA', 'STACK_BASE_REF', 'STACK_POSITION')
+    assert all(token in quality for token in identity)
+    assert all(token in lifecycle for token in identity)
     assert 'SWITCHSTAND_REAL_DOCKER=1' in lifecycle
