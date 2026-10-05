@@ -117,9 +117,21 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
         "-c", "mcp_servers.switchstand_managed.required=true",
         "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
         "-c", "mcp_servers.switchstand_development.required=true",
+        "-c", "features.hooks=true",
+        "-c", (
+            'hooks.SessionStart=[{matcher="^compact$",hooks=[{type="command",command='
+            '"/control/scripts/codex-managed-compact-hook",timeout=10,'
+            'additionalContextLimit=1200}]}]'
+        ),
     ]
     assert 'work_get(api_version="1")' in command[-1]
-    assert "Active inbox" in command[-1]
+    assert "Active inbox" not in command[-1]
+    assert "each exact current review/message/watch obligation" in command[-1]
+    assert "generic inbox" in command[-1]
+    assert "features.hooks=true" in command
+    hook = next(value for value in command if value.startswith("hooks.SessionStart="))
+    assert "/control/scripts/codex-managed-compact-hook" in hook
+    assert 'matcher="^compact$"' in hook
 
 
 @pytest.mark.parametrize("launch_request", ["", "inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])

@@ -205,6 +205,7 @@ def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
     command = context.codex_command(Path("/control"), Path("/writer"), arguments.assignment[0])
     assert command[-1].startswith(f"Exact launch assignment:\n{assignment}\n\n")
     assert command[-1].count(assignment) == 1
+    assert "exact current review/message/watch obligation" in command[-1]
 
 
 @pytest.mark.parametrize(
@@ -723,6 +724,10 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     assert '".git" = "write"' in config
     assert f'"{managed}" = "deny"' in config
     assert f'"{auth}" = "deny"' in config
+    assert '[[hooks.SessionStart]]' in config
+    assert 'matcher = "^compact$"' in config
+    assert f'command = "{control / "scripts/codex-managed-compact-hook"}"' in config
+    assert "coordinator-tracker-contract" not in config
 
 
 def test_managed_codex_home_rejects_symlinked_config(monkeypatch, tmp_path):

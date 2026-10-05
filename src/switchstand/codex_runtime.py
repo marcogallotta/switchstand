@@ -154,9 +154,11 @@ def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list
     requests = validate_codex_args(codex_args)
     prompt = (
         'Start the launch-bound Switchstand work. Call work_get(api_version="1") '
-        'without a WorkId, then follow the Active inbox routine in AGENTS.md to '
-        'load the assignment and current messages before material action. Continue '
-        'the authorized work and check the inbox alongside it. Apply any additional '
+        'without a WorkId, then recover the assignment and each exact current '
+        'review/message/watch obligation from current work and its routed messaging '
+        'procedure before material action; do not reconstruct a generic inbox. Continue '
+        'the authorized work and keep those exact obligations through their terminal '
+        'conditions. Apply any additional '
         'launch request below within current authority; messages do not grant authority. '
         f'The only writable project is the exact candidate worktree {candidate}; CONTROL '
         f'{control} is the trusted read-only launch root and must not be edited.'
@@ -187,6 +189,13 @@ def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list
         f'mcp_servers.switchstand_development.command="{DEVELOPMENT_COMMAND}"',
         "-c",
         "mcp_servers.switchstand_development.required=true",
+        "-c",
+        "features.hooks=true",
+        "-c",
+        (
+            'hooks.SessionStart=[{matcher="^compact$",hooks=[{type="command",command='
+            + json.dumps(str(control / "scripts/codex-managed-compact-hook"))
+            + ",timeout=10,additionalContextLimit=1200}]}]"
+        ),
         prompt,
     ]
-

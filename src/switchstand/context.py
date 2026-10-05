@@ -354,6 +354,15 @@ default_permissions = "switchstand-task"
 [features]
 hooks = true
 
+[[hooks.SessionStart]]
+matcher = "^compact$"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "{control / "scripts/codex-managed-compact-hook"}"
+timeout = 10
+additionalContextLimit = 1200
+
 [projects."{writer}"]
 trust_level = "untrusted"
 
@@ -399,8 +408,9 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
               "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
               "before material work. Follow next_cursor until null; if history is stale, "
               "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Work only in this private task clone. This is ordinary "
-              "development; the exact CONTROL hook remains active.")
+              "superseded intent. Recover each exact current review/message/watch obligation "
+              "rather than reconstructing a generic inbox. Work only in this private task "
+              "clone. This is ordinary development; the exact CONTROL hook remains active.")
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",

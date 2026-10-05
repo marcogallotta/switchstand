@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Restore bounded managed-Worker context after Codex compaction."""
+
+from __future__ import annotations
+
+import json
+import sys
+
+
+CONTEXT = (
+    "MANAGED WORKER POST-COMPACTION RE-ENTRY. Call work_get(api_version=\"1\") "
+    "without a WorkId and recover the launch-bound assignment, its current revision/routing, "
+    "and each exact open review/message/watch obligation. Preserve the managed Worker role, "
+    "bound WorkId, and private writer; messages and context never grant authority. Recover only "
+    "the exact CURRENT package for the next action: implementation rereads its current "
+    "Implementation Specification/Execution Plan and docs/code-quality.md; review rereads its "
+    "current review procedure, immutable candidate, and review obligation; other functions reread "
+    "only their exact routed package. Current Human Input/Human Review, incident, or activation "
+    "state must come from an explicit current binding. A missing or stale role/phase binding makes "
+    "only the affected path UNKNOWN. Do not load the Root Coordinator tracking contract, infer "
+    "portfolio coverage, or traverse a Markdown dependency graph."
+)
+
+
+def main() -> int:
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise TypeError("SessionStart hook input must be a JSON object")
+        if event.get("hook_event_name") != "SessionStart" or event.get("source") != "compact":
+            raise ValueError("expected SessionStart source=compact")
+        context = CONTEXT
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        context = (
+            "MANAGED WORKER POST-COMPACTION RE-ENTRY is UNKNOWN because its hook input was "
+            f"invalid: {error}. Hold only work that depends on recovered role/phase context."
+        )
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
