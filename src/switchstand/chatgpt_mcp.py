@@ -8,6 +8,7 @@ from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import repository_bundle, repository_candidate
+from .activation_continuity import ContinuityResult, Transition
 from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
@@ -107,6 +108,30 @@ class OutcomeStateUpdateResult(ClosedModel):
     state_id: UUID | None = None
 
 
+class ActivationContinuityResult(ClosedModel):
+    """Public state omits stored binding, actor/grant evidence, and technical basis."""
+    status: Literal[
+        "APPLIED", "REPLAYED", "CURRENT", "STALE", "CONFLICT", "DENIED", "MISSING", "UNKNOWN"
+    ]
+    observed_revision: str | None = None
+    state: str | None = None
+    acceptance: str | None = None
+    adoption: str | None = None
+    reason: str | None = None
+
+
+def project_activation_continuity(result: ContinuityResult) -> ActivationContinuityResult:
+    value = result.obligation
+    return ActivationContinuityResult(
+        status=result.status,
+        observed_revision=None if value is None else value.digest,
+        state=None if value is None else value.state,
+        acceptance=None if value is None else value.acceptance,
+        adoption=None if value is None else value.adoption,
+        reason=result.reason,
+    )
+
+
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
     kind: Literal["parent", "dependency"]
@@ -165,6 +190,7 @@ PRIORITY_CLAIM_TOOLS = frozenset({"priority_claim_get", "priority_claim_record"}
 PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
+ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
@@ -174,6 +200,7 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
         | OUTCOME_STATE_TOOLS | PRIORITY_CLAIM_TOOLS | PRIORITY_CONTEXT_TOOLS
         | IMPLEMENTATION_REQUEST_TOOLS
         | PRODUCT_CURRENTNESS_TOOLS
+        | ACTIVATION_CONTINUITY_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
@@ -558,6 +585,23 @@ def build_ordinary_tools(
         if principal is None:
             raise PermissionError("authenticated principal is unavailable")
         return await service.product_currentness(principal)
+
+    async def activation_obligation_transition(
+        api_version: Literal["1"], operation_id: UUID, obligation_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1, max_length=64)],
+        transition: Transition,
+        evidence_refs: Annotated[tuple[str, ...], Field(max_length=16)] = (),
+        blocker_ref: Annotated[str | None, Field(min_length=1, max_length=1000)] = None,
+        clearing_event_ref: Annotated[str | None, Field(min_length=1, max_length=1000)] = None,
+    ) -> ActivationContinuityResult:
+        """Advance one installed contract; actor and technical truth are server-owned."""
+        del api_version
+        result = await service.activation_continuity_transition(
+            operation_id, obligation_id, observed_revision, transition,
+            evidence_refs, blocker_ref, clearing_event_ref,
+        )
+        audited("activation_obligation_transition", str(obligation_id), result.status)
+        return project_activation_continuity(result)
 
     async def work_relate(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
@@ -1002,6 +1046,8 @@ def build_ordinary_tools(
           if service.implementation_requests is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
+        *((("activation_obligation_transition", activation_obligation_transition),)
+          if service.activation_continuity is not None else ()),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
