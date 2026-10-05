@@ -536,7 +536,12 @@ or owns a managed Codex daemon. The live same-home embedded root discovers durab
 and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner; ordinary
 launcher behavior does not invoke the precursor.
 The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
-`AgentMailboxState` objects in a dedicated supervised host process. It reads only committed
+`AgentMailboxState` objects in a dedicated supervised host process. `wakeful_runner.py` is its
+production supervision composition: a default-off process loads one private frozen
+mailbox/binding configuration, reuses `chatgpt_edge.resource_service()`, and stops through
+SIGINT/SIGTERM. Its user-systemd renderer is inert and does not install, enable, start, register,
+or take over anything. The runner creates no database or service owner and leaves the probe CLI
+semantics in `codex_wakeful.py` unchanged. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
 to the exact Codex root/start record. Source transactions finish before host admission so
 host latency cannot block canonical receive/disposition/takeover. Source and runtime checks

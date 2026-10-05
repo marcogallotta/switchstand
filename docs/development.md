@@ -1,8 +1,14 @@
 # Development
 
 The Wakeful inbound pilot is an explicit host-only composition, not a launcher or edge task.
-After separately authorized host/source qualification, a dedicated supervised Python process
-can reuse `chatgpt_edge.resource_service()` in its existing authorized deployment context:
+`switchstand-wakeful-inbound --enable --config=/absolute/private/runner.json` is the dedicated
+continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
+authorized deployment context and requires both the explicit `--enable` flag and a complete,
+mode-0600 frozen JSON configuration containing exactly one `mailbox`, `binding`, `codex_home`,
+and `codex` path. Merely installing Switchstand or launching its ordinary services does not
+start the runner.
+
+The process composes the existing owners as follows:
 
 ```python
 async with resource_service() as (service, _):
@@ -29,8 +35,12 @@ The Codex child starts lazily only when a committed pending source reaches admis
 `thread/queue/add` and `thread/queue/list` through stdio in the exact supplied `CODEX_HOME`, and
 terminates after the bounded scan. The existing embedded root consumes that durable queue when
 idle; the pilot never manages or attaches to a daemon.
-`opt_in=False` is inert. Stop/cancel the dedicated process to suspend this pilot; restart with
-the same configuration to reconcile pending admissions. This is not full product suspend,
+`opt_in=False` is inert. `wakeful_runner.systemd_user_unit()` takes exact runtime-Python,
+environment-file, and runner-config paths and renders a user-service definition with graceful
+SIGINT/SIGTERM stop and `Restart=on-failure`; the existing environment file supplies
+`DATABASE_URL`, rather than placing credentials in runner configuration. Rendering neither
+installs nor enables the unit. Stop/cancel the dedicated process; restart with the same frozen
+configuration to reconcile pending admissions. This is not full product suspend,
 replay, escalation, retirement, or service activation; those remain owned follow-up work.
 
 Governed implementation tasks carry the inline package projection and review handoff
