@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from switchstand.contracts import (
     WorkSource,
 )
 from switchstand.launch import Authority
+from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 from switchstand.mcp import build_context_server
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
@@ -205,6 +207,8 @@ def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
     command = context.codex_command(Path("/control"), Path("/writer"), arguments.assignment[0])
     assert command[-1].startswith(f"Exact launch assignment:\n{assignment}\n\n")
     assert command[-1].count(assignment) == 1
+    assert "managed Worker context contract" in command[-1]
+    assert "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS) in command
 
 
 @pytest.mark.parametrize(
@@ -723,6 +727,9 @@ def test_managed_codex_home_has_only_control_hook_and_protected_auth(monkeypatch
     assert '".git" = "write"' in config
     assert f'"{managed}" = "deny"' in config
     assert f'"{auth}" = "deny"' in config
+    assert tomllib.loads(config)["developer_instructions"] == MANAGED_DEVELOPER_INSTRUCTIONS
+    assert "[[hooks.SessionStart]]" not in config
+    assert "coordinator-tracker-contract" not in config
 
 
 def test_managed_codex_home_rejects_symlinked_config(monkeypatch, tmp_path):

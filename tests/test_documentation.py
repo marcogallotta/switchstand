@@ -56,6 +56,14 @@ def test_required_documentation_entry_points_exist():
     assert missing == []
 
 
+def test_architecture_separates_managed_worker_and_root_compact_controls():
+    architecture = " ".join((ROOT / "docs/architecture.md").read_text().split())
+
+    assert "Managed Codex carries an always-on developer-instruction contract" in architecture
+    assert "only its current role/phase package" in architecture
+    assert "does not reuse Root Coordinator manifest, currentness, tracker, or compact-hook controls" in architecture
+
+
 def test_claude_bootstrap_imports_canonical_agents_file():
     imports = {
         match.group("path")
@@ -72,35 +80,74 @@ def test_agents_coordination_contract_is_discoverable():
     required_rules = (
         "Meaningful work needs an exact WorkId",
         "live mitigation attaches it when safe",
-        "acknowledge before nontrivial reasoning, tools, or waits",
+        "Acknowledge before nontrivial reasoning, tools, or waits",
         "explicit response-time budget",
         "smallest useful decision-bearing response within it",
-        "clearly mark the uncertainty and continue the deeper work afterward",
+        "clearly mark uncertainty and continue",
         "empty acknowledgement or status-only reply does not satisfy the budget",
         "[human interaction](docs/human-interaction.md)",
-        "item update only for a material semantic transition",
-        "activity, elapsed time, or worker reassignment alone is not one",
-        "portfolio snapshot when Marco asks, at a coordination handoff",
-        "time is only a bounded silence watchdog",
-        "Major completion/activation remains visible until the human explicitly acknowledges it",
-        "review the idea proportionately for ambiguity, consequence, and conflict",
-        "Worker or child agent must not invoke Marco's question widget or ask Marco directly",
-        "question, supporting evidence, recommendation, actual blocking consequence",
-        "safe option-preserving work that can continue",
-        "continues that safe work while waiting",
-        "only the parent/Coordinator may raise a Marco-facing question",
-        "Root must use forked Workers by default",
-        "safely independent substantive lanes already assigned, claimed, or in flight",
-        "keeping Root focused on coordination and integration",
-        "Never select or dispatch merely-ready unassigned substantive work",
+        "review ambiguity, consequence, and conflict",
+        "Worker or child sends its parent the question, evidence, recommendation, actual blocking consequence",
+        "safe option-preserving work",
+        "continues that work while waiting",
+        "only the parent/Coordinator asks Marco",
+        "Root coordinates and integrates",
+        "Proactively fork bounded, safely independent substantive work already assigned, claimed, or in flight",
+        "keep tracking and integration at Root",
+        "Never dispatch unassigned work or filler",
         "use every safe slot, count product-gate review as product work",
-        "`STOP` immediately pauses new dispatch and re-grounds",
-        "terminal result as an immediate coordination interrupt",
+        "`STOP` pauses new dispatch and re-grounds",
+        "Disposition each Worker terminal result immediately",
+        "A lower-priority question never interrupts higher-priority work",
+        "rejecting a question does not reject the work",
+        "Continue executable authorized work",
         "Slice mutations by writable surface and semantic concern",
         "suspend the later mutation, reconcile any effects, then re-slice or serialize it",
     )
 
     assert [rule for rule in required_rules if rule not in agents] == []
+
+    working_with_marco = agents.split("## Working with Marco", 1)[1].split(
+        "\n## Repository bootstrap", 1
+    )[0]
+    assert len(working_with_marco.encode()) <= 2500
+
+
+def test_research_escalation_uses_current_capability_without_provider_routing():
+    sources = " ".join((ROOT / "docs/research-sources.md").read_text().split())
+
+    required = (
+        "deepen the bounded search with",
+        "current web-research capability",
+        "directly or through an authorized Worker",
+        "Keep the source dispositions",
+        "do not involve Marco merely to choose a research provider",
+    )
+    stale = (
+        "request a deeper search by Claude Code",
+        "agent-to-Claude-Code route",
+    )
+
+    assert [rule for rule in required if rule not in sources] == []
+    assert [rule for rule in stale if rule in sources] == []
+
+
+def test_research_owner_preserves_the_decision_bound_loop():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    sources = " ".join((ROOT / "docs/research-sources.md").read_text().split())
+
+    required = (
+        "state the question, desired outcome, timeframe, decision it will inform, and evidence standard",
+        "Search broad and short first, then narrow on the strongest leads",
+        "Follow a lead only while it can change the answer",
+        "set an explicit stop condition and stop when it is met",
+        "every material citation is current, reachable, and supports the claim",
+        "surface meaningful disagreement rather than hiding or averaging it",
+        "Workers return compact cited evidence and source dispositions; Root synthesizes the decision",
+    )
+
+    assert [rule for rule in required if rule not in sources] == []
+    assert [rule for rule in required if rule in agents] == []
 
 
 def test_authority_bootstrap_preserves_effect_and_grounding_boundaries():
@@ -236,9 +283,27 @@ def test_repository_safety_routes_detail_without_dropping_bootstrap_invariants()
     assert [rule for rule in bundle_owner if rule not in usage] == []
 
 
+def test_coordinator_handoff_docs_preserve_no_claim_semantics():
+    agents = " ".join((ROOT / "AGENTS.md").read_text().split())
+    architecture = " ".join((ROOT / "docs/architecture.md").read_text().split())
+    usage = " ".join((ROOT / "docs/how-marco-uses-switchstand.md").read_text().split())
+
+    assert "plain raw `codex` launch always creates an independent session and never claims" in agents
+    assert "Plain Coordinator launches remain independent and never claim it" in architecture
+    assert "Plain raw `codex` launches remain independent and never claim it" in usage
+    assert "Automatic transfer is disabled until a separate explicit addressed-claim" in agents
+    assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
+    assert "Automatic transfer is disabled until a separate explicit addressed-claim" in usage
+    assert "outgoing generation retains its obligations" in agents
+    assert "old generation does not retire before the successor acknowledges" in architecture
+    assert "obligations have not transferred and the outgoing Coordinator must not retire" in usage
+    assert "registration and a later plain launch are not pickup" in usage
+    assert "must update `AGENTS.md`, `docs/architecture.md`, and this owner together" in usage
+
+
 def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     agents = (ROOT / "AGENTS.md").read_text()
-    interaction = (ROOT / "docs/human-interaction.md").read_text()
+    interaction = " ".join((ROOT / "docs/human-interaction.md").read_text().split())
     human_input = (ROOT / "docs/human-input.md").read_text()
     human_review = (ROOT / "docs/human-review.md").read_text()
 
@@ -250,6 +315,7 @@ def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
     interaction_rules = (
         "Root reports the portfolio",
         "Other agents report only their assigned work and explicitly named children",
+        "state in plain language the outcome, exact change, consequence, size, and recommendation",
         "<Work> — <state>",
         "Changed: <material change>",
         "Constraint: <gate/blocker/none>",
@@ -279,6 +345,7 @@ def test_human_guidance_is_routed_from_agents_and_owned_by_docs():
         "creates no parallel work-management store",
     )
     assert [rule for rule in interaction_rules if rule not in interaction] == []
+    assert "exact change, consequence, size, and recommendation" not in agents
     assert "Raise Human Input before the next material commitment would harden a choice" in human_input
     assert "every material implementation gets final live Human Review before dispatch" in human_review
 

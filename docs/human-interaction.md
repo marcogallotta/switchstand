@@ -4,6 +4,9 @@ Read before reporting status, requesting human attention, or announcing major co
 
 Root reports the portfolio. Other agents report only their assigned work and explicitly named children.
 
+When Marco must decide, state in plain language the outcome, exact change, consequence, size, and
+recommendation.
+
 ## Item update
 
 ```text
