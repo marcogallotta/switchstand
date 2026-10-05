@@ -91,7 +91,7 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overa
 - **Delegated Coordinator:** exact lane/parent obligations + lane-required procedures; Coordinator role alone does not grant Root portfolio authority.
 - **Research/design Worker:** exact work + current bound research/design package; use [research sources](docs/research-sources.md) when researching.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
-- **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + current bound review procedure/owner + claim-specific evidence; no implementation choreography unless needed to judge the candidate.
+- **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + bound review owner; for substantive code/config/test review also load [code quality](docs/code-quality.md). No implementation execution detail unless needed to judge the candidate.
 - **Integration/landing Coordinator:** exact candidate/current target + [code quality](docs/code-quality.md) landing/composition guidance; do not preload implementation execution detail unless needed to resolve the integration.
 - **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
