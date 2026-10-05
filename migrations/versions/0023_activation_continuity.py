@@ -26,4 +26,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    connection = op.get_bind()
+    connection.execute(sa.text(
+        "LOCK TABLE activation_obligation_revisions IN ACCESS EXCLUSIVE MODE"
+    ))
+    if connection.scalar(sa.text(
+        "SELECT count(*) FROM activation_obligation_revisions"
+    )):
+        raise RuntimeError(
+            "preserve durable activation obligations; use a forward migration"
+        )
     op.drop_table("activation_obligation_revisions")
