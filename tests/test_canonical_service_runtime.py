@@ -167,7 +167,10 @@ async def test_service_updates_and_projects_coherent_lifecycle_routing(
     ))
     readback = await subject.service.get(subject.work_id)
 
-    assert incomplete.effect == "not_sent" and changed.effect == "applied"
+    assert (incomplete.effect, incomplete.reason) == (
+        "not_sent", "invalid_resultant_state",
+    )
+    assert changed.effect == "applied"
     assert readback.status == "ok" and readback.item is not None
     assert {
         "lifecycle_state": readback.item.routing.lifecycle_state,
