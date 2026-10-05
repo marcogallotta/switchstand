@@ -1,4 +1,5 @@
 import sys
+from inspect import signature
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -43,6 +44,31 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == set()
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+def test_priority_claim_tools_are_default_off_and_agent_work_only():
+    subject = service()
+    assert not {name for name, _ in build_ordinary_tools(subject)} & {
+        "priority_claim_get", "priority_claim_record",
+    }
+    subject.priority_claims_enabled = True
+    subject.priority_claims = object()  # type: ignore[assignment]
+    tools = dict(build_ordinary_tools(subject))
+    assert {"priority_claim_get", "priority_claim_record"} <= tools.keys()
+    parameters = signature(tools["priority_claim_record"]).parameters
+    assert "work_id" in parameters
+    assert "subject_kind" not in parameters
+    assert "claim_kind" not in parameters
+    assert "source_label" not in parameters
+
+
+def test_priority_context_tool_is_default_off_and_explicitly_bounded():
+    subject = service()
+    assert "priority_context_get" not in dict(build_ordinary_tools(subject))
+    subject.priority_context_enabled = True
+    subject.priority_context = object()  # type: ignore[assignment]
+    tool = dict(build_ordinary_tools(subject))["priority_context_get"]
+    assert set(signature(tool).parameters) == {"api_version", "work_ids"}
 
 
 async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):

@@ -155,14 +155,6 @@ class TaskRunRequestResult(ClosedModel):
         "state_unavailable",
     ] | None = None
 
-    @model_validator(mode="after")
-    def exact_shape(self) -> Self:
-        if self.status == "ok" and (self.request is None or self.reason is not None):
-            raise ValueError("successful request result requires only the request")
-        if self.status != "ok" and (self.request is not None or self.reason is None):
-            raise ValueError("failed request result requires only its reason")
-        return self
-
 
 _REQUEST_COLUMNS = tuple(task_run_requests.c)
 
