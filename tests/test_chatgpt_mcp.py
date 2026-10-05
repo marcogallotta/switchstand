@@ -496,7 +496,11 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "it never selects another bundle."
             in repository_bundle_description
         )
-        assert "On ``refresh_pending``, retry boundedly" in repository_bundle_description
+        assert (
+            "On ``refresh_pending``, retry boundedly rather than reconstructing "
+            "the repository through repeated remote file/tree reads."
+            in repository_bundle_description
+        )
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
         ).annotations.read_only_hint is True
