@@ -23,6 +23,9 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     writer = primary.parent / "writer"
     writer.mkdir(exist_ok=True)
+    writer_git_dir = primary / ".git/worktrees/writer"
+    writer_git_dir.mkdir(parents=True, exist_ok=True)
+    (writer / ".git").write_text(f"gitdir: {writer_git_dir}\n")
     state = primary.parent / "coordinator"
     subprocess.run(
         [SCRIPT, source, destination, runtime_profile, primary, writer, hooks, hook, continuity_hook,
@@ -97,6 +100,7 @@ trusted_hash = "must-not-copy"
     assert filesystem == {
         ":root": "read",
         str(tmp_path / "writer"): "write",
+        str(primary / ".git/worktrees/writer"): "write",
         str(tmp_path / "coordinator"): "write",
         str(tmp_path / ".cache/switchstand"): "write",
         str(tmp_path / ".local/state/switchstand/friction"): "write",
@@ -142,6 +146,9 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
     primary.mkdir()
     writer = tmp_path / "writer"
     writer.mkdir()
+    writer_git_dir = primary / ".git/worktrees/writer"
+    writer_git_dir.mkdir(parents=True)
+    (writer / ".git").write_text(f"gitdir: {writer_git_dir}\n")
     state = tmp_path / "coordinator"
     source.write_text("")
     for script in (guard, continuity):

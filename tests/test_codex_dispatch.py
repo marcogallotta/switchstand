@@ -57,6 +57,82 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     }
 
 
+def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    handoff = primary / "scripts/coordinator-handoff"
+    executable(handoff, (ROOT / "scripts/coordinator-handoff").read_text())
+    (primary / ".gitignore").write_text("friction.md\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", "scripts/coordinator-handoff", ".gitignore"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test", "-c",
+         "user.email=test@example.com", "commit", "-m", "test launch controls"],
+        check=True, capture_output=True,
+    )
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", remote], check=True, capture_output=True)
+    subprocess.run(["git", "-C", primary, "remote", "add", "origin", remote], check=True)
+    subprocess.run(
+        ["git", "-C", primary, "push", "-u", "origin", "main"],
+        check=True, capture_output=True,
+    )
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        """#!/bin/sh
+set -eu
+git config user.name Test
+git config user.email test@example.com
+printf 'fresh launch\n' > fresh-launch.txt
+git add fresh-launch.txt
+git commit -m 'fresh launch commit' >/dev/null
+git fetch origin
+record=
+for candidate in "$CODEX_HOME"/start-commit.*; do
+    case "$candidate" in *.manifest.json) continue;; esac
+    record=$candidate
+done
+[ -n "$record" ]
+obligations="$HOME/.local/state/switchstand/fresh-launch-obligations"
+printf 'fresh launch complete\n' > "$obligations"
+"$HOME/switchstand/scripts/coordinator-handoff" "$record" "$obligations" >/dev/null
+printf 'writer=%s\nhead=%s\n' "$PWD" "$(git rev-parse HEAD)" > "$MARKER"
+""",
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary, env=env, text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launched = dict(line.split("=", 1) for line in marker.read_text().splitlines())
+    writer = Path(launched["writer"])
+    assert subprocess.check_output(
+        ["git", "-C", writer, "show", "HEAD:fresh-launch.txt"], text=True,
+    ) == "fresh launch\n"
+    assert launched["head"] == subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "HEAD"], text=True,
+    ).strip()
+    assert subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "FETCH_HEAD"], text=True,
+    ).strip() == subprocess.check_output(
+        ["git", "-C", primary, "rev-parse", "origin/main"], text=True,
+    ).strip()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    pending = json.loads((coordinator_home / "pending-handoff.json").read_text())
+    artifact = Path(pending["artifact"])
+    assert json.loads((artifact / "handoff.json").read_text())["state"] == "AWAITING_SUCCESSOR"
+    profile = tomllib.loads(next(
+        coordinator_home.glob("switchstand-coordinator-*.config.toml")
+    ).read_text())
+    filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
+    writer_git_dir = subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
+    ).strip()
+    assert filesystem[writer_git_dir] == "write"
+
+
 def test_dispatch_rejects_invalid_legacy_friction_store_before_codex(
     tmp_path: Path,
 ) -> None:
@@ -201,8 +277,12 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
+    writer_git_dir = Path(subprocess.check_output(
+        ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
+    ).strip())
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
     assert filesystem[str(writer)] == "write"
+    assert filesystem[str(writer_git_dir)] == "write"
     assert profile["approval_policy"] == "never"
     records = [path for path in coordinator_home.glob("start-commit.*")
                if not path.name.endswith(".manifest.json")]

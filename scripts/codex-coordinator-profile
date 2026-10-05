@@ -27,6 +27,24 @@ CANONICAL_MCP_FIELDS = (
 CONTROL_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _linked_worktree_git_dir(primary: Path, writer: Path) -> Path:
+    gitfile = writer / ".git"
+    if gitfile.is_symlink() or not gitfile.is_file():
+        raise SystemExit("Coordinator writer Git administrative binding is unavailable")
+    try:
+        prefix, raw = gitfile.read_text().strip().split(":", 1)
+        git_dir = Path(raw.strip())
+        if not git_dir.is_absolute():
+            git_dir = gitfile.parent / git_dir
+        git_dir = git_dir.resolve(strict=True)
+        worktrees = (primary / ".git/worktrees").resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        raise SystemExit("Coordinator writer Git administrative binding is invalid") from exc
+    if prefix != "gitdir" or git_dir.parent != worktrees or not git_dir.is_dir():
+        raise SystemExit("Coordinator writer Git administrative binding is invalid")
+    return git_dir
+
+
 def _lookup(config: dict[str, Any], path: tuple[str, ...]) -> Any:
     value: Any = config
     for key in path:
@@ -80,6 +98,7 @@ def render(
     telemetry: Path,
 ) -> str:
     canonical_mcp = _canonical_mcp()
+    writer_git_dir = _linked_worktree_git_dir(primary, writer)
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
     ))
@@ -141,6 +160,7 @@ def render(
         "[permissions.switchstand-coordinator.filesystem]",
         '":root" = "read"',
         f'{json.dumps(str(writer))} = "write"',
+        f'{json.dumps(str(writer_git_dir))} = "write"',
         f'{json.dumps(str(start_record.parent))} = "write"',
         f'{json.dumps(str(primary.parent / ".cache/switchstand"))} = "write"',
         f'{json.dumps(str(primary.parent / ".local/state/switchstand/friction"))} = "write"',
