@@ -240,6 +240,13 @@ messaging, and required continuation:
   state for semantic writes; legacy incomplete rows remain editable through title/notes-only
   changes. The repositories remain outside shared
   `state.metadata` and are registered explicitly by the edge.
+- `priority_claim_service.py` owns an injectable, default-off MCP projection. Reads expose exact
+  work/project claims and explicit source currentness. Writes create only
+  `AGENT_RECOMMENDATION` for an exact launch grant's active WorkId and reuse `effect_intents` for
+  replay/conflict recovery; ordinary workspace and project writes are denied. No public argument
+  can mint `HUMAN_PRIORITY`, because no installed attributable human-confirmation seam exists.
+  The production edge does not construct, propagate, or register this projection. Activation must
+  add that wiring under separate authority, then reinstall and verify the client-visible MCP schema.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic

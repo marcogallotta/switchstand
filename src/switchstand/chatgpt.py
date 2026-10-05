@@ -56,6 +56,12 @@ from .messages import (
     send_message,
 )
 from .outcome_state import OutcomeItem, OutcomeWrite
+from .priority_claim_service import (
+    PriorityClaimReadResult,
+    PriorityClaimService,
+    PriorityClaimWrite,
+)
+from .priority_claims import SubjectKind
 from .relations import RelationGateway
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
@@ -93,6 +99,8 @@ class ChatGPTService:
         canonical_events: CanonicalEventReader | None = None,
         canonical_work_active: bool = False,
         outcome_state_enabled: bool = False,
+        priority_claims: PriorityClaimService | None = None,
+        priority_claims_enabled: bool = False,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -114,6 +122,8 @@ class ChatGPTService:
         self.canonical_events = canonical_events
         self.canonical_work_active = canonical_work_active
         self.outcome_state_enabled = outcome_state_enabled
+        self.priority_claims = priority_claims
+        self.priority_claims_enabled = priority_claims_enabled
 
     @staticmethod
     def denied(
@@ -358,6 +368,42 @@ class ChatGPTService:
                 )
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return OutcomeWrite("UNKNOWN")
+
+    async def priority_claim_get(
+        self, subject_kind: SubjectKind, subject_id: UUID,
+    ) -> PriorityClaimReadResult:
+        principal = await self.principal()
+        if principal is None or self.priority_claims is None:
+            return PriorityClaimReadResult(status="denied", reason="claim_surface_unavailable")
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if subject_kind == "WORK":
+                    authority, reason = await self._read_authority(
+                        principal, grant, operations=frozenset({"work_get"}),
+                        work_id=subject_id, explicit_target=True,
+                    )
+                    if authority is None:
+                        return PriorityClaimReadResult(
+                            status="denied", reason=reason or "work_not_granted",
+                        )
+                elif (grant is None or grant.principal != principal or not grant.current()
+                      or grant.scope != "workspace" or "work_get" not in grant.operations):
+                    return PriorityClaimReadResult(
+                        status="denied", reason="project_read_not_granted",
+                    )
+                return await self.priority_claims.current(subject_kind, subject_id)
+        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
+            return PriorityClaimReadResult(status="unknown", reason="claim_state_unavailable")
+
+    async def priority_claim_record(self, request: PriorityClaimWrite) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return PriorityClaimService.guard(
+                request, "denied", "authenticated_principal_required",
+            )
+        if self.priority_claims is None:
+            return PriorityClaimService.guard(request, "denied", "claim_surface_unavailable")
+        return await self.priority_claims.record(self.admission_grants, principal, request)
 
     async def history(self, request: WorkHistoryRequest) -> WorkHistoryResult:
         principal = await self.principal()
