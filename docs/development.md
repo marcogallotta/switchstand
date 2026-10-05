@@ -130,6 +130,14 @@ The governing distinctions and review rules live in
 Link to the applicable qualification document rather than copying its procedure into
 a task or review handoff.
 
+GitHub-native stacks may be authored, self-checked, and sent for focused layer review
+asynchronously. Each layer remains a bounded semantic change. Fix a defect in the lowest
+layer that owns it and cascade the restack upward. A restack preserves a focused review
+only when both the layer-diff identity and the reviewed dependency/interface-contract
+identity are unchanged and no conflict was resolved. Every included layer still waits for
+fresh exact-top cumulative review and qualification before landing; partial early landing
+is outside V1. Manual or unrecognized stacks keep the ordinary unstacked gates.
+
 Quality also runs the same authoritative Quality and Docker lifecycle jobs daily against
 the exact default-branch head supplied by GitHub. Scheduled runs are labeled separately
 from push exact-head and pull-request composition runs. GitHub schedules are best-effort:

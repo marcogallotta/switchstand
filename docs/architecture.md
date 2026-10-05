@@ -447,6 +447,12 @@ detail is opt-in. This provisional preferred read neither authorizes nor perform
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
 fallback during qualification of the semantic path.
 
+`stacked_delivery.py` owns the pure fail-closed identity and evidence predicates for
+GitHub-native stacked delivery. It can preserve a focused layer verdict only across an
+unchanged layer diff and reviewed dependency/interface contract, applies proportional
+inert/runtime proof, and requires fresh exact-top cumulative review and quality before
+landing. Stack discovery, CI execution, review storage, and merge effects remain outside it.
+
 ## Launch, candidate, and host control
 
 `launch.py` owns managed launch orchestration: linked-writer validation, exact-revision preflight,
