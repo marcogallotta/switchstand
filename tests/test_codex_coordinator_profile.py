@@ -114,10 +114,7 @@ trusted_hash = "must-not-copy"
         "transfer, or read the mailbox."
     ) in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
-    assert "use forked Workers by default" in instructions
-    assert "already assigned, claimed, or in flight" in instructions
-    assert "Never select or dispatch a merely-ready unassigned substantive item" in instructions
-    assert "STOP immediately pauses new dispatch" in instructions
+    assert "forked Workers" not in instructions
     assert profile["features"] == {"hooks": True, "multi_agent": True}
     canonical = tomllib.loads((ROOT / ".codex/config.toml").read_text())["mcp_servers"][
         "switchstand"
