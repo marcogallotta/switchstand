@@ -20,9 +20,14 @@ from switchstand.canonical_work import (
 )
 from switchstand.flow_report import report
 from switchstand.human_reviews import human_review_consequences
+from switchstand.human_trajectory import (
+    HumanTrajectoryData,
+    HumanTrajectoryStore,
+    SourceKind,
+)
 from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
+from switchstand.state import human_trajectory_revisions, outcome_state_revisions, work_handles
 from switchstand.state import metadata as state_metadata
-from switchstand.state import outcome_state_revisions, work_handles
 from switchstand.work_events import work_events
 
 
@@ -203,13 +208,25 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
             who_acts="OWNER",
         ),),
     )
+    trajectory_store = HumanTrajectoryStore(engine)
+    await trajectory_store.record(
+        work_id=target, append_request_id=uuid4(), expected_generation=1,
+        expected_predecessor_id=None, source_kind=SourceKind.HUMAN_INPUT,
+        source_ref="late", source_revision=None,
+        data=HumanTrajectoryData(
+            outcome="late", current_slice="late", remaining_outcome="late",
+        ),
+    )
     committed.set()
 
     result = await pending
 
     assert result["scope"]["dependencies"] == []
     assert result["outcome_state"]["status"] == "NONE"
-    assert (await report(engine, target))["outcome_state"]["status"] == "KNOWN"
+    assert result["human_trajectory"]["status"] == "NONE"
+    fresh = await report(engine, target)
+    assert fresh["outcome_state"]["status"] == "KNOWN"
+    assert fresh["human_trajectory"]["status"] == "KNOWN"
     async with engine.connect() as connection:
         assert await connection.scalar(select(work_dependencies.c.work_id)) == target
 
@@ -380,3 +397,112 @@ async def test_outcome_revisions_are_exact_current_privacy_safe_and_fail_closed(
     assert corrupt_digest["coverage"]["outcome_state"] == {
         "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
     }
+
+
+async def test_trajectory_headers_are_bounded_private_exact_and_fail_closed(
+    engine: AsyncEngine,
+) -> None:
+    target, unrelated = uuid4(), uuid4()
+    await add_work(engine, target)
+    await add_work(engine, unrelated)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "test", "provider_work_id": str(target)},
+            {"id": unrelated, "provider": "test", "provider_work_id": str(unrelated)},
+        ])
+    store = HumanTrajectoryStore(engine)
+    secret = "private trajectory outcome"
+    data = HumanTrajectoryData(
+        outcome=secret, settled_decisions=("private decision",),
+        unresolved_human_questions=("private question",),
+        current_slice="private current slice", remaining_outcome="private remaining work",
+        authority_effect_refs=("private authority ref",),
+    )
+    predecessor = None
+    for generation in range(1, 66):
+        recorded = await store.record(
+            work_id=target, append_request_id=uuid4(), expected_generation=generation,
+            expected_predecessor_id=predecessor, source_kind=SourceKind.HUMAN_REVIEW,
+            source_ref=f"private-source-{generation}", source_revision="private-revision",
+            data=data,
+        )
+        assert recorded.revision is not None
+        predecessor = recorded.revision.trajectory_id
+    unrelated_record = await store.record(
+        work_id=unrelated, append_request_id=uuid4(), expected_generation=1,
+        expected_predecessor_id=None, source_kind=SourceKind.HUMAN_STEERING,
+        source_ref="unrelated-private-source", source_revision=None, data=data,
+    )
+    assert unrelated_record.revision is not None
+
+    result = await report(engine, target)
+
+    trajectory = result["human_trajectory"]
+    assert trajectory["status"] == "KNOWN" and trajectory["chain_status"] == "VALIDATED"
+    assert trajectory["total_revisions"] == 65 and trajectory["truncated"] is True
+    assert [item["generation"] for item in trajectory["revisions"]] == list(range(2, 66))
+    assert unrelated_record.revision.trajectory_id not in {
+        UUID(item["trajectory_id"]) for item in trajectory["revisions"]
+    }
+    encoded = json.dumps(trajectory)
+    full_json = flow_report.render(result, "json")
+    assert all(value not in full_json for value in (
+        secret, "private decision", "private question", "private current slice",
+        "private remaining work", "private authority ref", "private-source-65",
+        "private-revision", "content_digest", "append_request_id",
+    ))
+    assert "CURRENT" not in encoded and "STALE" not in encoded
+    points = [item for item in result["ordered_evidence"]["items"]
+              if item["source"] == "human_trajectory"]
+    assert len(points) == 64 and all(item["duration_ms"] == 0 for item in points)
+    concise = flow_report.render(result, "concise")
+    trajectory_lines = "\n".join(
+        line for line in concise.splitlines() if "trajectory" in line
+    )
+    assert secret not in trajectory_lines and "private-source" not in trajectory_lines
+    assert "CURRENT" not in trajectory_lines and "STALE" not in trajectory_lines
+
+    async with engine.connect() as connection:
+        rows = (await connection.execute(select(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.work_id_ref == target
+        ).order_by(human_trajectory_revisions.c.generation))).all()
+        unrelated_rows = (await connection.execute(select(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.work_id_ref == unrelated
+        ).order_by(human_trajectory_revisions.c.generation))).all()
+    original = tuple(rows[-1])
+    latest_id = original[0]
+
+    async with engine.begin() as connection:
+        await connection.execute(update(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.trajectory_id == latest_id
+        ).values(predecessor_id=unrelated_record.revision.trajectory_id))
+    assert (await report(engine, target))["human_trajectory"]["status"] == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.trajectory_id == latest_id
+        ).values(predecessor_id=original[4], content_digest="0" * 64))
+    assert (await report(engine, target))["human_trajectory"]["status"] == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.trajectory_id == latest_id
+        ).values(content_digest=original[8], trajectory_data={}))
+    assert (await report(engine, target))["human_trajectory"]["status"] == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(human_trajectory_revisions).where(
+            human_trajectory_revisions.c.trajectory_id == latest_id
+        ).values(trajectory_data=original[9],
+                 created_at=datetime.now(UTC) + timedelta(days=1)))
+    future = await report(engine, target)
+    assert future["human_trajectory"]["reason"] == "CLOCK_SKEW_OR_FUTURE_CREATED_AT"
+    assert not any(item["source"] == "human_trajectory"
+                   for item in future["ordered_evidence"]["items"])
+
+    raw = [tuple(row) for row in rows]
+    naive_latest = list(raw[-1])
+    naive_latest[10] = original[10].replace(tzinfo=None)
+    assert flow_report._trajectory_projection(
+        [*raw[:-1], tuple(naive_latest)], target, datetime.now(UTC),
+    )["reason"] == "UNSAFE_CREATED_AT"
+    assert flow_report._trajectory_projection(
+        [tuple(row) for row in unrelated_rows], target, datetime.now(UTC),
+    )["reason"] == "CORRUPT_OR_MISMATCHED_CHAIN"

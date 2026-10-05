@@ -72,6 +72,10 @@ Outcome-state evidence is target-only through exact `owner_work_id` equality and
 the existing revision-chain oracle against the canonical row revision. Reports expose at most 64
 privacy-safe revision headers and item-status counts; payload text is excluded, corrupt chains are
 `UNKNOWN`, and revision timestamps remain zero-duration observational points.
+Human-trajectory evidence likewise uses exact `work_id_ref` and the trajectory owner's complete
+payload/digest-chain validator, but exposes only the latest 64 trajectory ID/generation/source-kind
+timestamps. It labels a sound chain `VALIDATED` without claiming canonical currentness; sensitive
+trajectory payload and provenance references never enter the report.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
