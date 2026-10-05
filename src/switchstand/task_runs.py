@@ -8,7 +8,17 @@ from typing import Literal, Self, cast
 from uuid import UUID, uuid5
 
 from pydantic import Field, JsonValue, model_validator
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Table, Text, func, select
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.engine import RowMapping
@@ -17,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ApiVersion, ClosedModel
+from .run import RunReceipt
 from .state import metadata, work_handles
 
 REQUEST_NAMESPACE = UUID("286bcc60-8887-5b76-97c1-19c18484df74")
@@ -57,6 +68,19 @@ task_run_requests = Table(
     CheckConstraint("length(content_digest) = 64", name="ck_task_run_request_digest"),
 )
 
+task_run_executions = Table(
+    "task_run_executions",
+    metadata,
+    Column(
+        "request_id",
+        PGUUID(as_uuid=True),
+        ForeignKey(task_run_requests.c.request_id, ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("run_id", PGUUID(as_uuid=True), primary_key=True),
+    Column("bound_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    UniqueConstraint("run_id", name="uq_task_run_execution_run"),
+)
 
 class AgentTaskRequest(ClosedModel):
     """Public intent; operation identity and requester route remain server-owned."""
@@ -90,6 +114,32 @@ class TaskRunRequest(ClosedModel):
     result_contract: dict[str, JsonValue]
     continuation: Literal["START", "CONTINUE", "TAKEOVER"]
     candidate_ref: str | None = None
+
+
+class TaskRunExecution(ClosedModel):
+    request_id: UUID
+    run_id: UUID
+
+
+class TaskRunBindResult(ClosedModel):
+    status: Literal["ok", "denied", "conflict", "unknown"]
+    execution: TaskRunExecution | None = None
+    reason: Literal[
+        "request_not_found",
+        "execution_work_mismatch",
+        "continuation_not_bound",
+        "execution_already_bound",
+        "run_already_bound",
+        "state_unavailable",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok" and (self.execution is None or self.reason is not None):
+            raise ValueError("successful bind requires only the execution")
+        if self.status != "ok" and (self.execution is not None or self.reason is None):
+            raise ValueError("failed bind requires only its reason")
+        return self
 
 
 class TaskRunRequestResult(ClosedModel):
@@ -205,3 +255,68 @@ class TaskRunState:
                 return TaskRunRequestResult(status="ok", request=_view(replay))
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
+
+    async def get(self, request_id: UUID) -> TaskRunRequestResult:
+        try:
+            async with self.engine.connect() as connection:
+                row = (await connection.execute(select(task_run_requests).where(
+                    task_run_requests.c.request_id == request_id
+                ))).mappings().one_or_none()
+            if row is None:
+                return TaskRunRequestResult(status="denied", reason="request_not_found")
+            return TaskRunRequestResult(status="ok", request=_view(row))
+        except (SQLAlchemyError, TypeError, ValueError):
+            return TaskRunRequestResult(status="unknown", reason="state_unavailable")
+
+    async def bind_start(
+        self, request_id: UUID, receipt: RunReceipt
+    ) -> TaskRunBindResult:
+        try:
+            async with self.engine.begin() as connection:
+                request = (await connection.execute(
+                    select(task_run_requests).where(
+                        task_run_requests.c.request_id == request_id
+                    ).with_for_update()
+                )).mappings().one_or_none()
+                if request is None:
+                    return TaskRunBindResult(status="denied", reason="request_not_found")
+                if request["execution_work_id"] != receipt.active_work_id:
+                    return TaskRunBindResult(
+                        status="denied", reason="execution_work_mismatch"
+                    )
+                if request["continuation"] != "START":
+                    return TaskRunBindResult(
+                        status="denied", reason="continuation_not_bound"
+                    )
+                current = (await connection.execute(
+                    select(task_run_executions).where(
+                        task_run_executions.c.request_id == request_id
+                    )
+                )).mappings().one_or_none()
+                if current is not None:
+                    if current["run_id"] != receipt.run_id:
+                        return TaskRunBindResult(
+                            status="denied", reason="execution_already_bound"
+                        )
+                    return TaskRunBindResult(
+                        status="ok",
+                        execution=TaskRunExecution(
+                            request_id=request_id, run_id=receipt.run_id
+                        ),
+                    )
+                inserted = (await connection.execute(
+                    insert(task_run_executions).values(
+                        request_id=request_id,
+                        run_id=receipt.run_id,
+                    ).on_conflict_do_nothing().returning(task_run_executions.c.run_id)
+                )).scalar_one_or_none()
+                if inserted is None:
+                    return TaskRunBindResult(status="conflict", reason="run_already_bound")
+                return TaskRunBindResult(
+                    status="ok",
+                    execution=TaskRunExecution(
+                        request_id=request_id, run_id=receipt.run_id
+                    ),
+                )
+        except (SQLAlchemyError, TypeError, ValueError):
+            return TaskRunBindResult(status="unknown", reason="state_unavailable")
