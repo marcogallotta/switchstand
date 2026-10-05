@@ -147,6 +147,27 @@ async def _relations(
     )
 
 
+async def _human_reviews(
+    connection: AsyncConnection, work_id: UUID,
+) -> tuple[list[Any], bool]:
+    available = await connection.scalar(
+        text("SELECT to_regclass('public.human_review_consequences') IS NOT NULL")
+    )
+    if not available:
+        return [], False
+    rows = (await connection.execute(select(
+        human_review_consequences.c.consequence_id,
+        human_review_consequences.c.state,
+        human_review_consequences.c.decision,
+        human_review_consequences.c.created_at,
+        human_review_consequences.c.decided_at,
+    ).where(human_review_consequences.c.package_work_id == work_id).order_by(
+        human_review_consequences.c.created_at,
+        human_review_consequences.c.consequence_id,
+    ))).all()
+    return list(rows), True
+
+
 async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
@@ -166,16 +187,7 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         work_events.c.id, work_events.c.sequence, work_events.c.subtype,
         work_events.c.result_version, work_events.c.created_at,
     ).where(work_events.c.work_id == work_id).order_by(work_events.c.sequence))).all()
-    reviews = (await connection.execute(select(
-        human_review_consequences.c.consequence_id,
-        human_review_consequences.c.state,
-        human_review_consequences.c.decision,
-        human_review_consequences.c.created_at,
-        human_review_consequences.c.decided_at,
-    ).where(human_review_consequences.c.package_work_id == work_id).order_by(
-        human_review_consequences.c.created_at,
-        human_review_consequences.c.consequence_id,
-    ))).all()
+    reviews, reviews_available = await _human_reviews(connection, work_id)
     outcome_values = (await connection.execute(select(outcome_state_revisions).where(
         outcome_state_revisions.c.owner_work_id == work_id
     ).order_by(outcome_state_revisions.c.generation))).mappings().all()
@@ -278,7 +290,8 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
             } for row in events],
         },
         "human_review": {
-            "coverage": "DIRECT_PACKAGE_WORK_ID",
+            "coverage": "DIRECT_PACKAGE_WORK_ID" if reviews_available else "UNKNOWN",
+            "reason": None if reviews_available else "SOURCE_TABLE_UNAVAILABLE",
             "items": review_items,
         },
         "outcome_state": outcome,
@@ -291,7 +304,11 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
             "canonical_work": {"status": "INCLUDED", "reason": "CURRENT_ONLY"},
             "relations": {"status": "INCLUDED", "reason": "CURRENT_ONLY"},
             "work_events": {"status": "INCLUDED", "reason": "OBSERVED_ONLY"},
-            "human_review": {"status": "INCLUDED", "reason": "DIRECT_PACKAGE_WORK_ID"},
+            "human_review": {
+                "status": "INCLUDED" if reviews_available else "UNKNOWN",
+                "reason": "DIRECT_PACKAGE_WORK_ID" if reviews_available
+                else "SOURCE_TABLE_UNAVAILABLE",
+            },
             "outcome_state": {
                 "status": "UNKNOWN" if outcome["status"] == "UNKNOWN" else "INCLUDED",
                 "reason": outcome["reason"] if outcome["status"] == "UNKNOWN"
@@ -535,7 +552,7 @@ def render_concise(value: dict[str, object]) -> str:
         )
         lines.append(
             f"human_review_count={len(review_items)} "
-            f"coverage={human_review['coverage']}"
+            f"coverage={human_review['coverage']} reason={human_review.get('reason')}"
         )
         for item in review_items:
             identifier = item["consequence_id"]

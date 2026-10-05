@@ -68,6 +68,9 @@ Direct `package_work_id` Human Review rows add prepared/decided point evidence a
 waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
 overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
 explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
+When the inert Human Review store is not installed, the report keeps that source explicitly
+`UNKNOWN / SOURCE_TABLE_UNAVAILABLE` and continues the same read-only snapshot without fabricating
+review evidence.
 Outcome-state evidence is target-only through exact `owner_work_id` equality and is validated with
 the existing revision-chain oracle against the canonical row revision. Reports expose at most 64
 privacy-safe revision headers and item-status counts; payload text is excluded, corrupt chains are
