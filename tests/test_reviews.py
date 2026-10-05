@@ -14,7 +14,13 @@ from switchstand.canonical_work import (
     canonical_revision,
 )
 from switchstand.grant_state import GrantState
-from switchstand.messages import MessageRoute, MessageState, MessageSubmitRequest
+from switchstand.messages import (
+    MessageReceiveRequest,
+    MessageRoute,
+    MessageState,
+    MessageSubmitRequest,
+    RuntimeCurrentness,
+)
 from switchstand.reviews import (
     CanonicalReviewBrief,
     ReviewBasis,
@@ -24,6 +30,7 @@ from switchstand.reviews import (
     ReviewPolicy,
     ReviewRequest,
     ReviewService,
+    ReviewSubmit,
     _stable,
 )
 from switchstand.state import work_handles
@@ -147,3 +154,46 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
         ), {"id": subject_id})
     stale = await service.request(request, requester)
     assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+
+
+async def test_received_review_submits_authoritative_pass(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b"
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(
+            generation=str(reviewer.generation),
+            current_generation=str(reviewer.generation),
+        ),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    submitted = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    async with engine.begin() as connection:
+        assert await occurrences.pass_status_in_transaction(
+            connection, subject_id, revision,
+        ) == "PASS"
