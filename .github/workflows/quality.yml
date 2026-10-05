@@ -249,7 +249,7 @@ jobs:
             -v "$PWD:/workspace:ro" -w /workspace switchstand-quality
             sh -c 'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
               PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
-              shift 1 && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
+              shift 1 && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider \
               --junitxml=/metrics/junit.xml "$@"' sh "$QUALITY_MODE"
           )
           if test "$QUALITY_MODE" = PROMOTE_TEST_MODULE_ONLY_V1; then
