@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -50,7 +51,7 @@ exit 2
         input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
         text=True,
         capture_output=True,
-        env={"EXPECTED_MANIFEST": str(manifest)},
+        env={**os.environ, "EXPECTED_MANIFEST": str(manifest)},
         check=False,
     )
 
