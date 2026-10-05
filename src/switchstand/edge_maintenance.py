@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import http.client
@@ -199,11 +200,52 @@ def atomic_copy(source: Path, target: Path, mode: int) -> None:
 def _validate_launch_mapping(config: Config) -> None:
     current = config.launcher.read_bytes()
     old_runtime = os.fsencode(config.current_runtime)
-    if current.count(old_runtime) != 1:
-        raise Failed("current launcher does not bind exactly one runtime")
-    expected = current.replace(old_runtime, os.fsencode(config.candidate_runtime), 1)
-    if config.candidate_launcher.read_bytes() != expected:
-        raise Failed("candidate launcher is not the exact runtime retarget")
+    candidate = config.candidate_launcher.read_bytes()
+    if current.count(old_runtime) == 1:
+        expected = current.replace(old_runtime, os.fsencode(config.candidate_runtime), 1)
+        if candidate == expected:
+            return
+    elif _normalized_launcher(current, config.current_runtime) == _normalized_launcher(
+        candidate, config.candidate_runtime
+    ):
+        return
+    raise Failed("candidate launcher is not the exact runtime retarget")
+
+
+def _normalized_launcher(source: bytes, runtime: Path) -> tuple[str, str] | None:
+    """Redact only the exact `RUNTIME = Path(...)` literal of an ASCII launcher."""
+    try:
+        text = source.decode("ascii")
+        tree = ast.parse(text)
+    except (SyntaxError, UnicodeDecodeError):
+        return None
+    matches: list[ast.Constant] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "RUNTIME"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "Path"
+            and len(node.value.args) == 1
+            and not node.value.keywords
+            and isinstance(node.value.args[0], ast.Constant)
+            and node.value.args[0].value == str(runtime)
+        ):
+            continue
+        matches.append(node.value.args[0])
+    if len(matches) != 1:
+        return None
+    runtime_literal = matches[0]
+    if runtime_literal.end_lineno is None or runtime_literal.end_col_offset is None:
+        return None
+    lines = text.splitlines(keepends=True)
+    start = sum(len(line) for line in lines[:runtime_literal.lineno - 1]) + runtime_literal.col_offset
+    end = sum(len(line) for line in lines[:runtime_literal.end_lineno - 1]) + runtime_literal.end_col_offset
+    runtime_literal.value = "<switchstand-runtime>"
+    return ast.dump(tree, include_attributes=False), text[:start] + text[end:]
 
 
 def exclusive_lock(path: Path = LOCK) -> TextIO:

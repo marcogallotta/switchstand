@@ -643,6 +643,45 @@ def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):
     _validate_launch_mapping(subject)
 
 
+def test_launch_mapping_accepts_exact_split_literal_runtime_retarget(tmp_path: Path):
+    subject = config(tmp_path)
+
+    def launcher(runtime: Path) -> str:
+        return (
+            "from pathlib import Path\n"
+            "RUNTIME = Path(\n"
+            f"    {(str(runtime.parent) + '/')!r}\n"
+            f"    {runtime.name!r}\n"
+            ")\n"
+        )
+
+    subject.launcher.write_text(launcher(subject.current_runtime))
+    subject.candidate_launcher.write_text(launcher(subject.candidate_runtime))
+
+    _validate_launch_mapping(subject)
+
+
+def test_launch_mapping_rejects_non_runtime_edit_with_split_literal(tmp_path: Path):
+    subject = config(tmp_path)
+
+    def launcher(runtime: Path) -> str:
+        return (
+            "from pathlib import Path\n"
+            "RUNTIME = Path(\n"
+            f"    {(str(runtime.parent) + '/')!r}\n"
+            f"    {runtime.name!r}\n"
+            ")\n"
+        )
+
+    subject.launcher.write_text(launcher(subject.current_runtime))
+    subject.candidate_launcher.write_text(
+        launcher(subject.candidate_runtime) + "# unrelated edit\n"
+    )
+
+    with pytest.raises(Failed, match="exact runtime retarget"):
+        _validate_launch_mapping(subject)
+
+
 def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
