@@ -103,6 +103,8 @@ class ImplementationRequestState:
                     return ImplementationRequestResult(
                         status="STALE", reason="package_revision_changed"
                     )
+                if package.completed or package.lifecycle_state != "CURRENT":
+                    return ImplementationRequestResult(status="DENIED", reason="package_not_active")
                 reviews = (
                     (
                         await connection.execute(
@@ -152,12 +154,26 @@ class ImplementationRequestState:
                 ):
                     return ImplementationRequestResult(status="DENIED", reason="no_send_authority")
 
+                authorization_ref = (
+                    f"human-review/{review.consequence_id}/{review.consequence_digest}"
+                )
+                stable = await self.tasks.get_implementation_in_transaction(
+                    connection, package_work_id, observed_revision, authorization_ref
+                )
+                if stable.request is not None:
+                    if not str(stable.request.send_authority_ref).endswith(f"/{principal.key}"):
+                        return ImplementationRequestResult(
+                            status="DENIED", reason="send_authority_mismatch"
+                        )
+                    return self._success("REPLAYED", stable.request)
+                if stable.reason != "request_not_found":
+                    return ImplementationRequestResult(
+                        status="UNKNOWN", reason="task_run_replay_unavailable"
+                    )
                 intent = ImplementationTaskRequest(
                     execution_work_id=package_work_id,
                     observed_revision=observed_revision,
-                    authorization_ref=(
-                        f"human-review/{review.consequence_id}/{review.consequence_digest}"
-                    ),
+                    authorization_ref=authorization_ref,
                     send_authority_ref=f"grant/{grant.id}/{grant.version}/{principal.key}",
                     objective=f"Implement approved package {package_work_id} at {observed_revision}.",
                     result_contract={

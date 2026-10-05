@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -9,7 +10,12 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
+from switchstand.canonical_work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+)
 from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
@@ -52,7 +58,9 @@ async def subject(database_prerequisite):
     state = PostgresState(engine)
     await state.bind_reserved(PACKAGE, "local", str(PACKAGE))
     works = CanonicalWorkRepository(engine)
-    await works.create(CurrentWork(PACKAGE, "Approved package", False, "exact package"))
+    await works.create(CurrentWork(
+        PACKAGE, "Approved package", False, "exact package", lifecycle_state="CURRENT"
+    ))
     grant = WorkGrant(
         id=uuid4(),
         version=1,
@@ -99,9 +107,13 @@ async def test_approved_current_send_authority_creates_one_inert_request(subject
     approved = await approve(reviews)
     operation_id = uuid4()
 
-    applied = await facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision)
+    applied, recovered = await asyncio.gather(
+        facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision),
+        facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision),
+    )
 
-    assert applied.status == "APPLIED"
+    assert {applied.status, recovered.status} == {"APPLIED", "REPLAYED"}
+    assert applied.task_run_request_id == recovered.task_run_request_id
     assert applied.delivery_state == "PENDING"
     assert applied.next_action == "await managed worker pickup"
     assert await request_count(engine) == 1
@@ -169,10 +181,35 @@ async def test_stale_package_or_revoked_authority_creates_zero_requests(subject)
     stale = await facade.request(PRINCIPAL, uuid4(), PACKAGE, "pg_stale")
     assert (stale.status, stale.reason) == ("STALE", "package_revision_changed")
 
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(completed=True))
+    terminal = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert (terminal.status, terminal.reason) == ("DENIED", "package_not_active")
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(
+            completed=False, lifecycle_state="TERMINAL"
+        ))
+    terminal = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert (terminal.status, terminal.reason) == ("DENIED", "package_not_active")
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(lifecycle_state="CURRENT"))
+
     revoked = grant.model_copy(
         update={"id": uuid4(), "version": 2, "state": "revoked"}
     )
     await GrantState(engine).issue(revoked, 1)
     denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
     assert (denied.status, denied.reason) == ("STALE", "send_authority_not_current")
+    assert await request_count(engine) == 0
+
+
+async def test_hold_review_creates_zero_requests(subject):
+    facade, reviews, engine, _ = subject
+    value = consequence()
+    proposed = await reviews.propose(value)
+    assert proposed.record is not None
+    held = await reviews.submit(proposed.record.consequence_id, PACKAGE, value.package_revision, "HOLD")
+    assert held.status == "RECORDED"
+    denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, value.package_revision)
+    assert (denied.status, denied.reason) == ("DENIED", "human_review_not_approved")
     assert await request_count(engine) == 0
