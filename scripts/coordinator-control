@@ -32,6 +32,7 @@ FROZEN_REPOSITORY_FILES = (
 )
 POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md", "docs/coordinator-tracker-contract.md")
 LEGACY_POST_COMPACTION_REREAD_CONTROLS = ("AGENTS.md",)
+MAX_MARKDOWN_DEPENDENCIES = 64
 
 
 def digest_file(path: Path) -> str:
@@ -106,6 +107,7 @@ def markdown_dependencies(
     repo: Path,
 ) -> tuple[dict[str, str], list[dict[str, str]]]:
     pending = [Path("AGENTS.md")]
+    discovered = {"AGENTS.md"}
     found: dict[str, str] = {}
     visited: set[str] = set()
     unresolved: list[dict[str, str]] = []
@@ -154,7 +156,17 @@ def markdown_dependencies(
             if not resolved.is_relative_to(root):
                 unresolved.append({"source": identity, "target": raw, "reason": "outside_root"})
                 continue
-            pending.append(resolved.relative_to(root))
+            relative_target = resolved.relative_to(root)
+            target_identity = relative_target.as_posix()
+            if target_identity in discovered:
+                continue
+            if len(discovered) >= MAX_MARKDOWN_DEPENDENCIES:
+                unresolved.append(
+                    {"source": identity, "target": raw, "reason": "dependency_limit"}
+                )
+                break
+            discovered.add(target_identity)
+            pending.append(relative_target)
     key = lambda item: (item["source"], item["target"], item["reason"])
     return dict(sorted(found.items())), sorted(unresolved, key=key)
 
