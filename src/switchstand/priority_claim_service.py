@@ -8,12 +8,13 @@ from typing import Literal, Self
 from uuid import UUID, uuid5
 
 from pydantic import Field, model_validator
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 
 from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
-from .grant_state import GrantState
-from .grants import GuardOutcome, PrincipalContext, PriorityClaimReceipt
+from .grant_state import EffectRecord, GrantState
+from .grants import GuardOutcome, PrincipalContext, PriorityClaimReceipt, WorkGrant
+from .mutation_effect import PreparedMutation, run_update_or_relation
 from .priority_claims import (
     NewPriorityClaim,
     PriorityBand,
@@ -160,72 +161,59 @@ class PriorityClaimService:
     async def record(
         self, grants: GrantState, principal: PrincipalContext, request: PriorityClaimWrite,
     ) -> GuardOutcome:
-        fingerprint = self._fingerprint(principal, request)
-        possible = False
+        return await run_update_or_relation(
+            grants, principal, request, self._fingerprint(principal, request),
+            "priority_claim", "priority_claim_qualification", "claim_write_not_qualified",
+            lambda status, reason, possible: self.guard(
+                request, status, "claim_scope_not_granted"
+                if reason == "operation_or_work_not_granted" else reason, possible=possible
+            ),
+            lambda grant, qualification: self._prepare(
+                principal, request, grant, qualification
+            ),
+            lambda record: self._reconcile(grants, principal, request, record),
+        )
+
+    async def _prepare(
+        self, principal: PrincipalContext, request: PriorityClaimWrite,
+        grant: WorkGrant, qualification: str,
+    ) -> PreparedMutation | GuardOutcome:
+        if grant.scope != "launch":
+            return self.guard(request, "denied", "claim_scope_not_granted")
+        work = await self.works.get(request.work_id)
+        if work is None:
+            return self.guard(request, "denied", "work_not_bound")
+        if request.observed_revision != canonical_revision(work.work_id, work.row_version):
+            return self.guard(request, "stale", "source_revision_changed")
+        return PreparedMutation(
+            intent={"request": request.model_dump(mode="json"),
+                    "qualification": qualification},
+            send=lambda: self._send(principal, request, grant.id, qualification),
+        )
+
+    async def _send(
+        self, principal: PrincipalContext, request: PriorityClaimWrite,
+        grant_id: UUID, qualification: str,
+    ) -> GuardOutcome:
         try:
-            async with grants.locked(principal.key, request.work_id) as grant:
-                exact = await grants.exact(request.operation_id)
-                if exact is not None:
-                    if exact.principal_key != principal.key or exact.fingerprint != fingerprint:
-                        return self.guard(request, "denied", "operation_identity_conflict")
-                    if exact.outcome.effect != "unknown":
-                        return exact.outcome
-                    grant_id = exact.grant_id
-                    possible, qualification = True, str(exact.intent.get("qualification", ""))
-                else:
-                    if grant is None or grant.principal != principal or not grant.current():
-                        return self.guard(request, "denied", "no_current_grant")
-                    if (grant.scope != "launch" or not grant.can_write(request.work_id)
-                            or "priority_claim" not in grant.operations):
-                        return self.guard(request, "denied", "claim_scope_not_granted")
-                    if request.grant_version != grant.version:
-                        return self.guard(request, "stale", "grant_version_changed")
-                    qualification = grant.priority_claim_qualification or ""
-                    if (not qualification or (principal.assurance == "test")
-                            != qualification.startswith("test:")):
-                        return self.guard(request, "denied", "claim_write_not_qualified")
-                    grant_id = grant.id
-                expected = self._new(request, grant_id)
-                prior = await self.repository.provenance(expected.claim_id, limit=1)
-                if prior:
-                    if not self._same(prior[0], expected):
-                        return self.guard(request, "denied", "claim_identity_conflict")
-                    outcome = self._applied(
-                        request, principal, grant_id, qualification, prior[0]
-                    )
-                    if exact is not None and exact.outcome.effect == "unknown":
-                        await grants.finish(outcome)
-                    return outcome
-                if exact is None:
-                    assert grant is not None
-                    work = await self.works.get(request.work_id)
-                    if work is None:
-                        return self.guard(request, "denied", "work_not_bound")
-                    if request.observed_revision != canonical_revision(
-                        work.work_id, work.row_version
-                    ):
-                        return self.guard(request, "stale", "source_revision_changed")
-                    unknown = self.guard(
-                        request, "unknown", "prepared_or_unconfirmed_write", possible=True,
-                    )
-                    await grants.prepare(
-                        {"request": request.model_dump(mode="json"),
-                         "qualification": qualification}, grant, fingerprint, unknown,
-                    )
-                    possible = True
-                try:
-                    claim = await self.repository.record(expected)
-                except (IntegrityError, LookupError, ValueError):
-                    prior = await self.repository.provenance(expected.claim_id, limit=1)
-                    if not prior or not self._same(prior[0], expected):
-                        outcome = self.guard(request, "denied", "invalid_claim_state")
-                        await grants.finish(outcome)
-                        return outcome
-                    claim = prior[0]
-                outcome = self._applied(request, principal, grant_id, qualification, claim)
-                await grants.finish(outcome)
-                return outcome
-        except (SQLAlchemyError, TypeError, KeyError):
-            return self.guard(
-                request, "unknown", "state_or_effect_unavailable", possible=possible,
-            )
+            claim = await self.repository.record(self._new(request, grant_id))
+        except (LookupError, ValueError):
+            return self.guard(request, "denied", "invalid_claim_state")
+        return self._applied(request, principal, grant_id, qualification, claim)
+
+    async def _reconcile(
+        self, grants: GrantState, principal: PrincipalContext,
+        request: PriorityClaimWrite, record: EffectRecord,
+    ) -> GuardOutcome:
+        qualification = record.intent.get("qualification")
+        if not isinstance(qualification, str) or not qualification:
+            raise ValueError("durable claim intent invalid")
+        expected = self._new(request, record.grant_id)
+        prior = await self.repository.provenance(expected.claim_id, limit=1)
+        if not prior:
+            return self.guard(request, "unknown", "effect_readback_unconfirmed", possible=True)
+        if not self._same(prior[0], expected):
+            return self.guard(request, "denied", "claim_identity_conflict")
+        outcome = self._applied(request, principal, record.grant_id, qualification, prior[0])
+        await grants.finish(outcome)
+        return outcome

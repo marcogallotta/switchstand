@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -86,6 +87,14 @@ def request(work, operation=None, **changes):
 async def test_agent_create_replay_supersede_stale_and_scope(subject):
     service, repository, grants, principal, grant, work, target, _project = subject
     first_request = request(work)
+    unknown = service.guard(first_request, "unknown", "prepared", possible=True)
+    await grants.prepare({"request": first_request.model_dump(mode="json"),
+                          "qualification": "test:launch-owner"}, grant,
+                         service._fingerprint(principal, first_request), unknown)
+    await repository.record(service._new(first_request, grant.id))
+    blocked = await service.record(grants, principal, request(work))
+    assert blocked.reason == "target_has_unresolved_effect"
+    assert blocked.blocked_by and blocked.blocked_by.operation_id == first_request.operation_id
     first = await service.record(grants, principal, first_request)
     replay = await service.record(grants, principal, first_request)
     assert first.status == replay.status == "ok" and first.receipt == replay.receipt
@@ -119,6 +128,18 @@ async def test_agent_create_replay_supersede_stale_and_scope(subject):
         "grant_version": 2,
     }))
     assert denied.reason == "claim_scope_not_granted"
+
+
+async def test_journal_read_failure_is_fail_closed_unknown(subject):
+    service, _repository, grants, principal, _grant, work, *_ = subject
+    async with grants.engine.begin() as connection:
+        await connection.execute(text("ALTER TABLE effect_intents RENAME TO hidden_intents"))
+    try:
+        outcome = await service.record(grants, principal, request(work))
+    finally:
+        async with grants.engine.begin() as connection:
+            await connection.execute(text("ALTER TABLE hidden_intents RENAME TO effect_intents"))
+    assert (outcome.status, outcome.effect, outcome.retry) == ("unknown", "unknown", "reconcile")
 
 
 async def test_project_read_does_not_propagate_and_human_write_is_not_a_contract(subject):
