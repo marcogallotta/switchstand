@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import repository_bundle, repository_candidate
-from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
+from .agent_mailboxes import AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
     AgentMessagePendingResult,
@@ -663,17 +663,6 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             stored = await mailboxes.takeover(name, principal.key, chat_session)
-            if stored.status == "recovery_required" and stored.reason == "state_unavailable":
-                # Same-principal takeover is replay-safe for this exact replacement session.
-                # Retry only the ambiguous state result, with the already-captured identity
-                # and unchanged arguments, then require an authoritative binding readback.
-                stored = await mailboxes.takeover(name, principal.key, chat_session)
-                if stored.status == "ok" and stored.mailbox is not None:
-                    observed = await mailboxes.for_actor(principal.key, chat_session)
-                    if observed.status != "ok" or observed.mailbox != stored.mailbox:
-                        stored = AgentMailboxResult(
-                            status="recovery_required", reason="state_unavailable"
-                        )
             result = (
                 AgentRegistrationResult(status="ok", name=stored.mailbox.name)
                 if stored.status == "ok" and stored.mailbox is not None
