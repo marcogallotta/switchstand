@@ -152,6 +152,7 @@ def render(
         "",
         "[features]",
         "hooks = true",
+        "multi_agent = true",
         "",
         "[mcp_servers.switchstand]",
         f"url = {json.dumps(canonical_mcp['url'])}",

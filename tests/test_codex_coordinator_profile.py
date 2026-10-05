@@ -69,6 +69,9 @@ alternate_screen = "never"
 [notice]
 hide_rate_limit_model_nudge = true
 
+[features]
+multi_agent = false
+
 [shell_environment_policy]
 set = { SECRET = "must-not-copy" }
 
@@ -111,7 +114,7 @@ trusted_hash = "must-not-copy"
         "transfer, or read the mailbox."
     ) in instructions
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
-    assert profile["features"] == {"hooks": True}
+    assert profile["features"] == {"hooks": True, "multi_agent": True}
     canonical = tomllib.loads((ROOT / ".codex/config.toml").read_text())["mcp_servers"][
         "switchstand"
     ]

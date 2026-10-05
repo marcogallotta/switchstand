@@ -297,6 +297,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert filesystem[str(writer)] == "write"
     assert filesystem[str(writer_git_dir)] == "write"
     assert profile["approval_policy"] == "never"
+    assert profile["features"]["multi_agent"] is True
     records = [path for path in coordinator_home.glob("start-commit.*")
                if path.is_file() and not path.name.endswith(".manifest.json")]
     assert len(records) == 1
