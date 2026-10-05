@@ -49,6 +49,23 @@ def _pending(required_sha: str | None, reason: str) -> RepositoryBundleResolutio
     )
 
 
+def _grounding_is_current(
+    manifest_refs: dict[str, str],
+    authoritative_refs: dict[str, str],
+    required_sha: str | None,
+) -> bool:
+    if required_sha is None:
+        manifest_main = manifest_refs.get("refs/heads/main")
+        return (
+            manifest_main is not None
+            and authoritative_refs.get("refs/heads/main") == manifest_main
+        )
+    return any(
+        sha == required_sha and authoritative_refs.get(ref) == required_sha
+        for ref, sha in manifest_refs.items()
+    )
+
+
 def _is_bundle_api_url(url: str, *, release: bool = False) -> bool:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.netloc != "api.github.com" or parsed.fragment:
@@ -152,8 +169,9 @@ async def resolve_repository_bundle(
             return _pending(required_sha, "bundle_transition")
         if manifest.get("snapshot_digest") != snapshot_digest:
             return _pending(required_sha, "manifest_digest_mismatch")
-        if authoritative != manifest_refs:
-            return _pending(required_sha, "refs_advanced")
+        if not _grounding_is_current(manifest_refs, authoritative, required_sha):
+            reason = "required_sha_unproved" if required_sha else "refs_advanced"
+            return _pending(required_sha, reason)
         return RepositoryBundleResolution(
             status="current",
             snapshot_digest=snapshot_digest,
@@ -161,9 +179,7 @@ async def resolve_repository_bundle(
             bundle_url=str(bundle_asset["browser_download_url"]),
             refs=manifest_refs,
             required_sha=required_sha,
-            required_sha_is_head=(
-                True if required_sha and required_sha in manifest_refs.values() else None
-            ),
+            required_sha_is_head=True if required_sha else None,
         )
     except httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError:
         return RepositoryBundleResolution(

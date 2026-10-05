@@ -56,6 +56,12 @@ from .messages import (
 )
 from .run import managed_runtime_currentness
 from .state import PostgresState
+from .task_runs import (
+    AgentTaskRequest,
+    TaskRunRequestResult,
+    TaskRunState,
+    task_request_operation_id,
+)
 from .work_events import WorkEventRepository
 
 
@@ -193,6 +199,7 @@ def build_server(
     principal: PrincipalContext | None = None,
     currentness: Callable[[], RuntimeCurrentness | None] | None = None,
     updates: Callable[[PrincipalContext, ProtectedUpdate], Awaitable[GuardOutcome]] | None = None,
+    task_runs: TaskRunState | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
@@ -338,6 +345,58 @@ def build_server(
         closed_tool(server, "message_recover", _message_recover)
         closed_tool(server, "message_result_send", _message_result_send)
         closed_tool(server, "message_disposition", _message_disposition)
+    if task_runs is not None and grants is not None and principal is not None and currentness is not None:
+        async def _agent_task_request(
+            api_version: Literal["1"], execution_work_id: UUID,
+            observed_revision: Annotated[str, Field(min_length=1, max_length=512)],
+            task_kind: Literal["INVESTIGATION", "VALIDATION"],
+            objective: Annotated[str, Field(min_length=1, max_length=8000)],
+            result_contract: dict[str, JsonValue],
+            continuation: Literal["START", "CONTINUE", "TAKEOVER"] = "START",
+            candidate_ref: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
+        ) -> TaskRunRequestResult:
+            """Persist one launch-bound investigation or validation request; never launch it."""
+            async with grants.locked(principal.key) as grant:
+                if grant is None or not grant.current():
+                    return TaskRunRequestResult(status="denied", reason="no_current_grant")
+                if (
+                    principal != managed_principal(active_work_id)
+                    or grant.principal != principal
+                    or grant.scope != "launch"
+                    or grant.authority.active_work_id != active_work_id
+                    or not grant.can_write(active_work_id)
+                    or "agent_task" not in grant.operations
+                    or execution_work_id != active_work_id
+                ):
+                    return TaskRunRequestResult(
+                        status="denied", reason="operation_not_granted"
+                    )
+                runtime = currentness()
+                if runtime is None or runtime.current_generation is None:
+                    return TaskRunRequestResult(
+                        status="unknown", reason="runtime_currentness_unavailable"
+                    )
+                if runtime.generation != runtime.current_generation:
+                    return TaskRunRequestResult(
+                        status="stale", reason="requester_run_superseded"
+                    )
+                request = AgentTaskRequest(
+                    api_version=api_version,
+                    execution_work_id=execution_work_id,
+                    observed_revision=observed_revision,
+                    task_kind=task_kind,
+                    objective=objective,
+                    result_contract=result_contract,
+                    continuation=continuation,
+                    candidate_ref=candidate_ref,
+                )
+                return await task_runs.request(
+                    active_work_id,
+                    task_request_operation_id(active_work_id, request),
+                    request,
+                )
+
+        closed_tool(server, "agent_task_request", _agent_task_request)
     return server
 
 
