@@ -13,6 +13,7 @@ MANAGED_COMMAND = "scripts/switchstand-controller-mcp"
 DEVELOPMENT_COMMAND = "scripts/switchstand-development-mcp"
 AGENT_TASK_MANAGED_TOOLS = (
     "work_get", "work_history", "work_event", "work_append", "work_update",
+    "priority_claim_get", "priority_claim_record", "priority_context_get",
     "message_pending", "message_receive", "message_recover", "message_result_send",
     "message_disposition", "agent_task_request", "agent_task_result",
 )

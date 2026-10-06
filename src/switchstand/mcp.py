@@ -54,6 +54,13 @@ from .messages import (
     pending_managed_messages,
     send_managed_result,
 )
+from .priority_claim_service import (
+    PriorityClaimReadResult,
+    PriorityClaimService,
+    PriorityClaimWrite,
+)
+from .priority_claims import PriorityBand, PriorityClaimRepository, RelationKind
+from .priority_context import PriorityContextProjection, PriorityContextResult
 from .run import managed_runtime_currentness
 from .state import PostgresState
 from .task_runs import (
@@ -202,6 +209,8 @@ def build_server(
     currentness: Callable[[], RuntimeCurrentness | None] | None = None,
     updates: Callable[[PrincipalContext, ProtectedUpdate], Awaitable[GuardOutcome]] | None = None,
     task_runs: TaskRunState | None = None,
+    priority_claims: PriorityClaimService | None = None,
+    priority_context: PriorityContextProjection | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
@@ -257,6 +266,54 @@ def build_server(
             return await updates(principal, request)
 
         closed_tool(server, "work_update", _work_update)
+    if priority_claims is not None and grants is not None and principal is not None:
+        async def _priority_claim_get(
+            api_version: Literal["1"],
+        ) -> PriorityClaimReadResult:
+            """Read current priority claims for the exact launch-bound work."""
+            del api_version
+            return await priority_claims.current("WORK", active_work_id)
+
+        async def _priority_claim_record(
+            api_version: Literal["1"], operation_id: UUID,
+            observed_revision: Annotated[str, Field(min_length=1)],
+            relation_kind: RelationKind,
+            rationale: Annotated[str, Field(min_length=1, max_length=300)],
+            relation_target_id: UUID | None = None,
+            band: PriorityBand | None = None,
+            supersedes_claim_id: UUID | None = None,
+        ) -> GuardOutcome:
+            """Record an AGENT recommendation for the exact launch-bound work."""
+            grant = await grants.current(principal.key)
+            request = PriorityClaimWrite(
+                api_version=api_version,
+                operation_id=operation_id,
+                work_id=active_work_id,
+                grant_version=1 if grant is None else grant.version,
+                observed_revision=observed_revision,
+                relation_kind=relation_kind,
+                rationale=rationale,
+                relation_target_id=relation_target_id,
+                band=band,
+                supersedes_claim_id=supersedes_claim_id,
+            )
+            return await priority_claims.record(grants, principal, request)
+
+        closed_tool(server, "priority_claim_get", _priority_claim_get)
+        closed_tool(server, "priority_claim_record", _priority_claim_record)
+    if priority_context is not None:
+        async def _priority_context_get(
+            api_version: Literal["1"], include_references: bool = False,
+        ) -> PriorityContextResult:
+            """Project priority context for the launch-bound work and optional references."""
+            del api_version
+            work_ids = (
+                (active_work_id, *reference_work_ids)
+                if include_references else (active_work_id,)
+            )
+            return await priority_context.project(work_ids)
+
+        closed_tool(server, "priority_context_get", _priority_context_get)
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:
             return currentness() or RuntimeCurrentness(
@@ -451,6 +508,17 @@ def server_from_env() -> MCPServer:
     work = service.work
     task_runs = TaskRunState(engine, work.works)
     active = service.authority.active_work_id
+    priority_claims = None
+    priority_context = None
+    if os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1":
+        priority_claims = PriorityClaimService(
+            PriorityClaimRepository(engine), work.works,
+        )
+        priority_context = PriorityContextProjection(
+            works=work.works,
+            relations=work.relations,
+            claims=priority_claims,
+        )
 
     def currentness() -> RuntimeCurrentness | None:
         try:
@@ -468,6 +536,8 @@ def server_from_env() -> MCPServer:
         currentness=currentness,
         updates=lambda principal, request: work.protected_update(grants, principal, request),
         task_runs=task_runs,
+        priority_claims=priority_claims,
+        priority_context=priority_context,
     )
 
 

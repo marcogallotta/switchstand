@@ -36,6 +36,13 @@ maintenance replacement applies the repository's current migration head before s
 edge. Clearing the flag in a later authorized replacement removes all three tools without deleting
 stored claims; database downgrade is not the feature rollback path.
 
+The ordinary edge's workspace admission intentionally denies `priority_claim_record`; its live
+denial proves fail-closed behavior, not a successful write path. With the same feature switch, the
+managed task-bound MCP exposes the three tools against its trusted launch grant. That adapter fixes
+the write target and grant version to the active launch and bounds context to the active WorkId and
+optional launch references. A real write acceptance test therefore uses a fresh managed launch,
+not an ordinary ChatGPT workspace session.
+
 The executable inventory and client policy are owned by
 `build_ordinary_tools` in `src/switchstand/chatgpt_mcp.py`, its edge tests, and
 the repository's `.codex/config.toml`. Do not copy the full tool list into prose:

@@ -154,6 +154,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
 
     managed = {
         "work_get", "work_history", "work_event", "work_append", "work_update", "message_pending",
+        "priority_claim_get", "priority_claim_record", "priority_context_get",
         "message_receive", "message_recover", "message_result_send", "message_disposition",
     }
     switchstand_managed = servers["switchstand_managed"]
