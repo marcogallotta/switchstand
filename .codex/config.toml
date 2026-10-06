@@ -29,7 +29,7 @@ url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 required = false
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
-                 "work_history", "work_event", "work_append",
+                 "work_history", "work_event", "work_append", "observability_get",
                  "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
@@ -48,7 +48,7 @@ url = "https://laptop.tail46f0b9.ts.net:8446/mcp"
 required = false
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
-                 "work_history", "work_event", "work_append",
+                 "work_history", "work_event", "work_append", "observability_get",
                  "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
