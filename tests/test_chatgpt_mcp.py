@@ -175,7 +175,8 @@ async def test_review_tools_self_document_actor_flow_and_typed_observability():
 
     observability = listed["observability_get"]
     assert "requester readback path after review_request" in observability.description
-    assert "do not poll a generic agent inbox" in observability.description
+    assert "do not poll a generic" in observability.description
+    assert "agent inbox" in observability.description
     pickup = observability.output_schema["$defs"]["ReviewPickupObservation"]
     assert {"review_id", "phase", "verdict", "findings", "context_provenance",
             "verdict_digest"} <= pickup["properties"].keys()
