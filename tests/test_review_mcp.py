@@ -6,7 +6,7 @@ from chatgpt_fixture import ACTIVE, PRINCIPAL, service
 
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
 from switchstand.chatgpt_mcp import build_chatgpt_server, build_ordinary_tools
-from switchstand.reviews import ReviewFinding, ReviewRequest, ReviewResult, ReviewSubmit
+from switchstand.reviews import ReviewFinding, ReviewResult, ReviewSubmit
 
 
 class Messages:
@@ -30,7 +30,7 @@ def mailbox() -> AgentMailbox:
     )
 
 
-async def test_review_request_is_default_off_and_has_no_caller_identity_fields(monkeypatch):
+async def test_review_request_is_rolled_back_while_submit_remains_default_off(monkeypatch):
     subject = service()
     assert not {"review_request", "review_submit"} & set(dict(build_ordinary_tools(subject)))
 
@@ -42,15 +42,9 @@ async def test_review_request_is_default_off_and_has_no_caller_identity_fields(m
     subject.messages = Messages()  # type: ignore[assignment]
     subject.reviews = AsyncMock()
     tools = await build_chatgpt_server(subject).list_tools()
-    schema = next(tool.input_schema for tool in tools if tool.name == "review_request")
-
-    assert {
-        "api_version", "subject_work_id", "observed_revision", "review_kind",
-        "candidate_ref", "mode", "prior_review_id", "finding_ids",
-    } == set(schema["properties"])
-    assert not {
-        "requester", "requester_endpoint_id", "principal", "grant_id", "reviewer",
-    } & set(schema["properties"])
+    names = {tool.name for tool in tools}
+    assert not {"review_request", "review_get", "review_recover"} & names
+    assert "review_submit" in names
     submit_schema = next(tool.input_schema for tool in tools if tool.name == "review_submit")
     assert {
         "api_version", "review_id", "verdict", "context_provenance", "findings",
@@ -59,9 +53,6 @@ async def test_review_request_is_default_off_and_has_no_caller_identity_fields(m
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
-    for name in ("review_get", "review_recover"):
-        schema = next(tool.input_schema for tool in tools if tool.name == name)
-        assert set(schema["properties"]) == {"api_version", "review_id"}
 
 
 async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
@@ -85,92 +76,6 @@ async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
         if item.name == "observability_get"
     )
     assert set(schema["properties"]) == {"work_id"}
-
-
-async def test_review_request_derives_current_mailbox_and_delegates_exact_request(monkeypatch):
-    subject = service()
-    bound = mailbox()
-    lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
-    monkeypatch.setattr(
-        "switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup,
-    )
-    subject.messages = Messages()  # type: ignore[assignment]
-    subject.reviews = AsyncMock()
-    expected = ReviewResult(
-        status="SENT", review_id=uuid4(), delivery_id=uuid4(),
-    )
-    subject.reviews.request.return_value = expected
-    targets: list[object] = []
-    audits: list[tuple[str, str | None, str]] = []
-    tool = dict(build_ordinary_tools(
-        subject,
-        audit=lambda *record: audits.append(record),
-        agent_identity=lambda: "chat-session",
-        correlate_work=targets.append,
-    ))["review_request"]
-    prior = uuid4()
-
-    result = await tool(
-        "1", ACTIVE, "pg_exact", "CODE", "git:abc", "FOCUSED", prior, ("F1",),
-    )
-
-    assert result == expected
-    assert lookup.seen == (PRINCIPAL.key, "chat-session")
-    subject.reviews.request.assert_awaited_once_with(
-        ReviewRequest(
-            subject_work_id=ACTIVE, observed_revision="pg_exact", review_kind="CODE",
-            candidate_ref="git:abc", mode="FOCUSED", prior_review_id=prior,
-            finding_ids=("F1",),
-        ),
-        bound,
-    )
-    assert targets == [ACTIVE]
-    assert audits == [("review_request", str(ACTIVE), "SENT")]
-
-
-async def test_review_request_refuses_unbound_authenticated_caller(monkeypatch):
-    subject = service()
-    lookup = Mailboxes(AgentMailboxResult(
-        status="denied", reason="agent_not_registered",
-    ))
-    monkeypatch.setattr(
-        "switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup,
-    )
-    subject.messages = Messages()  # type: ignore[assignment]
-    subject.reviews = AsyncMock()
-    tool = dict(build_ordinary_tools(
-        subject, agent_identity=lambda: "unregistered-chat",
-    ))["review_request"]
-
-    result = await tool("1", ACTIVE, "pg_exact", "CODE")
-
-    assert (result.status, result.reason) == ("DENIED", "requester_not_current")
-    subject.reviews.request.assert_not_awaited()
-
-
-async def test_review_request_preserves_mailbox_recovery_as_unknown(monkeypatch):
-    subject = service()
-    lookup = Mailboxes(AgentMailboxResult(
-        status="recovery_required", reason="state_unavailable",
-    ))
-    monkeypatch.setattr(
-        "switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup,
-    )
-    subject.messages = Messages()  # type: ignore[assignment]
-    subject.reviews = AsyncMock()
-    audits: list[tuple[str, str | None, str]] = []
-    tool = dict(build_ordinary_tools(
-        subject,
-        audit=lambda *record: audits.append(record),
-        agent_identity=lambda: "recovery-chat",
-    ))["review_request"]
-
-    result = await tool("1", ACTIVE, "pg_exact", "CODE")
-
-    assert (result.status, result.reason) == ("UNKNOWN", "state_unavailable")
-    subject.reviews.request.assert_not_awaited()
-    assert lookup.seen == (PRINCIPAL.key, "recovery-chat")
-    assert audits == [("review_request", str(ACTIVE), "UNKNOWN")]
 
 
 async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdict(monkeypatch):

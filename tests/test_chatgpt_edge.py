@@ -457,8 +457,9 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
 
     assert {
         "priority_claim_get", "priority_claim_record", "priority_context_get",
-        "review_request", "review_submit", "activation_obligation_transition",
+        "review_submit", "activation_obligation_transition",
     } <= injected_tools
+    assert not {"review_request", "review_get", "review_recover"} & injected_tools
     assert [
         captured[-1].priority_claims,
         captured[-1].priority_context,
@@ -650,7 +651,8 @@ async def test_resource_service_shares_review_dependencies_when_explicitly_injec
     ) as (subject, _runtime):
         names = {name for name, _tool in build_ordinary_tools(subject)}
         assert ("implementation_request" in names) is implementation_requests
-        assert ({"review_request", "review_submit"} <= names) is review_enabled
+        assert ("review_submit" in names) is review_enabled
+        assert not {"review_request", "review_get", "review_recover"} & names
         if review_enabled:
             assert subject.reviews is not None
             assert subject.reviews.policy is policy

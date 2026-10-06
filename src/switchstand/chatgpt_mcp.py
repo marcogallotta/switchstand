@@ -69,9 +69,6 @@ from .product_currentness import ProductCurrentness
 from .reviews import (
     ContextProvenance,
     ReviewFinding,
-    ReviewKind,
-    ReviewMode,
-    ReviewRequest,
     ReviewResult,
     ReviewSubmit,
     ReviewVerdict,
@@ -225,7 +222,7 @@ PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
-REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_recover", "review_submit"})
+REVIEW_TOOLS = frozenset({"review_submit"})
 OBSERVABILITY_TOOLS = frozenset({"observability_get"})
 
 
@@ -653,67 +650,6 @@ def build_ordinary_tools(
         )
         audited("implementation_request", str(package_work_id), result.status)
         return result
-
-    async def review_request(
-        api_version: Literal["1"], subject_work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)], review_kind: ReviewKind,
-        candidate_ref: Annotated[str | None, Field(min_length=1, max_length=500)] = None,
-        mode: ReviewMode = "FULL", prior_review_id: UUID | None = None,
-        finding_ids: tuple[str, ...] = (),
-    ) -> ReviewResult:
-        """Request one review as this registered caller at an exact subject revision."""
-        del api_version
-        correlate(subject_work_id)
-        context = await agent_context()
-        if isinstance(context, tuple):
-            result = ReviewResult(
-                status="UNKNOWN" if context[0] == "recovery_required" else "DENIED",
-                reason="state_unavailable" if context[0] == "recovery_required"
-                else "requester_not_current",
-            )
-        else:
-            assert service.reviews is not None
-            result = await service.reviews.request(ReviewRequest(
-                subject_work_id=subject_work_id,
-                observed_revision=observed_revision,
-                review_kind=review_kind,
-                candidate_ref=candidate_ref,
-                mode=mode,
-                prior_review_id=prior_review_id,
-                finding_ids=finding_ids,
-            ), context.mailbox)
-        audited("review_request", str(subject_work_id), result.status)
-        return result
-
-    async def review_read(
-        review_id: UUID, operation: Literal["get", "recover"],
-    ) -> ReviewResult:
-        correlate(review_id)
-        context = await agent_context()
-        if isinstance(context, tuple):
-            return ReviewResult(
-                status="UNKNOWN" if context[0] == "recovery_required" else "DENIED",
-                reason="state_unavailable" if context[0] == "recovery_required"
-                else ("requester_not_current" if operation == "get"
-                      else "reviewer_binding_changed"),
-            )
-        assert service.reviews is not None
-        result = await (
-            service.reviews.get(review_id, context.mailbox) if operation == "get"
-            else service.reviews.recover(review_id, context.mailbox)
-        )
-        audited(f"review_{operation}", str(review_id), result.status)
-        return result
-
-    async def review_get(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
-        """Poll one exact review as its current registered requester."""
-        del api_version
-        return await review_read(review_id, "get")
-
-    async def review_recover(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
-        """Rebind one received review after same-principal mailbox takeover."""
-        del api_version
-        return await review_read(review_id, "recover")
 
     async def review_submit(
         api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
@@ -1214,8 +1150,7 @@ def build_ordinary_tools(
           if service.priority_context_enabled and service.priority_context is not None else ()),
         *((("implementation_request", implementation_request),)
           if service.implementation_requests is not None else ()),
-        *((("review_request", review_request), ("review_get", review_get),
-           ("review_recover", review_recover), ("review_submit", review_submit))
+        *((("review_submit", review_submit),)
           if service.reviews is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
