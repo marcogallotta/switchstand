@@ -34,6 +34,27 @@ def initialized(tmp_path: Path, index: str = "") -> Path:
     return state
 
 
+def test_repository_ignores_friction_directory_symlink(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".gitignore").write_text((ROOT / ".gitignore").read_text())
+    subprocess.run(
+        ["git", "-C", repository, "init", "-b", "main"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", repository, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
+    target = tmp_path / "friction-state"
+    target.mkdir()
+    (repository / "friction").symlink_to(target, target_is_directory=True)
+
+    assert subprocess.check_output(
+        ["git", "-C", repository, "status", "--porcelain"], text=True,
+    ) == "A  .gitignore\n"
+
+
 def test_init_preserves_existing_index_and_creates_bounded_register(tmp_path: Path) -> None:
     state = initialized(tmp_path, "legacy evidence\n")
 

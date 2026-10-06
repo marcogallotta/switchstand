@@ -59,7 +59,10 @@ def broken_relative_destinations(root: Path, documents: list[Path]) -> list[str]
 
 
 def test_repository_documentation_graph_is_resolvable():
-    documents = [*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md")]
+    documents = [
+        *(path for path in ROOT.glob("*.md") if path.name != "friction.md"),
+        *(ROOT / "docs").rglob("*.md"),
+    ]
     assert broken_relative_destinations(ROOT, documents) == []
     assert [path for path in REQUIRED_ENTRY_POINTS if not (ROOT / path).is_file()] == []
 
