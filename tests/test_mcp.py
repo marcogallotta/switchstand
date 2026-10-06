@@ -3,7 +3,9 @@ import os
 import subprocess
 import sys
 import tomllib
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +14,7 @@ from mcp import Client, StdioServerParameters
 
 from switchstand.contracts import (
     AppendResult,
+    LaunchAuthority,
     Routing,
     WorkContext,
     WorkItem,
@@ -104,6 +107,58 @@ def test_managed_controller_needs_no_asana_configuration(monkeypatch):
 
     assert controller.providers == {}
     assert controller.authority.active_work_id == ID
+
+
+async def test_managed_server_constructs_task_runs_but_defaults_deny(monkeypatch):
+    import switchstand.mcp as managed_mcp
+
+    engine, works = object(), object()
+    work = SimpleNamespace(works=works, protected_update=None)
+    service = SimpleNamespace(
+        state=SimpleNamespace(engine=engine),
+        work=work,
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=()),
+    )
+    constructed = []
+
+    class NoGrantState:
+        def __init__(self, value):
+            self.engine = value
+
+        @asynccontextmanager
+        async def locked(self, _principal_key):
+            yield None
+
+    class SpyTaskRunState:
+        def __init__(self, value, works):
+            constructed.append((value, works))
+
+        async def request(self, *_args):
+            raise AssertionError("default-denied request reached persistence")
+
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setattr(managed_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(managed_mcp, "GrantState", NoGrantState)
+    monkeypatch.setattr(managed_mcp, "TaskRunState", SpyTaskRunState)
+
+    server = managed_mcp.server_from_env()
+    assert constructed == [(engine, works)]
+    assert "agent_task_request" in server._tool_manager._tools
+    result = await server.call_tool("agent_task_request", {
+        "api_version": "1",
+        "execution_work_id": str(ID),
+        "observed_revision": "r1",
+        "task_kind": "INVESTIGATION",
+        "objective": "Prove the default grant remains inert.",
+        "result_contract": {},
+    })
+    assert result.structured_content == {
+        "status": "denied", "request": None, "reason": "no_current_grant",
+    }
+    config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    assert "agent_task_request" not in (
+        config["mcp_servers"]["switchstand_managed"]["enabled_tools"]
+    )
 
 
 def test_managed_controller_script_without_authority_fails():

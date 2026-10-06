@@ -408,6 +408,7 @@ def server_from_env() -> MCPServer:
     grants = GrantState(engine)
     messages = MessageState(engine, grants)
     work = service.work
+    task_runs = TaskRunState(engine, work.works)
     active = service.authority.active_work_id
 
     def currentness() -> RuntimeCurrentness | None:
@@ -425,6 +426,7 @@ def server_from_env() -> MCPServer:
         messages=messages, grants=grants, principal=managed_principal(active),
         currentness=currentness,
         updates=lambda principal, request: work.protected_update(grants, principal, request),
+        task_runs=task_runs,
     )
 
 
