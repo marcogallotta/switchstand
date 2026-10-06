@@ -167,6 +167,33 @@ def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) ->
                 tool="apply_patch", **common) == {}
 
 
+def test_context_mcp_wrapper_forwards_priority_flag_to_container(tmp_path):
+    script = Path(__file__).parents[1] / "scripts" / "switchstand-context-mcp"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "docker-args"
+    executable(
+        fake_bin / "docker",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n",
+    )
+    environment = os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "ACTIVE_WORK_ID": str(ACTIVE),
+        "SWITCHSTAND_MANAGED": "1",
+        "SWITCHSTAND_PRIORITY_CLAIMS": "1",
+        "CAPTURE": str(capture),
+    }
+
+    result = subprocess.run([script], env=environment, text=True, capture_output=True, check=False)
+
+    assert result.returncode == 0
+    arguments = capture.read_text().splitlines()
+    assert ["-e", "SWITCHSTAND_PRIORITY_CLAIMS"] == arguments[
+        arguments.index("-e"):arguments.index("-e") + 2
+    ]
+    assert environment["SWITCHSTAND_PRIORITY_CLAIMS"] == "1"
+
+
 def test_context_server_exposes_only_bound_read_context():
     server = build_context_server(FakeService(), ACTIVE)
     assert set(server._tool_manager._tools) == {"work_get", "work_history"}

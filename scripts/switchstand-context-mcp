@@ -7,5 +7,6 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 
 export SWITCHSTAND_MANAGED_PROFILE=context
 cd "$repo"
-exec docker compose run --rm -T --no-deps controller \
-    uv run --no-sync python -m switchstand.mcp
+exec docker compose run --rm -T --no-deps \
+    -e SWITCHSTAND_PRIORITY_CLAIMS \
+    controller uv run --no-sync python -m switchstand.mcp
