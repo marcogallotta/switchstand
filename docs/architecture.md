@@ -576,13 +576,17 @@ so concurrent OFF and PILOT launches cannot replace one another's continuity pol
 private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
 registers `SubagentStop` or changes the destructive-command guard.
 Because an exact writable file root can be misclassified as a directory by sandbox child-mount
-handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory and
-binds their repository `friction.md` path to its mode-0600 file with a validated symlink. The first
-new launch copies a valid legacy local-state `friction.md` into that directory without moving or
-deleting the legacy file, so already-running agents remain undisturbed. Malformed legacy, current,
-or binding nodes move to a generation-specific private quarantine; dispatch recreates the bounded
-friction state, reports the degradation, and continues launch. Outside the canonical repository,
-dispatch passes through to the ordinary Codex executable.
+handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory.
+It binds repository `friction.md` to the mode-0600 policy/index and repository `friction/` to the
+same durable root, whose three mode-0600 category ledgers are capability, process, and
+implementation. A locked writer validates stable keys and entry bounds, checks only exact headings
+for global dedupe without returning ledger prose, and atomically replaces one ledger. The first
+new launch copies a valid legacy local-state
+`friction.md` into that directory without moving, deleting, or silently rewriting it, so
+already-running agents and unstructured evidence remain undisturbed. Malformed legacy, current,
+or binding nodes move to a generation-specific private quarantine; dispatch recreates only the
+affected bounded friction surface, reports the degradation, and continues launch. Outside the
+canonical repository, dispatch passes through to the ordinary Codex executable.
 
 Built-in delegated Workers share the Coordinator process and filesystem profile. Hooks are a
 useful guardrail rather than a security sandbox, so they cannot safely grant a Worker mutation in
