@@ -63,15 +63,16 @@ async def test_success_error_result_and_exception_each_emit_one_redacted_record(
     with pytest.raises(ValueError, match="secret exception"):
         await middleware.on_call_tool(context("exception", "3"), fail)
 
-    assert [(record["call_id"], record["tool"], record["status"]) for record in records] == [
-        ("1", "success", "ok"),
-        ("2", "error-result", "error"),
-        ("3", "exception", "error"),
+    assert [(record["tool"], record["status"]) for record in records] == [
+        ("success", "ok"), ("error-result", "error"), ("exception", "error"),
     ]
+    assert all(str(UUID(str(record["call_id"]))) == record["call_id"] for record in records)
+    assert [record["error_class"] for record in records] == [None, "TOOL_RESULT_ERROR", "RAISED_EXCEPTION"]
     assert all(record["schema"] == observability.TIMING_SCHEMA for record in records)
     assert all(record["identity"] == {"subject": "safe-subject"} for record in records)
     assert set(records[0]) == {
         "schema", "call_id", "tool", "wall_started_at", "duration_ms", "status",
+        "error_class",
         "identity", "target_work_id", "db_count", "db_sum_ms", "db_max_ms", "pool_wait_ms",
         "child_union_ms", "server_residual_ms",
     }
@@ -79,18 +80,22 @@ async def test_success_error_result_and_exception_each_emit_one_redacted_record(
     assert "secret exception" not in json.dumps(records)
 
 
-async def test_emission_failure_cannot_change_tool_result() -> None:
-    def broken_emit(_record: dict[str, object]) -> None:
-        raise RuntimeError("logger unavailable")
+async def test_emission_failures_do_not_suppress_persistence_or_change_result() -> None:
+    persisted: list[dict[str, object]] = []
+    async def persist(record: Any) -> None:
+        persisted.append(dict(record))
+    def broken(*_args: object) -> Any:
+        raise RuntimeError("unavailable")
 
     expected = ToolResult(structured_content={"ok": True})
-    middleware = CallTimingMiddleware(dict, broken_emit)
-
     async def succeed(context: MiddlewareContext[Any]) -> ToolResult:
         del context
         return expected
 
-    assert await middleware.on_call_tool(context("safe"), succeed) is expected
+    for identity, emit in ((broken, persisted.append), (dict, broken)):
+        middleware = CallTimingMiddleware(identity, emit, persist, {"safe"})
+        assert await middleware.on_call_tool(context("safe"), succeed) is expected
+    assert len(persisted) == 2
 
 
 def test_default_emitter_uses_stable_prefix_and_compact_json(

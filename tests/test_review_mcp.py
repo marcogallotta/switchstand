@@ -208,7 +208,7 @@ async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdic
         review_id=review_id, verdict="FINDINGS", findings=(finding,),
         evidence_refs=("git:exact",), context_provenance="INHERITED",
     ), bound)
-    assert targets == [review_id]
+    assert targets == [None]
     assert audits == [("review_submit", str(review_id), "SUBMITTED")]
 
 
