@@ -31,7 +31,8 @@ class WorkGrant(ClosedModel):
     scope: Literal["launch", "workspace"] = "launch"
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
-        "work_relate", "priority_claim", "message", "agent_task", "implementation_request"
+        "work_relate", "priority_claim", "message", "agent_task", "implementation_request",
+        "activation_continuity"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)

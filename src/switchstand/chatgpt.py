@@ -8,6 +8,8 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from .activation_continuity import ContinuityResult, TechnicalBasis, Transition, TransitionIntent
+from .activation_continuity_store import ActivationContinuity
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
@@ -71,6 +73,7 @@ from .updates import UpdateGateway
 from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
+ActivationTechnicalResolver = Callable[[UUID], Awaitable[TechnicalBasis | None]]
 REQUIRED_RESULT_NAMESPACE = UUID("12ddf4c9-f608-46b6-9150-3be7841e85da")
 REQUIRED_RESULT_HEADING = "## Current required result"
 
@@ -109,6 +112,8 @@ class ChatGPTService:
         implementation_requests: ImplementationRequestState | None = None,
         product_currentness: Callable[[PrincipalContext], Awaitable[ProductCurrentness]] | None = None,
         product_currentness_enabled: bool = False,
+        activation_continuity: ActivationContinuity | None = None,
+        activation_technical: ActivationTechnicalResolver | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -137,6 +142,37 @@ class ChatGPTService:
         self.implementation_requests = implementation_requests
         self.product_currentness = product_currentness
         self.product_currentness_enabled = product_currentness_enabled
+        self.activation_continuity = activation_continuity
+        self.activation_technical = activation_technical
+
+    async def activation_continuity_transition(
+        self, operation_id: UUID, obligation_id: UUID, observed_revision: str,
+        transition: Transition, evidence_refs: tuple[str, ...],
+        blocker_ref: str | None, clearing_event_ref: str | None,
+    ) -> ContinuityResult:
+        """Derive actor and technical evidence from authenticated server state."""
+        if self.activation_continuity is None:
+            return ContinuityResult(status="DENIED", reason="feature_default_off")
+        principal = await self.principal()
+        if principal is None:
+            return ContinuityResult(status="DENIED", reason="authenticated_principal_required")
+        intent = TransitionIntent(
+            operation_id=operation_id, obligation_id=obligation_id,
+            observed_revision=observed_revision, transition=transition,
+            evidence_refs=evidence_refs, blocker_ref=blocker_ref,
+            clearing_event_ref=clearing_event_ref,
+        )
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if grant is None or "activation_continuity" not in grant.operations:
+                    return ContinuityResult(status="DENIED", reason="work_not_granted")
+                technical = (None if self.activation_technical is None
+                             else await self.activation_technical(obligation_id))
+                return await self.activation_continuity.transition(
+                    principal, grant, intent, technical
+                )
+        except (SQLAlchemyError, ValueError, KeyError):
+            return ContinuityResult(status="UNKNOWN", reason="admission_unavailable")
 
     async def implementation_request(
         self, operation_id: UUID, package_work_id: UUID, observed_revision: str,
