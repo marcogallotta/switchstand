@@ -423,6 +423,36 @@ class ReviewOccurrenceState:
         return tuple((record.delivery, envelope)
             for record, envelope, _bound in await self.request_sources(review_id))
 
+    async def acquisition_sources(
+        self, review_id: UUID, connection: AsyncConnection | None = None,
+    ) -> tuple[tuple[_ReviewRecord, ReviewEnvelope], ...]:
+        records = await self.records(review_id, connection)
+        coordinator_result = await self.mailboxes.by_name(COORDINATOR_MAILBOX, connection)
+        coordinator = coordinator_result.mailbox
+        if coordinator_result.status != "ok" or coordinator is None:
+            return ()
+        found: list[tuple[_ReviewRecord, ReviewEnvelope]] = []
+        for record in records:
+            try:
+                envelope = ReviewEnvelope.model_validate(record.delivery.payload)
+            except ValueError:
+                continue
+            basis, delivery = envelope.brief.basis, record.delivery
+            if (
+                envelope.type == "REVIEWER_ACQUISITION"
+                and basis.review_id == review_id
+                and envelope.requester_endpoint_id == basis.requester_endpoint_id
+                and delivery.route_ref == "review.acquisition"
+                and delivery.kind == "request"
+                and record.reply_to is None
+                and delivery.message_id
+                == _stable("acquisition", review_id, basis.subject_revision)
+                and delivery.sender_work_id == basis.requester_endpoint_id
+                and delivery.recipient_work_id == coordinator.endpoint_id
+            ):
+                found.append((record, envelope))
+        return tuple(found)
+
     async def request_delivery(
         self, review_id: UUID, *, subject_revision: str | None = None,
     ) -> tuple[PendingMessage, ReviewEnvelope] | None:
@@ -484,14 +514,14 @@ class ReviewOccurrenceState:
     ) -> dict[str, object]:
         def unknown(reason: str) -> dict[str, object]:
             return {
-                "status": "UNKNOWN", "reason": reason, "unpicked": None,
+                "status": "UNKNOWN", "reason": reason, "phase": None, "unpicked": None,
                 "oldest_request_age_ms": None, "requested_at": None,
                 "received_at": None, "verdict_at": None,
             }
         values = (await connection.scalars(select(
             messages.c.payload["brief"]["basis"]["review_id"].astext,
         ).where(
-            messages.c.route_ref == "review.request",
+            messages.c.route_ref.in_(("review.request", "review.acquisition")),
             messages.c.payload["brief"]["basis"]["subject_work_id"].astext
             == str(subject_work_id),
             messages.c.payload["brief"]["basis"]["subject_revision"].astext
@@ -508,12 +538,23 @@ class ReviewOccurrenceState:
         requests = [source for source in await self.request_sources(review_id, connection)
                     if source[1].brief.basis.subject_work_id == subject_work_id
                     and source[1].brief.basis.subject_revision == subject_revision]
+        acquisitions = [
+            source for source in await self.acquisition_sources(review_id, connection)
+            if source[1].brief.basis.subject_work_id == subject_work_id
+            and source[1].brief.basis.subject_revision == subject_revision
+        ]
         outcomes = [source for source in await self.outcome_sources(review_id, connection)
                     if source[1].brief.basis.subject_work_id == subject_work_id
                     and source[1].brief.basis.subject_revision == subject_revision]
-        if len(requests) != 1 or len(outcomes) > 1:
+        if len(requests) > 1 or len(acquisitions) > 1 or len(outcomes) > 1:
             return unknown("AMBIGUOUS_OCCURRENCE")
-        record = requests[0][0]
+        acquisition_wait = not requests
+        if acquisition_wait:
+            if len(acquisitions) != 1 or outcomes:
+                return unknown("AMBIGUOUS_OCCURRENCE")
+            record = acquisitions[0][0]
+        else:
+            record = requests[0][0]
         verdict_at = outcomes[0][0].created_at if outcomes else None
         times = tuple(value for value in (
             record.created_at, record.received_at, record.dispositioned_at, verdict_at,
@@ -531,6 +572,11 @@ class ReviewOccurrenceState:
             return unknown("INCONSISTENT_TIMESTAMPS")
         return {
             "status": "KNOWN", "reason": None,
+            "phase": (
+                "VERDICT" if outcomes else "WAITING_REVIEWER" if acquisition_wait
+                else "REQUEST_UNPICKED" if record.delivery.state == "AVAILABLE"
+                and record.received_at is None else "RECEIVED"
+            ),
             "unpicked": record.delivery.state == "AVAILABLE"
             and record.received_at is None and not outcomes,
             "oldest_request_age_ms": int(

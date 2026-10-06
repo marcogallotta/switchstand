@@ -274,7 +274,8 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
 
     missing = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert missing == {
-        "status": "UNKNOWN", "reason": "NO_CURRENT_OCCURRENCE", "unpicked": None,
+        "status": "UNKNOWN", "reason": "NO_CURRENT_OCCURRENCE", "phase": None,
+        "unpicked": None,
         "oldest_request_age_ms": None, "requested_at": None,
         "received_at": None, "verdict_at": None,
     }
@@ -284,6 +285,7 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     assert sent.review_id is not None and sent.delivery_id is not None
     waiting = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert waiting["status"] == "KNOWN" and waiting["unpicked"] is True
+    assert waiting["phase"] == "REQUEST_UNPICKED"
     assert isinstance(waiting["oldest_request_age_ms"], int)
     assert waiting["requested_at"] is not None
     assert waiting["received_at"] is None and waiting["verdict_at"] is None
@@ -314,6 +316,7 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     assert received.status == "ok"
     picked = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert picked["status"] == "KNOWN" and picked["unpicked"] is False
+    assert picked["phase"] == "RECEIVED"
     assert datetime.fromisoformat(picked["received_at"]).tzinfo is not None
     submitted = await service.submit(ReviewSubmit(
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
@@ -321,6 +324,7 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     assert submitted.status == "SUBMITTED"
     decided = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert decided["status"] == "KNOWN" and decided["unpicked"] is False
+    assert decided["phase"] == "VERDICT"
     assert datetime.fromisoformat(decided["verdict_at"]).astimezone(UTC) <= datetime.now(UTC)
 
     async with engine.begin() as connection:
@@ -382,6 +386,12 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         review_kind="CODE",
     ), requester)
     assert waiting.review_id is not None and waiting.delivery_id is not None
+    acquiring = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert acquiring["status"] == "KNOWN"
+    assert acquiring["phase"] == "WAITING_REVIEWER"
+    assert acquiring["unpicked"] is True
+    assert isinstance(acquiring["oldest_request_age_ms"], int)
+    assert acquiring["received_at"] is None
     received = await messages.receive_admitted(
         coordinator.endpoint_id, coordinator.generation,
         RuntimeCurrentness(
@@ -395,6 +405,11 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         agent_binding=coordinator,
     )
     assert received.status == "ok"
+    acquired = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert acquired["status"] == "KNOWN"
+    assert acquired["phase"] == "WAITING_REVIEWER"
+    assert acquired["unpicked"] is False
+    assert datetime.fromisoformat(acquired["received_at"]).tzinfo is not None
     reviewer = (await mailboxes.register_agent(
         "Reviewer", "principal-b", "chat-b"
     )).mailbox
@@ -404,6 +419,9 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
     )
     sent = await service.continue_acquisition(waiting.review_id, coordinator)
     assert sent.status == "SENT" and sent.delivery_id is not None
+    requested = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert requested["phase"] == "REQUEST_UNPICKED"
+    assert requested["unpicked"] is True
     sources = await occurrences.request_sources(waiting.review_id)
     assert len(sources) == 1
     record, _envelope, bound = sources[0]
