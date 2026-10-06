@@ -128,7 +128,11 @@ def _runner_command(config: Path, lifeline: int) -> tuple[str, ...]:
     return (
         sys.executable,
         "-c",
-        "from switchstand.codex_wakeful import inbound_main; inbound_main()",
+        (
+            "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+            "from switchstand.codex_wakeful import inbound_main; inbound_main()"
+        ),
+        str(Path(__file__).resolve().parents[1]),
         "--config", str(config), "--lifeline-fd", str(lifeline),
     )
 

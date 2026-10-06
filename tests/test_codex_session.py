@@ -11,6 +11,7 @@ from switchstand.codex_session import (
     _database_url,
     _start_runner,
     _stop_runner,
+    main,
     prepare_runner,
     supervise,
 )
@@ -134,3 +135,28 @@ def test_supervisor_restarts_runner_and_stops_it_at_codex_exit(
     )
     assert result == 7
     assert marker.read_text() == "xxs"
+
+
+@pytest.mark.parametrize("pythonpath", ["writer-specific-path", None])
+def test_main_preserves_child_pythonpath(
+    tmp_path: Path, monkeypatch, pythonpath: str | None,
+) -> None:
+    session = spec(tmp_path)
+    observed: list[dict[str, str]] = []
+    if pythonpath is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", pythonpath)
+    monkeypatch.setattr(
+        "switchstand.codex_session.supervise",
+        lambda _spec, _command, environment: observed.append(environment) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "codex-session", "--home", str(session.home), "--codex", str(session.codex),
+        "--start-record", str(session.start_record), "--default-name", session.default_name,
+        "--environment-file", str(session.environment_file), "--", str(session.codex),
+    ])
+    with pytest.raises(SystemExit) as stopped:
+        main()
+    assert stopped.value.code == 0
+    assert observed[0].get("PYTHONPATH") == pythonpath
