@@ -377,7 +377,9 @@ messaging, and required continuation:
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
-  unreferenced legacy residue. For cross-principal recovery, the destination authenticated session
+  unreferenced legacy residue. Registration is read-or-create for that authenticated session: a
+  resume returns its existing immutable mailbox, including `/root`, rather than renaming or taking
+  it over. For cross-principal recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
