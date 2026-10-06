@@ -301,7 +301,9 @@ async def _activation(
             for expected_generation, row in enumerate(chain_rows, 1):
                 value = Obligation.model_validate(row["record"])
                 if (
-                    value.generation != expected_generation
+                    row["obligation_id"] != obligation_id
+                    or row["generation"] != expected_generation
+                    or value.generation != expected_generation
                     or value.predecessor != previous
                     or value.operation_id != row["operation_id"]
                     or seal_obligation(value).digest != value.digest
@@ -335,7 +337,7 @@ async def _activation(
         })
     return {
         "status": "PARTIAL",
-        "reason": ("MOST_RECENT_OBLIGATIONS_ONLY" if obligations_truncated
+        "reason": ("OBLIGATION_ID_LIMIT_EXCEEDED" if obligations_truncated
                    else "SOURCE_HAS_NO_REVISION_TIMESTAMPS"),
         "correlation": "DIRECT_CONTRACT_WORK_ID", "items": items,
         "total_obligations": (

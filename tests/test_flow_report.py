@@ -80,8 +80,25 @@ async def add_work(
         ))
 
 
+async def add_activation_revisions(
+    engine: AsyncEngine, values: list[tuple[UUID, int, Obligation]],
+) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "CREATE TABLE activation_obligation_revisions (obligation_id uuid NOT NULL, "
+            "operation_id uuid NOT NULL UNIQUE, generation bigint NOT NULL, "
+            "record jsonb NOT NULL, PRIMARY KEY (obligation_id,generation))"
+        ))
+        for obligation_id, generation, value in values:
+            await connection.execute(text(
+                "INSERT INTO activation_obligation_revisions VALUES "
+                "(:id,:operation_id,:generation,CAST(:record AS jsonb))"
+            ), {"id": obligation_id, "operation_id": value.operation_id,
+                "generation": generation, "record": value.model_dump_json()})
+
+
 async def test_exact_failure_and_activation_sources_are_private_and_validated(
-    engine: AsyncEngine,
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target, unrelated = uuid4(), uuid4()
     await add_work(engine, target, admitted_at=datetime.now(UTC) - timedelta(minutes=2))
@@ -122,19 +139,7 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
         actor_ref="actor", runtime_binding_token="runtime", generation=1,
         operation_id=operation_id, intent_digest="a" * 64, digest="0" * 64,
     ))
-    async with engine.begin() as connection:
-        await connection.execute(text(
-            "CREATE TABLE activation_obligation_revisions ("
-            "obligation_id uuid NOT NULL, operation_id uuid NOT NULL UNIQUE, "
-            "generation bigint NOT NULL, record jsonb NOT NULL, "
-            "PRIMARY KEY (obligation_id,generation))"
-        ))
-        await connection.execute(text(
-            "INSERT INTO activation_obligation_revisions "
-            "(obligation_id,operation_id,generation,record) "
-            "VALUES (:id,:operation_id,1,CAST(:record AS jsonb))"
-        ), {"id": contract.obligation_id, "operation_id": operation_id,
-            "record": obligation.model_dump_json()})
+    await add_activation_revisions(engine, [(contract.obligation_id, 1, obligation)])
 
     result = await report(engine, target)
 
@@ -161,9 +166,10 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     assert result["activation"]["items"][0]["correlation_roles"] == ["product_work_id"]
     assert result["elapsed"]["observed_interval_union_ms"] == 12_000
     assert result["source_coverage"]["failure_recovery"]["status"] == "KNOWN"
-    assert result["source_coverage"]["activation"] == {
-        "status": "PARTIAL", "reason": "SOURCE_HAS_NO_REVISION_TIMESTAMPS",
-    }
+    assert result["source_coverage"]["activation"]["status"] == "PARTIAL"
+    monkeypatch.setattr(flow_report, "ACTIVATION_REVISION_LIMIT", 0)
+    limited = await report(engine, target)
+    assert limited["activation"]["reason"] == "REVISION_LIMIT_EXCEEDED"
 
 
 async def test_activation_reads_complete_chain_and_rejects_changed_later_binding(
@@ -190,29 +196,77 @@ async def test_activation_reads_complete_chain_and_rejects_changed_later_binding
         "binding": changed_contract.stored(), "generation": 2, "predecessor": first.digest,
         "operation_id": uuid4(), "intent_digest": "b" * 64, "digest": "0" * 64,
     }))
-    async with engine.begin() as connection:
-        await connection.execute(text(
-            "CREATE TABLE activation_obligation_revisions ("
-            "obligation_id uuid NOT NULL, operation_id uuid NOT NULL UNIQUE, "
-            "generation bigint NOT NULL, record jsonb NOT NULL, "
-            "PRIMARY KEY (obligation_id,generation))"
-        ))
-        for value in (first, second):
-            await connection.execute(text(
-                "INSERT INTO activation_obligation_revisions "
-                "(obligation_id,operation_id,generation,record) "
-                "VALUES (:id,:operation_id,:generation,CAST(:record AS jsonb))"
-            ), {"id": contract.obligation_id, "operation_id": value.operation_id,
-                "generation": value.generation, "record": value.model_dump_json()})
+    await add_activation_revisions(engine, [
+        (contract.obligation_id, value.generation, value) for value in (first, second)
+    ])
 
     result = await report(engine, target)
 
-    assert result["activation"] == {
-        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN", "items": [],
-    }
+    assert result["activation"]["reason"] == "CORRUPT_REVISION_CHAIN"
     assert result["source_coverage"]["activation"] == {
         "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
     }
+
+
+async def test_activation_rejects_database_generation_gap(
+    engine: AsyncEngine,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    contract = ActivationContract(
+        product_work_id=target, return_owner_work_id=target, outcome_key="outcome",
+        target_revision="candidate:abc", target_phase="LIVE",
+        acceptance_contract_id="acceptance", contract_revision="1",
+        adoption_requirement="NOT_REQUIRED", lifecycle_authority_work_id=target,
+    )
+    first = seal_obligation(Obligation(
+        binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+        adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+        generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+    ))
+    second = seal_obligation(first.model_copy(update={
+        "generation": 2, "predecessor": first.digest, "operation_id": uuid4(),
+        "intent_digest": "b" * 64, "digest": "0" * 64,
+    }))
+    await add_activation_revisions(engine, [
+        (contract.obligation_id, 1, first), (contract.obligation_id, 3, second),
+    ])
+
+    result = await report(engine, target)
+
+    assert result["activation"]["reason"] == "CORRUPT_REVISION_CHAIN"
+
+
+async def test_activation_obligation_limit_names_deterministic_id_bound(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    values: list[tuple[UUID, int, Obligation]] = []
+    for index in range(2):
+        contract = ActivationContract(
+            product_work_id=target, return_owner_work_id=target,
+            outcome_key=f"outcome-{index}", target_revision=f"candidate:{index}",
+            target_phase="LIVE", acceptance_contract_id="acceptance",
+            contract_revision="1", adoption_requirement="NOT_REQUIRED",
+            lifecycle_authority_work_id=target,
+        )
+        value = seal_obligation(Obligation(
+            binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+            adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+            generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+        ))
+        values.append((contract.obligation_id, 1, value))
+    await add_activation_revisions(engine, values)
+    monkeypatch.setattr(flow_report, "ACTIVATION_OBLIGATION_LIMIT", 1)
+
+    result = await report(engine, target)
+
+    assert result["activation"]["status"] == "PARTIAL"
+    assert result["activation"]["reason"] == "OBLIGATION_ID_LIMIT_EXCEEDED"
+    assert result["activation"]["total_obligations"] == ">=2"
+    assert result["activation"]["truncated"] is True
+    assert len(result["activation"]["items"]) == 1
 
 
 async def test_failure_adapter_bounds_recent_records_truthfully(
