@@ -272,14 +272,14 @@ def build_server(
     server = MCPServer("Switchstand")
 
     if bound_context:
-        async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
+        async def _bound_work_get(api_version: Literal["1"]) -> PublicWorkResult:
             return project_work(await service.get(  # type: ignore[attr-defined]
                 WorkGetRequest(api_version=api_version, work_id=active_work_id)
             ))
 
-        _work_get.__doc__ = "Read the exact launch-bound work."
+        _bound_work_get.__doc__ = "Read the exact launch-bound work."
 
-        async def _work_history(
+        async def _bound_work_history(
             api_version: Literal["1"], observed_revision: str,
             cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
         ) -> WorkHistoryResult:
@@ -290,20 +290,23 @@ def build_server(
                     observed_revision=observed_revision, cursor=cursor, limit=limit,
                 )
             )
+
+        work_get_tool = _bound_work_get
+        work_history_tool = _bound_work_history
     else:
-        async def _work_get(
+        async def _selectable_work_get(
             api_version: Literal["1"], work_id: UUID | None = None,
         ) -> PublicWorkResult:
             request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
             return project_work(await service.get(request))  # type: ignore[attr-defined]
 
         references = ", ".join(map(str, reference_work_ids)) or "none"
-        _work_get.__doc__ = (
+        _selectable_work_get.__doc__ = (
             "Read launch-bound work. Omit work_id for the active assignment. "
             f"Bounded read-only reference WorkIds: {references}."
         )
 
-        async def _work_history(
+        async def _selectable_work_history(
             api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
             cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
         ) -> WorkHistoryResult:
@@ -311,6 +314,9 @@ def build_server(
             return await service.history(  # type: ignore[attr-defined]
                 WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                    observed_revision=observed_revision, cursor=cursor, limit=limit))
+
+        work_get_tool = _selectable_work_get
+        work_history_tool = _selectable_work_history
 
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
@@ -332,8 +338,8 @@ def build_server(
         )
         if bound_context else None
     )
-    closed_tool(server, "work_get", _work_get, read_annotations)
-    closed_tool(server, "work_history", _work_history, read_annotations)
+    closed_tool(server, "work_get", work_get_tool, read_annotations)
+    closed_tool(server, "work_history", work_history_tool, read_annotations)
     closed_tool(server, "work_event", _work_event)
     closed_tool(server, "work_append", _work_append)
     if updates is not None and grants is not None and principal is not None:
