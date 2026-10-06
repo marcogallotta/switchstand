@@ -381,7 +381,9 @@ messaging, and required continuation:
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
-  unreferenced legacy residue. For cross-principal recovery, the destination authenticated session
+  unreferenced legacy residue. Registration is read-or-create for that authenticated session: a
+  resume returns its existing immutable mailbox, including `/root`, rather than renaming or taking
+  it over. For cross-principal recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
@@ -677,7 +679,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change affected-test selection or repository qualification | `affected_tests.py`, `repository_candidate.py` | their owner-local tests, `scripts/check`, GitHub Quality/composition evidence, and exact-head-versus-local truth |
 | Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
-| Change Coordinator ordinary launch policy | `scripts/codex-dispatch` | `scripts/codex-coordinator-profile` and their tests |
+| Change Coordinator ordinary launch policy or session-bounded Wakeful supervision | `scripts/codex-dispatch`, `codex_session.py` | `scripts/codex-coordinator-profile`, `codex_wakeful.py`, and their tests |
 | Change guarded canonical-main synchronization | `coordinator_sync.py` | generated Coordinator profile, stdio boundary tests, and `scripts/coordinator-handoff` interaction |
 
 ## Compatibility and retirement boundaries
@@ -711,14 +713,20 @@ lock. For external-source admission it starts one bounded, lazy stdio client usi
 supplied Codex binary and `CODEX_HOME`, writes the deterministic client ID through Codex's durable
 thread queue, and terminates only that owned child. It never starts, stops, restarts, attaches to,
 or owns a managed Codex daemon. The live same-home embedded root discovers durable queue changes
-and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner; ordinary
-launcher behavior does not invoke the precursor.
-The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
+and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner.
+The `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
-configuration and reuses `chatgpt_edge.resource_service()`. The runner does not install, enable,
-start, register, or take over anything. It creates no database or service owner and leaves the
-existing probe CLI semantics unchanged. It reads only committed
+configuration and reuses `chatgpt_edge.resource_service()`. With
+`SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child, registers its
+exact authenticated thread through the existing MCP `agent_register` read-or-create operation,
+validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
+An existing registration, including `/root`, is reused without takeover; generated names are never
+`/root`. Runner failure is retried while Codex remains active, and Codex exit or supervisor death
+closes the lifeline so intake stops. The activated selector defaults to `PILOT`; an explicit
+`SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-launch rollback path. The runner creates no
+database or service owner and leaves the existing probe CLI
+semantics unchanged. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
 to the exact Codex root/start record. Source transactions finish before host admission so
 host latency cannot block canonical receive/disposition/takeover. Source and runtime checks
@@ -727,6 +735,6 @@ agent must reread the exact delivery before acting. Busy targets retain the dura
 until idle; unsupported history and ambiguous attempts remain UNKNOWN without resend. Queue and
 consumed-history readback remain distinct. A home-wide private lock excludes all
 precursor writers, and the source is never received or dispositioned by intake. Stopping the
-process preserves source records and the private admission projection; restarting the same
-target scans the pending source again. This pilot does not supply the neutral product bridge,
-operator lifecycle, retry/escalation, other sources/clients, or unattended service operation.
+process preserves source records, durable MessageState backlog, and the private admission
+projection; restarting the same target scans the pending source again. This pilot does not supply
+the neutral product bridge, other sources/clients, or unattended service operation.

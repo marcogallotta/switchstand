@@ -53,8 +53,82 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     )
     executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
     return home, primary, marker, os.environ | {
-        "HOME": str(home), "MARKER": str(marker)
+        "HOME": str(home), "MARKER": str(marker),
+        "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
     }
+
+
+def test_wakeful_pilot_routes_launch_through_default_on_supervisor(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    observed = tmp_path / "supervisor"
+    environment = home / ".config/switchstand/.env"
+    environment.parent.mkdir(parents=True)
+    environment.write_text("DATABASE_URL=postgresql://unused\n")
+    environment.chmod(0o600)
+    executable(
+        primary / ".venv/bin/python",
+        """#!/bin/sh
+printf 'wakeful=%s\ncode_home=%s\npythonpath=%s\n' \
+    "${SWITCHSTAND_CODEX_WAKEFUL-unset}" "$CODEX_HOME" "$PYTHONPATH" > "$SUPERVISOR"
+printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
+""",
+    )
+
+    default_env = env.copy()
+    default_env.pop("SWITCHSTAND_CODEX_WAKEFUL")
+    result = subprocess.run(
+        [DISPATCH, "resume", "thread-1"], cwd=primary,
+        env=default_env | {
+            "SUPERVISOR": str(observed), "PYTHONPATH": "original-codex-path",
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    lines = observed.read_text().splitlines()
+    assert lines[:2] == [
+        "wakeful=unset",
+        f"code_home={home}/.local/state/switchstand/codex/coordinator",
+    ]
+    assert lines[2] == "pythonpath=original-codex-path"
+    arguments = [line.removeprefix("arg=") for line in lines[3:]]
+    assert arguments[0] == "-c"
+    assert "switchstand.codex_session" in arguments[1]
+    assert arguments[2] == f"{primary}/src"
+    default_name = arguments[arguments.index("--default-name") + 1]
+    assert default_name.startswith("codex-head-") and default_name != "/root"
+    assert arguments[arguments.index("--environment-file") + 1] == str(environment)
+    separator = arguments.index("--")
+    assert arguments[separator + 1] == str(
+        home / ".codex/packages/standalone/current/bin/codex"
+    )
+    assert arguments[-2:] == ["resume", "thread-1"]
+
+
+def test_explicit_wakeful_off_preserves_direct_launch_rollback(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"SWITCHSTAND_CODEX_WAKEFUL": "OFF"},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == "executed\n"
+
+
+def test_dispatch_rejects_invalid_wakeful_selector(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"SWITCHSTAND_CODEX_WAKEFUL": "YES"},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "must be OFF or PILOT" in result.stderr
+    assert not marker.exists()
 
 
 def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) -> None:
@@ -319,7 +393,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     result = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
         env=os.environ | {
-            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file),
+            "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
         },
         text=True, capture_output=True, check=False,
     )
@@ -433,7 +508,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     fresh = subprocess.run(
         [DISPATCH], cwd=primary,
         env=os.environ | {
-            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file),
+            "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
         },
         text=True, capture_output=True, check=False,
     )
@@ -451,7 +527,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     repeated = subprocess.run(
         [DISPATCH, "resume", "test-session"], cwd=primary,
         env=os.environ | {
-            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file)
+            "HOME": str(home), "RESULT": str(result_file), "PWD_RESULT": str(pwd_file),
+            "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
         },
         text=True, capture_output=True, check=False,
     )
@@ -503,6 +580,7 @@ def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: 
             "HOME": str(home), "RESULT": str(result_file),
             "SWITCHSTAND_CODEX_CONTINUITY": "OFF",
             "SWITCHSTAND_CODEX_LIFETIME": "ASSIGNMENT",
+            "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
         },
         text=True, capture_output=True, check=False,
     )
@@ -571,7 +649,9 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
 
     first = subprocess.Popen(
         [DISPATCH, "resume", "session-a"], cwd=primary,
-        env=os.environ | {"HOME": str(home)},
+        env=os.environ | {
+            "HOME": str(home), "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
+        },
     )
     coordinator_home = home / ".local/state/switchstand/codex/coordinator"
     profiles: list[Path] = []
@@ -588,7 +668,9 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
 
     second = subprocess.Popen(
         [DISPATCH, "resume", "session-b"], cwd=primary,
-        env=os.environ | {"HOME": str(home)},
+        env=os.environ | {
+            "HOME": str(home), "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
+        },
     )
     assert first.wait(timeout=5) == 0
     assert second.wait(timeout=5) == 0

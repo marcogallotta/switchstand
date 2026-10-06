@@ -11,8 +11,9 @@ import re
 import selectors
 import stat
 import subprocess
+import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -496,7 +497,7 @@ async def run_inbound(
                 pass
 
 
-async def run_inbound_service(path: Path) -> None:
+async def run_inbound_service(path: Path, *, stop: asyncio.Event | None = None) -> None:
     config = json.loads(read_private_bytes(path))
     if set(config) != {"mailbox", "binding", "codex_home", "codex"}:
         raise ValueError("invalid inbound configuration")
@@ -509,13 +510,50 @@ async def run_inbound_service(path: Path) -> None:
     async with resource_service() as (service, _runtime):
         assert service.messages is not None
         await run_inbound(service.messages, AgentMailboxState(service.messages.engine), mailbox,
-                          binding, home, codex, asyncio.Event(), opt_in=True)
+                          binding, home, codex, stop or asyncio.Event(), opt_in=True)
+
+
+def watch_lifeline(
+    descriptor: int, loop: asyncio.AbstractEventLoop, stop: asyncio.Event,
+    done: threading.Event, *, grace: float = 12.0,
+    hard_exit: Callable[[int], None] = os._exit,
+) -> threading.Thread:
+    """Stop intake at pipe EOF and bound teardown if the event loop is wedged."""
+    if descriptor < 3 or not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+        raise ValueError("lifeline must be an inherited pipe descriptor")
+
+    def monitor() -> None:
+        try:
+            while os.read(descriptor, 1):
+                pass
+        finally:
+            os.close(descriptor)
+        loop.call_soon_threadsafe(stop.set)
+        if not done.wait(grace):
+            hard_exit(0)
+
+    thread = threading.Thread(target=monitor, name="wakeful-lifeline", daemon=True)
+    thread.start()
+    return thread
+
+
+async def _run_inbound_main(path: Path, lifeline_fd: int | None) -> None:
+    stop = asyncio.Event()
+    done = threading.Event()
+    if lifeline_fd is not None:
+        watch_lifeline(lifeline_fd, asyncio.get_running_loop(), stop, done)
+    try:
+        await run_inbound_service(path, stop=stop)
+    finally:
+        done.set()
 
 
 def inbound_main() -> None:
     parser = argparse.ArgumentParser(description="Run committed-message intake continuously")
     parser.add_argument("--config", type=Path, required=True)
-    asyncio.run(run_inbound_service(parser.parse_args().config))
+    parser.add_argument("--lifeline-fd", type=int)
+    args = parser.parse_args()
+    asyncio.run(_run_inbound_main(args.config, args.lifeline_fd))
 
 
 def main() -> None:
