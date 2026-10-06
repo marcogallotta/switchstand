@@ -178,6 +178,8 @@ def test_context_server_exposes_only_bound_read_context():
         "api_version", "observed_revision", "cursor", "limit",
     }
     assert "work_id" not in history.parameters["properties"]
+    assert "explicit bounded investigation or recovery" in (history.description or "")
+    assert "Do not use history for normal grounding, re-entry" in (history.description or "")
     for name in ("work_get", "work_history"):
         annotations = server._tool_manager.get_tool(name).annotations
         assert annotations is not None
@@ -303,6 +305,9 @@ def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
     assert command[-1].startswith(f"Exact launch assignment:\n{assignment}\n\n")
     assert command[-1].count(assignment) == 1
     assert "managed Worker context contract" in command[-1]
+    assert "Do not enumerate work_history during normal startup or re-entry" in command[-1]
+    assert "explicit bounded investigation/recovery question" in command[-1]
+    assert 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]' in command
     assert "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS) in command
 
 
