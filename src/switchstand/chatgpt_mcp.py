@@ -62,7 +62,16 @@ from .priority_claim_service import PriorityClaimReadResult, PriorityClaimWrite
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
 from .product_currentness import ProductCurrentness
-from .reviews import ReviewKind, ReviewMode, ReviewRequest, ReviewResult
+from .reviews import (
+    ContextProvenance,
+    ReviewFinding,
+    ReviewKind,
+    ReviewMode,
+    ReviewRequest,
+    ReviewResult,
+    ReviewSubmit,
+    ReviewVerdict,
+)
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -212,7 +221,7 @@ PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
-REVIEW_TOOLS = frozenset({"review_request"})
+REVIEW_TOOLS = frozenset({"review_request", "review_submit"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
@@ -646,6 +655,33 @@ def build_ordinary_tools(
                 finding_ids=finding_ids,
             ), context.mailbox)
         audited("review_request", str(subject_work_id), result.status)
+        return result
+
+    async def review_submit(
+        api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
+        context_provenance: ContextProvenance,
+        findings: tuple[ReviewFinding, ...] = (), evidence_refs: tuple[str, ...] = (),
+    ) -> ReviewResult:
+        """Submit one verdict as the current registered reviewer mailbox."""
+        del api_version
+        correlate(review_id)
+        context = await agent_context()
+        if isinstance(context, tuple):
+            result = ReviewResult(
+                status="UNKNOWN" if context[0] == "recovery_required" else "DENIED",
+                reason="state_unavailable" if context[0] == "recovery_required"
+                else "reviewer_binding_changed",
+            )
+        else:
+            assert service.reviews is not None
+            result = await service.reviews.submit(ReviewSubmit(
+                review_id=review_id,
+                verdict=verdict,
+                findings=findings,
+                evidence_refs=evidence_refs,
+                context_provenance=context_provenance,
+            ), context.mailbox)
+        audited("review_submit", str(review_id), result.status)
         return result
 
     async def product_currentness_get(api_version: Literal["1"]) -> ProductCurrentness:
@@ -1119,7 +1155,7 @@ def build_ordinary_tools(
           if service.priority_context_enabled and service.priority_context is not None else ()),
         *((("implementation_request", implementation_request),)
           if service.implementation_requests is not None else ()),
-        *((("review_request", review_request),)
+        *((("review_request", review_request), ("review_submit", review_submit))
           if service.reviews is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
