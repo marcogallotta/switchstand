@@ -485,6 +485,11 @@ the snapshotted checker still compares the tracked canonical controls. Manual po
 retries and post-sync checks use that same generation-private checker and never a mutable
 writer-relative `scripts/coordinator-control`. Each unresolved tracked dependency retains its identity and reason
 as component-scoped `CURRENTNESS_UNKNOWN`.
+The checker emits each required durable reread as a name-to-absolute-path mapping: every generation
+rereads its exact start-commit record, and only an addressed successor manifest adds its validated
+handoff obligations path. Current work remains the active assignment and WorkId; the compaction hook
+does not invent a duplicate local current-work pointer. Missing, relative, or malformed live-read
+paths make that mechanical re-grounding `CURRENTNESS_UNKNOWN`.
 That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
 installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
 The installer also materializes a private repair installer/source under

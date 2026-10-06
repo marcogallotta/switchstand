@@ -20,7 +20,18 @@ def context_for(status: dict[str, Any], manifest: Path, control: Path) -> str:
     if state not in {"CURRENT", "CURRENTNESS_UNKNOWN"}:
         raise ValueError("coordinator-control output has an invalid state")
     rereads = ", ".join(status.get("reread_required", [])) or "none"
-    live = ", ".join(status.get("required_live_reads", [])) or "none"
+    required_live_reads = status.get("required_live_reads", {})
+    if not isinstance(required_live_reads, dict) or not all(
+        isinstance(name, str)
+        and name
+        and isinstance(path, str)
+        and Path(path).is_absolute()
+        for name, path in required_live_reads.items()
+    ):
+        raise TypeError("coordinator-control live reads must map names to absolute paths")
+    live = ", ".join(
+        f"{name}={path}" for name, path in sorted(required_live_reads.items())
+    ) or "none"
     changed = ", ".join(status.get("changed_launch_controls", [])) or "none"
     unknown = ", ".join(status.get("unknown_components", [])) or "none"
     component_unknowns = [
@@ -49,7 +60,8 @@ def context_for(status: dict[str, Any], manifest: Path, control: Path) -> str:
         f"exact start record: {status.get('start_record', 'UNKNOWN')}. "
         f"Changed launch controls requiring affected-boundary recheck: {changed}. "
         f"Unknown components: {unknown}; affected currentness boundary: {affected}. "
-        "CURRENTNESS_UNKNOWN blocks only actions depending "
+        "Current work remains the preserved active assignment/WorkId; do not reconstruct or "
+        "duplicate it in a local pointer. CURRENTNESS_UNKNOWN blocks only actions depending "
         "on the unknown component. Preserve the current assignment and open obligations."
         f"{recovery}"
     )
