@@ -85,6 +85,11 @@ def test_managed_controller_checks_schema_without_upgrading_it():
     assert 'ACTIVE_WORK_ID:?required' in managed
 
 
+def test_controller_forwards_priority_claim_opt_in_to_runtime():
+    compose = (Path(__file__).parents[1] / "compose.yaml").read_text()
+    assert "SWITCHSTAND_PRIORITY_CLAIMS: ${SWITCHSTAND_PRIORITY_CLAIMS:-}" in compose
+
+
 def test_development_image_contains_repository_assets_read_by_tests():
     root = Path(__file__).parents[1]
     assert (root / "compose.yaml").is_file()
