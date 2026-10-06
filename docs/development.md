@@ -208,9 +208,10 @@ services, state, settings, or routing.
 - Normal task-bound development: run
   `scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>`.
   It creates or resumes the task's private durable writer with ordinary development access. Its single initial request
-  requires the agent to read bound `work_get`, then page bound `work_history` at that returned revision before material
-  work. A stale history read restarts from a fresh `work_get`, so later completion or supersession evidence is
-  reconciled without exposing arbitrary source-task reads. Both context tools are read-only and approval-free; the
+  grounds the agent from bound `work_get`, current durable work state, and only the exact current package needed for the
+  next action. Do not page `work_history` during normal startup, re-entry, review, polling, or implementation. Keep
+  `work_history` as a read-only bounded investigation/recovery capability when a named gap cannot be answered from
+  current durable state; reconcile any still-current conclusion back into current work before normal reliance. The
   active WorkId is launcher-bound and is not a tool argument.
   CONTROL supplies its existing pinned `uv` using `scripts/bootstrap --print-uv`.
   `scripts/check` runs locked sync into the writer's `.venv`; `uv` reuses the Git common-directory cache and existing
