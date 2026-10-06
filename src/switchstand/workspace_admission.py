@@ -36,7 +36,7 @@ class WorkspaceAdmissionState(GrantState):
             scope="workspace",
             operations=frozenset({
                 "work_get", "work_search", "work_append", "work_create", "work_update",
-                "work_relate",
+                "work_relate", "priority_claim",
             }),
             issuer="switchstand-ordinary-authenticated",
             provenance="server-owned ordinary authenticated workspace admission",
@@ -45,6 +45,7 @@ class WorkspaceAdmissionState(GrantState):
             create_qualification=f"{prefix}:ordinary-workspace",
             update_qualification=f"{prefix}:ordinary-workspace",
             relation_qualification=f"{prefix}:ordinary-workspace",
+            priority_claim_qualification=f"{prefix}:ordinary-workspace",
         )
 
     async def current(self, principal_key: str) -> WorkGrant | None:

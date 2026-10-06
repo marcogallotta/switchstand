@@ -36,6 +36,7 @@ from switchstand.grants import (
 )
 from switchstand.implementation_requests import ImplementationRequestResult
 from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
+from switchstand.priority_claim_service import HumanPriorityClear, HumanPrioritySet
 from switchstand.repository_candidate import RepositoryCandidateQualification
 
 
@@ -47,7 +48,7 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
 
 
-def test_priority_claim_tools_are_default_off_and_agent_work_only():
+def test_priority_claim_tools_are_default_off_and_human_only():
     subject = service()
     assert not {name for name, _ in build_ordinary_tools(subject)} & {
         "priority_claim_get", "priority_claim_record",
@@ -57,10 +58,47 @@ def test_priority_claim_tools_are_default_off_and_agent_work_only():
     tools = dict(build_ordinary_tools(subject))
     assert {"priority_claim_get", "priority_claim_record"} <= tools.keys()
     parameters = signature(tools["priority_claim_record"]).parameters
-    assert "work_id" in parameters
-    assert "subject_kind" not in parameters
+    assert {"action", "subject_kind", "subject_id", "claim_id"} <= parameters.keys()
+    assert "work_id" not in parameters
+    assert "grant_version" not in parameters
     assert "claim_kind" not in parameters
     assert "source_label" not in parameters
+
+
+async def test_ordinary_priority_claim_record_derives_set_and_clear(monkeypatch):
+    subject = service()
+    subject.priority_claims_enabled = True
+    subject.priority_claims = object()  # type: ignore[assignment]
+    recorded = AsyncMock(return_value=subject.denied("priority_claim_record", "probe"))
+    monkeypatch.setattr(subject, "priority_claim_record", recorded)
+    tool = dict(build_ordinary_tools(subject))["priority_claim_record"]
+    operation, claim = uuid4(), uuid4()
+
+    await tool(
+        api_version="1", operation_id=operation, action="SET",
+        subject_kind="WORK", subject_id=ACTIVE, observed_revision="r1",
+        relation_kind="BAND", rationale="Marco says high", band="HIGH",
+    )
+    request = recorded.await_args.args[0]
+    assert isinstance(request, HumanPrioritySet)
+    assert request.subject_id == ACTIVE and request.band == "HIGH"
+
+    recorded.reset_mock()
+    await tool(
+        api_version="1", operation_id=operation, action="CLEAR",
+        subject_kind="WORK", subject_id=ACTIVE, observed_revision="r1",
+        claim_id=claim,
+    )
+    request = recorded.await_args.args[0]
+    assert isinstance(request, HumanPriorityClear)
+    assert request.claim_id == claim
+
+    with pytest.raises(ValueError, match="CLEAR requires only"):
+        await tool(
+            api_version="1", operation_id=uuid4(), action="CLEAR",
+            subject_kind="WORK", subject_id=ACTIVE, observed_revision="r1",
+            claim_id=claim, rationale="caller must not restate relation",
+        )
 
 
 def test_priority_context_tool_is_default_off_and_explicitly_bounded():

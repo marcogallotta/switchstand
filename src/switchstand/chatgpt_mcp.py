@@ -58,7 +58,11 @@ from .messages import (
     disposition_digest,
 )
 from .outcome_state import ActionSummary, OutcomeItem
-from .priority_claim_service import PriorityClaimReadResult, PriorityClaimWrite
+from .priority_claim_service import (
+    HumanPriorityClear,
+    HumanPrioritySet,
+    PriorityClaimReadResult,
+)
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
 from .product_currentness import ProductCurrentness
@@ -596,27 +600,38 @@ def build_ordinary_tools(
         return await service.priority_claim_get(subject_kind, subject_id)
 
     async def priority_claim_record(
-        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)],
-        relation_kind: RelationKind,
-        rationale: Annotated[str, Field(min_length=1, max_length=300)],
+        api_version: Literal["1"], operation_id: UUID,
+        action: Literal["SET", "CLEAR"], subject_kind: SubjectKind, subject_id: UUID,
+        observed_revision: Annotated[str | None, Field(min_length=1)] = None,
+        relation_kind: RelationKind | None = None,
+        rationale: Annotated[str | None, Field(min_length=1, max_length=300)] = None,
         relation_target_id: UUID | None = None, band: PriorityBand | None = None,
         supersedes_claim_id: UUID | None = None,
+        claim_id: UUID | None = None,
     ) -> GuardOutcome:
-        """Record an AGENT recommendation for the caller's exact launch-bound WorkId."""
-        correlate(work_id)
-        grant_version, admission = await current_grant_version()
-        if admission == "unknown":
-            return admission_unknown("priority_claim_record", work_id, operation_id)
-        if grant_version is None:
-            return service.denied("priority_claim_record", "no_current_grant")
-        return await service.priority_claim_record(PriorityClaimWrite(
-            api_version=api_version, operation_id=operation_id, work_id=work_id,
-            grant_version=grant_version, observed_revision=observed_revision,
-            relation_kind=relation_kind, rationale=rationale,
-            relation_target_id=relation_target_id, band=band,
-            supersedes_claim_id=supersedes_claim_id,
-        ))
+        """SET or CLEAR explicit HUMAN priority from current Marco direction."""
+        correlate(subject_id if subject_kind == "WORK" else None)
+        if action == "CLEAR":
+            if claim_id is None or any(value is not None for value in (
+                relation_kind, rationale, relation_target_id, band, supersedes_claim_id,
+            )):
+                raise ValueError("CLEAR requires only the exact claim_id and subject fence")
+            request = HumanPriorityClear(
+                api_version=api_version, operation_id=operation_id,
+                subject_kind=subject_kind, subject_id=subject_id,
+                claim_id=claim_id, observed_revision=observed_revision,
+            )
+        else:
+            if claim_id is not None or relation_kind is None or rationale is None:
+                raise ValueError("SET requires relation_kind and rationale, not claim_id")
+            request = HumanPrioritySet(
+                api_version=api_version, operation_id=operation_id,
+                subject_kind=subject_kind, subject_id=subject_id,
+                observed_revision=observed_revision, relation_kind=relation_kind,
+                rationale=rationale, relation_target_id=relation_target_id,
+                band=band, supersedes_claim_id=supersedes_claim_id,
+            )
+        return await service.priority_claim_record(request)
 
     async def priority_context_get(
         api_version: Literal["1"],

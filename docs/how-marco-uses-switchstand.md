@@ -124,6 +124,13 @@ cold-replacement success require separate readback or behavioral evidence.
 
 ### Human attention is a designed interface
 
+Explicit priority is durable HUMAN state, not a synonym for attention. Ordinary authenticated
+ChatGPT may SET or CLEAR HUMAN WORK/PROJECT priority only while executing Marco's explicit current
+direction. The V1 provenance identifies the authenticated workspace principal and ordinary
+ChatGPT path; it does not cryptographically prove the exact utterance. Managed workers remain
+AGENT-recommendation-only. Project priority is context rather than inherited member priority, and
+attention, readiness, labels, recency, or noise never authorize inferring HUMAN priority.
+
 Marco's attention is necessary; it is not something agents should avoid using. Some authority,
 judgment, review, approval, installation, and Project Settings actions genuinely require him.
 Those requests are nevertheless consequential because one human serves the whole portfolio. A

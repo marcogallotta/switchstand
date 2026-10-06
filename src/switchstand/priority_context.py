@@ -140,7 +140,7 @@ class PriorityContextProjection:
         )
         reads = (work_read, *(project_reads[p.project_id] for p in base.relations.placements))
         flags = self._flags(work_claims, project_claims, reads)
-        classification = self._classification(work_claims, project_claims, flags)
+        classification = self._classification(work_claims, work_read)
         work = base.work
         return PriorityContextRow(
             work_id=base.work_id,
@@ -215,16 +215,16 @@ class PriorityContextProjection:
     @staticmethod
     def _classification(
         work_claims: tuple[PriorityContextClaim, ...],
-        project_claims: tuple[PriorityContextClaim, ...],
-        flags: tuple[str, ...],
+        work_read: PriorityClaimReadResult,
     ) -> PriorityKnowledge:
-        if any(flag.startswith("CONFLICTING_") for flag in flags) or "STALE_CLAIM" in flags:
+        flags = PriorityContextProjection._flags(work_claims, (), (work_read,))
+        if "CONFLICTING_HUMAN_BAND" in flags or "STALE_CLAIM" in flags:
             return "CONFLICTING_OR_STALE"
         if "CLAIMS_UNKNOWN" in flags or "UNKNOWN_CLAIM_CURRENTNESS" in flags:
             return "UNKNOWN_UNRANKED"
         if any(claim.authority == "HUMAN" for claim in work_claims):
             return "DIRECT_CURRENT"
-        if work_claims or project_claims:
+        if work_claims:
             return "DERIVED_CURRENT"
         return "UNKNOWN_UNRANKED"
 

@@ -67,9 +67,10 @@ from .messages import (
 )
 from .outcome_state import OutcomeItem, OutcomeWrite
 from .priority_claim_service import (
+    HumanPriorityClear,
+    HumanPrioritySet,
     PriorityClaimReadResult,
     PriorityClaimService,
-    PriorityClaimWrite,
 )
 from .priority_claims import SubjectKind
 from .priority_context import PriorityContextProjection, PriorityContextResult
@@ -498,15 +499,26 @@ class ChatGPTService:
         except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
             return PriorityClaimReadResult(status="unknown", reason="claim_state_unavailable")
 
-    async def priority_claim_record(self, request: PriorityClaimWrite) -> GuardOutcome:
+    async def priority_claim_record(
+        self, request: HumanPrioritySet | HumanPriorityClear,
+    ) -> GuardOutcome:
         principal = await self.principal()
         if principal is None:
-            return PriorityClaimService.guard(
-                request, "denied", "authenticated_principal_required",
+            return PriorityClaimService.human_guard(
+                request, "priority_claim_record", "denied",
+                "authenticated_principal_required",
             )
         if self.priority_claims is None:
-            return PriorityClaimService.guard(request, "denied", "claim_surface_unavailable")
-        return await self.priority_claims.record(self.admission_grants, principal, request)
+            return PriorityClaimService.human_guard(
+                request, "priority_claim_record", "denied", "claim_surface_unavailable"
+            )
+        if isinstance(request, HumanPriorityClear):
+            return await self.priority_claims.human_clear(
+                self.admission_grants, principal, request
+            )
+        return await self.priority_claims.human_set(
+            self.admission_grants, principal, request
+        )
 
     async def priority_context_get(
         self, work_ids: tuple[UUID, ...],
