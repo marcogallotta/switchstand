@@ -314,7 +314,9 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
-        await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        await connection.execute(text(
+            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+        ))
         await connection.run_sync(metadata.create_all)
         await connection.execute(text(
             "INSERT INTO work_handles (id, provider, provider_work_id) "
@@ -382,5 +384,7 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
         await server_task
         async with engine.begin() as connection:
             await connection.run_sync(metadata.drop_all)
-            await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+            await connection.execute(text(
+                "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+            ))
         await engine.dispose()

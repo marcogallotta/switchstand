@@ -275,6 +275,15 @@ messaging, and required continuation:
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
+  `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
+  per installed product/revision/phase contract after technical activation. The server derives
+  transition actors from current grants, rechecks exact product currentness before delivery, and
+  enforces separate acceptance and adoption authorities. Its MCP transition and owner-local
+  `work_get`/`work_update` projection exist only when the store and immutable contracts are
+  injected; the production edge does not construct them. Migration `0023_activation_continuity`
+  persists revisions and refuses a downgrade that would discard any obligation. Landing remains
+  inert: no public create, runtime launch, feature enablement, migration application, or activation
+  is included.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.

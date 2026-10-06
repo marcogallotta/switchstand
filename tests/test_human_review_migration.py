@@ -22,7 +22,8 @@ def _empty_database(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "DROP TABLE IF EXISTS alembic_version, human_review_consequences, "
+                "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions, "
+                "human_review_consequences, "
                 "task_run_results, task_run_executions, task_run_requests, "
                 "failure_resolutions, failure_records, work_migration_receipts, "
                 "outcome_state_revisions, human_trajectory_revisions, "
