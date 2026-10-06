@@ -253,7 +253,7 @@ def build_context_server(
     server = build_server(
         service, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
-        grants=grants, principal=principal,
+        grants=grants, principal=principal, bound_context=True,
     )
     return _restrict_server_tools(server, _context_tools(priority_claims is not None))
 
@@ -267,29 +267,50 @@ def build_server(
     task_runs: TaskRunState | None = None,
     priority_claims: PriorityClaimService | None = None,
     priority_context: PriorityContextProjection | None = None,
+    bound_context: bool = False,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
-    async def _work_get(
-        api_version: Literal["1"], work_id: UUID | None = None,
-    ) -> PublicWorkResult:
-        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
-        return project_work(await service.get(request))  # type: ignore[attr-defined]
+    if bound_context:
+        async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
+            return project_work(await service.get(  # type: ignore[attr-defined]
+                WorkGetRequest(api_version=api_version, work_id=active_work_id)
+            ))
 
-    references = ", ".join(map(str, reference_work_ids)) or "none"
-    _work_get.__doc__ = (
-        "Read launch-bound work. Omit work_id for the active assignment. "
-        f"Bounded read-only reference WorkIds: {references}."
-    )
+        _work_get.__doc__ = "Read the exact launch-bound work."
 
-    async def _work_history(
-        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
-        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> WorkHistoryResult:
-        """Read bounded history; on stale, repeat work_get and restart pagination."""
-        return await service.history(  # type: ignore[attr-defined]
-            WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
-                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+        async def _work_history(
+            api_version: Literal["1"], observed_revision: str,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Read bounded history for the exact launch-bound work."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(
+                    api_version=api_version, work_id=active_work_id,
+                    observed_revision=observed_revision, cursor=cursor, limit=limit,
+                )
+            )
+    else:
+        async def _work_get(
+            api_version: Literal["1"], work_id: UUID | None = None,
+        ) -> PublicWorkResult:
+            request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
+            return project_work(await service.get(request))  # type: ignore[attr-defined]
+
+        references = ", ".join(map(str, reference_work_ids)) or "none"
+        _work_get.__doc__ = (
+            "Read launch-bound work. Omit work_id for the active assignment. "
+            f"Bounded read-only reference WorkIds: {references}."
+        )
+
+        async def _work_history(
+            api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Read bounded history; on stale, repeat work_get and restart pagination."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
+                                   observed_revision=observed_revision, cursor=cursor, limit=limit))
 
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
@@ -304,8 +325,15 @@ def build_server(
         """Append one history entry to the active work item and return exact Asana effect identity."""
         return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
 
-    closed_tool(server, "work_get", _work_get)
-    closed_tool(server, "work_history", _work_history)
+    read_annotations = (
+        ToolAnnotations(
+            read_only_hint=True, destructive_hint=False,
+            idempotent_hint=True, open_world_hint=False,
+        )
+        if bound_context else None
+    )
+    closed_tool(server, "work_get", _work_get, read_annotations)
+    closed_tool(server, "work_history", _work_history, read_annotations)
     closed_tool(server, "work_event", _work_event)
     closed_tool(server, "work_append", _work_append)
     if updates is not None and grants is not None and principal is not None:
@@ -551,6 +579,7 @@ def server_from_env() -> MCPServer:
         task_runs=task_runs,
         priority_claims=priority_claims,
         priority_context=priority_context,
+        bound_context=os.getenv("SWITCHSTAND_MANAGED_PROFILE") == "context",
     )
     if os.getenv("SWITCHSTAND_MANAGED_PROFILE") == "context":
         return _restrict_server_tools(server, _context_tools(priority_claims is not None))
