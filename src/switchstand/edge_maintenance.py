@@ -35,6 +35,7 @@ EDGE_PATHS = (
     "/switchstand/mcp",
     "/switchstand/mcp/*",
     "/.well-known/oauth-protected-resource/switchstand/mcp",
+    "/.well-known/switchstand-certification-runtime",
     "/switchstand/authorize",
     "/switchstand/token",
     "/switchstand/register",

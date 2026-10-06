@@ -238,6 +238,13 @@ class TaskRunResult(ClosedModel):
     evidence_refs: tuple[str, ...]
 
 
+class TaskRunTerminalEvidence(ClosedModel):
+    """Digest-verified request/result pair selected as the terminal managed outcome."""
+
+    request: TaskRunRequest
+    result: TaskRunResult
+
+
 class TaskRunResultResult(ClosedModel):
     status: Literal["ok", "stale", "denied", "conflict", "unknown"]
     result: TaskRunResult | None = None
@@ -515,6 +522,28 @@ class TaskRunState:
                 )
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
+
+    async def terminal_evidence(self, result_id: UUID) -> TaskRunTerminalEvidence | None:
+        """Resolve one sealed terminal managed-run result without caller-owned truth fields."""
+        try:
+            async with self.engine.connect() as connection:
+                result_row = (await connection.execute(select(task_run_results).where(
+                    task_run_results.c.result_id == result_id
+                ))).mappings().one_or_none()
+                if result_row is None:
+                    return None
+                result = _result_view(result_row)
+                request_row = (await connection.execute(select(task_run_requests).where(
+                    task_run_requests.c.request_id == result.request_id
+                ))).mappings().one_or_none()
+                if request_row is None:
+                    return None
+                request = await _verified_request(connection, request_row)
+                if request.terminal_result_id != result.result_id:
+                    return None
+                return TaskRunTerminalEvidence(request=request, result=result)
+        except (SQLAlchemyError, TypeError, ValueError):
+            return None
 
     async def bind_start(
         self, request_id: UUID, receipt: RunReceipt

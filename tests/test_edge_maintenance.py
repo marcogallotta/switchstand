@@ -1226,7 +1226,11 @@ def test_real_caddy_gate_covers_mcp_oauth_and_metadata_paths(tmp_path: Path):
         operations.gate()
         assert operations.gate_exact()
         assert operations.public_gated()
-        for path in ("/switchstand/mcp", "/switchstand/mcp/maintenance-probe"):
+        for path in (
+            "/switchstand/mcp",
+            "/switchstand/mcp/maintenance-probe",
+            "/.well-known/switchstand-certification-runtime",
+        ):
             with pytest.raises(urllib.error.HTTPError) as exc:
                 urllib.request.urlopen(f"http://127.0.0.1:{public_port}{path}", timeout=1)
             assert exc.value.code == 503

@@ -17,6 +17,7 @@ from switchstand.stable_auth import (
     create_auth_service,
 )
 from switchstand.stable_auth_host import (
+    PUBLIC_CERTIFICATION_PATHS,
     PUBLIC_ISSUER_METADATA_PATHS,
     PUBLIC_MCP_PATHS,
     PUBLIC_OAUTH_PATHS,
@@ -168,12 +169,13 @@ def test_caddy_contract_splits_only_upstream_and_never_exposes_introspection(tmp
     routes = caddy_routes(assets)
     assert [route["match"][0]["path"] for route in routes] == [
         list(PUBLIC_MCP_PATHS),
-        list(PUBLIC_RESOURCE_METADATA_PATHS),
+        list(PUBLIC_RESOURCE_METADATA_PATHS + PUBLIC_CERTIFICATION_PATHS),
         list(PUBLIC_OAUTH_PATHS),
         list(PUBLIC_ISSUER_METADATA_PATHS),
     ]
     encoded = json.dumps(routes)
     assert "/internal/oauth/verify" not in encoded
+    assert "/.well-known/switchstand-certification-runtime" in encoded
     assert encoded.count("127.0.0.1:8790") == 2
     assert encoded.count("127.0.0.1:8791") == 2
     assert routes[0]["handle"][0] == {

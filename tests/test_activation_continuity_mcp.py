@@ -62,7 +62,7 @@ async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence(
     continuity = Continuity(bound)
     subject.activation_continuity = continuity
 
-    async def resolve_technical(_obligation_id):
+    async def resolve_technical(_principal, _obligation_id):
         return technical(bound)
 
     subject.activation_technical = resolve_technical

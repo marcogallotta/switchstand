@@ -81,7 +81,9 @@ from .updates import UpdateGateway
 from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
-ActivationTechnicalResolver = Callable[[UUID], Awaitable[TechnicalBasis | None]]
+ActivationTechnicalResolver = Callable[
+    [PrincipalContext, UUID], Awaitable[TechnicalBasis | None]
+]
 ActivationRuntimeResolver = Callable[
     [PrincipalContext, WorkGrant], Awaitable[RuntimeBinding | None]
 ]
@@ -191,8 +193,11 @@ class ChatGPTService:
                 runtime = await self.activation_runtime(principal, grant)
                 if runtime is None:
                     return ContinuityResult(status="UNKNOWN", reason="runtime_binding_unavailable")
-                technical = (None if self.activation_technical is None
-                             else await self.activation_technical(obligation_id))
+                technical = (
+                    None
+                    if self.activation_technical is None
+                    else await self.activation_technical(principal, obligation_id)
+                )
                 proof = None
                 if transition.startswith("ACCEPTANCE_") or transition in {
                     "ADOPTION_ADOPTED", "CLEAR_BLOCKER",

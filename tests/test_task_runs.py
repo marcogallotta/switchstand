@@ -393,6 +393,10 @@ async def test_current_result_is_durable_terminal_and_replays_exactly(subject):
     readback = await state.get(requested.request.request_id)
     assert readback.request is not None
     assert readback.request.terminal_result_id == result_id
+    terminal = await state.terminal_evidence(result_id)
+    assert terminal is not None
+    assert terminal.request == readback.request and terminal.result == first.result
+    assert await state.terminal_evidence(uuid4()) is None
 
     changed = await state.submit_result(
         requested.request.request_id,

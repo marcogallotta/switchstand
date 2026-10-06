@@ -26,7 +26,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .activation_continuity import ActivationContract
+from .activation_continuity import (
+    ActivationContract,
+    RuntimeBinding,
+    TechnicalBasis,
+    TransitionIntent,
+    TransitionProof,
+)
 from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
 from .agent_mailboxes import AgentMailboxState
@@ -37,7 +43,7 @@ from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
-from .grants import PrincipalContext
+from .grants import PrincipalContext, WorkGrant
 from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
@@ -65,6 +71,7 @@ from .stable_auth import (
     normalize_resource_url,
 )
 from .state import PostgresState
+from .task_runs import TaskRunState
 from .work_events import WorkEventRepository
 
 LOG = logging.getLogger(__name__)
@@ -274,6 +281,103 @@ def _runtime_identity() -> str:
     return runtime_identity_from_meta(meta)
 
 
+async def _activation_runtime(
+    principal: PrincipalContext, grant: WorkGrant,
+) -> RuntimeBinding | None:
+    """Bind one activation actor to the authenticated live MCP session."""
+    identity = _runtime_identity()
+    if not identity or grant.principal != principal or not grant.current():
+        return None
+    value = json.dumps(
+        {
+            "principal": principal.key,
+            "grant_id": str(grant.id),
+            "grant_version": grant.version,
+            "runtime": identity,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return RuntimeBinding(
+        actor_work_id=grant.authority.active_work_id,
+        binding_token=hashlib.sha256(value.encode()).hexdigest(),
+        currentness="CURRENT",
+    )
+
+
+def _managed_activation_proof(
+    tasks: TaskRunState,
+    contracts: Mapping[UUID, ActivationContract],
+):
+    """Resolve caller-selected evidence only through a sealed terminal managed run."""
+
+    async def resolve(
+        principal: PrincipalContext,
+        grant: WorkGrant,
+        intent: TransitionIntent,
+    ) -> TransitionProof | None:
+        if principal != grant.principal or not grant.current() or len(intent.evidence_refs) != 1:
+            return None
+        reference = intent.evidence_refs[0]
+        prefix = "task-run-result:"
+        if not reference.startswith(prefix):
+            return None
+        try:
+            result_id = UUID(reference.removeprefix(prefix))
+        except ValueError:
+            return None
+        contract = contracts.get(intent.obligation_id)
+        evidence = await tasks.terminal_evidence(result_id)
+        if contract is None or evidence is None:
+            return None
+        if intent.transition.startswith("ACCEPTANCE_"):
+            kind = "ACCEPTANCE"
+            outcome = intent.transition.removeprefix("ACCEPTANCE_")
+        elif intent.transition == "ADOPTION_ADOPTED":
+            kind, outcome = "ADOPTION", "ADOPTED"
+        elif intent.transition == "CLEAR_BLOCKER":
+            kind, outcome = "CLEARING", "PASS"
+        else:
+            return None
+        request, result = evidence.request, evidence.result
+        expected_contract = {
+            "schema": 1,
+            "proof_kind": kind,
+            "obligation_id": str(contract.obligation_id),
+            "product_work_id": str(contract.product_work_id),
+            "target_revision": contract.target_revision,
+            "target_phase": contract.target_phase,
+            "acceptance_contract_id": contract.acceptance_contract_id,
+            "contract_revision": contract.contract_revision,
+            "clearing_event_ref": intent.clearing_event_ref,
+        }
+        if (
+            request.task_kind != "VALIDATION"
+            or request.continuation != "START"
+            or request.requester_work_id != contract.product_work_id
+            or request.candidate_ref != contract.target_revision
+            or request.result_contract != expected_contract
+            or result.outcome != outcome
+            or not result.evidence_refs
+            or len(result.evidence_refs) > 15
+        ):
+            return None
+        return TransitionProof(
+            kind=kind,
+            obligation_id=contract.obligation_id,
+            product_work_id=contract.product_work_id,
+            target_revision=contract.target_revision,
+            target_phase=contract.target_phase,
+            acceptance_contract_id=contract.acceptance_contract_id,
+            contract_revision=contract.contract_revision,
+            currentness="CURRENT",
+            evidence_refs=(reference, *result.evidence_refs),
+            clearing_event_ref=intent.clearing_event_ref,
+        )
+
+    return resolve
+
+
 def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
     certification_runtime: tuple[str, str] | None = None,
@@ -388,6 +492,24 @@ def _create_resource_app(
 
         service.product_currentness = product_currentness
         service.product_currentness_enabled = True
+        continuity = service.activation_continuity
+        if continuity is not None:
+            async def activation_technical(
+                principal: PrincipalContext, obligation_id: UUID,
+            ) -> TechnicalBasis | None:
+                contract = continuity.contracts.get(obligation_id)
+                if contract is None:
+                    return None
+                result = await product_currentness(principal)
+                return TechnicalBasis(
+                    target_revision=contract.target_revision,
+                    target_phase=contract.target_phase,
+                    currentness="CURRENT",
+                    result=result,
+                )
+
+            service.activation_technical = activation_technical
+            service.activation_runtime = _activation_runtime
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     server.add_middleware(CallTimingMiddleware(_timing_identity))
     for name, tool in build_ordinary_tools(
@@ -396,17 +518,21 @@ def _create_resource_app(
         correlate_work=annotate_target,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
+    if certification_runtime is not None:
+        runtime_sha, run_id = certification_runtime
+
+        @server.custom_route(
+            CERTIFICATION_RUNTIME_PATH, methods=["GET"], include_in_schema=False
+        )
+        async def _certification_readback(  # pyright: ignore[reportUnusedFunction]
+            _request: Request,
+        ) -> JSONResponse:
+            return JSONResponse({"runtime_sha": runtime_sha, "run_id": run_id})
+
     app = server.http_app(
         path="/mcp", json_response=True, stateless_http=False,
         middleware=http_middleware(),
     )
-    if certification_runtime is not None:
-        runtime_sha, run_id = certification_runtime
-
-        async def certification_readback(_request: Request) -> JSONResponse:
-            return JSONResponse({"runtime_sha": runtime_sha, "run_id": run_id})
-
-        app.add_route(CERTIFICATION_RUNTIME_PATH, certification_readback, methods=["GET"])
     return app
 
 
@@ -423,6 +549,7 @@ async def resource_service(
             return None
 
         marker = os.getenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "").strip()
+        currentness_config = _ProductCurrentnessConfig.from_environment()
         grants = GrantState(engine)
         canonical_repository = CanonicalWorkRepository(engine)
         canonical_relations = CanonicalRelationsRepository(engine)
@@ -485,12 +612,25 @@ async def resource_service(
                 if activation_contracts is None
                 else ActivationContinuity(engine, activation_contracts)
             ))
-        runtime = None
+        if activation_contracts is not None:
+            service.activation_proof = _managed_activation_proof(
+                TaskRunState(engine, canonical_repository), activation_contracts
+            )
+        runtime = (
+            None
+            if currentness_config is None
+            else (currentness_config.runtime_sha, currentness_config.run_id)
+        )
         if marker:
-            runtime = (
+            certification_runtime = (
                 os.environ["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
                 os.environ["SWITCHSTAND_CERTIFICATION_RUN_ID"],
             )
+            if runtime is not None and runtime != certification_runtime:
+                raise ValueError(
+                    "certification and product-currentness runtime identities differ"
+                )
+            runtime = certification_runtime
         yield service, runtime
     finally:
         await engine.dispose()
