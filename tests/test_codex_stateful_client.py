@@ -315,7 +315,7 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
     async with engine.begin() as connection:
         await connection.run_sync(metadata.drop_all)
         await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+            "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
         ))
         await connection.run_sync(metadata.create_all)
         await connection.execute(text(
@@ -385,6 +385,6 @@ async def test_current_codex_app_server_calls_work_get_over_stateful_http(
         async with engine.begin() as connection:
             await connection.run_sync(metadata.drop_all)
             await connection.execute(text(
-                "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions"
+                "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
             ))
         await engine.dispose()

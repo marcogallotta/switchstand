@@ -71,13 +71,17 @@ MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
-interval aggregation; it neither persists records nor establishes journal durability or reliance.
+interval aggregation and appends a bounded, privacy-safe subset after the business result through
+one non-retrying transaction. Failures leave coverage partial. Migration
+`0024_mcp_operation_timings` stores no SQL, parameters, payloads, prompts, notes, tokens, bodies,
+or principal identity.
 `flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. The report remains
 partial: it reports canonical current state and relations plus observed target events from one
 read-only, repeatable-read transaction. It projects only digest-validated failure/resolution rows
 whose owner is that exact WorkId, without exposing their private prose, and digest-validates
 activation revision chains correlated by their source-owned product/return-owner bindings.
-Activation remains `PARTIAL` because that source has no revision timestamps. A separate additive
+Activation remains `PARTIAL` because that source has no revision timestamps. Exact WorkId timing is
+stable-cohort service evidence, never task critical path. A separate additive
 source-coverage projection uses only `KNOWN`, `PARTIAL`, or `UNKNOWN`; absent exact candidate,
 test-run, or durable MCP-timing correlation stays `UNKNOWN`. Its concise format is a deterministic
 projection of the same JSON facts and coverage reasons, not another correlation or inference layer.

@@ -32,6 +32,7 @@ from switchstand.human_trajectory import (
     HumanTrajectoryStore,
     SourceKind,
 )
+from switchstand.observability import register_timing_persistence
 from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
 from switchstand.state import human_trajectory_revisions, outcome_state_revisions, work_handles
 from switchstand.state import metadata as state_metadata
@@ -95,6 +96,58 @@ async def add_activation_revisions(
                 "(:id,:operation_id,:generation,CAST(:record AS jsonb))"
             ), {"id": obligation_id, "operation_id": value.operation_id,
                 "generation": generation, "record": value.model_dump_json()})
+
+
+async def add_timing_table(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "CREATE TABLE mcp_operation_timings (call_id text PRIMARY KEY,tool text NOT NULL,"
+            "target_work_id uuid,started_at timestamptz NOT NULL,duration_ms float NOT NULL,"
+            "status text NOT NULL,error_class text,db_count integer NOT NULL,db_total_ms float "
+            "NOT NULL,db_max_ms float NOT NULL,child_union_ms float NOT NULL,"
+            "server_residual_ms float NOT NULL,runtime_generation text NOT NULL,"
+            "schema_generation text NOT NULL)"
+        ))
+
+
+async def test_durable_mcp_timing_is_private_bounded_cohort_evidence(engine: AsyncEngine) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    await add_timing_table(engine)
+    runtime = "a" * 40
+    store = register_timing_persistence(engine, runtime)
+    base: dict[str, object] = {
+        "tool": "work_get", "wall_started_at": datetime.now(UTC).isoformat(), "status": "ok",
+        "error_class": None, "identity": {"subject": "private"},
+        "target_work_id": str(target), "db_count": 2, "db_sum_ms": 30.0,
+        "db_max_ms": 20.0, "child_union_ms": 30.0,
+        "server_residual_ms": 70.0,
+    }
+    await store.persist({**base, "call_id": "one", "duration_ms": 100.0})
+    await store.persist({**base, "call_id": "two", "duration_ms": 300.0})
+
+    result = await report(engine, target)
+
+    timing = result["mcp_tracker_timing"]
+    assert timing["status"] == "PARTIAL"
+    assert timing["reason"] == "BEST_EFFORT_NONRETRYING_CAPTURE"
+    assert timing["total_records"] == 2 and timing["service_total_ms"] == 400.0
+    assert timing["db_total_ms"] == 60.0 and timing["server_residual_ms"] == 140.0
+    assert timing["cohorts"] == [{
+        "runtime_generation": runtime,
+        "schema_generation": "0024_mcp_operation_timings", "tool": "work_get",
+        "sample_count": 2, "p50_ms": 200.0, "p90_ms": 280.0,
+    }]
+    assert result["coverage"]["timing_journal"] == {
+        "status": "PARTIAL", "reason": "BEST_EFFORT_NONRETRYING_CAPTURE",
+    }
+    async with engine.connect() as connection:
+        row = await connection.execute(text("SELECT * FROM mcp_operation_timings LIMIT 1"))
+        assert "identity" not in tuple(row.keys())
+    store.write_failed = True
+    assert "PERSISTENCE_FAILURE_IN_PROCESS" in (
+        await report(engine, target)
+    )["mcp_tracker_timing"]["reason"]
 
 
 async def test_exact_failure_and_activation_sources_are_private_and_validated(
@@ -319,7 +372,7 @@ async def test_root_modes_are_explicit_and_report_stays_partial(
         "isolation": "repeatable read", "read_only": "on", "row_version": 1,
     }
     assert result["coverage"]["timing_journal"] == {
-        "status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED",
+        "status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE",
     }
     assert result["coverage"]["messages"] == {
         "status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE",

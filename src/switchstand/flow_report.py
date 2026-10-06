@@ -27,6 +27,7 @@ from .failure_journal import (
 )
 from .human_reviews import human_review_consequences
 from .human_trajectory import validated_trajectory_headers
+from .observability import timing_persistence
 from .outcome_state import validated_revision_headers
 from .repository_candidate import (
     QualificationGate,
@@ -42,6 +43,7 @@ TRAJECTORY_REVISION_LIMIT = 64
 FAILURE_LIMIT = 128
 ACTIVATION_OBLIGATION_LIMIT = 32
 ACTIVATION_REVISION_LIMIT = 128
+TIMING_LIMIT = 256
 
 
 def _time(value: datetime | None) -> str | None:
@@ -347,9 +349,71 @@ async def _activation(
     }, True
 
 
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower), 3)
+
+
+async def _mcp_timings(
+    connection: AsyncConnection, work_id: UUID, write_failed: bool,
+) -> tuple[dict[str, object], bool]:
+    available = cast(bool, await connection.scalar(text(
+        "SELECT to_regclass('public.mcp_operation_timings') IS NOT NULL"
+    )))
+    if not available:
+        return {"status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE"}, False
+    total = cast(int, await connection.scalar(text(
+        "SELECT count(*) FROM mcp_operation_timings WHERE target_work_id=:work_id"
+    ), {"work_id": work_id}))
+    rows = (await connection.execute(text(
+        "SELECT tool,duration_ms,db_total_ms,db_max_ms,child_union_ms,"
+        "server_residual_ms,runtime_generation,schema_generation "
+        "FROM mcp_operation_timings WHERE target_work_id=:work_id "
+        "ORDER BY started_at DESC,call_id DESC LIMIT :limit"
+    ), {"work_id": work_id, "limit": TIMING_LIMIT})).mappings().all()
+    unstable = any(
+        row["runtime_generation"] is None or row["schema_generation"] == "UNKNOWN"
+        for row in rows
+    )
+    groups: dict[tuple[str, str, str], list[float]] = {}
+    for row in rows:
+        runtime = row["runtime_generation"]
+        key = (str(runtime), str(row["schema_generation"]), str(row["tool"]))
+        if runtime is not None and "UNKNOWN" not in key:
+            groups.setdefault(key, []).append(float(row["duration_ms"]))
+    truncated = total > len(rows)
+    reasons = ["BEST_EFFORT_NONRETRYING_CAPTURE", *[
+        reason for condition, reason in (
+            (write_failed, "PERSISTENCE_FAILURE_IN_PROCESS"),
+            (truncated, "MOST_RECENT_RECORDS_ONLY"),
+            (unstable, "UNSTABLE_COHORT_EXCLUDED"),
+        ) if condition
+    ]]
+    return {
+        "status": "PARTIAL", "reason": "+".join(reasons),
+        "correlation": "DIRECT_TARGET_WORK_ID",
+        "interpretation": "SERVICE_TIME_NOT_CRITICAL_PATH",
+        "total_records": total, "retained_records": len(rows), "truncated": truncated,
+        "service_total_ms": round(sum(float(row["duration_ms"]) for row in rows), 3),
+        "db_total_ms": round(sum(float(row["db_total_ms"]) for row in rows), 3),
+        "db_max_ms": round(max((float(row["db_max_ms"]) for row in rows), default=0), 3),
+        "child_union_ms": round(sum(float(row["child_union_ms"]) for row in rows), 3),
+        "server_residual_ms": round(sum(float(row["server_residual_ms"]) for row in rows), 3),
+        "cohorts": [{
+            "runtime_generation": runtime, "schema_generation": schema, "tool": tool,
+            "sample_count": len(durations), "p50_ms": _percentile(durations, .5),
+            "p90_ms": _percentile(durations, .9),
+        } for (runtime, schema, tool), durations in sorted(groups.items())],
+    }, True
+
+
 async def _snapshot(
     connection: AsyncConnection, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
+    timing_write_failed: bool = False,
 ) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
@@ -378,6 +442,7 @@ async def _snapshot(
     ).order_by(human_trajectory_revisions.c.generation))).all()
     failures, _failures_available = await _failures(connection, work_id, captured_at)
     activation, activation_available = await _activation(connection, work_id)
+    mcp_timings, timings_available = await _mcp_timings(connection, work_id, timing_write_failed)
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -502,6 +567,7 @@ async def _snapshot(
         "human_trajectory": trajectory,
         "failures": failures,
         "activation": activation,
+        "mcp_tracker_timing": mcp_timings,
         "review_pickup": review_pickup,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
@@ -530,7 +596,11 @@ async def _snapshot(
             "review_pickup": {
                 "status": review_pickup["status"], "reason": review_pickup["reason"],
             },
-            "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
+            "timing_journal": {
+                "status": ("UNKNOWN" if not timings_available else
+                           "PARTIAL" if mcp_timings["status"] == "PARTIAL" else "INCLUDED"),
+                "reason": mcp_timings["reason"],
+            },
             "failures": {
                 "status": "INCLUDED" if failures["status"] == "KNOWN" else "UNKNOWN",
                 "reason": "DIRECT_OWNER_WORK_ID" if failures["status"] == "KNOWN"
@@ -557,7 +627,7 @@ async def _snapshot(
             "failure_recovery": {"status": failures["status"], "reason": failures["reason"]},
             "activation": {"status": activation["status"], "reason": activation["reason"]},
             "mcp_tracker_timing": {
-                "status": "UNKNOWN", "reason": "DURABLE_RETENTION_NOT_PROVED",
+                "status": mcp_timings["status"], "reason": mcp_timings["reason"],
             },
         },
     }
@@ -568,10 +638,11 @@ async def report(
     engine: AsyncEngine, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
 ) -> dict[str, object]:
+    store = timing_persistence(engine)
     async with engine.connect() as connection:
         connection = await connection.execution_options(isolation_level="REPEATABLE READ")
         async with connection.begin():
-            return await _snapshot(connection, work_id, review_occurrences)
+            return await _snapshot(connection, work_id, review_occurrences, store is not None and store.write_failed)
 
 
 def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
@@ -867,6 +938,22 @@ def render_concise(value: dict[str, object]) -> str:
             f"trajectory_id={revision['trajectory_id']} source_kind={revision['source_kind']} "
             f"created_at={revision['created_at']}"
             for revision in cast(list[dict[str, object]], trajectory["revisions"])
+        )
+    timings = cast(dict[str, object] | None, value.get("mcp_tracker_timing"))
+    if timings is not None:
+        lines.append(
+            f"mcp_tracker_timing status={timings['status']} reason={timings['reason']} "
+            f"correlation={timings.get('correlation')} total_records={timings.get('total_records')} "
+            f"retained_records={timings.get('retained_records')} truncated={timings.get('truncated')} "
+            f"service_total_ms={timings.get('service_total_ms')} "
+            f"db_total_ms={timings.get('db_total_ms')} "
+            f"server_residual_ms={timings.get('server_residual_ms')}"
+        )
+        lines.extend(
+            f"mcp_timing_cohort runtime={item['runtime_generation']} "
+            f"schema={item['schema_generation']} tool={item['tool']} "
+            f"samples={item['sample_count']} p50_ms={item['p50_ms']} p90_ms={item['p90_ms']}"
+            for item in cast(list[dict[str, object]], timings.get("cohorts", []))
         )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"

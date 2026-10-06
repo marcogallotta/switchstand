@@ -40,7 +40,7 @@ async def store(database_prerequisite):
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, activation_obligation_revisions, "
+            "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions, "
             "human_review_consequences, "
             "task_run_results, task_run_executions, task_run_requests, priority_claims, "
             "outcome_state_revisions, human_trajectory_revisions, "
@@ -169,7 +169,7 @@ async def test_populated_migration_refuses_to_discard_trajectory(store):
     async with store.engine.connect() as connection:
         assert await connection.scalar(text(
             "SELECT version_num FROM alembic_version"
-        )) == "0023_activation_continuity"
+        )) == "0024_mcp_operation_timings"
         assert await connection.scalar(text(
             "SELECT count(*) FROM human_trajectory_revisions"
         )) == 1
