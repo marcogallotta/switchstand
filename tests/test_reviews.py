@@ -37,7 +37,7 @@ from switchstand.reviews import (
     ReviewSubmit,
     _stable,
 )
-from switchstand.state import work_handles
+from switchstand.state import work_handles, work_migration_receipts
 
 
 @pytest.fixture
@@ -152,6 +152,25 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
     assert delivery.delivery_id == sent.delivery_id
     assert envelope.brief.material_claim == "Material claim"
     assert envelope.brief.named_evidence == ("git:exact",)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_migration_receipts).values(
+            name="typed-review-v1-cutoff", source_digest="b" * 64,
+        ))
+    blocked = await messages.submit_admitted(
+        requester.endpoint_id,
+        MessageRoute(
+            recipient_work_id=reviewer.endpoint_id,
+            recipient_grant_version=reviewer.generation,
+        ),
+        MessageSubmitRequest(
+            api_version="1", message_id=uuid4(), grant_version=requester.generation,
+            route_ref="review.request", kind="request",
+            payload=envelope.model_dump(mode="json"),
+        ),
+        agent_binding=requester,
+    )
+    assert (blocked.status, blocked.reason) == ("denied", "reserved_route")
+    assert await service.request(request, requester) == sent
 
     async with engine.begin() as connection:
         await connection.execute(text(
@@ -364,15 +383,15 @@ async def test_review_pickup_rejects_multiple_current_occurrences(occurrence_run
     assert result["reason"] == "MULTIPLE_CURRENT_OCCURRENCES"
 
 
-async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_runtime):
+@pytest.mark.parametrize("cross_principal", [False, True])
+async def test_polling_acquires_reviewer_and_takeover_recovers_received_review(
+    occurrence_runtime, cross_principal,
+):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    coordinator = (await mailboxes.register_agent(
-        "Coordinator", "principal-c", "chat-c"
-    )).mailbox
-    assert requester is not None and coordinator is not None
+    assert requester is not None
     occurrences.policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={})
     service = ReviewService(
         occurrences, mailboxes, messages, occurrences.policy,
@@ -385,31 +404,8 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         observed_revision=canonical_revision(subject.work_id, subject.row_version),
         review_kind="CODE",
     ), requester)
-    assert waiting.review_id is not None and waiting.delivery_id is not None
-    acquiring = (await report(engine, subject_id, occurrences))["review_pickup"]
-    assert acquiring["status"] == "KNOWN"
-    assert acquiring["phase"] == "WAITING_REVIEWER"
-    assert acquiring["unpicked"] is True
-    assert isinstance(acquiring["oldest_request_age_ms"], int)
-    assert acquiring["received_at"] is None
-    received = await messages.receive_admitted(
-        coordinator.endpoint_id, coordinator.generation,
-        RuntimeCurrentness(
-            generation=str(coordinator.generation),
-            current_generation=str(coordinator.generation),
-        ),
-        MessageReceiveRequest(
-            api_version="1", delivery_id=waiting.delivery_id,
-            grant_version=coordinator.generation,
-        ),
-        agent_binding=coordinator,
-    )
-    assert received.status == "ok"
-    acquired = (await report(engine, subject_id, occurrences))["review_pickup"]
-    assert acquired["status"] == "KNOWN"
-    assert acquired["phase"] == "WAITING_REVIEWER"
-    assert acquired["unpicked"] is False
-    assert datetime.fromisoformat(acquired["received_at"]).tzinfo is not None
+    assert waiting.status == "WAITING_REVIEWER"
+    assert waiting.review_id is not None and waiting.delivery_id is None
     reviewer = (await mailboxes.register_agent(
         "Reviewer", "principal-b", "chat-b"
     )).mailbox
@@ -417,16 +413,8 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
     service.policy = ReviewPolicy(
         version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"},
     )
-    sent = await service.continue_acquisition(waiting.review_id, coordinator)
-    assert sent.status == "SENT" and sent.delivery_id is not None
-    requested = (await report(engine, subject_id, occurrences))["review_pickup"]
-    assert requested["phase"] == "REQUEST_UNPICKED"
-    assert requested["unpicked"] is True
-    sources = await occurrences.request_sources(waiting.review_id)
-    assert len(sources) == 1
-    record, _envelope, bound = sources[0]
-    assert record.delivery.sender_work_id == coordinator.endpoint_id
-    assert bound is not None and bound.reviewer_delivery_id == sent.delivery_id
+    sent = await service.get(waiting.review_id, requester)
+    assert sent.status == "REQUEST_UNPICKED" and sent.delivery_id is not None
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
@@ -440,10 +428,29 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         agent_binding=reviewer,
     )
     assert received.status == "ok"
+    if cross_principal:
+        transfer = await mailboxes.request_transfer(
+            "Reviewer", "principal-c", "chat-c"
+        )
+        assert transfer.status == "pending" and transfer.request_id is not None
+        assert (await mailboxes.approve_transfer(transfer.request_id)).status == "approved"
+        moved = (await mailboxes.by_name("Reviewer")).mailbox
+    else:
+        moved = (await mailboxes.takeover(
+            "Reviewer", "principal-b", "chat-b-replacement"
+        )).mailbox
+    assert moved is not None and moved.generation == reviewer.generation + 1
+    recovered = await service.recover(waiting.review_id, moved)
+    if cross_principal:
+        assert (recovered.status, recovered.reason) == ("DENIED", "recovery_identity_changed")
+        return
+    assert recovered.status == "RECEIVED"
     submitted = await service.submit(ReviewSubmit(
         review_id=waiting.review_id, verdict="PASS", context_provenance="UNSEEDED",
-    ), reviewer)
+    ), moved)
     assert submitted.status == "SUBMITTED"
+    outcome = await service.get(waiting.review_id, requester)
+    assert (outcome.status, outcome.verdict) == ("PASS", "PASS")
     async with engine.begin() as connection:
         subject = await occurrences.works.get(subject_id)
         assert subject is not None
