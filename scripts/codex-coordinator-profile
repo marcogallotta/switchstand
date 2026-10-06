@@ -100,6 +100,7 @@ def render(
 ) -> str:
     canonical_mcp = _canonical_mcp()
     _linked_worktree_git_dir(primary, writer)
+    user_home = Path.home().resolve(strict=True)
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer),
     ))
@@ -175,7 +176,7 @@ def render(
         'description = "Coordinator user access with the shared primary checkout read-only."',
         "",
         "[permissions.switchstand-coordinator.filesystem]",
-        '":root" = "write"',
+        f'{json.dumps(str(user_home))} = "write"',
         "",
         f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
         '"." = "read"',
