@@ -41,6 +41,7 @@ switchstand-agent-mailbox-transfer = "switchstand.agent_mailbox_transfer:run"
 switchstand-wakeful-inbound = "switchstand.codex_wakeful:inbound_main"
 switchstand-human-review-propose = "switchstand.human_review_propose:run"
 switchstand-human-review = "switchstand.human_review_runtime:main"
+switchstand-human-review-host = "switchstand.human_review_host:run"
 switchstand-worktree-lifecycle = "switchstand.worktree_lifecycle:main"
 
 [dependency-groups]
