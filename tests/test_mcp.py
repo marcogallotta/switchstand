@@ -30,6 +30,8 @@ from switchstand.mcp import (
     server_from_env,
 )
 from switchstand.messages import RuntimeCurrentness
+from switchstand.priority_claim_service import PriorityClaimReadResult, PriorityClaimService
+from switchstand.priority_context import PriorityContextResult
 from switchstand.task_runs import AgentTaskResult, TaskRunResult, TaskRunResultResult
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -51,6 +53,73 @@ class FakeService:
 
     async def append(self, request):
         return AppendResult(status="ok", task_gid=TASK_GID, story_gid=STORY_GID)
+
+
+async def test_managed_priority_tools_derive_launch_identity_and_bound_context():
+    principal = managed_principal(ID)
+    grant = SimpleNamespace(version=7)
+
+    class Grants:
+        async def current(self, principal_key):
+            assert principal_key == principal.key
+            return grant
+
+    class Claims:
+        def __init__(self):
+            self.calls = []
+
+        async def current(self, kind, subject_id):
+            self.calls.append(("current", kind, subject_id))
+            return PriorityClaimReadResult(status="ok")
+
+        async def record(self, passed_grants, passed_principal, request):
+            self.calls.append(("record", passed_grants, passed_principal, request))
+            return PriorityClaimService.guard(request, "denied", "probe")
+
+    class Context:
+        def __init__(self):
+            self.calls = []
+
+        async def project(self, work_ids):
+            self.calls.append(work_ids)
+            return PriorityContextResult(status="ok", scope_complete=True)
+
+    grants, claims, context = Grants(), Claims(), Context()
+    server = build_server(
+        FakeService(), ID, (REFERENCE_ID,),
+        grants=grants, principal=principal,
+        priority_claims=claims,  # type: ignore[arg-type]
+        priority_context=context,  # type: ignore[arg-type]
+    )
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert {
+            "priority_claim_get", "priority_claim_record", "priority_context_get",
+        } <= tools.keys()
+        record_schema = tools["priority_claim_record"].input_schema
+        assert "work_id" not in record_schema["properties"]
+        assert "grant_version" not in record_schema["properties"]
+
+        read = await client.call_tool("priority_claim_get", {"api_version": "1"})
+        assert read.structured_content["status"] == "ok"
+        operation_id = uuid4()
+        recorded = await client.call_tool("priority_claim_record", {
+            "api_version": "1", "operation_id": str(operation_id),
+            "observed_revision": "r1", "relation_kind": "BAND",
+            "band": "NORMAL", "rationale": "inspect after the current blocker",
+        })
+        assert recorded.structured_content["reason"] == "probe"
+        projected = await client.call_tool("priority_context_get", {
+            "api_version": "1", "include_references": True,
+        })
+        assert projected.structured_content["status"] == "ok"
+
+    assert claims.calls[0] == ("current", "WORK", ID)
+    request = claims.calls[1][3]
+    assert request.work_id == ID
+    assert request.grant_version == 7
+    assert request.operation_id == operation_id
+    assert context.calls == [(ID, REFERENCE_ID)]
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
@@ -349,6 +418,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             tool.name for tool in tools
         } | {
             "work_update",
+            "priority_claim_get", "priority_claim_record", "priority_context_get",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",
         }

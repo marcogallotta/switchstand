@@ -134,12 +134,12 @@ async def run(
             print(f"SWITCHSTAND_REPOSITORY={slug}")
         grant = None
         if managed_agent:
-            grant = (
-                await rotate_managed_grant(
-                    GrantState(engine), authority, agent_task=True
-                )
-                if agent_task
-                else await rotate_managed_grant(GrantState(engine), authority)
+            priority_claims = os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1"
+            options = {"agent_task": True} if agent_task else {}
+            if priority_claims:
+                options["priority_claims"] = True
+            grant = await rotate_managed_grant(
+                GrantState(engine), authority, **options,
             )
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
         print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))

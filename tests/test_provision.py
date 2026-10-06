@@ -155,7 +155,7 @@ async def test_provisioner_rejects_duplicate_canonical_work(monkeypatch):
         await provision.run("123", ("123",))
 
 
-async def test_agent_task_opt_in_is_atomic_with_managed_grant(monkeypatch, capsys):
+async def test_feature_opt_ins_are_atomic_with_managed_grant(monkeypatch, capsys):
     work_id = UUID("00000000-0000-4000-8000-000000000011")
     observed = []
 
@@ -179,11 +179,14 @@ async def test_agent_task_opt_in_is_atomic_with_managed_grant(monkeypatch, capsy
         assert value == str(work_id)
         return CurrentWork(work_id, "pilot", False, "")
 
-    async def rotate(_grants, authority, *, agent_task=False):
-        observed.append((authority.active_work_id, agent_task))
+    async def rotate(
+        _grants, authority, *, agent_task=False, priority_claims=False,
+    ):
+        observed.append((authority.active_work_id, agent_task, priority_claims))
         return SimpleNamespace(id=UUID(int=19), version=4)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused")
+    monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
     monkeypatch.setattr(provision, "create_async_engine", lambda _: Engine())
     monkeypatch.setattr(provision, "CanonicalWorkRepository", Works)
     monkeypatch.setattr(provision, "canonical_work", current)
@@ -195,7 +198,7 @@ async def test_agent_task_opt_in_is_atomic_with_managed_grant(monkeypatch, capsy
         str(work_id), (), managed_agent=True, agent_task=True
     )
 
-    assert observed == [(work_id, True)]
+    assert observed == [(work_id, True, True)]
     assert "MANAGED_GRANT_VERSION=4" in capsys.readouterr().out
 
 

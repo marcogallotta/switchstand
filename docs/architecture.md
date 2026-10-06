@@ -169,7 +169,10 @@ optional read-only reference WorkIds, the managed principal, run currentness, an
 gateways. Omitting a WorkId selects the active assignment; it is not workspace discovery. When
 `SWITCHSTAND_MANAGED` is absent, `server_from_env` returns an unbound server with no task authority.
 Managed construction reads canonical work and history from PostgreSQL and does not construct an
-Asana client; retained mutation owners are supplied explicitly.
+Asana client; retained mutation owners are supplied explicitly. When priority claims are enabled,
+the managed surface derives the claim target and grant version from that trusted launch, exposes
+the active claim read/write tools, and bounds priority context to the active WorkId plus its
+launch-bound read-only references.
 
 `mcp.py::build_context_server` is the smaller read-only context surface. It exposes only the
 launch-bound work and its revision-checked history. Managed and ordinary MCPs reuse contracts and
@@ -256,15 +259,17 @@ messaging, and required continuation:
   `AGENT_RECOMMENDATION` for an exact launch grant's active WorkId and reuse `effect_intents` for
   replay/conflict recovery; ordinary workspace and project writes are denied. No public argument
   can mint `HUMAN_PRIORITY`, because no installed attributable human-confirmation seam exists.
-  The production edge constructs and registers this projection only when
-  `SWITCHSTAND_PRIORITY_CLAIMS=1`; the same switch enables the bounded read-only priority-context
-  projection. Activation remains a separate deployment effect and requires reinstalling and
-  verifying the client-visible MCP schema.
+  The production edge and managed task-bound server construct and register this projection only
+  when `SWITCHSTAND_PRIORITY_CLAIMS=1`; the same switch enables the bounded read-only
+  priority-context projection. The ordinary workspace edge remains read/denial-only for claim
+  writes. The managed write adapter omits caller-supplied WorkId and grant version and derives both
+  from the trusted launch. Activation remains a separate deployment effect and requires verifying
+  the affected client-visible MCP schema.
 - `priority_context.py` composes a deterministic read-only view for at most 50 explicit WorkIds
   from canonical work, relations, and priority claims. It keeps project claims contextual, labels
   agent claims advisory, exposes stale/conflicting/unknown evidence, and never parses notes or
-  stores ranking, attention, or inherited claims. Its MCP/service seam is injectable, default-off,
-  and unconstructed by the production edge; exact-scope completeness is not portfolio completeness.
+  stores ranking, attention, or inherited claims. Its MCP/service seam is injectable and
+  default-off; exact-scope completeness is not portfolio completeness.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic
