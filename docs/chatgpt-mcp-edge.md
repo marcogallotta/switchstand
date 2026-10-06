@@ -125,7 +125,8 @@ absolute paths. When they are absent, `functional_proof` remains a blocker and t
 cannot return `TRUE`. Selecting, creating, and retaining those private files is a separate
 activation decision; this edge does not create either file.
 
-`switchstand-stateful-qualifier qualify` requires one explicit disposable WorkId, a separately
+`switchstand-stateful-qualifier schema-digest` reads the exact authenticated `tools/list` surface
+used by this contract. Its `qualify` command requires one explicit disposable WorkId, a separately
 denied WorkId, an attempt UUID and mode-0700 attempt directory, exact runtime/run and
 schema expectations, and an existing mode-0600 seal key. It journals the immutable operation IDs
 before the protected update; proves authenticated MCP, DENIED admission, STALE CAS, exact replay,

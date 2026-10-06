@@ -399,6 +399,9 @@ async def _qualify(arguments: argparse.Namespace) -> dict[str, object]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    digest = commands.add_parser("schema-digest")
+    digest.add_argument("--endpoint", required=True)
+    digest.add_argument("--token-file", required=True, type=Path)
     qualify = commands.add_parser("qualify")
     qualify.add_argument("--endpoint", required=True)
     qualify.add_argument("--token-file", required=True, type=Path)
@@ -423,6 +426,14 @@ def main() -> None:
     parser = _parser()
     arguments = parser.parse_args()
     try:
+        if arguments.command == "schema-digest":
+            client = MCPClient(_endpoint(arguments.endpoint), _private_token(arguments.token_file))
+            try:
+                client.initialize()
+                print(_digest(client.tools()))
+            finally:
+                client.close()
+            return
         print(json.dumps(asyncio.run(_qualify(arguments)), sort_keys=True))
     except (
         KeyError,
