@@ -51,6 +51,24 @@ def test_read_private_bytes_enforces_bound_without_partial_result(tmp_path: Path
         read_private_bytes(path, max_bytes=-1)
 
 
+def test_read_private_bytes_rechecks_bound_after_stale_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "receipt"
+    path.write_bytes(b"proof")
+    path.chmod(0o600)
+    real_fstat = os.fstat
+
+    def stale_size(descriptor: int) -> os.stat_result:
+        metadata = list(real_fstat(descriptor))
+        metadata[6] = 4
+        return os.stat_result(metadata)
+
+    monkeypatch.setattr(secure_file.os, "fstat", stale_size)
+    with pytest.raises(ValueError, match="exceeds maximum size"):
+        read_private_bytes(path, max_bytes=4)
+
+
 def test_atomic_replace_bytes_handles_short_writes_and_fsyncs_file_before_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
