@@ -527,6 +527,15 @@ or binding nodes move to a generation-specific private quarantine; dispatch recr
 friction state, reports the degradation, and continues launch. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
+Built-in delegated Workers share the Coordinator process and filesystem profile. Hooks are a
+useful guardrail rather than a security sandbox, so they cannot safely grant a Worker mutation in
+one writer while withholding Root's writer or sibling writers. Built-in Workers therefore remain
+repository-read-only through the standard local mutation surfaces: any Worker shell or file-edit
+call carrying Codex's subagent `agent_id` is denied. This is a process guard, not an adversarial OS
+boundary. Root delegates research and review directly; an implementation Worker returns a patch
+proposal for Root to apply in the generation-owned writer. Managed Workers retain their separate
+trusted task-private writer contract.
+
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
 `scripts/docker-gc` BuildKit cache cap whenever managed Docker work is reconciled. `scripts/docker-gc` serializes
 host-wide cache reconciliation and bounds only unused build cache; exact resource owners remain responsible for

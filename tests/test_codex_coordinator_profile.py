@@ -119,6 +119,14 @@ trusted_hash = "must-not-copy"
         "supplies one, report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted "
         "launch-bound managed runs."
     ) in instructions
+    assert (
+        "Built-in Workers are read-only: their shell and file-edit tools are denied"
+        in instructions
+    )
+    assert "a Worker returns a patch proposal and Root applies it" in instructions
+    assert not Path(
+        f"{tmp_path / 'coordinator/start-commit.coordinator.config'}.worker-writers"
+    ).exists()
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert "forked Workers" not in instructions
     assert profile["features"] == {"hooks": True, "multi_agent": True}

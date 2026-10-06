@@ -101,7 +101,7 @@ def render(
     canonical_mcp = _canonical_mcp()
     _linked_worktree_git_dir(primary, writer)
     guard_command = shlex.join((
-        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer)
+        str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer),
     ))
     continuity_command = shlex.join((
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
@@ -139,7 +139,10 @@ def render(
             "through an exact WorkId from Marco's direct assignment or an acknowledged addressed "
             "handoff, and call work_get with that exact ID. If neither trusted source supplies one, "
             "report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted launch-bound "
-            "managed runs. "
+            "managed runs. Built-in Workers are read-only: their shell and file-edit tools are "
+            "denied because they share Root's filesystem profile and hooks are not a security "
+            "sandbox. Delegate research/review freely; for implementation, a Worker returns a "
+            "patch proposal and Root applies it in this generation's owned writer. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
             f"lifetime={lifetime}."
         ),

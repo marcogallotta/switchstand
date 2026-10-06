@@ -235,7 +235,8 @@ def classify(
                          if token == "-c" or token.startswith("-") and token.endswith("c")]
             if positions:
                 nested = classify(
-                    tokens[positions[0] + 1], current, coordinator_primary, coordinator_writer
+                    tokens[positions[0] + 1], current, coordinator_primary,
+                    coordinator_writer,
                 )
                 if nested:
                     return nested
@@ -299,7 +300,6 @@ def classify(
             if ((subcommand in MUTATIONS and not tag_read and not stash_read)
                     or branch_write or worktree_write or config_write or remote_write
                     or notes_write or reflog_write):
-                identity = checkout_identity(prefix, command_cwd)
                 root = primary_checkout(prefix, command_cwd)
                 if root and (coordinator_primary is None
                         or os.path.realpath(root) == coordinator_primary):
@@ -318,7 +318,6 @@ def _inside(path: str, root: str) -> bool:
 
 
 def foreign_write(target: str, primary: str, writer: str | None) -> str | None:
-    del writer
     if _inside(target, primary):
         return (f"[primary-checkout] writing {target} is denied; "
                 "use a linked writer worktree.")
@@ -356,9 +355,7 @@ def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 
 
-def classify_edit(
-    tool_input: dict, cwd: str, primary: str, writer: str | None
-) -> str | None:
+def classify_edit(tool_input: dict, cwd: str, primary: str, writer: str | None) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
@@ -401,6 +398,16 @@ def run() -> int:
     tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
+    declared_workdir = tool_input.get("workdir")
+    if isinstance(declared_workdir, str):
+        cwd = os.path.realpath(os.path.join(cwd, declared_workdir))
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
+        print(json.dumps(deny(
+            "[worker-read-only] delegated Workers cannot use shell or file-edit tools; "
+            "return a patch or findings to Root.", event,
+        )))
+        return 0
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     target = os.path.realpath(os.path.join(cwd, raw)) if isinstance(raw, str) else ""
     memory_root = os.path.realpath(os.path.expanduser("~/.claude/projects"))
