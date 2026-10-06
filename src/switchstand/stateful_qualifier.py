@@ -151,6 +151,8 @@ class MCPClient:
             dict[str, object],
             self._post("tools/call", {"name": name, "arguments": arguments}),
         )
+        if result.get("isError") is True:
+            raise QualificationFailure(f"{name} returned a tool error")
         value = result.get("structuredContent", result)
         if not isinstance(value, dict):
             raise QualificationFailure(f"{name} returned no structured result")
@@ -168,6 +170,17 @@ def _status(value: dict[str, object], expected: str, label: str) -> dict[str, ob
     if value.get("status") != expected:
         raise QualificationFailure(f"{label} did not return {expected}")
     return value
+
+
+def _receipt_matches_principal(
+    receipt: dict[str, object], principal: PrincipalContext,
+) -> bool:
+    return receipt.get("principal") == {
+        "issuer": principal.issuer,
+        "subject": principal.subject,
+        "client_id": principal.client_id,
+        "assurance": principal.assurance,
+    }
 
 
 def _prepared(arguments: argparse.Namespace, item: dict[str, object]) -> dict[str, object]:
@@ -194,7 +207,10 @@ def _load_or_prepare(path: Path, expected: dict[str, object]) -> dict[str, objec
         _publish(journal, expected)
         return expected
     except FileExistsError:
-        current = cast(dict[str, object], json.loads(read_private_bytes(journal)))
+        loaded = json.loads(read_private_bytes(journal))
+        if not isinstance(loaded, dict):
+            raise QualificationFailure("existing attempt journal is not an object")
+        current = cast(dict[str, object], loaded)
         replay_varying = {"observed_revision", "completed"}
         stable_expected = {
             key: value for key, value in expected.items() if key not in replay_varying
@@ -296,7 +312,10 @@ async def _qualify(arguments: argparse.Namespace) -> dict[str, object]:
             "ok",
             "authenticated work_get",
         )
-        item = cast(dict[str, object], got.get("item"))
+        item_value = got.get("item")
+        if not isinstance(item_value, dict):
+            raise QualificationFailure("authenticated work_get returned no item")
+        item = cast(dict[str, object], item_value)
         if item.get("id") != str(arguments.work_id):
             raise QualificationFailure("disposable WorkId identity mismatch")
         expected_journal = _prepared(arguments, item)
@@ -317,14 +336,22 @@ async def _qualify(arguments: argparse.Namespace) -> dict[str, object]:
         replay = client.call("work_update", update_arguments)
         if replay != applied:
             raise QualificationFailure("exact operation replay did not return the same receipt")
-        receipt = cast(dict[str, object], applied.get("receipt"))
+        receipt_value = applied.get("receipt")
+        if not isinstance(receipt_value, dict):
+            raise QualificationFailure("disposable update returned no effect receipt")
+        receipt = cast(dict[str, object], receipt_value)
+        if not _receipt_matches_principal(receipt, principal):
+            raise QualificationFailure("effect receipt principal does not match the caller")
         resulting_revision = receipt.get("resulting_revision")
         rechecked = _status(
             client.call("work_get", {"api_version": "1", "work_id": str(arguments.work_id)}),
             "ok",
             "currentness recheck",
         )
-        current_item = cast(dict[str, object], rechecked.get("item"))
+        current_value = rechecked.get("item")
+        if not isinstance(current_value, dict):
+            raise QualificationFailure("currentness recheck returned no item")
+        current_item = cast(dict[str, object], current_value)
         if not resulting_revision or current_item.get("revision") != resulting_revision:
             raise QualificationFailure("currentness recheck did not match the effect receipt")
         payload = StatefulQualificationPayload(
