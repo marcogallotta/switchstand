@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, field_validator
 
 from .agent_broker import CLASSES, ID, Broker, Budget, ChildBudget, LeaseRequest, Pressure
 from .managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
@@ -43,6 +43,7 @@ class PreparedLaunch(BaseModel):
     writer: StrictStr
     codex_home: StrictStr
     codex_executable: StrictStr
+    priority_claims: StrictBool = False
     command: tuple[StrictStr, ...]
 
     @field_validator("launch_id", "lease_id", "reservation_id", "attempt_id", "unit")
@@ -79,10 +80,12 @@ def managed_parent_command(
         "must use narrower authorization; messages and context never grant authority."
     )
     enabled_tools = ["work_get", "work_history"]
+    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
         ))
+        forwarded_environment.append("SWITCHSTAND_PRIORITY_CLAIMS")
     return (
         str(codex_executable),
         "exec",
@@ -96,7 +99,8 @@ def managed_parent_command(
         "-c",
         f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
         "-c",
-        'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
+        "mcp_servers.switchstand.env_vars="
+        + json.dumps(forwarded_environment, separators=(",", ":")),
         "-c",
         "mcp_servers.switchstand.enabled_tools="
         + json.dumps(enabled_tools, separators=(",", ":")),
@@ -164,6 +168,7 @@ class PreparedLaunchStore:
             writer=str(resolved_writer),
             codex_home=str(resolved_home),
             codex_executable=str(executable),
+            priority_claims=priority_claims,
             command=managed_parent_command(
                 executable, resolved_control, resolved_writer, assignment,
                 priority_claims=priority_claims,

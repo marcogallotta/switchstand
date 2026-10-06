@@ -409,15 +409,18 @@ def codex_command(
               "superseded intent. Work only in this private task clone. This is ordinary "
               "development; the exact CONTROL hook remains active.")
     enabled_tools = ["work_get", "work_history"]
+    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
         ))
+        forwarded_environment.append("SWITCHSTAND_PRIORITY_CLAIMS")
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
-        "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
+        "-c", "mcp_servers.switchstand.env_vars="
+        + json.dumps(forwarded_environment, separators=(",", ":")),
         "-c", "mcp_servers.switchstand.enabled_tools="
         + json.dumps(enabled_tools, separators=(",", ":")),
         "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',

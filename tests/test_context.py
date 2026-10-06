@@ -313,11 +313,14 @@ def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
         if value.startswith("mcp_servers.switchstand.enabled_tools=")
     )
     assert "priority_claim_record" in enabled
+    assert any("SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command)
     default_enabled = next(
         value for value in context.codex_command(Path("/control"), Path("/writer"), assignment)
         if value.startswith("mcp_servers.switchstand.enabled_tools=")
     )
     assert "priority_claim_record" not in default_enabled
+    assert not any("SWITCHSTAND_PRIORITY_CLAIMS" in value for value in
+                   context.codex_command(Path("/control"), Path("/writer"), assignment))
 
 
 @pytest.mark.parametrize(

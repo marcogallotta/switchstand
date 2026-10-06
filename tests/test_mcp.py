@@ -12,6 +12,7 @@ import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
 
+from switchstand import context_mcp
 from switchstand.contracts import (
     AppendResult,
     LaunchAuthority,
@@ -169,6 +170,55 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
             "api_version": "1", "include_references": True,
         })
         assert result.structured_content["status"] == "ok"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
+    engine = object()
+    works = object()
+    relations = object()
+    service = SimpleNamespace(
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
+        state=SimpleNamespace(engine=engine),
+        work=SimpleNamespace(works=works, relations=relations),
+    )
+    captured = {}
+
+    class Server:
+        def run(self):
+            captured["ran"] = True
+
+    def build(passed_service, active, references, **adapters):
+        captured.update({
+            "service": passed_service, "active": active,
+            "references": references, **adapters,
+        })
+        return Server()
+
+    monkeypatch.setattr(context_mcp, "protect_provider_logs", lambda: None)
+    monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
+    monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(context_mcp, "build_context_server", build)
+    if enabled:
+        monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
+    else:
+        monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+
+    context_mcp.main()
+
+    assert captured["ran"] is True
+    assert captured["service"] is service
+    assert captured["active"] == ID
+    assert captured["references"] == (REFERENCE_ID,)
+    if enabled:
+        assert captured["principal"] == managed_principal(ID)
+        assert captured["grants"] is not None
+        assert captured["priority_claims"] is not None
+        assert captured["priority_context"] is not None
+    else:
+        assert all(captured[name] is None for name in (
+            "principal", "grants", "priority_claims", "priority_context",
+        ))
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])

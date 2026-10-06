@@ -523,6 +523,8 @@ class ManagedExecutor:
             f"SWITCHSTAND_TASK_WRITER={manifest.writer}",
             f"SWITCHSTAND_TASK_ID={manifest.work_id}",
         ]
+        if manifest.priority_claims:
+            environment.append("SWITCHSTAND_PRIORITY_CLAIMS=1")
         return [*arguments, "--", *environment, *manifest.command]
 
 

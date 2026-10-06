@@ -118,6 +118,7 @@ def test_prepared_manifest_is_exact_sealed_and_has_only_canonical_command(tmp_pa
     assert manifest.work_id == WORK_ID
     assert manifest.grant_id == GRANT_ID
     assert manifest.grant_version == 7
+    assert manifest.priority_claims is True
     assert manifest.reservation_id == broker.lease("managed-parent")["reservation_id"]
     assert manifest.command[:4] == (str(tmp_path / "codex"), "exec", "-C", str(tmp_path / "writer"))
     assert "--dangerously-bypass-approvals-and-sandbox" not in manifest.command
@@ -136,6 +137,11 @@ def test_prepared_manifest_is_exact_sealed_and_has_only_canonical_command(tmp_pa
     assert "priority_claim_get" in enabled
     assert "priority_claim_record" in enabled
     assert "priority_context_get" in enabled
+    forwarded = next(
+        value for value in manifest.command
+        if value.startswith("mcp_servers.switchstand.env_vars=")
+    )
+    assert "SWITCHSTAND_PRIORITY_CLAIMS" in forwarded
     assert "--json" in manifest.command
     assert "command" not in inspect.signature(PreparedLaunchStore.prepare).parameters
 
@@ -150,6 +156,9 @@ def test_managed_command_omits_priority_tools_without_explicit_opt_in(tmp_path: 
         if value.startswith("mcp_servers.switchstand.enabled_tools=")
     )
     assert "priority_claim_get" not in enabled
+    assert not any(
+        "SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command
+    )
 
 
 def test_manifest_tampering_and_wrong_store_are_rejected(tmp_path: Path) -> None:
@@ -222,6 +231,7 @@ def test_managed_executor_uses_aggregate_budget_and_exact_paths(
     assert f"--property=BindPaths={tmp_path / 'codex-home'}" in start
     assert f"ACTIVE_WORK_ID={WORK_ID}" in start
     assert f"SWITCHSTAND_GRANT_ID={GRANT_ID}" in start
+    assert "SWITCHSTAND_PRIORITY_CLAIMS=1" in start
     separator = start.index("--")
     assert start[separator + 1 : separator + 4] == [
         "/usr/bin/env",
