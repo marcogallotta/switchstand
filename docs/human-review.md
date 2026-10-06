@@ -17,6 +17,8 @@ The owner should know:
 - decision-changing aggregate implementation/test/support size;
 - important operating assumptions;
 - any materially different smaller alternative.
+- intended operating scale, introduced complexity and why it is required now, the smallest credible alternative, and deliberate V1 deferrals;
+- the first representative useful end-to-end stage, or why an independently stable non-speculative foundation must precede it and the immediate route from that foundation to the proof.
 
 If a load-bearing assumption, major scope question, or decision-changing size remains unknown, the work is not ready unless the decision is specifically whether to fund the investigation needed to determine it.
 
@@ -34,6 +36,8 @@ A useful Human Review states:
 - exactly what yes approves;
 - what remains separate;
 - the real decision, if one remains.
+
+Judge whether this is the right thing and scale to build before rewarding internal completeness. Never present default-off or inert readiness as ordinary-use product completion.
 
 Do not dump the specification, review chronology, IDs, or implementation detail unless they change the decision.
 

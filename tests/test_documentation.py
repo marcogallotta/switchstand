@@ -150,6 +150,25 @@ def test_code_quality_owns_implementation_and_review_execution_guidance():
     assert "before verdict/handoff" not in agents
 
 
+def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences():
+    agents = normalized("AGENTS.md")
+    quality = normalized("docs/code-quality.md")
+    human_input = normalized("docs/human-input.md")
+    human_review = normalized("docs/human-review.md")
+
+    assert "smallest safe vertical end-to-end stage" in quality
+    assert "exclude speculative later-stage machinery" in quality
+    assert "ACCEPT_DEFECT_REJECT_REMEDY" in quality
+    assert "exact disputed blocker" in quality
+    assert "There is no automatic third reviewer" in quality
+    assert "run in parallel unless a genuine dependency makes them serial" in quality
+    assert "only for an actual integration/composition claim" in quality
+    assert "Only current direct assignment or a `CURRENT` grant authorizes" in agents
+    assert "intended operating scale" in human_input
+    assert "deliberate V1 deferrals" in human_review
+    assert "Never present default-off or inert readiness as ordinary-use product completion" in human_review
+
+
 def test_human_and_incident_triggers_remain_always_loaded():
     agents = read("AGENTS.md")
     triggers = section(agents, "### Always-loaded triggers")

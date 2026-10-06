@@ -8,6 +8,8 @@ A good change delivers the exact governing behavior with the simplest sound curr
 
 ## Author / implementer
 
+Prefer the smallest safe vertical end-to-end stage that produces representative useful behavior and evidence. Use a foundation-only or inert first stage only when a vertical stage is unsafe or impractical; state why, keep the foundation independently stable, exclude speculative later-stage machinery, and name the immediate route to the first representative useful end-to-end proof. Default-off or inert readiness is a landing claim, not ordinary-use product completion.
+
 Before material coding:
 1. Bind the exact governing outcome, non-goals, current Design/Contract/Plan, candidate/base and writable surfaces.
 2. For nontrivial work, make the existing worker-owned Execution Plan concrete enough for a fresh worker to identify: the canonical owner/reuse/delete route; intended changed surfaces and ownership boundaries; the strongest materially smaller credible alternative when the choice is architecture-sensitive; the earliest real/discriminating test or proof; the expected implementation/test-support envelope; and material unknowns. The Execution Plan must also state the proposed PR/layer decomposition and why the chosen cut beats the obvious smaller alternative. The justification is semantic: independently useful/valid behavior, meaningful acceptance evidence, and independent rework/rollback. Line count is not the justification. This is not a second quality plan or a new approval artifact.
@@ -103,11 +105,15 @@ Use the highest practical fidelity needed by the claim. Unit/fake/mock evidence 
 
 Qualification is claim-specific and proportionate to consequence, blast radius and practical rollback. Use the cheapest safe evidence that actually exercises the claimed boundary. Do not default every change to a live/external run, and do not let an isolated/mock run establish a claim that depends on live provider/runtime behavior.
 
+Fast causal automated checks remain the baseline. Add behavioral qualification when the claim depends on behavior, at the representative boundary as early as practical. Independent review, automated checks, behavioral qualification and eligible integration work run in parallel unless a genuine dependency makes them serial. Require composition qualification only for an actual integration/composition claim; do not automatically duplicate exact-head proof when no such claim exists.
+
 Keep two claims separate when applicable:
 - **LANDING / INERT PROOF:** whether the exact candidate/composition can safely land in its reviewed default-off/inert configuration under the current contract.
 - **ACTIVATION / RELIANCE PROOF:** whether enabling or relying on the live external/runtime/user path works safely under the activation contract.
 
 A default-off/inert change may be landing-qualified without live activation when activation is not part of the landing claim. Conversely, landing green never proves activation/reliance. Never substitute activation-only evidence for an unresolved landing consequence, or landing-only evidence for a live activation claim.
+
+Keep deployment artifact identity separate from behavior enablement. Where a seam is needed, prefer a small explicit selector that is default-off; do not build a feature-management platform. Review or Human Review may bound activation but does not authorize it. Within a current direct assignment or explicit `CURRENT` grant for the exact effect and surface, agents own reversible bounded activation, rollback/disable and authoritative readback. High-consequence, destructive, security-, authority-, external-provider-, hard-to-reverse or broad-rollout effects retain their existing Human Review and exact effect-authority requirements.
 
 Named required gate + missing capability, NOT_RUN, SKIP, ambiguous readback or wrong subject identity means that exact claim is not established; it is not candidate failure unless the candidate actually failed, and it is not PASS. Preserve exact-head evidence separately from synthetic/base-composition evidence.
 
@@ -121,6 +127,7 @@ For a substantive candidate, review the exact governing behavior and exact immut
 
 Ask in order:
 A. **Should this solution exist?** Correct problem and owner? Root fix? Smaller reuse/delete/reframe route?
+A1. **Right scale first.** Is this the right thing and scale to build before internal completeness is polished? Does the candidate take the smallest safe useful vertical stage, or justify an independently stable non-speculative foundation plus its immediate route to representative end-to-end proof?
 B. **Whole-system effect.** Does local success create duplicate truth, dependency/authority drift, hidden behavior, residue/coupling, disproportionate operational/support burden, or worse agent navigation?
 C. **Implementation quality.** Correctness, failure/UNKNOWN semantics, applicable concurrency/idempotency/external semantics, cohesion/readability, unnecessary cleverness; does the implementation still match the concrete owner/reuse/evidence shape of its Execution Plan?
 D. **Tests as adversarial artifacts.** What concrete fault does each material test catch? Would plausible broken code fail? Are mocks/fixtures fabricating the real boundary? Is important causal regression or high-fidelity boundary evidence missing? Is the test-support architecture itself becoming a maintenance liability?
@@ -147,7 +154,9 @@ A valid finding does not make the reviewer's proposed implementation shape autho
 
 A real blocker continues to block only its affected consequential claim/path until cleared or adjudicated. Unaffected authorized work continues.
 
-ACCEPT_DEFECT_REJECT_REMEDY accepts the defect but does not clear it. The author implements/proposes the smaller authorized clearing route and returns the exact corrected candidate/evidence to the original reviewer for focused rereview against the original defect and minimum clearing condition. The reviewer then WITHDRAWS/NARROWS/UPHOLDS/returns NEEDS_EVIDENCE on that exact claim. If a material applicability/materiality/clearing dispute still survives after that bounded focused response, Coordinator acquires one fresh independent reviewer for exact-dispute adjudication only. Until cleared/adjudicated, the finding remains open and holds only the affected consequential claim/path.
+ACCEPT_DEFECT_REJECT_REMEDY accepts the defect but does not clear it. The author implements/proposes the smaller authorized clearing route and returns the exact corrected candidate/evidence to the original reviewer for focused rereview against the original defect and minimum clearing condition. The original reviewer answers **WITHDRAW**, **NARROW**, **UPHOLD**, or **NEEDS_EVIDENCE** on that exact claim.
+
+If one material applicability, materiality or clearing dispute genuinely survives that bounded response, Coordinator may acquire one fresh independent reviewer for exact-dispute adjudication only. The request to Marco must plainly state: the exact disputed blocker; why the current reviewer/owner evidence cannot resolve it; the independence or conflict-of-interest property required; and the exact narrow question to decide. There is no automatic third reviewer, Coordinator tie-break review or indefinite review chain. If fresh-review capability is unavailable, preserve the exact affected blocker without inventing another stage. Until cleared or adjudicated, the finding holds only the affected consequential claim/path.
 
 Author/reviewer agreement does not defeat the correction-ratchet reset. If cumulative accepted corrections materially change mechanism, ownership/trust surfaces, implementation envelope, or test/support burden, re-run the whole-current-candidate `should this solution exist? / smaller reuse-delete-reframe?` judgment before another local patch layer.
 
@@ -172,3 +181,4 @@ The repository's current deterministic quality gates remain whatever the current
 This guidance can require plan shape, refresh/replan behavior, test evidence and later review checks; it does not prove the agent actually complied during the coding trajectory. This package contains no deterministic trajectory monitor/evidence gate. Treat conformance during implementation as guidance + readiness/review-backed detection until natural adoption evidence demonstrates behavior. Future mechanical enforcement remains a separately reviewed design problem.
 
 Broader cumulative code-health/audit scheduling belongs to the existing audit owner/process, not this document.
+When a Code Audit encounters regression into an oversized staged package, it flags the concrete scale/staging defect and minimum clearing condition; it does not silently redesign the package.
