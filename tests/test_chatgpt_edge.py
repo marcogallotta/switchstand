@@ -378,9 +378,18 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
     monkeypatch.setattr(
         chatgpt_edge, "load_activation_contracts_from_environment", lambda: contracts
     )
+    review_config = ReviewEdgeConfig(
+        ReviewPolicy(version="policy-v1", reviewer_by_kind={}),
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    monkeypatch.setattr(
+        chatgpt_edge, "load_review_config_from_environment", lambda: review_config
+    )
     async with chatgpt_edge.configured_resource_service() as (configured, _runtime):
         assert configured.activation_continuity is not None
         assert configured.activation_continuity.contracts is contracts
+        assert configured.reviews is not None
+        assert configured.reviews.policy is review_config.policy
 
 
 @pytest.mark.parametrize(

@@ -56,7 +56,8 @@ from .product_currentness import (
     evaluate_stateful_currentness,
 )
 from .product_currentness_stateful import LiveStatefulEvidenceReader, StatefulServerSnapshot
-from .reviews import ReviewGuidelines, ReviewOccurrenceState, ReviewPolicy, ReviewService
+from .review_config_loader import ReviewEdgeConfig, load_review_config_from_environment
+from .reviews import ReviewOccurrenceState, ReviewPolicy, ReviewService
 from .stable_auth import (
     REQUIRED_SCOPE,
     IntrospectionTokenVerifier,
@@ -130,14 +131,6 @@ class _ProductCurrentnessConfig:
             qualification_receipt=receipt_path,
             qualification_key=key_path,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewEdgeConfig:
-    """Explicit default-off review policy dependencies for the ordinary edge."""
-
-    policy: ReviewPolicy
-    guidelines: ReviewGuidelines
 
 
 def _tools_snapshot(tools: Sequence[Tool]) -> tuple[tuple[str, ...], str]:
@@ -508,7 +501,10 @@ async def configured_resource_service(
 ) -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
     """Own resource dependencies using the explicit default-off host configuration."""
 
-    async with resource_service(load_activation_contracts_from_environment()) as owned:
+    async with resource_service(
+        activation_contracts=load_activation_contracts_from_environment(),
+        review_config=load_review_config_from_environment(),
+    ) as owned:
         yield owned
 
 

@@ -284,7 +284,11 @@ messaging, and required continuation:
   arguments. The resource service accepts one explicit default-off review policy/guidelines
   configuration and constructs one mailbox/occurrence graph shared with the independently enabled
   implementation-request facade, avoiding divergent review truth. Production configuration and
-  activation remain separate, and client-visible activation
+  activation remain separate. `review_config_loader.py` loads that configuration only when optional
+  `SWITCHSTAND_REVIEW_CONFIG_PATH` names one absolute, bounded, mode-0600 closed/versioned JSON
+  file; unset remains off, every present path is literal, and configured-invalid fails startup
+  closed. The file carries policy and guideline identities plus an immutable partial reviewer map;
+  unmapped review kinds retain coordinator acquisition rather than inventing a reviewer. Client-visible activation
   requires a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
