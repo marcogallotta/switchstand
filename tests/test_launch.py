@@ -429,6 +429,33 @@ def test_provision_does_not_pass_partial_selector_to_attached_control(monkeypatc
     assert upgrade[1]["env"] == {"HOME": "/home/test"}
 
 
+def test_provision_passes_agent_task_only_when_explicitly_selected(monkeypatch):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if "up" in command or command[0] == "git" or "switchstand-upgrade-state" in command[0]:
+            stdout = "a" * 40 + "\n/repo/.git\nmain\n" if command[0] == "git" else ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=f"ACTIVE_WORK_ID={ACTIVE}\nREFERENCE_WORK_IDS=\nLEGACY_TASK_GIDS=\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provision(Path("/repo"), "123", (), {"HOME": "/home/test"})
+    default = commands[-1]
+    commands.clear()
+    provision(
+        Path("/repo"), "123", (), {"HOME": "/home/test"}, agent_task=True
+    )
+    opted_in = commands[-1]
+
+    assert "--agent-task" not in default
+    assert opted_in[opted_in.index("--managed-agent") + 1] == "--agent-task"
+
+
 @pytest.mark.parametrize("provisioner", [provision, provision_target])
 def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch, provisioner):
     calls = []

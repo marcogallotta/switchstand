@@ -11,6 +11,11 @@ PROFILE = "switchstand-development"
 SWITCHSTAND_HTTP_URL = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 MANAGED_COMMAND = "scripts/switchstand-controller-mcp"
 DEVELOPMENT_COMMAND = "scripts/switchstand-development-mcp"
+AGENT_TASK_MANAGED_TOOLS = (
+    "work_get", "work_history", "work_event", "work_append", "work_update",
+    "message_pending", "message_receive", "message_recover", "message_result_send",
+    "message_disposition", "agent_task_request", "agent_task_result",
+)
 
 
 class CodexReadback(NamedTuple):
@@ -152,7 +157,13 @@ def validate_codex_args(arguments: list[str]) -> list[str]:
     return forwarded
 
 
-def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list[str]:
+def codex_command(
+    control: Path,
+    candidate: Path,
+    codex_args: list[str],
+    *,
+    agent_task: bool = False,
+) -> list[str]:
     requests = validate_codex_args(codex_args)
     prompt = (
         'Start the launch-bound Switchstand work under the managed Worker context contract. '
@@ -163,7 +174,7 @@ def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list
     )
     if requests:
         prompt += "\n\nAdditional launch request:\n" + requests[0]
-    return [
+    command = [
         "codex",
         "-C",
         str(control),
@@ -191,3 +202,10 @@ def codex_command(control: Path, candidate: Path, codex_args: list[str]) -> list
         "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS),
         prompt,
     ]
+    if agent_task:
+        command[-1:-1] = [
+            "-c",
+            "mcp_servers.switchstand_managed.enabled_tools="
+            + json.dumps(AGENT_TASK_MANAGED_TOOLS, separators=(",", ":")),
+        ]
+    return command

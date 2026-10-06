@@ -155,6 +155,50 @@ async def test_provisioner_rejects_duplicate_canonical_work(monkeypatch):
         await provision.run("123", ("123",))
 
 
+async def test_agent_task_opt_in_is_atomic_with_managed_grant(monkeypatch, capsys):
+    work_id = UUID("00000000-0000-4000-8000-000000000011")
+    observed = []
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    class Works:
+        def __init__(self, _engine):
+            pass
+
+        async def get(self, requested):
+            assert requested == work_id
+            return CurrentWork(work_id, "pilot", False, "")
+
+        async def asana_gids(self, requested):
+            assert requested == work_id
+            return ()
+
+    async def current(_works, value):
+        assert value == str(work_id)
+        return CurrentWork(work_id, "pilot", False, "")
+
+    async def rotate(_grants, authority, *, agent_task=False):
+        observed.append((authority.active_work_id, agent_task))
+        return SimpleNamespace(id=UUID(int=19), version=4)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://unused")
+    monkeypatch.setattr(provision, "create_async_engine", lambda _: Engine())
+    monkeypatch.setattr(provision, "CanonicalWorkRepository", Works)
+    monkeypatch.setattr(provision, "canonical_work", current)
+    monkeypatch.setattr(provision, "rotate_managed_grant", rotate)
+
+    with pytest.raises(ValueError, match="managed-agent"):
+        await provision.run(str(work_id), (), agent_task=True)
+    await provision.run(
+        str(work_id), (), managed_agent=True, agent_task=True
+    )
+
+    assert observed == [(work_id, True)]
+    assert "MANAGED_GRANT_VERSION=4" in capsys.readouterr().out
+
+
 async def test_exact_canonical_miss_uses_existing_grant_fallback_without_rotation(
     monkeypatch, capsys
 ):
@@ -202,6 +246,13 @@ async def test_exact_canonical_miss_uses_existing_grant_fallback_without_rotatio
 
     assert events == [f"canonical:{work_id}", f"fallback:{work_id}", "dispose"]
     assert f"ACTIVE_WORK_ID={work_id}" in capsys.readouterr().out
+
+    events.clear()
+    with pytest.raises(ValueError, match="requires canonical work"):
+        await provision.run(
+            str(work_id), (), managed_agent=True, agent_task=True
+        )
+    assert events == [f"canonical:{work_id}", "dispose"]
 
 
 async def _async_value(value):

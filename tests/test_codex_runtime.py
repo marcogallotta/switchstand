@@ -2,6 +2,7 @@ import json
 import os
 import selectors
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,33 @@ def test_managed_codex_requires_both_mcp_servers():
     assert "mcp_servers.switchstand.enabled=false" in command
     assert "mcp_servers.switchstand_managed.required=true" in command
     assert "mcp_servers.switchstand_development.required=true" in command
+
+
+def test_agent_task_tools_are_exposed_only_for_explicit_launch_opt_in():
+    default = codex_command(Path("/control"), Path("/writer"), [])
+    opted_in = codex_command(
+        Path("/control"), Path("/writer"), [], agent_task=True
+    )
+
+    assert not any("agent_task_" in value for value in default)
+    enabled = next(value for value in opted_in if "agent_task_request" in value)
+    assert enabled.startswith("mcp_servers.switchstand_managed.enabled_tools=")
+    assert '"agent_task_request","agent_task_result"' in enabled
+    assert opted_in[-1] == default[-1]
+
+
+def test_agent_task_opt_in_preserves_exact_managed_tool_baseline():
+    config = tomllib.loads(
+        (Path(__file__).parents[1] / ".codex/config.toml").read_text()
+    )
+    baseline = config["mcp_servers"]["switchstand_managed"]["enabled_tools"]
+    command = codex_command(
+        Path("/control"), Path("/writer"), [], agent_task=True
+    )
+    override = next(value for value in command if "agent_task_request" in value)
+    enabled = json.loads(override.split("=", 1)[1])
+
+    assert enabled == baseline + ["agent_task_request", "agent_task_result"]
 
 
 def test_managed_codex_starts_work_without_a_manual_prompt():

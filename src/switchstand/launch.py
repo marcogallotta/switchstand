@@ -91,6 +91,10 @@ def parser() -> argparse.ArgumentParser:
         "--reference", action="append", default=[], help="read-only Asana task ID or URL"
     )
     result.add_argument("--task-request-id", type=UUID, help="exact START request to bind")
+    result.add_argument(
+        "--agent-task", action="store_true",
+        help="enable task-run request/result tools for this launch only",
+    )
     result.add_argument("codex_args", nargs=argparse.REMAINDER, help="arguments passed to Codex")
     return result
 
@@ -217,14 +221,17 @@ def parse_authority(output: str) -> Authority:
 
 
 def provision(
-    control: Path, active: str, references: tuple[str, ...], env: dict[str, str]
+    control: Path, active: str, references: tuple[str, ...], env: dict[str, str],
+    *, agent_task: bool = False,
 ) -> Authority:
-    return parse_authority(provision_output(control, active, references, env))
+    return parse_authority(
+        provision_output(control, active, references, env, agent_task=agent_task)
+    )
 
 
 def provision_output(
     control: Path, active: str, references: tuple[str, ...], env: dict[str, str],
-    *, repository: bool = False,
+    *, repository: bool = False, agent_task: bool = False,
 ) -> str:
     """Run trusted provisioning, optionally requesting repository admission."""
     queue: PendingFailureQueue | None = None
@@ -296,6 +303,8 @@ def provision_output(
     ]
     if repository:
         command.append("--repository")
+    if agent_task:
+        command.append("--agent-task")
     for reference in references:
         command.extend(("--reference", reference))
     completed = subprocess.run(
@@ -378,12 +387,16 @@ def prepare_managed_run(
     git_dir: Path,
     expected_active: UUID,
     task_request_id: UUID | None = None,
+    agent_task: bool = False,
 ) -> PreparedRun:
     def reclaim(receipt: RunReceipt) -> None:
         reclaim_development(candidate, receipt.run_id, env)
 
     with reserve_run(candidate, branch, git_dir, reclaim) as record:
-        authority = provision(control, active, references, env)
+        authority = (
+            provision(control, active, references, env, agent_task=True)
+            if agent_task else provision(control, active, references, env)
+        )
         if authority.active != expected_active:
             raise ValueError("provisioned WorkId does not match the exact resolved launch work")
         receipt = record(authority.active)
@@ -482,6 +495,7 @@ def run(arguments: argparse.Namespace) -> None:
     prepared = prepare_managed_run(
         control, candidate, branch, arguments.active, tuple(arguments.reference), env, git_dir,
         resolved_work_id, arguments.task_request_id,
+        arguments.agent_task,
     )
     authority, development, receipt = prepared
     env["ACTIVE_WORK_ID"] = str(authority.active)
@@ -502,7 +516,10 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Codex profile: {checked.profile} ({checked.sandbox})", file=sys.stderr)
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
-    command = codex_command(control, candidate, codex_args)
+    command = (
+        codex_command(control, candidate, codex_args, agent_task=True)
+        if arguments.agent_task else codex_command(control, candidate, codex_args)
+    )
     raise SystemExit(supervise_codex(command, env, development, receipt.run_id))
 
 
