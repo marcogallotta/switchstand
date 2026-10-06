@@ -28,6 +28,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .activation_continuity import ActivationContract
 from .activation_continuity_store import ActivationContinuity
+from .activation_contract_loader import load_activation_contracts_from_environment
 from .agent_mailboxes import AgentMailboxState
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
@@ -453,9 +454,18 @@ async def resource_service(
         await engine.dispose()
 
 
+@asynccontextmanager
+async def configured_resource_service(
+) -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
+    """Own resource dependencies using the explicit default-off host configuration."""
+
+    async with resource_service(load_activation_contracts_from_environment()) as owned:
+        yield owned
+
+
 async def serve() -> None:
     config = MCPAuthConfig.from_environment()
-    async with resource_service() as (service, runtime):
+    async with configured_resource_service() as (service, runtime):
         app = create_app(service, config, certification_runtime=runtime)
         await app.state.fastmcp_server.run_http_async(
             host=config.bind_host, port=config.bind_port, path="/mcp",

@@ -339,6 +339,12 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
     async with chatgpt_edge.resource_service(contracts) as (injected, _runtime):
         assert injected.activation_continuity is not None
         assert injected.activation_continuity.contracts is contracts
+    monkeypatch.setattr(
+        chatgpt_edge, "load_activation_contracts_from_environment", lambda: contracts
+    )
+    async with chatgpt_edge.configured_resource_service() as (configured, _runtime):
+        assert configured.activation_continuity is not None
+        assert configured.activation_continuity.contracts is contracts
 
 
 async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
