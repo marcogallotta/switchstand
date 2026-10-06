@@ -41,13 +41,20 @@ def parser() -> argparse.ArgumentParser:
         "--reference", action="append", default=[], help="read-only WorkId or legacy task ID/URL"
     )
     result.add_argument("--managed-agent", action="store_true")
+    result.add_argument(
+        "--agent-task", action="store_true",
+        help="add task-run request/result authority to this managed launch only",
+    )
     result.add_argument("--repository", action="store_true")
     return result
 
 
 async def run(
-    active: str, references: tuple[str, ...], *, managed_agent: bool = False, repository: bool = False,
+    active: str, references: tuple[str, ...], *, managed_agent: bool = False,
+    agent_task: bool = False, repository: bool = False,
 ) -> None:
+    if agent_task and not managed_agent:
+        raise ValueError("agent-task authority requires a managed-agent launch")
     if len(references) > 8:
         raise ValueError("at most eight reference tasks are allowed")
     engine = create_async_engine(os.environ["DATABASE_URL"])
@@ -87,6 +94,8 @@ async def run(
             exact_active = None
         canonical_active = None if exact_active is None else await works.get(exact_active)
         if exact_active is not None and canonical_active is None:
+            if agent_task:
+                raise ValueError("agent-task authority requires canonical work")
             if references or repository:
                 raise ValueError("pre-migration bootstrap supports one local work target only")
             async with httpx.AsyncClient(
@@ -123,7 +132,15 @@ async def run(
             if slug != "marcogallotta/ai-tools":
                 raise ValueError("repository is outside the prototype allowlist")
             print(f"SWITCHSTAND_REPOSITORY={slug}")
-        grant = await rotate_managed_grant(GrantState(engine), authority) if managed_agent else None
+        grant = None
+        if managed_agent:
+            grant = (
+                await rotate_managed_grant(
+                    GrantState(engine), authority, agent_task=True
+                )
+                if agent_task
+                else await rotate_managed_grant(GrantState(engine), authority)
+            )
         print(f"ACTIVE_WORK_ID={authority.active_work_id}")
         print("REFERENCE_WORK_IDS=" + ",".join(map(str, authority.reference_work_ids)))
         print("LEGACY_TASK_GIDS=" + ",".join(
@@ -170,7 +187,7 @@ def main() -> None:
         require_current_schema()
         asyncio.run(run(
             arguments.active, tuple(arguments.reference), managed_agent=arguments.managed_agent,
-            repository=arguments.repository
+            agent_task=arguments.agent_task, repository=arguments.repository
         ))
     except Exception as error:  # noqa: BLE001 - this is the final secret-redacting CLI boundary
         detail = redact_environment(str(error), dict(os.environ))

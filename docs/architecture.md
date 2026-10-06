@@ -313,8 +313,10 @@ messaging, and required continuation:
   currentness preserves evidence nonterminal for later reconciliation. The managed launcher can
   bind one explicitly supplied exact START request to its durable RunReceipt before
   development setup; omission performs no selection or binding, and uncertain binding aborts launch.
-  The managed client allowlist and default grant still exclude `agent_task`; continuation/takeover,
-  request-selected or automatic launch,
+  The managed client allowlist and default grant exclude `agent_task`. An explicit trusted
+  `--agent-task` launch opt-in atomically adds that operation to the newly rotated launch grant and
+  exposes only the existing request/result adapters to that launched client. It selects no request
+  and starts no child. Continuation/takeover, request-selected or automatic launch,
   ordinary HTTP exposure, and activation remain absent.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.

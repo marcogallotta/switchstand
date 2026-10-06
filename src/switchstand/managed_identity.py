@@ -17,7 +17,12 @@ def managed_principal(active_work_id: UUID) -> PrincipalContext:
     )
 
 
-async def rotate_managed_grant(grants: GrantState, authority: LaunchAuthority) -> WorkGrant:
+async def rotate_managed_grant(
+    grants: GrantState,
+    authority: LaunchAuthority,
+    *,
+    agent_task: bool = False,
+) -> WorkGrant:
     principal = managed_principal(authority.active_work_id)
     current = await grants.current(principal.key)
     expected = None if current is None else current.version
@@ -26,6 +31,7 @@ async def rotate_managed_grant(grants: GrantState, authority: LaunchAuthority) -
         authority=authority, scope="launch",
         operations=frozenset({
             "work_get", "work_append", "work_update", "work_relate", "message",
+            *({"agent_task"} if agent_task else set()),
         }),
         issuer=MANAGED_ISSUER,
         provenance=f"trusted managed owner for WorkId {authority.active_work_id}",
