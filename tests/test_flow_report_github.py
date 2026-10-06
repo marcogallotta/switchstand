@@ -53,6 +53,9 @@ def test_caller_supplied_exact_subjects_union_overlaps_without_cross_subject_sum
     assert result["coverage"]["github"] == {
         "status": "INCLUDED", "reason": "CALLER_SUPPLIED",
     }
+    assert result["source_coverage"]["github_ci"] == {
+        "status": "KNOWN", "reason": "CALLER_SUPPLIED",
+    }
 
 
 def test_wall_projection_unions_github_subjects_instead_of_summing_them() -> None:
@@ -93,6 +96,9 @@ def test_head_mismatch_makes_source_unknown_without_a_span() -> None:
 
     assert result["github"]["status"] == "UNKNOWN"
     assert result["github"]["reason"] == "EXPECTED_HEAD_MISMATCH"
+    assert result["source_coverage"]["github_ci"] == {
+        "status": "UNKNOWN", "reason": "EXPECTED_HEAD_MISMATCH",
+    }
     assert all(subject["intervals"] == [] and subject["union_ms"] is None
                for subject in result["github"]["subjects"].values())
 
