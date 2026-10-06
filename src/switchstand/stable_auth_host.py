@@ -23,6 +23,7 @@ INTERNAL_SECRET_PATTERN = re.compile(r"[A-Za-z0-9_-]{64}")
 MIN_INTERNAL_SECRET_DISTINCT_CHARACTERS = 16
 PUBLIC_MCP_PATHS = ("/switchstand/mcp", "/switchstand/mcp/*")
 PUBLIC_RESOURCE_METADATA_PATHS = ("/.well-known/oauth-protected-resource/switchstand/mcp",)
+PUBLIC_CERTIFICATION_PATHS = ("/.well-known/switchstand-certification-runtime",)
 PUBLIC_OAUTH_PATHS = (
     "/switchstand/authorize",
     "/switchstand/token",
@@ -213,7 +214,9 @@ def caddy_routes(assets: HostAssets) -> list[dict[str, Any]]:
             "terminal": True,
         },
         {
-            "match": [{"path": list(PUBLIC_RESOURCE_METADATA_PATHS)}],
+            "match": [{
+                "path": list(PUBLIC_RESOURCE_METADATA_PATHS + PUBLIC_CERTIFICATION_PATHS)
+            }],
             "handle": [proxy("switchstand_split_resource_metadata_proxy", assets.edge_port)],
             "terminal": True,
         },
