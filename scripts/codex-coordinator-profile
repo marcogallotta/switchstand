@@ -176,6 +176,7 @@ def render(
         'description = "Coordinator user access with the shared primary checkout read-only."',
         "",
         "[permissions.switchstand-coordinator.filesystem]",
+        '":root" = "read"',
         f'{json.dumps(str(user_home))} = "write"',
         "",
         f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
