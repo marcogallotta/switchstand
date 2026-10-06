@@ -14,9 +14,9 @@ import uvicorn
 
 from .chatgpt_edge import (
     GRACEFUL_SHUTDOWN_SECONDS,
+    configured_resource_service,
     create_delegated_app,
     http_middleware,
-    resource_service,
 )
 from .stable_auth import (
     IntrospectionContract,
@@ -140,7 +140,7 @@ async def serve_edge() -> None:
             internal_secret=config.internal_secret,
             contract=config.contract,
         )
-        async with resource_service() as (service, runtime):
+        async with configured_resource_service() as (service, runtime):
             app = create_delegated_app(service, verifier, certification_runtime=runtime)
             await app.state.fastmcp_server.run_http_async(
                 host="127.0.0.1",

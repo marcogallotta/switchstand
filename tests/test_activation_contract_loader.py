@@ -8,9 +8,12 @@ from pydantic import ValidationError
 
 from switchstand.activation_continuity import ActivationContract
 from switchstand.activation_contract_loader import (
+    ACTIVATION_CONTRACTS_PATH_ENV,
     MAX_CONTRACT_FILE_BYTES,
     load_activation_contracts,
+    load_activation_contracts_from_environment,
 )
+from switchstand.secure_file import PrivateFileOpenError
 
 PRODUCT = UUID("30000000-0000-4000-8000-000000000001")
 OWNER = UUID("30000000-0000-4000-8000-000000000002")
@@ -59,6 +62,31 @@ def test_loads_immutable_registry_keyed_by_derived_obligation(tmp_path: Path) ->
     assert loaded == {bound.obligation_id: bound}
     with pytest.raises(TypeError):
         loaded[bound.obligation_id] = bound  # type: ignore[index]
+
+
+def test_environment_loading_is_explicit_absolute_and_default_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv(ACTIVATION_CONTRACTS_PATH_ENV, raising=False)
+    assert load_activation_contracts_from_environment() is None
+
+    monkeypatch.setenv(ACTIVATION_CONTRACTS_PATH_ENV, "contracts.json")
+    with pytest.raises(ValueError, match="absolute path"):
+        load_activation_contracts_from_environment()
+
+    monkeypatch.setenv(ACTIVATION_CONTRACTS_PATH_ENV, "   ")
+    with pytest.raises(ValueError, match="absolute path"):
+        load_activation_contracts_from_environment()
+
+    path = tmp_path / "contracts.json"
+    bound = contract()
+    write(path, envelope(bound))
+    monkeypatch.setenv(ACTIVATION_CONTRACTS_PATH_ENV, str(path))
+    assert load_activation_contracts_from_environment() == {bound.obligation_id: bound}
+
+    monkeypatch.setenv(ACTIVATION_CONTRACTS_PATH_ENV, f"{path} ")
+    with pytest.raises(PrivateFileOpenError):
+        load_activation_contracts_from_environment()
 
 
 @pytest.mark.parametrize(
