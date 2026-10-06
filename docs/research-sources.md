@@ -111,16 +111,21 @@ agent-reported and not independently verified.
   scale. Skip: product launches. Use: evidence. Fit: good, but its review blocks merges.
 - **Scott Logic** — https://blog.scottlogic.com. Go for: agent safety by design, measured spec-driven
   trials. Use: opinion. Fit: partial.
-- **Google SRE** — https://sre.google. Go for: incident command and live-state documents,
+- **Google SRE** — https://sre.google, especially
+  https://sre.google/workbook/postmortem-culture/ and
+  https://sre.google/workbook/error-budget-policy/. Go for: incident command and live-state documents,
   postmortem culture, canarying, blameless learning, and owned follow-up actions. Skip:
   Google-scale capacity and role machinery. Use: mechanics. Fit: good. Incident-management and
-  postmortem chapters verified reachable and used for the Code Red runbook on 2026-09-30.
+  postmortem chapters verified reachable and used for the Code Red runbook on 2026-09-30;
+  their start-small and severity-trigger evidence was USED for proportional RCA on 2026-10-06.
 - **PagerDuty Incident Response** — https://response.pagerduty.com. Go for: an independent
   operational playbook capable of challenging Google-derived incident roles, status, and
   lifecycle. Use: mechanics and vendor voice. Fit: good after removing its larger-team ceremony.
   The legacy page was not fetchable by the automated research client on 2026-09-30, but the
   first-party GitHub source and current PagerDuty Ops Guide were reachable and used for the Code
-  Red update/verification/follow-up lifecycle.
+  Red update/verification/follow-up lifecycle. The current postmortem process at
+  https://response.pagerduty.com/after/post_mortem_process/ was USED on 2026-10-06 for its
+  major-incident trigger, ROI test, and warning against too many low-value follow-up tickets.
 - **Cursor Blog** — https://cursor.com/blog. Go for: running many agents, long-run efficiency. Use:
   vendor voice. Fit: mixed; autonomy-forward.
 - **Cognition Blog** — https://cognition.com/blog. Go for: multi-agent arguments (writes stay

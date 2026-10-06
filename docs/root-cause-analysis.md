@@ -20,6 +20,37 @@ A live incident enters the [incident runbook](operations-live-incident.md) first
 work never delays acknowledgement, current-state inspection, or the smallest safe
 mitigation. Resolve or create the RCA identity as soon as it is safe.
 
+## Proportional depth
+
+Use the smallest investigation that can support the terminal causal standard and one
+useful correction. RCA is not a licence to survey the whole repository, reconstruct all
+history, start broad research, or create a correction programme.
+
+- **Friction note:** use for a one-off, low-impact failure with an obvious local cause and
+  clearing action. Record attempted claim, observed result, state-change truth, and the
+  smallest clearing action; do not open a full RCA merely to restate them.
+- **Bounded RCA (default):** use for an explicit RCA request, an escaped material control,
+  a recurrence, or a contained incident. Start from already-available current evidence,
+  test only the cheapest discriminating boundary, write a compact causal model, obtain one
+  independent review, and create only corrections that materially prevent or bound the
+  recurrence.
+- **Expanded RCA:** use only when severity/blast radius is high, the same mechanism recurs
+  across products, a consequential effect remains ambiguous, evidence materially
+  conflicts, or the cheapest check cannot distinguish credible causes. Record the exact
+  expansion trigger. Expansion is not justified by a long timeline, a large repository,
+  free Worker capacity, or a desire for completeness.
+
+For a bounded RCA, prefer one compact paragraph over a large narrative. Use a hypothesis
+table only when multiple credible hypotheses remain live. External research and parallel
+evidence lanes are optional and must answer a named unresolved decision; stop them when
+they cannot change the causal model or correction. Unknowns that cannot change the next
+safe action remain explicit residual truth rather than reasons to widen the investigation.
+
+Stop investigating when the trigger, mechanism, failed control, detection/response path,
+and counterfactual are supported well enough to choose the smallest owned correction.
+Marco's requested response-time or depth bound controls the presentation immediately;
+deliver the decision-bearing causal answer first and expand only on an applicable trigger.
+
 ## Identity, authority, and evidence
 
 Use one sanitized RCA parent WorkId in the dedicated RCA project selected by current
