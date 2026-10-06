@@ -137,6 +137,32 @@ def test_supervisor_restarts_runner_and_stops_it_at_codex_exit(
     assert marker.read_text() == "xxs"
 
 
+def test_supervisor_reports_continuous_registration_outage_once(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    session = spec(tmp_path)
+    attempts = 0
+
+    def unavailable(_spec: SessionSpec):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("unavailable")
+
+    monkeypatch.setattr("switchstand.codex_session.prepare_runner", unavailable)
+    monkeypatch.setattr("switchstand.codex_session.MAX_RETRY_SECONDS", 0.01)
+
+    result = supervise(
+        session, [sys.executable, "-c", "import time; time.sleep(1.25)"],
+        dict(os.environ),
+    )
+
+    assert result == 0
+    assert attempts >= 2
+    assert capsys.readouterr().err.count(
+        "Wakeful registration unavailable; retrying"
+    ) == 1
+
+
 @pytest.mark.parametrize("pythonpath", ["writer-specific-path", None])
 def test_main_preserves_child_pythonpath(
     tmp_path: Path, monkeypatch, pythonpath: str | None,
