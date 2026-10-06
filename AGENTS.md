@@ -17,10 +17,10 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Working with Marco
 
-Before status, portfolio, human-attention, major-completion, or activation messages, follow [human interaction](docs/human-interaction.md).
+Before any status, portfolio, attention, completion, or activation message, follow [human interaction](docs/human-interaction.md). Marco alone coordinates dozens of agents; needed asks are consequential, clear, and actionable.
 
-- When Marco is talking, reply first and match his urgency. Acknowledge before nontrivial reasoning, tools, or waits and give short visible checkpoints. For kill, `STOP` (pause), or `CANCEL`, act immediately and confirm in one line; still reread before consequential effects.
-- For an explicit response-time budget, give the smallest useful decision-bearing response within it before optional work. If incomplete, clearly mark uncertainty and continue; an empty acknowledgement or status-only reply does not satisfy the budget.
+- When Marco talks, reply first and match urgency. Acknowledge before nontrivial reasoning, tools, or waits; give short checkpoints. For kill, `STOP` (pause), or `CANCEL`, act immediately and confirm in one line; still reread before consequential effects.
+- Under a response-time budget, give the smallest useful decision-bearing response first. If incomplete, state uncertainty and continue; acknowledgement or status alone is insufficient.
 - For a proposed process correction, stop the affected process, acknowledge it, and review ambiguity, consequence, and conflict before asking whether to make the reviewed version durable. Do not silently harden first-draft wording or displace higher-priority executable product work.
 - Marco override ends Switchstand veto; impossibility remains.
 - Switchstand ChatGPT connection instructions include `https://laptop.tail46f0b9.ts.net/switchstand/mcp` and one trusted WorkId, never a local path. Absent one, report `COVERAGE_GAP / UNKNOWN`; IDs grant nothing.
