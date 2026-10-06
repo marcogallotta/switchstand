@@ -12,6 +12,7 @@ from mcp.server.auth.provider import AccessToken
 from starlette.testclient import TestClient
 
 from switchstand import chatgpt_edge
+from switchstand.activation_continuity import ActivationContract
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
@@ -302,6 +303,38 @@ async def test_resource_edge_preserves_injected_activation_dependencies(monkeypa
         captured[-1].activation_runtime,
         captured[-1].activation_proof,
     ] == dependencies
+
+
+async def test_resource_service_activation_registry_is_explicit_and_default_off(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+    product = uuid4()
+    contract = ActivationContract(
+        product_work_id=product,
+        outcome_key="release",
+        target_revision="git:abc",
+        target_phase="ACTIVATED",
+        return_owner_work_id=uuid4(),
+        acceptance_contract_id="acceptance-v1",
+        contract_revision="v1",
+        acceptance_verifier_work_id=uuid4(),
+        adoption_requirement="NOT_REQUIRED",
+        adoption_actor_work_id=None,
+        lifecycle_authority_work_id=product,
+    )
+    contracts = {contract.obligation_id: contract}
+
+    async with chatgpt_edge.resource_service() as (plain, _runtime):
+        assert plain.activation_continuity is None
+    async with chatgpt_edge.resource_service(contracts) as (injected, _runtime):
+        assert injected.activation_continuity is not None
+        assert injected.activation_continuity.contracts is contracts
 
 
 async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
