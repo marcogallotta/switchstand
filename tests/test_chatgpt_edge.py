@@ -21,6 +21,8 @@ from switchstand.chatgpt_edge import (
 )
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
+from switchstand.priority_claim_service import PriorityClaimService
+from switchstand.priority_context import PriorityContextProjection
 from switchstand.product_currentness_stateful import StatefulPersistenceSnapshot
 
 RESOURCE = "https://switchstand.example.com/mcp"
@@ -286,27 +288,59 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
     assert "activation_obligation_transition" not in plain_tools
 
     subject = service()
-    dependencies = [object() for _ in range(5)]
+    dependencies = [object() for _ in range(7)]
     (
+        subject.priority_claims,
+        subject.priority_context,
         subject.reviews,
         subject.activation_continuity,
         subject.activation_technical,
         subject.activation_runtime,
         subject.activation_proof,
     ) = dependencies
+    subject.priority_claims_enabled = True
+    subject.priority_context_enabled = True
     injected_app = create_app(subject, CONFIG, client_storage=MemoryStore())
     injected_tools = {tool.name for tool in await injected_app.state.fastmcp_server.list_tools()}
 
     assert {
-        "review_request", "review_submit", "activation_obligation_transition"
+        "priority_claim_get", "priority_claim_record", "priority_context_get",
+        "review_request", "review_submit", "activation_obligation_transition",
     } <= injected_tools
     assert [
+        captured[-1].priority_claims,
+        captured[-1].priority_context,
         captured[-1].reviews,
         captured[-1].activation_continuity,
         captured[-1].activation_technical,
         captured[-1].activation_runtime,
         captured[-1].activation_proof,
     ] == dependencies
+
+
+async def test_resource_service_priority_surface_is_explicit_and_default_off(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    engine = Engine()
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: engine)
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    async with chatgpt_edge.resource_service() as (plain, _runtime):
+        assert plain.priority_claims is None
+        assert plain.priority_context is None
+        assert plain.priority_claims_enabled is False
+        assert plain.priority_context_enabled is False
+
+    monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
+    async with chatgpt_edge.resource_service() as (enabled, _runtime):
+        assert isinstance(enabled.priority_claims, PriorityClaimService)
+        assert isinstance(enabled.priority_context, PriorityContextProjection)
+        assert enabled.priority_claims_enabled is True
+        assert enabled.priority_context_enabled is True
 
 
 async def test_resource_service_activation_registry_is_explicit_and_default_off(monkeypatch):

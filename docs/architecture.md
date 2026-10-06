@@ -256,8 +256,10 @@ messaging, and required continuation:
   `AGENT_RECOMMENDATION` for an exact launch grant's active WorkId and reuse `effect_intents` for
   replay/conflict recovery; ordinary workspace and project writes are denied. No public argument
   can mint `HUMAN_PRIORITY`, because no installed attributable human-confirmation seam exists.
-  The production edge does not construct, propagate, or register this projection. Activation must
-  add that wiring under separate authority, then reinstall and verify the client-visible MCP schema.
+  The production edge constructs and registers this projection only when
+  `SWITCHSTAND_PRIORITY_CLAIMS=1`; the same switch enables the bounded read-only priority-context
+  projection. Activation remains a separate deployment effect and requires reinstalling and
+  verifying the client-visible MCP schema.
 - `priority_context.py` composes a deterministic read-only view for at most 50 explicit WorkIds
   from canonical work, relations, and priority claims. It keeps project claims contextual, labels
   agent claims advisory, exposes stale/conflicting/unknown evidence, and never parses notes or
