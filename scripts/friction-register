@@ -22,21 +22,16 @@ REQUIRED = (
     "- Clearing action: ",
 )
 INDEX = """# Friction register
-
 Record proven setup and workflow failures by their primary clearing action:
-
 - [Capability](friction/capability.md): access, tool, runtime, or environment capability.
 - [Process](friction/process.md): coordination, routing, ownership, or procedure.
 - [Implementation](friction/implementation.md): a repository code or test defect.
-
 Use a globally stable lowercase key. Run `scripts/friction-register has <key>` before
-`scripts/friction-register append <category> <key>`. An entry is at most 800 Unicode
-characters and eight nonblank lines. Keep only attempted claim, observed result,
-state-change truth, and smallest clearing action. A proven unfixed item that is not
-selected also needs `Deferred because` and `Evidence` lines.
-
-Exclude speculative backlog, transcripts, raw logs, portfolio state, priorities,
-and secrets. Evidence detail remains on the owning WorkId or a durable private artifact.
+`scripts/friction-register append <category> <key>`. An entry is at most 800 Unicode characters
+and eight nonblank lines. Keep only attempted claim, observed result, state-change truth, and
+smallest clearing action. A proven unfixed item that is not selected also needs `Deferred because`
+and `Evidence` lines. Exclude speculative backlog, transcripts, raw logs, portfolio state,
+priorities, and secrets. Evidence detail remains on the owning WorkId or a durable private artifact.
 """
 HEADER = """# {title} friction
 
@@ -193,6 +188,8 @@ def validate_entry(key: str, body: str) -> str:
     if "\x00" in body:
         fail("entry body contains NUL")
     nonblank = [line for line in lines if line.strip()]
+    if any(line.startswith("### ") for line in nonblank):
+        fail("entry body must not contain a key heading")
     if len(nonblank) + 1 > 8:
         fail("entry exceeds eight nonblank lines including its heading")
     for prefix in REQUIRED:

@@ -106,6 +106,11 @@ def test_append_requires_complete_deferred_evidence_and_valid_key(tmp_path: Path
 
     invalid = run("append", "process", "../UPPER", cwd=tmp_path, body=body())
     assert invalid.returncode == 2 and "key must be" in invalid.stderr
+    for injected in ("### shadow-key", "### invalid key"):
+        poisoned = run("append", "process", "poison", cwd=tmp_path,
+                       body=body() + injected + "\n")
+        assert poisoned.returncode == 2 and "key heading" in poisoned.stderr
+    assert run("has", "shadow-key", cwd=tmp_path).returncode == 1
 
 
 def test_concurrent_same_key_append_converges_once(tmp_path: Path) -> None:
