@@ -76,8 +76,10 @@ Human Input, or owned residual work. If it is not satisfied, keep the incident `
   causal evidence.
 - [ ] Service posture is no longer `PENDING`. Any `GATE`/`SUSPEND` posture is returned to the
   intended steady state, or an owner and removal trigger are recorded.
-- [ ] Every rollback has an explicit roll-forward/redeploy/retirement decision; exact removed
-  candidate and bundled good work are accounted for; forward-only state was not rewound.
+- [ ] Every rollback completed the continuous `ROLLBACK / MITIGATE -> FIX -> QUALIFY -> REDEPLOY /
+  ROLL FORWARD -> CLOSE OR CONTINUE` loop, or remains an explicitly open owned obligation. The
+  exact removed candidate and bundled good work are accounted for; forward-only state was not
+  rewound; production-shaped affected-path proof gates redeployment and closeout.
 - [ ] Every temporary Project Settings, `START HERE`, agent-guidance, canary, or HOLD change is
   `REMOVED` or reviewed and installed as permanent guidance.
 - [ ] The sanitized RCA parent links the accepted causal model under the current canonical
