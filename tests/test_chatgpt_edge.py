@@ -251,9 +251,7 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
 
         subject.product_currentness = placeholder
         preliminary = create_app(subject, CONFIG, client_storage=MemoryStore())
-        preliminary_tools = await preliminary.state.fastmcp_server.list_tools(
-            run_middleware=False
-        )
+        preliminary_tools = await preliminary.state.fastmcp_server.list_tools()
         _, expected_digest = chatgpt_edge._tools_snapshot(preliminary_tools)
 
         _currentness_environment(monkeypatch)

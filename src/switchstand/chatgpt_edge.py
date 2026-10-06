@@ -467,7 +467,7 @@ def _create_resource_app(
 
             async def read_snapshot() -> StatefulServerSnapshot:
                 names, schema_digest = _tools_snapshot(
-                    await server.list_tools(run_middleware=False)
+                    await server.list_tools()
                 )
                 return StatefulServerSnapshot(
                     runtime_sha=currentness_config.runtime_sha,
