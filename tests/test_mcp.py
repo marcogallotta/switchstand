@@ -262,6 +262,43 @@ def test_unbound_environment_initializes_with_no_work_tools(monkeypatch):
     assert not server_from_env()._tool_manager._tools
 
 
+def test_context_profile_restricts_canonical_managed_server_server_side(monkeypatch):
+    import switchstand.mcp as managed_mcp
+
+    engine, works, relations = object(), object(), object()
+    service = SimpleNamespace(
+        state=SimpleNamespace(engine=engine),
+        work=SimpleNamespace(works=works, relations=relations, protected_update=None),
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
+    )
+
+    class NoGrantState:
+        def __init__(self, value):
+            self.engine = value
+
+        async def current(self, _principal_key):
+            return None
+
+    class NoMessages:
+        def __init__(self, *_args):
+            pass
+
+    class NoTaskRuns:
+        def __init__(self, *_args):
+            pass
+
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "context")
+    monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+    monkeypatch.setattr(managed_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(managed_mcp, "GrantState", NoGrantState)
+    monkeypatch.setattr(managed_mcp, "MessageState", NoMessages)
+    monkeypatch.setattr(managed_mcp, "TaskRunState", NoTaskRuns)
+
+    server = managed_mcp.server_from_env()
+    assert set(server._tool_manager._tools) == {"work_get", "work_history"}
+
+
 def test_managed_environment_without_authority_fails(monkeypatch):
     monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
     monkeypatch.delenv("ACTIVE_WORK_ID", raising=False)

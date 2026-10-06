@@ -181,11 +181,13 @@ the managed surface derives the claim target and grant version from that trusted
 the active claim read/write tools, and bounds priority context to the active WorkId plus its
 launch-bound read-only references.
 
-`mcp.py::build_context_server` is the smaller launch-context surface. It always exposes only the
-launch-bound work and its revision-checked history; when priority claims are enabled it additionally
-exposes the same active-work priority adapter and bounded context projection as the full managed
-server. Managed and ordinary MCPs reuse contracts and state, but their authority and inventories
-are intentionally not interchangeable.
+Managed launch profiles use the same `mcp.py::build_server` implementation and apply a
+server-side launch tool policy before serving. The historical `build_context_server` /
+`switchstand-context-mcp` names are compatibility aliases only; they do not own a second tool
+inventory. The context profile exposes only launch-bound work/history plus explicitly enabled
+launch capabilities such as priority claims. Client `enabled_tools` mirrors that policy for UX,
+but server-side registration is authoritative. Restricted capability does not justify a duplicate
+MCP implementation or provider credential path.
 
 ### Managed resource-worker runtime
 
