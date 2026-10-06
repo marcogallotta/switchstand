@@ -5,9 +5,192 @@ on:
   pull_request:
   schedule:
     - cron: "17 2 * * *"
+permissions:
+  actions: read
+  contents: read
 jobs:
-  quality:
-    name: ${{ github.event_name == 'pull_request' && 'PR composition Quality' || github.event_name == 'schedule' && 'Scheduled exact-head Quality' || 'Exact-head Quality' }}
+  plan:
+    name: Quality policy
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.policy.outputs.mode }}
+      reasons: ${{ steps.policy.outputs.reasons }}
+      selected_tests: ${{ steps.policy.outputs.selected_tests }}
+      planner_json: ${{ steps.policy.outputs.planner_json }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+          fetch-depth: 0
+      - name: Bind exact subject and select fail-closed foreground policy
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_KIND: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_FORCED: ${{ github.event.forced }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
+          STACK_TOP: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.position == github.event.pull_request.stack.size }}
+        run: |
+          execution_sha="$(git rev-parse HEAD)"
+          subject_verified=false
+          if test "$EVENT_KIND" = pull_request; then
+            planner_base_sha="$(git rev-parse HEAD^)"
+            planner_head_sha="$PR_HEAD_SHA"
+            if scripts/verify-quality-composition \
+                "$EVENT_SHA" "$PR_HEAD_SHA" "$PR_BASE_SHA" \
+                "$(git rev-parse "origin/$STACK_BASE_REF")" "${{ github.event.pull_request.stack.position }}"; then
+              subject_verified=true
+            fi
+          elif test "$EVENT_KIND" = push; then
+            planner_base_sha="$PUSH_BASE_SHA"
+            planner_head_sha="$EVENT_SHA"
+            if test "$execution_sha" = "$planner_head_sha" \
+              && test "$PUSH_FORCED" != true \
+              && printf '%s' "$planner_base_sha" | grep -Eq '^[0-9a-f]{40}$' \
+              && test "$planner_base_sha" != 0000000000000000000000000000000000000000 \
+              && git merge-base --is-ancestor "$planner_base_sha" "$planner_head_sha"; then
+              subject_verified=true
+            fi
+          else
+            planner_head_sha="$execution_sha"
+            planner_base_sha="$(git rev-parse HEAD^)"
+            subject_verified=true
+          fi
+
+          selector_health_clear=false
+          current_blob="$(git rev-parse "$execution_sha:.github/workflows/quality.yml")"
+          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || true)"
+          main_blob="$(git rev-parse "origin/$DEFAULT_BRANCH:.github/workflows/quality.yml" 2>/dev/null || true)"
+          history_file="$RUNNER_TEMP/broad-quality-history.tsv"
+          : > "$history_file"
+          history_complete=false
+          if test "$current_blob" = "$main_blob"; then
+            if push_count="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+                --method GET -f branch="$DEFAULT_BRANCH" -f event=push \
+                -f status=completed -f per_page=1 --jq '.total_count' 2>/dev/null)" \
+              && schedule_count="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+                --method GET -f event=schedule -f status=completed -f per_page=1 \
+                --jq '.total_count' 2>/dev/null)" \
+              && push_history="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+                --method GET --paginate -f branch="$DEFAULT_BRANCH" -f event=push \
+                -f status=completed -f per_page=100 \
+                --jq '.workflow_runs[] | ["push", .head_sha, .conclusion] | @tsv' 2>/dev/null)" \
+              && schedule_history="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+                --method GET --paginate -f event=schedule -f status=completed -f per_page=100 \
+                --jq '.workflow_runs[] | ["schedule", .head_sha, .conclusion] | @tsv' \
+                2>/dev/null)"; then
+              history_fetched=true
+              broad_history="$push_history"$'\n'"$schedule_history"
+            else
+              history_fetched=false
+              broad_history=""
+            fi
+            push_complete=false
+            schedule_complete=false
+            test "${push_count:-1000}" -lt 1000 && push_complete=true
+            test "${schedule_count:-1000}" -lt 1000 && schedule_complete=true
+            push_open=true
+            schedule_open=true
+            while IFS=$'\t' read -r broad_event broad_sha broad_conclusion; do
+              test -n "$broad_sha" || continue
+              if { test "$broad_event" = push && test "$push_open" = false; } \
+                || { test "$broad_event" = schedule && test "$schedule_open" = false; }; then
+                continue
+              fi
+              broad_blob="$(git rev-parse "$broad_sha:.github/workflows/quality.yml" 2>/dev/null || true)"
+              if test -n "$broad_blob" && test "$broad_blob" != "$current_blob"; then
+                if test "$broad_event" = push; then
+                  push_complete=true
+                  push_open=false
+                else
+                  schedule_complete=true
+                  schedule_open=false
+                fi
+                continue
+              fi
+              printf '%s\t%s\t%s\t%s\n' \
+                "$broad_event" "$broad_sha" "$broad_conclusion" "$broad_blob" >> "$history_file"
+            done <<< "$broad_history"
+            if test "$history_fetched" = true \
+              && test "$push_complete" = true \
+              && test "$schedule_complete" = true; then
+              history_complete=true
+            fi
+          fi
+          if test "$EVENT_KIND" = schedule \
+            || { test "$EVENT_KIND" = push && test "$REF_NAME" = "$DEFAULT_BRANCH"; }; then
+            selector_health_clear=false
+          fi
+
+          PYTHONPATH=src python3 - \
+            "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
+            "$subject_verified" "$history_complete" "$current_blob" "$default_sha" \
+            "$history_file" "$STACK_TOP" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          from switchstand.affected_tests import (
+              BroadQualityRun, foreground_authority, plan_exact,
+              selector_health_clear, validate_execution_tree,
+          )
+
+          (base, head, execution, verified, history_complete, current_blob,
+           default_sha, history_file, stack_top, output) = sys.argv[1:]
+          runs = tuple(
+              BroadQualityRun(event, run_sha, conclusion, workflow_blob or None)
+              for event, run_sha, conclusion, workflow_blob in (
+                  line.rstrip('\n').split('\t')
+                  for line in Path(history_file).read_text().splitlines()
+              )
+          )
+          health = selector_health_clear(
+              history_complete=history_complete == 'true',
+              current_workflow_blob=current_blob,
+              default_sha=default_sha,
+              runs=runs,
+          )
+          plan = validate_execution_tree(Path('.'), plan_exact(Path('.'), base, head), execution)
+          decision = foreground_authority(
+              plan,
+              subject_verified=verified == 'true',
+              selector_health_clear=health,
+              cumulative_stack_top=stack_top == 'true',
+          )
+          summary = {
+              'authority': decision.mode,
+              'authority_reasons': decision.reasons,
+              'planner': {
+                  'planner_revision': plan.planner_revision,
+                  'mode': plan.mode,
+                  'base': plan.base,
+                  'head': plan.head,
+                  'changed_paths': plan.changed_paths,
+                  'selected_tests': plan.selected_tests,
+                  'fallback_reasons': plan.fallback_reasons,
+                  'destructive': plan.destructive,
+              },
+          }
+          with open(output, 'a') as sink:
+              print(f'mode={decision.mode}', file=sink)
+              print('reasons=' + json.dumps(decision.reasons, separators=(',', ':')), file=sink)
+              print('selected_tests=' + json.dumps(plan.selected_tests, separators=(',', ':')), file=sink)
+              print('planner_json=' + json.dumps(summary['planner'], separators=(',', ':')), file=sink)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+  quality_execution:
+    needs: plan
+    name: Quality execution / ${{ needs.plan.outputs.mode }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -24,18 +207,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+          fetch-depth: 0
       - name: Record immutable Quality subject
         env:
           QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
           QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALITY_COMPOSITION_SHA: ${{ github.sha }}
+          STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
+          STACK_POSITION: ${{ github.event.pull_request.stack.position }}
         run: |
           checked_out_sha="$(git rev-parse HEAD)"
           if test "$QUALITY_SUBJECT_KIND" = composition; then
-            mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
-            test "${#parents[@]}" -eq 2
-            test "${parents[0]}" = "$QUALITY_BASE_SHA"
-            test "${parents[1]}" = "$QUALITY_SUBJECT_SHA"
+            scripts/verify-quality-composition \
+              "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
+              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else
@@ -46,16 +232,31 @@ jobs:
       - run: docker build --target development --tag switchstand-quality .
       - name: Prepare observational metrics
         run: mkdir -p "$RUNNER_TEMP/test-metrics"
-      - name: Authoritative Quality
-        run: >-
-          docker run --rm --network host
-          -e TEST_DATABASE_URL
-          -v "$RUNNER_TEMP/test-metrics:/metrics"
-          -v "$PWD:/workspace:ro" -w /workspace
-          switchstand-quality sh -c
-          'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
-          PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
-          PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider --junitxml=/metrics/junit.xml'
+      - name: Authoritative proportional or full-fallback Quality
+        env:
+          QUALITY_MODE: ${{ needs.plan.outputs.mode }}
+          SELECTED_TESTS: ${{ needs.plan.outputs.selected_tests }}
+          PLANNER_JSON: ${{ needs.plan.outputs.planner_json }}
+        run: |
+          printf '%s\n' "$PLANNER_JSON" > "$RUNNER_TEMP/test-metrics/planner.json"
+          mapfile -t selected_tests < <(
+            python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TESTS"])))'
+          )
+          test "$QUALITY_MODE" != PROMOTE_TEST_MODULE_ONLY_V1 || test "${#selected_tests[@]}" -gt 0
+          quality=(
+            docker run --rm --network host -e TEST_DATABASE_URL
+            -v "$RUNNER_TEMP/test-metrics:/metrics"
+            -v "$PWD:/workspace:ro" -w /workspace switchstand-quality
+            sh -c 'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
+              PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
+              shift 1 && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider \
+              --junitxml=/metrics/junit.xml "$@"' sh "$QUALITY_MODE"
+          )
+          if test "$QUALITY_MODE" = PROMOTE_TEST_MODULE_ONLY_V1; then
+            "${quality[@]}" "${selected_tests[@]}"
+          else
+            "${quality[@]}"
+          fi
       - name: Collect observational metrics
         if: always()
         continue-on-error: true
@@ -95,8 +296,11 @@ jobs:
           }
           Path(e["METRICS_DIR"], "identity.json").write_text(json.dumps(identity))
           PY
-          python3 src/switchstand/test_metrics.py --execution-kind full \
-            --identity "$METRICS_DIR/identity.json" --junit "$METRICS_DIR/junit.xml" \
+          execution_kind=full
+          test '${{ needs.plan.outputs.mode }}' != PROMOTE_TEST_MODULE_ONLY_V1 || execution_kind=selected
+          python3 src/switchstand/test_metrics.py --execution-kind "$execution_kind" \
+            --identity "$METRICS_DIR/identity.json" --planner "$METRICS_DIR/planner.json" \
+            --junit "$METRICS_DIR/junit.xml" \
             --output "$METRICS_DIR/metrics.json"
       - name: Retain original metrics attempt
         if: always()
@@ -107,25 +311,30 @@ jobs:
           path: ${{ runner.temp }}/test-metrics/
           retention-days: 90
           if-no-files-found: warn
-  docker-lifecycle:
+  docker_lifecycle:
+    needs: plan
+    if: needs.plan.outputs.mode != 'PROMOTE_TEST_MODULE_ONLY_V1'
     name: ${{ github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle' || 'Exact-head Docker lifecycle' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+          fetch-depth: 0
       - name: Record immutable Docker lifecycle subject
         env:
           QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
           QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALITY_COMPOSITION_SHA: ${{ github.sha }}
+          STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
+          STACK_POSITION: ${{ github.event.pull_request.stack.position }}
         run: |
           checked_out_sha="$(git rev-parse HEAD)"
           if test "$QUALITY_SUBJECT_KIND" = composition; then
-            mapfile -t parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
-            test "${#parents[@]}" -eq 2
-            test "${parents[0]}" = "$QUALITY_BASE_SHA"
-            test "${parents[1]}" = "$QUALITY_SUBJECT_SHA"
+            scripts/verify-quality-composition \
+              "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
+              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else
@@ -144,3 +353,33 @@ jobs:
           switchstand-quality sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
           tests/test_docker_lifecycle_real.py'
+
+  quality:
+    needs: [plan, quality_execution, docker_lifecycle]
+    if: always()
+    name: ${{ github.event_name == 'pull_request' && 'PR composition Quality' || github.event_name == 'schedule' && 'Scheduled exact-head Quality' || 'Exact-head Quality' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce fail-closed terminal Quality policy
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          QUALITY_RESULT: ${{ needs.quality_execution.result }}
+          DOCKER_RESULT: ${{ needs.docker_lifecycle.result }}
+          REASONS: ${{ needs.plan.outputs.reasons }}
+        run: |
+          printf 'mode=%s\nreasons=%s\nplan=%s\nquality=%s\ndocker=%s\n' \
+            "$MODE" "$REASONS" "$PLAN_RESULT" "$QUALITY_RESULT" "$DOCKER_RESULT"
+          test "$PLAN_RESULT" = success
+          test "$QUALITY_RESULT" = success
+          case "$MODE" in
+            PROMOTE_TEST_MODULE_ONLY_V1)
+              test "$DOCKER_RESULT" = skipped
+              ;;
+            FULL_FALLBACK)
+              test "$DOCKER_RESULT" = success
+              ;;
+            *)
+              exit 1
+              ;;
+          esac

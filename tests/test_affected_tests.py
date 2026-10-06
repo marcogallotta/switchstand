@@ -6,7 +6,14 @@ from pathlib import Path
 
 from _pytest.capture import CaptureFixture
 
-from switchstand.affected_tests import main, plan_exact, plan_local
+from switchstand.affected_tests import (
+    BroadQualityRun,
+    foreground_authority,
+    main,
+    plan_exact,
+    plan_local,
+    selector_health_clear,
+)
 
 
 def git(repo: Path, *args: str) -> str:
@@ -138,6 +145,7 @@ def test_migration_compose_and_deleted_python_fail_to_full_suite(tmp_path: Path)
     assert "fallback-class:migrations/0001.py" in plan.fallback_reasons
     assert "fallback-class:compose.yaml" in plan.fallback_reasons
     assert any("deleted or renamed" in reason for reason in plan.fallback_reasons)
+    assert plan.destructive
     write(repo, "src/switchstand/chatgpt_edge.py", "VALUE = 1\n")
     runtime = plan_exact(repo, head, commit(repo, "runtime"))
     assert runtime.fallback_reasons == (
@@ -196,3 +204,75 @@ def test_shadow_push_identity_rejects_forced_or_non_ancestor_bases() -> None:
     assert '--execution-tree "$EXECUTION_SHA"' in workflow
     assert "GIT_CONFIG_KEY_0=safe.directory" in workflow
     assert "GIT_CONFIG_VALUE_0=/workspace" in workflow
+
+
+def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Path) -> None:
+    repo, base = fixture_repo(tmp_path)
+    write(repo, "tests/test_alpha.py", "def test_value(): assert True\n")
+    plan = plan_exact(repo, base, commit(repo))
+
+    promoted = foreground_authority(
+        plan, subject_verified=True, selector_health_clear=True
+    )
+    assert promoted.mode == "PROMOTE_TEST_MODULE_ONLY_V1"
+    assert promoted.reasons == ()
+
+    assert foreground_authority(
+        plan, subject_verified=False, selector_health_clear=True
+    ).mode == "FULL_FALLBACK"
+    assert foreground_authority(
+        plan, subject_verified=True, selector_health_clear=False
+    ).mode == "FULL_FALLBACK"
+    assert foreground_authority(
+        plan,
+        subject_verified=True,
+        selector_health_clear=True,
+        cumulative_stack_top=True,
+    ).mode == "FULL_FALLBACK"
+
+
+def test_test_helpers_nested_modules_and_deletes_are_not_promoted(tmp_path: Path) -> None:
+    repo, base = fixture_repo(tmp_path)
+    write(repo, "tests/helpers.py", "VALUE = 2\n")
+    helper = plan_exact(repo, base, commit(repo, "helper"))
+    assert foreground_authority(
+        helper, subject_verified=True, selector_health_clear=True
+    ).mode == "FULL_FALLBACK"
+
+    nested_base = helper.head
+    write(repo, "tests/nested/test_extra.py", "def test_extra(): assert True\n")
+    nested = plan_exact(repo, nested_base, commit(repo, "nested"))
+    assert foreground_authority(
+        nested, subject_verified=True, selector_health_clear=True
+    ).mode == "FULL_FALLBACK"
+
+    delete_base = nested.head
+    (repo / "tests/test_alpha.py").unlink()
+    deleted = plan_exact(repo, delete_base, commit(repo, "delete"))
+    assert deleted.destructive
+    assert foreground_authority(
+        deleted, subject_verified=True, selector_health_clear=True
+    ).mode == "FULL_FALLBACK"
+
+
+def test_selector_health_requires_current_default_green_and_no_generation_failure() -> None:
+    green = BroadQualityRun("push", "a" * 40, "success", "current")
+
+    def healthy(*runs: BroadQualityRun, complete: bool = True) -> bool:
+        return selector_health_clear(
+            history_complete=complete,
+            current_workflow_blob="current",
+            default_sha="a" * 40,
+            runs=runs,
+        )
+
+    assert healthy(green, BroadQualityRun("schedule", "a" * 40, "success", "current"))
+    unhealthy = (
+        (BroadQualityRun("push", "b" * 40, "success", "current"),),
+        (green, BroadQualityRun("schedule", "a" * 40, "failure", "current")),
+        (green, BroadQualityRun("push", "b" * 40, "cancelled", "current")),
+        (green, BroadQualityRun("schedule", "b" * 40, "failure", None)),
+    )
+    assert all(not healthy(*runs) for runs in unhealthy)
+    assert healthy(green, BroadQualityRun("push", "b" * 40, "failure", "old"))
+    assert not healthy(green, complete=False)

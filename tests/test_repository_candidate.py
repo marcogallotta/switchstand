@@ -4,17 +4,18 @@ import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
 
-BASE, HEAD, COMPOSITION = "a" * 40, "b" * 40, "c" * 40
+BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
+    "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
+)
 
 
 def client(*, omitted: str | None = None, mismatch: bool = False,
            overrides: dict[str, tuple[str, str | None]] | None = None,
            malformed: bool = False, wrong_head: str | None = None,
            bad_run: bool = False, changed: bool = False,
-           job_failure: bool = False) -> httpx.AsyncClient:
+           job_failure: bool = False, stacked: bool = False) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
-
     def response(request: httpx.Request) -> httpx.Response:
         nonlocal pr_reads
         path = request.url.path
@@ -27,8 +28,17 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                 "head": {"sha": "d" * 40 if changed and pr_reads > 1 else HEAD},
                 "merge_commit_sha": COMPOSITION,
             }
+            if stacked:
+                payload["stack"] = {"base": {"ref": "main"}, "position": 2, "size": 2}
         elif path.endswith(f"/commits/{COMPOSITION}") and "check-runs" not in path:
-            payload = {"parents": [{"sha": BASE}, {"sha": "d" * 40 if mismatch else HEAD}]}
+            payload = {"parents": [
+                {"sha": PREFIX if stacked else BASE},
+                {"sha": "d" * 40 if mismatch else HEAD},
+            ]}
+        elif path.endswith(f"/commits/{PREFIX}"):
+            payload = {"parents": [{"sha": TARGET}, {"sha": BASE}]}
+        elif path.endswith("/branches/main"):
+            payload = {"commit": {"sha": TARGET}}
         elif path.endswith("/check-runs"):
             checks = []
             for index, (name, kind) in enumerate(GATES, 1):
@@ -71,7 +81,7 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
     return httpx.AsyncClient(transport=httpx.MockTransport(response))
 
 
-async def test_four_current_green_gates_are_ready_with_exact_identity_and_timing():
+async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timing():
     async with client() as http:
         result = await qualify_repository_candidate(7, client=http)
     assert (result.status, result.base_sha, result.head_sha, result.composition_sha) == (
@@ -81,6 +91,13 @@ async def test_four_current_green_gates_are_ready_with_exact_identity_and_timing
     assert [gate.name for gate in result.gates] == [name for name, _ in GATES]
     assert all(gate.attempt == 2 and gate.duration_ms == 2000 for gate in result.gates)
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
+
+
+async def test_native_stack_composition_is_bound_through_prefix_to_current_target():
+    async with client(stacked=True) as http:
+        result = await qualify_repository_candidate(7, client=http)
+    assert result.status == "READY"
+    assert result.composition_parents == [PREFIX, HEAD]
 
 
 async def test_missing_gate_and_old_composition_fail_closed():
@@ -93,7 +110,7 @@ async def test_missing_gate_and_old_composition_fail_closed():
         stale = await qualify_repository_candidate(7, client=http)
     assert stale.status == "NOT_READY" and stale.reason == "composition_mismatch"
     assert [g.reason for g in stale.gates if g.subject_kind == "composition"] == [
-        "wrong-head", "wrong-head",
+        "wrong-head",
     ]
 
     async with client(wrong_head="d" * 40) as http:
@@ -110,7 +127,6 @@ async def test_missing_gate_and_old_composition_fail_closed():
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     overrides = {
         "Exact-head Quality": ("in_progress", None),
-        "Exact-head Docker lifecycle": ("completed", "skipped"),
         "PR composition Quality": ("completed", "cancelled"),
     }
     async with client(overrides=overrides) as http:
@@ -120,7 +136,6 @@ async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     assert compact.status == "NOT_READY"
     assert running.reason == "running" and running.running_for_ms is not None
     assert cancelled.reason == "cancelled" and cancelled.duration_ms == 2000
-    assert next(g for g in compact.gates if g.name == "Exact-head Docker lifecycle").reason == "skipped"
     assert cancelled.failed_steps == [] and cancelled.failure_excerpt is None
 
     async with client(overrides=overrides) as http:
