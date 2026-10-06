@@ -210,6 +210,7 @@ def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Pat
     repo, base = fixture_repo(tmp_path)
     write(repo, "tests/test_alpha.py", "def test_value(): assert True\n")
     plan = plan_exact(repo, base, commit(repo))
+    assert plan.selected_tests == ("tests/test_alpha.py",)
 
     promoted = foreground_authority(
         plan, subject_verified=True, selector_health_clear=True
