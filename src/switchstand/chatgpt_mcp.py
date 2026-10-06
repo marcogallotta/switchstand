@@ -225,7 +225,7 @@ PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
-REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_submit"})
+REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_recover", "review_submit"})
 OBSERVABILITY_TOOLS = frozenset({"observability_get"})
 
 
@@ -727,6 +727,24 @@ def build_ordinary_tools(
         audited("review_get", str(review_id), result.status)
         return result
 
+    async def review_recover(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
+        """Recover one received review after same-principal mailbox takeover."""
+        del api_version
+        correlate(review_id)
+        context = await agent_context()
+        if isinstance(context, tuple):
+            result = ReviewResult(
+                status="UNKNOWN" if context[0] == "recovery_required" else "DENIED",
+                review_id=review_id,
+                reason="state_unavailable" if context[0] == "recovery_required"
+                else "recovery_not_allowed",
+            )
+        else:
+            assert service.reviews is not None
+            result = await service.reviews.recover(review_id, context.mailbox)
+        audited("review_recover", str(review_id), result.status)
+        return result
+
     async def product_currentness_get(api_version: Literal["1"]) -> ProductCurrentness:
         """Reconcile Stateful technical currentness from server-owned live evidence."""
         del api_version
@@ -1201,7 +1219,7 @@ def build_ordinary_tools(
           if service.implementation_requests is not None else ()),
         *((
             ("review_request", review_request), ("review_get", review_get),
-            ("review_submit", review_submit),
+            ("review_recover", review_recover), ("review_submit", review_submit),
         ) if service.reviews is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),

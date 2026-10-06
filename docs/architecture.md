@@ -328,10 +328,13 @@ messaging, and required continuation:
   revision; a changed proposal requires a new package revision and human decision.
   `reviews.py` owns durable review requests and outcomes. Its default-off ordinary path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
-  `review_submit` remains the sole verdict mutation. Requester and reviewer identities come from
-  the current authenticated agent mailbox and are never public arguments. The occurrence row
-  serializes request creation, so polling can acquire a newly available configured reviewer. The
-  resource service accepts one explicit default-off review policy/guidelines
+  `review_recover` can rebind only an exact received delivery after a same-principal mailbox
+  takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer
+  identities come from the current authenticated agent mailbox and are never public arguments.
+  The occurrence row serializes authoritative request creation, so polling can acquire a newly
+  available configured reviewer without a Coordinator mailbox or manual message choreography.
+  Legacy typed occurrences remain readable when their exact stored basis and delivery pass current
+  invariants. The resource service accepts one explicit default-off review policy/guidelines
   configuration and constructs one mailbox/occurrence graph shared with the independently enabled
   implementation-request facade, avoiding divergent review truth. Production configuration and
   activation remain separate. `review_config_loader.py` loads that configuration only when optional
