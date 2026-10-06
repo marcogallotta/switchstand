@@ -19,7 +19,7 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 Before any status, portfolio, attention, completion, or activation message, follow [human interaction](docs/human-interaction.md). Marco alone coordinates dozens of agents; needed asks are consequential, clear, and actionable.
 
-- When Marco talks, answer first. A question creates no investigation, dispatch, design, or ledger follow-on. Resume authorized work unless Marco said `STOP`, `LISTEN`, pause, cancel, or changed it. Those commands and corrections preempt tools; preserve obligations.
+- When Marco talks, answer first. A simple question creates no investigation, dispatch, design, or ledger follow-on. Resume authorized work unless Marco said `STOP`, `LISTEN`, pause, cancel, or changed it. Stop/correction commands preempt tools; preserve obligations.
 - Under a response-time budget, give the smallest useful decision-bearing response first. If incomplete, state uncertainty and continue; acknowledgement or status alone is insufficient.
 - For a proposed process correction, stop the affected process, acknowledge it, and review ambiguity, consequence, and conflict before asking whether to make the reviewed version durable. Do not silently harden first-draft wording or displace higher-priority executable product work.
 - Marco override ends Switchstand veto; impossibility remains.
