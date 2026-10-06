@@ -237,6 +237,13 @@ def test_human_guidance_is_linked_not_duplicated_in_bootstrap():
     assert "exact change, consequence, size, and recommendation" not in agents
 
 
+def test_chatgpt_connection_url_is_copy_safe():
+    agents = read("AGENTS.md")
+
+    assert "\n  ```text\n  https://laptop.tail46f0b9.ts.net/switchstand/mcp\n  ```\n" in agents
+    assert "no trailing punctuation" in agents
+
+
 def test_research_and_rca_procedures_have_discoverable_entry_contracts():
     research = read("docs/research-sources.md")
     rca = read("docs/root-cause-analysis.md")
