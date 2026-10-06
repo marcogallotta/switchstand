@@ -381,10 +381,15 @@ class PriorityClaimService:
                 return self.human_guard(
                     request, operation, "denied", "invalid_claim_state"
                 )
+            expected = self._human_clear_claim(principal, request, target)
             tombstone = await self.repository.clear(
-                self._human_clear_claim(principal, request, target),
+                expected,
                 observed_revision=request.observed_revision,
             )
+            if not self._same(tombstone, expected) or tombstone.state != "SUPERSEDED":
+                return self.human_guard(
+                    request, operation, "denied", "operation_identity_conflict"
+                )
             return self._human_applied(
                 request, operation, principal, grant, qualification, tombstone
             )

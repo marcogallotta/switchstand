@@ -178,7 +178,7 @@ async def test_project_read_does_not_propagate_and_human_write_is_not_a_contract
         request(work, relation_kind="NONE", band=None)
 
 
-async def test_workspace_human_set_clear_replay_and_project_scope(subject):
+async def test_workspace_human_set_clear_replay_and_project_scope(subject, monkeypatch):
     service, repository, _grants, principal, _grant, work, target, project = subject
 
     async def current_principal():
@@ -238,6 +238,28 @@ async def test_workspace_human_set_clear_replay_and_project_scope(subject):
     tombstone = await repository.get(cleared.receipt.claim_id)
     assert tombstone is not None and tombstone.state == "SUPERSEDED"
     assert tombstone.supersedes_claim_id == human.claim_id
+
+    real_get = repository.get
+    miss_tombstone = True
+
+    async def race_get(claim_id):
+        nonlocal miss_tombstone
+        if claim_id == tombstone.claim_id and miss_tombstone:
+            miss_tombstone = False
+            return None
+        return await real_get(claim_id)
+
+    monkeypatch.setattr(repository, "get", race_get)
+    assert (await service.human_clear(admission, principal, clear_request)).status == "ok"
+    miss_tombstone = True
+    raced_changed_subject = clear_request.model_copy(update={
+        "subject_id": target, "observed_revision": canonical_revision(target, 1),
+    })
+    raced = await service.human_clear(admission, principal, raced_changed_subject)
+    assert (raced.status, raced.effect, raced.reason) == (
+        "denied", "not_sent", "operation_identity_conflict",
+    )
+    monkeypatch.setattr(repository, "get", real_get)
 
     async with repository.engine.begin() as connection:
         await connection.execute(canonical_work.update().where(
