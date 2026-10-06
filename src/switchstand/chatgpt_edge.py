@@ -518,17 +518,21 @@ def _create_resource_app(
         correlate_work=annotate_target,
     ):
         server.tool(tool, annotations=ordinary_tool_annotations(name))
+    if certification_runtime is not None:
+        runtime_sha, run_id = certification_runtime
+
+        @server.custom_route(
+            CERTIFICATION_RUNTIME_PATH, methods=["GET"], include_in_schema=False
+        )
+        async def _certification_readback(  # pyright: ignore[reportUnusedFunction]
+            _request: Request,
+        ) -> JSONResponse:
+            return JSONResponse({"runtime_sha": runtime_sha, "run_id": run_id})
+
     app = server.http_app(
         path="/mcp", json_response=True, stateless_http=False,
         middleware=http_middleware(),
     )
-    if certification_runtime is not None:
-        runtime_sha, run_id = certification_runtime
-
-        async def certification_readback(_request: Request) -> JSONResponse:
-            return JSONResponse({"runtime_sha": runtime_sha, "run_id": run_id})
-
-        app.add_route(CERTIFICATION_RUNTIME_PATH, certification_readback, methods=["GET"])
     return app
 
 
