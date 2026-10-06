@@ -11,12 +11,14 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import bcrypt
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.routing import Route
 
-from .human_reviews import HumanDecision, HumanReviewResult
+from .canonical_work import CanonicalWorkRepository
+from .human_reviews import HumanDecision, HumanReviewResult, HumanReviewState
 
 MAX_FORM_BYTES = 8192
 DECISIONS: tuple[HumanDecision, ...] = ("APPROVED", "WAIT", "HOLD", "NO_DISPATCH")
@@ -206,4 +208,20 @@ def create_human_review_shell(
             Route("/human-review/submit", submit, methods=["POST"]),
             Route("/human-review/{package_work_id}", review, methods=["GET"]),
         ]
+    )
+
+
+def create_persistent_human_review_shell(
+    engine: AsyncEngine,
+    *,
+    expected_origin: str,
+    username: str,
+    password_hash: str,
+) -> Starlette:
+    """Build the local persistent shell; the caller owns the engine lifecycle."""
+    return create_human_review_shell(
+        HumanReviewState(engine, CanonicalWorkRepository(engine)),
+        expected_origin=expected_origin,
+        username=username,
+        password_hash=password_hash,
     )

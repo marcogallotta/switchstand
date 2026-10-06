@@ -1,17 +1,31 @@
 import base64
+import os
 from uuid import UUID
 
 import bcrypt
 import httpx
 import pytest
+from sqlalchemy import insert, text
+from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.testclient import TestClient
 
-from switchstand.human_review_shell import create_human_review_shell
+from switchstand.canonical_work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+)
+from switchstand.human_review_shell import (
+    create_human_review_shell,
+    create_persistent_human_review_shell,
+)
 from switchstand.human_reviews import (
     HumanDecision,
     HumanReviewConsequence,
     HumanReviewRecord,
     HumanReviewResult,
+    HumanReviewState,
+    human_review_consequences,
 )
 
 WORK = UUID("60000000-0000-4000-8000-000000000001")
@@ -221,3 +235,66 @@ def test_configuration_rejects_a_malformed_bcrypt_hash():
         create_human_review_shell(
             FakeState(), expected_origin=ORIGIN, username=USERNAME, password_hash="$2b$broken"
         )
+
+
+async def test_persistent_shell_factory_records_decision_in_real_state(database_prerequisite):
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is required for persistent Human Review shell test")
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TABLE IF EXISTS human_review_consequences, canonical_work CASCADE"
+            ))
+            await connection.run_sync(lambda sync: canonical_metadata.create_all(
+                sync, tables=[canonical_work, human_review_consequences]
+            ))
+            await connection.execute(insert(canonical_work).values(
+                work_id=WORK, title="Reviewed package", normalized_title="reviewed package",
+                completed=False, notes="exact package", row_version=1,
+            ))
+        revision = canonical_revision(WORK, 1)
+        consequence = HumanReviewConsequence(
+            package_work_id=WORK,
+            package_revision=revision,
+            implementation_scope=("land the exact reviewed package",),
+            implementation_target="repository main",
+            excluded_effects=("deployment", "activation"),
+        )
+        state = HumanReviewState(engine, CanonicalWorkRepository(engine))
+        proposed = await state.propose(consequence)
+        assert proposed.status == "PREPARED" and proposed.record is not None
+        password_hash = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt(rounds=4)).decode()
+        app = create_persistent_human_review_shell(
+            engine, expected_origin=ORIGIN, username=USERNAME, password_hash=password_hash,
+        )
+        token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
+        headers = {"Authorization": f"Basic {token}"}
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as browser:
+            shown = await browser.get(
+                f"/human-review/{WORK}?revision={revision}", headers=headers,
+            )
+            decided = await browser.post(
+                "/human-review/submit",
+                headers={**headers, "Origin": ORIGIN},
+                data=_form(proposed.record),
+            )
+
+        assert shown.status_code == 200
+        assert decided.status_code == 200
+        async with engine.connect() as connection:
+            row = (await connection.execute(
+                human_review_consequences.select()
+            )).mappings().one()
+        assert (row["decision"], row["state"]) == (
+            "APPROVED", "READY_FOR_IMPLEMENTATION",
+        )
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "DROP TABLE IF EXISTS human_review_consequences, canonical_work CASCADE"
+            ))
+        await engine.dispose()

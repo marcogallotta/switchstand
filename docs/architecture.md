@@ -291,8 +291,9 @@ messaging, and required continuation:
   inert: no public create, runtime launch, feature enablement, migration application, or activation
   is included.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
-  confirmation app over that store. Its public route, credentials, and production schema are not
-  installed; no dispatch or activation is enabled.
+  confirmation app over that store. Its local persistent factory wires the canonical state owner
+  without owning the database engine lifecycle. No listener, public route, credentials, or service
+  is installed; no dispatch or activation is enabled.
   `human_review_propose.py` is a host-only command that accepts one bounded, closed consequence
   JSON from an exact mode-0600 regular file without following its final path component. It can only
   propose or replay that consequence; it cannot record a decision, dispatch work, or activate it.
