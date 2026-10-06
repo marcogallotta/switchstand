@@ -39,6 +39,18 @@ def test_read_private_bytes_requires_regular_mode_0600_without_following_symlink
         read_private_bytes(path)
 
 
+def test_read_private_bytes_enforces_bound_without_partial_result(tmp_path: Path) -> None:
+    path = tmp_path / "receipt"
+    path.write_bytes(b"proof")
+    path.chmod(0o600)
+
+    assert read_private_bytes(path, max_bytes=5) == b"proof"
+    with pytest.raises(ValueError, match="exceeds maximum size"):
+        read_private_bytes(path, max_bytes=4)
+    with pytest.raises(ValueError, match="nonnegative"):
+        read_private_bytes(path, max_bytes=-1)
+
+
 def test_atomic_replace_bytes_handles_short_writes_and_fsyncs_file_before_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

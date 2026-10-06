@@ -286,7 +286,9 @@ messaging, and required continuation:
   server-resolved target/phase/contract-bound acceptance, adoption, and clearing proofs, rechecks
   exact product currentness before delivery, and enforces separate authorities. Its MCP transition and owner-local
   `work_get`/`work_update` projection exist only when the store and immutable contracts are
-  injected; the production edge does not construct them. Migration `0023_activation_continuity`
+  injected. `activation_contract_loader.py` can load those contracts from one explicit bounded,
+  closed, versioned mode-0600 JSON file into an immutable obligation-ID registry; it does not
+  select a path, reload contracts, or construct the production edge. Migration `0023_activation_continuity`
   persists revisions and refuses a downgrade that would discard any obligation. Landing remains
   inert: no public create, runtime launch, feature enablement, migration application, or activation
   is included.
