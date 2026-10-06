@@ -14,6 +14,10 @@ Continue research and option-preserving work while waiting. Hold only the branch
 
 After direction is clear, continue deeper work. Raise Human Input again only when new evidence, uncertainty, consequence, scale, cost, or a materially different route changes the choice.
 
+Do not wait for final Human Review to surface a genuinely new material choice. If implementation would make that choice expensive to reverse, Human Input belongs before implementation starts.
+
+When an already-agreed capability is broken, the smallest safe repair that restores the agreed behavior may continue without Human Input when it introduces no genuinely new material choice. A new durable architecture, execution path, authority surface, persistence/recovery model, or support burden is not "just restoration." If live restoration cannot wait and the smallest reversible repair knowingly uses a temporary or noncanonical route, mark that route explicitly as `TEMPORARY/NONCANONICAL — AUDIT REQUIRED`, restore service, and bring the durable architecture choice afterward.
+
 ## Grounding
 
 When the decision materially depends on current usage, operating scale, concurrency, workflow, support, or deployment shape, read current product/usage evidence before hardening around assumptions.
