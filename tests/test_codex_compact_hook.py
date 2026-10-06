@@ -42,7 +42,7 @@ test "$1" = check
 test "$2" = "$EXPECTED_MANIFEST"
 test "$3" = --trigger
 test "$4" = post-compaction
-printf '%s\\n' '{"state":"CURRENTNESS_UNKNOWN","reread_required":["AGENTS.md"],"required_live_reads":["CURRENT_WORK","OPEN_OBLIGATIONS","START_COMMIT"],"start_record":"/state/start-commit.x","changed_launch_controls":[],"unknown_components":[],"component_currentness":{"rereadable:AGENTS.md->missing.md":"CURRENTNESS_UNKNOWN"}}'
+printf '%s\\n' '{"state":"CURRENTNESS_UNKNOWN","reread_required":["AGENTS.md"],"required_live_reads":{"START_COMMIT":"/state/start-commit.x"},"start_record":"/state/start-commit.x","changed_launch_controls":[],"unknown_components":[],"component_currentness":{"rereadable:AGENTS.md->missing.md":"CURRENTNESS_UNKNOWN"}}'
 exit 2
 """,
     )
@@ -61,6 +61,8 @@ exit 2
     context = output["additionalContext"]
     assert "reread repository controls: AGENTS.md" in context
     assert "exact start record: /state/start-commit.x" in context
+    assert "live state: START_COMMIT=/state/start-commit.x" in context
+    assert "Current work remains the preserved active assignment/WorkId" in context
     assert "affected currentness boundary: rereadable:AGENTS.md->missing.md" in context
     assert f"rerun {hook.with_name('coordinator-control')} check {manifest}" in context
     assert "never substitute writer-relative scripts/coordinator-control" in context
@@ -106,6 +108,20 @@ def test_compact_hook_injects_currentness_unknown_for_non_object_checker_output(
     context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "CURRENTNESS_UNKNOWN" in context
     assert "coordinator-control output must be a JSON object" in context
+
+
+def test_compact_hook_rejects_symbolic_live_reads(tmp_path: Path) -> None:
+    hook, manifest = install_hook(
+        tmp_path,
+        "#!/bin/sh\necho '{\"state\":\"CURRENT\",\"required_live_reads\":[\"START_COMMIT\"]}'\n",
+    )
+
+    result = run_hook(hook, manifest)
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "CURRENTNESS_UNKNOWN" in context
+    assert "live reads must map names to absolute paths" in context
 
 
 def test_compact_hook_preserves_checker_owned_unknown_reason(tmp_path: Path) -> None:

@@ -146,7 +146,7 @@ def test_launch_manifest_tracks_transitive_graph_but_compact_reread_is_bounded(
     assert status["reread_required"] == [
         "AGENTS.md", "docs/coordinator-tracker-contract.md"
     ]
-    assert status["required_live_reads"] == ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"]
+    assert status["required_live_reads"] == {"START_COMMIT": str(_start)}
     assert status["component_currentness"] == {
         "runtime:effective-client-tool-surface": "CURRENTNESS_UNKNOWN"
     }
@@ -166,6 +166,33 @@ def test_markdown_dependency_graph_fails_closed_at_a_fixed_bound(tmp_path: Path)
     assert len(found) == limit
     assert len(unresolved) == 1
     assert unresolved[0]["reason"] == "dependency_limit"
+
+
+def test_required_live_reads_rejects_non_file_targets(tmp_path: Path) -> None:
+    required_live_reads = runpy.run_path(SCRIPT)["required_live_reads"]
+    start = tmp_path / "start"
+    start.mkdir()
+
+    try:
+        required_live_reads({"session": {"start_record": str(start)}})
+    except ValueError as error:
+        assert "start record must be a regular file" in str(error)
+    else:
+        raise AssertionError("directory start record was accepted")
+
+    start.rmdir()
+    start.write_text("a" * 40 + "\n")
+    obligations = tmp_path / "obligations"
+    obligations.mkdir()
+    try:
+        required_live_reads({
+            "session": {"start_record": str(start)},
+            "handoff": {"obligations": str(obligations)},
+        })
+    except ValueError as error:
+        assert "handoff obligations must be a regular file" in str(error)
+    else:
+        raise AssertionError("directory handoff obligations were accepted")
 
 
 def test_changed_launch_control_requires_bounded_recheck_without_staling_generation(
@@ -455,6 +482,12 @@ def test_actual_successor_launch_is_bound_and_must_acknowledge(tmp_path: Path) -
     manifest_path = Path(result.stdout.strip())
     manifest = json.loads(manifest_path.read_text())
     assert manifest["handoff"]["handoff_id"] == "handoff-id"
+    checked, status = check(manifest_path, "post-compaction")
+    assert checked.returncode == 0
+    assert status["required_live_reads"] == {
+        "OPEN_OBLIGATIONS": str(artifact / "obligations"),
+        "START_COMMIT": str(start),
+    }
     proof = json.loads((artifact / "successor-launch.json").read_text())
     assert proof["session_generation"] == manifest["session"]["generation"]
     assert json.loads((artifact / "handoff.json").read_text())["state"] == "SUCCESSOR_LAUNCHED"

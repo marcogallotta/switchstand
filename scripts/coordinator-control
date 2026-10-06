@@ -369,10 +369,36 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
+def required_live_reads(manifest: dict[str, Any]) -> dict[str, str]:
+    def readable_file(path: Path, label: str) -> str:
+        if not path.is_absolute():
+            raise ValueError(f"launch manifest {label} must be absolute")
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError(f"launch manifest {label} must be a regular file")
+        with resolved.open("rb") as handle:
+            handle.read(1)
+        return str(resolved)
+
+    session = manifest.get("session")
+    if not isinstance(session, dict) or not isinstance(session.get("start_record"), str):
+        raise TypeError("launch manifest start record is invalid")
+    start_record = Path(session["start_record"])
+    reads = {"START_COMMIT": readable_file(start_record, "start record")}
+    handoff = manifest.get("handoff")
+    if handoff is not None:
+        if not isinstance(handoff, dict) or not isinstance(handoff.get("obligations"), str):
+            raise TypeError("launch manifest handoff obligations are invalid")
+        obligations = Path(handoff["obligations"])
+        reads["OPEN_OBLIGATIONS"] = readable_file(obligations, "handoff obligations")
+    return dict(sorted(reads.items()))
+
+
 def check(arguments: argparse.Namespace) -> int:
     try:
         manifest_path = arguments.manifest.resolve(strict=True)
         manifest = load_manifest(manifest_path)
+        live_reads = required_live_reads(manifest)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         print(json.dumps({"state": "CURRENTNESS_UNKNOWN", "reason": str(error)}, sort_keys=True))
         return 2
@@ -419,7 +445,7 @@ def check(arguments: argparse.Namespace) -> int:
         "unknown_components": sorted(unknown),
         "unresolved_rereadable_controls": unresolved,
         "reread_required": required,
-        "required_live_reads": ["CURRENT_WORK", "OPEN_OBLIGATIONS", "START_COMMIT"],
+        "required_live_reads": live_reads,
         "unproved_frozen_controls": manifest["unproved_frozen_controls"],
         "component_currentness": {
             **{item["id"]: "CURRENTNESS_UNKNOWN" for item in manifest["unproved_frozen_controls"]},
