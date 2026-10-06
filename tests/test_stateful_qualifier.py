@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from switchstand import stateful_qualifier as qualifier
+from switchstand.grants import PrincipalContext
 from switchstand.product_currentness import ProductCurrentness
 from switchstand.product_currentness_stateful import StatefulQualificationBasis
 
@@ -85,7 +86,15 @@ async def test_qualifier_journals_before_effect_and_emits_rechecked_receipt(
             return {
                 "status": "ok",
                 "effect": "applied",
-                "receipt": {"resulting_revision": "r2"},
+                "receipt": {
+                    "resulting_revision": "r2",
+                    "principal": {
+                        "issuer": "https://issuer.test",
+                        "subject": "owner",
+                        "client_id": "client",
+                        "assurance": "authenticated",
+                    },
+                },
             }
 
     class Engine:
@@ -173,3 +182,29 @@ def test_endpoint_and_private_token_fail_closed(tmp_path: Path) -> None:
     token.chmod(0o640)
     with pytest.raises(ValueError, match="mode-0600"):
         qualifier._private_token(token)
+
+
+def test_tool_errors_and_effect_principal_mismatches_fail_closed() -> None:
+    client = object.__new__(qualifier.MCPClient)
+    client._post = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+        "isError": True,
+        "structuredContent": {"status": "ok"},
+    }
+    with pytest.raises(qualifier.QualificationFailure, match="tool error"):
+        client.call("work_get", {})
+
+    principal = PrincipalContext(
+        issuer="https://issuer.test",
+        subject="owner",
+        client_id="client",
+        assurance="authenticated",
+    )
+    receipt = {
+        "principal": {
+            "issuer": principal.issuer,
+            "subject": "different-caller",
+            "client_id": principal.client_id,
+            "assurance": principal.assurance,
+        }
+    }
+    assert not qualifier._receipt_matches_principal(receipt, principal)
