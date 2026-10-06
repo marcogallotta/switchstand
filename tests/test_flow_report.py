@@ -210,7 +210,17 @@ async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
         await connection.execute(update(task_run_requests).where(
             task_run_requests.c.request_id == request_id
         ).values(candidate_ref="candidate:tampered"))
-    assert (await report(engine, target))["run_receipts"]["status"] == "UNKNOWN"
+    corrupt = await report(engine, target)
+    assert corrupt["run_receipts"]["status"] == "UNKNOWN"
+    assert corrupt["process_shape"]["status"] == "UNKNOWN"
+    assert corrupt["process_shape"]["managed_attempts"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_OR_UNSAFE_RECEIPT",
+        "total": None, "retained": None, "truncated": None,
+        "cumulative_observed_duration_ms": None,
+        "retained_by_kind": None, "retained_by_state": None,
+        "retained_continuations": None,
+        "repeated_identical_validation_requests": None,
+    }
     async with engine.begin() as connection:
         await connection.execute(update(task_run_requests).where(
             task_run_requests.c.request_id == request_id
@@ -219,6 +229,92 @@ async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
             task_run_results.c.result_id == result_id
         ).values(outcome="TAMPERED"))
     assert (await report(engine, target))["run_receipts"]["status"] == "UNKNOWN"
+
+
+async def test_process_shape_and_shadow_repeat_advisory_use_exact_receipts(
+    engine: AsyncEngine,
+) -> None:
+    target, requester = uuid4(), uuid4()
+    admitted = datetime.now(UTC) - timedelta(minutes=20)
+    await add_work(engine, target, admitted_at=admitted)
+    request = AgentTaskRequest(
+        api_version="1", execution_work_id=target, observed_revision="pg_exact",
+        task_kind="VALIDATION", continuation="START", candidate_ref="candidate:abc",
+        objective="private repeated validation", result_contract={"private": "contract"},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        for index in range(2):
+            request_id, operation_id, run_id, result_id = (
+                uuid4(), uuid4(), uuid4(), uuid4()
+            )
+            started = admitted + timedelta(minutes=index * 5)
+            completed = started + timedelta(minutes=4)
+            result = AgentTaskResult(
+                api_version="1", outcome="PASS", summary="private summary",
+                evidence_refs=(),
+            )
+            await connection.execute(insert(task_run_requests).values(
+                request_id=request_id, operation_id=operation_id,
+                requester_work_id=requester,
+                **request.model_dump(mode="json", exclude={"api_version"}),
+                content_digest=task_request_digest(requester, request),
+                terminal_result_id=None, created_at=started,
+            ))
+            await connection.execute(insert(task_run_executions).values(
+                request_id=request_id, run_id=run_id,
+                bound_at=started + timedelta(seconds=5),
+            ))
+            await connection.execute(insert(task_run_results).values(
+                result_id=result_id, request_id=request_id, run_id=run_id,
+                **result.model_dump(mode="json", exclude={"api_version"}),
+                content_digest=task_result_digest(request_id, run_id, result),
+                created_at=completed,
+            ))
+            await connection.execute(update(task_run_requests).where(
+                task_run_requests.c.request_id == request_id
+            ).values(terminal_result_id=result_id))
+
+    projection = await report(engine, target)
+
+    assert projection["process_shape"]["managed_attempts"] == {
+        "status": "KNOWN", "reason": None, "total": 2, "retained": 2,
+        "truncated": False, "cumulative_observed_duration_ms": 480_000,
+        "retained_by_kind": {"VALIDATION": 2}, "retained_continuations": 0,
+        "retained_by_state": {"COMPLETE": 2},
+        "repeated_identical_validation_requests": [{
+            "group_id": projection["run_receipts"]["attempts"][0]["request_id"],
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+            "attempt_count": 2, "cumulative_observed_duration_ms": 480_000,
+            "request_ids": [
+                attempt["request_id"] for attempt in projection["run_receipts"]["attempts"]
+            ],
+            "operation_ids": [
+                attempt["operation_id"] for attempt in projection["run_receipts"]["attempts"]
+            ],
+        }],
+    }
+    repeat = next(item for item in projection["advisories"]
+                  if item["code"] == "REPEATED_EXPENSIVE_ATTEMPT")
+    assert repeat == {
+        "code": "REPEATED_EXPENSIVE_ATTEMPT", "mode": "SHADOW",
+        "status": "UNKNOWN", "reason": "MATERIAL_CLEARING_CHANGE_NOT_CORRELATED",
+        "evidence": {
+            "identical_completed_validation_groups": 1,
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        },
+    }
+    encoded = json.dumps(projection)
+    assert "private repeated validation" not in encoded
+    assert "private summary" not in encoded and "private\": \"contract" not in encoded
+    stored_digest = task_request_digest(requester, request)
+    derived_fingerprint = hashlib.sha256(
+        f"observability-attempt-v1:{stored_digest}".encode()
+    ).hexdigest()
+    assert stored_digest not in encoded and derived_fingerprint not in encoded
 
 
 async def test_managed_run_receipt_limit_is_explicitly_partial(engine: AsyncEngine) -> None:
