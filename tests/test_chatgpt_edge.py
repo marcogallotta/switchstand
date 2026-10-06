@@ -146,7 +146,7 @@ def test_certification_runtime_readback_is_explicit_and_exact():
         }
 
 
-def test_product_currentness_configuration_is_default_off_and_fails_closed(monkeypatch):
+def test_product_currentness_configuration_is_default_off_and_fails_closed(monkeypatch, tmp_path):
     assert chatgpt_edge._ProductCurrentnessConfig.from_environment() is None
     monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS", "yes")
     with pytest.raises(ValueError, match="must be 0 or 1"):
@@ -163,8 +163,30 @@ def test_product_currentness_configuration_is_default_off_and_fails_closed(monke
     with pytest.raises(ValueError, match="runtime SHA"):
         chatgpt_edge._ProductCurrentnessConfig.from_environment()
 
+    monkeypatch.setenv(
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA",
+        values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA"],
+    )
+    monkeypatch.setenv(
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT",
+        str(tmp_path / "receipt.json"),
+    )
+    with pytest.raises(ValueError, match="must be configured together"):
+        chatgpt_edge._ProductCurrentnessConfig.from_environment()
+    monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY", "relative.key")
+    with pytest.raises(ValueError, match="paths must be absolute"):
+        chatgpt_edge._ProductCurrentnessConfig.from_environment()
 
-async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatch):
+    key_path = tmp_path / "qualification.key"
+    monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY", str(key_path))
+    configured = chatgpt_edge._ProductCurrentnessConfig.from_environment()
+    assert (configured.qualification_receipt, configured.qualification_key) == (
+        tmp_path / "receipt.json",
+        key_path,
+    )
+
+
+async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
 
     class Engine:
@@ -204,6 +226,14 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
         subject.product_currentness = None
         subject.product_currentness_enabled = False
         captured = []
+        reader_configuration = []
+        reader_type = chatgpt_edge.LiveStatefulEvidenceReader
+
+        def configured_reader(*args, **kwargs):
+            reader_configuration.append(kwargs)
+            return reader_type(*args, **kwargs)
+
+        monkeypatch.setattr(chatgpt_edge, "LiveStatefulEvidenceReader", configured_reader)
         build_tools = chatgpt_edge.build_ordinary_tools
 
         def capture_tools(wired, *args, **kwargs):
@@ -217,9 +247,28 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
         assert wired.product_currentness is not None
         result = await wired.product_currentness(PRINCIPAL)
 
-    assert (result.status, result.current) == ("unknown", "UNKNOWN")
-    assert result.blockers == ("functional_proof",)
-    assert result.conditions[-1].detail == "functional_proof_missing_or_invalid"
+        assert reader_configuration[-1]["qualification_receipt"] is None
+        assert reader_configuration[-1]["qualification_key"] is None
+        assert (result.status, result.current) == ("unknown", "UNKNOWN")
+        assert result.blockers == ("functional_proof",)
+
+        receipt_path = tmp_path / "receipt.json"
+        key_path = tmp_path / "qualification.key"
+        monkeypatch.setenv(
+            "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT", str(receipt_path)
+        )
+        monkeypatch.setenv(
+            "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY", str(key_path)
+        )
+        create_app(subject, CONFIG, client_storage=MemoryStore())
+        wired_with_paths = captured[-1]
+        configured_result = await wired_with_paths.product_currentness(PRINCIPAL)
+
+    assert reader_configuration[-1]["qualification_receipt"] == receipt_path
+    assert reader_configuration[-1]["qualification_key"] == key_path
+    assert (configured_result.status, configured_result.current) == ("unknown", "UNKNOWN")
+    assert configured_result.blockers == ("functional_proof",)
+    assert configured_result.conditions[-1].detail == "functional_proof_missing_or_invalid"
 
 
 async def test_resource_edge_preserves_injected_activation_dependencies(monkeypatch):
