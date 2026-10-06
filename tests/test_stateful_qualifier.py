@@ -223,8 +223,14 @@ def test_attempt_journal_replays_only_exact_prepared_identity(tmp_path: Path) ->
 
 
 def test_endpoint_and_private_token_fail_closed(tmp_path: Path) -> None:
+    assert (
+        qualifier._endpoint("https://public.example/switchstand/mcp")
+        == "https://public.example/switchstand/mcp"
+    )
     with pytest.raises(qualifier.QualificationFailure, match="credential-free"):
         qualifier._endpoint("http://example.test/mcp")
+    with pytest.raises(qualifier.QualificationFailure, match="credential-free"):
+        qualifier._endpoint("http://127.0.0.1/switchstand/mcp")
     token = tmp_path / "token"
     token.write_text("secret")
     token.chmod(0o640)
