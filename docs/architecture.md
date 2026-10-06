@@ -274,6 +274,11 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
+  `reviews.py` owns durable review requests and outcomes. Its ordinary `review_request` adapter is
+  default-off and exists only when that owner is injected; requester identity comes from the
+  current authenticated agent mailbox and is never a public argument. Production construction and
+  activation remain separate, and client-visible activation requires a ChatGPT reinstall followed
+  by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
   per installed product/revision/phase contract after technical activation. The server derives

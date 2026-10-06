@@ -75,6 +75,7 @@ from .priority_claims import SubjectKind
 from .priority_context import PriorityContextProjection, PriorityContextResult
 from .product_currentness import ProductCurrentness
 from .relations import RelationGateway
+from .reviews import ReviewService
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
 from .workspace_admission import WorkspaceAdmissionState
@@ -123,6 +124,7 @@ class ChatGPTService:
         priority_context: PriorityContextProjection | None = None,
         priority_context_enabled: bool = False,
         implementation_requests: ImplementationRequestState | None = None,
+        reviews: ReviewService | None = None,
         product_currentness: Callable[[PrincipalContext], Awaitable[ProductCurrentness]] | None = None,
         product_currentness_enabled: bool = False,
         activation_continuity: ActivationContinuity | None = None,
@@ -155,6 +157,7 @@ class ChatGPTService:
         self.priority_context = priority_context
         self.priority_context_enabled = priority_context_enabled
         self.implementation_requests = implementation_requests
+        self.reviews = reviews
         self.product_currentness = product_currentness
         self.product_currentness_enabled = product_currentness_enabled
         self.activation_continuity = activation_continuity
