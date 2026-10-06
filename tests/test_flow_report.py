@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import AsyncGenerator
@@ -36,6 +37,13 @@ from switchstand.observability import register_timing_persistence
 from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
 from switchstand.state import human_trajectory_revisions, outcome_state_revisions, work_handles
 from switchstand.state import metadata as state_metadata
+from switchstand.task_runs import (
+    AgentTaskRequest,
+    AgentTaskResult,
+    task_run_executions,
+    task_run_requests,
+    task_run_results,
+)
 from switchstand.work_events import work_events
 
 
@@ -108,6 +116,145 @@ async def add_timing_table(engine: AsyncEngine) -> None:
             "server_residual_ms float NOT NULL,runtime_generation text NOT NULL,"
             "schema_generation text NOT NULL)"
         ))
+
+
+def task_request_digest(requester: UUID, request: AgentTaskRequest) -> str:
+    value = {
+        "requester_work_id": str(requester),
+        "request": request.model_dump(mode="json"),
+    }
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+
+
+def task_result_digest(request_id: UUID, run_id: UUID, result: AgentTaskResult) -> str:
+    value = {
+        "request_id": str(request_id), "run_id": str(run_id),
+        "result": result.model_dump(mode="json"),
+    }
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+
+
+async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
+    engine: AsyncEngine,
+) -> None:
+    target, requester = uuid4(), uuid4()
+    started = datetime.now(UTC) - timedelta(seconds=30)
+    bound, completed = started + timedelta(seconds=5), started + timedelta(seconds=20)
+    await add_work(engine, target, admitted_at=started - timedelta(seconds=10))
+    request_id, operation_id, run_id, result_id = uuid4(), uuid4(), uuid4(), uuid4()
+    request = AgentTaskRequest(
+        api_version="1", execution_work_id=target, observed_revision="pg_exact",
+        task_kind="VALIDATION", continuation="START", candidate_ref="candidate:abc",
+        objective="private objective", result_contract={"private": "contract"},
+    )
+    task_result = AgentTaskResult(
+        api_version="1", outcome="PASS", summary="private summary",
+        evidence_refs=("private evidence",),
+    )
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        await connection.execute(insert(task_run_requests).values(
+            request_id=request_id, operation_id=operation_id,
+            requester_work_id=requester,
+            **request.model_dump(mode="json", exclude={"api_version"}),
+            content_digest=task_request_digest(requester, request),
+            terminal_result_id=None, created_at=started,
+        ))
+        await connection.execute(insert(task_run_executions).values(
+            request_id=request_id, run_id=run_id, bound_at=bound,
+        ))
+        await connection.execute(insert(task_run_results).values(
+            result_id=result_id, request_id=request_id, run_id=run_id,
+            **task_result.model_dump(mode="json", exclude={"api_version"}),
+            content_digest=task_result_digest(request_id, run_id, task_result),
+            created_at=completed,
+        ))
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(terminal_result_id=result_id))
+
+    result = await report(engine, target)
+
+    assert result["run_receipts"] == {
+        "status": "KNOWN", "reason": None,
+        "correlation": "DIRECT_REQUESTER_OR_EXECUTION_WORK_ID",
+        "total_attempts": 1, "retained_attempts": 1, "truncated": False,
+        "cumulative_observed_duration_ms": 20_000,
+        "attempts": [{
+            "request_id": str(request_id), "operation_id": str(operation_id),
+            "run_id": str(run_id), "task_kind": "VALIDATION", "continuation": "START",
+            "candidate_ref": "candidate:abc", "correlation_roles": ["execution_work_id"],
+            "state": "COMPLETE", "outcome": "PASS",
+            "requested_at": started.isoformat(), "bound_at": bound.isoformat(),
+            "completed_at": completed.isoformat(), "observed_duration_ms": 20_000,
+        }],
+    }
+    assert result["coverage"]["run_receipts"] == {"status": "INCLUDED", "reason": None}
+    assert result["source_coverage"]["delivery_recovery_attempts"] == {
+        "status": "KNOWN", "reason": None,
+    }
+    encoded = json.dumps(result)
+    assert all(private not in encoded for private in (
+        "private objective", "private", "contract", "private summary", "private evidence",
+    ))
+    assert result["elapsed"]["observed_interval_union_ms"] == 20_000
+
+    async with engine.begin() as connection:
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(candidate_ref="candidate:tampered"))
+    assert (await report(engine, target))["run_receipts"]["status"] == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(candidate_ref=request.candidate_ref))
+        await connection.execute(update(task_run_results).where(
+            task_run_results.c.result_id == result_id
+        ).values(outcome="TAMPERED"))
+    assert (await report(engine, target))["run_receipts"]["status"] == "UNKNOWN"
+
+
+async def test_managed_run_receipt_limit_is_explicitly_partial(engine: AsyncEngine) -> None:
+    target, requester = uuid4(), uuid4()
+    admitted = datetime.now(UTC) - timedelta(minutes=10)
+    await add_work(engine, target, admitted_at=admitted)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        rows = []
+        for index in range(129):
+            request = AgentTaskRequest(
+                api_version="1", execution_work_id=target, observed_revision="pg_exact",
+                task_kind="VALIDATION", continuation="START",
+                objective=f"attempt {index}", result_contract={},
+            )
+            rows.append({
+                "request_id": uuid4(), "operation_id": uuid4(),
+                "requester_work_id": requester,
+                **request.model_dump(mode="json", exclude={"api_version"}),
+                "content_digest": task_request_digest(requester, request),
+                "created_at": admitted + timedelta(seconds=index),
+            })
+        await connection.execute(insert(task_run_requests), rows)
+
+    result = await report(engine, target)
+
+    assert result["run_receipts"]["status"] == "PARTIAL"
+    assert result["run_receipts"]["reason"] == "MOST_RECENT_ATTEMPTS_ONLY"
+    assert result["run_receipts"]["total_attempts"] == 129
+    assert result["run_receipts"]["retained_attempts"] == 128
+    assert result["run_receipts"]["truncated"] is True
+    assert result["run_receipts"]["cumulative_observed_duration_ms"] == 0
+    assert result["elapsed"]["observed_interval_union_ms"] == 0
 
 
 async def test_durable_mcp_timing_is_private_bounded_cohort_evidence(engine: AsyncEngine) -> None:
