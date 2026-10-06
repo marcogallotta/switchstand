@@ -77,6 +77,7 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
         [DISPATCH, "resume", "thread-1"], cwd=primary,
         env=env | {
             "SWITCHSTAND_CODEX_WAKEFUL": "PILOT", "SUPERVISOR": str(observed),
+            "PYTHONPATH": "original-codex-path",
         },
         text=True, capture_output=True, check=False,
     )
@@ -88,9 +89,11 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
         "wakeful=unset",
         f"code_home={home}/.local/state/switchstand/codex/coordinator",
     ]
-    assert lines[2].removeprefix("pythonpath=").split(":", 1)[0] == f"{primary}/src"
+    assert lines[2] == "pythonpath=original-codex-path"
     arguments = [line.removeprefix("arg=") for line in lines[3:]]
-    assert arguments[:2] == ["-m", "switchstand.codex_session"]
+    assert arguments[0] == "-c"
+    assert "switchstand.codex_session" in arguments[1]
+    assert arguments[2] == f"{primary}/src"
     default_name = arguments[arguments.index("--default-name") + 1]
     assert default_name.startswith("codex-head-") and default_name != "/root"
     assert arguments[arguments.index("--environment-file") + 1] == str(environment)

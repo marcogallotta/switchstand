@@ -186,8 +186,9 @@ if [ "$wakeful_mode" = PILOT ]; then
         exit 1
     fi
     CODEX_HOME="$coordinator_home" \
-        PYTHONPATH="$canonical_repo/src${PYTHONPATH:+:$PYTHONPATH}" \
-        exec "$runtime_python" -m switchstand.codex_session \
+        exec "$runtime_python" -c \
+            'import sys; sys.path.insert(0, sys.argv.pop(1)); from switchstand.codex_session import main; main()' \
+            "$canonical_repo/src" \
             --home "$coordinator_home" --codex "$real_codex" \
             --start-record "$start_record" \
             --default-name "codex-head-$writer_suffix" \
