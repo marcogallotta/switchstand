@@ -156,7 +156,9 @@ def test_managed_command_omits_priority_tools_without_explicit_opt_in(tmp_path: 
         if value.startswith("mcp_servers.switchstand.enabled_tools=")
     )
     assert "priority_claim_get" not in enabled
-    assert not any("SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command)
+    assert not any(
+        "SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command
+    )
 
 
 def test_manifest_tampering_and_wrong_store_are_rejected(tmp_path: Path) -> None:
