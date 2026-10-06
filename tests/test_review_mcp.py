@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -58,6 +59,29 @@ async def test_review_request_is_default_off_and_has_no_caller_identity_fields(m
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
+
+
+async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
+    subject = service()
+    occurrences = SimpleNamespace(engine=object())
+    subject.reviews = SimpleNamespace(occurrences=occurrences)
+    expected = {"schema": "switchstand.flow_report.v1", "review_pickup": {"status": "KNOWN"}}
+    report = AsyncMock(return_value=expected)
+    monkeypatch.setattr("switchstand.chatgpt_mcp.flow_report.report", report)
+    targets = []
+    tool = dict(build_ordinary_tools(subject, correlate_work=targets.append))["observability_get"]
+
+    result = await tool(ACTIVE)
+
+    assert result == expected
+    report.assert_awaited_once_with(occurrences.engine, ACTIVE, occurrences)
+    assert targets == [ACTIVE]
+    server = build_chatgpt_server(subject)
+    schema = next(
+        item.input_schema for item in await server.list_tools()
+        if item.name == "observability_get"
+    )
+    assert set(schema["properties"]) == {"work_id"}
 
 
 async def test_review_request_derives_current_mailbox_and_delegates_exact_request(monkeypatch):

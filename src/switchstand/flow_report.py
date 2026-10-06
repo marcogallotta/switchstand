@@ -24,6 +24,7 @@ from .repository_candidate import (
     RepositoryCandidateQualification,
     qualify_repository_candidate,
 )
+from .reviews import ReviewOccurrenceState
 from .state import human_trajectory_revisions, outcome_state_revisions
 from .work_events import work_events
 
@@ -168,7 +169,10 @@ async def _human_reviews(
     return list(rows), True
 
 
-async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, object]:
+async def _snapshot(
+    connection: AsyncConnection, work_id: UUID,
+    review_occurrences: ReviewOccurrenceState | None = None,
+) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
     isolation = cast(str, await connection.scalar(text("SHOW transaction_isolation")))
@@ -226,6 +230,15 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     )
     trajectory = _trajectory_projection(
         [tuple(value) for value in trajectory_values], work_id, captured_at,
+    )
+    review_pickup = (
+        {"status": "UNKNOWN", "reason": "SOURCE_UNAVAILABLE", "unpicked": None,
+         "oldest_request_age_ms": None, "requested_at": None,
+         "received_at": None, "verdict_at": None}
+        if review_occurrences is None else await review_occurrences.pickup_projection(
+            connection, work_id,
+            canonical_revision(work_id, cast(int, work.row_version)), captured_at,
+        )
     )
     review_items = [{
         "consequence_id": str(row.consequence_id),
@@ -296,6 +309,7 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
         },
         "outcome_state": outcome,
         "human_trajectory": trajectory,
+        "review_pickup": review_pickup,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,
@@ -320,6 +334,9 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
                 else "DIRECT_WORK_ID_REF",
             },
             "messages": {"status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE"},
+            "review_pickup": {
+                "status": review_pickup["status"], "reason": review_pickup["reason"],
+            },
             "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
             **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B4"} for name in (
                 "failures",
@@ -330,11 +347,14 @@ async def _snapshot(connection: AsyncConnection, work_id: UUID) -> dict[str, obj
     return project_wall(value)
 
 
-async def report(engine: AsyncEngine, work_id: UUID) -> dict[str, object]:
+async def report(
+    engine: AsyncEngine, work_id: UUID,
+    review_occurrences: ReviewOccurrenceState | None = None,
+) -> dict[str, object]:
     async with engine.connect() as connection:
         connection = await connection.execution_options(isolation_level="REPEATABLE READ")
         async with connection.begin():
-            return await _snapshot(connection, work_id)
+            return await _snapshot(connection, work_id, review_occurrences)
 
 
 def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
