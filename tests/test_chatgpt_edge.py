@@ -16,6 +16,7 @@ from switchstand.activation_continuity import ActivationContract
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
+    ReviewEdgeConfig,
     SwitchstandGitHubProvider,
     create_app,
 )
@@ -24,6 +25,7 @@ from switchstand.grants import PrincipalContext
 from switchstand.priority_claim_service import PriorityClaimService
 from switchstand.priority_context import PriorityContextProjection
 from switchstand.product_currentness_stateful import StatefulPersistenceSnapshot
+from switchstand.reviews import ReviewGuidelines, ReviewPolicy
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
@@ -379,6 +381,49 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
     async with chatgpt_edge.configured_resource_service() as (configured, _runtime):
         assert configured.activation_continuity is not None
         assert configured.activation_continuity.contracts is contracts
+
+
+@pytest.mark.parametrize(
+    ("implementation_requests", "review_enabled"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+async def test_resource_service_shares_review_dependencies_when_explicitly_injected(
+    monkeypatch, implementation_requests, review_enabled
+):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+    if implementation_requests:
+        monkeypatch.setenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS", "1")
+    else:
+        monkeypatch.delenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS", raising=False)
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+    policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"})
+    config = ReviewEdgeConfig(
+        policy, ReviewGuidelines(version="guidelines-v1", digest="a" * 64)
+    )
+
+    async with chatgpt_edge.resource_service(
+        review_config=config if review_enabled else None
+    ) as (subject, _runtime):
+        names = {name for name, _tool in build_ordinary_tools(subject)}
+        assert ("implementation_request" in names) is implementation_requests
+        assert ({"review_request", "review_submit"} <= names) is review_enabled
+        if review_enabled:
+            assert subject.reviews is not None
+            assert subject.reviews.policy is policy
+            assert subject.reviews.messages is subject.messages
+        if implementation_requests:
+            assert subject.implementation_requests is not None
+            if review_enabled:
+                assert (
+                    subject.implementation_requests.review_occurrences
+                    is subject.reviews.occurrences
+                )
 
 
 async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):

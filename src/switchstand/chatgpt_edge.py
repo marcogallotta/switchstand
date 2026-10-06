@@ -56,7 +56,7 @@ from .product_currentness import (
     evaluate_stateful_currentness,
 )
 from .product_currentness_stateful import LiveStatefulEvidenceReader, StatefulServerSnapshot
-from .reviews import ReviewOccurrenceState, ReviewPolicy
+from .reviews import ReviewGuidelines, ReviewOccurrenceState, ReviewPolicy, ReviewService
 from .stable_auth import (
     REQUIRED_SCOPE,
     IntrospectionTokenVerifier,
@@ -130,6 +130,14 @@ class _ProductCurrentnessConfig:
             qualification_receipt=receipt_path,
             qualification_key=key_path,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewEdgeConfig:
+    """Explicit default-off review policy dependencies for the ordinary edge."""
+
+    policy: ReviewPolicy
+    guidelines: ReviewGuidelines
 
 
 def _tools_snapshot(tools: Sequence[Tool]) -> tuple[tuple[str, ...], str]:
@@ -412,6 +420,7 @@ def _create_resource_app(
 @asynccontextmanager
 async def resource_service(
     activation_contracts: Mapping[UUID, ActivationContract] | None = None,
+    review_config: ReviewEdgeConfig | None = None,
 ) -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
     """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
@@ -443,14 +452,29 @@ async def resource_service(
                 relations=canonical_relations,
                 claims=priority_claims,
             )
-        implementation_requests = None
-        if os.getenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS") == "1":
-            reviews = ReviewOccurrenceState(
-                canonical_repository, AgentMailboxState(engine),
-                ReviewPolicy(version="review-policy-v1", reviewer_by_kind={}),
+        implementation_requests_enabled = os.getenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS") == "1"
+        review_occurrences = None
+        review_service = None
+        if review_config is not None or implementation_requests_enabled:
+            mailboxes = AgentMailboxState(engine)
+            policy = (
+                review_config.policy
+                if review_config is not None
+                else ReviewPolicy(version="review-policy-v1", reviewer_by_kind={})
             )
+            review_occurrences = ReviewOccurrenceState(
+                canonical_repository, mailboxes, policy
+            )
+            if review_config is not None:
+                review_service = ReviewService(
+                    review_occurrences, mailboxes, messages,
+                    review_config.policy, review_config.guidelines,
+                )
+        implementation_requests = None
+        if implementation_requests_enabled:
+            assert review_occurrences is not None
             implementation_requests = ImplementationRequestState(
-                engine, canonical_repository, reviews
+                engine, canonical_repository, review_occurrences
             )
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {},
             messages, RequiredResultPersistence(LifecycleRepository(engine)),
@@ -462,6 +486,7 @@ async def resource_service(
             priority_context=priority_context,
             priority_context_enabled=priority_claims_enabled,
             implementation_requests=implementation_requests,
+            reviews=review_service,
             activation_continuity=(
                 None
                 if activation_contracts is None

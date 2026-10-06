@@ -281,7 +281,10 @@ messaging, and required continuation:
   `reviews.py` owns durable review requests and outcomes. Its ordinary `review_request` and
   `review_submit` adapters are default-off and exist only when that owner is injected; requester
   and reviewer identities come from the current authenticated agent mailbox and are never public
-  arguments. Production construction and activation remain separate, and client-visible activation
+  arguments. The resource service accepts one explicit default-off review policy/guidelines
+  configuration and constructs one mailbox/occurrence graph shared with the independently enabled
+  implementation-request facade, avoiding divergent review truth. Production configuration and
+  activation remain separate, and client-visible activation
   requires a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
