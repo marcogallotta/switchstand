@@ -260,3 +260,14 @@ def test_incident_records_separate_evidence_from_causal_confidence():
         assert "falsifier" in document
     assert "Causal confidence is advisory inference only" in runbook
     assert "raw self-confidence cannot change them" in record
+
+
+def test_managed_history_is_exceptional_across_current_docs():
+    development = normalized("docs/development.md")
+    source_history = normalized("docs/source-history-feedback.md")
+
+    assert "do not enumerate `work_history`" in development
+    assert "explicit bounded investigation or recovery" in development
+    assert "History and exact-event reads are exceptional" in source_history
+    assert "not for normal grounding" in source_history
+    assert "routine polling" in source_history
