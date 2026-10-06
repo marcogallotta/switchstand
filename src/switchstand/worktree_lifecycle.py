@@ -13,26 +13,18 @@ from typing import Any
 
 EVIDENCE = {".qualification", ".switchstand-incidents"}
 DISPOSABLE = {".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache", "friction.md"}
-
-
 def _run(*arguments: str, cwd: Path | None = None) -> str:
     return subprocess.run(
         arguments, cwd=cwd, check=True, text=True, stdout=subprocess.PIPE
     ).stdout.strip()
-
-
 def _git(repo: Path, *arguments: str) -> str:
     return _run("git", "-C", str(repo), *arguments)
-
-
 def _atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
-
-
 def _records(repo: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for block in _git(repo, "worktree", "list", "--porcelain").split("\n\n"):
@@ -44,12 +36,8 @@ def _records(repo: Path) -> list[dict[str, Any]]:
         if fields:
             records.append(fields)
     return records
-
-
 def _inside(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
-
-
 def _manifests(coordinator: Path) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
     result: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path in coordinator.glob("start-commit.*.manifest.json"):
@@ -60,8 +48,6 @@ def _manifests(coordinator: Path) -> dict[str, list[tuple[Path, dict[str, Any]]]
             continue
         result.setdefault(str(candidate), []).append((path, value))
     return result
-
-
 def _manifest(
     coordinator: Path,
     writer: Path,
@@ -70,8 +56,6 @@ def _manifest(
     source = manifests if manifests is not None else _manifests(coordinator)
     matches = source.get(str(writer), [])
     return matches[0] if len(matches) == 1 else None
-
-
 def _last_marker(manifest_path: Path, coordinator: Path) -> str | None:
     suffix = manifest_path.name.removeprefix("start-commit.").removesuffix(".manifest.json")
     telemetry = coordinator / f"continuity-{suffix}.jsonl"
@@ -82,8 +66,6 @@ def _last_marker(manifest_path: Path, coordinator: Path) -> str | None:
         return None
     marker = value.get("yield_marker")
     return marker if isinstance(marker, str) else None
-
-
 def _ignored(writer: Path) -> tuple[list[Path], list[Path], list[str]]:
     output = _git(
         writer, "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=normal"
@@ -105,10 +87,27 @@ def _ignored(writer: Path) -> tuple[list[Path], list[Path], list[str]]:
         else:
             unknown.add(relative)
     return sorted(evidence), sorted(disposable), sorted(unknown)
-
-
 def _fingerprint(path: Path) -> dict[str, Any]:
     value = path.lstat()
+    digest = hashlib.sha256()
+    for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            item = Path(current) / name
+            metadata = item.lstat()
+            relative = str(item.relative_to(path))
+            digest.update(
+                json.dumps(
+                    [relative, stat.S_IFMT(metadata.st_mode), metadata.st_size, metadata.st_mtime_ns]
+                ).encode()
+            )
+            if stat.S_ISLNK(metadata.st_mode):
+                digest.update(os.readlink(item).encode())
+            elif stat.S_ISREG(metadata.st_mode):
+                with item.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
     return {
         "path": str(path),
         "device": value.st_dev,
@@ -116,9 +115,8 @@ def _fingerprint(path: Path) -> dict[str, Any]:
         "mode": stat.S_IFMT(value.st_mode),
         "size": value.st_size,
         "mtime_ns": value.st_mtime_ns,
+        "tree_sha256": digest.hexdigest(),
     }
-
-
 def classify(
     repo: Path,
     root: Path,
@@ -186,8 +184,6 @@ def classify(
         "disposable": [_fingerprint(path) for path in disposable],
         "ignored_unknown": ignored_unknown,
     }
-
-
 def _plan_retire(arguments: argparse.Namespace) -> None:
     identity = classify(arguments.repo, arguments.root, arguments.coordinator, arguments.writer)
     if identity["classification"] != "RETIREMENT_CANDIDATE":
@@ -207,10 +203,11 @@ def _plan_retire(arguments: argparse.Namespace) -> None:
         "identity": identity,
     }
     _atomic_json(arguments.plan, plan)
-
-
 def _apply_retire(arguments: argparse.Namespace) -> None:
     raw = arguments.plan.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != arguments.plan_sha256:
+        raise SystemExit("retirement plan digest changed")
     plan = json.loads(raw)
     if plan.get("schema") != 1 or plan.get("kind") != "retire":
         raise SystemExit("invalid retirement plan")
@@ -220,12 +217,18 @@ def _apply_retire(arguments: argparse.Namespace) -> None:
     )
     if expected != actual:
         raise SystemExit("retirement preimage changed")
+    writer = Path(expected["writer"]).resolve(strict=True)
     archive = Path(plan["archive"])
+    plan_path = arguments.plan.resolve(strict=True)
+    receipt_path = arguments.receipt.parent.resolve(strict=True) / arguments.receipt.name
+    archive_path = archive.parent.resolve(strict=True) / archive.name
+    if any(_inside(path, writer) for path in (plan_path, receipt_path, archive_path)):
+        raise SystemExit("plan, receipt and archive must remain outside the writer")
     if archive.exists():
         raise SystemExit("evidence archive already exists")
     receipt: dict[str, Any] = {
         "kind": "retire",
-        "plan_sha256": hashlib.sha256(raw).hexdigest(),
+        "plan_sha256": digest,
         "state": "STARTED",
         "writer": expected["writer"],
         "evidence": [],
@@ -244,12 +247,8 @@ def _apply_retire(arguments: argparse.Namespace) -> None:
         raise SystemExit("retirement readback failed; evidence remains preserved")
     receipt["state"] = "COMPLETE"
     _atomic_json(arguments.receipt, receipt)
-
-
 def _prunable(repo: Path) -> list[str]:
     return sorted(str(item["worktree"]) for item in _records(repo) if "prunable" in item)
-
-
 def _plan_prune(arguments: argparse.Namespace) -> None:
     plan = {
         "schema": 1,
@@ -258,10 +257,11 @@ def _plan_prune(arguments: argparse.Namespace) -> None:
         "prunable": _prunable(arguments.repo),
     }
     _atomic_json(arguments.plan, plan)
-
-
 def _apply_prune(arguments: argparse.Namespace) -> None:
     raw = arguments.plan.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != arguments.plan_sha256:
+        raise SystemExit("registration-prune plan digest changed")
     plan = json.loads(raw)
     if plan.get("schema") != 1 or plan.get("kind") != "prune-registrations":
         raise SystemExit("invalid registration-prune plan")
@@ -272,7 +272,7 @@ def _apply_prune(arguments: argparse.Namespace) -> None:
     remaining = sorted(set(plan["prunable"]) & set(_prunable(repo)))
     receipt = {
         "kind": "prune-registrations",
-        "plan_sha256": hashlib.sha256(raw).hexdigest(),
+        "plan_sha256": digest,
         "pruned": plan["prunable"],
         "remaining": remaining,
         "state": "COMPLETE" if not remaining else "INCOMPLETE",
@@ -280,8 +280,6 @@ def _apply_prune(arguments: argparse.Namespace) -> None:
     _atomic_json(arguments.receipt, receipt)
     if remaining:
         raise SystemExit("registration-prune readback failed")
-
-
 def _audit(arguments: argparse.Namespace) -> None:
     rows: list[dict[str, Any]] = []
     root = arguments.root.resolve(strict=True)
@@ -306,8 +304,6 @@ def _audit(arguments: argparse.Namespace) -> None:
                 )
             )
     print(json.dumps({"writers": rows, "prunable": _prunable(arguments.repo)}, sort_keys=True))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -325,6 +321,7 @@ def main() -> None:
     retire.set_defaults(run=_plan_retire)
     apply_retire = commands.add_parser("apply-retire")
     apply_retire.add_argument("--plan", type=Path, required=True)
+    apply_retire.add_argument("--plan-sha256", required=True)
     apply_retire.add_argument("--receipt", type=Path, required=True)
     apply_retire.set_defaults(run=_apply_retire)
     prune = commands.add_parser("plan-prune")
@@ -333,6 +330,7 @@ def main() -> None:
     prune.set_defaults(run=_plan_prune)
     apply_prune = commands.add_parser("apply-prune")
     apply_prune.add_argument("--plan", type=Path, required=True)
+    apply_prune.add_argument("--plan-sha256", required=True)
     apply_prune.add_argument("--receipt", type=Path, required=True)
     apply_prune.set_defaults(run=_apply_prune)
     arguments = parser.parse_args()
