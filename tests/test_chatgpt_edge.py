@@ -488,6 +488,83 @@ async def test_resource_service_priority_surface_is_explicit_and_default_off(mon
         assert enabled.priority_context_enabled is True
 
 
+async def test_resource_service_publishes_configured_currentness_runtime(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+    values = _currentness_environment(monkeypatch)
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    async with chatgpt_edge.resource_service() as (_service, runtime):
+        assert runtime == (
+            values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA"],
+            values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID"],
+        )
+
+
+@pytest.mark.parametrize("mismatch", ["sha", "run"])
+async def test_resource_service_rejects_conflicting_runtime_identities(
+    monkeypatch, mismatch,
+):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+    values = _currentness_environment(monkeypatch)
+    monkeypatch.setenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "fixture")
+    monkeypatch.setenv(
+        "SWITCHSTAND_CERTIFICATION_RUNTIME_SHA",
+        "c" * 40 if mismatch == "sha" else values[
+            "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA"
+        ],
+    )
+    monkeypatch.setenv(
+        "SWITCHSTAND_CERTIFICATION_RUN_ID",
+        "other-run" if mismatch == "run" else values[
+            "SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID"
+        ],
+    )
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    with pytest.raises(ValueError, match="runtime identities differ"):
+        async with chatgpt_edge.resource_service():
+            pytest.fail("conflicting runtime identities must fail before service publication")
+
+
+async def test_resource_service_accepts_matching_runtime_identities(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+    values = _currentness_environment(monkeypatch)
+    monkeypatch.setenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "fixture")
+    monkeypatch.setenv(
+        "SWITCHSTAND_CERTIFICATION_RUNTIME_SHA",
+        values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA"],
+    )
+    monkeypatch.setenv(
+        "SWITCHSTAND_CERTIFICATION_RUN_ID",
+        values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID"],
+    )
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    async with chatgpt_edge.resource_service() as (_service, runtime):
+        assert runtime == (
+            values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA"],
+            values["SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID"],
+        )
+
+
 async def test_resource_service_activation_registry_is_explicit_and_default_off(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
 

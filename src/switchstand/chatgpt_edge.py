@@ -545,6 +545,7 @@ async def resource_service(
             return None
 
         marker = os.getenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "").strip()
+        currentness_config = _ProductCurrentnessConfig.from_environment()
         grants = GrantState(engine)
         canonical_repository = CanonicalWorkRepository(engine)
         canonical_relations = CanonicalRelationsRepository(engine)
@@ -611,12 +612,21 @@ async def resource_service(
             service.activation_proof = _managed_activation_proof(
                 TaskRunState(engine, canonical_repository), activation_contracts
             )
-        runtime = None
+        runtime = (
+            None
+            if currentness_config is None
+            else (currentness_config.runtime_sha, currentness_config.run_id)
+        )
         if marker:
-            runtime = (
+            certification_runtime = (
                 os.environ["SWITCHSTAND_CERTIFICATION_RUNTIME_SHA"],
                 os.environ["SWITCHSTAND_CERTIFICATION_RUN_ID"],
             )
+            if runtime is not None and runtime != certification_runtime:
+                raise ValueError(
+                    "certification and product-currentness runtime identities differ"
+                )
+            runtime = certification_runtime
         yield service, runtime
     finally:
         await engine.dispose()

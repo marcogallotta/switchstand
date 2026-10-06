@@ -139,6 +139,8 @@ schema expectations, and an existing mode-0600 seal key. It journals the immutab
 before the protected update; proves authenticated MCP, DENIED admission, STALE CAS, exact replay,
 and current readback; emits the receipt create-new; then requires the same live adapter to evaluate
 TRUE. An existing mismatched journal or any ambiguous/nonconforming outcome emits no PASS.
+While product currentness is configured, the edge publishes the same narrow runtime-SHA/run-ID
+readback used by the qualifier; an independently configured certification identity must match it.
 
 Then the canonical activation check is:
 
