@@ -46,6 +46,14 @@ async def test_same_principal_distinct_chats_own_distinct_names(endpoints):
     assert duplicate.mailbox == alpha.mailbox
 
 
+async def test_existing_session_wins_when_requested_default_name_is_occupied(endpoints):
+    root = await endpoints.register_agent("Root", "owner", "root-chat")
+    await endpoints.register_agent("codex-head-generated", "other", "other-chat")
+    resumed = await endpoints.register_agent("codex-head-generated", "owner", "root-chat")
+    assert resumed.status == "ok"
+    assert resumed.mailbox == root.mailbox
+
+
 async def test_concurrent_registration_reconciles_unique_identity(endpoints):
     first, replay = await asyncio.gather(
         endpoints.register_agent("Concurrent", "owner", "same-chat"),

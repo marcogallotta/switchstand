@@ -135,25 +135,19 @@ class AgentMailboxState:
                     name_key=key, display_name=display, endpoint_id=uuid4(),
                     principal_key=principal_key, session_key=session_key, generation=1,
                 ).on_conflict_do_nothing())
-                bound = (await connection.execute(select(agent_mailboxes).where(
-                    agent_mailboxes.c.name_key == key
-                ))).mappings().one_or_none()
-                if bound is not None:
-                    mailbox = self._view(bound)
-                    if (mailbox.name, mailbox.principal_key, mailbox.session_key) == (
-                        display, principal_key, session_key,
-                    ):
-                        return AgentMailboxResult(status="ok", mailbox=mailbox)
-                    return AgentMailboxResult(status="conflict", reason="name_collision")
                 prior = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,
                 ))).mappings().one_or_none()
                 if prior is not None:
-                    # Registration is read-or-create for the authenticated session. Returning its
-                    # immutable mailbox lets a resumed Codex thread reuse even a special name such
-                    # as /root without guessing that name or performing a takeover.
+                    # The authenticated session identity wins even when its requested default name
+                    # is occupied. This reuses special names such as /root without takeover.
                     return AgentMailboxResult(status="ok", mailbox=self._view(prior))
+                bound = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == key
+                ))).mappings().one_or_none()
+                if bound is not None:
+                    return AgentMailboxResult(status="conflict", reason="name_collision")
                 return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
