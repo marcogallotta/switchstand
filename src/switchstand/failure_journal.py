@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -173,6 +174,26 @@ def _digest(value: dict[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def validate_failure_record_row(row: Mapping[str, object]) -> FailureRecord | None:
+    """Validate one stored failure row without projecting private text fields."""
+    try:
+        value = FailureRecord.model_validate({key: row[key] for key in FailureRecord.model_fields})
+        return value if _digest(value.canonical()) == row["content_digest"] else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def validate_failure_resolution_row(row: Mapping[str, object]) -> FailureResolution | None:
+    """Validate one stored resolution row without projecting private text fields."""
+    try:
+        value = FailureResolution.model_validate({
+            key: row[f"resolution_{key}"] for key in FailureResolution.model_fields
+        })
+        return value if _digest(value.canonical()) == row["resolution_content_digest"] else None
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class FailureJournal:

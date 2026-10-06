@@ -14,8 +14,17 @@ from uuid import UUID
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
+from .activation_continuity import ActivationContract, Obligation, seal_obligation
 from .canonical_relations import work_dependencies
 from .canonical_work import canonical_revision, canonical_work
+from .failure_journal import (
+    FailureRecord,
+    FailureResolution,
+    failure_records,
+    failure_resolutions,
+    validate_failure_record_row,
+    validate_failure_resolution_row,
+)
 from .human_reviews import human_review_consequences
 from .human_trajectory import validated_trajectory_headers
 from .outcome_state import validated_revision_headers
@@ -169,6 +178,131 @@ async def _human_reviews(
     return list(rows), True
 
 
+async def _failures(
+    connection: AsyncConnection, work_id: UUID, captured_at: datetime,
+) -> tuple[dict[str, object], bool]:
+    available = cast(bool, await connection.scalar(text(
+        "SELECT to_regclass('public.failure_records') IS NOT NULL "
+        "AND to_regclass('public.failure_resolutions') IS NOT NULL"
+    )))
+    if not available:
+        return {"status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE", "items": []}, False
+    record_fields = [
+        failure_records.c[name].label(name) for name in FailureRecord.model_fields
+    ]
+    resolution_fields = [
+        failure_resolutions.c[name].label(f"resolution_{name}")
+        for name in FailureResolution.model_fields
+    ]
+    rows = (await connection.execute(select(
+        *record_fields, failure_records.c.content_digest,
+        *resolution_fields,
+        failure_resolutions.c.content_digest.label("resolution_content_digest"),
+    ).select_from(failure_records.outerjoin(
+        failure_resolutions,
+        failure_resolutions.c.attempt_id == failure_records.c.attempt_id,
+    )).where(failure_records.c.owner == str(work_id)).order_by(
+        failure_records.c.occurred_at, failure_records.c.attempt_id,
+    ))).mappings().all()
+    items: list[dict[str, object]] = []
+    for row in rows:
+        stored = {str(key): value for key, value in row.items()}
+        record = validate_failure_record_row(stored)
+        resolution = (
+            None if stored["resolution_resolution_id"] is None
+            else validate_failure_resolution_row(stored)
+        )
+        if record is None or (
+            stored["resolution_resolution_id"] is not None and resolution is None
+        ):
+            return {"status": "UNKNOWN", "reason": "CORRUPT_RECORD", "items": []}, True
+        if record.occurred_at > captured_at or (
+            resolution is not None and (
+                resolution.resolved_at > captured_at
+                or resolution.resolved_at < record.occurred_at
+            )
+        ):
+            return {"status": "UNKNOWN", "reason": "UNSAFE_TIMESTAMP", "items": []}, True
+        items.append({
+            "attempt_id": str(record.attempt_id),
+            "operation_id": str(record.operation_id),
+            "effect_state": record.effect_state.value,
+            "occurred_at": _time(record.occurred_at),
+            "resolution_id": None if resolution is None else str(resolution.resolution_id),
+            "resolved_at": None if resolution is None else _time(resolution.resolved_at),
+            "resolution_latency_ms": None if resolution is None else int(
+                (resolution.resolved_at - record.occurred_at).total_seconds() * 1000
+            ),
+        })
+    return {
+        "status": "KNOWN", "reason": None,
+        "correlation": "DIRECT_OWNER_WORK_ID", "items": items,
+        "open_count": sum(item["resolved_at"] is None for item in items),
+    }, True
+
+
+async def _activation(
+    connection: AsyncConnection, work_id: UUID,
+) -> tuple[dict[str, object], bool]:
+    available = cast(bool, await connection.scalar(text(
+        "SELECT to_regclass('public.activation_obligation_revisions') IS NOT NULL"
+    )))
+    if not available:
+        return {"status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE", "items": []}, False
+    rows = (await connection.execute(text(
+        "SELECT obligation_id,operation_id,generation,record "
+        "FROM activation_obligation_revisions "
+        "WHERE record->'binding'->>'product_work_id'=:work_id "
+        "OR record->'binding'->>'return_owner_work_id'=:work_id "
+        "ORDER BY obligation_id,generation"
+    ), {"work_id": str(work_id)})).mappings().all()
+    grouped: dict[UUID, list[Mapping[Any, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(cast(UUID, row["obligation_id"]), []).append(row)
+    items: list[dict[str, object]] = []
+    for obligation_id, chain_rows in grouped.items():
+        previous: str | None = None
+        chain: list[Obligation] = []
+        try:
+            for expected_generation, row in enumerate(chain_rows, 1):
+                value = Obligation.model_validate(row["record"])
+                if (
+                    value.generation != expected_generation
+                    or value.predecessor != previous
+                    or value.operation_id != row["operation_id"]
+                    or seal_obligation(value).digest != value.digest
+                ):
+                    raise ValueError("invalid activation revision chain")
+                previous = value.digest
+                chain.append(value)
+        except (KeyError, TypeError, ValueError):
+            return {"status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN", "items": []}, True
+        latest = chain[-1]
+        raw_binding = dict(latest.binding)
+        embedded_obligation_id = raw_binding.pop("obligation_id", None)
+        try:
+            contract = ActivationContract.model_validate(raw_binding)
+        except (TypeError, ValueError):
+            return {"status": "UNKNOWN", "reason": "INVALID_CONTRACT_BINDING", "items": []}, True
+        if str(contract.obligation_id) != str(embedded_obligation_id) or (
+            contract.obligation_id != obligation_id
+        ):
+            return {"status": "UNKNOWN", "reason": "OBLIGATION_ID_MISMATCH", "items": []}, True
+        binding = contract.model_dump(mode="json")
+        roles = [name for name in ("product_work_id", "return_owner_work_id")
+                 if binding.get(name) == str(work_id)]
+        items.append({
+            "obligation_id": str(obligation_id), "generation": latest.generation,
+            "state": latest.state, "acceptance": latest.acceptance,
+            "adoption": latest.adoption, "target_phase": binding.get("target_phase"),
+            "target_revision": binding.get("target_revision"), "correlation_roles": roles,
+        })
+    return {
+        "status": "PARTIAL", "reason": "SOURCE_HAS_NO_REVISION_TIMESTAMPS",
+        "correlation": "DIRECT_CONTRACT_WORK_ID", "items": items,
+    }, True
+
+
 async def _snapshot(
     connection: AsyncConnection, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
@@ -198,6 +332,8 @@ async def _snapshot(
     trajectory_values = (await connection.execute(select(human_trajectory_revisions).where(
         human_trajectory_revisions.c.work_id_ref == work_id
     ).order_by(human_trajectory_revisions.c.generation))).all()
+    failures, _failures_available = await _failures(connection, work_id, captured_at)
+    activation, activation_available = await _activation(connection, work_id)
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -271,6 +407,16 @@ async def _snapshot(
             "source": "human_trajectory", "kind": "REVISION",
             "id": revision["trajectory_id"], "at": revision["created_at"], "duration_ms": 0,
         })
+    for item in cast(list[dict[str, object]], failures["items"]):
+        ordered_evidence.append({
+            "source": "failure_journal", "kind": "FAILURE_RECORDED",
+            "id": item["attempt_id"], "at": item["occurred_at"], "duration_ms": 0,
+        })
+        if item["resolved_at"] is not None:
+            ordered_evidence.append({
+                "source": "failure_journal", "kind": "FAILURE_RESOLVED",
+                "id": item["resolution_id"], "at": item["resolved_at"], "duration_ms": 0,
+            })
     ordered_evidence.sort(key=lambda item: (cast(str, item["at"]),
                                             cast(str, item["source"]),
                                             cast(str, item["id"])))
@@ -310,6 +456,8 @@ async def _snapshot(
         },
         "outcome_state": outcome,
         "human_trajectory": trajectory,
+        "failures": failures,
+        "activation": activation,
         "review_pickup": review_pickup,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
@@ -339,10 +487,33 @@ async def _snapshot(
                 "status": review_pickup["status"], "reason": review_pickup["reason"],
             },
             "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
-            **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_B4"} for name in (
-                "failures",
-                "lifecycle_timing", "github", "run_receipts",
-            )},
+            "failures": {
+                "status": "INCLUDED" if failures["status"] == "KNOWN" else "UNKNOWN",
+                "reason": "DIRECT_OWNER_WORK_ID" if failures["status"] == "KNOWN"
+                else failures["reason"],
+            },
+            "activation": {
+                "status": "INCLUDED" if activation_available else "UNKNOWN",
+                "reason": activation["reason"],
+            },
+            **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_V2_SLICE_A"}
+               for name in ("lifecycle_timing", "github", "run_receipts")},
+        },
+        "source_coverage": {
+            "canonical_work": {"status": "PARTIAL", "reason": "CURRENT_ONLY"},
+            "review": {"status": "KNOWN" if reviews_available else "UNKNOWN",
+                       "reason": None if reviews_available else "SOURCE_TABLE_UNAVAILABLE"},
+            "review_pickup": {
+                "status": "KNOWN" if review_pickup["status"] != "UNKNOWN" else "UNKNOWN",
+                "reason": review_pickup["reason"],
+            },
+            "github_ci": {"status": "UNKNOWN", "reason": "EXACT_CANDIDATE_NOT_CORRELATED"},
+            "test_metrics": {"status": "UNKNOWN", "reason": "EXACT_RUN_NOT_CORRELATED"},
+            "failure_recovery": {"status": failures["status"], "reason": failures["reason"]},
+            "activation": {"status": activation["status"], "reason": activation["reason"]},
+            "mcp_tracker_timing": {
+                "status": "UNKNOWN", "reason": "DURABLE_RETENTION_NOT_PROVED",
+            },
         },
     }
     return project_wall(value)

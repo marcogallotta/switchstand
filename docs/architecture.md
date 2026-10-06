@@ -72,10 +72,14 @@ Landing either layer is inert. Enabling the tool, producing a live qualification
 on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
 interval aggregation; it neither persists records nor establishes journal durability or reliance.
-`flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. B1 is always partial:
-it reports canonical current state and relations plus observed target events from one read-only,
-repeatable-read transaction. It names excluded sources and computes no elapsed time; journal timing
-remains unavailable until cross-restart retention is proved. Its concise format is a deterministic
+`flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. The report remains
+partial: it reports canonical current state and relations plus observed target events from one
+read-only, repeatable-read transaction. It projects only digest-validated failure/resolution rows
+whose owner is that exact WorkId, without exposing their private prose, and digest-validates
+activation revision chains correlated by their source-owned product/return-owner bindings.
+Activation remains `PARTIAL` because that source has no revision timestamps. A separate additive
+source-coverage projection uses only `KNOWN`, `PARTIAL`, or `UNKNOWN`; absent exact candidate,
+test-run, or durable MCP-timing correlation stays `UNKNOWN`. Its concise format is a deterministic
 projection of the same JSON facts and coverage reasons, not another correlation or inference layer.
 Optional GitHub evidence requires a caller-supplied pull-request number and expected exact head;
 the existing repository-candidate qualifier validates their current identity. Exact-head and
