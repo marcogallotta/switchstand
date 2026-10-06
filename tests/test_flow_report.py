@@ -148,7 +148,8 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
             "resolved_at": resolution.resolved_at.isoformat(),
             "resolution_latency_ms": 12_000,
         }],
-        "open_count": 0,
+        "total_records": 1, "truncated": False,
+        "open_count": 0, "observed_open_count": 0,
     }
     encoded = json.dumps(result)
     assert all(private not in encoded for private in (
@@ -158,10 +159,85 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     assert result["activation"]["status"] == "PARTIAL"
     assert result["activation"]["items"][0]["state"] == "WAITING_ACTIVATION"
     assert result["activation"]["items"][0]["correlation_roles"] == ["product_work_id"]
+    assert result["elapsed"]["observed_interval_union_ms"] == 12_000
     assert result["source_coverage"]["failure_recovery"]["status"] == "KNOWN"
     assert result["source_coverage"]["activation"] == {
         "status": "PARTIAL", "reason": "SOURCE_HAS_NO_REVISION_TIMESTAMPS",
     }
+
+
+async def test_activation_reads_complete_chain_and_rejects_changed_later_binding(
+    engine: AsyncEngine,
+) -> None:
+    target, other, replacement = uuid4(), uuid4(), uuid4()
+    await add_work(engine, target)
+    contract = ActivationContract(
+        product_work_id=target, return_owner_work_id=other, outcome_key="outcome",
+        target_revision="candidate:abc", target_phase="LIVE",
+        acceptance_contract_id="acceptance", contract_revision="1",
+        adoption_requirement="NOT_REQUIRED", lifecycle_authority_work_id=target,
+    )
+    first = seal_obligation(Obligation(
+        binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+        adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+        generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+    ))
+    changed_contract = contract.model_copy(update={
+        "product_work_id": replacement, "return_owner_work_id": replacement,
+        "lifecycle_authority_work_id": replacement,
+    })
+    second = seal_obligation(first.model_copy(update={
+        "binding": changed_contract.stored(), "generation": 2, "predecessor": first.digest,
+        "operation_id": uuid4(), "intent_digest": "b" * 64, "digest": "0" * 64,
+    }))
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "CREATE TABLE activation_obligation_revisions ("
+            "obligation_id uuid NOT NULL, operation_id uuid NOT NULL UNIQUE, "
+            "generation bigint NOT NULL, record jsonb NOT NULL, "
+            "PRIMARY KEY (obligation_id,generation))"
+        ))
+        for value in (first, second):
+            await connection.execute(text(
+                "INSERT INTO activation_obligation_revisions "
+                "(obligation_id,operation_id,generation,record) "
+                "VALUES (:id,:operation_id,:generation,CAST(:record AS jsonb))"
+            ), {"id": contract.obligation_id, "operation_id": value.operation_id,
+                "generation": value.generation, "record": value.model_dump_json()})
+
+    result = await report(engine, target)
+
+    assert result["activation"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN", "items": [],
+    }
+    assert result["source_coverage"]["activation"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+    }
+
+
+async def test_failure_adapter_bounds_recent_records_truthfully(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    journal = FailureJournal(engine)
+    for offset in range(2):
+        assert (await journal.record(FailureRecord(
+            attempt_id=uuid4(), operation_id=uuid4(), owner=str(target),
+            attempted_claim="claim", observed_result="result", clearing_action="clear",
+            effect_state=EffectState.NOT_SENT,
+            occurred_at=datetime.now(UTC) - timedelta(seconds=2 - offset),
+        ))).status == "APPLIED"
+    monkeypatch.setattr(flow_report, "FAILURE_LIMIT", 1)
+
+    result = await report(engine, target)
+
+    assert result["failures"]["status"] == "PARTIAL"
+    assert result["failures"]["reason"] == "MOST_RECENT_RECORDS_ONLY"
+    assert result["failures"]["total_records"] == 2
+    assert result["failures"]["truncated"] is True
+    assert result["failures"]["open_count"] is None
+    assert result["failures"]["observed_open_count"] == 1
 
 
 @pytest.mark.parametrize(

@@ -39,6 +39,9 @@ from .work_events import work_events
 
 OUTCOME_REVISION_LIMIT = 64
 TRAJECTORY_REVISION_LIMIT = 64
+FAILURE_LIMIT = 128
+ACTIVATION_OBLIGATION_LIMIT = 32
+ACTIVATION_REVISION_LIMIT = 128
 
 
 def _time(value: datetime | None) -> str | None:
@@ -194,6 +197,9 @@ async def _failures(
         failure_resolutions.c[name].label(f"resolution_{name}")
         for name in FailureResolution.model_fields
     ]
+    total = cast(int, await connection.scalar(select(func.count()).select_from(
+        failure_records
+    ).where(failure_records.c.owner == str(work_id))))
     rows = (await connection.execute(select(
         *record_fields, failure_records.c.content_digest,
         *resolution_fields,
@@ -202,8 +208,8 @@ async def _failures(
         failure_resolutions,
         failure_resolutions.c.attempt_id == failure_records.c.attempt_id,
     )).where(failure_records.c.owner == str(work_id)).order_by(
-        failure_records.c.occurred_at, failure_records.c.attempt_id,
-    ))).mappings().all()
+        failure_records.c.occurred_at.desc(), failure_records.c.attempt_id.desc(),
+    ).limit(FAILURE_LIMIT))).mappings().all()
     items: list[dict[str, object]] = []
     for row in rows:
         stored = {str(key): value for key, value in row.items()}
@@ -234,10 +240,17 @@ async def _failures(
                 (resolution.resolved_at - record.occurred_at).total_seconds() * 1000
             ),
         })
+    items.reverse()
+    truncated = total > len(items)
     return {
-        "status": "KNOWN", "reason": None,
+        "status": "PARTIAL" if truncated else "KNOWN",
+        "reason": "MOST_RECENT_RECORDS_ONLY" if truncated else None,
         "correlation": "DIRECT_OWNER_WORK_ID", "items": items,
-        "open_count": sum(item["resolved_at"] is None for item in items),
+        "total_records": total, "truncated": truncated,
+        "open_count": (None if truncated else sum(
+            item["resolved_at"] is None for item in items
+        )),
+        "observed_open_count": sum(item["resolved_at"] is None for item in items),
     }, True
 
 
@@ -249,13 +262,33 @@ async def _activation(
     )))
     if not available:
         return {"status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE", "items": []}, False
-    rows = (await connection.execute(text(
-        "SELECT obligation_id,operation_id,generation,record "
-        "FROM activation_obligation_revisions "
+    obligation_ids = list((await connection.scalars(text(
+        "SELECT DISTINCT obligation_id FROM activation_obligation_revisions "
         "WHERE record->'binding'->>'product_work_id'=:work_id "
         "OR record->'binding'->>'return_owner_work_id'=:work_id "
+        "ORDER BY obligation_id LIMIT :limit"
+    ), {"work_id": str(work_id), "limit": ACTIVATION_OBLIGATION_LIMIT + 1})).all())
+    obligations_truncated = len(obligation_ids) > ACTIVATION_OBLIGATION_LIMIT
+    selected_ids = obligation_ids[:ACTIVATION_OBLIGATION_LIMIT]
+    if not selected_ids:
+        return {
+            "status": "KNOWN", "reason": None, "correlation": "DIRECT_CONTRACT_WORK_ID",
+            "items": [], "total_obligations": 0, "truncated": False,
+        }, True
+    counts = (await connection.execute(text(
+        "SELECT obligation_id,count(*) AS revision_count "
+        "FROM activation_obligation_revisions WHERE obligation_id=ANY(:ids) "
+        "GROUP BY obligation_id"
+    ), {"ids": selected_ids})).mappings().all()
+    if any(cast(int, row["revision_count"]) > ACTIVATION_REVISION_LIMIT for row in counts):
+        return {
+            "status": "UNKNOWN", "reason": "REVISION_LIMIT_EXCEEDED", "items": [],
+        }, True
+    rows = (await connection.execute(text(
+        "SELECT obligation_id,operation_id,generation,record "
+        "FROM activation_obligation_revisions WHERE obligation_id=ANY(:ids) "
         "ORDER BY obligation_id,generation"
-    ), {"work_id": str(work_id)})).mappings().all()
+    ), {"ids": selected_ids})).mappings().all()
     grouped: dict[UUID, list[Mapping[Any, Any]]] = {}
     for row in rows:
         grouped.setdefault(cast(UUID, row["obligation_id"]), []).append(row)
@@ -263,6 +296,7 @@ async def _activation(
     for obligation_id, chain_rows in grouped.items():
         previous: str | None = None
         chain: list[Obligation] = []
+        binding: dict[str, object] | None = None
         try:
             for expected_generation, row in enumerate(chain_rows, 1):
                 value = Obligation.model_validate(row["record"])
@@ -271,9 +305,11 @@ async def _activation(
                     or value.predecessor != previous
                     or value.operation_id != row["operation_id"]
                     or seal_obligation(value).digest != value.digest
+                    or (binding is not None and value.binding != binding)
                 ):
                     raise ValueError("invalid activation revision chain")
                 previous = value.digest
+                binding = value.binding
                 chain.append(value)
         except (KeyError, TypeError, ValueError):
             return {"status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN", "items": []}, True
@@ -298,8 +334,14 @@ async def _activation(
             "target_revision": binding.get("target_revision"), "correlation_roles": roles,
         })
     return {
-        "status": "PARTIAL", "reason": "SOURCE_HAS_NO_REVISION_TIMESTAMPS",
+        "status": "PARTIAL",
+        "reason": ("MOST_RECENT_OBLIGATIONS_ONLY" if obligations_truncated
+                   else "SOURCE_HAS_NO_REVISION_TIMESTAMPS"),
         "correlation": "DIRECT_CONTRACT_WORK_ID", "items": items,
+        "total_obligations": (
+            f">={ACTIVATION_OBLIGATION_LIMIT + 1}" if obligations_truncated else len(items)
+        ),
+        "truncated": obligations_truncated,
     }, True
 
 
@@ -493,7 +535,8 @@ async def _snapshot(
                 else failures["reason"],
             },
             "activation": {
-                "status": "INCLUDED" if activation_available else "UNKNOWN",
+                "status": ("INCLUDED" if activation_available
+                           and activation["status"] != "UNKNOWN" else "UNKNOWN"),
                 "reason": activation["reason"],
             },
             **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_V2_SLICE_A"}
@@ -604,6 +647,11 @@ def project_wall(value: dict[str, object]) -> dict[str, object]:
         for subject in subjects.values():
             for interval in cast(list[dict[str, object]], subject["intervals"]):
                 raw_intervals.append((interval.get("started_at"), interval.get("completed_at")))
+    failures = cast(dict[str, object], value.get("failures", {}))
+    if failures.get("status") in {"KNOWN", "PARTIAL"}:
+        for item in cast(list[dict[str, object]], failures.get("items", [])):
+            if item.get("resolved_at") is not None:
+                raw_intervals.append((item.get("occurred_at"), item.get("resolved_at")))
 
     clipped: list[tuple[datetime, datetime]] = []
     for raw_start, raw_end in raw_intervals:
@@ -707,6 +755,12 @@ def add_github_evidence(
         "reason": "CALLER_SUPPLIED" if status == "OBSERVED" else reason,
     }
     result["coverage"] = coverage
+    source_coverage = dict(cast(dict[str, object], value.get("source_coverage", {})))
+    source_coverage["github_ci"] = {
+        "status": "KNOWN" if status == "OBSERVED" else "UNKNOWN",
+        "reason": "CALLER_SUPPLIED" if status == "OBSERVED" else reason,
+    }
+    result["source_coverage"] = source_coverage
     return project_wall(result) if "admission" in result else result
 
 
