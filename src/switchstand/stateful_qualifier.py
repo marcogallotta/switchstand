@@ -47,9 +47,11 @@ def _digest(value: object) -> str:
 def _endpoint(value: str) -> str:
     parsed = urlparse(value)
     loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    path_ok = parsed.path == "/mcp" if loopback else parsed.path.endswith("/mcp")
     if (
         not parsed.hostname
-        or parsed.path != "/mcp"
+        or not path_ok
+        or parsed.params
         or parsed.query
         or parsed.fragment
         or parsed.username
@@ -57,7 +59,9 @@ def _endpoint(value: str) -> str:
         or parsed.scheme not in {"https", "http"}
         or (parsed.scheme == "http" and not loopback)
     ):
-        raise QualificationFailure("endpoint must be credential-free HTTPS or loopback /mcp")
+        raise QualificationFailure(
+            "endpoint must be credential-free HTTPS ending in /mcp or loopback /mcp"
+        )
     return value
 
 
