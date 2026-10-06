@@ -392,7 +392,13 @@ exclude = ["*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "SSH_AUTH_SOCK",
     return managed
 
 
-def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
+def codex_command(
+    control: Path,
+    writer: Path,
+    assignment: str,
+    *,
+    priority_claims: bool = False,
+) -> list[str]:
     if not assignment:
         raise ValueError("initial assignment must not be empty")
     prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
@@ -402,12 +408,21 @@ def codex_command(control: Path, writer: Path, assignment: str) -> list[str]:
               "repeat work_get and restart the history read. Do not resume completed or "
               "superseded intent. Work only in this private task clone. This is ordinary "
               "development; the exact CONTROL hook remains active.")
+    enabled_tools = ["work_get", "work_history"]
+    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
+    if priority_claims:
+        enabled_tools.extend((
+            "priority_claim_get", "priority_claim_record", "priority_context_get",
+        ))
+        forwarded_environment.append("SWITCHSTAND_PRIORITY_CLAIMS")
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
         "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
-        "-c", 'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
-        "-c", 'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
+        "-c", "mcp_servers.switchstand.env_vars="
+        + json.dumps(forwarded_environment, separators=(",", ":")),
+        "-c", "mcp_servers.switchstand.enabled_tools="
+        + json.dumps(enabled_tools, separators=(",", ":")),
         "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_get.approval_mode="auto"',
         "-c", 'mcp_servers.switchstand.tools.work_history.approval_mode="auto"',
@@ -468,6 +483,7 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
         codex_home=codex_home,
         codex_executable=Path(executable),
         assignment=assignment,
+        priority_claims=os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1",
     )
     if receipt.get("state") != "completed":
         raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")

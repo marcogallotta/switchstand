@@ -12,6 +12,7 @@ import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
 
+from switchstand import context_mcp
 from switchstand.contracts import (
     AppendResult,
     LaunchAuthority,
@@ -23,6 +24,7 @@ from switchstand.contracts import (
 from switchstand.grants import GrantedWorkResult
 from switchstand.managed_identity import managed_principal
 from switchstand.mcp import (
+    build_context_server,
     build_server,
     controller_from_env,
     project_work,
@@ -120,6 +122,103 @@ async def test_managed_priority_tools_derive_launch_identity_and_bound_context()
     assert request.grant_version == 7
     assert request.operation_id == operation_id
     assert context.calls == [(ID, REFERENCE_ID)]
+
+
+async def test_launch_context_server_exposes_same_bound_priority_adapter():
+    principal = managed_principal(ID)
+    grant = SimpleNamespace(version=7)
+
+    class Grants:
+        async def current(self, principal_key):
+            assert principal_key == principal.key
+            return grant
+
+    class Claims:
+        async def current(self, kind, subject_id):
+            assert (kind, subject_id) == ("WORK", ID)
+            return PriorityClaimReadResult(status="ok")
+
+        async def record(self, passed_grants, passed_principal, request):
+            assert passed_grants is grants
+            assert passed_principal == principal
+            assert request.work_id == ID
+            assert request.grant_version == 7
+            return PriorityClaimService.guard(request, "denied", "probe")
+
+    class Context:
+        async def project(self, work_ids):
+            assert work_ids == (ID, REFERENCE_ID)
+            return PriorityContextResult(status="ok", scope_complete=True)
+
+    grants = Grants()
+    server = build_context_server(
+        FakeService(), ID, (REFERENCE_ID,),
+        grants=grants, principal=principal,
+        priority_claims=Claims(),  # type: ignore[arg-type]
+        priority_context=Context(),  # type: ignore[arg-type]
+    )
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert set(tools) == {
+            "work_get", "work_history", "priority_claim_get",
+            "priority_claim_record", "priority_context_get",
+        }
+        schema = tools["priority_claim_record"].input_schema
+        assert "work_id" not in schema["properties"]
+        assert "grant_version" not in schema["properties"]
+        result = await client.call_tool("priority_context_get", {
+            "api_version": "1", "include_references": True,
+        })
+        assert result.structured_content["status"] == "ok"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
+    engine = object()
+    works = object()
+    relations = object()
+    service = SimpleNamespace(
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
+        state=SimpleNamespace(engine=engine),
+        work=SimpleNamespace(works=works, relations=relations),
+    )
+    captured = {}
+
+    class Server:
+        def run(self):
+            captured["ran"] = True
+
+    def build(passed_service, active, references, **adapters):
+        captured.update({
+            "service": passed_service, "active": active,
+            "references": references, **adapters,
+        })
+        return Server()
+
+    monkeypatch.setattr(context_mcp, "protect_provider_logs", lambda: None)
+    monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
+    monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(context_mcp, "build_context_server", build)
+    if enabled:
+        monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
+    else:
+        monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+
+    context_mcp.main()
+
+    assert captured["ran"] is True
+    assert captured["service"] is service
+    assert captured["active"] == ID
+    assert captured["references"] == (REFERENCE_ID,)
+    if enabled:
+        assert captured["principal"] == managed_principal(ID)
+        assert captured["grants"] is not None
+        assert captured["priority_claims"] is not None
+        assert captured["priority_context"] is not None
+    else:
+        assert all(captured[name] is None for name in (
+            "principal", "grants", "priority_claims", "priority_context",
+        ))
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
