@@ -65,6 +65,8 @@ receipts. The host-only `switchstand-stateful-qualifier` computes the exact auth
 attempt journal before proving denied admission, stale CAS, one applied operation, exact replay,
 and current readback. It derives the receipt basis from the same PostgreSQL/runtime/principal
 adapter, seals PASS only after those outcomes, and re-evaluates the installed receipt to TRUE.
+The configured product-currentness runtime also exposes the qualifier's narrow SHA/run-ID readback;
+any simultaneous certification identity must match it exactly.
 MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
