@@ -168,6 +168,33 @@ def test_markdown_dependency_graph_fails_closed_at_a_fixed_bound(tmp_path: Path)
     assert unresolved[0]["reason"] == "dependency_limit"
 
 
+def test_required_live_reads_rejects_non_file_targets(tmp_path: Path) -> None:
+    required_live_reads = runpy.run_path(SCRIPT)["required_live_reads"]
+    start = tmp_path / "start"
+    start.mkdir()
+
+    try:
+        required_live_reads({"session": {"start_record": str(start)}})
+    except ValueError as error:
+        assert "start record must be a regular file" in str(error)
+    else:
+        raise AssertionError("directory start record was accepted")
+
+    start.rmdir()
+    start.write_text("a" * 40 + "\n")
+    obligations = tmp_path / "obligations"
+    obligations.mkdir()
+    try:
+        required_live_reads({
+            "session": {"start_record": str(start)},
+            "handoff": {"obligations": str(obligations)},
+        })
+    except ValueError as error:
+        assert "handoff obligations must be a regular file" in str(error)
+    else:
+        raise AssertionError("directory handoff obligations were accepted")
+
+
 def test_changed_launch_control_requires_bounded_recheck_without_staling_generation(
     tmp_path: Path,
 ) -> None:

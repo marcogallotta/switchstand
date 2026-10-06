@@ -370,21 +370,27 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def required_live_reads(manifest: dict[str, Any]) -> dict[str, str]:
+    def readable_file(path: Path, label: str) -> str:
+        if not path.is_absolute():
+            raise ValueError(f"launch manifest {label} must be absolute")
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError(f"launch manifest {label} must be a regular file")
+        with resolved.open("rb") as handle:
+            handle.read(1)
+        return str(resolved)
+
     session = manifest.get("session")
     if not isinstance(session, dict) or not isinstance(session.get("start_record"), str):
         raise TypeError("launch manifest start record is invalid")
     start_record = Path(session["start_record"])
-    if not start_record.is_absolute():
-        raise ValueError("launch manifest start record must be absolute")
-    reads = {"START_COMMIT": str(start_record.resolve(strict=True))}
+    reads = {"START_COMMIT": readable_file(start_record, "start record")}
     handoff = manifest.get("handoff")
     if handoff is not None:
         if not isinstance(handoff, dict) or not isinstance(handoff.get("obligations"), str):
             raise TypeError("launch manifest handoff obligations are invalid")
         obligations = Path(handoff["obligations"])
-        if not obligations.is_absolute():
-            raise ValueError("launch manifest handoff obligations must be absolute")
-        reads["OPEN_OBLIGATIONS"] = str(obligations.resolve(strict=True))
+        reads["OPEN_OBLIGATIONS"] = readable_file(obligations, "handoff obligations")
     return dict(sorted(reads.items()))
 
 
