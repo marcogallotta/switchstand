@@ -7,7 +7,7 @@ from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import repository_bundle, repository_candidate
+from . import flow_report, repository_bundle, repository_candidate
 from .activation_continuity import ContinuityResult, Transition, next_action
 from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from .agent_messages import (
@@ -222,6 +222,7 @@ IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
 REVIEW_TOOLS = frozenset({"review_request", "review_submit"})
+OBSERVABILITY_TOOLS = frozenset({"observability_get"})
 
 
 def ordinary_tool_annotations(name: str) -> ToolAnnotations:
@@ -233,6 +234,7 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
         | PRODUCT_CURRENTNESS_TOOLS
         | ACTIVATION_CONTINUITY_TOOLS
         | REVIEW_TOOLS
+        | OBSERVABILITY_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
@@ -354,6 +356,17 @@ def build_ordinary_tools(
             pull_request, include_failure_detail,
         )
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
+        return result
+
+    async def observability_get(work_id: UUID) -> dict[str, object]:
+        """Read current exact-WorkId flow evidence and authenticated review pickup state."""
+        correlate(work_id)
+        if service.reviews is None:
+            raise RuntimeError("canonical review occurrence state is unavailable")
+        result = await flow_report.report(
+            service.reviews.occurrences.engine, work_id, service.reviews.occurrences,
+        )
+        audited("observability_get", str(work_id), "ok")
         return result
 
     async def work_get(
@@ -1133,6 +1146,7 @@ def build_ordinary_tools(
     return (
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
+        *(((("observability_get", observability_get),)) if service.reviews is not None else ()),
         ("work_get", enriched_work_get if (
             service.outcome_state_enabled or service.activation_continuity is not None
         ) else work_get),

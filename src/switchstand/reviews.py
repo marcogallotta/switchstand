@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Self, cast
 from uuid import UUID, uuid5
 
@@ -224,6 +225,9 @@ class ReviewPolicy:
 class _ReviewRecord:
     delivery: PendingMessage
     reply_to: UUID | None
+    created_at: datetime
+    received_at: datetime | None
+    dispositioned_at: datetime | None
 
 
 class ReviewOccurrenceState:
@@ -289,6 +293,8 @@ class ReviewOccurrenceState:
             messages.c.route_ref, messages.c.kind, messages.c.payload,
             message_deliveries.c.state, message_deliveries.c.recipient_grant_version,
             message_deliveries.c.receiving_generation, messages.c.in_reply_to_delivery_id,
+            messages.c.created_at, message_deliveries.c.received_at,
+            message_deliveries.c.dispositioned_at,
         ).join(messages, and_(
             messages.c.sender_work_id == message_deliveries.c.sender_work_id,
             messages.c.message_id == message_deliveries.c.message_id,
@@ -307,8 +313,11 @@ class ReviewOccurrenceState:
         return tuple(_ReviewRecord(
             PendingMessage.model_validate({
                 key: value for key, value in row.items()
-                if key != "in_reply_to_delivery_id"
-            }), row["in_reply_to_delivery_id"],
+                if key not in {
+                    "in_reply_to_delivery_id", "created_at", "received_at", "dispositioned_at",
+                }
+            }), row["in_reply_to_delivery_id"], row["created_at"],
+            row["received_at"], row["dispositioned_at"],
         ) for row in rows)
     @staticmethod
     @staticmethod
@@ -392,7 +401,7 @@ class ReviewOccurrenceState:
                 continue
             basis = envelope.brief.basis
             reviewer_name = self.policy.reviewer_name(basis.review_kind)
-            reviewer = ((await self.mailboxes.by_name(reviewer_name)).mailbox
+            reviewer = ((await self.mailboxes.by_name(reviewer_name, connection)).mailbox
                         if reviewer_name else None)
             if (
                 basis.policy_version != self.policy.version
@@ -422,14 +431,14 @@ class ReviewOccurrenceState:
                 return delivery, envelope
         return None
 
-    async def outcome_envelopes(
+    async def outcome_sources(
         self, review_id: UUID, connection: AsyncConnection | None = None,
-    ) -> tuple[ReviewOutcomeEnvelope, ...]:
+    ) -> tuple[tuple[_ReviewRecord, ReviewOutcomeEnvelope], ...]:
         sources = {
             record.delivery.delivery_id: (record, envelope)
             for record, envelope, _bound in await self.request_sources(review_id, connection)
         }
-        found: dict[str, ReviewOutcomeEnvelope] = {}
+        found: dict[str, tuple[_ReviewRecord, ReviewOutcomeEnvelope]] = {}
         for record in await self.records(review_id, connection):
             try:
                 envelope = ReviewOutcomeEnvelope.model_validate(record.delivery.payload)
@@ -459,8 +468,78 @@ class ReviewOccurrenceState:
                     "verdict", review_id, request_record.delivery.delivery_id,
                 )
             ):
-                found[outcome.verdict_digest] = envelope
+                found[outcome.verdict_digest] = record, envelope
         return tuple(found.values())
+
+    async def outcome_envelopes(
+        self, review_id: UUID, connection: AsyncConnection | None = None,
+    ) -> tuple[ReviewOutcomeEnvelope, ...]:
+        return tuple(envelope for _record, envelope in await self.outcome_sources(
+            review_id, connection,
+        ))
+
+    async def pickup_projection(
+        self, connection: AsyncConnection, subject_work_id: UUID,
+        subject_revision: str, captured_at: datetime,
+    ) -> dict[str, object]:
+        def unknown(reason: str) -> dict[str, object]:
+            return {
+                "status": "UNKNOWN", "reason": reason, "unpicked": None,
+                "oldest_request_age_ms": None, "requested_at": None,
+                "received_at": None, "verdict_at": None,
+            }
+        values = (await connection.scalars(select(
+            messages.c.payload["brief"]["basis"]["review_id"].astext,
+        ).where(
+            messages.c.route_ref == "review.request",
+            messages.c.payload["brief"]["basis"]["subject_work_id"].astext
+            == str(subject_work_id),
+            messages.c.payload["brief"]["basis"]["subject_revision"].astext
+            == subject_revision,
+        ).distinct())).all()
+        try:
+            review_ids = {UUID(value) for value in values if value}
+        except (TypeError, ValueError):
+            return unknown("INVALID_OCCURRENCE_ID")
+        if len(review_ids) != 1:
+            reason = "NO_CURRENT_OCCURRENCE" if not review_ids else "MULTIPLE_CURRENT_OCCURRENCES"
+            return unknown(reason)
+        review_id = next(iter(review_ids))
+        requests = [source for source in await self.request_sources(review_id, connection)
+                    if source[1].brief.basis.subject_work_id == subject_work_id
+                    and source[1].brief.basis.subject_revision == subject_revision]
+        outcomes = [source for source in await self.outcome_sources(review_id, connection)
+                    if source[1].brief.basis.subject_work_id == subject_work_id
+                    and source[1].brief.basis.subject_revision == subject_revision]
+        if len(requests) != 1 or len(outcomes) > 1:
+            return unknown("AMBIGUOUS_OCCURRENCE")
+        record = requests[0][0]
+        verdict_at = outcomes[0][0].created_at if outcomes else None
+        times = tuple(value for value in (
+            record.created_at, record.received_at, record.dispositioned_at, verdict_at,
+        ) if value is not None)
+        if (any(value.utcoffset() is None or value > captured_at for value in times)
+                or record.received_at is not None and record.received_at < record.created_at
+                or record.dispositioned_at is not None and (
+                    record.received_at is None or record.dispositioned_at < record.received_at
+                )
+                or record.delivery.state != "DISPOSITIONED"
+                and record.dispositioned_at is not None
+                or verdict_at is not None and verdict_at < record.created_at
+                or verdict_at is not None and record.received_at is not None
+                and verdict_at < record.received_at):
+            return unknown("INCONSISTENT_TIMESTAMPS")
+        return {
+            "status": "KNOWN", "reason": None,
+            "unpicked": record.delivery.state == "AVAILABLE"
+            and record.received_at is None and not outcomes,
+            "oldest_request_age_ms": int(
+                (captured_at - record.created_at).total_seconds() * 1000
+            ),
+            "requested_at": record.created_at.isoformat(),
+            "received_at": None if record.received_at is None else record.received_at.isoformat(),
+            "verdict_at": None if verdict_at is None else verdict_at.isoformat(),
+        }
 
     async def pass_status_in_transaction(
         self, connection: AsyncConnection, subject_work_id: UUID, subject_revision: str,

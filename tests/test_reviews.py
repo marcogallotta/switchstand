@@ -1,5 +1,6 @@
 import os
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from switchstand.canonical_work import (
     canonical_metadata,
     canonical_revision,
 )
+from switchstand.flow_report import report
 from switchstand.grant_state import GrantState
 from switchstand.messages import (
     MessageReceiveRequest,
@@ -251,6 +253,111 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         assert await occurrences.pass_status_in_transaction(
             connection, subject_id, current_revision,
         ) == "NOT_PASS"
+
+
+async def test_flow_report_projects_exact_current_review_pickup(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b"
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+
+    missing = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert missing == {
+        "status": "UNKNOWN", "reason": "NO_CURRENT_OCCURRENCE", "unpicked": None,
+        "oldest_request_age_ms": None, "requested_at": None,
+        "received_at": None, "verdict_at": None,
+    }
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    waiting = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert waiting["status"] == "KNOWN" and waiting["unpicked"] is True
+    assert isinstance(waiting["oldest_request_age_ms"], int)
+    assert waiting["requested_at"] is not None
+    assert waiting["received_at"] is None and waiting["verdict_at"] is None
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE message_deliveries SET received_at = now() + interval '1 day' "
+            "WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})
+    unsafe = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert (unsafe["status"], unsafe["reason"]) == ("UNKNOWN", "INCONSISTENT_TIMESTAMPS")
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE message_deliveries SET received_at = NULL WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})
+
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(
+            generation=str(reviewer.generation),
+            current_generation=str(reviewer.generation),
+        ),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    picked = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert picked["status"] == "KNOWN" and picked["unpicked"] is False
+    assert datetime.fromisoformat(picked["received_at"]).tzinfo is not None
+    submitted = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    decided = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert decided["status"] == "KNOWN" and decided["unpicked"] is False
+    assert datetime.fromisoformat(decided["verdict_at"]).astimezone(UTC) <= datetime.now(UTC)
+
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+    obsolete = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert obsolete["status"] == "UNKNOWN"
+    assert obsolete["reason"] == "NO_CURRENT_OCCURRENCE"
+
+
+async def test_review_pickup_rejects_multiple_current_occurrences(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-reviewer", "chat-reviewer"
+    )).mailbox
+    assert reviewer is not None
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    for suffix in ("a", "b"):
+        requester = (await mailboxes.register_agent(
+            f"Requester {suffix}", f"principal-{suffix}", f"chat-{suffix}"
+        )).mailbox
+        assert requester is not None
+        sent = await service.request(ReviewRequest(
+            subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
+        ), requester)
+        assert sent.status == "SENT"
+
+    result = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert result["status"] == "UNKNOWN"
+    assert result["reason"] == "MULTIPLE_CURRENT_OCCURRENCES"
 
 
 async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_runtime):

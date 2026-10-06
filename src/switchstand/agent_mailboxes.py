@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .contracts import ClosedModel
 from .state import metadata
@@ -155,10 +155,17 @@ class AgentMailboxState:
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def by_name(self, name: str) -> AgentMailboxResult:
+    async def by_name(
+        self, name: str, connection: AsyncConnection | None = None,
+    ) -> AgentMailboxResult:
         try:
             key = agent_name_key(name)
-            async with self.engine.connect() as connection:
+            if connection is None:
+                async with self.engine.connect() as owned:
+                    row = (await owned.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.name_key == key
+                    ))).mappings().one_or_none()
+            else:
                 row = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.name_key == key
                 ))).mappings().one_or_none()
