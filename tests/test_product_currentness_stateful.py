@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -15,6 +15,7 @@ from chatgpt_fixture import PRINCIPAL
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from switchstand import product_currentness_stateful as stateful_currentness
 from switchstand.product_currentness import (
     STATEFUL_PRODUCT_WORK_ID,
     evaluate_stateful_currentness,
@@ -22,6 +23,7 @@ from switchstand.product_currentness import (
 from switchstand.product_currentness_stateful import (
     LiveStatefulEvidenceReader,
     StatefulPersistenceSnapshot,
+    StatefulQualificationPayload,
     StatefulQualificationReceipt,
     StatefulServerSnapshot,
 )
@@ -77,11 +79,12 @@ def build_reader(*, receipt: Path | None = None, key: Path | None = None):
 
 
 async def qualified_reader(
-    tmp_path: Path, **updates: object,
+    tmp_path: Path,
+    **updates: object,
 ) -> tuple[MemoryStatefulEvidenceReader, StatefulQualificationReceipt]:
     diagnostic, _, _ = build_reader()
     binding = await diagnostic.acceptance_binding()
-    receipt = StatefulQualificationReceipt(
+    payload = StatefulQualificationPayload(
         schema=2,
         issuer="switchstand-stateful-qualifier",
         qualification="real:authenticated-stateful-currentness-v1",
@@ -100,21 +103,78 @@ async def qualified_reader(
         replay="REPLAYED",
         currentness="RECHECKED",
         observed_at=datetime.now(UTC),
-        seal="0" * 64,
     ).model_copy(update=updates)
     key = tmp_path / "qualification.key"
     key.write_bytes(b"q" * 32)
     key.chmod(0o600)
-    payload = receipt.model_dump(mode="json", by_alias=True, exclude={"seal"})
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    receipt = receipt.model_copy(
-        update={"seal": hmac.new(key.read_bytes(), canonical, hashlib.sha256).hexdigest()}
-    )
     path = tmp_path / "qualification.json"
-    path.write_text(receipt.model_dump_json(by_alias=True))
-    path.chmod(0o600)
+    emission = stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+        payload,
+        key_path=key,
+        receipt_path=path,
+    )
     reader, _, _ = build_reader(receipt=path, key=key)
-    return reader, receipt
+    return reader, emission.receipt
+
+
+async def test_emitter_creates_reader_compatible_private_receipt(tmp_path: Path) -> None:
+    reader, receipt = await qualified_reader(tmp_path)
+    path = tmp_path / "qualification.json"
+    raw = path.read_bytes()
+
+    proof = await reader.read("functional_proof")
+
+    assert proof.result == "TRUE"
+    assert proof.currentness_token == hashlib.sha256(raw).hexdigest()
+    assert StatefulQualificationReceipt.model_validate_json(raw) == receipt
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+async def test_emitter_never_replaces_existing_receipt(tmp_path: Path) -> None:
+    _, receipt = await qualified_reader(tmp_path)
+    path = tmp_path / "qualification.json"
+    original = path.read_bytes()
+    payload = StatefulQualificationPayload.model_validate(
+        receipt.model_dump(mode="python", by_alias=True, exclude={"seal"})
+    )
+
+    with pytest.raises(FileExistsError):
+        stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+            payload,
+            key_path=tmp_path / "qualification.key",
+            receipt_path=path,
+        )
+
+    assert path.read_bytes() == original
+
+
+async def test_emitter_requires_explicit_absolute_distinct_private_paths(tmp_path: Path) -> None:
+    _, receipt = await qualified_reader(tmp_path)
+    payload = StatefulQualificationPayload.model_validate(
+        receipt.model_dump(mode="python", by_alias=True, exclude={"seal"})
+    )
+    key = tmp_path / "qualification.key"
+    path = tmp_path / "another.json"
+
+    with pytest.raises(ValueError, match="must be absolute"):
+        stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+            payload, key_path=Path("key"), receipt_path=path
+        )
+    with pytest.raises(ValueError, match="must be distinct"):
+        stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+            payload, key_path=key, receipt_path=key
+        )
+    key.chmod(0o640)
+    with pytest.raises(ValueError, match="mode-0600 regular file"):
+        stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+            payload, key_path=key, receipt_path=path
+        )
+    key.write_bytes(b"short")
+    key.chmod(0o600)
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        stateful_currentness._emit_stateful_qualification_receipt(  # pyright: ignore[reportPrivateUsage]
+            payload, key_path=key, receipt_path=path
+        )
 
 
 async def test_live_prerequisites_are_diagnostic_but_cannot_claim_true() -> None:
@@ -152,7 +212,9 @@ async def test_snapshot_must_match_authenticated_principal() -> None:
     set_snapshot(snapshot.model_copy(update={"principal_key": "d" * 64}))
     result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
     assert (result.status, result.current, result.reason) == (
-        "unknown", "UNKNOWN", "acceptance_contract_unbound",
+        "unknown",
+        "UNKNOWN",
+        "acceptance_contract_unbound",
     )
 
 
@@ -167,7 +229,8 @@ async def test_sealed_real_qualification_completes_true_boundary(tmp_path: Path)
 
 @pytest.mark.parametrize("field", ["run_id", "principal_key"])
 async def test_qualification_for_wrong_run_or_principal_conflicts(
-    tmp_path: Path, field: str,
+    tmp_path: Path,
+    field: str,
 ) -> None:
     update = "another-run" if field == "run_id" else "d" * 64
     reader, _ = await qualified_reader(tmp_path, **{field: update})
@@ -208,7 +271,9 @@ async def test_live_adapter_reads_real_postgres_prerequisites() -> None:
         command.upgrade(migration, "head")
         async with engine.begin() as connection:
             actual_migration = str(
-                (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+                (
+                    await connection.execute(text("SELECT version_num FROM alembic_version"))
+                ).scalar_one()
             )
             await connection.execute(
                 text("""

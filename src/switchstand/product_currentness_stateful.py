@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from .contracts import ClosedModel
 from .grants import PrincipalContext
 from .product_currentness import SourceEvidence, SourceName, StatefulAcceptanceBinding
-from .secure_file import read_private_bytes
+from .secure_file import create_new_private_bytes, read_private_bytes
 
 STATEFUL_CONTRACT_REVISION = "stateful-technical-currentness-v1"
 STATEFUL_REQUIRED_SOURCES: tuple[SourceName, ...] = (
@@ -47,8 +48,8 @@ class StatefulPersistenceSnapshot(ClosedModel):
     outcome_state_table: str | None
 
 
-class StatefulQualificationReceipt(ClosedModel):
-    """Sealed output from the real Stateful qualification runner."""
+class StatefulQualificationPayload(ClosedModel):
+    """Exact successful outcomes produced by the real Stateful qualifier."""
 
     schema_version: Literal[2] = Field(alias="schema")
     issuer: Literal["switchstand-stateful-qualifier"]
@@ -68,7 +69,20 @@ class StatefulQualificationReceipt(ClosedModel):
     replay: Literal["REPLAYED"]
     currentness: Literal["RECHECKED"]
     observed_at: datetime
+
+
+class StatefulQualificationReceipt(StatefulQualificationPayload):
+    """Sealed output from the real Stateful qualification runner."""
+
     seal: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class StatefulQualificationEmission:
+    """The exact receipt published by one successful emission."""
+
+    receipt: StatefulQualificationReceipt
+    digest: str
 
 
 SnapshotReader = Callable[[], Awaitable[StatefulServerSnapshot]]
@@ -81,6 +95,33 @@ def _canonical(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _qualification_payload_bytes(value: StatefulQualificationPayload) -> bytes:
+    return _canonical(value.model_dump(mode="json", by_alias=True, exclude={"seal"}))
+
+
+def _emit_stateful_qualification_receipt(  # pyright: ignore[reportUnusedFunction]
+    payload: StatefulQualificationPayload,
+    *,
+    key_path: Path,
+    receipt_path: Path,
+) -> StatefulQualificationEmission:
+    """Seal and durably publish one immutable qualification receipt."""
+    if not key_path.is_absolute() or not receipt_path.is_absolute():
+        raise ValueError("qualification key and receipt paths must be absolute")
+    if key_path.resolve(strict=False) == receipt_path.resolve(strict=False):
+        raise ValueError("qualification key and receipt paths must be distinct")
+    key = read_private_bytes(key_path)
+    if len(key) != 32:
+        raise ValueError("qualification key must contain exactly 32 bytes")
+    seal = hmac.new(key, _qualification_payload_bytes(payload), hashlib.sha256).hexdigest()
+    receipt = StatefulQualificationReceipt(
+        **payload.model_dump(mode="python", by_alias=True), seal=seal
+    )
+    raw = _canonical(receipt.model_dump(mode="json", by_alias=True))
+    create_new_private_bytes(receipt_path, raw)
+    return StatefulQualificationEmission(receipt=receipt, digest=hashlib.sha256(raw).hexdigest())
 
 
 class LiveStatefulEvidenceReader:
@@ -225,8 +266,7 @@ class LiveStatefulEvidenceReader:
         key = read_private_bytes(self._qualification_key)
         if len(key) != 32:
             raise ValueError("qualification key must contain exactly 32 bytes")
-        payload = receipt.model_dump(mode="json", by_alias=True, exclude={"seal"})
-        expected = hmac.new(key, _canonical(payload), hashlib.sha256).hexdigest()
+        expected = hmac.new(key, _qualification_payload_bytes(receipt), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(receipt.seal, expected):
             raise ValueError("qualification receipt seal is invalid")
         return receipt, hashlib.sha256(raw).hexdigest()
@@ -240,7 +280,7 @@ class LiveStatefulEvidenceReader:
     ) -> SourceEvidence:
         try:
             receipt, token = self._qualification()
-        except (OSError, ValueError, ValidationError):
+        except OSError, ValueError, ValidationError:
             return SourceEvidence(
                 source="functional_proof",
                 result="UNKNOWN",
