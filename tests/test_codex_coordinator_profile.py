@@ -139,7 +139,11 @@ trusted_hash = "must-not-copy"
             "command": str(primary / "scripts/switchstand-coordinator-control-mcp"),
             "required": True,
             "default_tools_approval_mode": "approve",
-            "enabled_tools": ["coordinator_currentness_get", "coordinator_main_sync"],
+            "enabled_tools": [
+                "coordinator_currentness_get", "coordinator_main_sync",
+                "coordinator_implementation_spawn", "coordinator_implementation_status",
+                "coordinator_implementation_cancel",
+            ],
         }
     }
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]

@@ -143,7 +143,9 @@ def render(
             "managed runs. Built-in Workers are read-only: their shell and file-edit tools are "
             "denied because they share Root's filesystem profile and hooks are not a security "
             "sandbox. Delegate research/review freely; for implementation, a Worker returns a "
-            "patch proposal and Root applies it in this generation's owned writer. "
+            "patch proposal and Root applies it in this generation's owned writer. The "
+            "Coordinator control MCP separately exposes an isolated implementation-worker "
+            "spawn/status/cancel path backed by the exact WorkId and a task-private writer. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
             f"lifetime={lifetime}."
         ),
@@ -170,7 +172,9 @@ def render(
         f"command = {json.dumps(str(primary / 'scripts/switchstand-coordinator-control-mcp'))}",
         'required = true',
         'default_tools_approval_mode = "approve"',
-        'enabled_tools = ["coordinator_currentness_get", "coordinator_main_sync"]',
+        'enabled_tools = ["coordinator_currentness_get", "coordinator_main_sync", '
+        '"coordinator_implementation_spawn", "coordinator_implementation_status", '
+        '"coordinator_implementation_cancel"]',
         "",
         "[permissions.switchstand-coordinator]",
         'description = "Coordinator user access with the shared primary checkout read-only."',

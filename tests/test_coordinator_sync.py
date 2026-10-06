@@ -9,6 +9,7 @@ import pytest
 from mcp import Client, StdioServerParameters
 
 from switchstand.coordinator_sync import CoordinatorSync, build_server
+from switchstand.coordinator_workers import CoordinatorWorkers
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -154,6 +155,27 @@ async def test_real_stdio_boundary_performs_fixed_host_fast_forward(tmp_path: Pa
     assert rejected.is_error
     assert result.structured_content["status"] == "ok"
     assert git(primary, "rev-parse", "HEAD") == final
+
+
+async def test_worker_tools_are_closed_and_explicit_when_enabled(tmp_path: Path) -> None:
+    home, _primary, source, _started, _final = setup(tmp_path)
+    server = build_server(
+        control(home, source.parent / "remote.git"),
+        CoordinatorWorkers(home, launcher=("/bin/false",), state_root=tmp_path / "workers"),
+    )
+    names = set(server._tool_manager._tools)
+    assert names == {
+        "coordinator_currentness_get", "coordinator_main_sync",
+        "coordinator_implementation_spawn", "coordinator_implementation_status",
+        "coordinator_implementation_cancel",
+    }
+    schema = server._tool_manager._tools[
+        "coordinator_implementation_spawn"
+    ].fn_metadata.arg_model.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "api_version", "operation_id", "work_id", "objective"
+    }
 
 
 def executable(path: Path, marker: Path, *, passthrough: bool = False) -> None:
