@@ -298,8 +298,12 @@ messaging, and required continuation:
   confirmation app over that store. Its local persistent factory wires the canonical state owner
   without owning the database engine lifecycle. `human_review_runtime.py` adds an explicit,
   default-off command that owns the engine and Uvicorn lifecycle, requires every configuration
-  value, and accepts only a loopback IP listener. No public route, credentials, or service is
-  installed; no dispatch or activation is enabled.
+  value, and accepts only a loopback IP listener. `human_review_host.py` renders one create-new
+  user-systemd service asset from explicit systemd-literal-safe real-executable runtime,
+  mode-0600 environment, and port inputs while fixing the listener to loopback. It publishes only
+  a fully written and fsynced same-directory staging inode without replacing an existing unit; it
+  does not install, start, or enable a service. No public route or credentials are installed; no
+  dispatch or activation is enabled.
   `human_review_propose.py` is a host-only command that accepts one bounded, closed consequence
   JSON from an exact mode-0600 regular file without following its final path component. It can only
   propose or replay that consequence; it cannot record a decision, dispatch work, or activate it.
