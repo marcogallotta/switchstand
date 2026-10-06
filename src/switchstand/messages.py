@@ -24,17 +24,19 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .agent_mailboxes import AgentMailbox, agent_mailboxes
 from .contracts import ApiVersion, ClosedModel
 from .core import ProviderError, State
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
-from .state import metadata
+from .state import metadata, work_migration_receipts
 
 DELIVERY_NAMESPACE = UUID("8b7eedf9-138d-4a5e-9060-7c208138402d")
 PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
+REVIEW_CUTOFF_RECEIPT = "typed-review-v1-cutoff"
+REVIEW_ROUTE_REFS = frozenset({"review.request", "review.acquisition", "review.outcome"})
 
 messages = Table(
     "messages",
@@ -160,6 +162,7 @@ class MessageSubmitResult(ClosedModel):
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
         "runtime_generation_changed", "sender_binding_changed", "state_unavailable",
+        "reserved_route",
     ] | None = None
 
     @model_validator(mode="after")
@@ -485,6 +488,10 @@ class MessageState:
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
         delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
         async with self.engine.begin() as connection:
+            if request.route_ref in REVIEW_ROUTE_REFS and await connection.scalar(select(
+                work_migration_receipts.c.name
+            ).where(work_migration_receipts.c.name == REVIEW_CUTOFF_RECEIPT)) is not None:
+                return MessageSubmitResult(status="denied", reason="reserved_route")
             if (
                 agent_binding is not None
                 and not await self._current_agent_binding(connection, agent_binding)
@@ -538,6 +545,56 @@ class MessageState:
             row = (await connection.execute(self._pending_query().where(
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()
+        return MessageSubmitResult(status="ok", message=_view(dict(row)))
+
+    async def submit_review_internal(
+        self, connection: AsyncConnection, sender: AgentMailbox, route: MessageRoute,
+        request: MessageSubmitRequest,
+        received_binding: tuple[int, str] | None = None,
+    ) -> MessageSubmitResult:
+        """Store one typed review message inside the occurrence serialization fence."""
+        if not await self._current_agent_binding(connection, sender):
+            return MessageSubmitResult(status="stale", reason="sender_binding_changed")
+        if request.in_reply_to_delivery_id is not None:
+            replied = (await connection.execute(select(message_deliveries).where(
+                message_deliveries.c.delivery_id == request.in_reply_to_delivery_id
+            ).with_for_update())).mappings().one_or_none()
+            if replied is None or replied["recipient_work_id"] != sender.endpoint_id or (
+                received_binding is not None and (
+                    replied["state"], replied["recipient_grant_version"],
+                    replied["receiving_generation"],
+                ) != ("RECEIVED", *received_binding)
+            ):
+                return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+            prior = (await connection.execute(select(
+                messages.c.sender_work_id, messages.c.message_id
+            ).where(messages.c.in_reply_to_delivery_id == request.in_reply_to_delivery_id))).one_or_none()
+            if prior is not None and prior != (sender.endpoint_id, request.message_id):
+                return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
+        digest = _digest(route, request)
+        delivery_id = uuid5(
+            DELIVERY_NAMESPACE,
+            f"{sender.endpoint_id}:{request.message_id}:{route.recipient_work_id}",
+        )
+        await connection.execute(insert(messages).values(
+            sender_work_id=sender.endpoint_id, message_id=request.message_id,
+            route_ref=request.route_ref, kind=request.kind, payload=request.payload,
+            digest=digest, in_reply_to_delivery_id=request.in_reply_to_delivery_id,
+        ).on_conflict_do_nothing())
+        current = await connection.scalar(select(messages.c.digest).where(
+            messages.c.sender_work_id == sender.endpoint_id,
+            messages.c.message_id == request.message_id,
+        ))
+        if current != digest:
+            return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
+        await connection.execute(insert(message_deliveries).values(
+            delivery_id=delivery_id, sender_work_id=sender.endpoint_id,
+            message_id=request.message_id, recipient_work_id=route.recipient_work_id,
+            recipient_grant_version=route.recipient_grant_version,
+        ).on_conflict_do_nothing())
+        row = (await connection.execute(self._pending_query().where(
+            message_deliveries.c.delivery_id == delivery_id
+        ))).mappings().one()
         return MessageSubmitResult(status="ok", message=_view(dict(row)))
 
     async def submit_admitted(
