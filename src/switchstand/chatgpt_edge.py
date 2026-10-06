@@ -334,6 +334,7 @@ def _create_resource_app(
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
         implementation_requests=service.implementation_requests,
+        reviews=service.reviews,
         product_currentness=service.product_currentness,
         product_currentness_enabled=service.product_currentness_enabled,
         activation_continuity=service.activation_continuity,

@@ -272,7 +272,7 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
     assert configured_result.conditions[-1].detail == "functional_proof_missing_or_invalid"
 
 
-async def test_resource_edge_preserves_injected_activation_dependencies(monkeypatch):
+async def test_resource_edge_preserves_injected_services(monkeypatch):
     captured = []
     build_tools = chatgpt_edge.build_ordinary_tools
 
@@ -286,8 +286,9 @@ async def test_resource_edge_preserves_injected_activation_dependencies(monkeypa
     assert "activation_obligation_transition" not in plain_tools
 
     subject = service()
-    dependencies = [object() for _ in range(4)]
+    dependencies = [object() for _ in range(5)]
     (
+        subject.reviews,
         subject.activation_continuity,
         subject.activation_technical,
         subject.activation_runtime,
@@ -296,8 +297,11 @@ async def test_resource_edge_preserves_injected_activation_dependencies(monkeypa
     injected_app = create_app(subject, CONFIG, client_storage=MemoryStore())
     injected_tools = {tool.name for tool in await injected_app.state.fastmcp_server.list_tools()}
 
-    assert "activation_obligation_transition" in injected_tools
+    assert {
+        "review_request", "review_submit", "activation_obligation_transition"
+    } <= injected_tools
     assert [
+        captured[-1].reviews,
         captured[-1].activation_continuity,
         captured[-1].activation_technical,
         captured[-1].activation_runtime,
