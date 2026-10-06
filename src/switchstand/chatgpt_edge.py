@@ -46,6 +46,9 @@ from .oauth_continuity import (
 )
 from .observability import CallTimingMiddleware, annotate_target, register_sqlalchemy_timing
 from .principal import RequestPrincipal
+from .priority_claim_service import PriorityClaimService
+from .priority_claims import PriorityClaimRepository
+from .priority_context import PriorityContextProjection
 from .product_currentness import (
     STATEFUL_PRODUCT_WORK_ID,
     ProductCurrentness,
@@ -333,6 +336,10 @@ def _create_resource_app(
         canonical_events=service.canonical_events,
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
+        priority_claims=service.priority_claims,
+        priority_claims_enabled=service.priority_claims_enabled,
+        priority_context=service.priority_context,
+        priority_context_enabled=service.priority_context_enabled,
         implementation_requests=service.implementation_requests,
         reviews=service.reviews,
         product_currentness=service.product_currentness,
@@ -415,13 +422,26 @@ async def resource_service(
         marker = os.getenv("SWITCHSTAND_CERTIFICATION_FIXTURE_MARKER", "").strip()
         grants = GrantState(engine)
         canonical_repository = CanonicalWorkRepository(engine)
+        canonical_relations = CanonicalRelationsRepository(engine)
         canonical_work = CanonicalWorkRuntime(
-            canonical_repository, CanonicalRelationsRepository(engine)
+            canonical_repository, canonical_relations
         )
         canonical_events = CanonicalEventReader(
             canonical_repository, WorkEventRepository(engine)
         )
         messages = MessageState(engine, grants)
+        priority_claims = None
+        priority_context = None
+        priority_claims_enabled = os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1"
+        if priority_claims_enabled:
+            priority_claims = PriorityClaimService(
+                PriorityClaimRepository(engine), canonical_repository
+            )
+            priority_context = PriorityContextProjection(
+                works=canonical_repository,
+                relations=canonical_relations,
+                claims=priority_claims,
+            )
         implementation_requests = None
         if os.getenv("SWITCHSTAND_IMPLEMENTATION_REQUESTS") == "1":
             reviews = ReviewOccurrenceState(
@@ -436,6 +456,10 @@ async def resource_service(
             canonical_work=canonical_work, canonical_events=canonical_events,
             canonical_work_active=True,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1",
+            priority_claims=priority_claims,
+            priority_claims_enabled=priority_claims_enabled,
+            priority_context=priority_context,
+            priority_context_enabled=priority_claims_enabled,
             implementation_requests=implementation_requests,
             activation_continuity=(
                 None

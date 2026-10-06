@@ -23,6 +23,19 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may
 truthfully remain `null`; landing this schema change does not activate or prove the live client path.
 
+The priority-claim and bounded priority-context tools remain default-off unless the resource edge
+starts with `SWITCHSTAND_PRIORITY_CLAIMS=1`. Enabling that flag constructs both projections over
+the canonical PostgreSQL repositories. It permits only the already-bounded launch-grant
+`AGENT_RECOMMENDATION` write path; it does not create a trusted `HUMAN_PRIORITY` write seam.
+Direct project-claim reads still require workspace read authority. A context request authorized for
+an exact WorkId may include the claims attached to that WorkId's project memberships as explicitly
+labeled context; it does not grant a project read or copy those claims onto the WorkId.
+Because enabling changes the client-visible tool schema, activation requires an edge replacement,
+a ChatGPT app/connection reinstall, a fresh chat, and exact schema and behavior verification. The
+maintenance replacement applies the repository's current migration head before starting the enabled
+edge. Clearing the flag in a later authorized replacement removes all three tools without deleting
+stored claims; database downgrade is not the feature rollback path.
+
 The executable inventory and client policy are owned by
 `build_ordinary_tools` in `src/switchstand/chatgpt_mcp.py`, its edge tests, and
 the repository's `.codex/config.toml`. Do not copy the full tool list into prose:
