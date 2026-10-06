@@ -159,7 +159,16 @@ docker run -d --rm --name "$rehearsal" --tmpfs /var/lib/postgresql \
     -e POSTGRES_DB=switchstand -e POSTGRES_USER=switchstand \
     -e POSTGRES_PASSWORD=switchstand "$IMAGE" >/dev/null
 i=0
-until docker exec "$rehearsal" pg_isready -U switchstand >/dev/null 2>&1; do
+ready=0
+while [ "$ready" -lt 2 ]; do
+    if docker exec "$rehearsal" pg_isready -U switchstand >/dev/null 2>&1; then
+        ready=$((ready + 1))
+    else
+        ready=0
+    fi
+    if [ "$ready" -ge 2 ]; then
+        continue
+    fi
     i=$((i + 1)); [ "$i" -lt 31 ] || { echo "rehearsal PostgreSQL did not become healthy" >&2; exit 1; }
     sleep 1
 done

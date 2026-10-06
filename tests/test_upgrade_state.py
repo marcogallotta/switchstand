@@ -61,7 +61,13 @@ case "$*" in
   "exec shared psql "*) echo "$FAKE_COUNTS" ;;
   "exec shared pg_dump "*) printf DUMP ;;
   "run -d "*) : ;;
-  "exec switchstand-upgrade-rehearsal-"*" pg_isready "*) : ;;
+  "exec switchstand-upgrade-rehearsal-"*" pg_isready "*)
+    count_file="$FAKE_STATE/ready-count"
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    [ "$FAKE_READY_FLAP" = 0 ] || [ "$count" -ne 2 ] ;;
   "cp "*) : ;;
   "exec switchstand-upgrade-rehearsal-"*" pg_restore "*) : ;;
   "exec switchstand-upgrade-rehearsal-"*" psql "*version_num*)
@@ -85,6 +91,10 @@ esac
     )
     docker.chmod(0o755)
 
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/bin/sh\nexit 0\n")
+    sleep.chmod(0o755)
+
     trace = tmp_path / "trace"
     state = tmp_path / "state"
     state.mkdir()
@@ -106,6 +116,7 @@ esac
         "FAKE_MEMBERS": "shared-name",
         "FAKE_FAIL_REHEARSAL": "0",
         "FAKE_FAIL_SHARED": "0",
+        "FAKE_READY_FLAP": "0",
     }
     return repo, env
 
@@ -176,6 +187,18 @@ def test_rehearsal_failure_never_migrates_shared_state(tmp_path):
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "run --rm --network container:shared" not in trace
     assert list((tmp_path / "backups").glob("*.dump"))
+
+
+def test_rehearsal_requires_stable_readiness_before_restore(tmp_path):
+    repo, env = _repo(tmp_path)
+    env["FAKE_READY_FLAP"] = "1"
+
+    result = _run(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert trace.count("pg_isready") == 4
+    assert trace.index("pg_isready") < trace.index("pg_restore")
 
 
 def test_attached_writer_container_refuses_before_backup(tmp_path):
