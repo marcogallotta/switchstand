@@ -58,7 +58,9 @@ runtime/run, exact ordinary-tool schema and PostgreSQL prerequisites into one re
 The first diagnostic layer deliberately has no functional-proof reader and therefore cannot return
 TRUE. The proof layer consumes only a private, sealed external qualification receipt bound to that
 same principal/runtime/basis and exact MCP/admission/CAS/replay/currentness outcomes; invalid or
-misbound receipts cannot prove TRUE. MCP arguments never supply evidence or acceptance booleans.
+misbound receipts cannot prove TRUE. Its private emitter requires an existing mode-0600 key and
+creates one immutable, durably published mode-0600 receipt; it never creates keys or replaces
+receipts. MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
