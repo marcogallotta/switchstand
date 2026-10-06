@@ -306,8 +306,11 @@ messaging, and required continuation:
   request and result adapters, which admit only the exact managed principal with a current
   launch-bound `agent_task` grant and write authority for the active WorkId. Result submission
   accepts only an already-bound execution and server-derived runtime currentness; stale or unknown
-  currentness preserves evidence nonterminal for later reconciliation. The managed client
-  allowlist and default grant still exclude `agent_task`; continuation/takeover, runtime launch,
+  currentness preserves evidence nonterminal for later reconciliation. The managed launcher can
+  bind one explicitly supplied exact START request to its durable RunReceipt before
+  development setup; omission performs no selection or binding, and uncertain binding aborts launch.
+  The managed client allowlist and default grant still exclude `agent_task`; continuation/takeover,
+  request-selected or automatic launch,
   ordinary HTTP exposure, and activation remain absent.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
