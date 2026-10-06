@@ -290,7 +290,9 @@ messaging, and required continuation:
   `work_get`/`work_update` projection exist only when the store and immutable contracts are
   injected. `activation_contract_loader.py` can load those contracts from one explicit bounded,
   closed, versioned mode-0600 JSON file into an immutable obligation-ID registry; it does not
-  select a path, reload contracts, or construct the production edge. Migration `0023_activation_continuity`
+  select a path or reload contracts. The resource service accepts only an explicitly injected
+  registry and otherwise leaves activation continuity unconstructed and absent from its tool
+  inventory; no environment/path selection occurs at that seam. Migration `0023_activation_continuity`
   persists revisions and refuses a downgrade that would discard any obligation. Landing remains
   inert: no public create, runtime launch, feature enablement, migration application, or activation
   is included.

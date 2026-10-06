@@ -8,11 +8,12 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
@@ -25,6 +26,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .activation_continuity import ActivationContract
+from .activation_continuity_store import ActivationContinuity
 from .agent_mailboxes import AgentMailboxState
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
@@ -398,7 +401,9 @@ def _create_resource_app(
 
 
 @asynccontextmanager
-async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
+async def resource_service(
+    activation_contracts: Mapping[UUID, ActivationContract] | None = None,
+) -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
     """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
     register_sqlalchemy_timing(engine)
@@ -430,7 +435,12 @@ async def resource_service() -> AsyncGenerator[tuple[ChatGPTService, tuple[str, 
             canonical_work=canonical_work, canonical_events=canonical_events,
             canonical_work_active=True,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1",
-            implementation_requests=implementation_requests)
+            implementation_requests=implementation_requests,
+            activation_continuity=(
+                None
+                if activation_contracts is None
+                else ActivationContinuity(engine, activation_contracts)
+            ))
         runtime = None
         if marker:
             runtime = (
