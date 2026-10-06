@@ -11,6 +11,7 @@ import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -71,6 +72,8 @@ class _ProductCurrentnessConfig:
     selected_runtime_sha: str
     run_id: str
     expected_tools_schema_sha256: str
+    qualification_receipt: Path | None = None
+    qualification_key: Path | None = None
 
     @classmethod
     def from_environment(cls) -> _ProductCurrentnessConfig | None:
@@ -99,7 +102,27 @@ class _ProductCurrentnessConfig:
             raise ValueError("product-currentness selected runtime SHA must be a lowercase Git SHA")
         if not re.fullmatch(r"[0-9a-f]{64}", values["expected_tools_schema_sha256"]):
             raise ValueError("product-currentness expected schema must be a SHA-256 digest")
-        return cls(**values)
+        receipt = os.getenv("SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT", "").strip()
+        key = os.getenv("SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY", "").strip()
+        if bool(receipt) != bool(key):
+            raise ValueError(
+                "product-currentness qualification receipt and key must be configured together"
+            )
+        receipt_path = Path(receipt) if receipt else None
+        key_path = Path(key) if key else None
+        if (
+            receipt_path is not None
+            and key_path is not None
+            and (not receipt_path.is_absolute() or not key_path.is_absolute())
+        ):
+            raise ValueError(
+                "product-currentness qualification receipt and key paths must be absolute"
+            )
+        return cls(
+            **values,
+            qualification_receipt=receipt_path,
+            qualification_key=key_path,
+        )
 
 
 def _tools_snapshot(tools: Sequence[Tool]) -> tuple[tuple[str, ...], str]:
@@ -345,6 +368,8 @@ def _create_resource_app(
                 read_snapshot,
                 expected_migration_revision=STATEFUL_MIGRATION_REVISION,
                 expected_tools_schema_sha256=currentness_config.expected_tools_schema_sha256,
+                qualification_receipt=currentness_config.qualification_receipt,
+                qualification_key=currentness_config.qualification_key,
             )
             return await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
 

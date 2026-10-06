@@ -105,8 +105,12 @@ run ID, and expected tools-schema SHA-256 through the
 corresponding `SWITCHSTAND_PRODUCT_CURRENTNESS_*` variables. Startup rejects missing
 or malformed values. This diagnostic construction binds those host values to the
 authenticated principal, exact live FastMCP tool schema, outcome-action switch, and PostgreSQL
-prerequisites. It intentionally configures no qualification receipt or seal key, so
-`functional_proof` remains a blocker and this layer cannot return `TRUE`.
+prerequisites. The optional
+`SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT` and
+`SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY` values must be configured together as
+absolute paths. When they are absent, `functional_proof` remains a blocker and this layer
+cannot return `TRUE`. Selecting, creating, and retaining those private files is a separate
+activation decision; this edge does not create either file.
 
 Then the canonical activation check is:
 
