@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Maintain the bounded local friction register without exposing its corpus."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+import re
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import NoReturn
+
+CATEGORIES = ("capability", "process", "implementation")
+KEY = re.compile(r"[a-z0-9][a-z0-9._-]{0,79}")
+REQUIRED = (
+    "- Attempted: ",
+    "- Observed: ",
+    "- State-change truth: ",
+    "- Clearing action: ",
+)
+INDEX = """# Friction register
+Record proven setup and workflow failures by their primary clearing action:
+- [Capability](friction/capability.md): access, tool, runtime, or environment capability.
+- [Process](friction/process.md): coordination, routing, ownership, or procedure.
+- [Implementation](friction/implementation.md): a repository code or test defect.
+Use a globally stable lowercase key. Run `scripts/friction-register has <key>` before
+`scripts/friction-register append <category> <key>`. An entry is at most 800 Unicode characters
+and eight nonblank lines. Keep only attempted claim, observed result, state-change truth, and
+smallest clearing action. A proven unfixed item that is not selected also needs `Deferred because`
+and `Evidence` lines. Exclude speculative backlog, transcripts, raw logs, portfolio state,
+priorities, and secrets. Evidence detail remains on the owning WorkId or a durable private artifact.
+"""
+HEADER = """# {title} friction
+
+Entries are ordered by observation. The stable key in each heading is globally unique.
+"""
+
+
+def fail(message: str, status: int = 2) -> NoReturn:
+    print(f"friction-register: {message}", file=sys.stderr)
+    raise SystemExit(status)
+
+
+def register_root(index: Path) -> Path:
+    if not index.is_file():
+        fail(f"index is unavailable: {index}")
+    resolved = index.resolve(strict=True)
+    if resolved.name != "friction.md":
+        fail("index must resolve to friction.md")
+    return resolved.parent
+
+
+def category_paths(root: Path) -> dict[str, Path]:
+    return {category: root / f"{category}.md" for category in CATEGORIES}
+
+
+def validate_regular(path: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        fail(f"register surface is not a regular file: {path}")
+
+
+def parse_keys(path: Path) -> set[str]:
+    validate_regular(path)
+    keys: set[str] = set()
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.startswith("### "):
+                key = line.removeprefix("### ").strip()
+                if not KEY.fullmatch(key):
+                    fail(f"invalid stored key in {path.name}: {key!r}")
+                if key in keys:
+                    fail(f"duplicate stored key in {path.name}: {key}")
+                keys.add(key)
+    return keys
+
+
+@contextmanager
+def register_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
+    path = root / ".register.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        fail(f"cannot open register lock: {error}")
+    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+        os.chmod(path, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+
+
+def locate(paths: dict[str, Path], key: str) -> str | None:
+    found = [category for category, path in paths.items() if key in parse_keys(path)]
+    if len(found) > 1:
+        fail(f"duplicate stored key across categories: {key}")
+    return found[0] if found else None
+
+
+def atomic_replace(path: Path, text: str) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(text)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def command_init(args: argparse.Namespace) -> None:
+    root = Path(args.root).expanduser()
+    if root.is_symlink() or not root.is_dir():
+        fail(f"register root is not a directory: {root}")
+    root = root.resolve(strict=True)
+    os.chmod(root, 0o700)
+    index = root / "friction.md"
+    if not index.exists():
+        index.write_text(INDEX, encoding="utf-8")
+    validate_regular(index)
+    if index.stat().st_size == 0:
+        index.write_text(INDEX, encoding="utf-8")
+    os.chmod(index, 0o600)
+    for category, path in category_paths(root).items():
+        if not path.exists():
+            path.write_text(HEADER.format(title=category.title()), encoding="utf-8")
+        validate_regular(path)
+        os.chmod(path, 0o600)
+    all_keys = [key for path in category_paths(root).values() for key in parse_keys(path)]
+    if len(all_keys) != len(set(all_keys)):
+        fail("duplicate stored key across categories")
+
+
+def checked_key(raw: str) -> str:
+    if not KEY.fullmatch(raw):
+        fail("key must be 1-80 lowercase ASCII letters, digits, dots, underscores, or hyphens")
+    return raw
+
+
+def bound_index(args: argparse.Namespace) -> Path:
+    return Path(args.index).expanduser() if args.index else Path.cwd() / "friction.md"
+
+
+def command_has(args: argparse.Namespace) -> None:
+    key = checked_key(args.key)
+    root = register_root(bound_index(args))
+    paths = category_paths(root)
+    with register_lock(root, exclusive=False):
+        category = locate(paths, key)
+    if category is None:
+        raise SystemExit(1)
+    print(category)
+
+
+def command_migrate(args: argparse.Namespace) -> None:
+    index = bound_index(args)
+    root = register_root(index)
+    index = index.resolve(strict=True)
+    archive = root / "legacy-index.md"
+    with register_lock(root, exclusive=True):
+        current = index.read_text(encoding="utf-8")
+        if current == INDEX:
+            return
+        if archive.exists():
+            validate_regular(archive)
+            if archive.read_text(encoding="utf-8") != current:
+                fail("legacy index archive conflicts with current index")
+        else:
+            atomic_replace(archive, current)
+        atomic_replace(index, INDEX)
+
+
+def validate_entry(key: str, body: str) -> str:
+    body = body.strip()
+    lines = body.splitlines()
+    if not body:
+        fail("entry body is empty")
+    if "\x00" in body:
+        fail("entry body contains NUL")
+    nonblank = [line for line in lines if line.strip()]
+    if any(line.startswith("### ") for line in nonblank):
+        fail("entry body must not contain a key heading")
+    if len(nonblank) + 1 > 8:
+        fail("entry exceeds eight nonblank lines including its heading")
+    for prefix in REQUIRED:
+        if sum(line.startswith(prefix) for line in nonblank) != 1:
+            fail(f"entry requires exactly one {prefix.strip()} line")
+    deferred = [line for line in nonblank if line.startswith("- Deferred because: ")]
+    evidence = [line for line in nonblank if line.startswith("- Evidence: ")]
+    if bool(deferred) != bool(evidence) or len(deferred) > 1 or len(evidence) > 1:
+        fail("deferred entries require exactly one Deferred because and one Evidence line")
+    entry = f"### {key}\n{body}\n"
+    if len(entry) > 800:
+        fail("entry exceeds 800 Unicode characters")
+    return entry
+
+
+def command_append(args: argparse.Namespace) -> None:
+    key = checked_key(args.key)
+    root = register_root(bound_index(args))
+    paths = category_paths(root)
+    entry = validate_entry(key, sys.stdin.read())
+    with register_lock(root, exclusive=True):
+        existing = locate(paths, key)
+        if existing is not None:
+            fail(f"key already exists in {existing}: {key}", 3)
+        target = paths[args.category]
+        validate_regular(target)
+        current = target.read_text(encoding="utf-8")
+        separator = "" if not current else ("\n" if current.endswith("\n") else "\n\n")
+        atomic_replace(target, f"{current}{separator}{entry}")
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    commands = result.add_subparsers(dest="command", required=True)
+    init = commands.add_parser("init")
+    init.add_argument("root")
+    init.set_defaults(run=command_init)
+    has = commands.add_parser("has")
+    has.add_argument("key")
+    has.add_argument("--index")
+    has.set_defaults(run=command_has)
+    migrate = commands.add_parser("migrate-index")
+    migrate.add_argument("--index")
+    migrate.set_defaults(run=command_migrate)
+    append = commands.add_parser("append")
+    append.add_argument("category", choices=CATEGORIES)
+    append.add_argument("key")
+    append.add_argument("--index")
+    append.set_defaults(run=command_append)
+    return result
+
+
+def main() -> None:
+    args = parser().parse_args()
+    args.run(args)
+
+
+if __name__ == "__main__":
+    main()

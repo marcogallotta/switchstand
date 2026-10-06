@@ -400,12 +400,19 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     current_friction_store = friction_root / "friction.md"
     assert (primary / "friction.md").is_symlink()
     assert (primary / "friction.md").resolve() == current_friction_store
+    assert (primary / "friction").is_symlink()
+    assert (primary / "friction").resolve() == friction_root
     assert friction_store.read_text() == "existing friction\n"
     assert friction_store.stat().st_mode & 0o777 == 0o600
     assert friction_root.stat().st_mode & 0o777 == 0o700
     assert current_friction_store.read_text() == "existing friction\n"
     assert current_friction_store.stat().st_mode & 0o777 == 0o600
     assert (writer / "friction.md").resolve() == current_friction_store
+    assert (writer / "friction").resolve() == friction_root
+    for category in ("capability", "process", "implementation"):
+        category_store = friction_root / f"{category}.md"
+        assert category_store.is_file() and not category_store.is_symlink()
+        assert category_store.stat().st_mode & 0o777 == 0o600
     assert filesystem[str(home)] == "write"
     assert filesystem[":root"] == "read"
     assert str(friction_store) not in filesystem

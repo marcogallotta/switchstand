@@ -686,6 +686,18 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         (root / "friction.md").symlink_to(store)
         assert hook(root, "*** Update File: friction.md", environment | {"HOME": str(tmp_path)}, tool="apply_patch", coordinator_primary=primary, coordinator_writer=writer) == {}
         assert hook(root, str(root / "friction.md"), environment | {"HOME": str(tmp_path)}, tool="Edit", coordinator_primary=primary, coordinator_writer=writer) == {}
+    friction_root = tmp_path / ".local/state/switchstand/friction"
+    friction_root.mkdir(parents=True, exist_ok=True)
+    for root in (primary, writer):
+        category_root = root / "friction"
+        if not category_root.exists():
+            category_root.symlink_to(friction_root, target_is_directory=True)
+        for name in ("capability.md", "process.md", "implementation.md"):
+            (friction_root / name).touch(exist_ok=True)
+            target = category_root / name
+            assert hook(root, str(target), environment | {"HOME": str(tmp_path)},
+                        tool="Edit", coordinator_primary=primary,
+                        coordinator_writer=writer) == {}
 
 
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):

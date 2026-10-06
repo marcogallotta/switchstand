@@ -47,14 +47,28 @@ Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Wor
 #### Setup and workflow failure journal
 
 Immediately record every newly observed setup or workflow failure through the repo-local,
-Git-ignored `friction.md` entrypoint. Each entry states the attempted claim, observed result,
-state-change truth, and smallest clearing action. Keep a current remaining-priority view without
-erasing append-only evidence. Before Coordinator handoff, reconcile that view against current
-truth. When the append-only section becomes too long for quick use, preserve it intact in a dated
-sibling beside the durable local-state backing file, then restart `friction.md` with the current
-priorities. If the path is not writable, preserve the same facts in the authorized work result or
-handoff. Missing feedback capability does not block assigned work. Before any replacement write,
-reread the exact target and preserve user changes.
+Git-ignored friction register. `friction.md` is its short policy and category index; detailed entries
+live in `friction/capability.md`, `friction/process.md`, or `friction/implementation.md`, selected by
+the primary clearing action rather than symptoms or keywords. Capability covers access, tools,
+runtimes, and environment; process covers routing, ownership, coordination, and procedure;
+implementation covers repository code, configuration, and tests.
+
+Use `scripts/friction-register has <stable-key>` to check the global exact-key registry without loading
+the category corpora. Add an entry with `scripts/friction-register append <category> <stable-key>` and
+the bounded entry on standard input. One entry is at most 800 Unicode characters and eight nonblank lines including its stable
+key heading. It states only the attempted claim, observed result, state-change truth, and smallest
+clearing action. A proven unfixed item that is not selected remains recorded with `Deferred
+because` and `Evidence` lines. Exclude speculative backlog, transcripts, raw logs, portfolio
+state, priorities, and secrets. Evidence detail belongs on the owning WorkId or in a durable
+private artifact.
+
+The writer serializes concurrent updates, checks exact headings without returning corpus prose, and
+atomically replaces only the selected ledger. Existing unstructured index bytes are preserved;
+initialization never silently rewrites them. An authorized activation runs `scripts/friction-register
+migrate-index`, which preserves those bytes once as `legacy-index.md` before installing the short
+index. Before handoff reconcile the register against current truth. If the path is not writable,
+preserve the same facts in the authorized work result or handoff.
+Missing feedback capability does not block assigned work.
 
 #### Coordinator handoff
 

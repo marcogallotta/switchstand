@@ -326,14 +326,27 @@ def foreign_write(target: str, primary: str, writer: str | None) -> str | None:
 
 def friction_binding(candidate: str, primary: str, writer: str | None) -> bool:
     logical = os.path.abspath(candidate)
+    names = ("capability.md", "process.md", "implementation.md")
     if writer is None:
-        return logical == os.path.join(primary, "friction.md")
-    bindings = {os.path.join(root, "friction.md") for root in (primary, writer)}
-    durable = {
+        if logical == os.path.join(primary, "friction.md"):
+            return True
+        roots = (primary,)
+    else:
+        roots = (primary, writer)
+    index_bindings = {os.path.join(root, "friction.md") for root in roots}
+    durable_root = os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction"))
+    durable_indexes = {
         os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction.md")),
-        os.path.realpath(os.path.expanduser("~/.local/state/switchstand/friction/friction.md")),
+        os.path.join(durable_root, "friction.md"),
     }
-    return logical in bindings and os.path.islink(logical) and os.path.realpath(logical) in durable
+    if logical in index_bindings:
+        return os.path.islink(logical) and os.path.realpath(logical) in durable_indexes
+    category_bindings = {
+        os.path.join(root, "friction", name) for root in roots for name in names
+    }
+    return logical in category_bindings and os.path.realpath(logical) == os.path.join(
+        durable_root, os.path.basename(logical)
+    )
 
 
 def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> str | None:
