@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,10 +10,6 @@ from switchstand import stateful_qualifier as qualifier
 from switchstand.grants import PrincipalContext
 from switchstand.product_currentness import ProductCurrentness
 from switchstand.product_currentness_stateful import StatefulQualificationBasis
-
-
-def _head() -> str:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
 
 def _current(current: str, blockers: tuple[str, ...]) -> ProductCurrentness:
@@ -49,7 +44,7 @@ async def test_qualifier_journals_before_effect_and_emits_rechecked_receipt(
         {"name": "outcome_state_update", "inputSchema": {}},
     ]
     tools_digest = qualifier._digest(tools)
-    runtime_sha = _head()
+    runtime_sha = "d" * 40
     calls: list[tuple[str, dict[str, object]]] = []
 
     class Client:
@@ -101,6 +96,15 @@ async def test_qualifier_journals_before_effect_and_emits_rechecked_receipt(
         async def dispose(self):
             pass
 
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return f"{runtime_sha}\n".encode(), b""
+
+    async def subprocess_exec(*_args, **_kwargs):
+        return Process()
+
     class Reader:
         def __init__(self, *_args, qualification_receipt=None, **_kwargs):
             self.qualified = qualification_receipt is not None
@@ -118,6 +122,7 @@ async def test_qualifier_journals_before_effect_and_emits_rechecked_receipt(
         )
 
     monkeypatch.setattr(qualifier, "MCPClient", Client)
+    monkeypatch.setattr(qualifier.asyncio, "create_subprocess_exec", subprocess_exec)
     monkeypatch.setattr(qualifier, "create_async_engine", lambda _url: Engine())
     monkeypatch.setattr(qualifier, "LiveStatefulEvidenceReader", Reader)
     monkeypatch.setattr(qualifier, "evaluate_stateful_currentness", evaluate)
