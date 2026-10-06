@@ -1,6 +1,7 @@
 """Append-only storage and authenticated server facade for activation continuity."""
 
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import text
@@ -80,6 +81,27 @@ class ActivationContinuity:
         if not chain:
             return ContinuityResult(status="MISSING", reason="obligation_missing")
         return ContinuityResult(status="CURRENT", obligation=chain[-1])
+
+    async def for_owner(
+        self, owner_work_id: UUID,
+    ) -> tuple[Obligation, ...] | Literal["UNKNOWN"]:
+        try:
+            async with self.engine.connect() as connection:
+                rows = (await connection.execute(text(
+                    "SELECT obligation_id,operation_id,generation,record "
+                    "FROM activation_obligation_revisions "
+                    "WHERE record->'binding'->>'return_owner_work_id'=:owner "
+                    "ORDER BY obligation_id,generation"
+                ), {"owner": str(owner_work_id)})).mappings().all()
+            grouped: dict[UUID, list[dict[str, object]]] = {}
+            for row in rows:
+                grouped.setdefault(row["obligation_id"], []).append(dict(row))
+            chains = [self._chain(values) for values in grouped.values()]
+            if any(chain is None for chain in chains):
+                return "UNKNOWN"
+            return tuple(chain[-1] for chain in chains if chain)
+        except (SQLAlchemyError, KeyError, TypeError, ValueError):
+            return "UNKNOWN"
 
     async def transition(
         self,

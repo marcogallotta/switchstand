@@ -125,6 +125,8 @@ async def test_server_owned_creator_and_acceptance_adoption_guards(subject):
     denied = await apply(state, bound, OWNER, "ACTIVATED", "MISSING", technical(bound))
     assert denied.status == "DENIED"
     opened = await apply(state, bound, PRODUCT, "ACTIVATED", "MISSING", technical(bound))
+    projected = await state.for_owner(OWNER)
+    assert len(projected) == 1 and projected[0].digest == opened.obligation.digest
     assert (opened.status, opened.obligation.state) == ("APPLIED", "VERIFY_NOW")
     adopted = await apply(
         state,
@@ -206,3 +208,4 @@ async def test_concurrent_replay_and_corruption_fail_closed(subject):
         )
     corrupt = await state.get(bound.obligation_id)
     assert (corrupt.status, corrupt.reason) == ("UNKNOWN", "corrupt_revision_chain")
+    assert await state.for_owner(OWNER) == "UNKNOWN"
