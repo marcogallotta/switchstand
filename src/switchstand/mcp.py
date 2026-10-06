@@ -259,8 +259,9 @@ def build_context_server(
         )
 
     _work_history.__doc__ = (
-        "Read one revision-checked page of the exact launch-bound work history. "
-        "Follow next_cursor until null; on stale, call work_get again and restart."
+        "Exceptional bounded investigation/recovery history for the exact launch-bound work; "
+        "never normal startup, re-entry, review, polling, or implementation grounding. "
+        "Pagination is revision-checked; on stale, call work_get again before recovery continues."
     )
     closed_tool(server, "work_history", _work_history, ToolAnnotations(
         read_only_hint=True,
@@ -304,7 +305,7 @@ def build_server(
         api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> WorkHistoryResult:
-        """Read bounded history; on stale, repeat work_get and restart pagination."""
+        """Exceptional bounded investigation/recovery history; never normal grounding."""
         return await service.history(  # type: ignore[attr-defined]
             WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
