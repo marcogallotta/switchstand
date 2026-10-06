@@ -38,6 +38,7 @@ EXPLICIT_RULES: tuple[tuple[str, tuple[str, ...] | None], ...] = (
     ("src/switchstand/mcp.py", None),
 )
 _SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+_DIRECT_TEST_MODULE = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,6 @@ def foreground_authority(
     """Promote only the reviewed direct test-module class; fail closed otherwise."""
 
     reasons: list[str] = []
-    direct_test = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
     if plan.basis_kind != "exact" or not subject_verified:
         reasons.append("subject-not-exact-current")
     if plan.planner_revision != PLANNER_REVISION:
@@ -116,9 +116,9 @@ def foreground_authority(
         reasons.append("planner-did-not-select-cleanly")
     if plan.destructive:
         reasons.append("delete-or-rename")
-    if not plan.changed_paths or any(direct_test(path) is None for path in plan.changed_paths):
+    if not plan.changed_paths or any(_DIRECT_TEST_MODULE(path) is None for path in plan.changed_paths):
         reasons.append("changed-path-outside-direct-test-modules")
-    if not plan.selected_tests or any(direct_test(path) is None for path in plan.selected_tests):
+    if not plan.selected_tests or any(_DIRECT_TEST_MODULE(path) is None for path in plan.selected_tests):
         reasons.append("selected-path-outside-direct-test-modules")
     if not set(plan.changed_paths).issubset(plan.selected_tests):
         reasons.append("changed-test-module-not-selected")
@@ -233,14 +233,20 @@ def _plan(
             fallback.append(f"unknown behavioral non-Python input:{path}")
     modules: dict[str, str] = {}
     dependencies: dict[str, set[str]] = {}
-    try:
-        for path in files:
-            name = _module(path)
-            if name is not None:
-                modules[name] = path
-                dependencies[path] = _imports(path, read(path))
-    except (RuntimeError, OSError, SyntaxError, UnicodeError, ValueError) as error:
-        fallback.append(f"unreadable dependency graph:{type(error).__name__}")
+    direct_test_only = (
+        bool(changed)
+        and not destructive
+        and all(_DIRECT_TEST_MODULE(path) is not None for path in changed)
+    )
+    if not direct_test_only:
+        try:
+            for path in files:
+                name = _module(path)
+                if name is not None:
+                    modules[name] = path
+                    dependencies[path] = _imports(path, read(path))
+        except (RuntimeError, OSError, SyntaxError, UnicodeError, ValueError) as error:
+            fallback.append(f"unreadable dependency graph:{type(error).__name__}")
 
     reasons: dict[str, set[str]] = {}
 

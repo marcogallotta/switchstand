@@ -231,6 +231,21 @@ def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Pat
     ).mode == "FULL_FALLBACK"
 
 
+def test_direct_test_change_does_not_parse_unrelated_dependency_graph(
+    tmp_path: Path,
+) -> None:
+    repo, _ = fixture_repo(tmp_path)
+    write(repo, "src/switchstand/unrelated.py", "this is not valid Python\n")
+    base = commit(repo, "unrelated parser-incompatible source")
+    write(repo, "tests/test_alpha.py", "def test_value(): assert True\n")
+
+    plan = plan_exact(repo, base, commit(repo))
+
+    assert plan.mode == "SELECTED"
+    assert plan.selected_tests == ("tests/test_alpha.py",)
+    assert plan.fallback_reasons == ()
+
+
 def test_test_helpers_nested_modules_and_deletes_are_not_promoted(tmp_path: Path) -> None:
     repo, base = fixture_repo(tmp_path)
     write(repo, "tests/helpers.py", "VALUE = 2\n")
