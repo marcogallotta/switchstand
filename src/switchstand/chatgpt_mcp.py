@@ -1,10 +1,11 @@
 from collections.abc import Callable
+from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
-from pydantic import Field, JsonValue, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import flow_report, repository_bundle, repository_candidate
@@ -141,6 +142,36 @@ class OrdinaryUpdateResult(GuardOutcome):
 class OutcomeStateUpdateResult(ClosedModel):
     status: Literal["APPLIED", "REPLAYED", "STALE", "CONFLICT", "DENIED", "UNKNOWN"]
     state_id: UUID | None = None
+
+
+class ReviewPickupObservation(ClosedModel):
+    """Typed requester-facing projection of the canonical review occurrence."""
+
+    status: Literal["KNOWN", "UNKNOWN"]
+    reason: str | None = None
+    phase: Literal["WAITING_REVIEWER", "REQUEST_UNPICKED", "RECEIVED", "VERDICT"] | None = None
+    unpicked: bool | None = None
+    review_id: UUID | None = None
+    oldest_request_age_ms: int | None = Field(default=None, ge=0)
+    requested_at: datetime | None = None
+    received_at: datetime | None = None
+    verdict_at: datetime | None = None
+    verdict: ReviewVerdict | None = None
+    findings: tuple[ReviewFinding, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    context_provenance: ContextProvenance | None = None
+    verdict_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ObservabilityResult(BaseModel):
+    """Flow snapshot with a typed canonical-review readback projection."""
+
+    model_config = ConfigDict(extra="allow")
+    schema: Literal["switchstand.flow_report.v1"]
+    status: Literal["PARTIAL"]
+    work_id: UUID
+    captured_at: datetime
+    review_pickup: ReviewPickupObservation
 
 
 def project_activation_continuity(result: ContinuityResult) -> ActivationContinuityResult:
@@ -358,8 +389,24 @@ def build_ordinary_tools(
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
         return result
 
-    async def observability_get(work_id: UUID) -> dict[str, object]:
-        """Read current exact-WorkId flow evidence and authenticated review pickup state."""
+    async def observability_get(
+        work_id: Annotated[
+            UUID,
+            Field(description=(
+                "Exact review subject WorkId. Requesters should pass the same subject_work_id "
+                "used with review_request."
+            )),
+        ],
+    ) -> ObservabilityResult:
+        """Read exact review progress and terminal verdict from the canonical occurrence.
+
+        This is the requester readback path after review_request; do not poll a generic
+        agent inbox for review completion. REQUEST_UNPICKED means the canonical reviewer
+        delivery exists but has not been received, RECEIVED means the reviewer picked it
+        up, WAITING_REVIEWER means acquisition is unresolved, and VERDICT is terminal for
+        that exact subject revision and includes the verdict/findings. UNKNOWN never proves
+        completion. This operation is read-only and does not receive or submit messages.
+        """
         correlate(work_id)
         if service.reviews is None:
             raise RuntimeError("canonical review occurrence state is unavailable")
@@ -367,7 +414,7 @@ def build_ordinary_tools(
             service.reviews.occurrences.engine, work_id, service.reviews.occurrences,
         )
         audited("observability_get", str(work_id), "ok")
-        return result
+        return ObservabilityResult.model_validate(result)
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
@@ -640,13 +687,60 @@ def build_ordinary_tools(
         return result
 
     async def review_request(
-        api_version: Literal["1"], subject_work_id: UUID,
-        observed_revision: Annotated[str, Field(min_length=1)], review_kind: ReviewKind,
-        candidate_ref: Annotated[str | None, Field(min_length=1, max_length=500)] = None,
-        mode: ReviewMode = "FULL", prior_review_id: UUID | None = None,
-        finding_ids: tuple[str, ...] = (),
+        api_version: Literal["1"],
+        subject_work_id: Annotated[
+            UUID, Field(description="Exact WorkId whose current claim/candidate is being reviewed.")
+        ],
+        observed_revision: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Exact current revision returned by work_get for subject_work_id.",
+            ),
+        ],
+        review_kind: Annotated[
+            ReviewKind,
+            Field(description="Review discipline used to select the configured independent reviewer."),
+        ],
+        candidate_ref: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                max_length=500,
+                description=(
+                    "Optional immutable candidate/evidence identity, such as an exact Git SHA or "
+                    "PR head. It becomes named evidence in the canonical review brief."
+                ),
+            ),
+        ] = None,
+        mode: Annotated[
+            ReviewMode,
+            Field(description=(
+                "FULL starts a fresh review. FOCUSED rechecks named findings from a prior "
+                "authoritative review after the subject revision changes."
+            )),
+        ] = "FULL",
+        prior_review_id: Annotated[
+            UUID | None,
+            Field(description="Required with FOCUSED: the authoritative prior review occurrence."),
+        ] = None,
+        finding_ids: Annotated[
+            tuple[str, ...],
+            Field(description=(
+                "Required with FOCUSED: distinct finding IDs from prior_review_id to recheck."
+            )),
+        ] = (),
     ) -> ReviewResult:
-        """Request one review as this registered caller at an exact subject revision."""
+        """Canonical requester operation for an independent review of an exact revision.
+
+        Do not originate ordinary reviews with agent_message_send. The current registered
+        caller is the requester; reviewer identity, independence, policy, and delivery routing
+        are server-owned. SENT means a canonical delivery exists, not reviewer pickup or a
+        verdict. WAITING_REVIEWER means acquisition is unresolved. Keep review_id and use
+        observability_get(subject_work_id) until VERDICT. STALE requires rereading the subject
+        and requesting against its new revision. If a result is UNKNOWN, reconcile exact review
+        observability before retrying; replay only the unchanged request basis.
+        """
         del api_version
         correlate(subject_work_id)
         context = await agent_context()
@@ -671,11 +765,45 @@ def build_ordinary_tools(
         return result
 
     async def review_submit(
-        api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
-        context_provenance: ContextProvenance,
-        findings: tuple[ReviewFinding, ...] = (), evidence_refs: tuple[str, ...] = (),
+        api_version: Literal["1"],
+        review_id: Annotated[
+            UUID, Field(description="Canonical review occurrence from the received review delivery.")
+        ],
+        verdict: Annotated[
+            ReviewVerdict,
+            Field(description=(
+                "PASS accepts the reviewed claim; FINDINGS requires structured findings; "
+                "BLOCKED records that the review cannot currently be completed."
+            )),
+        ],
+        context_provenance: Annotated[
+            ContextProvenance,
+            Field(description=(
+                "Whether review context was inherited, deliberately unseeded for independence, "
+                "or unknown."
+            )),
+        ],
+        findings: Annotated[
+            tuple[ReviewFinding, ...],
+            Field(description=(
+                "Structured defects for FINDINGS only: evidence, consequence, affected claim, "
+                "and minimum clearing condition are required by each finding."
+            )),
+        ] = (),
+        evidence_refs: Annotated[
+            tuple[str, ...],
+            Field(description="Optional exact evidence identities supporting the verdict."),
+        ] = (),
     ) -> ReviewResult:
-        """Submit one verdict as the current registered reviewer mailbox."""
+        """Reviewer-only terminal write for a canonical review delivery.
+
+        The current registered reviewer must first receive the canonical review delivery with
+        agent_message_receive; review_submit will deny an unreceived, stale, ineligible, or
+        wrong-reviewer delivery. Record the verdict here rather than returning it only through
+        generic messaging. SUBMITTED means the verdict was durably recorded; PASS is evidence,
+        not effect authority. On UNKNOWN, reconcile the exact review before retrying and never
+        change the verdict payload under an ambiguous result.
+        """
         del api_version
         correlate(review_id)
         context = await agent_context()
