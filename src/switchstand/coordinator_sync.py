@@ -12,12 +12,19 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .contracts import ClosedModel
+from .coordinator_workers import (
+    CoordinatorWorkers,
+    WorkerCancelResult,
+    WorkerSpawnResult,
+    WorkerStatusResult,
+)
 from .mcp import closed_tool
 
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -386,7 +393,9 @@ class CoordinatorSync:
         )
 
 
-def build_server(control: CoordinatorSync) -> MCPServer:
+def build_server(
+    control: CoordinatorSync, workers: CoordinatorWorkers | None = None
+) -> MCPServer:
     server = MCPServer("Switchstand Coordinator Control")
 
     async def _coordinator_currentness_get(
@@ -408,6 +417,38 @@ def build_server(control: CoordinatorSync) -> MCPServer:
     closed_tool(server, "coordinator_main_sync", _coordinator_main_sync,
                 ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                 idempotent_hint=True, open_world_hint=False))
+    if workers is not None:
+        async def _coordinator_implementation_spawn(
+            api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+            objective: str = Field(min_length=1, max_length=8_000),
+        ) -> WorkerSpawnResult:
+            """Start one exact implementation in an isolated private writer and return now."""
+            return workers.spawn(operation_id, work_id, objective)
+
+        async def _coordinator_implementation_status(
+            api_version: Literal["1"], spawn_id: UUID,
+        ) -> WorkerStatusResult:
+            """Read exact worker/process/candidate state without changing it."""
+            return workers.status(spawn_id)
+
+        async def _coordinator_implementation_cancel(
+            api_version: Literal["1"], spawn_id: UUID,
+        ) -> WorkerCancelResult:
+            """Stop only the exact worker process and preserve its writer as evidence."""
+            return workers.cancel(spawn_id)
+
+        closed_tool(server, "coordinator_implementation_spawn",
+                    _coordinator_implementation_spawn,
+                    ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                    idempotent_hint=True, open_world_hint=False))
+        closed_tool(server, "coordinator_implementation_status",
+                    _coordinator_implementation_status,
+                    ToolAnnotations(read_only_hint=True, destructive_hint=False,
+                                    idempotent_hint=True, open_world_hint=False))
+        closed_tool(server, "coordinator_implementation_cancel",
+                    _coordinator_implementation_cancel,
+                    ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                    idempotent_hint=True, open_world_hint=False))
     return server
 
 
@@ -423,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
         result = control.handoff(arguments[1])
         print(json.dumps(result.model_dump(), sort_keys=True))
         return 0 if result.status == "ready" else 2
-    build_server(control).run()
+    build_server(control, CoordinatorWorkers(home.resolve())).run()
     return 0
 
 

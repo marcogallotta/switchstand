@@ -588,6 +588,16 @@ or binding nodes move to a generation-specific private quarantine; dispatch recr
 affected bounded friction surface, reports the degradation, and continues launch. Outside the
 canonical repository, dispatch passes through to the ordinary Codex executable.
 
+The Coordinator-control MCP also owns the narrow asynchronous implementation handoff. An exact
+WorkId, caller-chosen operation identity, and bounded objective start the existing trusted
+`switchstand --isolated` path, which binds a managed Worker to that WorkId and its durable
+task-private linked writer. Spawn returns immediately so Root remains available for coordination;
+status reports the exact base/head, branch, writer, commit summary, and terminal or UNKNOWN state.
+A deterministic host unit and durable phase record survive Coordinator restart; cancellation uses
+the managed run receipt when present, stops only that unit, and retains the writer and logs as
+recovery evidence. The seam grants no merge, deployment, or activation authority, and built-in
+shared-filesystem Workers remain read-only.
+
 Built-in delegated Workers share the Coordinator process and filesystem profile. Hooks are a
 useful guardrail rather than a security sandbox, so they cannot safely grant a Worker mutation in
 one writer while withholding Root's writer or sibling writers. Built-in Workers therefore remain
