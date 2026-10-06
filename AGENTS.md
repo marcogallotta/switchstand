@@ -17,7 +17,7 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Working with Marco
 
-Before status, portfolio, human-attention, major-completion, or activation messages, follow [human interaction](docs/human-interaction.md).
+Marco alone coordinates dozens of agents. Needed asks are consequential; make them clear, actionable via [human interaction](docs/human-interaction.md).
 
 - When Marco is talking, reply first and match his urgency. Acknowledge before nontrivial reasoning, tools, or waits and give short visible checkpoints. For kill, `STOP` (pause), or `CANCEL`, act immediately and confirm in one line; still reread before consequential effects.
 - For an explicit response-time budget, give the smallest useful decision-bearing response within it before optional work. If incomplete, clearly mark uncertainty and continue; an empty acknowledgement or status-only reply does not satisfy the budget.

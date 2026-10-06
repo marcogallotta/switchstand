@@ -1,6 +1,6 @@
 # How Marco uses Switchstand
 
-Switchstand coordinates bounded engineering work across ordinary Codex, task-bound Codex workers, and ChatGPT. This page is the current usage model. It does not grant authority, replace a task's current governing package, or enumerate a volatile tool inventory.
+Switchstand coordinates bounded engineering work across ordinary Codex, task-bound Codex workers, and ChatGPT. Marco is its sole human developer and operator; every other participant described here is an AI agent. He personally coordinates dozens of active or resumable agent threads. This page is the current usage model. It does not grant authority, replace a task's current governing package, or enumerate a volatile tool inventory.
 
 ## Start from current truth
 
@@ -76,7 +76,7 @@ When Marco must connect, reconnect, or reinstall Switchstand in ChatGPT, give hi
 
 The desired user model is one chat equals one stable named agent identity. The visible name, authenticated OAuth principal, hidden ChatGPT chat identity, MCP session generation, and any WorkId are distinct. The HTTP edge reads `openai/session` from MCP call metadata; the mailbox stores a hash of that value and binds one visible name to each principal-and-chat pair. Distinct chats under the same OAuth principal can register distinct names, while one chat cannot register multiple names. The agent does not supply or see the hidden chat value. An unavailable chat identity yields a recovery result; explicit same-principal takeover of a name fences the old chat. When Marco declares an agent under another authenticated identity dead, the replacement session uses `agent_transfer_request` and reports its request ID. A host operator then runs `switchstand-agent-mailbox-transfer <request-id>` with the edge database environment. That command approves only the exact recorded mailbox preimage and destination session; it preserves the endpoint and pending deliveries, increments generation, and blocks the old owner. A stale request or a destination session already bound elsewhere is terminal and must not be retried under a new ID without rereading current state. This describes the code contract, not a claim that the live client journey has been accepted. Because `agent_transfer_request` changes the client-visible MCP schema, activation still requires app reinstall, a fresh chat, and exact schema/behavior verification.
 
-## Current observed use and continuity limit (Marco, 2026-09-29)
+## Current observed use and continuity limit (Marco, 2026-10-06)
 
 This is Marco's report of how he currently uses the system, not a prescription for the
 future or proof that the written process runs reliably:
@@ -85,8 +85,11 @@ future or proof that the written process runs reliably:
   implementation and local tooling fixes that arise during that work. He also uses
   separate research agents. These are current use cases; the three technical modes
   above describe available host/launch boundaries rather than this allocation of work.
-- Marco runs only about 2-4 Codex heads (concurrent top-level Codex sessions) at a
-  time. Design for that scale; do not assume dozens of parallel Codex sessions.
+- Most of the time Marco has 2-6 Codex heads (concurrent top-level Codex sessions),
+  usually with native forked agents, plus 4-8 active ChatGPT tabs and several more
+  closed chats whose obligations may later resume. The top-level head count is not
+  the agent count: together these sessions and forks make dozens of active or
+  resumable agent threads that Marco alone coordinates.
 - Codex can fork bounded reviewers and keep working in a comparatively long-lived
   session. Ordinary ChatGPT chats have a shorter active life. Marco repeatedly has
   to tell stopped agents to **resume** and prompt agents to follow up on reviews they
@@ -104,6 +107,23 @@ cross. The written continuation rules in [AGENTS.md](../AGENTS.md) and current r
 owners state that obligation. Their presence is not evidence that ordinary ChatGPT
 agents consistently follow it. Current UI installation, runtime adoption, and
 cold-replacement success require separate readback or behavioral evidence.
+
+### Human attention is a designed interface
+
+Marco's attention is necessary; it is not something agents should avoid using. Some authority,
+judgment, review, approval, installation, and Project Settings actions genuinely require him.
+Those requests are nevertheless consequential because one human serves the whole portfolio. A
+minute spent servicing one agent is unavailable to the other dozens; viewed per agent, the
+available share of Marco's attention may be roughly one-thirtieth of what a one-to-one
+collaboration would imply.
+
+Design the system and every agent interaction around both truths. Ask promptly when Marco is
+actually needed, and make the request exceptionally clear and immediately actionable. State the
+exact action or decision first; provide the direct target, link, text, or command; recommend an
+outcome where appropriate; explain why it is needed now and the consequence of delay; distinguish
+what is blocked from what continues; and say how success will be confirmed. Complete all safe
+preparation before asking and combine compatible requests when that makes the interaction easier,
+but never hide, suppress, or defer an essential ask merely to reduce interruptions.
 
 **Interactive polling.** When Marco says “poll” or “keep polling” for a current inbox or exact review, the agent reads that exact surface, uses a supported bounded wait, and reads again while the current session can run. An empty read or an arbitrary count of checks is not a terminal result. A ChatGPT Scheduled task, including an hourly condition watch, is a different future-running product and must not replace this live obligation unless Marco explicitly requests scheduled future runs. At a real host limit, preserve the exact watch and state that active polling stopped; the inactive chat cannot promise further checks, and the obligation resumes on active re-entry.
 
