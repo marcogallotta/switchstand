@@ -305,7 +305,9 @@ messaging, and required continuation:
   mode-0600 environment, and port inputs while fixing the listener to loopback. It publishes only
   a fully written and fsynced same-directory staging inode without replacing an existing unit; it
   does not install, start, or enable a service. No public route or credentials are installed; no
-  dispatch or activation is enabled.
+  dispatch or activation is enabled. `human_review_caddy.py` renders a single inert route fragment
+  only from an explicit literal public path ending in the shell's fixed `/human-review` path and
+  an explicit loopback port; it does not select, install, or mutate a Caddy route.
   `human_review_propose.py` is a host-only command that accepts one bounded, closed consequence
   JSON from an exact mode-0600 regular file without following its final path component. It can only
   propose or replay that consequence; it cannot record a decision, dispatch work, or activate it.
