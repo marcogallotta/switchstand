@@ -40,6 +40,7 @@ switchstand-flow-report = "switchstand.flow_report:main"
 switchstand-agent-mailbox-transfer = "switchstand.agent_mailbox_transfer:run"
 switchstand-wakeful-inbound = "switchstand.codex_wakeful:inbound_main"
 switchstand-human-review-propose = "switchstand.human_review_propose:run"
+switchstand-human-review = "switchstand.human_review_runtime:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
