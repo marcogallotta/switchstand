@@ -402,12 +402,13 @@ def codex_command(
     if not assignment:
         raise ValueError("initial assignment must not be empty")
     prompt = ('Exact launch assignment:\n' + assignment + '\n\n'
-              'Obey the managed Worker context contract, then reconcile current history with '
-              "work_history(api_version=\"1\", observed_revision=<the returned revision>) "
-              "before material work. Follow next_cursor until null; if history is stale, "
-              "repeat work_get and restart the history read. Do not resume completed or "
-              "superseded intent. Work only in this private task clone. This is ordinary "
-              "development; the exact CONTROL hook remains active.")
+              'Obey the managed Worker context contract and ground ordinary execution from '
+              'work_get plus the current durable package. Do not enumerate work_history during '
+              'normal startup, re-entry, review, polling, or implementation. Use work_history '
+              'only for explicit bounded investigation or recovery, and reconcile any controlling '
+              'conclusion back into current durable work. Do not resume completed or superseded '
+              'intent. Work only in this private task clone. This is ordinary development; the '
+              'exact CONTROL hook remains active.')
     enabled_tools = ["work_get", "work_history"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
     if priority_claims:
