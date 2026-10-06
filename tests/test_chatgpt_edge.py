@@ -155,6 +155,15 @@ def test_certification_runtime_readback_is_explicit_and_exact():
             "runtime_sha": "a" * 40,
             "run_id": "run-1",
         }
+    rebuilt = certification.state.fastmcp_server.http_app(
+        path="/mcp", json_response=True, stateless_http=False,
+        middleware=chatgpt_edge.http_middleware(),
+    )
+    with TestClient(rebuilt) as client:
+        assert client.get("/.well-known/switchstand-certification-runtime").json() == {
+            "runtime_sha": "a" * 40,
+            "run_id": "run-1",
+        }
 
 
 def test_product_currentness_configuration_is_default_off_and_fails_closed(monkeypatch, tmp_path):
