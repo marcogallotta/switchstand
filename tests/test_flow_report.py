@@ -11,12 +11,19 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand import flow_report
+from switchstand.activation_continuity import ActivationContract, Obligation, seal_obligation
 from switchstand.canonical_relations import work_dependencies, work_parents
 from switchstand.canonical_work import (
     canonical_metadata,
     canonical_revision,
     canonical_work,
     normalize_title,
+)
+from switchstand.failure_journal import (
+    EffectState,
+    FailureJournal,
+    FailureRecord,
+    FailureResolution,
 )
 from switchstand.flow_report import report
 from switchstand.human_reviews import human_review_consequences
@@ -71,6 +78,220 @@ async def add_work(
             completed=False, notes="", canonical_root=root, admitted_at=admitted_at,
             row_version=1,
         ))
+
+
+async def add_activation_revisions(
+    engine: AsyncEngine, values: list[tuple[UUID, int, Obligation]],
+) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "CREATE TABLE activation_obligation_revisions (obligation_id uuid NOT NULL, "
+            "operation_id uuid NOT NULL UNIQUE, generation bigint NOT NULL, "
+            "record jsonb NOT NULL, PRIMARY KEY (obligation_id,generation))"
+        ))
+        for obligation_id, generation, value in values:
+            await connection.execute(text(
+                "INSERT INTO activation_obligation_revisions VALUES "
+                "(:id,:operation_id,:generation,CAST(:record AS jsonb))"
+            ), {"id": obligation_id, "operation_id": value.operation_id,
+                "generation": generation, "record": value.model_dump_json()})
+
+
+async def test_exact_failure_and_activation_sources_are_private_and_validated(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, unrelated = uuid4(), uuid4()
+    await add_work(engine, target, admitted_at=datetime.now(UTC) - timedelta(minutes=2))
+    await add_work(engine, unrelated)
+    failed_at = datetime.now(UTC) - timedelta(minutes=1)
+    journal = FailureJournal(engine)
+    target_failure = FailureRecord(
+        attempt_id=uuid4(), operation_id=uuid4(), owner=str(target),
+        attempted_claim="private claim", observed_result="private result",
+        clearing_action="private clearing action", effect_state=EffectState.NOT_SENT,
+        occurred_at=failed_at, evidence=("private evidence",),
+    )
+    unrelated_failure = target_failure.model_copy(update={
+        "attempt_id": uuid4(), "operation_id": uuid4(), "owner": str(unrelated),
+    })
+    assert (await journal.record(target_failure)).status == "APPLIED"
+    assert (await journal.record(unrelated_failure)).status == "APPLIED"
+    resolution = FailureResolution(
+        resolution_id=uuid4(), operation_id=uuid4(), attempt_id=target_failure.attempt_id,
+        resolved_at=failed_at + timedelta(seconds=12), summary="private resolution",
+        evidence=("private resolution evidence",),
+    )
+    assert (await journal.resolve(resolution)).status == "APPLIED"
+
+    operation_id = uuid4()
+    contract = ActivationContract(
+        product_work_id=target, return_owner_work_id=unrelated,
+        target_phase="LIVE", target_revision="candidate:abc",
+        outcome_key="observability-v2-slice-a",
+        acceptance_contract_id="observability-v2-slice-a-live",
+        contract_revision="1", acceptance_verifier_work_id=None,
+        adoption_requirement="NOT_REQUIRED", adoption_actor_work_id=None,
+        lifecycle_authority_work_id=target,
+    )
+    obligation = seal_obligation(Obligation(
+        binding=contract.stored(),
+        state="WAITING_ACTIVATION", acceptance="NOT_RUN", adoption="NOT_REQUIRED",
+        actor_ref="actor", runtime_binding_token="runtime", generation=1,
+        operation_id=operation_id, intent_digest="a" * 64, digest="0" * 64,
+    ))
+    await add_activation_revisions(engine, [(contract.obligation_id, 1, obligation)])
+
+    result = await report(engine, target)
+
+    assert result["failures"] == {
+        "status": "KNOWN", "reason": None, "correlation": "DIRECT_OWNER_WORK_ID",
+        "items": [{
+            "attempt_id": str(target_failure.attempt_id),
+            "operation_id": str(target_failure.operation_id),
+            "effect_state": "NOT_SENT", "occurred_at": failed_at.isoformat(),
+            "resolution_id": str(resolution.resolution_id),
+            "resolved_at": resolution.resolved_at.isoformat(),
+            "resolution_latency_ms": 12_000,
+        }],
+        "total_records": 1, "truncated": False,
+        "open_count": 0, "observed_open_count": 0,
+    }
+    encoded = json.dumps(result)
+    assert all(private not in encoded for private in (
+        "private claim", "private result", "private clearing action", "private evidence",
+        "private resolution", "private resolution evidence",
+    ))
+    assert result["activation"]["status"] == "PARTIAL"
+    assert result["activation"]["items"][0]["state"] == "WAITING_ACTIVATION"
+    assert result["activation"]["items"][0]["correlation_roles"] == ["product_work_id"]
+    assert result["elapsed"]["observed_interval_union_ms"] == 12_000
+    assert result["source_coverage"]["failure_recovery"]["status"] == "KNOWN"
+    assert result["source_coverage"]["activation"]["status"] == "PARTIAL"
+    monkeypatch.setattr(flow_report, "ACTIVATION_REVISION_LIMIT", 0)
+    limited = await report(engine, target)
+    assert limited["activation"]["reason"] == "REVISION_LIMIT_EXCEEDED"
+
+
+async def test_activation_reads_complete_chain_and_rejects_changed_later_binding(
+    engine: AsyncEngine,
+) -> None:
+    target, other, replacement = uuid4(), uuid4(), uuid4()
+    await add_work(engine, target)
+    contract = ActivationContract(
+        product_work_id=target, return_owner_work_id=other, outcome_key="outcome",
+        target_revision="candidate:abc", target_phase="LIVE",
+        acceptance_contract_id="acceptance", contract_revision="1",
+        adoption_requirement="NOT_REQUIRED", lifecycle_authority_work_id=target,
+    )
+    first = seal_obligation(Obligation(
+        binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+        adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+        generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+    ))
+    changed_contract = contract.model_copy(update={
+        "product_work_id": replacement, "return_owner_work_id": replacement,
+        "lifecycle_authority_work_id": replacement,
+    })
+    second = seal_obligation(first.model_copy(update={
+        "binding": changed_contract.stored(), "generation": 2, "predecessor": first.digest,
+        "operation_id": uuid4(), "intent_digest": "b" * 64, "digest": "0" * 64,
+    }))
+    await add_activation_revisions(engine, [
+        (contract.obligation_id, value.generation, value) for value in (first, second)
+    ])
+
+    result = await report(engine, target)
+
+    assert result["activation"]["reason"] == "CORRUPT_REVISION_CHAIN"
+    assert result["source_coverage"]["activation"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_REVISION_CHAIN",
+    }
+
+
+async def test_activation_rejects_database_generation_gap(
+    engine: AsyncEngine,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    contract = ActivationContract(
+        product_work_id=target, return_owner_work_id=target, outcome_key="outcome",
+        target_revision="candidate:abc", target_phase="LIVE",
+        acceptance_contract_id="acceptance", contract_revision="1",
+        adoption_requirement="NOT_REQUIRED", lifecycle_authority_work_id=target,
+    )
+    first = seal_obligation(Obligation(
+        binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+        adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+        generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+    ))
+    second = seal_obligation(first.model_copy(update={
+        "generation": 2, "predecessor": first.digest, "operation_id": uuid4(),
+        "intent_digest": "b" * 64, "digest": "0" * 64,
+    }))
+    await add_activation_revisions(engine, [
+        (contract.obligation_id, 1, first), (contract.obligation_id, 3, second),
+    ])
+
+    result = await report(engine, target)
+
+    assert result["activation"]["reason"] == "CORRUPT_REVISION_CHAIN"
+
+
+async def test_activation_obligation_limit_names_deterministic_id_bound(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    values: list[tuple[UUID, int, Obligation]] = []
+    for index in range(2):
+        contract = ActivationContract(
+            product_work_id=target, return_owner_work_id=target,
+            outcome_key=f"outcome-{index}", target_revision=f"candidate:{index}",
+            target_phase="LIVE", acceptance_contract_id="acceptance",
+            contract_revision="1", adoption_requirement="NOT_REQUIRED",
+            lifecycle_authority_work_id=target,
+        )
+        value = seal_obligation(Obligation(
+            binding=contract.stored(), state="WAITING_ACTIVATION", acceptance="NOT_RUN",
+            adoption="NOT_REQUIRED", actor_ref="actor", runtime_binding_token="runtime",
+            generation=1, operation_id=uuid4(), intent_digest="a" * 64, digest="0" * 64,
+        ))
+        values.append((contract.obligation_id, 1, value))
+    await add_activation_revisions(engine, values)
+    monkeypatch.setattr(flow_report, "ACTIVATION_OBLIGATION_LIMIT", 1)
+
+    result = await report(engine, target)
+
+    assert result["activation"]["status"] == "PARTIAL"
+    assert result["activation"]["reason"] == "OBLIGATION_ID_LIMIT_EXCEEDED"
+    assert result["activation"]["total_obligations"] == ">=2"
+    assert result["activation"]["truncated"] is True
+    assert len(result["activation"]["items"]) == 1
+
+
+async def test_failure_adapter_bounds_recent_records_truthfully(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    journal = FailureJournal(engine)
+    for offset in range(2):
+        assert (await journal.record(FailureRecord(
+            attempt_id=uuid4(), operation_id=uuid4(), owner=str(target),
+            attempted_claim="claim", observed_result="result", clearing_action="clear",
+            effect_state=EffectState.NOT_SENT,
+            occurred_at=datetime.now(UTC) - timedelta(seconds=2 - offset),
+        ))).status == "APPLIED"
+    monkeypatch.setattr(flow_report, "FAILURE_LIMIT", 1)
+
+    result = await report(engine, target)
+
+    assert result["failures"]["status"] == "PARTIAL"
+    assert result["failures"]["reason"] == "MOST_RECENT_RECORDS_ONLY"
+    assert result["failures"]["total_records"] == 2
+    assert result["failures"]["truncated"] is True
+    assert result["failures"]["open_count"] is None
+    assert result["failures"]["observed_open_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -319,7 +540,7 @@ async def test_review_waits_are_target_only_clipped_unioned_and_observational(
     assert elapsed["unobserved_wall_ms"] == 5_000
     assert elapsed["unobserved_interpretation"] == "NOT_IDLE_OR_CRITICAL_PATH"
     assert result["coverage"]["failures"] == {
-        "status": "EXCLUDED", "reason": "NOT_INCLUDED_B4",
+        "status": "INCLUDED", "reason": "DIRECT_OWNER_WORK_ID",
     }
 
 
