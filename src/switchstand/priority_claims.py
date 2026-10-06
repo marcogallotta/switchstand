@@ -24,12 +24,18 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .canonical_relations import projects
-from .canonical_work import canonical_metadata, canonical_work
+from .canonical_work import canonical_metadata, canonical_revision, canonical_work
 
 ClaimKind = Literal["HUMAN_PRIORITY", "AGENT_RECOMMENDATION"]
 SubjectKind = Literal["WORK", "PROJECT"]
 RelationKind = Literal["BAND", "BEFORE", "HOLD"]
 PriorityBand = Literal["HIGH", "NORMAL"]
+
+
+class StalePriorityClaim(ValueError):
+    pass
+
+
 priority_claims = Table(
     "priority_claims", canonical_metadata,
     Column("claim_id", PGUUID(as_uuid=True), primary_key=True),
@@ -131,11 +137,30 @@ class PriorityClaimRepository:
             statement = statement.with_for_update()
         if await connection.scalar(statement) is None:
             raise LookupError(f"{kind.lower()} subject does not exist")
-    async def record(self, value: NewPriorityClaim) -> PriorityClaim:
+    @staticmethod
+    async def _require_revision(
+        connection: AsyncConnection, kind: SubjectKind, subject_id: UUID,
+        observed_revision: str | None,
+    ) -> None:
+        if kind != "WORK" or observed_revision is None:
+            return
+        row = (await connection.execute(select(
+            canonical_work.c.work_id, canonical_work.c.row_version,
+        ).where(canonical_work.c.work_id == subject_id).with_for_update())).one_or_none()
+        if row is None:
+            raise LookupError("work subject does not exist")
+        if observed_revision != canonical_revision(row[0], row[1]):
+            raise StalePriorityClaim("source revision changed")
+    async def record(
+        self, value: NewPriorityClaim, *, observed_revision: str | None = None,
+    ) -> PriorityClaim:
         if value.claim_id == value.supersedes_claim_id:
             raise ValueError("priority claim cannot supersede itself")
         async with self.engine.begin() as connection:
             await self._require_subject(connection, value.subject_kind, value.subject_id, lock=True)
+            await self._require_revision(
+                connection, value.subject_kind, value.subject_id, observed_revision,
+            )
             if value.relation_kind == "BEFORE":
                 if value.relation_target_id == value.subject_id:
                     raise ValueError("priority claim cannot precede itself")
@@ -161,6 +186,49 @@ class PriorityClaimRepository:
                 ).values(state="SUPERSEDED"))
             row = (await connection.execute(insert(priority_claims).values(
                 **value.__dict__, state="CURRENT",
+            ).returning(*_COLUMNS))).one()
+        return _claim(tuple(row))
+    async def get(self, claim_id: UUID) -> PriorityClaim | None:
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(*_COLUMNS).where(
+                priority_claims.c.claim_id == claim_id
+            ))).one_or_none()
+        return None if row is None else _claim(tuple(row))
+    async def clear(
+        self, value: NewPriorityClaim, *, observed_revision: str | None = None,
+    ) -> PriorityClaim:
+        """Atomically supersede one exact HUMAN claim and retain a non-current tombstone."""
+        if value.supersedes_claim_id is None or value.claim_id == value.supersedes_claim_id:
+            raise ValueError("priority clear requires a distinct target claim")
+        async with self.engine.begin() as connection:
+            replay = (await connection.execute(select(*_COLUMNS).where(
+                priority_claims.c.claim_id == value.claim_id
+            ).with_for_update())).one_or_none()
+            if replay is not None:
+                return _claim(tuple(replay))
+            await self._require_subject(
+                connection, value.subject_kind, value.subject_id, lock=True,
+            )
+            await self._require_revision(
+                connection, value.subject_kind, value.subject_id, observed_revision,
+            )
+            target = (await connection.execute(select(*_COLUMNS).where(
+                priority_claims.c.claim_id == value.supersedes_claim_id
+            ).with_for_update())).one_or_none()
+            if target is None:
+                raise LookupError("cleared priority claim does not exist")
+            old = _claim(tuple(target))
+            if (
+                old.state != "CURRENT" or old.claim_kind != "HUMAN_PRIORITY"
+                or old.subject_kind != value.subject_kind
+                or old.subject_id != value.subject_id
+            ):
+                raise ValueError("cleared priority claim is not current HUMAN state in scope")
+            await connection.execute(update(priority_claims).where(
+                priority_claims.c.claim_id == old.claim_id
+            ).values(state="SUPERSEDED"))
+            row = (await connection.execute(insert(priority_claims).values(
+                **value.__dict__, state="SUPERSEDED",
             ).returning(*_COLUMNS))).one()
         return _claim(tuple(row))
     async def current(self, kind: SubjectKind, subject_id: UUID) -> tuple[PriorityClaim, ...]:

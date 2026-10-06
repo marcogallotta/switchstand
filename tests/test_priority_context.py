@@ -140,3 +140,28 @@ async def test_conflicting_human_bands_are_not_ranked(projection):
     row = (await view.project((work_id,))).rows[0]
     assert row.priority_knowledge == "CONFLICTING_OR_STALE"
     assert row.flags == ("CONFLICTING_HUMAN_BAND",)
+
+
+async def test_project_claim_states_are_context_only_for_work_classification(projection):
+    view, repository, (work_id, _blocked, _unranked), project_id = projection
+    await repository.record(claim(
+        "HUMAN_PRIORITY", project_id, "BAND", project=True, band="HIGH",
+    ))
+    await repository.record(claim(
+        "HUMAN_PRIORITY", project_id, "BAND", project=True, band="NORMAL",
+    ))
+    await repository.record(claim("HUMAN_PRIORITY", project_id, "HOLD", project=True))
+    await repository.record(claim(
+        "AGENT_RECOMMENDATION", project_id, "HOLD", project=True,
+        source_observed_revision="project-revision-is-context-only",
+    ))
+
+    row = (await view.project((work_id,))).rows[0]
+    assert row.priority_knowledge == "UNKNOWN_UNRANKED"
+    assert len(row.project_claims) == 4
+    assert "CONFLICTING_PROJECT_HUMAN_BAND" in row.flags
+    assert "UNKNOWN_CLAIM_CURRENTNESS" in row.flags
+
+    await repository.record(claim("HUMAN_PRIORITY", work_id, "HOLD"))
+    row = (await view.project((work_id,))).rows[0]
+    assert row.priority_knowledge == "DIRECT_CURRENT"

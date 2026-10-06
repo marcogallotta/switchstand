@@ -256,10 +256,14 @@ class PriorityClaimReceipt(ClosedModel):
     principal: PrincipalContext
     grant_id: UUID
     grant_version: int
-    work_id: UUID
+    work_id: UUID | None = None
+    action: Literal["SET", "CLEAR"] = "SET"
+    subject_kind: Literal["WORK", "PROJECT"] = "WORK"
+    subject_id: UUID
     claim_id: UUID
     supersedes_claim_id: UUID | None = None
-    source_observed_revision: str
+    cleared_claim_id: UUID | None = None
+    source_observed_revision: str | None = None
     qualification: str
 
 

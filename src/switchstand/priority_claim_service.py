@@ -21,10 +21,13 @@ from .priority_claims import (
     PriorityClaim,
     PriorityClaimRepository,
     RelationKind,
+    StalePriorityClaim,
     SubjectKind,
 )
 
 CLAIM_NAMESPACE = UUID("43e26bcc-bd6e-446c-baa7-9babe6d15412")
+HUMAN_CLAIM_NAMESPACE = UUID("33741195-b41c-47a6-a782-ff56310f8433")
+HUMAN_CLEAR_NAMESPACE = UUID("86a859e4-e0cf-4fe7-98db-ec334970409a")
 
 
 class PriorityClaimWrite(ClosedModel):
@@ -51,6 +54,50 @@ class PriorityClaimWrite(ClosedModel):
         )
         if not valid:
             raise ValueError("priority relation fields do not match relation_kind")
+        return self
+
+
+class HumanPrioritySet(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    subject_kind: SubjectKind
+    subject_id: UUID
+    observed_revision: str | None = Field(default=None, min_length=1)
+    relation_kind: RelationKind
+    rationale: str = Field(min_length=1, max_length=300)
+    relation_target_id: UUID | None = None
+    band: PriorityBand | None = None
+    supersedes_claim_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def valid_set(self) -> Self:
+        if (self.subject_kind == "WORK") != (self.observed_revision is not None):
+            raise ValueError("observed_revision is required only for WORK priority")
+        valid = (
+            (self.relation_kind == "BAND" and self.band is not None
+             and self.relation_target_id is None)
+            or (self.relation_kind == "BEFORE" and self.band is None
+                and self.relation_target_id is not None)
+            or (self.relation_kind == "HOLD" and self.band is None
+                and self.relation_target_id is None)
+        )
+        if not valid:
+            raise ValueError("priority relation fields do not match relation_kind")
+        return self
+
+
+class HumanPriorityClear(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    subject_kind: SubjectKind
+    subject_id: UUID
+    claim_id: UUID
+    observed_revision: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def valid_clear(self) -> Self:
+        if (self.subject_kind == "WORK") != (self.observed_revision is not None):
+            raise ValueError("observed_revision is required only for WORK priority")
         return self
 
 
@@ -129,6 +176,7 @@ class PriorityClaimService:
             operation_id=request.operation_id, principal=principal,
             grant_id=grant_id, grant_version=request.grant_version,
             work_id=request.work_id, claim_id=claim.claim_id,
+            subject_id=request.work_id,
             supersedes_claim_id=claim.supersedes_claim_id,
             source_observed_revision=request.observed_revision,
             qualification=qualification,
@@ -138,6 +186,216 @@ class PriorityClaimService:
             operation_id=request.operation_id, reason="priority_claim_converged",
             effect="applied", next_action="Use the recorded receipt.", receipt=receipt,
         )
+
+    @staticmethod
+    def _human_fingerprint(
+        principal: PrincipalContext, request: HumanPrioritySet | HumanPriorityClear,
+    ) -> str:
+        payload = [principal.key, request.model_dump(mode="json")]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    @classmethod
+    def _human_source_ref(
+        cls, principal: PrincipalContext, request: HumanPrioritySet | HumanPriorityClear,
+    ) -> str:
+        return f"human-via-ordinary-chatgpt-v1:{cls._human_fingerprint(principal, request)}"
+
+    @staticmethod
+    def human_guard(
+        request: HumanPrioritySet | HumanPriorityClear, operation: str,
+        status: Literal["ok", "denied", "stale", "not_applied", "unknown"],
+        reason: str, *, possible: bool = False,
+    ) -> GuardOutcome:
+        return GuardOutcome(
+            status=status, operation=operation,
+            work_id=request.subject_id if request.subject_kind == "WORK" else None,
+            operation_id=request.operation_id, reason=reason,
+            effect="unknown" if possible else "not_sent",
+            retry="reconcile" if possible else "refresh" if status == "stale" else "none",
+            next_action=(
+                "Retry this exact OperationId and identical arguments to reconcile."
+                if possible else "Refresh the exact subject or use a trusted issuer."
+            ),
+        )
+
+    @classmethod
+    def _human_set_claim(
+        cls, principal: PrincipalContext, request: HumanPrioritySet,
+    ) -> NewPriorityClaim:
+        return NewPriorityClaim(
+            claim_id=uuid5(HUMAN_CLAIM_NAMESPACE, str(request.operation_id)),
+            claim_kind="HUMAN_PRIORITY", subject_kind=request.subject_kind,
+            subject_id=request.subject_id, relation_kind=request.relation_kind,
+            rationale=request.rationale, source_label="HUMAN",
+            source_ref=cls._human_source_ref(principal, request),
+            relation_target_id=request.relation_target_id, band=request.band,
+            source_observed_revision=None,
+            supersedes_claim_id=request.supersedes_claim_id,
+        )
+
+    @classmethod
+    def _human_clear_claim(
+        cls, principal: PrincipalContext, request: HumanPriorityClear,
+        target: PriorityClaim,
+    ) -> NewPriorityClaim:
+        return NewPriorityClaim(
+            claim_id=uuid5(HUMAN_CLEAR_NAMESPACE, str(request.operation_id)),
+            claim_kind="HUMAN_PRIORITY", subject_kind=request.subject_kind,
+            subject_id=request.subject_id, relation_kind=target.relation_kind,
+            rationale="HUMAN priority cleared", source_label="HUMAN_CLEAR",
+            source_ref=cls._human_source_ref(principal, request),
+            relation_target_id=target.relation_target_id, band=target.band,
+            source_observed_revision=None, supersedes_claim_id=request.claim_id,
+        )
+
+    @staticmethod
+    def _human_applied(
+        request: HumanPrioritySet | HumanPriorityClear, operation: str,
+        principal: PrincipalContext, grant: WorkGrant, qualification: str,
+        claim: PriorityClaim,
+    ) -> GuardOutcome:
+        cleared = request.claim_id if isinstance(request, HumanPriorityClear) else None
+        receipt = PriorityClaimReceipt(
+            operation_id=request.operation_id, principal=principal,
+            grant_id=grant.id, grant_version=grant.version,
+            work_id=request.subject_id if request.subject_kind == "WORK" else None,
+            action="CLEAR" if cleared is not None else "SET",
+            subject_kind=request.subject_kind, subject_id=request.subject_id,
+            claim_id=claim.claim_id, supersedes_claim_id=claim.supersedes_claim_id,
+            cleared_claim_id=cleared,
+            source_observed_revision=request.observed_revision,
+            qualification=qualification,
+        )
+        return GuardOutcome(
+            status="ok", operation=operation,
+            work_id=request.subject_id if request.subject_kind == "WORK" else None,
+            operation_id=request.operation_id, reason="priority_claim_converged",
+            effect="applied", next_action="Use the recorded receipt.", receipt=receipt,
+        )
+
+    async def _human_admission(
+        self, grants: GrantState, principal: PrincipalContext,
+        request: HumanPrioritySet | HumanPriorityClear, operation: str,
+    ) -> tuple[WorkGrant, str] | GuardOutcome:
+        grant = await grants.current(principal.key)
+        if grant is None or grant.principal != principal or not grant.current():
+            return self.human_guard(request, operation, "denied", "no_current_grant")
+        if grant.scope != "workspace" or "priority_claim" not in grant.operations:
+            return self.human_guard(request, operation, "denied", "claim_scope_not_granted")
+        qualification = grant.priority_claim_qualification
+        if (
+            qualification is None
+            or (principal.assurance == "test") != qualification.startswith("test:")
+        ):
+            return self.human_guard(request, operation, "denied", "claim_write_not_qualified")
+        return grant, qualification
+
+    async def _human_revision_status(
+        self, request: HumanPrioritySet | HumanPriorityClear,
+    ) -> Literal["CURRENT", "STALE", "MISSING"]:
+        if request.subject_kind != "WORK":
+            return "CURRENT"
+        work = await self.works.get(request.subject_id)
+        if work is None:
+            return "MISSING"
+        return (
+            "CURRENT" if request.observed_revision == canonical_revision(
+                work.work_id, work.row_version
+            ) else "STALE"
+        )
+
+    async def human_set(
+        self, grants: GrantState, principal: PrincipalContext, request: HumanPrioritySet,
+    ) -> GuardOutcome:
+        operation = "priority_claim_set"
+        try:
+            admission = await self._human_admission(grants, principal, request, operation)
+            if isinstance(admission, GuardOutcome):
+                return admission
+            grant, qualification = admission
+            expected = self._human_set_claim(principal, request)
+            prior = await self.repository.get(expected.claim_id)
+            if prior is not None:
+                if not self._same(prior, expected):
+                    return self.human_guard(
+                        request, operation, "denied", "operation_identity_conflict"
+                    )
+                return self._human_applied(
+                    request, operation, principal, grant, qualification, prior
+                )
+            revision = await self._human_revision_status(request)
+            if revision == "MISSING":
+                return self.human_guard(request, operation, "denied", "invalid_claim_state")
+            if revision == "STALE":
+                return self.human_guard(request, operation, "stale", "source_revision_changed")
+            claim = await self.repository.record(
+                expected, observed_revision=request.observed_revision,
+            )
+            return self._human_applied(
+                request, operation, principal, grant, qualification, claim
+            )
+        except StalePriorityClaim:
+            return self.human_guard(request, operation, "stale", "source_revision_changed")
+        except (LookupError, ValueError):
+            return self.human_guard(request, operation, "denied", "invalid_claim_state")
+        except (SQLAlchemyError, TypeError, KeyError):
+            return self.human_guard(
+                request, operation, "unknown", "state_or_effect_unavailable", possible=True
+            )
+
+    async def human_clear(
+        self, grants: GrantState, principal: PrincipalContext, request: HumanPriorityClear,
+    ) -> GuardOutcome:
+        operation = "priority_claim_clear"
+        try:
+            admission = await self._human_admission(grants, principal, request, operation)
+            if isinstance(admission, GuardOutcome):
+                return admission
+            grant, qualification = admission
+            tombstone_id = uuid5(HUMAN_CLEAR_NAMESPACE, str(request.operation_id))
+            replay = await self.repository.get(tombstone_id)
+            expected_source = self._human_source_ref(principal, request)
+            if replay is not None:
+                if not (
+                    replay.claim_kind == "HUMAN_PRIORITY"
+                    and replay.subject_kind == request.subject_kind
+                    and replay.subject_id == request.subject_id
+                    and replay.supersedes_claim_id == request.claim_id
+                    and replay.source_label == "HUMAN_CLEAR"
+                    and replay.source_ref == expected_source
+                    and replay.state == "SUPERSEDED"
+                ):
+                    return self.human_guard(
+                        request, operation, "denied", "operation_identity_conflict"
+                    )
+                return self._human_applied(
+                    request, operation, principal, grant, qualification, replay
+                )
+            revision = await self._human_revision_status(request)
+            if revision == "MISSING":
+                return self.human_guard(request, operation, "denied", "invalid_claim_state")
+            if revision == "STALE":
+                return self.human_guard(request, operation, "stale", "source_revision_changed")
+            target = await self.repository.get(request.claim_id)
+            if target is None:
+                return self.human_guard(
+                    request, operation, "denied", "invalid_claim_state"
+                )
+            tombstone = await self.repository.clear(
+                self._human_clear_claim(principal, request, target),
+                observed_revision=request.observed_revision,
+            )
+            return self._human_applied(
+                request, operation, principal, grant, qualification, tombstone
+            )
+        except StalePriorityClaim:
+            return self.human_guard(request, operation, "stale", "source_revision_changed")
+        except (LookupError, ValueError):
+            return self.human_guard(request, operation, "denied", "invalid_claim_state")
+        except (SQLAlchemyError, TypeError, KeyError):
+            return self.human_guard(
+                request, operation, "unknown", "state_or_effect_unavailable", possible=True
+            )
 
     async def current(self, kind: SubjectKind, subject_id: UUID) -> PriorityClaimReadResult:
         try:

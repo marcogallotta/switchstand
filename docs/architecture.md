@@ -264,21 +264,27 @@ messaging, and required continuation:
   changes. The repositories remain outside shared
   `state.metadata` and are registered explicitly by the edge.
 - `priority_claim_service.py` owns an injectable, default-off MCP projection. Reads expose exact
-  work/project claims and explicit source currentness. Writes create only
-  `AGENT_RECOMMENDATION` for an exact launch grant's active WorkId and reuse `effect_intents` for
-  replay/conflict recovery; ordinary workspace and project writes are denied. No public argument
-  can mint `HUMAN_PRIORITY`, because no installed attributable human-confirmation seam exists.
+  work/project claims and explicit source currentness. The ordinary authenticated workspace
+  adapter derives `HUMAN_PRIORITY` for SET/CLEAR requests made while following explicit current
+  Marco direction; its schema exposes no claim-kind, authority, source, grant, or qualification
+  selector. WORK revisions fence a new write but are not stored as HUMAN source currentness, so a
+  HUMAN claim remains current until superseded or cleared. Exact CLEAR inserts a non-current
+  deterministic tombstone in the existing table for replay/history. Managed task-bound writes
+  remain active-WorkId-only `AGENT_RECOMMENDATION`, retain stale-on-source-revision semantics, and
+  reuse `effect_intents` for replay/conflict recovery. Neither surface can mint the other's kind.
   The production edge and managed task-bound server construct and register this projection only
   when `SWITCHSTAND_PRIORITY_CLAIMS=1`; the same switch enables the bounded read-only
-  priority-context projection. The ordinary workspace edge remains read/denial-only for claim
-  writes. The managed write adapter omits caller-supplied WorkId and grant version and derives both
+  priority-context projection. The managed write adapter omits caller-supplied WorkId and grant version and derives both
   from the trusted launch. Activation remains a separate deployment effect and requires verifying
   the affected client-visible MCP schema.
 - `priority_context.py` composes a deterministic read-only view for at most 50 explicit WorkIds
   from canonical work, relations, and priority claims. It keeps project claims contextual, labels
   agent claims advisory, exposes stale/conflicting/unknown evidence, and never parses notes or
   stores ranking, attention, or inherited claims. Its MCP/service seam is injectable and
-  default-off; exact-scope completeness is not portfolio completeness.
+  default-off; exact-scope completeness is not portfolio completeness. Work-level
+  `priority_knowledge` derives solely from WORK claims: project BAND/BEFORE/HOLD, conflict,
+  staleness, unknown currentness, and read failure remain visible context but never change a
+  member WorkId's classification.
 - `state.py` owns `work_handles` and `work_event_handles`, which bind provider work/events to stable
   WorkIds. `discovery.py` binds provider search and structure results before returning them.
   `outcome_state.py` separately owns append-only owner-local outcome snapshots and deterministic

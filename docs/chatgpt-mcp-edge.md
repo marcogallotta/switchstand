@@ -25,8 +25,12 @@ truthfully remain `null`; landing this schema change does not activate or prove 
 
 The priority-claim and bounded priority-context tools remain default-off unless the resource edge
 starts with `SWITCHSTAND_PRIORITY_CLAIMS=1`. Enabling that flag constructs both projections over
-the canonical PostgreSQL repositories. It permits only the already-bounded launch-grant
-`AGENT_RECOMMENDATION` write path; it does not create a trusted `HUMAN_PRIORITY` write seam.
+the canonical PostgreSQL repositories. Ordinary authenticated ChatGPT exposes server-derived
+HUMAN SET/CLEAR only while executing explicit current Marco direction; callers cannot select
+claim kind, authority, source, grant, or qualification. Its provenance establishes an
+authenticated workspace principal using ordinary ChatGPT V1, not cryptographic proof of Marco's
+exact utterance. Managed task-bound clients retain the launch-grant `AGENT_RECOMMENDATION` path and
+cannot write HUMAN or PROJECT claims.
 Direct project-claim reads still require workspace read authority. A context request authorized for
 an exact WorkId may include the claims attached to that WorkId's project memberships as explicitly
 labeled context; it does not grant a project read or copy those claims onto the WorkId.
@@ -36,12 +40,14 @@ maintenance replacement applies the repository's current migration head before s
 edge. Clearing the flag in a later authorized replacement removes all three tools without deleting
 stored claims; database downgrade is not the feature rollback path.
 
-The ordinary edge's workspace admission intentionally denies `priority_claim_record`; its live
-denial proves fail-closed behavior, not a successful write path. With the same feature switch, the
-managed task-bound MCP exposes the three tools against its trusted launch grant. That adapter fixes
+The ordinary edge's `priority_claim_record` schema accepts explicit HUMAN SET/CLEAR and uses WORK
+revision only as a new-write fence; HUMAN state lasts until superseded or cleared. Project claims
+remain contextual and do not inherit into member work classification. With the same feature
+switch, the managed task-bound MCP exposes its separate AGENT-only schema against the trusted
+launch grant. That adapter fixes
 the write target and grant version to the active launch and bounds context to the active WorkId and
-optional launch references. A real write acceptance test therefore uses a fresh managed launch,
-not an ordinary ChatGPT workspace session.
+optional launch references. A managed write acceptance test uses a fresh managed launch; HUMAN
+acceptance uses a fresh ordinary authenticated ChatGPT workspace session.
 
 The executable inventory and client policy are owned by
 `build_ordinary_tools` in `src/switchstand/chatgpt_mcp.py`, its edge tests, and
