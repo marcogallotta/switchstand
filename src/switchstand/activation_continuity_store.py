@@ -1,5 +1,6 @@
 """Append-only storage and authenticated server facade for activation continuity."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
@@ -31,7 +32,7 @@ class ActivationContinuity:
     """Server-owned creator and transition facade. Construction is the feature gate."""
 
     engine: AsyncEngine
-    contracts: dict[UUID, ActivationContract]
+    contracts: Mapping[UUID, ActivationContract]
 
     async def _rows(self, obligation_id: UUID) -> list[dict[str, object]]:
         async with self.engine.connect() as connection:
