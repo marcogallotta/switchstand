@@ -1,13 +1,18 @@
 # Development
 
-The Wakeful inbound pilot is an explicit host-only composition, not a launcher or edge task.
+The Wakeful inbound pilot is a default-off host-only composition, not an edge task.
 `switchstand-wakeful-inbound --config=/absolute/private/runner.json` is the dedicated
 continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
 authorized deployment context and requires a complete, mode-0600 frozen JSON configuration
-containing exactly one `mailbox`, `binding`, `codex_home`, and `codex` path. Direct invocation is
-the explicit action. Merely installing Switchstand or launching its ordinary services does not
-start the runner; the rendered unit remains default-off because nothing installs, enables, or
-starts it.
+containing exactly one `mailbox`, `binding`, `codex_home`, and `codex` path. Raw Coordinator
+launches retain their direct-exec behavior by default. Setting `SWITCHSTAND_CODEX_WAKEFUL=PILOT`
+for pre-activation qualification routes that launch through `codex_session.py`, which registers
+the exact authenticated Codex thread, freezes its mailbox binding, and owns the runner only for
+that Codex process lifetime. It reads only `DATABASE_URL` from the existing owned mode-0600
+`~/.config/switchstand/.env`; credentials are not exported to Codex. Merely installing
+Switchstand or launching its ordinary services does not enable the pilot; the selector remains
+`OFF` until a separate activation. The rendered unit also remains default-off because nothing
+installs, enables, or starts it.
 
 The process composes the existing owners as follows:
 

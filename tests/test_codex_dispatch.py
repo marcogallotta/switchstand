@@ -57,6 +57,65 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     }
 
 
+def test_wakeful_pilot_routes_launch_through_default_off_supervisor(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    observed = tmp_path / "supervisor"
+    environment = home / ".config/switchstand/.env"
+    environment.parent.mkdir(parents=True)
+    environment.write_text("DATABASE_URL=postgresql://unused\n")
+    environment.chmod(0o600)
+    executable(
+        primary / ".venv/bin/python",
+        """#!/bin/sh
+printf 'wakeful=%s\ncode_home=%s\npythonpath=%s\n' \
+    "${SWITCHSTAND_CODEX_WAKEFUL-unset}" "$CODEX_HOME" "$PYTHONPATH" > "$SUPERVISOR"
+printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
+""",
+    )
+
+    result = subprocess.run(
+        [DISPATCH, "resume", "thread-1"], cwd=primary,
+        env=env | {
+            "SWITCHSTAND_CODEX_WAKEFUL": "PILOT", "SUPERVISOR": str(observed),
+            "PYTHONPATH": "original-codex-path",
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    lines = observed.read_text().splitlines()
+    assert lines[:2] == [
+        "wakeful=unset",
+        f"code_home={home}/.local/state/switchstand/codex/coordinator",
+    ]
+    assert lines[2] == "pythonpath=original-codex-path"
+    arguments = [line.removeprefix("arg=") for line in lines[3:]]
+    assert arguments[0] == "-c"
+    assert "switchstand.codex_session" in arguments[1]
+    assert arguments[2] == f"{primary}/src"
+    default_name = arguments[arguments.index("--default-name") + 1]
+    assert default_name.startswith("codex-head-") and default_name != "/root"
+    assert arguments[arguments.index("--environment-file") + 1] == str(environment)
+    separator = arguments.index("--")
+    assert arguments[separator + 1] == str(
+        home / ".codex/packages/standalone/current/bin/codex"
+    )
+    assert arguments[-2:] == ["resume", "thread-1"]
+
+
+def test_dispatch_rejects_invalid_wakeful_selector(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"SWITCHSTAND_CODEX_WAKEFUL": "YES"},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "must be OFF or PILOT" in result.stderr
+    assert not marker.exists()
+
+
 def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) -> None:
     home, primary, marker, env = dispatch_fixture(tmp_path)
     handoff = primary / "scripts/coordinator-handoff"

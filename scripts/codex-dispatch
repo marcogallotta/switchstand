@@ -24,10 +24,13 @@ fi
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
 continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-PILOT}
 continuity_lifetime=${SWITCHSTAND_CODEX_LIFETIME:-ASSIGNMENT}
+wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
 case "$continuity_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_CONTINUITY must be OFF or PILOT" >&2; exit 2;; esac
 case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)
     echo "SWITCHSTAND_CODEX_LIFETIME must be ASSIGNMENT or STANDING" >&2; exit 2;; esac
+case "$wakeful_mode" in OFF|PILOT) ;; *)
+    echo "SWITCHSTAND_CODEX_WAKEFUL must be OFF or PILOT" >&2; exit 2;; esac
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then
@@ -173,8 +176,28 @@ if [ ! -e "$owned_writer/friction" ]; then
     ln -s "$friction_root" "$owned_writer/friction"
 fi
 
-unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME
+unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME SWITCHSTAND_CODEX_WAKEFUL
 cd "$owned_writer"
+if [ "$wakeful_mode" = PILOT ]; then
+    runtime_python="$canonical_repo/.venv/bin/python"
+    environment_file="$HOME/.config/switchstand/.env"
+    if [ ! -x "$runtime_python" ] || [ ! -f "$environment_file" ]; then
+        echo "Wakeful pilot runtime is unavailable" >&2
+        exit 1
+    fi
+    CODEX_HOME="$coordinator_home" \
+        exec "$runtime_python" -c \
+            'import sys; sys.path.insert(0, sys.argv.pop(1)); from switchstand.codex_session import main; main()' \
+            "$canonical_repo/src" \
+            --home "$coordinator_home" --codex "$real_codex" \
+            --start-record "$start_record" \
+            --default-name "codex-head-$writer_suffix" \
+            --environment-file "$environment_file" -- \
+            "$real_codex" --profile "$coordinator_profile" \
+            -c 'model_reasoning_effort="medium"' \
+            -a never -c 'default_permissions="switchstand-coordinator"' \
+            --enable hooks --dangerously-bypass-hook-trust "$@"
+fi
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
         -c 'model_reasoning_effort="medium"' \
