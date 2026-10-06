@@ -293,6 +293,9 @@ messaging, and required continuation:
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its public route, credentials, and production schema are not
   installed; no dispatch or activation is enabled.
+  `human_review_propose.py` is a host-only command that accepts one bounded, closed consequence
+  JSON from an exact mode-0600 regular file without following its final path component. It can only
+  propose or replay that consequence; it cannot record a decision, dispatch work, or activate it.
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.

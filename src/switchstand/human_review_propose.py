@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import stat
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from .canonical_work import CanonicalWorkRepository
 from .human_reviews import HumanReviewConsequence, HumanReviewResult, HumanReviewState
-from .secure_file import read_private_bytes
+from .secure_file import PrivateFileOpenError
 
 MAX_CONSEQUENCE_BYTES = 64 * 1024
 
@@ -23,9 +24,31 @@ class HumanReviewProposer(Protocol):
     async def propose(self, consequence: HumanReviewConsequence) -> HumanReviewResult: ...
 
 
+def _read_private_bounded(path: Path) -> bytes:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as error:
+        raise PrivateFileOpenError(str(path)) from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
+            raise ValueError("not an exact mode-0600 regular file")
+        remaining = MAX_CONSEQUENCE_BYTES + 1
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
 def read_consequence(path: Path) -> HumanReviewConsequence:
     """Read one bounded consequence from an exact mode-0600 regular file."""
-    payload = read_private_bytes(path)
+    payload = _read_private_bounded(path)
     if not payload or len(payload) > MAX_CONSEQUENCE_BYTES:
         raise ValueError("consequence JSON must be 1..65536 bytes")
     return HumanReviewConsequence.model_validate_json(payload)

@@ -7,6 +7,7 @@ import pytest
 from switchstand import human_review_propose
 from switchstand.human_review_propose import (
     MAX_CONSEQUENCE_BYTES,
+    _read_private_bounded,
     propose_file,
     read_consequence,
 )
@@ -78,6 +79,26 @@ def test_read_consequence_rejects_oversized_or_extra_input(tmp_path: Path) -> No
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         read_consequence(path)
+
+
+def test_private_reader_caps_total_read_even_when_reads_are_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "consequence.json"
+    path.write_bytes(b"0123456789abcdef")
+    path.chmod(0o600)
+    real_read = human_review_propose.os.read
+    requested: list[int] = []
+
+    def short_read(descriptor: int, size: int) -> bytes:
+        requested.append(size)
+        return real_read(descriptor, min(size, 2))
+
+    monkeypatch.setattr(human_review_propose, "MAX_CONSEQUENCE_BYTES", 8)
+    monkeypatch.setattr(human_review_propose.os, "read", short_read)
+
+    assert _read_private_bounded(path) == b"012345678"
+    assert requested == [9, 7, 5, 3, 1]
 
 
 def test_cli_reports_nonprepared_result_and_exits_nonzero(monkeypatch, capsys) -> None:
