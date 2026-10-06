@@ -206,6 +206,23 @@ provider-write, or other irreversible boundary. Restore compatible code around c
 then forward-fix. A rollback obligation remains open after service recovery until all bundled
 good work is redeployed or explicitly reviewed and retired.
 
+For every Code Red rollback, the operator owns one continuous recovery loop; rollback does not
+hand the incident to an unowned backlog:
+
+1. **ROLLBACK / MITIGATE** — restore the smallest compatible known-good service posture, read it
+   back, and preserve the removed candidate plus every ambiguous effect.
+2. **FIX** — correct the causal defect against current state, add the regression proof that would
+   have rejected the failed candidate, and keep unrelated good work explicitly accounted for.
+3. **QUALIFY** — exercise the same production-shaped identity, dependency wiring, and semantic
+   path that failed. Process health, registration, mocks, or a different runtime role cannot
+   substitute. Any required `NOT_RUN`, `UNKNOWN`, or failed proof keeps redeployment on hold.
+4. **REDEPLOY / ROLL FORWARD** — deploy the exact qualified candidate with a recorded rollback
+   target, then repeat the affected authenticated path across the relevant restart/refresh
+   boundary and watch window.
+5. **CLOSE OR CONTINUE** — remove temporary gates only after readback. If the fix or redeploy
+   fails, return to the smallest safe posture and keep the same incident and rollback obligation
+   open; do not declare completion from the rollback alone.
+
 ## Exit and closeout
 
 Mitigation is established only when the affected authenticated path succeeds, the result
