@@ -444,12 +444,23 @@ and consumers must verify the advertised SHA-256 before materializing the bundle
 
 `repository_candidate.py` owns the ordinary read-only GitHub candidate qualification. It binds the
 current public pull-request base and head to the merge-ref commit's ordered parents, then evaluates
-the four exact-head/composition job names in its versioned code-owned catalogue. Missing, stale,
-ambiguous, skipped, or wrong-subject evidence fails closed; provider failure is `UNKNOWN`. Compact
+the stable exact-head/composition terminal Quality evidence in its versioned code-owned catalogue.
+Each terminal job is the trusted workflow's fail-closed aggregation of exact planning, the selected
+or full Quality execution, and Docker when the reviewed policy requires it; its check name never
+varies by internal mode. Missing, stale, ambiguous, skipped, or wrong-subject terminal evidence
+fails closed; provider failure is `UNKNOWN`. Compact
 gate identity, reason, and timing are returned by default, while bounded failed-step and check-output
 detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
 fallback during qualification of the semantic path.
+
+`stacked_delivery.py` owns the pure fail-closed identity and evidence predicates for
+GitHub-native stacked delivery. It can preserve a focused layer verdict only across an
+unchanged layer diff and reviewed dependency/interface contract, applies proportional
+inert/runtime proof, and requires fresh exact-top cumulative review and quality before
+landing. `scripts/verify-quality-composition` binds an Actions checkout either to the
+ordinary PR merge parents or to the exact native-stack first-parent composition chain.
+Stack discovery, CI execution, review storage, and merge effects remain outside it.
 
 ## Launch, candidate, and host control
 
