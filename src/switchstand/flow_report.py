@@ -232,7 +232,8 @@ async def _snapshot(
         [tuple(value) for value in trajectory_values], work_id, captured_at,
     )
     review_pickup = (
-        {"status": "UNKNOWN", "reason": "SOURCE_UNAVAILABLE", "unpicked": None,
+        {"status": "UNKNOWN", "reason": "SOURCE_UNAVAILABLE", "phase": None,
+         "unpicked": None,
          "oldest_request_age_ms": None, "requested_at": None,
          "received_at": None, "verdict_at": None}
         if review_occurrences is None else await review_occurrences.pickup_projection(
