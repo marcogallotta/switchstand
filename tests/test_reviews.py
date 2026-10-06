@@ -275,9 +275,11 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     missing = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert missing == {
         "status": "UNKNOWN", "reason": "NO_CURRENT_OCCURRENCE", "phase": None,
-        "unpicked": None,
+        "unpicked": None, "review_id": None,
         "oldest_request_age_ms": None, "requested_at": None,
-        "received_at": None, "verdict_at": None,
+        "received_at": None, "verdict_at": None, "verdict": None,
+        "findings": [], "evidence_refs": [], "context_provenance": None,
+        "verdict_digest": None,
     }
     sent = await service.request(ReviewRequest(
         subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
@@ -286,6 +288,8 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     waiting = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert waiting["status"] == "KNOWN" and waiting["unpicked"] is True
     assert waiting["phase"] == "REQUEST_UNPICKED"
+    assert waiting["review_id"] == str(sent.review_id)
+    assert waiting["verdict"] is None and waiting["findings"] == []
     assert isinstance(waiting["oldest_request_age_ms"], int)
     assert waiting["requested_at"] is not None
     assert waiting["received_at"] is None and waiting["verdict_at"] is None
@@ -325,6 +329,10 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     decided = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert decided["status"] == "KNOWN" and decided["unpicked"] is False
     assert decided["phase"] == "VERDICT"
+    assert decided["review_id"] == str(sent.review_id)
+    assert decided["verdict"] == "PASS"
+    assert decided["findings"] == [] and decided["context_provenance"] == "UNSEEDED"
+    assert isinstance(decided["verdict_digest"], str)
     assert datetime.fromisoformat(decided["verdict_at"]).astimezone(UTC) <= datetime.now(UTC)
 
     async with engine.begin() as connection:
@@ -502,6 +510,11 @@ async def test_focused_rereview_requires_authoritative_named_finding(occurrence_
         context_provenance="UNSEEDED",
     ), reviewer)
     assert submitted.status == "SUBMITTED"
+    observed = (await report(engine, subject_id, occurrences))["review_pickup"]
+    assert observed["phase"] == "VERDICT" and observed["verdict"] == "FINDINGS"
+    assert observed["review_id"] == str(initial.review_id)
+    assert observed["findings"] == [finding.model_dump(mode="json")]
+    assert observed["context_provenance"] == "UNSEEDED"
     same_revision = await service.request(ReviewRequest(
         subject_work_id=subject_id, observed_revision=initial_request_revision,
         review_kind="CODE", mode="FOCUSED", prior_review_id=initial.review_id,

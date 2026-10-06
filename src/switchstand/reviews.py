@@ -169,10 +169,27 @@ class ReviewOutcomeEnvelope(ClosedModel):
 
 
 class ReviewResult(ClosedModel):
-    status: Literal["SENT", "WAITING_REVIEWER", "SUBMITTED", "STALE", "DENIED", "UNKNOWN"]
-    review_id: UUID | None = None
-    delivery_id: UUID | None = None
-    verdict_digest: str | None = None
+    """Canonical review operation result; statuses describe delivery/state, not authority."""
+
+    status: Literal[
+        "SENT", "WAITING_REVIEWER", "SUBMITTED", "STALE", "DENIED", "UNKNOWN"
+    ] = Field(description=(
+        "SENT means a canonical review delivery exists, not that it was picked up; "
+        "WAITING_REVIEWER means reviewer acquisition is unresolved; SUBMITTED means the "
+        "reviewer verdict was durably recorded; STALE requires a fresh subject revision; "
+        "DENIED means the caller/prerequisite is invalid; UNKNOWN must be reconciled before retry."
+    ))
+    review_id: UUID | None = Field(
+        default=None, description="Stable review occurrence identity when one is established."
+    )
+    delivery_id: UUID | None = Field(
+        default=None,
+        description="Canonical delivery identity for the request/acquisition/result transition.",
+    )
+    verdict_digest: str | None = Field(
+        default=None,
+        description="Digest of the exact submitted verdict; present only after SUBMITTED.",
+    )
     reason: Literal[
         "subject_not_found", "subject_revision_changed", "prior_review_not_found",
         "requester_not_current", "coordinator_not_registered", "reviewer_not_available",
@@ -180,7 +197,10 @@ class ReviewResult(ClosedModel):
         "review_delivery_not_found", "review_delivery_not_received",
         "reviewer_binding_changed", "occurrence_conflict", "message_conflict",
         "review_basis_changed", "state_unavailable",
-    ] | None = None
+    ] | None = Field(
+        default=None,
+        description="Machine-readable cause for WAITING_REVIEWER, STALE, DENIED, or UNKNOWN.",
+    )
 
     @model_validator(mode="after")
     def exact_result(self) -> Self:
@@ -515,8 +535,10 @@ class ReviewOccurrenceState:
         def unknown(reason: str) -> dict[str, object]:
             return {
                 "status": "UNKNOWN", "reason": reason, "phase": None, "unpicked": None,
-                "oldest_request_age_ms": None, "requested_at": None,
-                "received_at": None, "verdict_at": None,
+                "review_id": None, "oldest_request_age_ms": None, "requested_at": None,
+                "received_at": None, "verdict_at": None, "verdict": None,
+                "findings": [], "evidence_refs": [], "context_provenance": None,
+                "verdict_digest": None,
             }
         values = (await connection.scalars(select(
             messages.c.payload["brief"]["basis"]["review_id"].astext,
@@ -570,6 +592,7 @@ class ReviewOccurrenceState:
                 or verdict_at is not None and record.received_at is not None
                 and verdict_at < record.received_at):
             return unknown("INCONSISTENT_TIMESTAMPS")
+        outcome = outcomes[0][1].outcome if outcomes else None
         return {
             "status": "KNOWN", "reason": None,
             "phase": (
@@ -579,12 +602,20 @@ class ReviewOccurrenceState:
             ),
             "unpicked": record.delivery.state == "AVAILABLE"
             and record.received_at is None and not outcomes,
+            "review_id": str(review_id),
             "oldest_request_age_ms": int(
                 (captured_at - record.created_at).total_seconds() * 1000
             ),
             "requested_at": record.created_at.isoformat(),
             "received_at": None if record.received_at is None else record.received_at.isoformat(),
             "verdict_at": None if verdict_at is None else verdict_at.isoformat(),
+            "verdict": None if outcome is None else outcome.verdict,
+            "findings": [] if outcome is None else [
+                finding.model_dump(mode="json") for finding in outcome.findings
+            ],
+            "evidence_refs": [] if outcome is None else list(outcome.evidence_refs),
+            "context_provenance": None if outcome is None else outcome.context_provenance,
+            "verdict_digest": None if outcome is None else outcome.verdict_digest,
         }
 
     async def pass_status_in_transaction(

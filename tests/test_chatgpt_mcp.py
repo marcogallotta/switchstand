@@ -151,6 +151,40 @@ async def test_product_currentness_tool_requires_authenticated_principal():
     callback.assert_not_awaited()
 
 
+async def test_review_tools_self_document_actor_flow_and_typed_observability():
+    subject = service()
+    subject.reviews = object()  # type: ignore[assignment]
+    listed = {tool.name: tool for tool in await build_chatgpt_server(subject).list_tools()}
+
+    request = listed["review_request"]
+    assert "Do not originate ordinary reviews with agent_message_send" in request.description
+    assert "SENT means a canonical delivery exists, not reviewer pickup" in request.description
+    for field in (
+        "subject_work_id", "observed_revision", "review_kind", "candidate_ref",
+        "mode", "prior_review_id", "finding_ids",
+    ):
+        assert request.input_schema["properties"][field]["description"]
+    assert request.output_schema["properties"]["status"]["description"]
+
+    submit = listed["review_submit"]
+    assert "must first receive the canonical review delivery" in submit.description
+    assert "PASS is evidence" in submit.description
+    assert "not effect authority" in submit.description
+    for field in ("review_id", "verdict", "context_provenance", "findings", "evidence_refs"):
+        assert submit.input_schema["properties"][field]["description"]
+
+    observability = listed["observability_get"]
+    assert "requester readback path after review_request" in observability.description
+    assert "do not poll a generic" in observability.description
+    assert "agent inbox" in observability.description
+    pickup = observability.output_schema["$defs"]["ReviewPickupObservation"]
+    assert {"review_id", "phase", "verdict", "findings", "context_provenance",
+            "verdict_digest"} <= pickup["properties"].keys()
+    assert pickup["properties"]["phase"]["anyOf"][0]["enum"] == [
+        "WAITING_REVIEWER", "REQUEST_UNPICKED", "RECEIVED", "VERDICT",
+    ]
+
+
 async def test_chatgpt_update_rejects_empty_patch_before_handler(monkeypatch):
     subject = service()
     update = AsyncMock(side_effect=AssertionError("invalid patch reached update handler"))
