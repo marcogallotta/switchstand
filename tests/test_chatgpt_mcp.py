@@ -130,7 +130,8 @@ async def test_review_tools_self_document_actor_flow_and_typed_observability():
 
     submit = listed["review_submit"]
     assert "must first receive the canonical review delivery" in submit.description
-    assert "PASS is evidence, not effect authority" in submit.description
+    assert "PASS is evidence" in submit.description
+    assert "not effect authority" in submit.description
     for field in ("review_id", "verdict", "context_provenance", "findings", "evidence_refs"):
         assert submit.input_schema["properties"][field]["description"]
 
