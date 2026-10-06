@@ -166,8 +166,8 @@ class ReviewPickupObservation(ClosedModel):
 class ObservabilityResult(BaseModel):
     """Flow snapshot with a typed canonical-review readback projection."""
 
-    model_config = ConfigDict(extra="allow")
-    schema: Literal["switchstand.flow_report.v1"]
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    schema_name: Literal["switchstand.flow_report.v1"] = Field(alias="schema")
     status: Literal["PARTIAL"]
     work_id: UUID
     captured_at: datetime
