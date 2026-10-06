@@ -85,6 +85,14 @@ class StatefulQualificationEmission:
     digest: str
 
 
+class StatefulQualificationBasis(ClosedModel):
+    """Server-owned inputs a real qualifier must seal after live checks."""
+
+    persistence_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    basis_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 SnapshotReader = Callable[[], Awaitable[StatefulServerSnapshot]]
 PrincipalReader = Callable[[], Awaitable[PrincipalContext | None]]
 
@@ -122,6 +130,18 @@ def _emit_stateful_qualification_receipt(  # pyright: ignore[reportUnusedFunctio
     raw = _canonical(receipt.model_dump(mode="json", by_alias=True))
     create_new_private_bytes(receipt_path, raw)
     return StatefulQualificationEmission(receipt=receipt, digest=hashlib.sha256(raw).hexdigest())
+
+
+def emit_stateful_qualification_receipt(
+    payload: StatefulQualificationPayload,
+    *,
+    key_path: Path,
+    receipt_path: Path,
+) -> StatefulQualificationEmission:
+    """Public host boundary for the real qualifier's immutable sealed result."""
+    return _emit_stateful_qualification_receipt(
+        payload, key_path=key_path, receipt_path=receipt_path
+    )
 
 
 class LiveStatefulEvidenceReader:
@@ -255,6 +275,15 @@ class LiveStatefulEvidenceReader:
     async def basis_token(self) -> str:
         _, _, basis = await self._basis_state()
         return basis
+
+    async def qualification_basis(self) -> StatefulQualificationBasis:
+        """Return the exact live basis used by the sealed qualifier receipt."""
+        _, persistence, basis = await self._basis_state()
+        return StatefulQualificationBasis(
+            persistence_token=self.persistence_token(persistence),
+            basis_token=basis,
+            contract_token=self._contract_token,
+        )
 
     def _qualification(self) -> tuple[StatefulQualificationReceipt, str]:
         if self._qualification_receipt is None or self._qualification_key is None:
