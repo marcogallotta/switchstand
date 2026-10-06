@@ -252,6 +252,10 @@ def _create_resource_app(
         implementation_requests=service.implementation_requests,
         product_currentness=service.product_currentness,
         product_currentness_enabled=service.product_currentness_enabled,
+        activation_continuity=service.activation_continuity,
+        activation_technical=service.activation_technical,
+        activation_runtime=service.activation_runtime,
+        activation_proof=service.activation_proof,
     )
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     server.add_middleware(CallTimingMiddleware(_timing_identity))

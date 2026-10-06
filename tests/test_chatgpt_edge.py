@@ -11,6 +11,7 @@ from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
 from starlette.testclient import TestClient
 
+from switchstand import chatgpt_edge
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
@@ -129,6 +130,39 @@ def test_certification_runtime_readback_is_explicit_and_exact():
             "runtime_sha": "a" * 40,
             "run_id": "run-1",
         }
+
+
+async def test_resource_edge_preserves_injected_activation_dependencies(monkeypatch):
+    captured = []
+    build_tools = chatgpt_edge.build_ordinary_tools
+
+    def capture_tools(subject, *args, **kwargs):
+        captured.append(subject)
+        return build_tools(subject, *args, **kwargs)
+
+    monkeypatch.setattr(chatgpt_edge, "build_ordinary_tools", capture_tools)
+    plain_app = create_app(service(), CONFIG, client_storage=MemoryStore())
+    plain_tools = {tool.name for tool in await plain_app.state.fastmcp_server.list_tools()}
+    assert "activation_obligation_transition" not in plain_tools
+
+    subject = service()
+    dependencies = [object() for _ in range(4)]
+    (
+        subject.activation_continuity,
+        subject.activation_technical,
+        subject.activation_runtime,
+        subject.activation_proof,
+    ) = dependencies
+    injected_app = create_app(subject, CONFIG, client_storage=MemoryStore())
+    injected_tools = {tool.name for tool in await injected_app.state.fastmcp_server.list_tools()}
+
+    assert "activation_obligation_transition" in injected_tools
+    assert [
+        captured[-1].activation_continuity,
+        captured[-1].activation_technical,
+        captured[-1].activation_runtime,
+        captured[-1].activation_proof,
+    ] == dependencies
 
 
 async def test_stateful_http_session_is_stable_distinct_and_credential_bound(monkeypatch):
