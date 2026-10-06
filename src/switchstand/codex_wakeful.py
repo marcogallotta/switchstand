@@ -189,6 +189,29 @@ def bind(
         return "NOT_BOUND"
     try:
         read_private_bytes(token)
+        if expected_thread_id is not None:
+            thread = client.call("thread/read", {
+                "threadId": expected_thread_id, "includeTurns": False,
+            })["thread"]
+            if thread["id"] != expected_thread_id:
+                return "NOT_BOUND"
+            path = Path(thread["path"])
+            if not path.resolve().is_relative_to(home.resolve()):
+                return "NOT_BOUND"
+            matched = False
+            for line in path.read_text().split("\n"):
+                if not line:
+                    continue
+                record = json.loads(line)
+                payload = record.get("payload", {})
+                if (record["type"] == "response_item" and payload.get("type") == "message"
+                        and payload.get("role") == "developer"):
+                    matched |= any(re.search(r"(?<!\S)" + re.escape(str(token))
+                        + r"(?=$|\s|[.,;:!?](?=\s|$))", part.get("text", "")) is not None
+                        for part in payload.get("content", [])
+                        if part.get("type") == "input_text")
+            return (CodexBinding(expected_thread_id, str(token), token.name)
+                    if matched else "NOT_BOUND")
         matches: list[str] = []
         cursor = None
         while True:

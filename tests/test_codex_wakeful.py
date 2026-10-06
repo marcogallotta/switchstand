@@ -27,9 +27,10 @@ class Client(QueueClient):
         self.queued = []
         self.turn_pages = {}
         self.turn_list_calls = 0
-        self.thread = {"id": "exact", "historyMode": "legacy", "turns": [],
-                       "status": {"type": "idle"}, "canAcceptDirectInput": True}
         self.path = home / "rollout.jsonl"
+        self.thread = {"id": "exact", "path": str(self.path), "historyMode": "legacy",
+                       "turns": [], "status": {"type": "idle"},
+                       "canAcceptDirectInput": True}
         self.record = {"type": "response_item", "payload": {"type": "message",
             "role": "developer", "content": [{"type": "input_text", "text":
             f"Coordinator start commit is recorded at {token}. Reread that file after "
@@ -90,9 +91,27 @@ def test_binding_exact_zero_multiple_and_reconnect(setup):
     assert bind(client, home, token, "missing") == "NOT_BOUND"
     client.listed.pop()
     assert bind(client, home, token) == binding
-    client.listed[0]["id"] = "replacement"
+    client.thread["id"] = "replacement"
     p = Projection(home, binding)
     assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "UNKNOWN"
+
+
+def test_expected_binding_uses_exact_read_and_result_taxonomy(setup):
+    home, token, client, binding = setup
+    client.listed = []
+    assert bind(client, home, token, "exact") == binding
+
+    client.thread["id"] = "other"
+    assert bind(client, home, token, "exact") == "NOT_BOUND"
+    client.thread["id"] = "exact"
+    client.thread["path"] = "/outside/exact-home"
+    assert bind(client, home, token, "exact") == "NOT_BOUND"
+    client.thread["path"] = str(client.path)
+    client.record["payload"]["content"][0]["text"] = "different start record"
+    client.path.write_text(json.dumps(client.record) + "\n")
+    assert bind(client, home, token, "exact") == "NOT_BOUND"
+    client.thread.pop("path")
+    assert bind(client, home, token, "exact") == "UNAVAILABLE"
 
 @pytest.mark.parametrize("suffix,expected", [(". Reread", True), (", next", True),
     (".suffix", False), ("/child", False), ("longer", False), (".suffix next", False)])
