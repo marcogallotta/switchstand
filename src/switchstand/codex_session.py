@@ -202,6 +202,7 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
     retry_at = 0.0
     retry_delay = 1.0
     runner_started_at: float | None = None
+    registration_unavailable_reported = False
 
     def deliver(signum: int) -> None:
         nonlocal termination
@@ -253,8 +254,11 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
                         config, database_url = prepare_runner(spec)
                     runner, lifeline = _start_runner(config, database_url)
                     runner_started_at = time.monotonic()
+                    registration_unavailable_reported = False
                 except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                    print("Wakeful registration unavailable; retrying", file=sys.stderr)
+                    if not registration_unavailable_reported:
+                        print("Wakeful registration unavailable; retrying", file=sys.stderr)
+                        registration_unavailable_reported = True
                     retry_at = time.monotonic() + retry_delay
                     retry_delay = min(retry_delay * 2, MAX_RETRY_SECONDS)
             time.sleep(0.1)
