@@ -111,3 +111,28 @@ async def test_review_request_refuses_unbound_authenticated_caller(monkeypatch):
 
     assert (result.status, result.reason) == ("DENIED", "requester_not_current")
     subject.reviews.request.assert_not_awaited()
+
+
+async def test_review_request_preserves_mailbox_recovery_as_unknown(monkeypatch):
+    subject = service()
+    lookup = Mailboxes(AgentMailboxResult(
+        status="recovery_required", reason="state_unavailable",
+    ))
+    monkeypatch.setattr(
+        "switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup,
+    )
+    subject.messages = Messages()  # type: ignore[assignment]
+    subject.reviews = AsyncMock()
+    audits: list[tuple[str, str | None, str]] = []
+    tool = dict(build_ordinary_tools(
+        subject,
+        audit=lambda *record: audits.append(record),
+        agent_identity=lambda: "recovery-chat",
+    ))["review_request"]
+
+    result = await tool("1", ACTIVE, "pg_exact", "CODE")
+
+    assert (result.status, result.reason) == ("UNKNOWN", "state_unavailable")
+    subject.reviews.request.assert_not_awaited()
+    assert lookup.seen == (PRINCIPAL.key, "recovery-chat")
+    assert audits == [("review_request", str(ACTIVE), "UNKNOWN")]
