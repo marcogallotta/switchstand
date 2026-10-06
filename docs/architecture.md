@@ -60,7 +60,12 @@ TRUE. The proof layer consumes only a private, sealed external qualification rec
 same principal/runtime/basis and exact MCP/admission/CAS/replay/currentness outcomes; invalid or
 misbound receipts cannot prove TRUE. Its private emitter requires an existing mode-0600 key and
 creates one immutable, durably published mode-0600 receipt; it never creates keys or replaces
-receipts. MCP arguments never supply evidence or acceptance booleans.
+receipts. The host-only `switchstand-stateful-qualifier` computes the exact authenticated
+`tools/list` digest and, for one explicitly selected disposable WorkId, creates its immutable
+attempt journal before proving denied admission, stale CAS, one applied operation, exact replay,
+and current readback. It derives the receipt basis from the same PostgreSQL/runtime/principal
+adapter, seals PASS only after those outcomes, and re-evaluates the installed receipt to TRUE.
+MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
@@ -305,7 +310,15 @@ messaging, and required continuation:
   file; unset remains off and configured-invalid fails startup closed. Migration `0023_activation_continuity`
   persists revisions and refuses a downgrade that would discard any obligation. Landing remains
   inert: no public create, runtime launch, feature enablement, migration application, or activation
-  is included.
+  is included. When both an activation-contract registry and product-currentness configuration are
+  explicitly installed, the authenticated edge binds `ACTIVATED` to the caller's current grant and
+  live MCP session and resolves technical truth through the exact installed contract plus Stateful
+  currentness. Acceptance, adoption, and blocker clearing resolve only an exact caller-selected
+  `task-run-result:<UUID>` through the digest-verified managed request/result store. The selected
+  result must be the request's terminal result, come from a START validation requested by the
+  contract's product owner, carry the exact installed contract in its result contract, match the
+  requested transition outcome, and retain nonempty server-read evidence references; every
+  mismatch remains fail-closed.
   `human_review_shell.py` provides a default-off server-rendered Basic-auth and exact-Origin
   confirmation app over that store. Its local persistent factory wires the canonical state owner
   without owning the database engine lifecycle. `human_review_runtime.py` adds an explicit,

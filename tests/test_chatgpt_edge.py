@@ -12,7 +12,7 @@ from mcp.server.auth.provider import AccessToken
 from starlette.testclient import TestClient
 
 from switchstand import chatgpt_edge
-from switchstand.activation_continuity import ActivationContract
+from switchstand.activation_continuity import ActivationContract, TransitionIntent
 from switchstand.chatgpt_edge import (
     REQUIRED_SCOPE,
     MCPAuthConfig,
@@ -24,8 +24,14 @@ from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
 from switchstand.priority_claim_service import PriorityClaimService
 from switchstand.priority_context import PriorityContextProjection
+from switchstand.product_currentness import STATEFUL_PRODUCT_WORK_ID
 from switchstand.product_currentness_stateful import StatefulPersistenceSnapshot
 from switchstand.reviews import ReviewGuidelines, ReviewPolicy
+from switchstand.task_runs import (
+    TaskRunRequest,
+    TaskRunResult,
+    TaskRunTerminalEvidence,
+)
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
@@ -212,6 +218,24 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
     async with chatgpt_edge.resource_service() as (subject, _runtime):
         subject.outcome_state_enabled = True
         subject.product_currentness_enabled = True
+        contract = ActivationContract(
+            product_work_id=STATEFUL_PRODUCT_WORK_ID,
+            outcome_key="a-f-release",
+            target_revision="git:" + "a" * 40,
+            target_phase="ACTIVATED",
+            return_owner_work_id=ACTIVE,
+            acceptance_contract_id="a-f-release-v1",
+            contract_revision="v1",
+            acceptance_verifier_work_id=STATEFUL_PRODUCT_WORK_ID,
+            adoption_requirement="NOT_REQUIRED",
+            lifecycle_authority_work_id=STATEFUL_PRODUCT_WORK_ID,
+        )
+
+        class Continuity:
+            def __init__(self):
+                self.contracts = {contract.obligation_id: contract}
+
+        subject.activation_continuity = Continuity()
 
         async def placeholder(_principal):
             raise AssertionError("inventory construction must not call the tool")
@@ -251,11 +275,29 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
         assert wired.product_currentness_enabled is True
         assert wired.product_currentness is not None
         result = await wired.product_currentness(PRINCIPAL)
+        technical = await wired.activation_technical(PRINCIPAL, contract.obligation_id)
 
         assert reader_configuration[-1]["qualification_receipt"] is None
         assert reader_configuration[-1]["qualification_key"] is None
         assert (result.status, result.current) == ("unknown", "UNKNOWN")
         assert result.blockers == ("functional_proof",)
+        assert technical is not None
+        assert (
+            technical.target_revision,
+            technical.target_phase,
+            technical.currentness,
+            technical.result.status,
+            technical.result.current,
+            technical.result.blockers,
+        ) == (
+            contract.target_revision,
+            contract.target_phase,
+            "CURRENT",
+            result.status,
+            result.current,
+            result.blockers,
+        )
+        assert await wired.activation_technical(PRINCIPAL, uuid4()) is None
 
         receipt_path = tmp_path / "receipt.json"
         key_path = tmp_path / "qualification.key"
@@ -274,6 +316,107 @@ async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatc
     assert (configured_result.status, configured_result.current) == ("unknown", "UNKNOWN")
     assert configured_result.blockers == ("functional_proof",)
     assert configured_result.conditions[-1].detail == "functional_proof_missing_or_invalid"
+
+
+async def test_activation_runtime_binds_current_grant_and_live_session(monkeypatch):
+    selected = grant()
+    monkeypatch.setattr(chatgpt_edge, "_runtime_identity", lambda: "session-1")
+
+    actual = await chatgpt_edge._activation_runtime(PRINCIPAL, selected)
+
+    assert actual is not None
+    assert actual.actor_work_id == selected.authority.active_work_id
+    assert actual.currentness == "CURRENT" and len(actual.binding_token) == 64
+    assert await chatgpt_edge._activation_runtime(
+        PrincipalContext(
+            issuer="fixture", subject="other", client_id="local-test", assurance="test"
+        ),
+        selected,
+    ) is None
+    assert await chatgpt_edge._activation_runtime(
+        PRINCIPAL, selected.model_copy(update={"state": "revoked"})
+    ) is None
+    monkeypatch.setattr(chatgpt_edge, "_runtime_identity", lambda: "")
+    assert await chatgpt_edge._activation_runtime(PRINCIPAL, selected) is None
+
+
+async def test_activation_proof_resolves_only_exact_terminal_managed_validation():
+    contract = ActivationContract(
+        product_work_id=ACTIVE,
+        outcome_key="release",
+        target_revision="git:abc",
+        target_phase="ACTIVATED",
+        return_owner_work_id=ACTIVE,
+        acceptance_contract_id="acceptance-v1",
+        contract_revision="v1",
+        adoption_requirement="NOT_REQUIRED",
+        lifecycle_authority_work_id=ACTIVE,
+    )
+    result_id, request_id, run_id = uuid4(), uuid4(), uuid4()
+    result_contract = {
+        "schema": 1,
+        "proof_kind": "ACCEPTANCE",
+        "obligation_id": str(contract.obligation_id),
+        "product_work_id": str(contract.product_work_id),
+        "target_revision": contract.target_revision,
+        "target_phase": contract.target_phase,
+        "acceptance_contract_id": contract.acceptance_contract_id,
+        "contract_revision": contract.contract_revision,
+        "clearing_event_ref": None,
+    }
+    terminal = TaskRunTerminalEvidence(
+        request=TaskRunRequest(
+            request_id=request_id,
+            requester_work_id=ACTIVE,
+            execution_work_id=uuid4(),
+            observed_revision="revision",
+            task_kind="VALIDATION",
+            objective="Validate the exact A-F activation release.",
+            result_contract=result_contract,
+            continuation="START",
+            candidate_ref="git:abc",
+            terminal_result_id=result_id,
+        ),
+        result=TaskRunResult(
+            result_id=result_id,
+            request_id=request_id,
+            run_id=run_id,
+            outcome="PASS",
+            summary="Validated.",
+            evidence_refs=("receipt://managed-run/pass",),
+        ),
+    )
+
+    class Tasks:
+        value = terminal
+
+        async def terminal_evidence(self, selected):
+            return self.value if selected == result_id else None
+
+    tasks = Tasks()
+    resolve = chatgpt_edge._managed_activation_proof(
+        tasks, {contract.obligation_id: contract}
+    )
+    selected = grant(operations=frozenset({"activation_continuity"}))
+    intent = TransitionIntent(
+        operation_id=uuid4(),
+        obligation_id=contract.obligation_id,
+        observed_revision="revision",
+        transition="ACCEPTANCE_PASS",
+        evidence_refs=(f"task-run-result:{result_id}",),
+    )
+
+    proof = await resolve(PRINCIPAL, selected, intent)
+
+    assert proof is not None
+    assert proof.kind == "ACCEPTANCE" and proof.currentness == "CURRENT"
+    assert proof.evidence_refs == (
+        f"task-run-result:{result_id}", "receipt://managed-run/pass"
+    )
+    tasks.value = terminal.model_copy(update={
+        "result": terminal.result.model_copy(update={"outcome": "FAIL"})
+    })
+    assert await resolve(PRINCIPAL, selected, intent) is None
 
 
 async def test_resource_edge_preserves_injected_services(monkeypatch):
@@ -375,6 +518,7 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
     async with chatgpt_edge.resource_service(contracts) as (injected, _runtime):
         assert injected.activation_continuity is not None
         assert injected.activation_continuity.contracts is contracts
+        assert injected.activation_proof is not None
     monkeypatch.setattr(
         chatgpt_edge, "load_activation_contracts_from_environment", lambda: contracts
     )
@@ -388,6 +532,7 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
     async with chatgpt_edge.configured_resource_service() as (configured, _runtime):
         assert configured.activation_continuity is not None
         assert configured.activation_continuity.contracts is contracts
+        assert configured.activation_proof is not None
         assert configured.reviews is not None
         assert configured.reviews.policy is review_config.policy
 
