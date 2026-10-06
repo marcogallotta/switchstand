@@ -137,6 +137,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     servers = config["mcp_servers"]
 
     ordinary = {name for name, _ in build_ordinary_tools(chatgpt_service())}
+    ordinary.add("observability_get")
     ordinary.add("outcome_state_update")
     ordinary.add("implementation_request")
     switchstand = servers["switchstand"]
