@@ -99,6 +99,15 @@ SWITCHSTAND_MCP_BIND_PORT=8790
 SWITCHSTAND_MCP_PUBLIC_URL=https://public.example/switchstand/mcp
 ```
 
+Stateful product-currentness diagnostics are default-off. Setting
+`SWITCHSTAND_PRODUCT_CURRENTNESS=1` requires the selected and running runtime SHAs,
+run ID, and expected tools-schema SHA-256 through the
+corresponding `SWITCHSTAND_PRODUCT_CURRENTNESS_*` variables. Startup rejects missing
+or malformed values. This diagnostic construction binds those host values to the
+authenticated principal, exact live FastMCP tool schema, outcome-action switch, and PostgreSQL
+prerequisites. It intentionally configures no qualification receipt or seal key, so
+`functional_proof` remains a blocker and this layer cannot return `TRUE`.
+
 Then the canonical activation check is:
 
 ```console

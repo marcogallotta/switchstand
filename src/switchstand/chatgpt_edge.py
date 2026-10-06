@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
-from collections.abc import AsyncGenerator
+import re
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
+from fastmcp.tools import Tool
 from mcp.server.auth.middleware.auth_context import get_access_token
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -28,6 +32,7 @@ from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
+from .grants import PrincipalContext
 from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessageState
@@ -37,6 +42,12 @@ from .oauth_continuity import (
 )
 from .observability import CallTimingMiddleware, annotate_target, register_sqlalchemy_timing
 from .principal import RequestPrincipal
+from .product_currentness import (
+    STATEFUL_PRODUCT_WORK_ID,
+    ProductCurrentness,
+    evaluate_stateful_currentness,
+)
+from .product_currentness_stateful import LiveStatefulEvidenceReader, StatefulServerSnapshot
 from .reviews import ReviewOccurrenceState, ReviewPolicy
 from .stable_auth import (
     REQUIRED_SCOPE,
@@ -50,7 +61,54 @@ from .work_events import WorkEventRepository
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
+STATEFUL_MIGRATION_REVISION = "0023_activation_continuity"
 _https_resource_url = normalize_resource_url
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductCurrentnessConfig:
+    runtime_sha: str
+    selected_runtime_sha: str
+    run_id: str
+    expected_tools_schema_sha256: str
+
+    @classmethod
+    def from_environment(cls) -> _ProductCurrentnessConfig | None:
+        enabled = os.getenv("SWITCHSTAND_PRODUCT_CURRENTNESS", "").strip()
+        if enabled not in {"", "0", "1"}:
+            raise ValueError("SWITCHSTAND_PRODUCT_CURRENTNESS must be 0 or 1")
+        if enabled != "1":
+            return None
+        names = {
+            "runtime_sha": "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA",
+            "selected_runtime_sha": "SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA",
+            "run_id": "SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID",
+            "expected_tools_schema_sha256": (
+                "SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256"
+            ),
+        }
+        values = {field: os.getenv(variable, "").strip() for field, variable in names.items()}
+        missing = [names[field] for field, value in values.items() if not value]
+        if missing:
+            raise ValueError(
+                "required product-currentness configuration missing: " + ", ".join(missing)
+            )
+        if not re.fullmatch(r"[0-9a-f]{40}", values["runtime_sha"]):
+            raise ValueError("product-currentness runtime SHA must be a lowercase Git SHA")
+        if not re.fullmatch(r"[0-9a-f]{40}", values["selected_runtime_sha"]):
+            raise ValueError("product-currentness selected runtime SHA must be a lowercase Git SHA")
+        if not re.fullmatch(r"[0-9a-f]{64}", values["expected_tools_schema_sha256"]):
+            raise ValueError("product-currentness expected schema must be a SHA-256 digest")
+        return cls(**values)
+
+
+def _tools_snapshot(tools: Sequence[Tool]) -> tuple[tuple[str, ...], str]:
+    payload = [
+        tool.to_mcp_tool().model_dump(mode="json", by_alias=True, exclude_none=True)
+        for tool in tools
+    ]
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return tuple(tool.name for tool in tools), hashlib.sha256(canonical).hexdigest()
 
 
 class _CompleteMCPStream:
@@ -257,6 +315,41 @@ def _create_resource_app(
         activation_runtime=service.activation_runtime,
         activation_proof=service.activation_proof,
     )
+    currentness_config = _ProductCurrentnessConfig.from_environment()
+    if currentness_config is not None:
+        currentness_state = service.state
+        if not isinstance(currentness_state, PostgresState):
+            raise ValueError("product currentness requires the PostgreSQL resource edge")
+
+        async def product_currentness(principal: PrincipalContext) -> ProductCurrentness:
+            async def read_principal() -> PrincipalContext:
+                return principal
+
+            async def read_snapshot() -> StatefulServerSnapshot:
+                names, schema_digest = _tools_snapshot(
+                    await server.list_tools(run_middleware=False)
+                )
+                return StatefulServerSnapshot(
+                    runtime_sha=currentness_config.runtime_sha,
+                    selected_runtime_sha=currentness_config.selected_runtime_sha,
+                    run_id=currentness_config.run_id,
+                    principal_key=principal.key,
+                    outcome_actions_enabled=service.outcome_state_enabled,
+                    tool_names=names,
+                    tools_schema_sha256=schema_digest,
+                )
+
+            reader = LiveStatefulEvidenceReader(
+                currentness_state.engine,
+                read_principal,
+                read_snapshot,
+                expected_migration_revision=STATEFUL_MIGRATION_REVISION,
+                expected_tools_schema_sha256=currentness_config.expected_tools_schema_sha256,
+            )
+            return await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+
+        service.product_currentness = product_currentness
+        service.product_currentness_enabled = True
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
     server.add_middleware(CallTimingMiddleware(_timing_identity))
     for name, tool in build_ordinary_tools(

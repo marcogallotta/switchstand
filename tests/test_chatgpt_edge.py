@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx2
 import pytest
-from chatgpt_fixture import ACTIVE, assert_public, grant, service
+from chatgpt_fixture import ACTIVE, PRINCIPAL, assert_public, grant, service
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.auth.providers.github import GitHubProvider
@@ -20,11 +20,25 @@ from switchstand.chatgpt_edge import (
 )
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
+from switchstand.product_currentness_stateful import StatefulPersistenceSnapshot
 
 RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
 GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
+
+
+def _currentness_environment(monkeypatch):
+    values = {
+        "SWITCHSTAND_PRODUCT_CURRENTNESS": "1",
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA": "a" * 40,
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA": "a" * 40,
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID": "run-1",
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256": "b" * 64,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    return values
 
 
 def test_config_requires_numeric_identity_exact_resource_and_loopback(monkeypatch):
@@ -130,6 +144,82 @@ def test_certification_runtime_readback_is_explicit_and_exact():
             "runtime_sha": "a" * 40,
             "run_id": "run-1",
         }
+
+
+def test_product_currentness_configuration_is_default_off_and_fails_closed(monkeypatch):
+    assert chatgpt_edge._ProductCurrentnessConfig.from_environment() is None
+    monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS", "yes")
+    with pytest.raises(ValueError, match="must be 0 or 1"):
+        chatgpt_edge._ProductCurrentnessConfig.from_environment()
+
+    values = _currentness_environment(monkeypatch)
+    monkeypatch.delenv("SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID")
+    with pytest.raises(ValueError, match="RUN_ID"):
+        chatgpt_edge._ProductCurrentnessConfig.from_environment()
+    monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID", values[
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID"
+    ])
+    monkeypatch.setenv("SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA", "not-a-sha")
+    with pytest.raises(ValueError, match="runtime SHA"):
+        chatgpt_edge._ProductCurrentnessConfig.from_environment()
+
+
+async def test_resource_edge_currentness_diagnostic_cannot_claim_true(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    async def persistence(_self):
+        return StatefulPersistenceSnapshot(
+            migration_revision=chatgpt_edge.STATEFUL_MIGRATION_REVISION,
+            migration_receipt_digest="c" * 64,
+            outcome_state_table="outcome_state_revisions",
+        )
+
+    monkeypatch.setattr(chatgpt_edge.LiveStatefulEvidenceReader, "_persistence", persistence)
+    async with chatgpt_edge.resource_service() as (subject, _runtime):
+        subject.outcome_state_enabled = True
+        subject.product_currentness_enabled = True
+
+        async def placeholder(_principal):
+            raise AssertionError("inventory construction must not call the tool")
+
+        subject.product_currentness = placeholder
+        preliminary = create_app(subject, CONFIG, client_storage=MemoryStore())
+        preliminary_tools = await preliminary.state.fastmcp_server.list_tools(
+            run_middleware=False
+        )
+        _, expected_digest = chatgpt_edge._tools_snapshot(preliminary_tools)
+
+        _currentness_environment(monkeypatch)
+        monkeypatch.setenv(
+            "SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256",
+            expected_digest,
+        )
+        subject.product_currentness = None
+        subject.product_currentness_enabled = False
+        captured = []
+        build_tools = chatgpt_edge.build_ordinary_tools
+
+        def capture_tools(wired, *args, **kwargs):
+            captured.append(wired)
+            return build_tools(wired, *args, **kwargs)
+
+        monkeypatch.setattr(chatgpt_edge, "build_ordinary_tools", capture_tools)
+        create_app(subject, CONFIG, client_storage=MemoryStore())
+        wired = captured[-1]
+        assert wired.product_currentness_enabled is True
+        assert wired.product_currentness is not None
+        result = await wired.product_currentness(PRINCIPAL)
+
+    assert (result.status, result.current) == ("unknown", "UNKNOWN")
+    assert result.blockers == ("functional_proof",)
+    assert result.conditions[-1].detail == "functional_proof_missing_or_invalid"
 
 
 async def test_resource_edge_preserves_injected_activation_dependencies(monkeypatch):
