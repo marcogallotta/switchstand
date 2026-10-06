@@ -159,8 +159,77 @@ def closed_tool(
     tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
 
 
-def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
-    server = MCPServer("Switchstand read-only context")
+def register_priority_tools(
+    server: MCPServer,
+    active_work_id: UUID,
+    reference_work_ids: tuple[UUID, ...],
+    *,
+    priority_claims: PriorityClaimService | None,
+    priority_context: PriorityContextProjection | None,
+    grants: GrantState | None,
+    principal: PrincipalContext | None,
+) -> None:
+    if priority_claims is not None and grants is not None and principal is not None:
+        async def _priority_claim_get(
+            api_version: Literal["1"],
+        ) -> PriorityClaimReadResult:
+            """Read current priority claims for the exact launch-bound work."""
+            del api_version
+            return await priority_claims.current("WORK", active_work_id)
+
+        async def _priority_claim_record(
+            api_version: Literal["1"], operation_id: UUID,
+            observed_revision: Annotated[str, Field(min_length=1)],
+            relation_kind: RelationKind,
+            rationale: Annotated[str, Field(min_length=1, max_length=300)],
+            relation_target_id: UUID | None = None,
+            band: PriorityBand | None = None,
+            supersedes_claim_id: UUID | None = None,
+        ) -> GuardOutcome:
+            """Record an AGENT recommendation for the exact launch-bound work."""
+            grant = await grants.current(principal.key)
+            request = PriorityClaimWrite(
+                api_version=api_version,
+                operation_id=operation_id,
+                work_id=active_work_id,
+                grant_version=1 if grant is None else grant.version,
+                observed_revision=observed_revision,
+                relation_kind=relation_kind,
+                rationale=rationale,
+                relation_target_id=relation_target_id,
+                band=band,
+                supersedes_claim_id=supersedes_claim_id,
+            )
+            return await priority_claims.record(grants, principal, request)
+
+        closed_tool(server, "priority_claim_get", _priority_claim_get)
+        closed_tool(server, "priority_claim_record", _priority_claim_record)
+    if priority_context is not None:
+        async def _priority_context_get(
+            api_version: Literal["1"], include_references: bool = False,
+        ) -> PriorityContextResult:
+            """Project priority context for the launch-bound work and optional references."""
+            del api_version
+            work_ids = (
+                (active_work_id, *reference_work_ids)
+                if include_references else (active_work_id,)
+            )
+            return await priority_context.project(work_ids)
+
+        closed_tool(server, "priority_context_get", _priority_context_get)
+
+
+def build_context_server(
+    service: object,
+    active_work_id: UUID,
+    reference_work_ids: tuple[UUID, ...] = (),
+    *,
+    priority_claims: PriorityClaimService | None = None,
+    priority_context: PriorityContextProjection | None = None,
+    grants: GrantState | None = None,
+    principal: PrincipalContext | None = None,
+) -> MCPServer:
+    server = MCPServer("Switchstand launch-bound context")
 
     async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
         return project_work(await service.get(  # type: ignore[attr-defined]
@@ -199,6 +268,11 @@ def build_context_server(service: object, active_work_id: UUID) -> MCPServer:
         idempotent_hint=True,
         open_world_hint=False,
     ))
+    register_priority_tools(
+        server, active_work_id, reference_work_ids,
+        priority_claims=priority_claims, priority_context=priority_context,
+        grants=grants, principal=principal,
+    )
     return server
 
 
@@ -266,54 +340,11 @@ def build_server(
             return await updates(principal, request)
 
         closed_tool(server, "work_update", _work_update)
-    if priority_claims is not None and grants is not None and principal is not None:
-        async def _priority_claim_get(
-            api_version: Literal["1"],
-        ) -> PriorityClaimReadResult:
-            """Read current priority claims for the exact launch-bound work."""
-            del api_version
-            return await priority_claims.current("WORK", active_work_id)
-
-        async def _priority_claim_record(
-            api_version: Literal["1"], operation_id: UUID,
-            observed_revision: Annotated[str, Field(min_length=1)],
-            relation_kind: RelationKind,
-            rationale: Annotated[str, Field(min_length=1, max_length=300)],
-            relation_target_id: UUID | None = None,
-            band: PriorityBand | None = None,
-            supersedes_claim_id: UUID | None = None,
-        ) -> GuardOutcome:
-            """Record an AGENT recommendation for the exact launch-bound work."""
-            grant = await grants.current(principal.key)
-            request = PriorityClaimWrite(
-                api_version=api_version,
-                operation_id=operation_id,
-                work_id=active_work_id,
-                grant_version=1 if grant is None else grant.version,
-                observed_revision=observed_revision,
-                relation_kind=relation_kind,
-                rationale=rationale,
-                relation_target_id=relation_target_id,
-                band=band,
-                supersedes_claim_id=supersedes_claim_id,
-            )
-            return await priority_claims.record(grants, principal, request)
-
-        closed_tool(server, "priority_claim_get", _priority_claim_get)
-        closed_tool(server, "priority_claim_record", _priority_claim_record)
-    if priority_context is not None:
-        async def _priority_context_get(
-            api_version: Literal["1"], include_references: bool = False,
-        ) -> PriorityContextResult:
-            """Project priority context for the launch-bound work and optional references."""
-            del api_version
-            work_ids = (
-                (active_work_id, *reference_work_ids)
-                if include_references else (active_work_id,)
-            )
-            return await priority_context.project(work_ids)
-
-        closed_tool(server, "priority_context_get", _priority_context_get)
+    register_priority_tools(
+        server, active_work_id, reference_work_ids,
+        priority_claims=priority_claims, priority_context=priority_context,
+        grants=grants, principal=principal,
+    )
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:
             return currentness() or RuntimeCurrentness(
