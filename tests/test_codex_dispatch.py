@@ -141,9 +141,10 @@ printf 'writer=%s\nhead=%s\n' "$PWD" "$(git rev-parse HEAD)" > "$MARKER"
     ).read_text())
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
-        ":root": "write",
+        str(home): "write",
         str(primary): {".": "read", ".git": "write"},
     }
+    assert ":root" not in filesystem
 
 
 def test_dispatch_quarantines_invalid_legacy_friction_and_launches_codex(
@@ -356,7 +357,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
     ).strip())
     assert filesystem[str(primary)] == {".": "read", ".git": "write"}
-    assert filesystem[":root"] == "write"
+    assert filesystem[str(home)] == "write"
+    assert ":root" not in filesystem
     assert str(writer) not in filesystem
     assert str(writer_git_dir) not in filesystem
     assert profile["approval_policy"] == "never"
@@ -404,7 +406,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert current_friction_store.read_text() == "existing friction\n"
     assert current_friction_store.stat().st_mode & 0o777 == 0o600
     assert (writer / "friction.md").resolve() == current_friction_store
-    assert filesystem[":root"] == "write"
+    assert filesystem[str(home)] == "write"
+    assert ":root" not in filesystem
     assert str(friction_store) not in filesystem
 
     artifact = home / ".local/state/switchstand/codex/handoffs/handoff-real-successor"

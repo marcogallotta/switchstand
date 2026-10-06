@@ -144,9 +144,10 @@ trusted_hash = "must-not-copy"
     }
     filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     assert filesystem == {
-        ":root": "write",
+        str(Path.home().resolve()): "write",
         str(primary): {".": "read", ".git": "write"},
     }
+    assert ":root" not in filesystem
     assert profile["permissions"]["switchstand-coordinator"]["network"] == {
         "enabled": True,
         "dangerously_allow_all_unix_sockets": True,
