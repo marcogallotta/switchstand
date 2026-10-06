@@ -2,7 +2,10 @@
 
 import hashlib
 import json
-from collections.abc import Mapping
+import os
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
@@ -24,7 +27,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .agent_mailboxes import AgentMailbox, agent_mailboxes
 from .contracts import ApiVersion, ClosedModel
@@ -160,6 +163,7 @@ class MessageSubmitResult(ClosedModel):
         "actor_not_admitted", "message_not_granted", "recipient_route_unavailable",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
         "runtime_generation_changed", "sender_binding_changed", "state_unavailable",
+        "reserved_route",
     ] | None = None
 
     @model_validator(mode="after")
@@ -353,6 +357,10 @@ def runtime_admission(runtime: RuntimeCurrentness) -> RuntimeAdmissionFailure | 
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
+        raw_cutoff = os.getenv("SWITCHSTAND_REVIEW_CUTOFF_RECEIPT")
+        self.review_cutoff = None if raw_cutoff is None else datetime.fromisoformat(raw_cutoff)
+        if self.review_cutoff is not None and self.review_cutoff.utcoffset() is None:
+            raise ValueError("review cutoff receipt must include a timezone")
 
     async def pending_delivery_ids(
         self, binding: AgentMailbox, cursor: UUID | None = None,
@@ -480,11 +488,12 @@ class MessageState:
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
         received_binding: tuple[int, str] | None = None,
         agent_binding: AgentMailbox | None = None,
+        transaction: AsyncConnection | None = None,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
         identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
         delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
-        async with self.engine.begin() as connection:
+        async with self._transaction(transaction) as connection:
             if (
                 agent_binding is not None
                 and not await self._current_agent_binding(connection, agent_binding)
@@ -539,6 +548,26 @@ class MessageState:
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()
         return MessageSubmitResult(status="ok", message=_view(dict(row)))
+
+    async def store_in_transaction(
+        self, connection: AsyncConnection, sender_work_id: UUID, route: MessageRoute,
+        request: MessageSubmitRequest, *, agent_binding: AgentMailbox,
+    ) -> MessageSubmitResult:
+        """Internal store seam for owners that already hold their serialization lock."""
+        return await self._store(
+            sender_work_id, route, request, agent_binding=agent_binding,
+            transaction=connection,
+        )
+
+    @asynccontextmanager
+    async def _transaction(
+        self, transaction: AsyncConnection | None,
+    ) -> AsyncGenerator[AsyncConnection]:
+        if transaction is not None:
+            yield transaction
+            return
+        async with self.engine.begin() as connection:
+            yield connection
 
     async def submit_admitted(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
@@ -1036,6 +1065,10 @@ async def _send_message(
                 )
             route_ref = request.route_ref if context is None else context.route_ref
             assert route_ref is not None
+            if messages.review_cutoff is not None and route_ref in {
+                "review.request", "review.acquisition", "review.outcome",
+            }:
+                return MessageSubmitResult(status="denied", reason="reserved_route")
             route = MessageRoute(
                 recipient_work_id=recipient_work_id,
                 recipient_grant_version=recipient.version,

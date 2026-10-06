@@ -298,17 +298,23 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
-  `reviews.py` owns durable review requests and outcomes. Its ordinary `review_request` and
-  `review_submit` adapters are default-off and exist only when that owner is injected; requester
-  and reviewer identities come from the current authenticated agent mailbox and are never public
-  arguments. The resource service accepts one explicit default-off review policy/guidelines
+  `reviews.py` owns durable review requests and outcomes. Its default-off ordinary path is
+  `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
+  `review_recover` can rebind only an exact received delivery after a same-principal mailbox
+  takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer
+  identities come from the current authenticated agent mailbox and are never public arguments.
+  The occurrence row serializes authoritative request creation, so polling can acquire a newly
+  available configured reviewer without a Coordinator mailbox or manual message choreography.
+  Generic messaging rejects the reserved `review.request`, `review.acquisition`, and `review.outcome`
+  routes only after the timezone-bearing `SWITCHSTAND_REVIEW_CUTOFF_RECEIPT` is installed; legacy typed occurrences remain readable when their exact stored
+  basis and delivery pass current invariants. The resource service accepts one explicit default-off review policy/guidelines
   configuration and constructs one mailbox/occurrence graph shared with the independently enabled
   implementation-request facade, avoiding divergent review truth. Production configuration and
   activation remain separate. `review_config_loader.py` loads that configuration only when optional
   `SWITCHSTAND_REVIEW_CONFIG_PATH` names one absolute, bounded, mode-0600 closed/versioned JSON
   file; unset remains off, every present path is literal, and configured-invalid fails startup
   closed. The file carries policy and guideline identities plus an immutable partial reviewer map;
-  unmapped review kinds retain coordinator acquisition rather than inventing a reviewer. Client-visible activation
+  unmapped review kinds remain `WAITING_REVIEWER` rather than inventing a reviewer. Client-visible activation
   requires a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
