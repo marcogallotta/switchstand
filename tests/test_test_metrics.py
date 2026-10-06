@@ -96,7 +96,7 @@ def test_workflow_preserves_authority_and_attempts():
     assert authoritative.split('--junitxml=/metrics/junit.xml', 1)[0].rstrip().endswith('\\')
     assert 'shift 1 &&' in authoritative
     assert 'needs.plan.outputs.selected_tests' in authoritative
-    assert '--planner "$METRICS_DIR/planner.json"' in execution
+    assert '--planner ' in execution and "'planner_revision': plan.planner_revision" in execution
     assert '--method GET' in execution
     assert 'selector_health_clear(' in execution
     assert 'history_complete=history_complete' in execution

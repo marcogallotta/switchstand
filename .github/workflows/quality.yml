@@ -170,7 +170,7 @@ jobs:
               'authority': decision.mode,
               'authority_reasons': decision.reasons,
               'planner': {
-                  'revision': plan.planner_revision,
+                  'planner_revision': plan.planner_revision,
                   'mode': plan.mode,
                   'base': plan.base,
                   'head': plan.head,
