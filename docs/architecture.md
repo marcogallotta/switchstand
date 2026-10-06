@@ -714,7 +714,7 @@ supplied Codex binary and `CODEX_HOME`, writes the deterministic client ID throu
 thread queue, and terminates only that owned child. It never starts, stops, restarts, attaches to,
 or owns a managed Codex daemon. The live same-home embedded root discovers durable queue changes
 and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner.
-The `run_inbound` pilot reuses existing authorized `MessageState` and
+The default-off `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
 configuration and reuses `chatgpt_edge.resource_service()`. With
@@ -723,9 +723,8 @@ exact authenticated thread through the existing MCP `agent_register` read-or-cre
 validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
 An existing registration, including `/root`, is reused without takeover; generated names are never
 `/root`. Runner failure is retried while Codex remains active, and Codex exit or supervisor death
-closes the lifeline so intake stops. The activated selector defaults to `PILOT`; an explicit
-`SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-launch rollback path. The runner creates no
-database or service owner and leaves the existing probe CLI
+closes the lifeline so intake stops. The selector defaults to `OFF`, so landing does not activate
+this path. The runner creates no database or service owner and leaves the existing probe CLI
 semantics unchanged. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
 to the exact Codex root/start record. Source transactions finish before host admission so
