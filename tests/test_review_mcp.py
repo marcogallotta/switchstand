@@ -59,6 +59,9 @@ async def test_review_request_is_default_off_and_has_no_caller_identity_fields(m
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
+    for name in ("review_get", "review_recover"):
+        schema = next(tool.input_schema for tool in tools if tool.name == name)
+        assert set(schema["properties"]) == {"api_version", "review_id"}
 
 
 async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
