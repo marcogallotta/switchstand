@@ -18,7 +18,9 @@ from .development import (
 )
 from .failure_journal import redact_environment
 from .pending_failures import PendingFailureQueue, PendingFailureRegistry, failure_queue_root
-from .run import RunReceipt, reserve_run
+from .run import RECEIPT, RunReceipt, inspect_receipt, reserve_run
+from .task_run_bind import OUTPUT_PREFIX
+from .task_runs import TaskRunBindResult
 
 AUTHORITY_NAMES = ("ACTIVE_WORK_ID", "REFERENCE_WORK_IDS")
 AUTHORITY_OUTPUT_NAMES = (
@@ -88,6 +90,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--reference", action="append", default=[], help="read-only Asana task ID or URL"
     )
+    result.add_argument("--task-request-id", type=UUID, help="exact START request to bind")
     result.add_argument("codex_args", nargs=argparse.REMAINDER, help="arguments passed to Codex")
     return result
 
@@ -324,6 +327,47 @@ def provision_output(
     return completed.stdout
 
 
+def bind_task_start(
+    control: Path, git_dir: Path, request_id: UUID, receipt: RunReceipt, env: dict[str, str]
+) -> None:
+    command = [
+        "docker", "compose", "--project-directory", str(control),
+        "-f", str(control / "compose.yaml"), "run", "--build", "--rm", "--no-deps",
+        "controller", "uv", "run", "--no-sync", "switchstand-task-run-bind",
+        "--request-id", str(request_id),
+    ]
+    payload = receipt.model_dump_json() + "\n"
+    for attempt in range(2):
+        completed = subprocess.run(
+            command, cwd=control, env=env, check=False, text=True,
+            capture_output=True, input=payload,
+        )
+        lines = [line.removeprefix(OUTPUT_PREFIX) for line in completed.stdout.splitlines()
+                 if line.startswith(OUTPUT_PREFIX)]
+        try:
+            result = TaskRunBindResult.model_validate_json(lines[0]) if len(lines) == 1 else None
+        except ValueError:
+            result = None
+        if result is not None:
+            if result.status != "ok":
+                raise RuntimeError(f"task-run bind {result.status}: {result.reason}")
+            execution = result.execution
+            if (completed.returncode or execution is None
+                    or execution.request_id != request_id or execution.run_id != receipt.run_id):
+                raise RuntimeError("task-run binder returned inconsistent identity")
+            return
+        status = inspect_receipt(
+            git_dir / RECEIPT, Path(receipt.worktree), receipt.branch
+        )
+        current = (
+            status.status == "running" and status.run_id == receipt.run_id
+            and status.active_work_id == receipt.active_work_id
+            and status.branch == receipt.branch
+        )
+        if attempt or not current:
+            raise RuntimeError("task-run bind outcome is unknown")
+
+
 def prepare_managed_run(
     control: Path,
     candidate: Path,
@@ -333,6 +377,7 @@ def prepare_managed_run(
     env: dict[str, str],
     git_dir: Path,
     expected_active: UUID,
+    task_request_id: UUID | None = None,
 ) -> PreparedRun:
     def reclaim(receipt: RunReceipt) -> None:
         reclaim_development(candidate, receipt.run_id, env)
@@ -342,6 +387,8 @@ def prepare_managed_run(
         if authority.active != expected_active:
             raise ValueError("provisioned WorkId does not match the exact resolved launch work")
         receipt = record(authority.active)
+        if task_request_id is not None:
+            bind_task_start(control, git_dir, task_request_id, receipt, env)
         development = prepare_development(control, candidate, receipt.run_id, env)
     return PreparedRun(authority, development, receipt)
 
@@ -434,7 +481,7 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Revision: {observed}", file=sys.stderr)
     prepared = prepare_managed_run(
         control, candidate, branch, arguments.active, tuple(arguments.reference), env, git_dir,
-        resolved_work_id,
+        resolved_work_id, arguments.task_request_id,
     )
     authority, development, receipt = prepared
     env["ACTIVE_WORK_ID"] = str(authority.active)

@@ -5,8 +5,9 @@ import subprocess
 import sys
 import tomllib
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from chatgpt_fixture import service as chatgpt_service
@@ -16,6 +17,7 @@ from switchstand.codex_runtime import PROFILE
 from switchstand.context import provision_target
 from switchstand.development import DevelopmentBoundary
 from switchstand.launch import (
+    bind_task_start,
     clean_environment,
     exact_revision_preflight,
     linked_branch,
@@ -26,6 +28,8 @@ from switchstand.launch import (
     run,
     supervise_codex,
 )
+from switchstand.run import RunReceipt, RunStatus
+from switchstand.task_runs import TaskRunBindResult, TaskRunExecution
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE = UUID("00000000-0000-0000-0000-000000000002")
@@ -501,6 +505,10 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "switchstand.launch.prepare_development",
         lambda *args: events.append("development") or development,
     )
+    monkeypatch.setattr(
+        "switchstand.launch.bind_task_start",
+        lambda *args: pytest.fail("omitted request ID must not bind"),
+    )
     control = tmp_path / "control"
     candidate = tmp_path / "candidate"
     result = prepare_managed_run(
@@ -514,6 +522,117 @@ def test_run_reservation_precedes_provision_and_development(monkeypatch, tmp_pat
         "development",
     ]
     assert result.authority is authority and result.development is development
+
+
+def test_exact_task_request_binds_after_receipt_before_development(monkeypatch, tmp_path):
+    events = []
+    request_id = uuid4()
+
+    @contextmanager
+    def reservation(*args):
+        def record(active):
+            events.append(("record", active))
+            return type("Receipt", (), {"run_id": ACTIVE})()
+        yield record
+
+    monkeypatch.setattr("switchstand.launch.reserve_run", reservation)
+    monkeypatch.setattr(
+        "switchstand.launch.provision",
+        lambda *args: events.append("provision") or type("Authority", (), {"active": ACTIVE})(),
+    )
+    monkeypatch.setattr(
+        "switchstand.launch.bind_task_start",
+        lambda *args: events.append(("bind", args[2])),
+    )
+    monkeypatch.setattr(
+        "switchstand.launch.prepare_development",
+        lambda *args: events.append("development") or object(),
+    )
+    prepare_managed_run(
+        tmp_path, tmp_path, "owned", "legacy", (), {}, tmp_path, ACTIVE, request_id
+    )
+    assert events == ["provision", ("record", ACTIVE), ("bind", request_id), "development"]
+
+
+def test_task_bind_uses_exact_receipt_and_replays_only_ambiguous_outcome(monkeypatch, tmp_path):
+    request_id, run_id = uuid4(), uuid4()
+    receipt = RunReceipt(
+        run_id=run_id, active_work_id=ACTIVE, worktree=str(tmp_path), branch="owned",
+        pid=1, start_token=1, started_at=datetime.now(UTC),
+    )
+    calls = []
+    success = TaskRunBindResult(
+        status="ok", execution=TaskRunExecution(request_id=request_id, run_id=run_id)
+    )
+
+    def invoke(command, **kwargs):
+        calls.append((command, kwargs["input"]))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="lost")
+        return subprocess.CompletedProcess(
+            command, 0, stdout="TASK_RUN_BIND=" + success.model_dump_json() + "\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", invoke)
+    monkeypatch.setattr(
+        "switchstand.launch.inspect_receipt",
+        lambda *args: RunStatus(
+            status="running", run_id=run_id, active_work_id=ACTIVE, branch="owned"
+        ),
+    )
+    bind_task_start(tmp_path, tmp_path, request_id, receipt, {})
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert calls[0][0][-2:] == ["--request-id", str(request_id)]
+    assert RunReceipt.model_validate_json(calls[0][1]) == receipt
+
+
+@pytest.mark.parametrize("status", ["denied", "conflict", "unknown"])
+def test_task_bind_closed_result_aborts_without_replay(monkeypatch, tmp_path, status):
+    request_id, run_id = uuid4(), uuid4()
+    receipt = RunReceipt(
+        run_id=run_id, active_work_id=ACTIVE, worktree=str(tmp_path), branch="owned",
+        pid=1, start_token=1, started_at=datetime.now(UTC),
+    )
+    reason = {
+        "denied": "execution_work_mismatch",
+        "conflict": "run_already_bound",
+        "unknown": "state_unavailable",
+    }[status]
+    result = TaskRunBindResult(status=status, reason=reason)
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda command, **kwargs: calls.append(command) or subprocess.CompletedProcess(
+            command, 2, stdout="TASK_RUN_BIND=" + result.model_dump_json() + "\n", stderr=""
+        ),
+    )
+    with pytest.raises(RuntimeError, match=f"task-run bind {status}"):
+        bind_task_start(tmp_path, tmp_path, request_id, receipt, {})
+    assert len(calls) == 1
+
+
+def test_task_bind_repeated_malformed_outcome_aborts(monkeypatch, tmp_path):
+    request_id, run_id = uuid4(), uuid4()
+    receipt = RunReceipt(
+        run_id=run_id, active_work_id=ACTIVE, worktree=str(tmp_path), branch="owned",
+        pid=1, start_token=1, started_at=datetime.now(UTC),
+    )
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda command, **kwargs: calls.append(command) or subprocess.CompletedProcess(
+            command, 0, stdout="TASK_RUN_BIND={malformed}\n", stderr=""
+        ),
+    )
+    monkeypatch.setattr(
+        "switchstand.launch.inspect_receipt",
+        lambda *args: RunStatus(
+            status="running", run_id=run_id, active_work_id=ACTIVE, branch="owned"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="outcome is unknown"):
+        bind_task_start(tmp_path, tmp_path, request_id, receipt, {})
+    assert len(calls) == 2
 
 
 def test_prepare_managed_run_rejects_resolved_work_id_mismatch(monkeypatch, tmp_path):

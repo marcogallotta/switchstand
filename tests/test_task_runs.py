@@ -31,6 +31,7 @@ from switchstand.run import (
     process_start_token,
 )
 from switchstand.state import PostgresState
+from switchstand.task_run_bind import bind_task_start as bind_from_controller
 from switchstand.task_runs import (
     AgentTaskRequest,
     AgentTaskResult,
@@ -293,6 +294,27 @@ async def test_start_bind_is_trusted_exact_and_one_to_one(subject):
     config.set_main_option("sqlalchemy.url", os.environ["TEST_DATABASE_URL"])
     with pytest.raises(RuntimeError, match="preserve durable task-run execution evidence"):
         command.downgrade(config, "0018_task_runs")
+
+
+async def test_controller_composition_binds_and_replays_exact_request(subject):
+    state, engine, requester, execution = subject
+    requested = await state.request(requester, uuid4(), request(execution))
+    assert requested.request is not None
+    run = receipt(execution)
+    first = await bind_from_controller(engine, requested.request.request_id, run)
+    assert first.status == "ok"
+    assert await bind_from_controller(engine, requested.request.request_id, run) == first
+
+    other = await state.request(requester, uuid4(), request(execution))
+    assert other.request is not None
+    denied = await bind_from_controller(
+        engine, other.request.request_id, receipt(uuid4())
+    )
+    assert (denied.status, denied.reason) == ("denied", "execution_work_mismatch")
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(task_run_executions)
+        ) == 1
 
 
 async def test_concurrent_distinct_runs_bind_one_execution(subject):
