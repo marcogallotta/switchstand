@@ -100,10 +100,8 @@ def render(
 ) -> str:
     canonical_mcp = _canonical_mcp()
     _linked_worktree_git_dir(primary, writer)
-    worker_bindings = Path(f"{start_record}.worker-writers")
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer),
-        "--worker-bindings", str(worker_bindings),
     ))
     continuity_command = shlex.join((
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
@@ -141,13 +139,10 @@ def render(
             "through an exact WorkId from Marco's direct assignment or an acknowledged addressed "
             "handoff, and call work_get with that exact ID. If neither trusted source supplies one, "
             "report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted launch-bound "
-            "managed runs. Before delegating repository mutation to a built-in Worker, create "
-            "its exact linked writer, spawn it, then bind the returned agent ID with "
-            f"{hook} --bind-worker AGENT_ID --writer WRITER --coordinator-primary {primary} "
-            f"--worker-bindings {worker_bindings}; send that exact writer path to the Worker. "
-            "The Worker uses absolute edit paths and visible git -C WRITER commands so the guard "
-            "can verify the effective repository even on hosts that omit exec workdir from hooks. "
-            "Until bound, a built-in Worker is read-only for this repository. "
+            "managed runs. Built-in Workers are read-only: their shell and file-edit tools are "
+            "denied because they share Root's filesystem profile and hooks are not a security "
+            "sandbox. Delegate research/review freely; for implementation, a Worker returns a "
+            "patch proposal and Root applies it in this generation's owned writer. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
             f"lifetime={lifetime}."
         ),
@@ -284,10 +279,6 @@ def main() -> None:
         raise SystemExit("Continuity hook is unavailable")
     compact_controls = Path(f"{start_record}.compact-controls")
     compact_controls.mkdir(mode=0o700, parents=True)
-    worker_bindings = Path(f"{start_record}.worker-writers")
-    worker_bindings.mkdir(mode=0o700, parents=True)
-    if worker_bindings.stat().st_mode & 0o077:
-        raise SystemExit("Coordinator Worker binding directory is not private")
     compact_hook_snapshot = compact_controls / "codex-compact-hook"
     control_snapshot = compact_controls / "coordinator-control"
     _write(

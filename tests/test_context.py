@@ -56,14 +56,13 @@ def git(repo: Path, *arguments: str) -> str:
 def hook(
     repo: Path, command: str, environment: dict[str, str],
     *, tool: str = "Bash", coordinator_primary: Path | None = None,
-    coordinator_writer: Path | None = None, worker_bindings: Path | None = None,
+    coordinator_writer: Path | None = None,
     agent_id: str | None = None, tool_workdir: Path | None = None,
 ) -> dict:
     arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
     if coordinator_primary is not None:
         arguments += ["--coordinator-primary", str(coordinator_primary)]
     arguments += ["--coordinator-writer", str(coordinator_writer)] if coordinator_writer else []
-    arguments += ["--worker-bindings", str(worker_bindings)] if worker_bindings else []
     payload = {"hook_event_name": "PreToolUse", "tool_name": tool,
                "tool_input": {"file_path" if tool == "Edit" else "command": command},
                "cwd": str(repo)}
@@ -79,7 +78,9 @@ def hook(
     return json.loads(result.stdout) if result.stdout else {}
 
 
-def test_delegated_worker_is_bound_to_one_exact_linked_writer(tmp_path: Path) -> None:
+def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
+    tmp_path: Path,
+) -> None:
     primary = tmp_path / "primary"
     primary.mkdir()
     git(primary, "init", "-b", "main")
@@ -91,54 +92,79 @@ def test_delegated_worker_is_bound_to_one_exact_linked_writer(tmp_path: Path) ->
     root_writer, assigned, foreign = (tmp_path / name for name in ("root", "assigned", "foreign"))
     for path in (root_writer, assigned, foreign):
         git(primary, "worktree", "add", "-b", path.name, str(path))
-    bindings = tmp_path / "bindings"
-    bindings.mkdir(mode=0o700)
-    guard = Path(__file__).parents[1] / "scripts/codex-hook"
-    agent = "worker-123"
-    bound = subprocess.run(
-        [guard, "--bind-worker", agent, "--writer", assigned,
-         "--coordinator-primary", primary, "--worker-bindings", bindings],
-        text=True, capture_output=True, check=True,
-    )
-    assert bound.stdout.strip() == str(assigned)
-    with pytest.raises(subprocess.CalledProcessError):
-        subprocess.run(
-            [guard, "--bind-worker", agent, "--writer", foreign,
-             "--coordinator-primary", primary, "--worker-bindings", bindings],
-            text=True, capture_output=True, check=True,
-        )
-
     common = {
         "environment": dict(os.environ),
         "coordinator_primary": primary,
         "coordinator_writer": root_writer,
-        "worker_bindings": bindings,
-        "agent_id": agent,
+        "agent_id": "worker-123",
     }
-    assert hook(assigned, str(assigned / "new.txt"), tool="Edit", **common) == {}
-    for target in (root_writer / "new.txt", foreign / "new.txt", primary / "new.txt"):
-        denied = hook(assigned, str(target), tool="Edit", **common)
-        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
-    (assigned / "foreign-link").symlink_to(foreign / "tracked.txt")
-    denied = hook(assigned, str(assigned / "foreign-link"), tool="Edit", **common)
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
-    assert hook(
-        root_writer, f"git -C {assigned} add tracked.txt", **common
-    ) == {}
-    assert hook(root_writer, "git add tracked.txt", tool_workdir=assigned, **common) == {}
-    denied = hook(root_writer, f"git -C {foreign} add tracked.txt", **common)
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    protected = (primary, root_writer, foreign)
+    before = {
+        repo: (git(repo, "status", "--porcelain=v1"), git(repo, "write-tree"),
+               (repo / "tracked.txt").read_text())
+        for repo in protected
+    }
+    root_git_dir = git(root_writer, "rev-parse", "--absolute-git-dir")
+    foreign_git_dir = git(foreign, "rev-parse", "--absolute-git-dir")
+    hostile = (
+        f"printf contaminated > {root_writer / 'tracked.txt'}",
+        f"sh -c 'printf contaminated > {foreign / 'tracked.txt'}'",
+        f"git -C {foreign} add tracked.txt",
+        (
+            f"printf contaminated > {root_writer / 'tracked.txt'} && "
+            f"git --git-dir={root_git_dir} --work-tree={root_writer} add tracked.txt"
+        ),
+        (
+            f"printf contaminated > {foreign / 'tracked.txt'} && "
+            f"git --work-tree={foreign} --git-dir={foreign_git_dir} "
+            "update-index --add tracked.txt"
+        ),
+    )
+    decisions = []
+    for command in hostile:
+        denied = hook(assigned, command, **common)
+        decisions.append(denied)
+        if not denied:
+            subprocess.run(["bash", "-lc", command], cwd=assigned, check=True)
 
-    unbound = common | {"agent_id": "unbound-worker"}
-    denied = hook(root_writer, str(root_writer / "new.txt"), tool="Edit", **unbound)
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "UNBOUND" in denied["hookSpecificOutput"]["permissionDecisionReason"]
-    denied = hook(root_writer, "git add tracked.txt", **unbound)
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "UNBOUND" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    patch = "*** Begin Patch\n*** Add File: worker-probe\n+x\n*** End Patch"
+    for tool, value in (("apply_patch", patch), ("Edit", str(assigned / "worker-probe"))):
+        denied = hook(assigned, value, tool=tool, **common)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "worker-read-only" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+    after = {
+        repo: (git(repo, "status", "--porcelain=v1"), git(repo, "write-tree"),
+               (repo / "tracked.txt").read_text())
+        for repo in protected
+    }
+    assert all(
+        decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+        and "worker-read-only" in decision["hookSpecificOutput"]["permissionDecisionReason"]
+        for decision in decisions
+    )
+    assert after == before
+
+
+def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    (primary / "tracked.txt").write_text("base\n")
+    git(primary, "add", "tracked.txt")
+    git(primary, "commit", "-m", "base")
+    writer = tmp_path / "writer"
+    git(primary, "worktree", "add", "--detach", str(writer))
+    common = {
+        "environment": dict(os.environ),
+        "coordinator_primary": primary,
+        "coordinator_writer": writer,
+    }
+    assert hook(writer, "git status --short", **common) == {}
+    assert hook(writer, "*** Begin Patch\n*** Add File: probe\n+x\n*** End Patch",
+                tool="apply_patch", **common) == {}
 
 
 def test_context_server_exposes_only_bound_read_context():

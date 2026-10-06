@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shlex
@@ -222,14 +221,13 @@ def classify(
     cwd: str,
     coordinator_primary: str | None = None,
     coordinator_writer: str | None = None,
-    strict_writer: bool = False,
 ) -> str | None:
     current = cwd
     for tokens in segments(command):
         unwrapped, wrapped_cwd = unwrap_env(tokens, current)
         if unwrapped != tokens or wrapped_cwd != current:
             if reason := classify(shlex.join(unwrapped), wrapped_cwd,
-                                  coordinator_primary, coordinator_writer, strict_writer):
+                                  coordinator_primary, coordinator_writer):
                 return reason
             continue
         if tokens and Path(tokens[0]).name in SHELLS:
@@ -238,15 +236,13 @@ def classify(
             if positions:
                 nested = classify(
                     tokens[positions[0] + 1], current, coordinator_primary,
-                    coordinator_writer, strict_writer,
+                    coordinator_writer,
                 )
                 if nested:
                     return nested
         alias = inline_alias(tokens)
         if alias:
-            nested = classify(
-                alias, current, coordinator_primary, coordinator_writer, strict_writer
-            )
+            nested = classify(alias, current, coordinator_primary, coordinator_writer)
             if nested:
                 return nested
         if coordinator_primary is None:
@@ -256,9 +252,6 @@ def classify(
         if tokens and Path(tokens[0]).name == "git-commit":
             identity = checkout_identity([], current)
             root = identity[0] if identity else None
-            if strict_writer and root and root != coordinator_writer:
-                return (f"[worker-writer] git git-commit is denied in {root}; "
-                        f"assigned writer is {coordinator_writer or 'UNBOUND'}.")
             if root and (coordinator_primary is None or root == coordinator_primary):
                 return (f"[primary-checkout] git git-commit is denied in {root}; "
                         "use a linked writer worktree.")
@@ -307,11 +300,6 @@ def classify(
             if ((subcommand in MUTATIONS and not tag_read and not stash_read)
                     or branch_write or worktree_write or config_write or remote_write
                     or notes_write or reflog_write):
-                identity = checkout_identity(prefix, command_cwd)
-                identity_root = identity[0] if identity else None
-                if strict_writer and identity_root and identity_root != coordinator_writer:
-                    return (f"[worker-writer] git {subcommand} is denied in {identity_root}; "
-                            f"assigned writer is {coordinator_writer or 'UNBOUND'}.")
                 root = primary_checkout(prefix, command_cwd)
                 if root and (coordinator_primary is None
                         or os.path.realpath(root) == coordinator_primary):
@@ -329,23 +317,7 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
-def _repository_root(target: str) -> str | None:
-    candidate = Path(target)
-    while not candidate.exists() and candidate != candidate.parent:
-        candidate = candidate.parent
-    cwd = candidate if candidate.is_dir() else candidate.parent
-    identity = checkout_identity([], str(cwd))
-    return identity[0] if identity else None
-
-
-def foreign_write(
-    target: str, primary: str, writer: str | None, *, strict_writer: bool = False
-) -> str | None:
-    if strict_writer:
-        root = _repository_root(target)
-        if root and root != writer:
-            return (f"[worker-writer] writing {target} is denied in {root}; "
-                    f"assigned writer is {writer or 'UNBOUND'}.")
+def foreign_write(target: str, primary: str, writer: str | None) -> str | None:
     if _inside(target, primary):
         return (f"[primary-checkout] writing {target} is denied; "
                 "use a linked writer worktree.")
@@ -364,9 +336,7 @@ def friction_binding(candidate: str, primary: str, writer: str | None) -> bool:
     return logical in bindings and os.path.islink(logical) and os.path.realpath(logical) in durable
 
 
-def classify_patch(
-    command: str, cwd: str, primary: str, writer: str | None, *, strict_writer: bool = False
-) -> str | None:
+def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> str | None:
     prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
     for line in command.splitlines():
         raw = next((line.removeprefix(prefix) for prefix in prefixes
@@ -375,8 +345,8 @@ def classify_patch(
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
         target = os.path.abspath(candidate) if writer is None else os.path.realpath(candidate)
-        if strict_writer or not friction_binding(candidate, primary, writer):
-            reason = foreign_write(target, primary, writer, strict_writer=strict_writer)
+        if not friction_binding(candidate, primary, writer):
+            reason = foreign_write(target, primary, writer)
             if reason:
                 return reason
     return None
@@ -385,79 +355,22 @@ def classify_patch(
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 
 
-def classify_edit(
-    tool_input: dict, cwd: str, primary: str, writer: str | None, *, strict_writer: bool = False
-) -> str | None:
+def classify_edit(tool_input: dict, cwd: str, primary: str, writer: str | None) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
     candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
     target = os.path.realpath(candidate)
-    if not strict_writer and friction_binding(candidate, primary, writer):
+    if friction_binding(candidate, primary, writer):
         return None
-    return foreign_write(target, primary, writer, strict_writer=strict_writer)
-
-
-def _binding_path(bindings: Path, agent_id: str) -> Path:
-    return bindings / (hashlib.sha256(agent_id.encode()).hexdigest() + ".json")
-
-
-def _validated_linked_writer(primary: str, writer: str) -> str:
-    resolved = os.path.realpath(writer)
-    identity = checkout_identity([], resolved)
-    expected_common = os.path.realpath(os.path.join(primary, ".git"))
-    if (identity is None or identity[0] != resolved or identity[1] == identity[2]
-            or identity[2] != expected_common):
-        raise ValueError("delegated writer is not a linked worktree of the canonical repository")
-    return resolved
-
-
-def bind_worker(arguments: list[str]) -> int:
-    if len(arguments) != 8 or arguments[0] != "--bind-worker" \
-            or arguments[2] != "--writer" or arguments[4] != "--coordinator-primary" \
-            or arguments[6] != "--worker-bindings":
-        raise SystemExit(
-            "usage: codex-hook --bind-worker AGENT_ID --writer PATH "
-            "--coordinator-primary PATH --worker-bindings PATH"
-        )
-    agent_id, writer, primary, bindings_value = (
-        arguments[1], arguments[3], os.path.realpath(arguments[5]), arguments[7]
-    )
-    if not agent_id:
-        raise SystemExit("delegated Worker agent identity is required")
-    bindings = Path(bindings_value).resolve(strict=True)
-    if not bindings.is_dir() or bindings.stat().st_mode & 0o077:
-        raise SystemExit("delegated Worker binding directory is invalid")
-    resolved_writer = _validated_linked_writer(primary, writer)
-    destination = _binding_path(bindings, agent_id)
-    payload = json.dumps({"agent_id": agent_id, "writer": resolved_writer}) + "\n"
-    try:
-        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise SystemExit("delegated Worker identity is already bound") from exc
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(payload)
-    print(resolved_writer)
-    return 0
-
-
-def worker_writer(bindings: Path | None, agent_id: str, primary: str) -> str | None:
-    if bindings is None:
-        return None
-    try:
-        payload = json.loads(_binding_path(bindings, agent_id).read_text())
-        if payload.get("agent_id") != agent_id or not isinstance(payload.get("writer"), str):
-            return None
-        return _validated_linked_writer(primary, payload["writer"])
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
+    return foreign_write(target, primary, writer)
 
 
 def main() -> int:
     try:
         return run()
     except Exception as error:
-        if len(sys.argv) in {3, 5, 7} and sys.argv[1] == "--coordinator-primary":
+        if len(sys.argv) in {3, 5} and sys.argv[1] == "--coordinator-primary":
             print(json.dumps(deny(f"[primary-checkout] guard failed closed: {error}",
                                   "PreToolUse")))
             return 0
@@ -467,14 +380,7 @@ def main() -> int:
 def run() -> int:
     coordinator_primary = None
     coordinator_writer = None
-    worker_bindings = None
-    if len(sys.argv) == 7 and sys.argv[1] == "--coordinator-primary" \
-            and sys.argv[3] == "--coordinator-writer" \
-            and sys.argv[5] == "--worker-bindings":
-        coordinator_primary = os.path.realpath(sys.argv[2])
-        coordinator_writer = os.path.realpath(sys.argv[4])
-        worker_bindings = Path(sys.argv[6]).resolve(strict=True)
-    elif len(sys.argv) == 5 and sys.argv[1] == "--coordinator-primary" \
+    if len(sys.argv) == 5 and sys.argv[1] == "--coordinator-primary" \
             and sys.argv[3] == "--coordinator-writer":
         coordinator_primary = os.path.realpath(sys.argv[2])
         coordinator_writer = os.path.realpath(sys.argv[4])
@@ -482,8 +388,7 @@ def run() -> int:
         coordinator_primary = os.path.realpath(sys.argv[2])
     elif len(sys.argv) != 1:
         raise SystemExit(
-            "usage: codex-hook [--coordinator-primary PATH "
-            "[--coordinator-writer PATH --worker-bindings PATH]]"
+            "usage: codex-hook [--coordinator-primary PATH [--coordinator-writer PATH]]"
         )
     payload = json.load(sys.stdin)
     event = str(payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse")
@@ -497,9 +402,12 @@ def run() -> int:
     if isinstance(declared_workdir, str):
         cwd = os.path.realpath(os.path.join(cwd, declared_workdir))
     agent_id = payload.get("agent_id")
-    strict_writer = isinstance(agent_id, str) and bool(agent_id)
-    if strict_writer and coordinator_primary is not None:
-        coordinator_writer = worker_writer(worker_bindings, agent_id, coordinator_primary)
+    if isinstance(agent_id, str) and agent_id and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
+        print(json.dumps(deny(
+            "[worker-read-only] delegated Workers cannot use shell or file-edit tools; "
+            "return a patch or findings to Root.", event,
+        )))
+        return 0
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     target = os.path.realpath(os.path.join(cwd, raw)) if isinstance(raw, str) else ""
     memory_root = os.path.realpath(os.path.expanduser("~/.claude/projects"))
@@ -509,21 +417,13 @@ def run() -> int:
             print(json.dumps(deny(f"[memory-write] blocked: auto-memory is not allowed ({target}).", event)))
             return 0
     if tool in EDIT_TOOLS and coordinator_primary is not None:
-        reason = classify_edit(
-            tool_input, cwd, coordinator_primary, coordinator_writer,
-            strict_writer=strict_writer,
-        )
+        reason = classify_edit(tool_input, cwd, coordinator_primary, coordinator_writer)
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
-        reason = classify(
-            command, cwd, coordinator_primary, coordinator_writer, strict_writer
-        )
+        reason = classify(command, cwd, coordinator_primary, coordinator_writer)
     elif tool == "apply_patch" and coordinator_primary is not None:
-        reason = classify_patch(
-            command, cwd, coordinator_primary, coordinator_writer,
-            strict_writer=strict_writer,
-        )
+        reason = classify_patch(command, cwd, coordinator_primary, coordinator_writer)
     else:
         return 0
     if reason:
@@ -532,6 +432,4 @@ def run() -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--bind-worker":
-        raise SystemExit(bind_worker(sys.argv[1:]))
     raise SystemExit(main())

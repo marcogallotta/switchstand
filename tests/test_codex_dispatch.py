@@ -382,11 +382,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     hook_command = profile["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     hook_arguments = hook_command.split()
     assert hook_arguments[0] == str(ROOT / "scripts/codex-hook")
-    assert hook_arguments[-4:-2] == ["--coordinator-writer", str(writer)]
-    assert hook_arguments[-2] == "--worker-bindings"
-    bindings = Path(hook_arguments[-1])
-    assert bindings.is_dir()
-    assert bindings.stat().st_mode & 0o777 == 0o700
+    assert hook_arguments[-2:] == ["--coordinator-writer", str(writer)]
+    assert "Built-in Workers are read-only" in profile["developer_instructions"]
     assert profile["mcp_servers"]["switchstand_coordinator_control"]["command"] == str(
         primary / "scripts/switchstand-coordinator-control-mcp"
     )
