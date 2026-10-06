@@ -56,20 +56,89 @@ def git(repo: Path, *arguments: str) -> str:
 def hook(
     repo: Path, command: str, environment: dict[str, str],
     *, tool: str = "Bash", coordinator_primary: Path | None = None,
-    coordinator_writer: Path | None = None,
+    coordinator_writer: Path | None = None, worker_bindings: Path | None = None,
+    agent_id: str | None = None, tool_workdir: Path | None = None,
 ) -> dict:
     arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
     if coordinator_primary is not None:
         arguments += ["--coordinator-primary", str(coordinator_primary)]
     arguments += ["--coordinator-writer", str(coordinator_writer)] if coordinator_writer else []
+    arguments += ["--worker-bindings", str(worker_bindings)] if worker_bindings else []
+    payload = {"hook_event_name": "PreToolUse", "tool_name": tool,
+               "tool_input": {"file_path" if tool == "Edit" else "command": command},
+               "cwd": str(repo)}
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    if tool_workdir is not None:
+        payload["tool_input"]["workdir"] = str(tool_workdir)
     result = subprocess.run(
         arguments,
-        input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
-                          "tool_input": {"file_path" if tool == "Edit" else "command": command},
-                          "cwd": str(repo)}),
+        input=json.dumps(payload),
         text=True, capture_output=True, check=True, env=environment,
     )
     return json.loads(result.stdout) if result.stdout else {}
+
+
+def test_delegated_worker_is_bound_to_one_exact_linked_writer(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    (primary / "tracked.txt").write_text("base\n")
+    git(primary, "add", "tracked.txt")
+    git(primary, "commit", "-m", "base")
+    root_writer, assigned, foreign = (tmp_path / name for name in ("root", "assigned", "foreign"))
+    for path in (root_writer, assigned, foreign):
+        git(primary, "worktree", "add", "-b", path.name, str(path))
+    bindings = tmp_path / "bindings"
+    bindings.mkdir(mode=0o700)
+    guard = Path(__file__).parents[1] / "scripts/codex-hook"
+    agent = "worker-123"
+    bound = subprocess.run(
+        [guard, "--bind-worker", agent, "--writer", assigned,
+         "--coordinator-primary", primary, "--worker-bindings", bindings],
+        text=True, capture_output=True, check=True,
+    )
+    assert bound.stdout.strip() == str(assigned)
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(
+            [guard, "--bind-worker", agent, "--writer", foreign,
+             "--coordinator-primary", primary, "--worker-bindings", bindings],
+            text=True, capture_output=True, check=True,
+        )
+
+    common = {
+        "environment": dict(os.environ),
+        "coordinator_primary": primary,
+        "coordinator_writer": root_writer,
+        "worker_bindings": bindings,
+        "agent_id": agent,
+    }
+    assert hook(assigned, str(assigned / "new.txt"), tool="Edit", **common) == {}
+    for target in (root_writer / "new.txt", foreign / "new.txt", primary / "new.txt"):
+        denied = hook(assigned, str(target), tool="Edit", **common)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    (assigned / "foreign-link").symlink_to(foreign / "tracked.txt")
+    denied = hook(assigned, str(assigned / "foreign-link"), tool="Edit", **common)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(
+        root_writer, f"git -C {assigned} add tracked.txt", **common
+    ) == {}
+    assert hook(root_writer, "git add tracked.txt", tool_workdir=assigned, **common) == {}
+    denied = hook(root_writer, f"git -C {foreign} add tracked.txt", **common)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "worker-writer" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+    unbound = common | {"agent_id": "unbound-worker"}
+    denied = hook(root_writer, str(root_writer / "new.txt"), tool="Edit", **unbound)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "UNBOUND" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    denied = hook(root_writer, "git add tracked.txt", **unbound)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "UNBOUND" in denied["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_context_server_exposes_only_bound_read_context():

@@ -119,6 +119,13 @@ trusted_hash = "must-not-copy"
         "supplies one, report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted "
         "launch-bound managed runs."
     ) in instructions
+    bindings = Path(f"{tmp_path / 'coordinator/start-commit.coordinator.config'}.worker-writers")
+    assert (
+        f"--worker-bindings {bindings}; send that exact writer path to the Worker"
+        in instructions
+    )
+    assert bindings.is_dir()
+    assert bindings.stat().st_mode & 0o777 == 0o700
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert "forked Workers" not in instructions
     assert profile["features"] == {"hooks": True, "multi_agent": True}
@@ -156,7 +163,7 @@ trusted_hash = "must-not-copy"
     group = profile["hooks"]["PreToolUse"][0]
     assert group["hooks"][0]["command"] == (
         f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary} "
-        f"--coordinator-writer {primary.parent / 'writer'}"
+        f"--coordinator-writer {primary.parent / 'writer'} --worker-bindings {bindings}"
     )
     compact = profile["hooks"]["SessionStart"][0]
     assert compact["matcher"] == "^compact$"

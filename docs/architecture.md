@@ -520,6 +520,14 @@ or binding nodes move to a generation-specific private quarantine; dispatch recr
 friction state, reports the degradation, and continues launch. Outside the canonical repository,
 dispatch passes through to the ordinary Codex executable.
 
+Built-in delegated Workers share the Coordinator process profile, so repository mutation is
+fail-closed until Root explicitly binds the returned Worker agent ID to one exact linked writer.
+The generation-private binding registry is mode 0700, accepts each identity once, and validates
+that the target is a linked worktree of the canonical repository. Pre-tool checks then allow that
+Worker's visible Git and edit mutations only in the bound writer; Root's writer, canonical main,
+and sibling writers remain fenced. Root sends the exact path after binding. Read-only Workers need
+no binding, and managed Workers retain their separate trusted task-private writer contract.
+
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
 `scripts/docker-gc` BuildKit cache cap whenever managed Docker work is reconciled. `scripts/docker-gc` serializes
 host-wide cache reconciliation and bounds only unused build cache; exact resource owners remain responsible for
