@@ -58,7 +58,9 @@ from .run import managed_runtime_currentness
 from .state import PostgresState
 from .task_runs import (
     AgentTaskRequest,
+    AgentTaskResult,
     TaskRunRequestResult,
+    TaskRunResultResult,
     TaskRunState,
     task_request_operation_id,
 )
@@ -396,7 +398,46 @@ def build_server(
                     request,
                 )
 
+        async def _agent_task_result(
+            api_version: Literal["1"], request_id: UUID, result_id: UUID,
+            outcome: Annotated[str, Field(min_length=1, max_length=128)],
+            summary: Annotated[str, Field(min_length=1, max_length=8000)],
+            evidence_refs: Annotated[tuple[str, ...], Field(max_length=64)] = (),
+        ) -> TaskRunResultResult:
+            """Persist evidence for an exact pre-bound managed task execution."""
+            async with grants.locked(principal.key) as grant:
+                if grant is None or not grant.current():
+                    return TaskRunResultResult(status="denied", reason="no_current_grant")
+                if (
+                    principal != managed_principal(active_work_id)
+                    or grant.principal != principal
+                    or grant.scope != "launch"
+                    or grant.authority.active_work_id != active_work_id
+                    or not grant.can_write(active_work_id)
+                    or "agent_task" not in grant.operations
+                ):
+                    return TaskRunResultResult(
+                        status="denied", reason="operation_not_granted"
+                    )
+                runtime = currentness()
+                if runtime is None:
+                    return TaskRunResultResult(
+                        status="unknown", reason="runtime_currentness_unavailable"
+                    )
+                return await task_runs.submit_result(
+                    request_id,
+                    result_id,
+                    runtime,
+                    AgentTaskResult(
+                        api_version=api_version,
+                        outcome=outcome,
+                        summary=summary,
+                        evidence_refs=evidence_refs,
+                    ),
+                )
+
         closed_tool(server, "agent_task_request", _agent_task_request)
+        closed_tool(server, "agent_task_result", _agent_task_result)
     return server
 
 
