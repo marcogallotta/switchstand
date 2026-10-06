@@ -145,12 +145,15 @@ class AgentMailboxState:
                     ):
                         return AgentMailboxResult(status="ok", mailbox=mailbox)
                     return AgentMailboxResult(status="conflict", reason="name_collision")
-                prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
+                prior = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,
-                ))).scalar_one_or_none()
+                ))).mappings().one_or_none()
                 if prior is not None:
-                    return AgentMailboxResult(status="conflict", reason="session_already_registered")
+                    # Registration is read-or-create for the authenticated session. Returning its
+                    # immutable mailbox lets a resumed Codex thread reuse even a special name such
+                    # as /root without guessing that name or performing a takeover.
+                    return AgentMailboxResult(status="ok", mailbox=self._view(prior))
                 return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")

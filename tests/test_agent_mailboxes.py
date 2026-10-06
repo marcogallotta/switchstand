@@ -42,7 +42,8 @@ async def test_same_principal_distinct_chats_own_distinct_names(endpoints):
     assert alpha.mailbox.endpoint_id != beta.mailbox.endpoint_id
     assert (await endpoints.for_actor("owner", "chat-a")).mailbox == alpha.mailbox
     duplicate = await endpoints.register_agent("Gamma", "owner", "chat-a")
-    assert (duplicate.status, duplicate.reason) == ("conflict", "session_already_registered")
+    assert duplicate.status == "ok"
+    assert duplicate.mailbox == alpha.mailbox
 
 
 async def test_concurrent_registration_reconciles_unique_identity(endpoints):
@@ -57,9 +58,8 @@ async def test_concurrent_registration_reconciles_unique_identity(endpoints):
         endpoints.register_agent("Alpha", "other", "contended-chat"),
         endpoints.register_agent("Beta", "other", "contended-chat"),
     )
-    assert sorted((alpha.status, beta.status)) == ["conflict", "ok"]
-    conflict = alpha if alpha.status == "conflict" else beta
-    assert conflict.reason == "session_already_registered"
+    assert alpha.status == beta.status == "ok"
+    assert alpha.mailbox == beta.mailbox
 
 
 async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
