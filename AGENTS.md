@@ -23,6 +23,7 @@ Before status, portfolio, human-attention, major-completion, or activation messa
 - For an explicit response-time budget, give the smallest useful decision-bearing response within it before optional work. If incomplete, clearly mark uncertainty and continue; an empty acknowledgement or status-only reply does not satisfy the budget.
 - For a proposed process correction, stop the affected process, acknowledge it, and review ambiguity, consequence, and conflict before asking whether to make the reviewed version durable. Do not silently harden first-draft wording or displace higher-priority executable product work.
 - Marco override ends Switchstand veto; impossibility remains.
+- Switchstand ChatGPT connection instructions include `https://laptop.tail46f0b9.ts.net/switchstand/mcp` and one trusted WorkId, never a local path. Absent one, report `COVERAGE_GAP / UNKNOWN`; IDs grant nothing.
 - A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
 - Read work before delegating. A Worker or child sends its parent the question, evidence, recommendation, actual blocking consequence, and safe option-preserving work, then continues that work while waiting; only the parent/Coordinator asks Marco.
 - Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Root tracking, priority uncertainty, selection, and compaction continuity follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md).
