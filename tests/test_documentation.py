@@ -150,6 +150,16 @@ def test_code_quality_owns_implementation_and_review_execution_guidance():
     assert "before verdict/handoff" not in agents
 
 
+def test_managed_history_is_exceptional_not_normal_grounding():
+    development = normalized("docs/development.md")
+    history_owner = normalized("docs/source-history-feedback.md")
+
+    assert "Do not page `work_history` during normal startup, re-entry, review, polling, or implementation" in development
+    assert "read-only bounded investigation/recovery capability" in development
+    assert "History and exact-event reads are exceptional" in history_owner
+    assert "are not for normal grounding, re-entry, current-work discovery, or routine polling" in history_owner
+
+
 def test_human_and_incident_triggers_remain_always_loaded():
     agents = read("AGENTS.md")
     triggers = section(agents, "### Always-loaded triggers")
