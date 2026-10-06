@@ -21,6 +21,7 @@ from switchstand.contracts import (
     WorkResult,
 )
 from switchstand.grants import GrantedWorkResult
+from switchstand.managed_identity import managed_principal
 from switchstand.mcp import (
     build_server,
     controller_from_env,
@@ -28,6 +29,8 @@ from switchstand.mcp import (
     protect_provider_logs,
     server_from_env,
 )
+from switchstand.messages import RuntimeCurrentness
+from switchstand.task_runs import AgentTaskResult, TaskRunResult, TaskRunResultResult
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -136,6 +139,9 @@ async def test_managed_server_constructs_task_runs_but_defaults_deny(monkeypatch
         async def request(self, *_args):
             raise AssertionError("default-denied request reached persistence")
 
+        async def submit_result(self, *_args):
+            raise AssertionError("default-denied result reached persistence")
+
     monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
     monkeypatch.setattr(managed_mcp, "controller_from_env", lambda: service)
     monkeypatch.setattr(managed_mcp, "GrantState", NoGrantState)
@@ -155,10 +161,142 @@ async def test_managed_server_constructs_task_runs_but_defaults_deny(monkeypatch
     assert result.structured_content == {
         "status": "denied", "request": None, "reason": "no_current_grant",
     }
+    assert "agent_task_result" in server._tool_manager._tools
+    result = await server.call_tool("agent_task_result", {
+        "api_version": "1",
+        "request_id": str(uuid4()),
+        "result_id": str(uuid4()),
+        "outcome": "complete",
+        "summary": "Evidence remains denied by default.",
+        "evidence_refs": [],
+    })
+    assert result.structured_content == {
+        "status": "denied", "result": None, "terminal": False,
+        "reason": "no_current_grant",
+    }
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
-    assert "agent_task_request" not in (
-        config["mcp_servers"]["switchstand_managed"]["enabled_tools"]
+    enabled = config["mcp_servers"]["switchstand_managed"]["enabled_tools"]
+    assert "agent_task_request" not in enabled
+    assert "agent_task_result" not in enabled
+
+
+async def test_agent_task_result_passes_runtime_currentness_to_existing_binding():
+    principal = managed_principal(ID)
+    request_id, result_id = uuid4(), uuid4()
+    presented_run, current_run = uuid4(), uuid4()
+    runtimes = (
+        RuntimeCurrentness(generation=str(presented_run), current_generation=None),
+        RuntimeCurrentness(
+            generation=str(presented_run), current_generation=str(current_run)
+        ),
     )
+
+    grant = SimpleNamespace(
+        principal=principal,
+        scope="launch",
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=()),
+        operations=frozenset({"agent_task"}),
+        current=lambda: True,
+        can_write=lambda work_id: work_id == ID,
+    )
+
+    class Grants:
+        @asynccontextmanager
+        async def locked(self, principal_key):
+            assert principal_key == principal.key
+            yield grant
+
+    class TaskRuns:
+        def __init__(self):
+            self.calls = []
+
+        async def submit_result(self, *args):
+            self.calls.append(args)
+            runtime = args[2]
+            return TaskRunResultResult(
+                status="unknown" if runtime.current_generation is None else "stale",
+                result=TaskRunResult(
+                    result_id=result_id,
+                    request_id=request_id,
+                    run_id=presented_run,
+                    outcome="complete",
+                    summary="Bound execution evidence.",
+                    evidence_refs=("commit:abc",),
+                ),
+                reason=(
+                    "runtime_currentness_unavailable"
+                    if runtime.current_generation is None else "run_superseded"
+                ),
+            )
+
+    task_runs = TaskRuns()
+    selected = iter(runtimes)
+    server = build_server(
+        object(), active_work_id=ID, grants=Grants(), principal=principal,
+        currentness=lambda: next(selected), task_runs=task_runs,
+    )
+    schema = server._tool_manager._tools["agent_task_result"].fn_metadata.arg_model.model_json_schema()
+    assert set(schema["properties"]) == {
+        "api_version", "request_id", "result_id", "outcome", "summary", "evidence_refs",
+    }
+    payload = {
+        "api_version": "1", "request_id": str(request_id), "result_id": str(result_id),
+        "outcome": "complete", "summary": "Bound execution evidence.",
+        "evidence_refs": ["commit:abc"],
+    }
+
+    for runtime, expected_status in zip(runtimes, ("unknown", "stale"), strict=True):
+        response = await server.call_tool("agent_task_result", payload)
+        assert response.structured_content["status"] == expected_status
+        assert response.structured_content["terminal"] is False
+        assert response.structured_content["result"]["evidence_refs"] == ["commit:abc"]
+        assert task_runs.calls[-1] == (
+            request_id,
+            result_id,
+            runtime,
+            AgentTaskResult(
+                api_version="1", outcome="complete", summary="Bound execution evidence.",
+                evidence_refs=("commit:abc",),
+            ),
+        )
+
+
+async def test_agent_task_result_never_persists_without_runtime_identity():
+    principal = managed_principal(ID)
+    grant = SimpleNamespace(
+        principal=principal,
+        scope="launch",
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=()),
+        operations=frozenset({"agent_task"}),
+        current=lambda: True,
+        can_write=lambda work_id: work_id == ID,
+    )
+
+    class Grants:
+        @asynccontextmanager
+        async def locked(self, _principal_key):
+            yield grant
+
+    selected_runtime = None
+    server = build_server(
+        object(), active_work_id=ID, grants=Grants(), principal=principal,
+        currentness=lambda: selected_runtime, task_runs=SimpleNamespace(),
+    )
+    payload = {
+        "api_version": "1", "request_id": str(uuid4()), "result_id": str(uuid4()),
+        "outcome": "complete", "summary": "No runtime identity.",
+    }
+    grant.operations = frozenset()
+    response = await server.call_tool("agent_task_result", payload)
+    assert response.structured_content["status"] == "denied"
+    assert response.structured_content["reason"] == "operation_not_granted"
+
+    grant.operations = frozenset({"agent_task"})
+    response = await server.call_tool("agent_task_result", payload)
+    assert response.structured_content == {
+        "status": "unknown", "result": None, "terminal": False,
+        "reason": "runtime_currentness_unavailable",
+    }
 
 
 def test_managed_controller_script_without_authority_fails():

@@ -247,6 +247,8 @@ class TaskRunResultResult(ClosedModel):
         "execution_not_bound",
         "result_identity_conflict",
         "terminal_result_conflict",
+        "no_current_grant",
+        "operation_not_granted",
         "run_superseded",
         "runtime_currentness_unavailable",
         "state_unavailable",
