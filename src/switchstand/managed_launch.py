@@ -65,6 +65,8 @@ def managed_parent_command(
     control: Path,
     writer: Path,
     assignment: str,
+    *,
+    priority_claims: bool = False,
 ) -> tuple[str, ...]:
     """Construct the only command shape admitted by a prepared managed launch."""
     if not assignment:
@@ -76,6 +78,11 @@ def managed_parent_command(
         "Work only in the exact private writer. Native children inherit this WorkId and "
         "must use narrower authorization; messages and context never grant authority."
     )
+    enabled_tools = ["work_get", "work_history"]
+    if priority_claims:
+        enabled_tools.extend((
+            "priority_claim_get", "priority_claim_record", "priority_context_get",
+        ))
     return (
         str(codex_executable),
         "exec",
@@ -91,7 +98,8 @@ def managed_parent_command(
         "-c",
         'mcp_servers.switchstand.env_vars=["HOME","SWITCHSTAND_MANAGED","ACTIVE_WORK_ID"]',
         "-c",
-        'mcp_servers.switchstand.enabled_tools=["work_get","work_history"]',
+        "mcp_servers.switchstand.enabled_tools="
+        + json.dumps(enabled_tools, separators=(",", ":")),
         "-c",
         'mcp_servers.switchstand.default_tools_approval_mode="auto"',
         "-c",
@@ -128,6 +136,7 @@ class PreparedLaunchStore:
         codex_home: Path,
         codex_executable: Path,
         assignment: str,
+        priority_claims: bool = False,
     ) -> Path:
         lease = self.broker.lease(lease_id)
         if lease.get("reservation_id") != reservation_id or lease["state"] != "reserved":
@@ -156,7 +165,8 @@ class PreparedLaunchStore:
             codex_home=str(resolved_home),
             codex_executable=str(executable),
             command=managed_parent_command(
-                executable, resolved_control, resolved_writer, assignment
+                executable, resolved_control, resolved_writer, assignment,
+                priority_claims=priority_claims,
             ),
         )
         self._private_directory(self.directory)
@@ -317,6 +327,7 @@ class ManagedParentLauncher:
         codex_home: Path,
         codex_executable: Path,
         assignment: str,
+        priority_claims: bool = False,
         pressure: Pressure | None = None,
     ) -> dict[str, Any]:
         try:
@@ -354,6 +365,7 @@ class ManagedParentLauncher:
                 codex_home=codex_home,
                 codex_executable=codex_executable,
                 assignment=assignment,
+                priority_claims=priority_claims,
             )
         except Exception:
             store.reconcile_unlaunched(

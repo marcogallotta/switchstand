@@ -13,6 +13,7 @@ from switchstand.managed_launch import (
     MANAGED_ROOT_BUDGET,
     ManagedParentLauncher,
     PreparedLaunchStore,
+    managed_parent_command,
 )
 from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 
@@ -77,6 +78,7 @@ def prepared(tmp_path: Path) -> tuple[Broker, Path]:
         codex_home=codex_home,
         codex_executable=executable,
         assignment="implement the exact task",
+        priority_claims=True,
     )
     return broker, manifest
 
@@ -127,8 +129,27 @@ def test_prepared_manifest_is_exact_sealed_and_has_only_canonical_command(tmp_pa
     )
     assert "review uses its current review procedure" in instructions
     assert not any(value.startswith("hooks.SessionStart=") for value in manifest.command)
+    enabled = next(
+        value for value in manifest.command
+        if value.startswith("mcp_servers.switchstand.enabled_tools=")
+    )
+    assert "priority_claim_get" in enabled
+    assert "priority_claim_record" in enabled
+    assert "priority_context_get" in enabled
     assert "--json" in manifest.command
     assert "command" not in inspect.signature(PreparedLaunchStore.prepare).parameters
+
+
+def test_managed_command_omits_priority_tools_without_explicit_opt_in(tmp_path: Path) -> None:
+    command = managed_parent_command(
+        tmp_path / "codex", tmp_path / "control", tmp_path / "writer",
+        "implement the exact task",
+    )
+    enabled = next(
+        value for value in command
+        if value.startswith("mcp_servers.switchstand.enabled_tools=")
+    )
+    assert "priority_claim_get" not in enabled
 
 
 def test_manifest_tampering_and_wrong_store_are_rejected(tmp_path: Path) -> None:

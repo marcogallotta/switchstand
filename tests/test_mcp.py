@@ -23,6 +23,7 @@ from switchstand.contracts import (
 from switchstand.grants import GrantedWorkResult
 from switchstand.managed_identity import managed_principal
 from switchstand.mcp import (
+    build_context_server,
     build_server,
     controller_from_env,
     project_work,
@@ -120,6 +121,54 @@ async def test_managed_priority_tools_derive_launch_identity_and_bound_context()
     assert request.grant_version == 7
     assert request.operation_id == operation_id
     assert context.calls == [(ID, REFERENCE_ID)]
+
+
+async def test_launch_context_server_exposes_same_bound_priority_adapter():
+    principal = managed_principal(ID)
+    grant = SimpleNamespace(version=7)
+
+    class Grants:
+        async def current(self, principal_key):
+            assert principal_key == principal.key
+            return grant
+
+    class Claims:
+        async def current(self, kind, subject_id):
+            assert (kind, subject_id) == ("WORK", ID)
+            return PriorityClaimReadResult(status="ok")
+
+        async def record(self, passed_grants, passed_principal, request):
+            assert passed_grants is grants
+            assert passed_principal == principal
+            assert request.work_id == ID
+            assert request.grant_version == 7
+            return PriorityClaimService.guard(request, "denied", "probe")
+
+    class Context:
+        async def project(self, work_ids):
+            assert work_ids == (ID, REFERENCE_ID)
+            return PriorityContextResult(status="ok", scope_complete=True)
+
+    grants = Grants()
+    server = build_context_server(
+        FakeService(), ID, (REFERENCE_ID,),
+        grants=grants, principal=principal,
+        priority_claims=Claims(),  # type: ignore[arg-type]
+        priority_context=Context(),  # type: ignore[arg-type]
+    )
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert set(tools) == {
+            "work_get", "work_history", "priority_claim_get",
+            "priority_claim_record", "priority_context_get",
+        }
+        schema = tools["priority_claim_record"].input_schema
+        assert "work_id" not in schema["properties"]
+        assert "grant_version" not in schema["properties"]
+        result = await client.call_tool("priority_context_get", {
+            "api_version": "1", "include_references": True,
+        })
+        assert result.structured_content["status"] == "ok"
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])

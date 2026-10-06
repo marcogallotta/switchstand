@@ -216,6 +216,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     monkeypatch.setenv("ASANA_TOKEN", "host-secret")
     monkeypatch.setenv("ACTIVE_WORK_ID", "stale")
     monkeypatch.setenv("REFERENCE_WORK_IDS", "stale")
+    monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
 
     def fake_provision(repo, active, references, env):
         events.append(("provision", repo, active, references, dict(env)))
@@ -276,6 +277,7 @@ def test_context_provisions_before_codex_without_provider_token(monkeypatch, tmp
     assert launch["writer"] == writer
     assert launch["codex_home"] == tmp_path / "codex"
     assert launch["assignment"] == "repair the launcher"
+    assert launch["priority_claims"] is True
 
 
 def test_context_work_id_launch_rejects_existing_legacy_gid_writer(monkeypatch, tmp_path):
@@ -299,11 +301,23 @@ def test_context_work_id_launch_rejects_existing_legacy_gid_writer(monkeypatch, 
 @pytest.mark.parametrize("assignment", ["inspect only", "Stop.\nDo not edit.\n`$HOME` 'quoted'"])
 def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
     arguments = context.parser().parse_args(["--active", "123", "--", assignment])
-    command = context.codex_command(Path("/control"), Path("/writer"), arguments.assignment[0])
+    command = context.codex_command(
+        Path("/control"), Path("/writer"), arguments.assignment[0], priority_claims=True,
+    )
     assert command[-1].startswith(f"Exact launch assignment:\n{assignment}\n\n")
     assert command[-1].count(assignment) == 1
     assert "managed Worker context contract" in command[-1]
     assert "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS) in command
+    enabled = next(
+        value for value in command
+        if value.startswith("mcp_servers.switchstand.enabled_tools=")
+    )
+    assert "priority_claim_record" in enabled
+    default_enabled = next(
+        value for value in context.codex_command(Path("/control"), Path("/writer"), assignment)
+        if value.startswith("mcp_servers.switchstand.enabled_tools=")
+    )
+    assert "priority_claim_record" not in default_enabled
 
 
 @pytest.mark.parametrize(

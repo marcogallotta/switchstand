@@ -174,9 +174,11 @@ the managed surface derives the claim target and grant version from that trusted
 the active claim read/write tools, and bounds priority context to the active WorkId plus its
 launch-bound read-only references.
 
-`mcp.py::build_context_server` is the smaller read-only context surface. It exposes only the
-launch-bound work and its revision-checked history. Managed and ordinary MCPs reuse contracts and
-state, but their authority and inventories are intentionally not interchangeable.
+`mcp.py::build_context_server` is the smaller launch-context surface. It always exposes only the
+launch-bound work and its revision-checked history; when priority claims are enabled it additionally
+exposes the same active-work priority adapter and bounded context projection as the full managed
+server. Managed and ordinary MCPs reuse contracts and state, but their authority and inventories
+are intentionally not interchangeable.
 
 ### Managed resource-worker runtime
 
