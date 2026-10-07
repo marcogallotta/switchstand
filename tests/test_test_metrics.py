@@ -99,6 +99,12 @@ def test_workflow_preserves_authority_and_attempts():
     assert '--planner ' in execution and "'planner_revision': plan.planner_revision" in execution
     assert '--method GET' in execution
     assert 'selector_health_clear(' in execution
+    assert 'broad_backstop_required(event_kind, ref_name, default_branch)' in execution
+    assert "vars.SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED == 'true'" in text
+    assert "health = selective_enabled == 'true' and not force_full" in execution
+    assert 'evaluate_full_suite_due' in execution
+    assert 'adaptive_full_suite_shadow' in execution
+    assert 'adaptive_json=' in execution
     assert 'history_complete=history_complete' in execution
     assert 'test "${push_count:-1000}" -lt 1000' in execution
     assert 'test "${schedule_count:-1000}" -lt 1000' in execution

@@ -3,7 +3,15 @@ from __future__ import annotations
 import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
-from switchstand.stacked_delivery import layer_qualification_is_sufficient
+from switchstand.stacked_delivery import (
+    FocusedLayerReview,
+    FocusedReviewCheck,
+    LayerReviewIdentity,
+    StackLandingEvidence,
+    layer_qualification_is_sufficient,
+    stack_is_ready_to_land,
+)
+from switchstand.wakeful_host_qualification import HostJourney, qualify_host_journey
 
 BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
     "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
@@ -119,7 +127,23 @@ async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timin
     assert all(gate.attempt == 2 and gate.duration_ms == 2000 for gate in result.gates)
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
     assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in result.gates)
-    assert layer_qualification_is_sufficient(result.proportional_evidence())
+    catalogue = result.proportional_evidence()
+    assert layer_qualification_is_sufficient(catalogue)
+    host = qualify_host_journey(HostJourney(
+        HEAD, ("1" * 64, "2" * 64, "3" * 64), "nonce-0123456789abcdef",
+        "session", "session", HEAD, "nonce-0123456789abcdef",
+        True, True, True, True, True, True, True, True, 0, 0, 0,
+    )).evidence
+    reviews = tuple(
+        FocusedReviewCheck(FocusedLayerReview(
+            LayerReviewIdentity(character * 64, "b" * 64), "PASS", layer,
+            frozenset({"LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE"}),
+        ), LayerReviewIdentity(character * 64, "b" * 64))
+        for layer, character in zip(("A", "B", "C", "D"), "acde", strict=True)
+    )
+    assert stack_is_ready_to_land(StackLandingEvidence(
+        HEAD, COMPOSITION, HEAD, HEAD, reviews, (catalogue, host),
+    ))
 
 
 async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_closed():
@@ -167,6 +191,8 @@ async def test_missing_gate_and_old_composition_fail_closed():
         untrusted = await qualify_repository_candidate(7, client=http)
     assert untrusted.status == "NOT_READY"
     assert all(g.reason == "conflicting" for g in untrusted.gates)
+
+
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     overrides = {
         "Exact-head Quality": ("in_progress", None),
