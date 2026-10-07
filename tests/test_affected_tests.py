@@ -21,10 +21,9 @@ from switchstand.affected_tests import (
 
 def test_cumulative_stack_top_requires_one_parent_and_no_child() -> None:
     cases = ((0, 0, False), (1, 0, True), (1, 1, False), (None, 0, None), (2, 0, None))
-    for parents, children, expected in cases:
-        assert classify_cumulative_stack_top(
-            parent_count=parents, child_count=children
-        ) is expected
+    actual = tuple(classify_cumulative_stack_top(
+        parent_count=parents, child_count=children) for parents, children, _ in cases)
+    assert actual == tuple(expected for _, _, expected in cases)
 
 
 def test_schedule_and_default_push_always_require_broad_backstop() -> None:

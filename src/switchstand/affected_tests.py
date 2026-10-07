@@ -139,9 +139,7 @@ def foreground_authority(
     return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
 
 
-def classify_cumulative_stack_top(
-    *, parent_count: int | None, child_count: int | None
-) -> bool | None:
+def classify_cumulative_stack_top(*, parent_count: int | None, child_count: int | None) -> bool | None:
     if parent_count is None or child_count is None or parent_count > 1:
         return None
     return parent_count == 1 and child_count == 0
