@@ -190,7 +190,9 @@ canonical FastMCP state path and a candidate launcher that is byte-for-byte the 
 launcher with its single exact runtime path retargeted to the candidate. Before replacement
 and after each start, it binds the systemd `MainPID` command line to that launcher and derives
 the process's effective FastMCP path from its initial environment; a mismatch cannot pass.
-It proves the current four Caddy proxy handlers, inserts and publicly verifies a
+It proves the current four Caddy proxy handlers and requires the current runtime to
+pass the complete public-address readiness probe before any gate mutation. It then
+inserts and publicly verifies a
 first-priority `503 Retry-After` route covering every Switchstand MCP, OAuth and
 metadata path, and only then stops the edge. While that gate remains publicly proven
 and the systemd service is confirmed stopped, it runs the existing
@@ -200,17 +202,23 @@ before that forward-only command and `UPGRADED` only after it completes, so an
 interrupted or failed migration remains gated and `UNKNOWN`, never a blind retry or
 old-runtime rollback. It then snapshots the exact FastMCP state directory without
 parsing or logging its secret contents, atomically swaps the launcher, starts the edge, runs the edge doctor locally, removes the
-gate, and runs the public doctor. A definite failure before `UPGRADE_PENDING`
-retains the existing safe recovery: when stop is definitely complete, it restarts
-and verifies the compatible old runtime before ungating. Every failure or
+gate, and runs the public doctor. If public gate proof fails or is interrupted
+before the service is stopped, it proves the old runtime locally exact, removes
+and reads back the exact gate, and terminalizes the attempt as `ROLLED_BACK / FAIL`;
+remaining external-address degradation is diagnostic and cannot reinstall a
+service-wide gate. Ambiguous old-runtime or gate-removal proof stays `UNKNOWN`
+without deliberately re-gating the still-running old service. A definite failure
+later but before `UPGRADE_PENDING` retains the existing safe recovery: when stop
+is definitely complete, it restarts and verifies the compatible old runtime before
+ungating. Every failure or
 ambiguity at or after `UPGRADE_PENDING` returns `UNKNOWN`, retains or reinstalls
 the gate, and performs no automatic old-runtime restart. It never restores the
 OAuth snapshot automatically because doing
 so could discard registrations or token rotations accepted after the snapshot.
 Snapshot restoration is a separate offline corruption-recovery action with explicit
-session-loss consequences. Ambiguous mutation/readback or ambiguous rollback returns `UNKNOWN`
-and retains or reinstalls the maintenance route. An interrupt after gate insertion follows the
-same fail-closed path. Never blindly rerun an UNKNOWN;
+session-loss consequences. Ambiguous mutation/readback or ambiguous rollback after
+the service-stop boundary returns `UNKNOWN` and retains or reinstalls the maintenance
+route. An interrupt after that boundary follows the same fail-closed path. Never blindly rerun an UNKNOWN;
 inspect its receipt and live gate/service/launcher state first.
 
 One narrow recovery mode exists only for an exact `UNKNOWN / UPGRADE_PENDING`

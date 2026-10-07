@@ -63,6 +63,7 @@ class FakeOperations:
         self,
         *,
         public_gate: bool = True,
+        current_public: bool = True,
         local: bool = True,
         public: bool = True,
         fail_at: str | None = None,
@@ -72,6 +73,7 @@ class FakeOperations:
         self.events: list[str] = []
         self.gated = False
         self.public_gate = public_gate
+        self.current_public = current_public
         self.local = local
         self.public = public
         self.fail_at = fail_at
@@ -129,6 +131,14 @@ class FakeOperations:
     def rollback_ready(self):
         self._event("rollback_ready")
         return self.rollback
+
+    def gate_abort_ready(self):
+        self._event("gate_abort_ready")
+        return self.rollback
+
+    def current_public_ready(self):
+        self._event("current_public_ready")
+        return self.current_public
 
     def ungate(self):
         self._event("ungate")
@@ -371,6 +381,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
 
     assert operations.events == [
         "preflight",
+        "current_public_ready",
         "gate",
         "public_gated",
         "stop",
@@ -446,19 +457,147 @@ def test_gate_retention_reports_its_own_unknown_class():
         maintenance.retain_gate(operations)
 
 
-def test_unproved_public_gate_is_unknown_and_service_is_not_stopped(tmp_path: Path):
+def test_unproved_public_gate_restores_old_route_without_stopping(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(public_gate=False)
+    operations = FakeOperations(public_gate=False, public=False)
+
+    assert deploy(subject, operations) == "FAIL"
+
+    assert "stop" not in operations.events
+    assert "upgrade_state" not in operations.events
+    assert "swap" not in operations.events
+    assert operations.events[-4:] == [
+        "gate_abort_ready", "ungate", "gate_exact", "public_ready",
+    ]
+    assert not operations.gated
+    assert {key: receipt(subject)[key] for key in ("phase", "status", "error")} == {
+        "phase": "ROLLED_BACK",
+        "status": "FAIL",
+        "error": "PublicGateUnproven",
+    }
+
+
+def test_unproved_public_gate_ambiguous_ungate_does_not_reinstall_gate(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(public_gate=False, unknown_at="ungate")
 
     assert deploy(subject, operations) == "UNKNOWN"
 
+    assert operations.events[-2:] == ["gate_abort_ready", "ungate"]
+    assert operations.events.count("gate") == 1
     assert "stop" not in operations.events
-    assert operations.gated
     assert {key: receipt(subject)[key] for key in ("phase", "status", "error")} == {
         "phase": "GATED",
         "status": "UNKNOWN",
-        "error": "GateRetentionUnknown",
+        "error": "GateAbortUnknown",
     }
+
+
+def test_preflight_public_failure_never_installs_gate(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(current_public=False)
+
+    assert deploy(subject, operations) == "FAIL"
+
+    assert operations.events == ["preflight", "current_public_ready"]
+    assert not operations.gated
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+
+
+def test_interrupted_preflight_gate_routes_to_abort_without_reinstall(tmp_path: Path):
+    subject = config(tmp_path)
+    seed_receipt(subject, "PREFLIGHT")
+    operations = FakeOperations(public_gate=False, public=False)
+    operations.gated = True
+    operations.reconcile_phase = lambda _phase, _proof: ("GATED", {})  # type: ignore[method-assign]
+
+    assert deploy(subject, operations) == "FAIL"
+
+    assert "stop" not in operations.events
+    assert "upgrade_state" not in operations.events
+    assert "swap" not in operations.events
+    assert operations.events.count("gate") == 0
+    assert not operations.gated
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+
+
+def test_preflight_reconcile_defers_external_gate_proof_to_abort_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    subject = config(tmp_path)
+    operations = HostOperations(subject)
+    monkeypatch.setattr(operations, "_resume_trust", lambda: None)
+    monkeypatch.setattr(operations, "_gate_state", lambda: "APPLIED")
+    monkeypatch.setattr(operations, "_service_state", lambda: "ACTIVE")
+    monkeypatch.setattr(
+        operations,
+        "_artifact_digest",
+        lambda path, _mode: subject.current_launcher_sha
+        if path == subject.launcher
+        else "unexpected",
+    )
+    monkeypatch.setattr(
+        operations,
+        "public_gated",
+        lambda: pytest.fail("GATED branch owns external proof and abort"),
+    )
+
+    assert operations.reconcile_phase("PREFLIGHT", {}) == ("GATED", {})
+
+
+def test_gate_abort_unknown_reentry_reconciles_without_reinstall(tmp_path: Path):
+    subject = config(tmp_path)
+    seed_receipt(subject, "GATED")
+    value = receipt(subject)
+    value["error"] = "GateAbortUnknown"
+    subject.attempt_dir.joinpath("receipt.json").write_text(json.dumps(value))
+    subject.attempt_dir.joinpath("receipt.json").chmod(0o600)
+    operations = FakeOperations()
+    operations.gated = True
+
+    assert deploy(subject, operations) == "FAIL"
+
+    assert operations.events == [
+        "gate_abort_ready", "ungate", "gate_exact", "public_ready",
+    ]
+    assert not operations.gated
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+
+
+def test_gate_abort_unknown_reentry_requires_full_attempt_trust(tmp_path: Path):
+    subject = config(tmp_path)
+    seed_receipt(subject, "GATED")
+    value = receipt(subject)
+    value["error"] = "GateAbortUnknown"
+    subject.attempt_dir.joinpath("receipt.json").write_text(json.dumps(value))
+    subject.attempt_dir.joinpath("receipt.json").chmod(0o600)
+    operations = FakeOperations(unknown_at="gate_abort_ready")
+    operations.gated = True
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.events == ["gate_abort_ready"]
+    assert operations.gated
+    assert receipt(subject)["error"] == "GateAbortUnknown"
+
+
+def test_host_gate_abort_readiness_validates_resume_trust_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    operations = HostOperations(config(tmp_path))
+    monkeypatch.setattr(
+        operations,
+        "_resume_trust",
+        lambda: (_ for _ in ()).throw(Unknown("changed candidate runtime")),
+    )
+    monkeypatch.setattr(
+        operations,
+        "rollback_ready",
+        lambda: pytest.fail("rollback doctor must not run before attempt trust"),
+    )
+
+    with pytest.raises(Unknown, match="changed candidate runtime"):
+        operations.gate_abort_ready()
 
 
 def test_definite_pre_upgrade_failure_restarts_old_runtime_and_ungates(tmp_path: Path):
@@ -1236,8 +1375,36 @@ def test_real_caddy_gate_covers_mcp_oauth_and_metadata_paths(tmp_path: Path):
                 urllib.request.urlopen(f"http://127.0.0.1:{public_port}{path}", timeout=1)
             assert exc.value.code == 503
             assert exc.value.headers["Retry-After"] == "60"
-        operations.ungate()
+        durable = maintenance.Receipt(subject)
+        durable.write("GATED")
+
+        class RealCaddyAbort:
+            def gate_abort_ready(self):
+                return True
+
+            def ungate(self):
+                operations.ungate()
+
+            def gate_exact(self):
+                return operations.gate_exact()
+
+            def public_ready(self):
+                try:
+                    urllib.request.urlopen(
+                        f"http://127.0.0.1:{public_port}/switchstand/mcp", timeout=1
+                    )
+                except urllib.error.HTTPError as exc:
+                    return exc.code == 418
+                return False
+
+        assert maintenance.abort_unproved_gate(durable, RealCaddyAbort()) == "FAIL"
         assert not operations.gate_exact()
+        assert receipt(subject)["phase"] == "ROLLED_BACK"
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{public_port}/switchstand/mcp", timeout=1
+            )
+        assert exc.value.code == 418
     finally:
         process.terminate()
         process.wait(timeout=5)
@@ -1272,6 +1439,34 @@ def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
     assert all(call[:3] == ("edge.example", "8.8.8.8", "GET") for call in requests)
 
 
+def test_https_gate_proof_fails_when_one_public_address_times_out(
+    monkeypatch, tmp_path: Path
+):
+    subject = config(tmp_path, public_origin="https://edge.example")
+    operations = HostOperations(subject)
+    requests = []
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp,
+        "public_addresses",
+        lambda _self, host: ("8.8.8.8", "9.9.9.9") if host == "edge.example" else (),
+    )
+
+    def request(host, address, method, path):
+        requests.append((host, address, method, path))
+        if address == "9.9.9.9":
+            raise TimeoutError
+        return 503, {"retry-after": "60"}, b""
+
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp, "request", staticmethod(request)
+    )
+
+    assert not operations.public_gated()
+    assert any(call[1] == "8.8.8.8" for call in requests)
+    assert any(call[1] == "9.9.9.9" for call in requests)
+
+
 def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path: Path):
     subject = config(tmp_path, public_origin="https://edge.example")
     operations = HostOperations(subject)
@@ -1291,3 +1486,22 @@ def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path:
         lambda _self: HttpObservation(True, 401, valid_auth_challenge=True),
     )
     assert operations.public_ready()
+
+
+def test_current_public_readiness_binds_old_runtime(monkeypatch, tmp_path: Path):
+    subject = config(tmp_path, public_origin="https://edge.example")
+    operations = HostOperations(subject)
+    calls = []
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp,
+        "observe",
+        lambda _self: HttpObservation(True, 401, valid_auth_challenge=True),
+    )
+    monkeypatch.setattr(
+        operations,
+        "_doctor",
+        lambda runtime, expected, public: calls.append((runtime, expected, public)) or True,
+    )
+
+    assert operations.current_public_ready()
+    assert calls == [(subject.current_runtime, subject.current_sha, True)]

@@ -107,6 +107,8 @@ class Operations(Protocol):
     def start(self) -> None: ...
     def local_ready(self) -> bool: ...
     def rollback_ready(self) -> bool: ...
+    def gate_abort_ready(self) -> bool: ...
+    def current_public_ready(self) -> bool: ...
     def ungate(self) -> None: ...
     def public_ready(self) -> bool: ...
     def restore_launcher(self) -> None: ...
@@ -519,19 +521,21 @@ class HostOperations:
                 raise Unknown("preflight contains an unexpected snapshot")
             if gate == "ABSENT" and service == "ACTIVE":
                 return phase, {}
-            if gate == "APPLIED" and service == "ACTIVE" and self.public_gated():
+            if gate == "APPLIED" and service == "ACTIVE":
                 return "GATED", {}
             raise Unknown("gate outcome is ambiguous")
+        if phase == "GATED":
+            if gate != "APPLIED":
+                raise Unknown("exact maintenance gate is not proven")
+            if service == "ACTIVE":
+                return phase, {}
+            if service == "INACTIVE" and self.public_gated():
+                return "STOPPED", {}
+            raise Unknown("stop outcome is ambiguous")
         if phase not in {"STARTED", "UNGATED", "COMPLETE"} and (
             gate != "APPLIED" or not self.public_gated()
         ):
             raise Unknown("exact maintenance gate is not proven")
-        if phase == "GATED":
-            if service == "ACTIVE":
-                return phase, {}
-            if service == "INACTIVE":
-                return "STOPPED", {}
-            raise Unknown("stop outcome is ambiguous")
         if phase not in {"SWAPPED", "STARTED", "UNGATED", "COMPLETE"} and service != "INACTIVE":
             raise Unknown("service is not proven stopped")
         if phase == "UPGRADE_PENDING":
@@ -879,6 +883,10 @@ class HostOperations:
             and self._running_process_exact()
         )
 
+    def gate_abort_ready(self) -> bool:
+        self._resume_trust()
+        return self.rollback_ready()
+
     def ungate(self) -> None:
         try:
             self._api("DELETE", f"/id/{GATE_ID}")
@@ -890,10 +898,7 @@ class HostOperations:
         if self.gate_exact():
             raise Unknown("maintenance gate removal is ambiguous")
 
-    def public_ready(self) -> bool:
-        candidate = _sha(self.c.launcher) == self.c.candidate_launcher_sha
-        runtime = self.c.candidate_runtime if candidate else self.c.current_runtime
-        expected = self.c.candidate_sha if candidate else self.c.current_sha
+    def _public_ready(self, runtime: Path, expected: str) -> bool:
         public_url = self.c.public_origin + "/switchstand/mcp"
         ingress = ExternalIngressHttp(public_url, public_url).observe()
         return (
@@ -901,6 +906,15 @@ class HostOperations:
             and ingress.valid_auth_challenge
             and self._doctor(runtime, expected, True)
         )
+
+    def current_public_ready(self) -> bool:
+        return self._public_ready(self.c.current_runtime, self.c.current_sha)
+
+    def public_ready(self) -> bool:
+        candidate = _sha(self.c.launcher) == self.c.candidate_launcher_sha
+        runtime = self.c.candidate_runtime if candidate else self.c.current_runtime
+        expected = self.c.candidate_sha if candidate else self.c.current_sha
+        return self._public_ready(runtime, expected)
 
     def restore_launcher(self) -> None:
         if _sha(self.c.launcher) != self.c.current_launcher_sha:
@@ -1086,6 +1100,30 @@ def retain_gate(operations: Operations) -> None:
         raise GateRetentionUnknown("maintenance gate retention is unknown") from exc
 
 
+def abort_unproved_gate(receipt: Receipt, operations: Operations) -> str:
+    """Restore the exact old public route before the service has been stopped."""
+    try:
+        if (
+            receipt.value["state_upgrade"] != "NOT_STARTED"
+            or not operations.gate_abort_ready()
+        ):
+            raise Unknown("old runtime is not exact before gate abort")
+        operations.ungate()
+        if operations.gate_exact():
+            raise Unknown("maintenance gate remains after abort")
+    except (Failed, Unknown, OSError, subprocess.SubprocessError):
+        # Do not deliberately reinstall a service-wide outage when the old process
+        # is still running.  The operator must reconcile the exact gate ID.
+        receipt.write("GATED", "UNKNOWN", "GateAbortUnknown")
+        return "UNKNOWN"
+    try:
+        operations.public_ready()
+    except (Failed, Unknown, OSError, subprocess.SubprocessError):
+        pass
+    receipt.write("ROLLED_BACK", "FAIL", "PublicGateUnproven")
+    return "FAIL"
+
+
 def deploy(config: Config, operations: Operations) -> str:
     try:
         validate_target(config)
@@ -1105,6 +1143,12 @@ def deploy(config: Config, operations: Operations) -> str:
     gate_retained = False
     gate_attempted = phase != "PREFLIGHT"
     try:
+        if (
+            receipt.existing
+            and phase == "GATED"
+            and receipt.value.get("error") == "GateAbortUnknown"
+        ):
+            return abort_unproved_gate(receipt, operations)
         if receipt.existing:
             observed, proof = operations.reconcile_phase(phase, receipt.value)
             gate_retained = proof.pop("gate_retained", None) == "true"
@@ -1118,13 +1162,19 @@ def deploy(config: Config, operations: Operations) -> str:
         if phase == "UPGRADE_PENDING":
             raise Unknown("shared state upgrade outcome is ambiguous")
         if phase == "PREFLIGHT":
+            if not operations.current_public_ready():
+                raise Failed("current public edge is not ready")
             gate_attempted = True
             operations.gate()
             phase = "GATED"
             receipt.write(phase)
         if phase == "GATED":
-            if not operations.public_gated():
-                raise Unknown("public maintenance gate is not exact")
+            try:
+                public_gate_exact = operations.public_gated()
+            except (Failed, Unknown, OSError, subprocess.SubprocessError):
+                public_gate_exact = False
+            if not public_gate_exact:
+                return abort_unproved_gate(receipt, operations)
             operations.stop()
             phase = "STOPPED"
             receipt.write(phase)
