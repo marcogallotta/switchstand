@@ -101,6 +101,19 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
     assert arguments[separator + 1] == str(
         home / ".codex/packages/standalone/current/bin/codex"
     )
+    command = arguments[separator + 1:]
+    assert command[command.index("--profile") + 1].startswith(
+        "switchstand-coordinator-"
+    )
+    assert 'model_reasoning_effort="medium"' in command
+    assert "-a" not in command
+    assert not any(
+        argument.startswith("default_permissions=") for argument in command
+    )
+    assert command[command.index("--enable") + 1] == "hooks"
+    assert "--dangerously-bypass-hook-trust" in command
+    assert command[command.index("resume") + 1] == "__SWITCHSTAND_WAKEFUL_THREAD__"
+    assert command[command.index("--remote") + 1] == "__SWITCHSTAND_WAKEFUL_SOCKET__"
     assert arguments[-2:] == ["resume", "thread-1"]
 
 
