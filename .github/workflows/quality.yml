@@ -17,6 +17,7 @@ jobs:
       reasons: ${{ steps.policy.outputs.reasons }}
       selected_tests: ${{ steps.policy.outputs.selected_tests }}
       planner_json: ${{ steps.policy.outputs.planner_json }}
+      adaptive_json: ${{ steps.policy.outputs.adaptive_json }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,11 +84,11 @@ jobs:
                 "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
                 --method GET --paginate -f branch="$DEFAULT_BRANCH" -f event=push \
                 -f status=completed -f per_page=100 \
-                --jq '.workflow_runs[] | ["push", .head_sha, .conclusion] | @tsv' 2>/dev/null)" \
+                --jq '.workflow_runs[] | ["push", .head_sha, .conclusion, .updated_at] | @tsv' 2>/dev/null)" \
               && schedule_history="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
                 --method GET --paginate -f event=schedule -f status=completed -f per_page=100 \
-                --jq '.workflow_runs[] | ["schedule", .head_sha, .conclusion] | @tsv' \
+                --jq '.workflow_runs[] | ["schedule", .head_sha, .conclusion, .updated_at] | @tsv' \
                 2>/dev/null)"; then
               history_fetched=true
               broad_history="$push_history"$'\n'"$schedule_history"
@@ -101,7 +102,7 @@ jobs:
             test "${schedule_count:-1000}" -lt 1000 && schedule_complete=true
             push_open=true
             schedule_open=true
-            while IFS=$'\t' read -r broad_event broad_sha broad_conclusion; do
+            while IFS=$'\t' read -r broad_event broad_sha broad_conclusion broad_completed_at; do
               test -n "$broad_sha" || continue
               if { test "$broad_event" = push && test "$push_open" = false; } \
                 || { test "$broad_event" = schedule && test "$schedule_open" = false; }; then
@@ -118,8 +119,9 @@ jobs:
                 fi
                 continue
               fi
-              printf '%s\t%s\t%s\t%s\n' \
-                "$broad_event" "$broad_sha" "$broad_conclusion" "$broad_blob" >> "$history_file"
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$broad_event" "$broad_sha" "$broad_conclusion" "$broad_blob" \
+                "$broad_completed_at" >> "$history_file"
             done <<< "$broad_history"
             if test "$history_fetched" = true \
               && test "$push_complete" = true \
@@ -127,32 +129,35 @@ jobs:
               history_complete=true
             fi
           fi
-          if test "$EVENT_KIND" = schedule \
-            || { test "$EVENT_KIND" = push && test "$REF_NAME" = "$DEFAULT_BRANCH"; }; then
-            selector_health_clear=false
-          fi
-
           PYTHONPATH=src python3 - \
             "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
             "$subject_verified" "$history_complete" "$current_blob" "$default_sha" \
-            "$history_file" "$STACK_TOP" "$GITHUB_OUTPUT" <<'PY'
+            "$history_file" "$STACK_TOP" "$EVENT_KIND" "$REF_NAME" \
+            "$DEFAULT_BRANCH" "$GITHUB_OUTPUT" <<'PY'
           import json
+          import subprocess
           import sys
+          from dataclasses import asdict
+          from datetime import UTC, datetime
           from pathlib import Path
           from switchstand.affected_tests import (
               BroadQualityRun, foreground_authority, plan_exact,
               selector_health_clear, validate_execution_tree,
           )
+          from switchstand.full_suite_due import (
+              FullSuiteDecision, FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due,
+          )
 
           (base, head, execution, verified, history_complete, current_blob,
-           default_sha, history_file, stack_top, output) = sys.argv[1:]
-          runs = tuple(
-              BroadQualityRun(event, run_sha, conclusion, workflow_blob or None)
-              for event, run_sha, conclusion, workflow_blob in (
-                  line.rstrip('\n').split('\t')
-                  for line in Path(history_file).read_text().splitlines()
-              )
+           default_sha, history_file, stack_top, event_kind, ref_name,
+           default_branch, output) = sys.argv[1:]
+          rows = tuple(
+              line.rstrip('\n').split('\t')
+              for line in Path(history_file).read_text().splitlines()
           )
+          runs = tuple(BroadQualityRun(
+              event, run_sha, conclusion, workflow_blob or None,
+          ) for event, run_sha, conclusion, workflow_blob, _ in rows)
           health = selector_health_clear(
               history_complete=history_complete == 'true',
               current_workflow_blob=current_blob,
@@ -165,10 +170,49 @@ jobs:
               subject_verified=verified == 'true',
               selector_health_clear=health,
               cumulative_stack_top=stack_top == 'true',
+              broad_backstop_due=(
+                  event_kind == 'schedule'
+                  or (event_kind == 'push' and ref_name == default_branch)
+              ),
           )
+          try:
+              candidates = tuple(row for row in rows if (
+                  row[2] == 'success' and row[3] == current_blob and row[1] != head and row[4]
+              ))
+              baseline = max(candidates, key=lambda row: datetime.fromisoformat(row[4])) \
+                  if candidates else None
+              baseline_sha = baseline[1] if baseline else None
+              baseline_at = datetime.fromisoformat(baseline[4]) if baseline else None
+              ancestry = None
+              commits = None
+              changed_paths = None
+              if baseline_sha:
+                  ancestry = subprocess.run(
+                      ['git', 'merge-base', '--is-ancestor', baseline_sha, head], check=False,
+                  ).returncode == 0
+                  if ancestry:
+                      commits = int(subprocess.check_output(
+                          ['git', 'rev-list', '--count', f'{baseline_sha}..{head}'], text=True,
+                      ))
+                      changed_paths = len(subprocess.check_output(
+                          ['git', 'diff', '--name-only', baseline_sha, head], text=True,
+                      ).splitlines())
+              adaptive = evaluate_full_suite_due(FullSuiteInputs(
+                  repository='marcogallotta/switchstand', landed_sha=head,
+                  baseline_sha=baseline_sha, baseline_completed_at=baseline_at,
+                  evaluated_at=datetime.now(UTC), commits_since_baseline=commits,
+                  changed_paths_since_baseline=changed_paths, ancestry_verified=ancestry,
+                  planner_policy_changed=False, unresolved_hard_miss=False,
+                  current_truth_known=history_complete == 'true',
+              ), FullSuitePolicy('adaptive-v1', 20, 24 * 60 * 60, 100))
+          except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+              adaptive = FullSuiteDecision(
+                  'UNKNOWN', ('observation-unavailable',), None, None,
+              )
           summary = {
               'authority': decision.mode,
               'authority_reasons': decision.reasons,
+              'adaptive_full_suite_shadow': asdict(adaptive),
               'planner': {
                   'planner_revision': plan.planner_revision,
                   'mode': plan.mode,
@@ -185,6 +229,7 @@ jobs:
               print('reasons=' + json.dumps(decision.reasons, separators=(',', ':')), file=sink)
               print('selected_tests=' + json.dumps(plan.selected_tests, separators=(',', ':')), file=sink)
               print('planner_json=' + json.dumps(summary['planner'], separators=(',', ':')), file=sink)
+              print('adaptive_json=' + json.dumps(asdict(adaptive), separators=(',', ':')), file=sink)
           print(json.dumps(summary, indent=2, sort_keys=True))
           PY
 
@@ -233,11 +278,14 @@ jobs:
       - name: Prepare observational metrics
         run: mkdir -p "$RUNNER_TEMP/test-metrics"
       - name: Authoritative proportional or full-fallback Quality
+        id: quality_run
         env:
           QUALITY_MODE: ${{ needs.plan.outputs.mode }}
           SELECTED_TESTS: ${{ needs.plan.outputs.selected_tests }}
           PLANNER_JSON: ${{ needs.plan.outputs.planner_json }}
         run: |
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$RUNNER_TEMP/test-metrics/started-at"
+          trap 'date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$RUNNER_TEMP/test-metrics/completed-at"' EXIT
           printf '%s\n' "$PLANNER_JSON" > "$RUNNER_TEMP/test-metrics/planner.json"
           mapfile -t selected_tests < <(
             python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TESTS"])))'
@@ -263,7 +311,10 @@ jobs:
         env:
           SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
           SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          QUALIFICATION_SUBJECT: ${{ github.event_name == 'pull_request' && format('pull-request:{0}', github.event.pull_request.number) || format('exact-head:{0}', github.ref) }}
+          ADAPTIVE_JSON: ${{ needs.plan.outputs.adaptive_json }}
+          QUALITY_OUTCOME: ${{ steps.quality_run.outcome }}
         run: |
           export METRICS_DIR="$RUNNER_TEMP/test-metrics"
           export COMPOSITION_SHA="$(git rev-parse HEAD)"
@@ -281,13 +332,21 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           e = os.environ
+          rework_path = Path(e["METRICS_DIR"], "rework.json")
           identity = {
               "subject_kind": e["SUBJECT_KIND"], "subject_sha": e["SUBJECT_SHA"],
+              "qualification_subject": e["QUALIFICATION_SUBJECT"],
               "base_sha": e["BASE_SHA"] or None,
               "composition_sha": e["COMPOSITION_SHA"] if e["SUBJECT_KIND"] == "composition" else None,
               "github": {"run_id": e["GITHUB_RUN_ID"], "run_attempt": e["GITHUB_RUN_ATTEMPT"],
                          "job": e["GITHUB_JOB"], "workflow": e["GITHUB_WORKFLOW"], "repository": e["GITHUB_REPOSITORY"]},
               "candidate_image": e["QUALITY_IMAGE"] or None,
+              "started_at": Path(e["METRICS_DIR"], "started-at").read_text().strip() if Path(e["METRICS_DIR"], "started-at").exists() else None,
+              "completed_at": Path(e["METRICS_DIR"], "completed-at").read_text().strip() if Path(e["METRICS_DIR"], "completed-at").exists() else None,
+              "quality_outcome": e["QUALITY_OUTCOME"], "current": True,
+              "foreground": e["SUBJECT_KIND"] == "composition",
+              "qualification_rework": json.loads(rework_path.read_text()) if rework_path.exists() else None,
+              "adaptive_full_suite_shadow": json.loads(e["ADAPTIVE_JSON"]),
               "environment": {"workflow_blob": e["WORKFLOW_BLOB"], "manifest_blobs": e["MANIFEST_BLOBS"],
                               "python": e["QUALITY_PYTHON"] or None,
                               "runtime_packages": hashlib.sha256("\n".join(sorted(e["QUALITY_RUNTIME"].splitlines())).encode()).hexdigest() if e["QUALITY_RUNTIME"] else None,

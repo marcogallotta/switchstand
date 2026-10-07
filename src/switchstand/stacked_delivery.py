@@ -12,8 +12,20 @@ from typing import Literal
 
 ReviewVerdict = Literal["PASS", "FAIL", "UNKNOWN"]
 Inertness = Literal["INERT_PROVEN", "RELIANCE_CHANGING", "UNKNOWN"]
+EvidenceDimension = Literal[
+    "LAYER_CAUSAL_QUALITY",
+    "INERTNESS_NON_RELIANCE",
+    "CUMULATIVE_TOP_QUALITY",
+    "BROAD_QUALITY",
+    "RUNTIME_LIFECYCLE",
+    "WAKEFUL_REAL_HOST",
+]
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+EVIDENCE_DIMENSIONS: frozenset[str] = frozenset({
+    "LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE", "CUMULATIVE_TOP_QUALITY",
+    "BROAD_QUALITY", "RUNTIME_LIFECYCLE", "WAKEFUL_REAL_HOST",
+})
 
 
 @dataclass(frozen=True)
@@ -42,14 +54,44 @@ class LayerQualification:
 
 
 @dataclass(frozen=True)
+class ProportionalQualification:
+    """Typed evidence for one layer without creating another landing decision."""
+
+    subject_sha: str
+    required: frozenset[EvidenceDimension]
+    passed: frozenset[EvidenceDimension]
+    unknown: frozenset[EvidenceDimension] = frozenset()
+    composition_sha: str | None = None
+
+
+def proportional_qualification_is_sufficient(evidence: ProportionalQualification) -> bool:
+    """Accept only exact, typed proof; missing or UNKNOWN dimensions fail closed."""
+
+    return (
+        _SHA.fullmatch(evidence.subject_sha) is not None
+        and evidence.required <= EVIDENCE_DIMENSIONS
+        and evidence.passed <= EVIDENCE_DIMENSIONS
+        and evidence.unknown <= EVIDENCE_DIMENSIONS
+        and (
+            "CUMULATIVE_TOP_QUALITY" not in evidence.required
+            or _SHA.fullmatch(evidence.composition_sha or "") is not None
+        )
+        and not evidence.unknown
+        and evidence.required <= evidence.passed
+    )
+
+
+@dataclass(frozen=True)
 class StackLandingEvidence:
     """Evidence required before any contiguous part of a V1 stack may land."""
 
     exact_top_sha: str
+    exact_composition_sha: str
     cumulative_review_sha: str | None
     cumulative_quality_sha: str | None
     focused_reviews_current: bool
-    layer_qualifications_passed: bool
+    required_dimensions: frozenset[EvidenceDimension]
+    layer_qualifications: tuple[ProportionalQualification, ...]
 
 
 def focused_review_is_current(
@@ -90,12 +132,36 @@ def layer_qualification_is_sufficient(evidence: LayerQualification) -> bool:
 def stack_is_ready_to_land(evidence: StackLandingEvidence) -> bool:
     """Enforce the V1 no-early-partial-landing boundary."""
 
+    passed = frozenset(
+        dimension
+        for item in evidence.layer_qualifications
+        if item.subject_sha == evidence.exact_top_sha
+        and (
+            "CUMULATIVE_TOP_QUALITY" not in item.passed
+            or item.composition_sha == evidence.exact_composition_sha
+        )
+        for dimension in item.passed
+        if proportional_qualification_is_sufficient(item)
+    )
     return (
         _SHA.fullmatch(evidence.exact_top_sha) is not None
+        and _SHA.fullmatch(evidence.exact_composition_sha) is not None
         and _SHA.fullmatch(evidence.cumulative_review_sha or "") is not None
         and _SHA.fullmatch(evidence.cumulative_quality_sha or "") is not None
         and evidence.focused_reviews_current
-        and evidence.layer_qualifications_passed
+        and bool(evidence.layer_qualifications)
+        and bool(evidence.required_dimensions)
+        and evidence.required_dimensions <= EVIDENCE_DIMENSIONS
+        and evidence.required_dimensions <= passed
+        and all(
+            proportional_qualification_is_sufficient(item)
+            for item in evidence.layer_qualifications
+        )
+        and all(
+            "CUMULATIVE_TOP_QUALITY" not in item.required
+            or item.composition_sha == evidence.exact_composition_sha
+            for item in evidence.layer_qualifications
+        )
         and evidence.cumulative_review_sha == evidence.exact_top_sha
         and evidence.cumulative_quality_sha == evidence.exact_top_sha
     )
