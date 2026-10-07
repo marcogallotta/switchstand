@@ -458,6 +458,16 @@ def test_provision_passes_agent_task_only_when_explicitly_selected(monkeypatch):
     assert opted_in[opted_in.index("--managed-agent") + 1] == "--agent-task"
 
 
+def test_noninteractive_is_an_explicit_internal_launch_mode():
+    default = parser().parse_args(["--active", "123", "--commit", "a" * 40])
+    asynchronous = parser().parse_args(
+        ["--active", "123", "--commit", "a" * 40, "--noninteractive"]
+    )
+
+    assert default.noninteractive is False
+    assert asynchronous.noninteractive is True
+
+
 @pytest.mark.parametrize("provisioner", [provision, provision_target])
 def test_provision_stops_on_state_upgrade_failure_with_exact_diagnostic(monkeypatch, provisioner):
     calls = []

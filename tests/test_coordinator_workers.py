@@ -65,6 +65,7 @@ def repository(tmp_path: Path, gate: Path) -> tuple[Path, Path, Path, str]:
     internal.write_text(
         "#!/bin/sh\nset -eu\n"
         f'[ "$1" = --active ] && [ "$2" = "{WORK}" ] && [ "$3" = --commit ]\n'
+        '[ "$5" = --noninteractive ]\n'
         f'git -C "{primary}" worktree add -q -b "v2-task-{WORK}" "{writer}" "$4"\n'
         f'while [ ! -f "{gate}" ]; do sleep 0.02; done\n'
         f'printf "worker candidate\\n" >"{writer}/worker.txt"\n'
