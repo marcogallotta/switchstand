@@ -942,6 +942,13 @@ class ReviewService:
             )
             if not authenticated_upgrade:
                 return ReviewResult(status="DENIED", reason="prior_review_not_found")
+        reviewer_name = self.policy.reviewer_name(basis.review_kind)
+        if reviewer_name is not None:
+            reviewer_result = await self.mailboxes.by_name(reviewer_name)
+            reviewer = reviewer_result.mailbox
+            if reviewer is not None and not self.policy.eligible(requester, reviewer):
+                return ReviewResult(status="DENIED", review_id=basis.review_id,
+                                    reason="reviewer_not_eligible")
         brief = self._brief(basis, subject, focused_from)
         if not await self.occurrences.ensure(brief):
             return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
