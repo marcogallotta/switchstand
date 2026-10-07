@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -52,7 +53,7 @@ class Client(QueueClient):
         if method == "thread/queue/list":
             return {"data": list(self.queued), "nextCursor": None}
         assert method == "thread/queue/add"
-        pending = json.loads((self.path.parent / "codex-wakeful.json").read_text())
+        pending = json.loads(next(self.path.parent.glob("codex-wakeful-*.json")).read_text())
         assert pending[params["clientUserMessageId"]]["state"] == "PENDING"
         assert pending[params["clientUserMessageId"]]["attempted"] is True
         self.calls.append(params)
@@ -94,6 +95,27 @@ def test_binding_exact_zero_multiple_and_reconnect(setup):
     client.thread["id"] = "replacement"
     p = Projection(home, binding)
     assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "UNKNOWN"
+
+
+def test_binding_detects_duplicate_on_later_filtered_page(setup):
+    home, token, client, _binding = setup
+    pages = {
+        None: {"data": [client.listed[0]], "nextCursor": "later"},
+        "later": {"data": [{"id": "duplicate", "path": str(client.path)}],
+                  "nextCursor": None},
+    }
+    seen: list[dict[str, object]] = []
+
+    def call(method, params):
+        assert method == "thread/list"
+        seen.append(params)
+        return pages[params.get("cursor")]
+
+    client.call = call
+    assert bind(client, home, token) == "CONFLICT"
+    assert all(page["cwd"] == str(Path.cwd()) for page in seen)
+    assert all(page["sourceKinds"] == ["cli"] for page in seen)
+    assert all(page["useStateDbOnly"] is True for page in seen)
 
 
 def test_expected_binding_uses_exact_read_and_result_taxonomy(setup):
@@ -216,7 +238,7 @@ def test_paginated_incomplete_malformed_or_lost_history_is_unknown(setup, page):
     source = WakeSourceRef("switchstand_inbound", str(uuid4()))
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert not client.calls
-    record = json.loads((home / "codex-wakeful.json").read_text())[wake_id(binding, source)]
+    record = json.loads(Projection(home, binding).path.read_text())[wake_id(binding, source)]
     assert record["attempted"] is False
 
 
@@ -321,7 +343,7 @@ def test_simultaneous_probe_and_private_file_boundary(setup):
             "--opt-in", "--home", str(home), "--codex", "/must-not-run",
             "--start-record", str(token)], capture_output=True, text=True, check=False)
     assert result.returncode == 0 and "simultaneous probe" in result.stdout
-    path = home / "codex-wakeful.json"
+    path = Projection(home, binding).path
     path.symlink_to(token)
     with pytest.raises(OSError):
         Projection(home, binding)

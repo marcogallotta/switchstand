@@ -57,7 +57,7 @@ async def test_committed_source_restart_exact_reference_and_duplicate(subject, s
     assert set(results.values()) == {"ADMITTED"} and len(client.calls) == 1
     assert str(delivery_id) in client.calls[0]["input"][0]["text"]
     assert "private-source-payload" not in json.dumps(client.calls)
-    assert "private-source-payload" not in (home / "codex-wakeful.json").read_text()
+    assert "private-source-payload" not in Projection(home, binding).path.read_text()
     other = await mailboxes.register_agent("other-root", mailbox.principal_key, "codex:other")
     assert other.mailbox is not None
     assert await messages.pending_delivery_ids(other.mailbox) == ()
@@ -79,7 +79,7 @@ async def test_disposition_between_scan_and_admission_does_not_wake(subject, set
     monkeypatch.setattr(messages, "pending_delivery_ids", transitioned)
     _, results = await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client)
     assert set(results.values()) == {"STALE"} and not client.calls
-    assert not (home / "codex-wakeful.json").exists()
+    assert not Projection(home, binding).path.exists()
 
 
 async def test_source_lifecycle_progresses_while_host_admission_waits(subject, setup, monkeypatch):
@@ -149,7 +149,7 @@ async def test_busy_queue_and_unsupported_history_fail_safely(subject, setup, st
     assert len(client.calls) == (1 if state == "active" else 0)
     assert await messages.pending_delivery_ids(mailbox) == (delivery_id,)
     identity = wake_id(binding, WakeSourceRef("switchstand_inbound", str(delivery_id)))
-    assert json.loads((home / "codex-wakeful.json").read_text())[identity]["attempted"] is (
+    assert json.loads(Projection(home, binding).path.read_text())[identity]["attempted"] is (
         state == "active")
 
 
@@ -158,11 +158,12 @@ async def test_default_off_and_stop_before_source_or_host_access(subject, setup)
     messages, mailboxes, mailbox, _ = await source(subject)
     stop = asyncio.Event()
     await run_inbound(messages, mailboxes, mailbox, binding, home, home / "missing", stop)
-    assert not (home / "codex-wakeful.lock").exists()
+    lock = home / f"codex-wakeful-{binding.generation}.lock"
+    assert not lock.exists()
     stop.set()
     await run_inbound(messages, mailboxes, mailbox, binding, home, home / "missing", stop,
                       opt_in=True)
-    assert not (home / "codex-wakeful.json").exists()
+    assert not Projection(home, binding).path.exists()
 
 
 async def test_supervised_intake_scans_real_source_without_agent_poll(subject, setup, monkeypatch):
@@ -190,13 +191,15 @@ async def test_supervised_intake_scans_real_source_without_agent_poll(subject, s
         await asyncio.wait_for(task, timeout=3)
 
 
-def test_projection_lock_excludes_other_generations_and_rejects_symlink(setup):
-    home, token, _, _ = setup
-    with projection_lock(home), pytest.raises(BlockingIOError), projection_lock(home):
+def test_projection_lock_isolates_generations_and_rejects_symlink(setup):
+    home, token, _, binding = setup
+    with projection_lock(home, binding.generation), pytest.raises(BlockingIOError), \
+            projection_lock(home, binding.generation):
         pytest.fail("second writer admitted")
-    with projection_lock(home):
+    with projection_lock(home, "other-generation"):
         pass
-    (home / "codex-wakeful.lock").unlink()
-    (home / "codex-wakeful.lock").symlink_to(token)
-    with pytest.raises(OSError), projection_lock(home):
+    path = home / f"codex-wakeful-{binding.generation}.lock"
+    path.unlink()
+    path.symlink_to(token)
+    with pytest.raises(OSError), projection_lock(home, binding.generation):
         pytest.fail("symlink lock admitted")
