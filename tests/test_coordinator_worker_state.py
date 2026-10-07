@@ -28,7 +28,9 @@ def store(tmp_path: Path) -> tuple[WorkerStore, str]:
     base = git(repo, "rev-parse", "HEAD")
     control = home / ".local/state/switchstand/control"
     control.mkdir(parents=True)
-    (control / "manifest").write_text(f"state=ACTIVE\ncontrol_sha={base}\n")
+    (control / "manifest").write_text(
+        f"state=ACTIVE\ncontrol_sha={base}\ncontrol_path={repo}\n"
+    )
     return WorkerStore(home, tmp_path / "state"), base
 
 
@@ -36,6 +38,7 @@ def test_records_are_durable_and_corruption_fails_closed(tmp_path: Path) -> None
     subject, base = store(tmp_path)
     spawn_id = uuid4()
     record = WorkerRecord(
+        version=1,
         spawn_id=spawn_id,
         work_id=WORK,
         objective="objective",
@@ -60,14 +63,16 @@ def test_records_are_durable_and_corruption_fails_closed(tmp_path: Path) -> None
 
 def test_candidate_requires_exact_writer_identity_and_base_ancestry(tmp_path: Path) -> None:
     subject, base = store(tmp_path)
-    head, writer, branch = subject.candidate_identity(WORK)
+    head, writer, branch, common = subject.candidate_identity(WORK)
     assert head == base
+    assert common == str((subject.repo / ".git").resolve())
     writer.parent.mkdir(parents=True)
     git(subject.repo, "worktree", "add", "-q", "-b", branch, str(writer), base)
     (writer / "candidate").write_text("done\n")
     git(writer, "add", "candidate")
     git(writer, "commit", "-m", "candidate")
     record = WorkerRecord(
+        version=1,
         spawn_id=uuid4(),
         work_id=WORK,
         objective="objective",
@@ -88,3 +93,23 @@ def test_candidate_requires_exact_writer_identity_and_base_ancestry(tmp_path: Pa
     ).strip()
     git(writer, "reset", "--hard", unrelated)
     assert subject.candidate(record) == (unrelated, True, False)
+
+
+@pytest.mark.parametrize("git_common", [None, "relative/.git", "/tmp/../escape"])
+def test_v2_record_requires_absolute_canonical_git_common(git_common: str | None) -> None:
+    with pytest.raises(ValueError, match="git_common"):
+        WorkerRecord(
+            spawn_id=uuid4(), work_id=WORK, objective="objective", writer="/writer",
+            branch=f"v2-task-{WORK}", base_sha="a" * 40, git_common=git_common,
+            unit="unit.service", log="/log", started_at=1, command=("true",),
+        )
+
+
+def test_v1_record_rejects_git_common() -> None:
+    with pytest.raises(ValueError, match="legacy"):
+        WorkerRecord(
+            version=1, spawn_id=uuid4(), work_id=WORK, objective="objective",
+            writer="/writer", branch=f"v2-task-{WORK}", base_sha="a" * 40,
+            git_common="/repo/.git", unit="unit.service", log="/log", started_at=1,
+            command=("true",),
+        )

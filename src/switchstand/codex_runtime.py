@@ -1,4 +1,5 @@
 import json
+import os
 import selectors
 import subprocess
 import time
@@ -11,6 +12,7 @@ PROFILE = "switchstand-development"
 SWITCHSTAND_HTTP_URL = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 MANAGED_COMMAND = "scripts/switchstand-controller-mcp"
 DEVELOPMENT_COMMAND = "scripts/switchstand-development-mcp"
+CODEX_BINARY_ENV = "SWITCHSTAND_CODEX_BINARY"
 AGENT_TASK_MANAGED_TOOLS = (
     "work_get", "work_history", "work_event", "work_append", "work_update",
     "priority_claim_get", "priority_claim_record", "priority_context_get",
@@ -40,7 +42,7 @@ def _rpc_messages(
 ) -> list[dict[str, Any]]:
     process = subprocess.Popen(
         [
-            "codex",
+            os.environ.get(CODEX_BINARY_ENV, "codex"),
             "-c",
             f'default_permissions="{PROFILE}"',
             "-c",
@@ -179,7 +181,7 @@ def codex_command(
     if requests:
         prompt += "\n\nAdditional launch request:\n" + requests[0]
     command = [
-        "codex",
+        os.environ.get(CODEX_BINARY_ENV, "codex"),
         "-C",
         str(control),
         "--add-dir",

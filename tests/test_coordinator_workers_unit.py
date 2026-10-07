@@ -28,7 +28,9 @@ def test_spawn_persists_prepared_identity_before_start(
     base = git(repo, "rev-parse", "HEAD")
     control = home / ".local/state/switchstand/control"
     control.mkdir(parents=True)
-    (control / "manifest").write_text(f"state=ACTIVE\ncontrol_sha={base}\n")
+    (control / "manifest").write_text(
+        f"state=ACTIVE\ncontrol_sha={base}\ncontrol_path={repo}\n"
+    )
     subject = CoordinatorWorkers(home, state_root=tmp_path / "state")
     monkeypatch.setattr(subject, "_command", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     operation = uuid4()
@@ -40,4 +42,5 @@ def test_spawn_persists_prepared_identity_before_start(
     assert result.status == "started"
     assert record is not None and record.phase == "PREPARED"
     assert record.work_id == work_id and record.base_sha == base
+    assert record.git_common == str((repo / ".git").resolve())
     assert record.command[:2] == (str(repo / "scripts/switchstand"), "--isolated")

@@ -63,7 +63,7 @@ class CoordinatorWorkers:
                 )
             return self._spawn_result("replayed", existing)
         self._require_unambiguous_state(work_id)
-        base, writer, branch = self.store.candidate_identity(work_id)
+        base, writer, branch, git_common = self.store.candidate_identity(work_id)
         unit = f"switchstand-implementation-{operation_id.hex}.service"
         log = self.store.root / f"{operation_id}.log"
         descriptor = os.open(
@@ -77,6 +77,7 @@ class CoordinatorWorkers:
             writer=str(writer),
             branch=branch,
             base_sha=base,
+            git_common=git_common,
             unit=unit,
             log=str(log),
             started_at=time.time(),
@@ -367,10 +368,14 @@ class CoordinatorWorkers:
         )
 
     def _worker_environment(self) -> dict[str, str]:
+        codex = self.home / ".local/state/switchstand/codex/updater-bin/bin/codex"
         return {
             "HOME": str(self.home),
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            # Activated controls predating SWITCHSTAND_CODEX_BINARY still resolve
+            # the literal `codex`; keep that compatibility lookup exact and first.
+            "PATH": f"{codex.parent}:/usr/local/bin:/usr/bin:/bin",
             "LC_ALL": "C.UTF-8",
+            "SWITCHSTAND_CODEX_BINARY": str(codex),
         }
 
     @staticmethod

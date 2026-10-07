@@ -639,6 +639,13 @@ WorkId, caller-chosen operation identity, and bounded objective start the existi
 `switchstand --isolated` path, which binds a managed Worker to that WorkId and its durable
 task-private linked writer. Spawn returns immediately so Root remains available for coordination;
 status reports the exact base/head, branch, writer, commit summary, and terminal or UNKNOWN state.
+A worker record binds the writer to the selected immutable CONTROL clone's exact Git common
+directory, rather than assuming the independently cloned CONTROL shares canonical `main`'s Git
+metadata. The host unit supplies the exact user-managed updater Codex executable through
+`SWITCHSTAND_CODEX_BINARY`. For immutable older controls that still execute literal `codex`, the
+same dedicated updater `bin` directory is the sole user-writable `PATH` prefix, followed by
+`/usr/local/bin:/usr/bin:/bin`; newer controls use the exact binary variable. This bounded
+compatibility exception avoids a stale CLI without adding broader user-writable lookup paths.
 A deterministic host unit and durable phase record survive Coordinator restart; cancellation uses
 the managed run receipt when present, stops only that unit, and retains the writer and logs as
 recovery evidence. The seam grants no merge, deployment, or activation authority, and built-in
