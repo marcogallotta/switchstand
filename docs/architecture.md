@@ -338,6 +338,9 @@ messaging, and required continuation:
   `SWITCHSTAND_REVIEW_CONFIG_PATH` names one absolute, bounded, mode-0600 closed/versioned JSON
   file; unset remains off, every present path is literal, and configured-invalid fails startup
   closed. The file carries policy and guideline identities plus an immutable partial reviewer map.
+  The installed `typed-review-v1-cutoff` receipt continues to reject generic
+  `review.request`, `review.acquisition`, and `review.outcome` message routes during this rollback;
+  generic messaging is not a fallback for the unavailable typed acquisition adapters.
   Client-visible activation requires a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
