@@ -530,8 +530,12 @@ the stable exact-head/composition terminal Quality evidence in its versioned cod
 Each terminal job is the trusted workflow's fail-closed aggregation of exact planning, the selected
 or full Quality execution, and Docker when the reviewed policy requires it; its check name never
 varies by internal mode. Missing, stale, ambiguous, skipped, or wrong-subject terminal evidence
-fails closed; provider failure is `UNKNOWN`. Compact
-gate identity, reason, and timing are returned by default, while bounded failed-step and check-output
+fails closed; provider failure is `UNKNOWN`.
+`PROMOTE_TEST_MODULE_ONLY_V1` also requires the repository variable
+`SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED` to equal `true`; absent or other values force
+`FULL_FALLBACK`. Setting it is a separate provider activation still subordinate to selector-health
+and broad-backstop gates. Compact gate identity, reason, and timing are returned by default, while
+bounded failed-step and check-output
 detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
 fallback during qualification of the semantic path.
@@ -597,6 +601,11 @@ executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
 session storage and byte-stable hooks without replacing another generation's evidence. The full
+An explicit Wakeful qualification launch may substitute one clean, non-canonical registered linked
+writer only in PILOT mode. The dispatcher requires its resolved path to be that worktree's top level
+and its Git common directory to equal canonical Switchstand, then records the candidate's exact HEAD.
+This test seam grants no deployment, activation, provider effect, or ordinary caller-selected source.
+The full
 local Markdown dependency graph rooted at `AGENTS.md` remains tracked for post-sync change
 detection, while schema v3 records a separate bounded post-compaction reread set. Fresh Coordinator
 manifests include both `AGENTS.md` and `docs/coordinator-tracker-contract.md`; an already-created
