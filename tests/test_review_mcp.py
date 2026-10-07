@@ -68,7 +68,21 @@ async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
     subject = service()
     occurrences = SimpleNamespace(engine=object())
     subject.reviews = SimpleNamespace(occurrences=occurrences)
-    expected = {"schema": "switchstand.flow_report.v1", "review_pickup": {"status": "KNOWN"}}
+    expected = {
+        "schema": "switchstand.flow_report.v1",
+        "review_pickup": {"status": "KNOWN"},
+        "aggregate_learning": {
+            "status": "UNKNOWN",
+            "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
+            "sample_count": None, "coverage_fraction": None,
+            "cohort": {
+                "runtime_generation": None, "schema_generation": None,
+                "environment": None,
+            },
+            "metrics": {"lead_time_ms": None, "unobserved_share": None},
+            "delivery_estimate": None,
+        },
+    }
     report = AsyncMock(return_value=expected)
     monkeypatch.setattr("switchstand.chatgpt_mcp.flow_report.report", report)
     targets = []

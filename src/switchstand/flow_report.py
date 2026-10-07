@@ -288,6 +288,32 @@ def _process_shape_and_advisories(
     return process_shape, advisories
 
 
+def _aggregate_learning() -> dict[str, object]:
+    """Fail closed until a sufficiently covered completed-trace cohort exists."""
+    return {
+        "status": "UNKNOWN",
+        "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
+        "sample_count": None,
+        "coverage_fraction": None,
+        "cohort": {
+            "runtime_generation": None,
+            "schema_generation": None,
+            "environment": None,
+        },
+        "metrics": {
+            "lead_time_ms": None,
+            "review_pickup_ms": None,
+            "review_execution_ms": None,
+            "ci_qualification_ms": None,
+            "mcp_service_ms": None,
+            "recovery_reconciliation_ms": None,
+            "unobserved_share": None,
+            "advisory_feedback": None,
+        },
+        "delivery_estimate": None,
+    }
+
+
 def _review_wait(
     created_at: datetime, decided_at: datetime | None, captured_at: datetime,
 ) -> dict[str, object]:
@@ -831,6 +857,7 @@ async def _snapshot(
         "review_pickup": review_pickup,
         "process_shape": process_shape,
         "advisories": advisories,
+        "aggregate_learning": _aggregate_learning(),
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,
@@ -1248,6 +1275,19 @@ def render_concise(value: dict[str, object]) -> str:
             f"bound_at={item['bound_at']} completed_at={item['completed_at']} "
             f"observed_duration_ms={item['observed_duration_ms']}"
             for item in cast(list[dict[str, object]], run_receipts["attempts"])
+        )
+    aggregate = cast(dict[str, object] | None, value.get("aggregate_learning"))
+    if aggregate is not None:
+        cohort = cast(dict[str, object], aggregate["cohort"])
+        metrics = cast(dict[str, object], aggregate["metrics"])
+        lines.append(
+            f"aggregate_learning status={aggregate['status']} reason={aggregate['reason']} "
+            f"sample_count={aggregate['sample_count']} "
+            f"coverage_fraction={aggregate['coverage_fraction']} "
+            f"runtime={cohort['runtime_generation']} schema={cohort['schema_generation']} "
+            f"environment={cohort['environment']} delivery_estimate="
+            f"{aggregate['delivery_estimate']} metrics="
+            + ",".join(f"{name}:{value}" for name, value in sorted(metrics.items()))
         )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"

@@ -67,6 +67,34 @@ def test_json_remains_the_default_shape_without_renderer_inference() -> None:
     assert '"critical_path"' not in output
 
 
+def test_concise_render_exposes_fail_closed_aggregate_learning() -> None:
+    value = deepcopy(REPORT)
+    value["aggregate_learning"] = {
+        "status": "UNKNOWN",
+        "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
+        "sample_count": None, "coverage_fraction": None,
+        "cohort": {
+            "runtime_generation": None, "schema_generation": None,
+            "environment": None,
+        },
+        "metrics": {
+            "lead_time_ms": None, "review_pickup_ms": None,
+            "review_execution_ms": None, "ci_qualification_ms": None,
+            "mcp_service_ms": None, "recovery_reconciliation_ms": None,
+            "unobserved_share": None, "advisory_feedback": None,
+        },
+        "delivery_estimate": None,
+    }
+
+    output = render(value, "concise")
+
+    assert "aggregate_learning status=UNKNOWN" in output
+    assert "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE" in output
+    assert "sample_count=None coverage_fraction=None" in output
+    assert "runtime=None schema=None environment=None delivery_estimate=None" in output
+    assert "lead_time_ms:None" in output and "unobserved_share:None" in output
+
+
 def test_concise_render_keeps_github_subjects_separate() -> None:
     value = deepcopy(REPORT)
     value["github"] = {
