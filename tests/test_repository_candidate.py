@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
+from switchstand.stacked_delivery import layer_qualification_is_sufficient
 
 BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
     "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
@@ -13,7 +14,8 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
            overrides: dict[str, tuple[str, str | None]] | None = None,
            malformed: bool = False, wrong_head: str | None = None,
            bad_run: bool = False, changed: bool = False,
-           job_failure: bool = False, stacked: bool = False) -> httpx.AsyncClient:
+           job_failure: bool = False, stacked: bool = False,
+           selected: bool = False, omit_policy_evidence: bool = False) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
     def response(request: httpx.Request) -> httpx.Response:
@@ -54,6 +56,31 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                     "details_url": f"https://github.com/marcogallotta/switchstand/actions/runs/{index}/job/{100 + index}",
                     "output": {"title": "failure title", "summary": "short summary"},
                 })
+                if not omit_policy_evidence:
+                    mode = "PROMOTE_TEST_MODULE_ONLY_V1" if selected else "FULL_FALLBACK"
+                    companions = (
+                        ("Quality policy", "success"),
+                        (f"Quality execution / {mode}", "success"),
+                        (
+                            "Exact-head Docker lifecycle" if kind == "exact_head"
+                            else "PR composition Docker lifecycle",
+                            "skipped" if selected else "success",
+                        ),
+                    )
+                    for offset, (companion, companion_conclusion) in enumerate(companions, 1):
+                        checks.append({
+                            "id": 1000 + index * 10 + offset,
+                            "name": companion,
+                            "head_sha": wrong_head or HEAD,
+                            "app": {"slug": "github-actions"},
+                            "check_suite": {"id": 10 + index},
+                            "status": "completed",
+                            "conclusion": companion_conclusion,
+                            "details_url": (
+                                "https://github.com/marcogallotta/switchstand/actions/"
+                                f"runs/{index}/job/{1000 + index * 10 + offset}"
+                            ),
+                        })
             payload = {"check_runs": checks}
         elif "/actions/runs/" in path:
             index = int(path.rsplit("/", 1)[1])
@@ -91,6 +118,20 @@ async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timin
     assert [gate.name for gate in result.gates] == [name for name, _ in GATES]
     assert all(gate.attempt == 2 and gate.duration_ms == 2000 for gate in result.gates)
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
+    assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in result.gates)
+    assert layer_qualification_is_sufficient(result.proportional_evidence())
+
+
+async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_closed():
+    async with client(selected=True) as http:
+        selected = await qualify_repository_candidate(7, client=http)
+    assert selected.status == "READY"
+    assert all("RUNTIME_LIFECYCLE" not in gate.evidence_dimensions for gate in selected.gates)
+
+    async with client(omit_policy_evidence=True) as http:
+        missing = await qualify_repository_candidate(7, client=http)
+    assert missing.status == "NOT_READY"
+    assert all(gate.reason == "policy-evidence-missing" for gate in missing.gates)
 
 
 async def test_native_stack_composition_is_bound_through_prefix_to_current_target():
@@ -122,6 +163,15 @@ async def test_missing_gate_and_old_composition_fail_closed():
         untrusted = await qualify_repository_candidate(7, client=http)
     assert untrusted.status == "NOT_READY"
     assert all(g.reason == "conflicting" for g in untrusted.gates)
+
+
+async def test_not_ready_candidate_cannot_project_success_from_one_gate():
+    async with client(omitted="Exact-head Quality") as http:
+        candidate = await qualify_repository_candidate(7, client=http)
+    evidence = candidate.proportional_evidence()
+    assert candidate.status == "NOT_READY"
+    assert not evidence.passed
+    assert not layer_qualification_is_sufficient(evidence)
 
 
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
