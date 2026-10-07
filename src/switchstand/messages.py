@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
@@ -356,6 +358,10 @@ def runtime_admission(runtime: RuntimeCurrentness) -> RuntimeAdmissionFailure | 
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
+        raw_cutoff = os.getenv("SWITCHSTAND_REVIEW_CUTOFF_RECEIPT")
+        self.review_cutoff = None if raw_cutoff is None else datetime.fromisoformat(raw_cutoff)
+        if self.review_cutoff is not None and self.review_cutoff.utcoffset() is None:
+            raise ValueError("review cutoff receipt must include a timezone")
 
     async def pending_delivery_ids(
         self, binding: AgentMailbox, cursor: UUID | None = None,
@@ -1093,6 +1099,10 @@ async def _send_message(
                 )
             route_ref = request.route_ref if context is None else context.route_ref
             assert route_ref is not None
+            if messages.review_cutoff is not None and route_ref in {
+                "review.request", "review.acquisition", "review.outcome",
+            }:
+                return MessageSubmitResult(status="denied", reason="reserved_route")
             route = MessageRoute(
                 recipient_work_id=recipient_work_id,
                 recipient_grant_version=recipient.version,

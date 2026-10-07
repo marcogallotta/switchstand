@@ -177,10 +177,15 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
     subject = await occurrences.works.get(subject_id)
     assert subject is not None
     revision = canonical_revision(subject.work_id, subject.row_version)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_migration_receipts).values(
+            name="typed-review-v1-cutoff", source_digest="b" * 64,
+        ))
     sent = await service.request(ReviewRequest(
         subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
     ), requester)
     assert sent.review_id is not None and sent.delivery_id is not None
+    assert (await service.get(sent.review_id, requester)).status == "REQUEST_UNPICKED"
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
@@ -194,10 +199,6 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         agent_binding=reviewer,
     )
     assert received.status == "ok"
-    async with engine.begin() as connection:
-        await connection.execute(insert(work_migration_receipts).values(
-            name="typed-review-v1-cutoff", source_digest="b" * 64,
-        ))
     submitted = await service.submit(ReviewSubmit(
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
@@ -368,15 +369,12 @@ async def test_review_pickup_rejects_multiple_current_occurrences(occurrence_run
     assert result["reason"] == "MULTIPLE_CURRENT_OCCURRENCES"
 
 
-async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_runtime):
+async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    coordinator = (await mailboxes.register_agent(
-        "Coordinator", "principal-c", "chat-c"
-    )).mailbox
-    assert requester is not None and coordinator is not None
+    assert requester is not None
     occurrences.policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={})
     service = ReviewService(
         occurrences, mailboxes, messages, occurrences.policy,
@@ -389,31 +387,7 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         observed_revision=canonical_revision(subject.work_id, subject.row_version),
         review_kind="CODE",
     ), requester)
-    assert waiting.review_id is not None and waiting.delivery_id is not None
-    acquiring = (await report(engine, subject_id, occurrences))["review_pickup"]
-    assert acquiring["status"] == "KNOWN"
-    assert acquiring["phase"] == "WAITING_REVIEWER"
-    assert acquiring["unpicked"] is True
-    assert isinstance(acquiring["oldest_request_age_ms"], int)
-    assert acquiring["received_at"] is None
-    received = await messages.receive_admitted(
-        coordinator.endpoint_id, coordinator.generation,
-        RuntimeCurrentness(
-            generation=str(coordinator.generation),
-            current_generation=str(coordinator.generation),
-        ),
-        MessageReceiveRequest(
-            api_version="1", delivery_id=waiting.delivery_id,
-            grant_version=coordinator.generation,
-        ),
-        agent_binding=coordinator,
-    )
-    assert received.status == "ok"
-    acquired = (await report(engine, subject_id, occurrences))["review_pickup"]
-    assert acquired["status"] == "KNOWN"
-    assert acquired["phase"] == "WAITING_REVIEWER"
-    assert acquired["unpicked"] is False
-    assert datetime.fromisoformat(acquired["received_at"]).tzinfo is not None
+    assert waiting.review_id is not None and waiting.delivery_id is None
     reviewer = (await mailboxes.register_agent(
         "Reviewer", "principal-b", "chat-b"
     )).mailbox
@@ -421,16 +395,16 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
     service.policy = ReviewPolicy(
         version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"},
     )
-    sent = await service.continue_acquisition(waiting.review_id, coordinator)
-    assert sent.status == "SENT" and sent.delivery_id is not None
+    sent = await service.get(waiting.review_id, requester)
+    assert sent.status == "REQUEST_UNPICKED" and sent.delivery_id is not None, sent
     requested = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert requested["phase"] == "REQUEST_UNPICKED"
     assert requested["unpicked"] is True
     sources = await occurrences.request_sources(waiting.review_id)
     assert len(sources) == 1
     record, _envelope, bound = sources[0]
-    assert record.delivery.sender_work_id == coordinator.endpoint_id
-    assert bound is not None and bound.reviewer_delivery_id == sent.delivery_id
+    assert record.delivery.sender_work_id == requester.endpoint_id
+    assert bound is None
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
@@ -444,10 +418,12 @@ async def test_coordinator_acquisition_binds_independent_reviewer(occurrence_run
         agent_binding=reviewer,
     )
     assert received.status == "ok"
+    assert (await service.get(waiting.review_id, requester)).status == "RECEIVED"
     submitted = await service.submit(ReviewSubmit(
         review_id=waiting.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
     assert submitted.status == "SUBMITTED"
+    assert (await service.get(waiting.review_id, requester)).status == "PASS"
     async with engine.begin() as connection:
         subject = await occurrences.works.get(subject_id)
         assert subject is not None
@@ -545,10 +521,4 @@ async def test_focused_rereview_requires_authoritative_named_finding(occurrence_
         observed_revision=canonical_revision(corrected.work_id, corrected.row_version),
         review_kind="CODE", prior_review_id=initial.review_id,
     ), requester)
-    assert upgraded.status == "SENT"
-    upgrades = [
-        envelope for _record, envelope, _bound
-        in await occurrences.request_sources(initial.review_id)
-        if envelope.brief.basis.upgrades_focused
-    ]
-    assert len(upgrades) == 1
+    assert (upgraded.status, upgraded.reason) == ("UNKNOWN", "duplicate_authoritative_state")

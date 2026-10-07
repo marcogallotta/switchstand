@@ -172,9 +172,16 @@ class AgentMailboxState:
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def by_endpoint_id(self, endpoint_id: UUID) -> AgentMailboxResult:
+    async def by_endpoint_id(
+        self, endpoint_id: UUID, connection: AsyncConnection | None = None,
+    ) -> AgentMailboxResult:
         try:
-            async with self.engine.connect() as connection:
+            if connection is None:
+                async with self.engine.connect() as owned:
+                    row = (await owned.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.endpoint_id == endpoint_id
+                    ))).mappings().one_or_none()
+            else:
                 row = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.endpoint_id == endpoint_id
                 ))).mappings().one_or_none()

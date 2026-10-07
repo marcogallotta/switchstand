@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -24,7 +25,7 @@ from switchstand.state import PostgresState, metadata
 
 
 @pytest.fixture
-async def messaging(database_prerequisite):
+async def messaging(database_prerequisite, monkeypatch):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for PostgreSQL message service tests")
@@ -39,6 +40,7 @@ async def messaging(database_prerequisite):
         await grants.issue(selected, None)
     actor = [principals[0]]
     async def resolve(): return actor[0]
+    monkeypatch.delenv("SWITCHSTAND_REVIEW_CUTOFF_RECEIPT", raising=False)
     service = ChatGPTService(resolve, state, grants, {}, MessageState(engine, grants))
     yield service, actor, principals, works, issued
     await engine.dispose()
@@ -64,12 +66,23 @@ async def test_service_vertical_correlation_and_truthful_reply_failure(messaging
     before = await row_counts(service)
     first = await service.message_send(send(works[0], 1, works[1]))
     assert first.status == "ok"
+    legacy = await service.message_send(send(
+        works[0], 1, works[1], route_ref="review.request",
+    ))
+    assert legacy.status == "ok"
+    service.messages.review_cutoff = datetime.now(UTC)
+    reserved = await service.message_send(send(
+        works[0], 1, works[1], route_ref="review.outcome",
+    ))
+    assert (reserved.status, reserved.reason) == ("denied", "reserved_route")
     after = await row_counts(service)
-    assert tuple(new - old for new, old in zip(after, before, strict=True)) == (1, 1, 0)
+    assert tuple(new - old for new, old in zip(after, before, strict=True)) == (2, 2, 0)
     actor[0] = principals[1]
     pending = await service.message_pending(works[1], MessagePendingRequest(
         api_version="1", grant_version=1))
-    assert pending.messages == (first.message,)
+    assert {item.delivery_id for item in pending.messages} == {
+        first.message.delivery_id, legacy.message.delivery_id,
+    }
     result = await service.message_send(MessageSendRequest(
         api_version="1", work_id=works[1], grant_version=1, message_id=uuid4(),
         payload={"result": "done"}, in_reply_to_delivery_id=first.message.delivery_id))

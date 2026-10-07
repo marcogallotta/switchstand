@@ -30,9 +30,10 @@ def mailbox() -> AgentMailbox:
     )
 
 
-async def test_review_request_is_rolled_back_while_submit_remains_default_off(monkeypatch):
+async def test_review_tools_are_default_off_and_closed(monkeypatch):
     subject = service()
-    assert not {"review_request", "review_submit"} & set(dict(build_ordinary_tools(subject)))
+    review_tools = {"review_request", "review_get", "review_submit"}
+    assert not review_tools & set(dict(build_ordinary_tools(subject)))
 
     bound = mailbox()
     lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
@@ -43,8 +44,7 @@ async def test_review_request_is_rolled_back_while_submit_remains_default_off(mo
     subject.reviews = AsyncMock()
     tools = await build_chatgpt_server(subject).list_tools()
     names = {tool.name for tool in tools}
-    assert not {"review_request", "review_get", "review_recover"} & names
-    assert "review_submit" in names
+    assert names & (review_tools | {"review_recover"}) == review_tools
     submit_schema = next(tool.input_schema for tool in tools if tool.name == "review_submit")
     assert {
         "api_version", "review_id", "verdict", "context_provenance", "findings",
@@ -53,6 +53,29 @@ async def test_review_request_is_rolled_back_while_submit_remains_default_off(mo
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
+    schema = next(tool.input_schema for tool in tools if tool.name == "review_get")
+    assert set(schema["properties"]) == {"api_version", "review_id"}
+
+
+async def test_review_poll_derives_current_mailbox(monkeypatch):
+    subject = service()
+    bound = mailbox()
+    lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
+    monkeypatch.setattr("switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup)
+    subject.messages = Messages()  # type: ignore[assignment]
+    subject.reviews = AsyncMock()
+    review_id = uuid4()
+    expected = ReviewResult(status="RECEIVED", review_id=review_id, delivery_id=uuid4())
+    subject.reviews.get.return_value = expected
+    audits: list[tuple[str, str | None, str]] = []
+    tools = dict(build_ordinary_tools(
+        subject, audit=lambda *record: audits.append(record),
+        agent_identity=lambda: "chat-session",
+    ))
+
+    assert await tools["review_get"]("1", review_id) == expected
+    subject.reviews.get.assert_awaited_once_with(review_id, bound)
+    assert [record[0] for record in audits] == ["review_get"]
 
 
 async def test_observability_get_is_exact_read_only_delegation(monkeypatch):

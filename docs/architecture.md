@@ -326,12 +326,12 @@ messaging, and required continuation:
 - `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
   Internal typed proposal admission binds one immutable consequence to an exact canonical package
   revision; a changed proposal requires a new package revision and human decision.
-  `reviews.py` owns durable review requests and outcomes. During the typed-acquisition rollback,
-  only its ordinary `review_submit` adapter remains default-off and available when that owner is
-  injected, so an existing received review can conclude; new review request, polling, and recovery
-  adapters remain unavailable until their compliant implementation lands. Reviewer identity comes
-  from the current authenticated agent mailbox and is never a public argument. The resource service
-  accepts one explicit default-off review policy/guidelines
+  `reviews.py` owns durable review requests and outcomes. Its default-off ordinary path is
+  `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
+  `review_submit` remains the sole verdict mutation. Requester and reviewer identities come from
+  the current authenticated agent mailbox and are never public arguments. The occurrence row
+  serializes request creation, so polling can acquire a newly available configured reviewer. The
+  resource service accepts one explicit default-off review policy/guidelines
   configuration and constructs one mailbox/occurrence graph shared with the independently enabled
   implementation-request facade, avoiding divergent review truth. Production configuration and
   activation remain separate. `review_config_loader.py` loads that configuration only when optional
@@ -339,9 +339,9 @@ messaging, and required continuation:
   file; unset remains off, every present path is literal, and configured-invalid fails startup
   closed. The file carries policy and guideline identities plus an immutable partial reviewer map.
   The installed `typed-review-v1-cutoff` receipt continues to reject generic
-  `review.request`, `review.acquisition`, and `review.outcome` message routes during this rollback;
-  generic messaging is not a fallback for the unavailable typed acquisition adapters.
-  Client-visible activation requires a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
+  `review.request`, `review.acquisition`, and `review.outcome` message routes; only the typed review
+  owner writes them. Unmapped kinds remain `WAITING_REVIEWER`. Client-visible activation requires
+  a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
   per installed product/revision/phase contract after technical activation. The server derives
