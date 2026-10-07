@@ -19,7 +19,10 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 class FullSuitePolicy:
     max_commits: int
     max_age_seconds: int
-    max_changed_paths: int
+    max_changed_production_files: int
+    max_changed_production_lines: int
+    max_selected_tests: int
+    max_selected_ratio: float
 
 
 @dataclass(frozen=True)
@@ -29,8 +32,13 @@ class FullSuiteInputs:
     baseline_completed_at: datetime | None
     evaluated_at: datetime
     commits_since_baseline: int | None
-    changed_paths_since_baseline: int | None
+    changed_production_files: int | None
+    changed_production_lines: int | None
+    selected_tests: int | None
+    total_tests: int | None
     ancestry_verified: bool | None
+    planner_mode: Literal["SELECTED", "FULL_FALLBACK", "NO_PLAN", "STALE"] | None = None
+    high_risk_fallback: bool | None = None
     planner_policy_changed: bool | None = None
     unresolved_hard_miss: bool | None = None
     current_truth_known: bool = True
@@ -56,7 +64,10 @@ def evaluate_full_suite_due(
         _SHA.fullmatch(inputs.landed_sha) is not None
         and policy.max_commits > 0
         and policy.max_age_seconds > 0
-        and policy.max_changed_paths > 0
+        and policy.max_changed_production_files > 0
+        and policy.max_changed_production_lines > 0
+        and policy.max_selected_tests > 0
+        and 0 < policy.max_selected_ratio <= 1
         and inputs.evaluated_at.tzinfo is not None
     )
     if not values_valid or not inputs.current_truth_known:
@@ -64,12 +75,20 @@ def evaluate_full_suite_due(
 
     if inputs.baseline_sha is None or inputs.baseline_completed_at is None:
         return _due(inputs, ("trusted-baseline-missing",))
-    if inputs.planner_policy_changed is None or inputs.unresolved_hard_miss is None:
+    if any(value is None for value in (
+        inputs.planner_mode, inputs.high_risk_fallback,
+        inputs.planner_policy_changed, inputs.unresolved_hard_miss,
+    )):
         return FullSuiteDecision("UNKNOWN", ("current-inputs-unavailable",), None)
     commits = inputs.commits_since_baseline
-    changed_paths = inputs.changed_paths_since_baseline
+    counters = (
+        inputs.changed_production_files, inputs.changed_production_lines,
+        inputs.selected_tests, inputs.total_tests,
+    )
     counters_known = commits is not None and commits >= 0 \
-        and changed_paths is not None and changed_paths >= 0
+        and all(value is not None and value >= 0 for value in counters) \
+        and inputs.total_tests is not None and inputs.total_tests > 0 \
+        and inputs.selected_tests is not None and inputs.selected_tests <= inputs.total_tests
     if (
         _SHA.fullmatch(inputs.baseline_sha) is None
         or inputs.baseline_completed_at.tzinfo is None
@@ -80,17 +99,30 @@ def evaluate_full_suite_due(
         return _due(inputs, ("baseline-not-ancestor",))
     if not counters_known:
         return FullSuiteDecision("UNKNOWN", ("current-inputs-unavailable",), None)
-    assert commits is not None and changed_paths is not None
+    assert commits is not None and all(value is not None for value in counters)
+    production_files, production_lines, selected_tests, total_tests = counters
+    assert production_files is not None and production_lines is not None
+    assert selected_tests is not None and total_tests is not None
 
     reasons: list[str] = []
+    if inputs.planner_mode != "SELECTED":
+        reasons.append(f"planner-{inputs.planner_mode.lower().replace('_', '-')}")
+    if inputs.high_risk_fallback:
+        reasons.append("high-risk-fallback")
     if inputs.planner_policy_changed:
         reasons.append("planner-policy-changed")
     if inputs.unresolved_hard_miss:
         reasons.append("unresolved-hard-miss")
     if commits >= policy.max_commits:
         reasons.append("commit-budget-exhausted")
-    if changed_paths >= policy.max_changed_paths:
-        reasons.append("change-budget-exhausted")
+    if production_files >= policy.max_changed_production_files:
+        reasons.append("production-file-budget-exhausted")
+    if production_lines >= policy.max_changed_production_lines:
+        reasons.append("production-line-budget-exhausted")
+    if selected_tests >= policy.max_selected_tests:
+        reasons.append("selected-test-count-budget-exhausted")
+    if selected_tests / total_tests >= policy.max_selected_ratio:
+        reasons.append("selected-test-ratio-budget-exhausted")
     age = inputs.evaluated_at.astimezone(UTC) - inputs.baseline_completed_at.astimezone(UTC)
     if age.total_seconds() < 0:
         return FullSuiteDecision("UNKNOWN", ("contradictory-timestamps",), None)
