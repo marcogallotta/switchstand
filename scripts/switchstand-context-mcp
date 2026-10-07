@@ -2,9 +2,11 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-: "${ACTIVE_WORK_ID:?context controller requires ACTIVE_WORK_ID}"
-: "${SWITCHSTAND_MANAGED:?context controller requires SWITCHSTAND_MANAGED}"
+: "${ACTIVE_WORK_ID:?managed MCP requires ACTIVE_WORK_ID}"
+: "${SWITCHSTAND_MANAGED:?managed MCP requires SWITCHSTAND_MANAGED}"
 
+export SWITCHSTAND_MANAGED_PROFILE=context
 cd "$repo"
-exec docker compose run --rm -T --no-deps controller \
-    uv run --no-sync python -m switchstand.context_mcp
+exec docker compose run --rm -T --no-deps \
+    -e SWITCHSTAND_PRIORITY_CLAIMS \
+    controller uv run --no-sync python -m switchstand.mcp

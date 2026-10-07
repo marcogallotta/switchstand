@@ -172,53 +172,18 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
         assert result.structured_content["status"] == "ok"
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
-    engine = object()
-    works = object()
-    relations = object()
-    service = SimpleNamespace(
-        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
-        state=SimpleNamespace(engine=engine),
-        work=SimpleNamespace(works=works, relations=relations),
-    )
-    captured = {}
+def test_context_mcp_is_only_a_profile_alias(monkeypatch):
+    called = []
 
-    class Server:
-        def run(self):
-            captured["ran"] = True
+    def canonical():
+        called.append(os.environ.get("SWITCHSTAND_MANAGED_PROFILE"))
 
-    def build(passed_service, active, references, **adapters):
-        captured.update({
-            "service": passed_service, "active": active,
-            "references": references, **adapters,
-        })
-        return Server()
-
-    monkeypatch.setattr(context_mcp, "protect_provider_logs", lambda: None)
-    monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
-    monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
-    monkeypatch.setattr(context_mcp, "build_context_server", build)
-    if enabled:
-        monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
-    else:
-        monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+    monkeypatch.delenv("SWITCHSTAND_MANAGED_PROFILE", raising=False)
+    monkeypatch.setattr(context_mcp, "canonical_main", canonical)
 
     context_mcp.main()
 
-    assert captured["ran"] is True
-    assert captured["service"] is service
-    assert captured["active"] == ID
-    assert captured["references"] == (REFERENCE_ID,)
-    if enabled:
-        assert captured["principal"] == managed_principal(ID)
-        assert captured["grants"] is not None
-        assert captured["priority_claims"] is not None
-        assert captured["priority_context"] is not None
-    else:
-        assert all(captured[name] is None for name in (
-            "principal", "grants", "priority_claims", "priority_context",
-        ))
+    assert called == ["context"]
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
@@ -260,6 +225,43 @@ def test_unbound_environment_initializes_with_no_work_tools(monkeypatch):
     monkeypatch.delenv("ACTIVE_WORK_ID", raising=False)
     monkeypatch.setenv("ASANA_TOKEN", "must-not-create-a-provider")
     assert not server_from_env()._tool_manager._tools
+
+
+def test_context_profile_restricts_canonical_managed_server_server_side(monkeypatch):
+    import switchstand.mcp as managed_mcp
+
+    engine, works, relations = object(), object(), object()
+    service = SimpleNamespace(
+        state=SimpleNamespace(engine=engine),
+        work=SimpleNamespace(works=works, relations=relations, protected_update=None),
+        authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
+    )
+
+    class NoGrantState:
+        def __init__(self, value):
+            self.engine = value
+
+        async def current(self, _principal_key):
+            return None
+
+    class NoMessages:
+        def __init__(self, *_args):
+            pass
+
+    class NoTaskRuns:
+        def __init__(self, *_args):
+            pass
+
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "context")
+    monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+    monkeypatch.setattr(managed_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(managed_mcp, "GrantState", NoGrantState)
+    monkeypatch.setattr(managed_mcp, "MessageState", NoMessages)
+    monkeypatch.setattr(managed_mcp, "TaskRunState", NoTaskRuns)
+
+    server = managed_mcp.server_from_env()
+    assert set(server._tool_manager._tools) == {"work_get", "work_history"}
 
 
 def test_managed_environment_without_authority_fails(monkeypatch):
