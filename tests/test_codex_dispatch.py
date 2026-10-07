@@ -237,12 +237,8 @@ printf 'writer=%s\nhead=%s\n' "$PWD" "$(git rev-parse HEAD)" > "$MARKER"
     profile = tomllib.loads(next(
         coordinator_home.glob("switchstand-coordinator-*.config.toml")
     ).read_text())
-    filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
-    assert filesystem == {
-        ":root": "read",
-        str(home): "write",
-        str(primary): {".": "read", ".git": "write"},
-    }
+    assert profile["sandbox_mode"] == "danger-full-access"
+    assert "permissions" not in profile
 
 
 def test_dispatch_quarantines_invalid_legacy_friction_and_launches_codex(
@@ -434,7 +430,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert "-m" not in arguments
     assert arguments[arguments.index("--enable") + 1] == "hooks"
     assert "--dangerously-bypass-hook-trust" in arguments
-    assert 'default_permissions="switchstand-coordinator"' in arguments
+    assert arguments[arguments.index("-s") + 1] == "danger-full-access"
+    assert not any("default_permissions" in argument for argument in arguments)
     assert arguments[-2:] == ["resume", "test-session"]
     writer = Path(pwd_file.read_text().strip())
     assert writer.parent == home / ".local/state/switchstand/worktrees"
@@ -451,15 +448,11 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
 
     profile_path = next(coordinator_home.glob("switchstand-coordinator-*.config.toml"))
     profile = tomllib.loads(profile_path.read_text())
-    filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
     writer_git_dir = Path(subprocess.check_output(
         ["git", "-C", writer, "rev-parse", "--absolute-git-dir"], text=True,
     ).strip())
-    assert filesystem[str(primary)] == {".": "read", ".git": "write"}
-    assert filesystem[str(home)] == "write"
-    assert filesystem[":root"] == "read"
-    assert str(writer) not in filesystem
-    assert str(writer_git_dir) not in filesystem
+    assert profile["sandbox_mode"] == "danger-full-access"
+    assert "permissions" not in profile
     assert profile["approval_policy"] == "never"
     assert profile["features"]["multi_agent"] is True
     records = [path for path in coordinator_home.glob("start-commit.*")
@@ -512,9 +505,7 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
         category_store = friction_root / f"{category}.md"
         assert category_store.is_file() and not category_store.is_symlink()
         assert category_store.stat().st_mode & 0o777 == 0o600
-    assert filesystem[str(home)] == "write"
-    assert filesystem[":root"] == "read"
-    assert str(friction_store) not in filesystem
+    assert writer_git_dir.parent.name == "worktrees"
 
     artifact = home / ".local/state/switchstand/codex/handoffs/handoff-real-successor"
     artifact.mkdir(parents=True)

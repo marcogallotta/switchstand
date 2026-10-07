@@ -100,7 +100,6 @@ def render(
 ) -> str:
     canonical_mcp = _canonical_mcp()
     _linked_worktree_git_dir(primary, writer)
-    user_home = Path.home().resolve(strict=True)
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer),
     ))
@@ -114,7 +113,7 @@ def render(
     frozen_control = compact_hook.with_name("coordinator-control")
     lines = [
         'approval_policy = "never"',
-        'default_permissions = "switchstand-coordinator"',
+        'sandbox_mode = "danger-full-access"',
         "developer_instructions = " + json.dumps(
             f"Coordinator start commit is recorded at {start_record}. "
             f"This generation's owned linked writer is {writer}; make repository mutations "
@@ -140,7 +139,10 @@ def render(
             "through an exact WorkId from Marco's direct assignment or an acknowledged addressed "
             "handoff, and call work_get with that exact ID. If neither trusted source supplies one, "
             "report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted launch-bound "
-            "managed runs. Built-in Workers are read-only: their shell and file-edit tools are "
+            "managed runs. Native full local-user execution applies to directly operated Root "
+            "and sub-Coordinators, but grants no provider, deployment, activation, or other "
+            "consequential-effect authority; preserve each exact authority and readback gate. "
+            "Built-in Workers are read-only: their shell and file-edit tools are "
             "denied because they share Root's filesystem profile and hooks are not a security "
             "sandbox. Delegate research/review freely; for implementation, a Worker returns a "
             "patch proposal and Root applies it in this generation's owned writer. The "
@@ -175,21 +177,6 @@ def render(
         'enabled_tools = ["coordinator_currentness_get", "coordinator_main_sync", '
         '"coordinator_implementation_spawn", "coordinator_implementation_status", '
         '"coordinator_implementation_cancel"]',
-        "",
-        "[permissions.switchstand-coordinator]",
-        'description = "Coordinator user access with the shared primary checkout read-only."',
-        "",
-        "[permissions.switchstand-coordinator.filesystem]",
-        '":root" = "read"',
-        f'{json.dumps(str(user_home))} = "write"',
-        "",
-        f'[permissions.switchstand-coordinator.filesystem.{json.dumps(str(primary))}]',
-        '"." = "read"',
-        '".git" = "write"',
-        "",
-        "[permissions.switchstand-coordinator.network]",
-        "enabled = true",
-        "dangerously_allow_all_unix_sockets = true",
         "",
         "[[hooks.PreToolUse]]",
         "",

@@ -203,5 +203,5 @@ fi
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
         -c 'model_reasoning_effort="medium"' \
-        -a never -c 'default_permissions="switchstand-coordinator"' \
+        -a never -s danger-full-access \
         --enable hooks --dangerously-bypass-hook-trust "$@"

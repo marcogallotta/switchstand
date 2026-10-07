@@ -152,7 +152,7 @@ def start_thread(client: QueueClient, profile: dict[str, Any], developer: str) -
     started = client.call("thread/start", {
         "cwd": str(Path.cwd()), "ephemeral": False,
         "developerInstructions": developer, "config": profile,
-        "approvalPolicy": "never", "permissions": "switchstand-coordinator",
+        "approvalPolicy": "never", "sandbox": "danger-full-access",
     })
     thread_id = cast(dict[str, Any], started["thread"])["id"]
     if not isinstance(thread_id, str) or not thread_id:
