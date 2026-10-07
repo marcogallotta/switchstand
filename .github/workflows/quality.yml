@@ -278,11 +278,14 @@ jobs:
       - name: Prepare observational metrics
         run: mkdir -p "$RUNNER_TEMP/test-metrics"
       - name: Authoritative proportional or full-fallback Quality
+        id: quality_run
         env:
           QUALITY_MODE: ${{ needs.plan.outputs.mode }}
           SELECTED_TESTS: ${{ needs.plan.outputs.selected_tests }}
           PLANNER_JSON: ${{ needs.plan.outputs.planner_json }}
         run: |
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$RUNNER_TEMP/test-metrics/started-at"
+          trap 'date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$RUNNER_TEMP/test-metrics/completed-at"' EXIT
           printf '%s\n' "$PLANNER_JSON" > "$RUNNER_TEMP/test-metrics/planner.json"
           mapfile -t selected_tests < <(
             python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TESTS"])))'
@@ -308,8 +311,10 @@ jobs:
         env:
           SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
           SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          QUALIFICATION_SUBJECT: ${{ github.event_name == 'pull_request' && format('pull-request:{0}', github.event.pull_request.number) || format('exact-head:{0}', github.ref) }}
           ADAPTIVE_JSON: ${{ needs.plan.outputs.adaptive_json }}
+          QUALITY_OUTCOME: ${{ steps.quality_run.outcome }}
         run: |
           export METRICS_DIR="$RUNNER_TEMP/test-metrics"
           export COMPOSITION_SHA="$(git rev-parse HEAD)"
@@ -327,13 +332,20 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           e = os.environ
+          rework_path = Path(e["METRICS_DIR"], "rework.json")
           identity = {
               "subject_kind": e["SUBJECT_KIND"], "subject_sha": e["SUBJECT_SHA"],
+              "qualification_subject": e["QUALIFICATION_SUBJECT"],
               "base_sha": e["BASE_SHA"] or None,
               "composition_sha": e["COMPOSITION_SHA"] if e["SUBJECT_KIND"] == "composition" else None,
               "github": {"run_id": e["GITHUB_RUN_ID"], "run_attempt": e["GITHUB_RUN_ATTEMPT"],
                          "job": e["GITHUB_JOB"], "workflow": e["GITHUB_WORKFLOW"], "repository": e["GITHUB_REPOSITORY"]},
               "candidate_image": e["QUALITY_IMAGE"] or None,
+              "started_at": Path(e["METRICS_DIR"], "started-at").read_text().strip() if Path(e["METRICS_DIR"], "started-at").exists() else None,
+              "completed_at": Path(e["METRICS_DIR"], "completed-at").read_text().strip() if Path(e["METRICS_DIR"], "completed-at").exists() else None,
+              "quality_outcome": e["QUALITY_OUTCOME"], "current": True,
+              "foreground": e["SUBJECT_KIND"] == "composition",
+              "qualification_rework": json.loads(rework_path.read_text()) if rework_path.exists() else None,
               "adaptive_full_suite_shadow": json.loads(e["ADAPTIVE_JSON"]),
               "environment": {"workflow_blob": e["WORKFLOW_BLOB"], "manifest_blobs": e["MANIFEST_BLOBS"],
                               "python": e["QUALITY_PYTHON"] or None,
