@@ -104,7 +104,7 @@ networking are available without a second approval path. Repository policy still
 primary source mutation; the hook blocks recognized Git and editing-tool mutation routes but is a
 guardrail, not complete shell or operating-system isolation. Arbitrary local-user shell code remains
 technically capable of writing the canonical checkout, so implementation must stay in an owned
-writer. The hook also keeps built-in Workers' shell and file-edit tools denied and blocks
+writer. Unbound Workers stay read-only; bound Workers get writer-confined edits while it blocks
 auto-memory writes. Full local-user execution is not provider, deployment, activation, or other
 consequential-effect authority; those exact grants and readbacks remain separate. Malformed auxiliary
 friction state is quarantined and regenerated visibly so launch and unrelated diagnosis remain usable.

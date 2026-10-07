@@ -116,8 +116,8 @@ def search(root: Path, needle: str, raws: list[str]) -> None:
                         fail(f"result limit reached ({MAX_RESULTS})")
 
 
-def git_read(root: Path, action: str, paths: list[str], count: int) -> None:
-    if action in {"status", "diff"}:
+def git_action(root: Path, action: str, paths: list[str], count: int) -> None:
+    if action in {"status", "diff", "commit"}:
         for _directory, names, filenames in os.walk(root, followlinks=False):
             names[:] = [name for name in names if name != ".git"]
             if ".gitattributes" in filenames:
@@ -153,9 +153,23 @@ def git_read(root: Path, action: str, paths: list[str], count: int) -> None:
         command = [*prefix, "status", "--short", "--branch", "--untracked-files=all"]
     elif action == "diff":
         command = [*prefix, "diff", "--no-ext-diff", "--no-textconv", "--", *selected]
-    else:
+    elif action == "log":
         command = [*prefix, "log", f"-{count}", "--format=%h %s"]
-    result = subprocess.run(command, text=True, timeout=10, check=False, env=git_environment())
+    elif action == "test":
+        command = [str(root / ".venv/bin/pytest"), "-q", *selected]
+    else:
+        added = subprocess.run(
+            [*prefix, "-c", "core.hooksPath=/dev/null", "add", "-A", "--", *selected],
+            text=True, timeout=10, check=False, env=git_environment(),
+        )
+        if added.returncode:
+            fail(f"Git add failed ({added.returncode})")
+        command = [*prefix, "-c", "core.hooksPath=/dev/null", "commit", "-m",
+                   "Commit native Worker candidate"]
+    result = subprocess.run(
+        command, text=True, timeout=300 if action == "test" else 10,
+        check=False, env=git_environment(),
+    )
     if result.returncode:
         fail(f"Git {action} failed ({result.returncode})")
 
@@ -178,6 +192,10 @@ def main() -> None:
     difference.add_argument("paths", nargs="*")
     history = commands.add_parser("log")
     history.add_argument("count", nargs="?", default=20, type=int)
+    testing = commands.add_parser("test")
+    testing.add_argument("paths", nargs="+")
+    committing = commands.add_parser("commit")
+    committing.add_argument("paths", nargs="+")
     args = parser.parse_args()
     root = repository(args.root)
     if args.action == "files":
@@ -186,10 +204,10 @@ def main() -> None:
         read(root, args.path, args.start, args.end)
     elif args.action == "search":
         search(root, args.text, args.paths)
-    elif args.action in {"status", "diff", "log"}:
+    elif args.action in {"status", "diff", "log", "test", "commit"}:
         if args.action == "log" and not 1 <= args.count <= 100:
             fail("log count must be between 1 and 100")
-        git_read(root, args.action, getattr(args, "paths", []), getattr(args, "count", 20))
+        git_action(root, args.action, getattr(args, "paths", []), getattr(args, "count", 20))
 
 
 if __name__ == "__main__":

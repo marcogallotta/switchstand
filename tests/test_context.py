@@ -89,12 +89,14 @@ def hook(
     repo: Path, command: str, environment: dict[str, str],
     *, tool: str = "Bash", coordinator_primary: Path | None = None,
     coordinator_writer: Path | None = None,
+    worker_bindings: Path | None = None,
     agent_id: str | None = None, tool_workdir: Path | None = None,
 ) -> dict:
     arguments = [str(Path(__file__).parents[1] / "scripts/codex-hook")]
     if coordinator_primary is not None:
         arguments += ["--coordinator-primary", str(coordinator_primary)]
     arguments += ["--coordinator-writer", str(coordinator_writer)] if coordinator_writer else []
+    arguments += ["--worker-bindings", str(worker_bindings)] if worker_bindings else []
     payload = {"hook_event_name": "PreToolUse", "tool_name": tool,
                "tool_input": {"file_path" if tool == "Edit" else "command": command},
                "cwd": str(repo)}
@@ -226,6 +228,80 @@ def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
         for decision in decisions
     )
     assert after == before
+
+
+def test_bound_workers_get_only_their_writer_surface_and_fixed_commands(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    for name in ("a", "b", "c"):
+        (primary / name).mkdir()
+        (primary / name / "value.txt").write_text("base\n")
+    (primary / ".gitignore").write_text(".venv/\n__pycache__/\n")
+    (primary / "a/test_smoke.py").write_text("def test_smoke():\n    assert True\n")
+    git(primary, "add", ".")
+    git(primary, "commit", "-m", "base")
+    base = git(primary, "rev-parse", "HEAD")
+    root, first, second, third, fourth = (
+        tmp_path / name for name in ("root", "first", "second", "third", "fourth")
+    )
+    for writer in (root, first, second, third, fourth):
+        git(primary, "worktree", "add", "-b", writer.name, str(writer), base)
+    bindings = tmp_path / "bindings"
+    bindings.mkdir(mode=0o700)
+    guard = Path(__file__).parents[1] / "scripts/codex-hook"
+
+    def bind(agent: str, work: UUID, writer: Path, surface: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [guard, "--bind-worker", agent, "--work-id", str(work), "--writer", writer,
+             "--base", base, "--surface", surface, "--coordinator-primary", primary,
+             "--worker-bindings", bindings], text=True, capture_output=True, check=False,
+        )
+
+    assert bind("worker-a", ACTIVE, first, "a").returncode == 0
+    assert bind("worker-b", UUID(int=2), second, "b").returncode == 0
+    assert bind("worker-c", UUID(int=3), third, "c").returncode == 0
+    overlap = bind("worker-d", UUID(int=4), fourth, "a/nested")
+    assert overlap.returncode != 0 and "already bound" in overlap.stderr
+
+    common = {"environment": dict(os.environ), "coordinator_primary": primary,
+              "coordinator_writer": root, "worker_bindings": bindings,
+              "agent_id": "worker-a"}
+    assert hook(first, str(first / "a/new.txt"), tool="Edit", **common) == {}
+    patch = "*** Begin Patch\n*** Add File: a/new.txt\n+x\n*** End Patch"
+    assert hook(first, patch, tool="apply_patch", **common) == {}
+    for target in (first / "b/value.txt", root / "a/value.txt", primary / "a/value.txt"):
+        denied = hook(first, str(target), tool="Edit", **common)
+        assert "outside the bound surface" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    outside = tmp_path / "outside"
+    outside.write_text("safe\n")
+    (first / "a/escape").symlink_to(outside)
+    denied = hook(first, str(first / "a/escape"), tool="Edit", **common)
+    assert "outside the bound surface" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    (first / "a/escape").unlink()
+
+    inspector = Path(__file__).parents[1] / "scripts/codex-worker-inspect"
+    (first / ".venv/bin").mkdir(parents=True)
+    (first / ".venv/bin/pytest").symlink_to(Path(sys.executable).with_name("pytest"))
+    test_command = f"{inspector} --root {first} test a/test_smoke.py"
+    commit_command = f"{inspector} --root {first} commit a"
+    assert hook(first, test_command, **common) == {}
+    subprocess.run(test_command.split(), cwd=first, check=True)
+    (first / "a/value.txt").write_text("candidate\n")
+    assert hook(first, commit_command, **common) == {}
+    subprocess.run(commit_command.split(), cwd=first, check=True)
+    assert git(first, "status", "--porcelain") == ""
+    assert subprocess.run(
+        ["git", "-C", first, "merge-base", "--is-ancestor", base, "HEAD"], check=False,
+    ).returncode == 0
+    for command in (
+        "touch probe", "python -c pass", f"git -C {first} status",
+        f"{inspector} --root {root} commit a",
+    ):
+        denied = hook(first, command, **common)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_shared_primary_hook_defers_worker_policy_to_writer_bound_hook(

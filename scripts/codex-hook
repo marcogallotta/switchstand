@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from uuid import UUID
 
 MUTATIONS = {
     "add", "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge",
@@ -318,7 +320,16 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
-def foreign_write(target: str, primary: str, writer: str | None) -> str | None:
+def foreign_write(
+    target: str, primary: str, writer: str | None, surface: str | None = None,
+) -> str | None:
+    if surface is not None and (not writer or not _inside(target, surface)):
+        return f"[worker-writer] writing {target} outside the bound surface is denied."
+    if writer and _inside(target, writer):
+        relative = Path(target).relative_to(writer)
+        if ".git" in relative.parts:
+            return "[worker-writer] Git administrative files are not writable."
+        return None
     if _inside(target, primary):
         return (f"[primary-checkout] writing {target} is denied; "
                 "use a linked writer worktree.")
@@ -350,7 +361,10 @@ def friction_binding(candidate: str, primary: str, writer: str | None) -> bool:
     )
 
 
-def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> str | None:
+def classify_patch(
+    command: str, cwd: str, primary: str, writer: str | None,
+    surface: str | None = None,
+) -> str | None:
     prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: ")
     for line in command.splitlines():
         raw = next((line.removeprefix(prefix) for prefix in prefixes
@@ -359,8 +373,8 @@ def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> 
             continue
         candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
         target = os.path.abspath(candidate) if writer is None else os.path.realpath(candidate)
-        if not friction_binding(candidate, primary, writer):
-            reason = foreign_write(target, primary, writer)
+        if surface is not None or not friction_binding(candidate, primary, writer):
+            reason = foreign_write(target, primary, writer, surface)
             if reason:
                 return reason
     return None
@@ -370,7 +384,9 @@ EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 WORKER_COMMAND = re.compile(r"[A-Za-z0-9_./:@%+=,~^ -]+")
 
 
-def worker_inspection(command: str, primary: str | None, writer: str | None) -> bool:
+def worker_inspection(
+    command: str, primary: str | None, writer: str | None, surface: str | None,
+) -> bool:
     if primary is None or writer is None or not WORKER_COMMAND.fullmatch(command):
         return False
     try:
@@ -378,26 +394,110 @@ def worker_inspection(command: str, primary: str | None, writer: str | None) -> 
     except ValueError:
         return False
     inspector = str(Path(__file__).resolve().with_name("codex-worker-inspect"))
-    return len(tokens) >= 4 and tokens[0] == inspector \
-        and tokens[1:3] == ["--root", writer]
+    if len(tokens) < 4 or tokens[0] != inspector or tokens[1:3] != ["--root", writer]:
+        return False
+    if tokens[3] in {"test", "commit"} and surface is None:
+        return False
+    return tokens[3] != "commit" or len(tokens) > 4 and all(
+        _inside(os.path.realpath(os.path.join(writer, raw)), surface or "")
+        for raw in tokens[4:]
+    )
 
 
-def classify_edit(tool_input: dict, cwd: str, primary: str, writer: str | None) -> str | None:
+def classify_edit(
+    tool_input: dict, cwd: str, primary: str, writer: str | None,
+    surface: str | None = None,
+) -> str | None:
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(raw, str):
         return None
     candidate = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
     target = os.path.realpath(candidate)
-    if friction_binding(candidate, primary, writer):
+    if surface is None and friction_binding(candidate, primary, writer):
         return None
-    return foreign_write(target, primary, writer)
+    return foreign_write(target, primary, writer, surface)
+
+
+def _binding_path(bindings: Path, agent_id: str) -> Path:
+    return bindings / (hashlib.sha256(agent_id.encode()).hexdigest() + ".json")
+
+
+def _linked_writer(primary: str, raw: str) -> str:
+    writer = os.path.realpath(raw)
+    identity = checkout_identity([], writer)
+    if identity is None or identity[0] != writer or identity[1] == identity[2] \
+            or identity[2] != os.path.realpath(os.path.join(primary, ".git")):
+        raise ValueError("worker writer is not a linked worktree of the canonical repository")
+    return writer
+
+
+def _binding_directory(raw: str) -> Path:
+    bindings = Path(raw).resolve(strict=True)
+    if not bindings.is_dir() or bindings.stat().st_mode & 0o077:
+        raise ValueError("worker binding directory is invalid")
+    return bindings
+
+
+def bind_worker(arguments: list[str]) -> int:
+    flags = ("--bind-worker", "--work-id", "--writer", "--base", "--surface",
+             "--coordinator-primary", "--worker-bindings")
+    if len(arguments) != 14 or tuple(arguments[::2]) != flags:
+        raise SystemExit("invalid worker binding arguments")
+    agent, work, raw_writer, base, raw_surface, primary, raw_bindings = arguments[1::2]
+    UUID(work)
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        raise SystemExit("worker base must be an exact commit")
+    primary, writer = os.path.realpath(primary), _linked_writer(primary, raw_writer)
+    if subprocess.run(["git", "-C", writer, "rev-parse", "HEAD"], text=True,
+                      capture_output=True, check=True).stdout.strip() != base:
+        raise SystemExit("worker writer is not at the exact base")
+    if subprocess.run(["git", "-C", writer, "status", "--porcelain"], text=True,
+                      capture_output=True, check=True).stdout.strip():
+        raise SystemExit("worker writer must be clean")
+    surface = os.path.realpath(os.path.join(writer, raw_surface))
+    if os.path.isabs(raw_surface) or not _inside(surface, writer) \
+            or ".git" in Path(surface).relative_to(writer).parts:
+        raise SystemExit("worker surface escapes its writer")
+    bindings = _binding_directory(raw_bindings)
+    logical = Path(surface).relative_to(writer)
+    for record in bindings.glob("*.json"):
+        prior = json.loads(record.read_text())
+        other = Path(prior["surface"])
+        if prior["writer"] == writer or logical == other \
+                or logical.is_relative_to(other) or other.is_relative_to(logical):
+            raise SystemExit("worker writer or surface is already bound")
+    payload = {"agent_id": agent, "work_id": work, "writer": writer,
+               "base": base, "surface": str(logical)}
+    destination = _binding_path(bindings, agent)
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        json.dump(payload, handle)
+    print(writer)
+    return 0
+
+
+def worker_binding(
+    bindings: Path | None, agent_id: str, primary: str,
+) -> tuple[str, str] | None:
+    if bindings is None:
+        return None
+    try:
+        payload = json.loads(_binding_path(bindings, agent_id).read_text())
+        UUID(payload["work_id"])
+        writer = _linked_writer(primary, payload["writer"])
+        surface = os.path.realpath(os.path.join(writer, payload["surface"]))
+        if payload["agent_id"] != agent_id or not _inside(surface, writer):
+            return None
+        return writer, surface
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def main() -> int:
     try:
         return run()
     except Exception as error:
-        if len(sys.argv) in {3, 5} and sys.argv[1] == "--coordinator-primary":
+        if len(sys.argv) in {3, 5, 7} and sys.argv[1] == "--coordinator-primary":
             print(json.dumps(deny(f"[primary-checkout] guard failed closed: {error}",
                                   "PreToolUse")))
             return 0
@@ -407,7 +507,14 @@ def main() -> int:
 def run() -> int:
     coordinator_primary = None
     coordinator_writer = None
-    if len(sys.argv) == 5 and sys.argv[1] == "--coordinator-primary" \
+    worker_bindings = None
+    if len(sys.argv) == 7 and sys.argv[1] == "--coordinator-primary" \
+            and sys.argv[3] == "--coordinator-writer" \
+            and sys.argv[5] == "--worker-bindings":
+        coordinator_primary = os.path.realpath(sys.argv[2])
+        coordinator_writer = os.path.realpath(sys.argv[4])
+        worker_bindings = _binding_directory(sys.argv[6])
+    elif len(sys.argv) == 5 and sys.argv[1] == "--coordinator-primary" \
             and sys.argv[3] == "--coordinator-writer":
         coordinator_primary = os.path.realpath(sys.argv[2])
         coordinator_writer = os.path.realpath(sys.argv[4])
@@ -429,13 +536,24 @@ def run() -> int:
     if isinstance(declared_workdir, str):
         cwd = os.path.realpath(os.path.join(cwd, declared_workdir))
     agent_id = payload.get("agent_id")
+    binding = worker_binding(worker_bindings, agent_id, coordinator_primary) \
+        if coordinator_primary and isinstance(agent_id, str) and agent_id else None
+    worker_writer = binding[0] if binding else coordinator_writer
     if isinstance(agent_id, str) and agent_id and tool == "Bash" \
             and isinstance(command, str) and worker_inspection(
-                command, coordinator_primary, coordinator_writer
+                command, coordinator_primary, worker_writer, binding[1] if binding else None
             ):
         return 0
     if coordinator_writer is not None and isinstance(agent_id, str) and agent_id \
             and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
+        if binding is not None and tool != "Bash":
+            reason = classify_edit(tool_input, cwd, coordinator_primary, *binding) \
+                if tool in EDIT_TOOLS else classify_patch(
+                    command or "", cwd, coordinator_primary, *binding
+                )
+            if reason:
+                print(json.dumps(deny(reason, event)))
+            return 0
         print(json.dumps(deny(
             "[worker-read-only] delegated Workers may use only the bound repository "
             "inspection command; shell and file-edit mutation remain denied.", event,
@@ -465,4 +583,6 @@ def run() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--bind-worker":
+        raise SystemExit(bind_worker(sys.argv[1:]))
     raise SystemExit(main())
