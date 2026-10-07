@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from switchstand import control_release
+
 SELECTOR_SOURCE = Path(__file__).parents[1] / "scripts" / "switchstand-selector"
 
 
@@ -248,3 +250,105 @@ def test_paused_manifest_is_closed(selector_fixture, tmp_path):
     assert result.returncode == 1
     assert 'PAUSED CONTROL manifest must contain only state' in result.stderr
     assert not receipt.with_suffix('.sha').exists()
+
+
+def test_control_release_stages_selects_and_preserves_legacy_rollback(
+    selector_fixture, tmp_path, monkeypatch
+):
+    wrapper, manifest, control_a, sha_a, receipt, env, controls = selector_fixture
+    monkeypatch.setenv('HOME', env['HOME'])
+    origin = tmp_path / 'origin'
+    git(origin, 'branch', '-M', 'main')
+    active(manifest, sha_a, control_a)
+    internal = origin / 'scripts/switchstand-start'
+    internal.write_text(internal.read_text() + '# release B\n')
+    git(origin, 'add', 'scripts/switchstand-start')
+    git(origin, 'commit', '-qm', 'release B')
+    sha_b = git(origin, 'rev-parse', 'HEAD')
+    monkeypatch.setattr(control_release, 'REMOTE', str(origin))
+    canonical = 'https://github.com/marcogallotta/switchstand.git'
+
+    marker = tmp_path / 'legacy-selector-executed'
+    installed = wrapper.read_bytes()
+    wrapper.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+    with pytest.raises(RuntimeError, match='installed selector does not match'):
+        control_release.activate(sha_b)
+    assert not marker.exists()
+    wrapper.write_bytes(installed)
+
+    redirected = tmp_path / 'redirected-controls'
+    controls.rename(redirected)
+    controls.symlink_to(redirected, target_is_directory=True)
+    with pytest.raises(RuntimeError, match='CONTROL root is missing, redirected'):
+        control_release.activate(sha_b)
+    assert not tuple(redirected.glob('.stage-*'))
+    controls.unlink()
+    redirected.rename(controls)
+
+    invalid = manifest.parent / '.invalid'
+    invalid.write_text('invalid\n')
+    invalid.chmod(0o600)
+    mode = control_release.MODE
+    assert run(str(wrapper), mode, str(invalid), env=env, check=False).returncode == 1
+    assert run(str(wrapper), mode, str(manifest), 'extra', env=env, check=False).returncode == 1
+    assert not receipt.with_suffix('.sha').exists()
+
+    assert control_release.activate(sha_b) == 'APPLIED'
+    control_b = controls / sha_b
+    assert git(control_b, 'branch', '--show-current') == ''
+    assert git(control_b, 'remote', 'get-url', 'origin') == canonical
+    assert not receipt.with_suffix('.sha').exists()
+    assert run(str(wrapper), env=env).returncode == 0
+    assert receipt.with_suffix('.sha').read_text().strip() == sha_b
+    active(manifest, sha_a, control_a)
+    assert run(str(wrapper), env=env).returncode == 0
+    assert receipt.with_suffix('.sha').read_text().strip() == sha_a
+
+    manifest.chmod(0o600)
+    real_replace = control_release.atomic_replace_bytes
+
+    def replace_then_fail(path, body):
+        real_replace(path, body)
+        raise OSError('parent fsync outcome unavailable')
+
+    monkeypatch.setattr(control_release, 'atomic_replace_bytes', replace_then_fail)
+    with pytest.raises(RuntimeError, match='APPLIED_WITH_DURABILITY_UNKNOWN'):
+        control_release.activate(sha_b)
+    active(manifest, sha_a, control_a)
+    manifest.chmod(0o600)
+    monkeypatch.setattr(control_release, 'atomic_replace_bytes', real_replace)
+    real_read = control_release.read_private_bytes
+
+    def unreadable_readback(_path):
+        raise ValueError('unreadable readback')
+
+    monkeypatch.setattr(control_release, 'read_private_bytes', unreadable_readback)
+    with pytest.raises(RuntimeError, match='UNKNOWN'):
+        control_release.activate(sha_b)
+    monkeypatch.setattr(control_release, 'read_private_bytes', real_read)
+    active(manifest, sha_a, control_a)
+    real_unlink = Path.unlink
+
+    def reject_prospective_cleanup(path, *args, **kwargs):
+        if path.name.startswith('.prospective-'):
+            raise OSError('cleanup failed')
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', reject_prospective_cleanup)
+    with pytest.raises(OSError, match='cleanup failed'):
+        control_release.activate(sha_b)
+    assert manifest.read_text().startswith(f'state=ACTIVE\nrepository=marcogallotta/switchstand\ncontrol_sha={sha_a}\n')
+    monkeypatch.setattr(Path, 'unlink', real_unlink)
+
+    def cleanup_then_move(path, *args, **kwargs):
+        internal.write_text(internal.read_text() + '# release C\n')
+        git(origin, 'add', 'scripts/switchstand-start')
+        git(origin, 'commit', '-qm', 'release C')
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', cleanup_then_move)
+    with pytest.raises(RuntimeError, match='remote main moved before selection'):
+        control_release.activate(sha_b)
+    assert manifest.read_text().startswith(
+        f'state=ACTIVE\nrepository=marcogallotta/switchstand\ncontrol_sha={sha_a}\n'
+    )
