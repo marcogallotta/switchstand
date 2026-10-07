@@ -66,7 +66,7 @@ def wake_id(binding: CodexBinding, source: WakeSourceRef) -> str:
 class QueueClient:
     """Lazy bounded client for Codex's durable same-home user-message queue."""
 
-    def __init__(self, codex: Path, home: Path):
+    def __init__(self, codex: Path, home: Path, socket_path: Path | None = None):
         try:
             self.codex = codex.resolve(strict=True)
             self.home = home.resolve(strict=True)
@@ -81,6 +81,7 @@ class QueueClient:
         self.selector: selectors.BaseSelector | None = None
         self.read_buffer = bytearray()
         self.sequence = 0
+        self.socket_path = socket_path
 
     def _start(self) -> None:
         if self.process is not None:
@@ -88,8 +89,13 @@ class QueueClient:
         environment = dict(os.environ)
         environment["CODEX_HOME"] = str(self.home)
         try:
+            command = (
+                [str(self.codex), "app-server", "--listen", "stdio://"]
+                if self.socket_path is None
+                else [str(self.codex), "app-server", "proxy", "--sock", str(self.socket_path)]
+            )
             process = subprocess.Popen(
-                [str(self.codex), "app-server", "--listen", "stdio://"],
+                command,
                 cwd=self.home,
                 env=environment,
                 stdin=subprocess.PIPE,
@@ -476,7 +482,7 @@ async def inbound_cycle(
 async def run_inbound(
     messages: MessageState, mailboxes: AgentMailboxState, mailbox: AgentMailbox,
     binding: CodexBinding, home: Path, codex: Path, stop: asyncio.Event,
-    *, opt_in: bool = False,
+    *, socket_path: Path | None = None, opt_in: bool = False,
 ) -> None:
     """Dedicated supervised host process, never a task on the live edge's event loop."""
     if not opt_in:
@@ -487,7 +493,7 @@ async def run_inbound(
         while not stop.is_set():
             client = None
             try:
-                client = QueueClient(codex, home)
+                client = QueueClient(codex, home, socket_path)
                 cursor, results = await inbound_cycle(
                     messages, mailboxes, mailbox, projection, client, cursor, stop,
                 )
@@ -506,18 +512,21 @@ async def run_inbound(
 
 async def run_inbound_service(path: Path, *, stop: asyncio.Event | None = None) -> None:
     config = json.loads(read_private_bytes(path))
-    if set(config) != {"mailbox", "binding", "codex_home", "codex"}:
+    if set(config) != {"mailbox", "binding", "codex_home", "codex", "app_server_socket"}:
         raise ValueError("invalid inbound configuration")
     mailbox = AgentMailbox.model_validate(config["mailbox"])
     binding = CodexBinding(**config["binding"])
     home, codex = Path(config["codex_home"]), Path(config["codex"])
-    if not home.is_absolute() or not codex.is_absolute() or Path(binding.start_record).parent != home:
+    socket_path = Path(config["app_server_socket"])
+    if (not home.is_absolute() or not codex.is_absolute() or not socket_path.is_absolute()
+            or socket_path.parent != home or Path(binding.start_record).parent != home):
         raise ValueError("invalid inbound binding paths")
     from switchstand.chatgpt_edge import resource_service
     async with resource_service() as (service, _runtime):
         assert service.messages is not None
         await run_inbound(service.messages, AgentMailboxState(service.messages.engine), mailbox,
-                          binding, home, codex, stop or asyncio.Event(), opt_in=True)
+                          binding, home, codex, stop or asyncio.Event(),
+                          socket_path=socket_path, opt_in=True)
 
 
 def watch_lifeline(

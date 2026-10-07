@@ -192,11 +192,14 @@ if [ "$wakeful_mode" = PILOT ]; then
             --home "$coordinator_home" --codex "$real_codex" \
             --start-record "$start_record" \
             --default-name "codex-head-$writer_suffix" \
-            --environment-file "$environment_file" -- \
+            --environment-file "$environment_file" \
+            --profile-path "$coordinator_profile_path" -- \
             "$real_codex" --profile "$coordinator_profile" \
             -c 'model_reasoning_effort="medium"' \
             -a never -c 'default_permissions="switchstand-coordinator"' \
-            --enable hooks --dangerously-bypass-hook-trust "$@"
+            --enable hooks --dangerously-bypass-hook-trust \
+            resume __SWITCHSTAND_WAKEFUL_THREAD__ \
+            --remote __SWITCHSTAND_WAKEFUL_SOCKET__ "$@"
 fi
 CODEX_HOME="$coordinator_home" \
     exec "$real_codex" --profile "$coordinator_profile" \
