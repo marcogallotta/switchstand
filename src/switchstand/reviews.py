@@ -741,6 +741,31 @@ class ReviewService:
     def policy(self, value: ReviewPolicy) -> None:
         self.occurrences.policy = value
 
+    async def hygiene_findings(
+        self, subject_work_id: UUID, connection: AsyncConnection | None = None,
+    ) -> tuple[FindingRef, ...] | None:
+        """Project durable typed findings without creating a second review store."""
+        try:
+            if connection is None:
+                async with self.occurrences.engine.connect() as owned:
+                    return await self.hygiene_findings(subject_work_id, owned)
+            payloads = (await connection.scalars(select(messages.c.payload).where(
+                    messages.c.payload["brief"]["basis"]["subject_work_id"].astext
+                    == str(subject_work_id),
+                    messages.c.payload["outcome"]["type"].astext == "REVIEW_OUTCOME",
+                ))).all()
+            refs: set[tuple[str, str]] = set()
+            for payload in payloads:
+                envelope = ReviewOutcomeEnvelope.model_validate(payload)
+                if envelope.outcome.verdict == "FINDINGS":
+                    refs.update(
+                        (f"review:{envelope.outcome.review_id}", finding.finding_id)
+                        for finding in envelope.outcome.findings
+                    )
+            return tuple(FindingRef(source_ref=source, finding_id=finding) for source, finding in sorted(refs))
+        except (SQLAlchemyError, KeyError, TypeError, ValueError):
+            return None
+
     def _basis(self, request: ReviewRequest, requester: AgentMailbox) -> ReviewBasis:
         identity = _digest({
             "protocol": REVIEW_PROTOCOL, "subject": str(request.subject_work_id),

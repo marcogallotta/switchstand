@@ -78,6 +78,7 @@ from .reviews import (
     ReviewVerdict,
 )
 from .task_control import DurableControlCapsule, TaskControlCheckpointResult, TaskControlReadResult
+from .work_hygiene import HygieneGate, WorkHygieneResult
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -216,6 +217,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "agent_message_pending",
     "capability_preflight_get",
     "task_control_get",
+    "work_hygiene_check",
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
@@ -593,6 +595,17 @@ def build_ordinary_tools(
         correlate(work_id)
         result = await service.task_control_get(work_id)
         audited("task_control_get", str(work_id), result.status)
+        return result
+
+    async def work_hygiene_check(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        gate: HygieneGate,
+    ) -> WorkHygieneResult:
+        """Read deterministic readiness evidence; never repair or schedule work."""
+        del api_version
+        correlate(work_id)
+        result = await service.work_hygiene_check(work_id, observed_revision, gate)
+        audited("work_hygiene_check", str(work_id), result.status)
         return result
 
     async def task_control_checkpoint(
@@ -1391,6 +1404,7 @@ def build_ordinary_tools(
         ("work_append", work_append),
         ("work_create", work_create),
         ("task_control_get", task_control_get),
+        ("work_hygiene_check", work_hygiene_check),
         ("task_control_checkpoint", task_control_checkpoint),
         ("work_update", enriched_work_update if (
             service.outcome_state_enabled or service.activation_continuity is not None

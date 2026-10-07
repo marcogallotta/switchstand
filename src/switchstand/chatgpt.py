@@ -85,6 +85,7 @@ from .task_control import (
 )
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
+from .work_hygiene import HygieneGate, WorkHygieneResult, WorkHygieneState, evaluate_work_hygiene
 from .workspace_admission import WorkspaceAdmissionState
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
@@ -127,6 +128,7 @@ class ChatGPTService:
         canonical_work: CanonicalWorkRuntime | None = None,
         canonical_events: CanonicalEventReader | None = None,
         task_control: TaskControlState | None = None,
+        work_hygiene: WorkHygieneState | None = None,
         canonical_work_active: bool = False,
         outcome_state_enabled: bool = False,
         priority_claims: PriorityClaimService | None = None,
@@ -163,6 +165,7 @@ class ChatGPTService:
         self.canonical_work = canonical_work
         self.canonical_events = canonical_events
         self.task_control = task_control
+        self.work_hygiene = work_hygiene
         self.canonical_work_active = canonical_work_active
         self.outcome_state_enabled = outcome_state_enabled
         self.priority_claims = priority_claims
@@ -679,6 +682,31 @@ class ChatGPTService:
             return TaskControlCheckpointResult(
                 status="unknown", currentness="UNKNOWN", reason="state_unavailable",
             )
+
+    async def work_hygiene_check(
+        self, work_id: UUID, observed_revision: str, gate: HygieneGate,
+    ) -> WorkHygieneResult:
+        def unavailable() -> WorkHygieneResult:
+            return evaluate_work_hygiene(
+                work=None, work_id=work_id, observed_revision=observed_revision, gate=gate,
+                checkpoint=None, finding_refs=None, watch_refs=None, unknown_effect_refs=None,
+            )
+        if self.work_hygiene is None:
+            return unavailable()
+        principal = await self.principal()
+        if principal is None:
+            return unavailable()
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if (
+                    grant is None or grant.principal != principal or not grant.current()
+                    or "work_get" not in grant.operations
+                    or not grant.can_read(work_id, explicit_target=True)
+                ):
+                    return unavailable()
+                return await self.work_hygiene.check(work_id, observed_revision, gate)
+        except (SQLAlchemyError, KeyError, TypeError, ValueError):
+            return unavailable()
 
     async def update(self, request: ProtectedUpdate) -> GuardOutcome:
         principal = await self.principal()

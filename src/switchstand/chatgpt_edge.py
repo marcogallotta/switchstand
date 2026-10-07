@@ -80,6 +80,7 @@ from .state import PostgresState
 from .task_control import TaskControlState
 from .task_runs import TaskRunState
 from .work_events import WorkEventRepository
+from .work_hygiene import WorkHygieneState
 
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
@@ -448,6 +449,7 @@ def _create_resource_app(
         canonical_work=service.canonical_work,
         canonical_events=service.canonical_events,
         task_control=service.task_control,
+        work_hygiene=service.work_hygiene,
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
         priority_claims=service.priority_claims,
@@ -621,6 +623,11 @@ async def resource_service(
             messages, RequiredResultPersistence(LifecycleRepository(engine)),
             canonical_work=canonical_work, canonical_events=canonical_events,
             task_control=task_control,
+            work_hygiene=(
+                None if task_control is None else WorkHygieneState(
+                    canonical_repository, task_control, grants, messages, review_service,
+                )
+            ),
             canonical_work_active=True,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1",
             priority_claims=priority_claims,
