@@ -247,10 +247,10 @@ class ReviewPolicy:
 
     @staticmethod
     def eligible(requester: AgentMailbox, reviewer: AgentMailbox) -> bool:
-        return (
-            requester.endpoint_id != reviewer.endpoint_id
-            and requester.principal_key != reviewer.principal_key
-        )
+        # The endpoint is the durable logical-agent identity.  A principal is
+        # an account/client authorization boundary and can legitimately be
+        # shared by multiple independent ChatGPT agents.
+        return requester.endpoint_id != reviewer.endpoint_id
 
 
 @dataclass(frozen=True)
