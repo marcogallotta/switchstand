@@ -694,9 +694,10 @@ def build_ordinary_tools(
             identity = (value.base_sha, value.head_sha, value.composition_sha)
             if None in identity or len(value.composition_parents) != 2:
                 return "UNKNOWN"
-            if (value.status, value.reason) in {
-                ("NOT_READY", "composition_mismatch"), ("NOT_READY", "candidate_changed"),
-            }:
+            stale = value.reason in {"composition_mismatch", "candidate_changed"} or any(
+                gate.reason in {"wrong-head", "wrong-base", "wrong-composition", "conflicting",
+                                "stale"} for gate in value.gates)
+            if value.status == "NOT_READY" and stale:
                 return "STALE"
             expected = {
                 ("Exact-head Quality", "exact_head", value.head_sha),

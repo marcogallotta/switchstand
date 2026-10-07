@@ -103,11 +103,16 @@ async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatc
     current = unknown.model_copy(update={"gates": gates})
     duplicate = current.model_copy(update={"gates": [gates[0], gates[0]]})
     contradictory = current.model_copy(update={"status": "READY", "reason": None})
+    stale_gate = current.model_copy(update={"gates": [
+        gates[0].model_copy(update={"reason": "wrong-head"}), gates[1],
+    ]})
     changed = current.model_copy(update={"head_sha": "d" * 40})
-    qualify.side_effect = [duplicate, contradictory, current, changed]
+    qualify.side_effect = [duplicate, contradictory, stale_gate, current, changed]
     for _ in range(2):
         result = await tool("1", review_id)
         assert result.structured_content["status"] == "UNKNOWN" and len(result.content) == 1
+    result = await tool("1", review_id)
+    assert result.structured_content["status"] == "STALE" and len(result.content) == 1
     result = await tool("1", review_id)
     assert result.structured_content["status"] == "STALE" and len(result.content) == 1
 
