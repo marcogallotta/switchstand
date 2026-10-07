@@ -203,19 +203,22 @@ def test_prepare_reuses_exact_persisted_registration(spec: Spec, monkeypatch) ->
 
 
 def test_prepare_recovers_registration_after_lost_response(spec: Spec, monkeypatch) -> None:
-    binding = CodexBinding("thread-1", str(spec.start_record), spec.start_record.name)
     calls: list[tuple[str, str]] = []
+    frozen_threads: list[str] = []
     attempt = 0
+    started = 0
 
     class Client:
         def __init__(self, *_args):
             pass
 
         def call(self, method: str, arguments: dict[str, object]):
+            nonlocal started
             tool = str(arguments.get("tool", ""))
             calls.append((method, tool))
             if method == "thread/start":
-                return {"thread": {"id": "thread-1"}}
+                started += 1
+                return {"thread": {"id": f"thread-{started}"}}
             if tool == "agent_register":
                 raise OSError("response lost after durable registration")
             return {"structuredContent": {"status": "ok", "name": spec.default_name}}
@@ -229,19 +232,29 @@ def test_prepare_recovers_registration_after_lost_response(spec: Spec, monkeypat
         return (("missing", None) if attempt == 1 else
                 ("takeover", spec.default_name))
 
+    async def freeze(_spec, binding, *_args):
+        frozen_threads.append(binding.thread_id)
+        return spec.home / "runner.json"
+
     monkeypatch.setattr("switchstand.codex_registration.QueueClient", Client)
-    monkeypatch.setattr("switchstand.codex_registration.bind", lambda *_args: binding)
-    monkeypatch.setattr("switchstand.codex_registration.existing_registration", existing)
     monkeypatch.setattr(
-        "switchstand.codex_registration.freeze_config",
-        lambda *_args: _async_value(spec.home / "runner.json"),
+        "switchstand.codex_registration.bind",
+        lambda _client, _home, start, thread: CodexBinding(
+            thread, str(start), start.name,
+        ),
     )
+    monkeypatch.setattr("switchstand.codex_registration.existing_registration", existing)
+    monkeypatch.setattr("switchstand.codex_registration.freeze_config", freeze)
 
     with pytest.raises(OSError, match="response lost"):
         prepare_registration(spec)
-    assert prepare_registration(spec)[2] == binding
+    final_binding = prepare_registration(spec)[2]
+    assert final_binding.thread_id == "thread-2"
+    assert calls.count(("thread/start", "")) == 2
     assert calls.count(("mcpServer/tool/call", "agent_register")) == 1
     assert calls.count(("mcpServer/tool/call", "agent_takeover")) == 1
+    assert frozen_threads == ["thread-2"]
+    assert (spec.home / "wakeful-thread-exact").read_text() == "thread-2\n"
 
 
 @pytest.mark.asyncio
