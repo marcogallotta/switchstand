@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -366,6 +367,19 @@ def classify_patch(command: str, cwd: str, primary: str, writer: str | None) -> 
 
 
 EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+WORKER_COMMAND = re.compile(r"[A-Za-z0-9_./:@%+=,~^ -]+")
+
+
+def worker_inspection(command: str, primary: str | None, writer: str | None) -> bool:
+    if primary is None or writer is None or not WORKER_COMMAND.fullmatch(command):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    inspector = str(Path(__file__).resolve().with_name("codex-worker-inspect"))
+    return len(tokens) >= 4 and tokens[0] == inspector \
+        and tokens[1:3] == ["--root", writer]
 
 
 def classify_edit(tool_input: dict, cwd: str, primary: str, writer: str | None) -> str | None:
@@ -415,10 +429,15 @@ def run() -> int:
     if isinstance(declared_workdir, str):
         cwd = os.path.realpath(os.path.join(cwd, declared_workdir))
     agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id and tool == "Bash" \
+            and isinstance(command, str) and worker_inspection(
+                command, coordinator_primary, coordinator_writer
+            ):
+        return 0
     if isinstance(agent_id, str) and agent_id and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
         print(json.dumps(deny(
-            "[worker-read-only] delegated Workers cannot use shell or file-edit tools; "
-            "return a patch or findings to Root.", event,
+            "[worker-read-only] delegated Workers may use only the bound repository "
+            "inspection command; shell and file-edit mutation remain denied.", event,
         )))
         return 0
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")

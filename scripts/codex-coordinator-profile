@@ -110,6 +110,9 @@ def render(
     compact_command = shlex.join((
         str(compact_hook), str(manifest_record),
     ))
+    worker_inspector = shlex.join((
+        str(hook.with_name("codex-worker-inspect")), "--root", str(writer),
+    ))
     frozen_control = compact_hook.with_name("coordinator-control")
     lines = [
         'approval_policy = "never"',
@@ -142,10 +145,12 @@ def render(
             "managed runs. Native full local-user execution applies to directly operated Root "
             "and sub-Coordinators, but grants no provider, deployment, activation, or other "
             "consequential-effect authority; preserve each exact authority and readback gate. "
-            "Built-in Workers are read-only: their shell and file-edit tools are "
-            "denied because they share Root's filesystem profile and hooks are not a security "
-            "sandbox. Delegate research/review freely; for implementation, a Worker returns a "
-            "patch proposal and Root applies it in this generation's owned writer. The "
+            "Built-in Workers are read-only because they share Root's filesystem "
+            "profile and hooks are not a security sandbox. Their only shell entry point is "
+            f"`{worker_inspector}` with one of `files`, `read`, `search`, `status`, `diff`, or "
+            "`log`; the runtime denies every other shell and every file-edit call. Delegate "
+            "research/review freely; for implementation, a Worker returns a patch proposal and "
+            "Root applies it in this generation's owned writer. The "
             "Coordinator control MCP separately exposes an isolated implementation-worker "
             "spawn/status/cancel path backed by the exact WorkId and a task-private writer. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
@@ -270,6 +275,9 @@ def main() -> None:
     resolved_continuity_hook = continuity_hook.resolve(strict=True)
     if not resolved_continuity_hook.is_file() or not os.access(resolved_continuity_hook, os.X_OK):
         raise SystemExit("Continuity hook is unavailable")
+    worker_inspector = resolved_hook.with_name("codex-worker-inspect")
+    if not worker_inspector.is_file() or not os.access(worker_inspector, os.X_OK):
+        raise SystemExit("Worker repository inspector is unavailable")
     compact_controls = Path(f"{start_record}.compact-controls")
     compact_controls.mkdir(mode=0o700, parents=True)
     compact_hook_snapshot = compact_controls / "codex-compact-hook"

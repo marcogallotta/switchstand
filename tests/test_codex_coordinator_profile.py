@@ -27,6 +27,9 @@ def prepare(source: Path, destination: Path, primary: Path, hooks: Path) -> Path
     compact_hook.chmod(compact_hook.stat().st_mode | stat.S_IXUSR)
     coordinator_control.write_text("#!/bin/sh\nexit 0\n")
     coordinator_control.chmod(coordinator_control.stat().st_mode | stat.S_IXUSR)
+    inspector = primary / "scripts/codex-worker-inspect"
+    inspector.write_text("#!/bin/sh\nexit 0\n")
+    inspector.chmod(inspector.stat().st_mode | stat.S_IXUSR)
     runtime_profile = destination.with_name(f"{destination.stem}.runtime.toml")
     writer = primary.parent / "writer"
     writer.mkdir(exist_ok=True)
@@ -120,11 +123,16 @@ trusted_hash = "must-not-copy"
         "launch-bound managed runs."
     ) in instructions
     assert (
-        "Built-in Workers are read-only: their shell and file-edit tools are denied"
+        "Built-in Workers are read-only because they share Root's filesystem profile"
         in instructions
     )
     assert "Native full local-user execution applies to directly operated Root" in instructions
     assert "grants no provider, deployment, activation" in instructions
+    assert (
+        f"`{primary / 'scripts/codex-worker-inspect'} --root {primary.parent / 'writer'}`"
+        in instructions
+    )
+    assert "runtime denies every other shell and every file-edit call" in instructions
     assert "a Worker returns a patch proposal and Root applies it" in instructions
     assert not Path(
         f"{tmp_path / 'coordinator/start-commit.coordinator.config'}.worker-writers"
@@ -199,7 +207,8 @@ def test_pilot_profile_registers_only_root_continuity_events(tmp_path: Path) -> 
     (writer / ".git").write_text(f"gitdir: {writer_git_dir}\n")
     state = tmp_path / "coordinator"
     source.write_text("")
-    for script in (guard, continuity):
+    inspector = primary / "scripts/codex-worker-inspect"
+    for script in (guard, continuity, inspector):
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/sh\nexit 0\n")
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
