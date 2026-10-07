@@ -31,8 +31,8 @@ class FullSuiteInputs:
     commits_since_baseline: int | None
     changed_paths_since_baseline: int | None
     ancestry_verified: bool | None
-    planner_policy_changed: bool = False
-    unresolved_hard_miss: bool = False
+    planner_policy_changed: bool | None = None
+    unresolved_hard_miss: bool | None = None
     current_truth_known: bool = True
 
 
@@ -64,6 +64,8 @@ def evaluate_full_suite_due(
 
     if inputs.baseline_sha is None or inputs.baseline_completed_at is None:
         return _due(inputs, ("trusted-baseline-missing",))
+    if inputs.planner_policy_changed is None or inputs.unresolved_hard_miss is None:
+        return FullSuiteDecision("UNKNOWN", ("current-inputs-unavailable",), None)
     commits = inputs.commits_since_baseline
     changed_paths = inputs.changed_paths_since_baseline
     counters_known = commits is not None and commits >= 0 \
