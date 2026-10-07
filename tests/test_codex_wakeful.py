@@ -4,24 +4,32 @@ import sys
 import tempfile
 import threading
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from websockets.sync.server import unix_serve
 
+from switchstand.agent_mailboxes import AgentMailbox
 from switchstand.codex_wakeful import (
     CodexBinding,
     Projection,
     QueueClient,
     WakeSourceRef,
     bind,
+    chat_session_key,
     children,
     inbound,
+    inbound_cycle,
+    open_wakeful_event_store,
     wake_id,
+    wakeful_event_cycle,
 )
 from switchstand.messages import PendingMessage
 from switchstand.secure_file import atomic_replace_bytes
+from switchstand.wakeful import EventSeverity, WakeEvent, WakefulStore
 
 
 class Client(QueueClient):
@@ -183,6 +191,93 @@ def test_busy_target_queues_and_unresolved_absence_never_resends(setup):
     client.thread["turns"] = []
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_wakeful_event_delivers_once_to_exact_root(setup):
+    home, _, client, binding = setup
+    mailbox = AgentMailbox(
+        name="/root",
+        name_key="root",
+        endpoint_id=uuid4(),
+        principal_key="principal",
+        session_key="session",
+        generation=1,
+    )
+
+    class Mailboxes:
+        async def by_endpoint_id(self, _endpoint_id):
+            return SimpleNamespace(status="ok", mailbox=mailbox)
+
+    store = WakefulStore(home / "disk-pressure.sqlite3")
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    lease = store.acquire_cycle(monitor="disk", now=now)
+    assert lease is not None
+    event = WakeEvent.create(
+        source="switchstand.disk-pressure",
+        subject="/",
+        kind="disk.warning",
+        severity=EventSeverity.WARNING,
+        summary="Disk warning",
+        observed_at=now,
+    )
+    store.complete_cycle(
+        lease=lease,
+        cursor="1",
+        condition="warning",
+        healthy=False,
+        event=event,
+        now=now,
+    )
+
+    results = await wakeful_event_cycle(
+        Mailboxes(), mailbox, Projection(home, binding), client, store
+    )
+
+    assert list(results.values()) == ["PENDING"]
+    assert store.pending() == ()
+    assert len(client.calls) == 1
+    queued = client.calls[0]["input"][0]["text"]
+    assert f"event_id={event.event_id}" in queued
+    assert "switchstand-disk-pressure status" in queued
+    assert await wakeful_event_cycle(
+        Mailboxes(), mailbox, Projection(home, binding), client, store
+    ) == {}
+
+
+@pytest.mark.asyncio
+async def test_corrupt_optional_event_store_does_not_block_inbound(
+    setup, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, _, client, binding = setup
+    mailbox = AgentMailbox(
+        name="/root",
+        name_key="root",
+        endpoint_id=uuid4(),
+        principal_key="principal",
+        session_key=chat_session_key(f"codex:{binding.thread_id}"),
+        generation=1,
+    )
+
+    class Mailboxes:
+        async def by_endpoint_id(self, _endpoint_id):
+            return SimpleNamespace(status="ok", mailbox=mailbox)
+
+    class Messages:
+        async def pending_delivery_ids(self, _mailbox, _cursor):
+            return []
+
+    state = tmp_path / "state"
+    database = state / "switchstand/disk-pressure/wakeful.sqlite3"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"not a sqlite database")
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    assert open_wakeful_event_store(mailbox) is None
+    cursor, results = await inbound_cycle(
+        Messages(), Mailboxes(), mailbox, Projection(home, binding), client
+    )
+    assert cursor is None and results == {}
 
 
 def test_paginated_absence_queues_and_legacy_does_not_page(setup):

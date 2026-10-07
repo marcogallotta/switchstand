@@ -776,6 +776,13 @@ supplied Codex binary and `CODEX_HOME`, writes the deterministic client ID throu
 thread queue, and terminates only that owned child. It never starts, stops, restarts, attaches to,
 or owns a managed Codex daemon. The live same-home embedded root discovers durable queue changes
 and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner.
+`disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex
+launch path. It performs only a constant-time filesystem capacity probe, records an atomic private
+SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
+The current Root-only Wakeful adapter admits an exact pending event ID through the existing durable
+Codex queue and requires exact event plus current filesystem readback before action; the reminder
+grants no cleanup authority. Installation/activation of the timer remains a separate host effect,
+and the producer never deletes data or runs from `codex-dispatch`.
 The `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding

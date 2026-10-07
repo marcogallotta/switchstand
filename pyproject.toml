@@ -45,6 +45,7 @@ switchstand-human-review-caddy = "switchstand.human_review_caddy:run"
 switchstand-human-review-host = "switchstand.human_review_host:run"
 switchstand-worktree-lifecycle = "switchstand.worktree_lifecycle:main"
 switchstand-stateful-qualifier = "switchstand.stateful_qualifier:main"
+switchstand-disk-pressure = "switchstand.disk_pressure:main"
 
 [dependency-groups]
 dev = ["pyright>=1.1,<2", "pytest>=8.4,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]

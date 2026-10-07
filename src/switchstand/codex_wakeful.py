@@ -9,6 +9,7 @@ import json
 import os
 import re
 import selectors
+import sqlite3
 import stat
 import subprocess
 import threading
@@ -16,6 +17,7 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 from uuid import UUID
@@ -31,6 +33,7 @@ from switchstand.secure_file import (
     create_new_private_bytes,
     read_private_bytes,
 )
+from switchstand.wakeful import WakefulStore
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,12 @@ class WakeSourceRef:
             )
         if self.source_kind == "child_completion":
             return "Reread the exact parent call and latest persisted child state before acting."
+        if self.source_kind == "wakeful_event":
+            return (
+                "Reread this exact event with `switchstand-disk-pressure status "
+                f"--event-id {self.source_id}`, then verify current usage with `df -h /` "
+                "before acting. The event is a reminder, not cleanup authority."
+            )
         raise ValueError("unsupported source")
 
 
@@ -456,11 +465,17 @@ class Projection:
                 return "STALE"
             record.update(attempted=True, timestamp=time.time())
             self.save()
+            source_labels = {
+                "switchstand_inbound": "delivery_id=",
+                "child_completion": "parent_call_child_terminal=",
+                "wakeful_event": "event_id=",
+            }
+            label = source_labels.get(source.source_kind)
+            if label is None:
+                raise ValueError("unsupported source")
             queued = client.call("thread/queue/add", {"threadId": self.binding.thread_id,
                 "clientUserMessageId": identity, "input": [{"type": "text",
-                "text": f'{source.source_kind} '
-                        + ('delivery_id=' if source.source_kind == 'switchstand_inbound'
-                           else 'parent_call_child_terminal=') + source.source_id + '. '
+                "text": f'{source.source_kind} ' + label + source.source_id + '. '
                         + source.reread_instruction}]})["queuedSubmission"]
             if queued.get("clientUserMessageId") != identity:
                 return "UNKNOWN"
@@ -520,6 +535,51 @@ async def inbound_cycle(
     return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
 
 
+def wakeful_event_store_path() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return state / "switchstand/disk-pressure/wakeful.sqlite3"
+
+
+def open_wakeful_event_store(mailbox: AgentMailbox) -> WakefulStore | None:
+    """Keep optional local reminders from affecting ordinary mailbox intake."""
+    if mailbox.name_key != "root":
+        return None
+    try:
+        return WakefulStore(wakeful_event_store_path())
+    except (OSError, sqlite3.Error):
+        return None
+
+
+async def wakeful_event_cycle(
+    mailboxes: AgentMailboxState,
+    mailbox: AgentMailbox,
+    projection: Projection,
+    client: QueueClient,
+    store: WakefulStore,
+) -> dict[str, str]:
+    """Deliver pending local events only to the exact current Root mailbox."""
+    if mailbox.name_key != "root":
+        return {}
+    current = await mailboxes.by_endpoint_id(mailbox.endpoint_id)
+    if current.status == "recovery_required":
+        return {"source": "UNKNOWN"}
+    if current.mailbox != mailbox:
+        return {"source": "STALE"}
+    results: dict[str, str] = {}
+    for event in store.pending(limit=20):
+        source = WakeSourceRef("wakeful_event", event.event_id)
+        identity = wake_id(projection.binding, source)
+        if store.event(event.event_id) is None:
+            results[identity] = "STALE"
+            continue
+        result = projection.admit(client, source)
+        results[identity] = result
+        if result in {"PENDING", "ADMITTED"}:
+            store.mark_delivered(event.event_id, delivered_at=datetime.now(UTC))
+        await asyncio.sleep(0)
+    return results
+
+
 async def run_inbound(
     messages: MessageState, mailboxes: AgentMailboxState, mailbox: AgentMailbox,
     binding: CodexBinding, home: Path, codex: Path, stop: asyncio.Event,
@@ -530,6 +590,7 @@ async def run_inbound(
         return
     with projection_lock(home, binding.generation):
         projection = Projection(home, binding)
+        wakeful_store = open_wakeful_event_store(mailbox)
         cursor = None
         while not stop.is_set():
             client = None
@@ -540,7 +601,13 @@ async def run_inbound(
                 )
                 for identity, result in results.items():
                     print(identity, result, flush=True)
-            except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
+                if wakeful_store is not None:
+                    wakeful_results = await wakeful_event_cycle(
+                        mailboxes, mailbox, projection, client, wakeful_store,
+                    )
+                    for identity, result in wakeful_results.items():
+                        print(identity, result, flush=True)
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, SQLAlchemyError):
                 print("inbound UNKNOWN", flush=True)
             finally:
                 if client is not None:
