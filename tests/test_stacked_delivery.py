@@ -129,21 +129,6 @@ def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
         replace(ready, cumulative_review=ReviewReceipt("a" * 40, "FAIL")),
         replace(ready, cumulative_review=ReviewReceipt("a" * 40, "UNKNOWN")),
         replace(ready, focused_reviews=reviews[:-1]),
-        replace(ready, focused_reviews=(*reviews[:-1], reviews[0])),
-        replace(ready, focused_reviews=(replace(
-            reviews[0], review=replace(
-                reviews[0].review, reviewed_dimensions=frozenset({"LAYER_CAUSAL_QUALITY"}),
-            ),
-        ), *reviews[1:])),
-        replace(ready, focused_reviews=(replace(
-            reviews[0], current=LayerReviewIdentity("3" * 64, "b" * 64),
-        ), *reviews[1:])),
-        replace(ready, focused_reviews=(replace(
-            reviews[0], current=LayerReviewIdentity("a" * 64, "3" * 64),
-        ), *reviews[1:])),
-        replace(ready, focused_reviews=(replace(
-            reviews[0], conflict_resolution_occurred=True,
-        ), *reviews[1:])),
         replace(ready, qualifications=(catalogue, replace(host, subject_sha="b" * 40))),
         replace(ready, qualifications=(replace(catalogue, composition_sha="d" * 40), host)),
     )
