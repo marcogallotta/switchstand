@@ -9,8 +9,10 @@ import subprocess
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
+
+from pydantic import model_validator
 
 from .contracts import ClosedModel
 from .run import RECEIPT
@@ -52,13 +54,14 @@ class UnitState(ClosedModel):
 
 
 class WorkerRecord(ClosedModel):
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 2
     spawn_id: UUID
     work_id: UUID
     objective: str
     writer: str
     branch: str
     base_sha: str
+    git_common: str | None = None
     unit: str
     log: str
     started_at: float
@@ -66,6 +69,18 @@ class WorkerRecord(ClosedModel):
     phase: Literal["PREPARED", "RUNNING", "TERMINAL"] = "PREPARED"
     exit_status: int | None = None
     cancelled: bool = False
+
+    @model_validator(mode="after")
+    def validate_git_common_version(self) -> Self:
+        if self.version == 1 and self.git_common is not None:
+            raise ValueError("legacy worker record cannot bind git_common")
+        if self.version == 2 and self.git_common is None:
+            raise ValueError("worker record v2 requires git_common")
+        if self.git_common is not None:
+            common = Path(self.git_common)
+            if not common.is_absolute() or ".." in common.parts:
+                raise ValueError("worker record git_common must be an absolute canonical path")
+        return self
 
 
 class WorkerStore:
@@ -149,14 +164,18 @@ class WorkerStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def candidate_identity(self, work_id: UUID) -> tuple[str, Path, str]:
+    def candidate_identity(self, work_id: UUID) -> tuple[str, Path, str, str]:
         writer = self.home / ".local/state/switchstand/worktrees" / f"switchstand-task-{work_id}"
         branch = f"v2-task-{work_id}"
+        base, expected_common = self._active_control_identity()
         if writer.exists():
-            head, identity = self._writer_identity(writer, branch)
+            head, identity = self._writer_identity(writer, branch, Path(expected_common))
             if not identity:
                 raise ValueError("worker_writer_identity_mismatch")
-            return head, writer, branch
+            return head, writer, branch, expected_common
+        return base, writer, branch, expected_common
+
+    def _active_control_identity(self) -> tuple[str, str]:
         manifest = self.home / ".local/state/switchstand/control/manifest"
         metadata = manifest.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
@@ -166,16 +185,36 @@ class WorkerStore:
             raise ValueError("isolated_control_unavailable")
         fields = dict(line.split("=", 1) for line in lines)
         base = fields.get("control_sha", "")
-        if fields.get("state") != "ACTIVE" or len(base) != 40:
+        control_path = fields.get("control_path", "")
+        if fields.get("state") != "ACTIVE" or len(base) != 40 or not control_path:
             raise ValueError("isolated_control_unavailable")
         int(base, 16)
-        return base, writer, branch
+        control = Path(control_path)
+        common = self.git(
+            control, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        ).stdout.strip()
+        head = self.git(control, "rev-parse", "--verify", "HEAD").stdout.strip()
+        if head != base or not common:
+            raise ValueError("isolated_control_unavailable")
+        return base, str(Path(common).resolve())
 
     def candidate(self, record: WorkerRecord) -> tuple[str | None, bool, bool]:
         writer = Path(record.writer)
         if not writer.is_dir() or writer.is_symlink():
             return None, False, False
-        head, identity = self._writer_identity(writer, record.branch)
+        if record.version == 2:
+            if record.git_common is None:  # enforced by WorkerRecord validation
+                return None, False, False
+            expected_common = Path(record.git_common)
+        else:
+            expected_common = self.repo / ".git"
+        if record.version == 2:
+            try:
+                if expected_common.resolve(strict=True) != expected_common:
+                    return None, False, False
+            except OSError:
+                return None, False, False
+        head, identity = self._writer_identity(writer, record.branch, expected_common)
         if not identity:
             return None, False, False
         clean = not self.git(
@@ -194,7 +233,9 @@ class WorkerStore:
         )
         return head, clean, descendant
 
-    def _writer_identity(self, writer: Path, branch: str) -> tuple[str, bool]:
+    def _writer_identity(
+        self, writer: Path, branch: str, expected_common: Path
+    ) -> tuple[str, bool]:
         root, observed_branch, common = self.git(
             writer,
             "rev-parse",
@@ -208,7 +249,7 @@ class WorkerStore:
         identity = (
             Path(root).resolve() == writer.resolve()
             and observed_branch == branch
-            and Path(common).resolve() == (self.repo / ".git").resolve()
+            and Path(common).resolve() == expected_common.resolve()
         )
         return head, identity
 

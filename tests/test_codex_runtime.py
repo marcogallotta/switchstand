@@ -131,6 +131,14 @@ def test_noninteractive_managed_codex_uses_exec_after_global_options():
     assert command[command.index("-a") + 1] == "never"
 
 
+def test_managed_codex_uses_explicit_runtime_binary(monkeypatch):
+    monkeypatch.setenv("SWITCHSTAND_CODEX_BINARY", "/managed/bin/codex")
+
+    command = codex_command(Path("/control"), Path("/writer"), [])
+
+    assert command[0] == "/managed/bin/codex"
+
+
 def test_agent_task_opt_in_preserves_exact_managed_tool_baseline():
     config = tomllib.loads(
         (Path(__file__).parents[1] / ".codex/config.toml").read_text()

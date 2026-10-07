@@ -124,7 +124,9 @@ def test_bootstrap_fails_actionably_when_docker_is_missing(tmp_path: Path) -> No
     (repo / "pyproject.toml").write_text("[project]\n")
     (repo / "uv.lock").write_text("lock\n")
     fake_git(fake_bin / "git")
-    for command_name in ("dirname", "sha256sum", "cut", "mkdir", "chmod", "mv", "rm"):
+    for command_name in (
+        "dirname", "sha256sum", "cut", "mkdir", "chmod", "mv", "rm", "flock"
+    ):
         (fake_bin / command_name).symlink_to(find_command(command_name))
     executable(fake_bin / "python3", "#!/bin/sh\necho 'Python 3.14.0'\n")
     environment = unbound_environment() | {"PATH": str(fake_bin), "FAKE_REPO": str(repo)}
@@ -299,6 +301,35 @@ def test_bootstrap_verify_reuses_receipt_without_mutation(tmp_path: Path) -> Non
         assert not result.stdout
         assert "run scripts/bootstrap in the primary checkout" in result.stderr
         assert tree_bytes(repo) == before
+
+
+def test_bootstrap_serializes_concurrent_environment_sync(tmp_path: Path) -> None:
+    repo = tmp_path / "primary"
+    bootstrap = copy_script("bootstrap", repo)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    (repo / "pyproject.toml").write_text("[project]\n")
+    (repo / "uv.lock").write_text("lock\n")
+    tools = repo / ".git/switchstand-tools"
+    executable(
+        tools / "uv-0.12.10",
+        """#!/bin/sh
+printf 'start\n' >> "$FAKE_BOOTSTRAP_LOG"
+mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+for tool in python ruff pyright pytest; do
+    printf '#!/bin/sh\nexit 0\n' > "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+    chmod +x "$UV_PROJECT_ENVIRONMENT/bin/$tool"
+done
+sleep 1
+printf 'end\n' >> "$FAKE_BOOTSTRAP_LOG"
+""",
+    )
+    log = tmp_path / "bootstrap.log"
+    environment = os.environ | {"FAKE_BOOTSTRAP_LOG": str(log)}
+    first = subprocess.Popen([bootstrap], env=environment, text=True)
+    second = subprocess.Popen([bootstrap], env=environment, text=True)
+    assert first.wait(timeout=10) == 0
+    assert second.wait(timeout=10) == 0
+    assert log.read_text().splitlines() == ["start", "end"]
 
 
 def test_writer_check_locked_sync_failure_and_reentry(tmp_path: Path) -> None:

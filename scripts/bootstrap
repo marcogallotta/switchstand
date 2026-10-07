@@ -11,7 +11,7 @@ missing() {
     echo "bootstrap prerequisite '$1' is missing; make '$1' available on PATH, then rerun scripts/bootstrap in the primary checkout" >&2
     exit 1
 }
-for command_name in dirname git sha256sum cut mkdir chmod mv rm; do
+for command_name in dirname git sha256sum cut mkdir chmod mv rm flock; do
     command -v "$command_name" >/dev/null 2>&1 || missing "$command_name"
 done
 
@@ -60,6 +60,17 @@ if [ "$mode" = --verify-only ]; then
 fi
 
 mkdir -p "$tools"
+exec 9>"$tools/bootstrap.lock"
+flock -w 180 9 || {
+    echo "shared check environment bootstrap lock timed out" >&2
+    exit 1
+}
+# Another launcher may have completed bootstrap while this process waited.
+if [ -x "$venv/bin/python" ] && [ -x "$venv/bin/ruff" ] \
+        && [ -x "$venv/bin/pyright" ] && [ -x "$venv/bin/pytest" ] \
+        && [ -f "$receipt" ]; then
+    exit 0
+fi
 if [ ! -x "$uv" ]; then
     command -v docker >/dev/null 2>&1 || missing "docker"
     container=$(docker create "ghcr.io/astral-sh/uv:$UV_VERSION")

@@ -64,9 +64,10 @@ def repository(tmp_path: Path, gate: Path) -> tuple[Path, Path, Path, str]:
     internal = scripts / "switchstand-start"
     internal.write_text(
         "#!/bin/sh\nset -eu\n"
+        'repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
         f'[ "$1" = --active ] && [ "$2" = "{WORK}" ] && [ "$3" = --commit ]\n'
         '[ "$5" = --noninteractive ]\n'
-        f'git -C "{primary}" worktree add -q -b "v2-task-{WORK}" "{writer}" "$4"\n'
+        f'git -C "$repo" worktree add -q -b "v2-task-{WORK}" "{writer}" "$4"\n'
         f'while [ ! -f "{gate}" ]; do sleep 0.02; done\n'
         f'printf "worker candidate\\n" >"{writer}/worker.txt"\n'
         f'git -C "{writer}" add worker.txt\n'
@@ -101,6 +102,19 @@ def manager(home: Path, state: Path) -> CoordinatorWorkers:
         state_root=state,
         runtime_source=SOURCE / "src",
     )
+
+
+def test_worker_prefers_user_managed_codex_runtime(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    subject = CoordinatorWorkers(home, state_root=tmp_path / "worker-state")
+
+    environment = subject._worker_environment()
+
+    codex = home / ".local/state/switchstand/codex/updater-bin/bin/codex"
+    assert environment["PATH"] == f"{codex.parent}:/usr/local/bin:/usr/bin:/bin"
+    assert environment["SWITCHSTAND_CODEX_BINARY"] == str(codex)
+    assert environment["HOME"] == str(home)
 
 
 def wait_for(subject: CoordinatorWorkers, spawn_id: UUID, status: str):
