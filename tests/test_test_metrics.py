@@ -105,6 +105,9 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'test "$push_complete" = true' in execution
     assert 'test "$schedule_complete" = true' in execution
     assert '--paginate' in execution
+    assert 'github.event.pull_request.stack.position == github.event.pull_request.stack.size' not in execution
+    assert '-f base="$PR_HEAD_REF"' in execution
+    assert 'test "$stack_top" != unknown || subject_verified=false' in execution
     assert "if: needs.plan.outputs.mode != 'PROMOTE_TEST_MODULE_ONLY_V1'" in lifecycle
     assert 'if: always()' in terminal
     assert 'test "$PLAN_RESULT" = success' in terminal
