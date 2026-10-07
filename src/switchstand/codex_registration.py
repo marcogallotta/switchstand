@@ -117,9 +117,6 @@ async def existing_registration(
         async with resource_service() as (service, _runtime):
             if service.messages is None:
                 raise ValueError("message state is unavailable")
-            principal = await service.principal()
-            if principal is None:
-                raise ValueError("authenticated principal is unavailable")
             result = await AgentMailboxState(service.messages.engine).by_name(name)
             if result.status == "denied" and result.reason == "mailbox_not_found":
                 return "missing", None
@@ -128,6 +125,9 @@ async def existing_registration(
                 raise ValueError("mailbox registration state is unavailable")
             if mailbox.session_key == chat_session_key(f"codex:{binding.thread_id}"):
                 return "exact", mailbox.name
+            principal = await service.principal()
+            if principal is None:
+                raise ValueError("authenticated principal is unavailable")
             if mailbox.principal_key == principal.key:
                 return "takeover", mailbox.name
             raise ValueError("mailbox name is owned by another principal")

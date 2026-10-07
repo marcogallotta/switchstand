@@ -263,6 +263,37 @@ def test_prepare_recovers_registration_after_lost_response(spec: Spec, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_missing_registration_does_not_require_local_principal(monkeypatch) -> None:
+    class Mailboxes:
+        def __init__(self, _engine):
+            pass
+
+        async def by_name(self, _name: str):
+            return SimpleNamespace(
+                status="denied", reason="mailbox_not_found", mailbox=None,
+            )
+
+    async def unexpected_principal():
+        raise AssertionError("fresh registration must authenticate through MCP")
+
+    service = SimpleNamespace(
+        messages=SimpleNamespace(engine=object()),
+        principal=unexpected_principal,
+    )
+
+    @asynccontextmanager
+    async def resources():
+        yield service, object()
+
+    monkeypatch.setattr("switchstand.codex_registration.AgentMailboxState", Mailboxes)
+    monkeypatch.setattr("switchstand.chatgpt_edge.resource_service", resources)
+    binding = CodexBinding("thread-1", "/start", "generation")
+    assert await existing_registration(
+        binding, "codex-head-exact", "postgresql://exact",
+    ) == ("missing", None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "session_key,principal_key,expected",
     [
