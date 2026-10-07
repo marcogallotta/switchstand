@@ -111,6 +111,53 @@ consequential changes still return while cheap even if all line caps are green. 
 scope/authority boundaries and the >=500 actual PR/diff exemption rule remain hard and
 independent; splitting cannot launder either package growth or the per-PR rule.
 
+### Exceptional LOC exemption gate
+
+Both a governed package hard-cap exemption and a `>=500` actual PR/diff exemption are exceptional.
+They are separate decisions: granting either one never grants or weakens the other. Root, the
+implementation parent, and the integration owner reject incomplete or routine requests before
+they reach Marco. Convenience, sunk cost, schedule pressure, "almost done", ordinary test growth,
+or avoiding another PR is not an exceptional reason.
+
+LOC bounds are controls, not optimization targets. Never compress or omit necessary work, choose
+499 lines, or otherwise shape a change to sit just below a review boundary. Estimate the smallest
+sound implementation honestly and apply every boundary it crosses.
+
+Freeze one complete evidence packet before requesting either exemption. It contains the exact
+WorkId and approved package/specification revision; immutable package base and exact candidate/head
+where applicable; the reproducible count and disclosed classifications/exclusions; original
+forecast, approved margin, current hard cap, exact current count, complete remaining-work forecast,
+and one requested absolute final ceiling with explicit contingency; the causal reason the original
+plan failed; why the additional lines are essential to the approved outcome; and concrete
+`KEEP ONE PR / SPLIT / REPLAN` alternatives, including the strongest smaller design or cut and the
+evidence for rejecting it. A legitimate exception must rest on a demonstrated indivisible
+correctness, migration, compatibility, recovery or reviewability invariant, a size fixed by an
+external contract/artifact, or necessary mechanical movement/deletion for which splitting would
+materially reduce reviewability. Merely asserting that the change is atomic is insufficient.
+
+Before the request reaches Marco, two independent forks that did not author, design, or implement
+the candidate receive the same frozen packet and independently try to falsify its counts,
+classification, unchanged scope, smaller alternatives, atomicity claim, remaining forecast and
+contingency, and resistance to split laundering. They challenge and filter; they do not grant the
+exemption. The requester must resolve every count, evidence, scope, or viable-smaller-route finding
+before escalation. Both reviewers must explicitly `PRE-APPROVE` the same frozen packet; any `HOLD`
+blocks escalation, and any material packet revision requires both reviews again. Preserve any
+remaining genuine tradeoff dissent verbatim. Only Marco may grant the exemption.
+
+A package-cap request asks once for one absolute replacement ceiling, never an increment such as
+"20 more lines". Approval binds the exact WorkId, approved package revision and surfaces. Exceeding
+that replacement ceiling requires `STOP` and `CUT / SPLIT / REPLAN`, not another top-up. A later
+request is admissible only after genuinely new Marco-directed scope or a new external fact
+materially changes the objective; record that as explicit re-scope or a new package rather than
+underestimated continuation work. Request the exemption before crossing the cap.
+
+The `>=500` exemption binds the exact stable merge-base/head and measured actual diff and must be
+granted before landing. Material candidate or base change invalidates it. Aggregate semantically
+coupled stacked and follow-up work serving one objective when testing for laundering. A legitimate
+split must be independently useful, valid, reviewable, testable, landable and recoverable/revertible,
+without placeholder or dead sibling code. Changing bases, WorkIds, PR boundaries, or line-category
+labels does not reset the governing history.
+
 Before approving defensive machinery, exercise the smallest credible implementation at the real
 boundary, or use a precise skeleton where execution is not yet practical. Name the contract,
 boundary case, expected result and remaining unproved claims. Hypothetical completeness alone
