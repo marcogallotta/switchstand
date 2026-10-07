@@ -216,7 +216,14 @@ def bind(
         matches: list[str] = []
         cursor = None
         while True:
-            page = client.call("thread/list", {"cursor": cursor, "limit": 10})
+            page = client.call("thread/list", {
+                "cursor": cursor,
+                "limit": 100,
+                "cwd": str(Path.cwd()),
+                "archived": False,
+                "sourceKinds": ["cli"],
+                "useStateDbOnly": True,
+            })
             for thread in page["data"]:
                 if expected_thread_id is not None and thread.get("id") != expected_thread_id:
                     continue
@@ -237,15 +244,12 @@ def bind(
                             if part.get("type") == "input_text")
                 if matched:
                     matches.append(thread["id"])
-            if matches:
-                return (
-                    CodexBinding(matches[0], str(token), token.name)
-                    if len(matches) == 1 else "CONFLICT"
-                )
             cursor = page.get("nextCursor")
             if not cursor:
                 break
-        return "NOT_BOUND"
+        if len(matches) != 1:
+            return "CONFLICT" if matches else "NOT_BOUND"
+        return CodexBinding(matches[0], str(token), token.name)
     except (OSError, ValueError, KeyError, TypeError):
         return "UNAVAILABLE"
 

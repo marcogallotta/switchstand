@@ -80,6 +80,9 @@ def test_prepare_registers_on_owned_helper_then_rebinds_exact_thread(
     monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
     monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
     monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
+    async def existing(*_args):
+        return None
+    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
     async def rebind(exact, name, registration_thread, database_url):
         assert (exact, name, registration_thread, database_url) == (
             binding, "/root", "registration-thread", "postgresql://exact",
@@ -96,6 +99,39 @@ def test_prepare_registers_on_owned_helper_then_rebinds_exact_thread(
         "arguments": {"api_version": "1", "name": "codex-head-exact"},
     })
     assert observed == [(binding, "/root", "postgresql://exact")]
+
+
+def test_prepare_reconciles_committed_live_registration_before_retrying_helper(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    session = spec(tmp_path)
+    binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, _codex: Path, _home: Path):
+            pass
+
+        def call(self, method: str, _arguments: dict[str, object]):
+            calls.append(method)
+            raise AssertionError("helper registration must not be retried")
+
+        def close(self) -> None:
+            calls.append("closed")
+
+    async def existing(*_args):
+        return "codex-head-exact"
+
+    async def freeze(*_args):
+        return tmp_path / "runner.json"
+
+    monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
+    monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
+    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
+    monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
+
+    assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
+    assert calls == ["closed"]
 
 
 def test_runner_lifeline_eof_is_inherited_only_by_runner(tmp_path: Path, monkeypatch) -> None:

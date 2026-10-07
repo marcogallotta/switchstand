@@ -129,6 +129,27 @@ async def _rebind_registration(
             return moved.mailbox.name
 
 
+async def _existing_live_registration(
+    binding: CodexBinding, name: str, database_url: str,
+) -> str | None:
+    """Reconcile a prior committed takeover before retrying helper registration."""
+    from .chatgpt_edge import resource_service
+
+    with _configured_database(database_url):
+        async with resource_service() as (service, _runtime):
+            if service.messages is None:
+                raise ValueError("message state is unavailable")
+            result = await AgentMailboxState(service.messages.engine).by_name(name)
+    if result.status == "denied" and result.reason == "mailbox_not_found":
+        return None
+    mailbox = result.mailbox
+    if result.status != "ok" or mailbox is None:
+        raise ValueError("mailbox registration state is unavailable")
+    if mailbox.session_key == chat_session_key(f"codex:{binding.thread_id}"):
+        return mailbox.name
+    return None
+
+
 def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
     """Bind, authenticate registration on an owned helper thread, and freeze config."""
     database_url = _database_url(spec.environment_file)
@@ -137,6 +158,14 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
         binding = bind(client, spec.home, spec.start_record)
         if not isinstance(binding, CodexBinding):
             raise TypeError(f"Codex thread binding is {binding}")
+        existing_name = asyncio.run(_existing_live_registration(
+            binding, spec.default_name, database_url,
+        ))
+        if existing_name is not None:
+            return (
+                asyncio.run(_freeze_config(spec, binding, existing_name, database_url)),
+                database_url,
+            )
         started = client.call("thread/start", {"cwd": str(Path.cwd()), "ephemeral": True})
         registration_thread = cast(dict[str, Any], started["thread"])["id"]
         if not isinstance(registration_thread, str) or not registration_thread:

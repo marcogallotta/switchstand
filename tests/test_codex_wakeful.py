@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -94,6 +95,27 @@ def test_binding_exact_zero_multiple_and_reconnect(setup):
     client.thread["id"] = "replacement"
     p = Projection(home, binding)
     assert p.admit(client, WakeSourceRef("child_completion", "call/child/completed")) == "UNKNOWN"
+
+
+def test_binding_detects_duplicate_on_later_filtered_page(setup):
+    home, token, client, _binding = setup
+    pages = {
+        None: {"data": [client.listed[0]], "nextCursor": "later"},
+        "later": {"data": [{"id": "duplicate", "path": str(client.path)}],
+                  "nextCursor": None},
+    }
+    seen: list[dict[str, object]] = []
+
+    def call(method, params):
+        assert method == "thread/list"
+        seen.append(params)
+        return pages[params.get("cursor")]
+
+    client.call = call
+    assert bind(client, home, token) == "CONFLICT"
+    assert all(page["cwd"] == str(Path.cwd()) for page in seen)
+    assert all(page["sourceKinds"] == ["cli"] for page in seen)
+    assert all(page["useStateDbOnly"] is True for page in seen)
 
 
 def test_expected_binding_uses_exact_read_and_result_taxonomy(setup):
