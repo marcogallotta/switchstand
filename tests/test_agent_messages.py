@@ -145,6 +145,32 @@ async def test_missing_runtime_identity_is_local_to_agent_messaging(agent_messag
     )
 
 
+async def test_unregistered_send_and_pending_direct_actor_to_register(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    session[0] = "recipient-chat"
+    assert (await tools["agent_register"]("1", "Recipient")).status == "ok"
+    session[0] = "unregistered-chat"
+
+    sent = await tools["agent_message_send"](
+        "1", "Recipient", uuid4(), {"request": "hello"},
+    )
+    pending = await tools["agent_message_pending"]("1")
+
+    for result in (sent, pending):
+        assert (result.status, result.reason) == ("denied", "agent_not_registered")
+        assert result.next_action is not None
+        assert "agent_register" in result.next_action
+        assert "intended durable agent name" in result.next_action
+        assert "Do not infer /root" in result.next_action
+
+    session[0] = "recipient-chat"
+    missing = await tools["agent_message_send"](
+        "1", "Missing Recipient", uuid4(), {"request": "hello"},
+    )
+    assert (missing.status, missing.reason) == ("denied", "recipient_not_registered")
+    assert missing.next_action is None
+
+
 async def test_takeover_preserves_delivery_and_fences_old_session(agent_messaging):
     tools, actor, session, _owner, other, _service = agent_messaging
     assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
@@ -185,7 +211,7 @@ async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
     agent_messaging, monkeypatch,
 ):
     tools, _actor, session, _owner, _other, _service = agent_messaging
-    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    assert (await tools["agent_register"]("1", "Coordinator")).status == "ok"
     session[0] = "replacement"
     original_takeover = AgentMailboxState.takeover
     original_for_actor = AgentMailboxState.for_actor
@@ -208,16 +234,16 @@ async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
     monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
     monkeypatch.setattr(AgentMailboxState, "for_actor", observed)
 
-    result = await tools["agent_takeover"]("1", "Root")
+    result = await tools["agent_takeover"]("1", "Coordinator")
 
-    assert (result.status, result.name) == ("ok", "Root")
+    assert (result.status, result.name) == ("ok", "Coordinator")
     assert len(calls) == 2 and calls[0] == calls[1]
     assert readbacks == 1
 
 
 async def test_takeover_does_not_retry_explicit_denial(agent_messaging, monkeypatch):
     tools, actor, session, _owner, other, _service = agent_messaging
-    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    assert (await tools["agent_register"]("1", "Coordinator")).status == "ok"
     actor[0], session[0] = other, "other-session"
     original = AgentMailboxState.takeover
     calls = 0
@@ -229,7 +255,7 @@ async def test_takeover_does_not_retry_explicit_denial(agent_messaging, monkeypa
 
     monkeypatch.setattr(AgentMailboxState, "takeover", counted)
 
-    result = await tools["agent_takeover"]("1", "Root")
+    result = await tools["agent_takeover"]("1", "Coordinator")
 
     assert (result.status, result.reason) == ("denied", "principal_mismatch")
     assert calls == 1
@@ -239,7 +265,7 @@ async def test_takeover_retry_does_not_claim_success_without_binding_readback(
     agent_messaging, monkeypatch,
 ):
     tools, _actor, session, _owner, _other, _service = agent_messaging
-    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    assert (await tools["agent_register"]("1", "Coordinator")).status == "ok"
     session[0] = "replacement"
     original = AgentMailboxState.takeover
     calls = 0
@@ -259,7 +285,7 @@ async def test_takeover_retry_does_not_claim_success_without_binding_readback(
     monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
     monkeypatch.setattr(AgentMailboxState, "for_actor", unavailable_readback)
 
-    result = await tools["agent_takeover"]("1", "Root")
+    result = await tools["agent_takeover"]("1", "Coordinator")
 
     assert (result.status, result.reason) == ("recovery_required", "state_unavailable")
     assert calls == 2
@@ -269,14 +295,16 @@ async def test_host_approved_transfer_preserves_delivery_and_fences_old_owner(ag
     tools, actor, session, _owner, other, service = agent_messaging
     assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
     session[0] = "chat-b"
-    assert (await tools["agent_register"]("1", "Root")).status == "ok"
+    assert (await tools["agent_register"]("1", "Coordinator")).status == "ok"
     session[0] = "chat-a"
-    sent = await tools["agent_message_send"]("1", "Root", uuid4(), {"request": "handoff"})
+    sent = await tools["agent_message_send"](
+        "1", "Coordinator", uuid4(), {"request": "handoff"},
+    )
     assert sent.status == "ok" and sent.message is not None
     delivery = sent.message.delivery_id
 
-    actor[0], session[0] = other, "new-root-chat"
-    request = await tools["agent_transfer_request"]("1", "Root")
+    actor[0], session[0] = other, "new-coordinator-chat"
+    request = await tools["agent_transfer_request"]("1", "Coordinator")
     assert request.status == "ok" and request.request_id is not None
     assert service.messages is not None
     approval = await AgentMailboxState(service.messages.engine).approve_transfer(request.request_id)

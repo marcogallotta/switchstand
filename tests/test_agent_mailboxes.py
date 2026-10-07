@@ -1,11 +1,17 @@
 import asyncio
 import os
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState, agent_name_key
+from switchstand.agent_mailboxes import (
+    AgentMailboxState,
+    agent_mailboxes,
+    agent_name_key,
+    chat_session_key,
+)
 from switchstand.state import metadata
 
 
@@ -46,12 +52,26 @@ async def test_same_principal_distinct_chats_own_distinct_names(endpoints):
     assert duplicate.mailbox == alpha.mailbox
 
 
-async def test_existing_session_wins_when_requested_default_name_is_occupied(endpoints):
-    root = await endpoints.register_agent("Root", "owner", "root-chat")
+async def test_root_registration_requires_takeover_but_existing_session_resumes(endpoints):
+    for alias in ("/root", "root", "ROOT", " / root "):
+        denied = await endpoints.register_agent(alias, "owner", "unbound-chat")
+        assert (denied.status, denied.reason) == (
+            "denied", "reserved_name_requires_takeover",
+        )
+    async with endpoints.engine.begin() as connection:
+        await connection.execute(insert(agent_mailboxes).values(
+            name_key="root", display_name="/root", endpoint_id=uuid4(),
+            principal_key="owner", session_key=chat_session_key("root-chat"), generation=4,
+        ))
     await endpoints.register_agent("codex-head-generated", "other", "other-chat")
     resumed = await endpoints.register_agent("codex-head-generated", "owner", "root-chat")
     assert resumed.status == "ok"
-    assert resumed.mailbox == root.mailbox
+    assert resumed.mailbox.name == "/root" and resumed.mailbox.generation == 4
+    taken = await endpoints.takeover("/root", "owner", "replacement-root-chat")
+    assert taken.status == "ok"
+    assert taken.mailbox.endpoint_id == resumed.mailbox.endpoint_id
+    assert taken.mailbox.generation == 5
+    assert (await endpoints.for_actor("owner", "root-chat")).reason == "agent_not_registered"
 
 
 async def test_concurrent_registration_reconciles_unique_identity(endpoints):
@@ -94,8 +114,8 @@ async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
 
 
 async def test_cross_principal_transfer_requires_exact_host_approval(endpoints):
-    created = await endpoints.register_agent("Root", "old-owner", "old-chat")
-    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    created = await endpoints.register_agent("Coordinator", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.status == "pending" and requested.request_id is not None
     first, replay = await asyncio.gather(
         endpoints.approve_transfer(requested.request_id),
@@ -108,10 +128,10 @@ async def test_cross_principal_transfer_requires_exact_host_approval(endpoints):
 
 
 async def test_cross_principal_transfer_rejects_stale_preimage(endpoints):
-    await endpoints.register_agent("Root", "old-owner", "old-chat")
-    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    await endpoints.register_agent("Coordinator", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.request_id is not None
-    assert (await endpoints.takeover("Root", "old-owner", "replacement")).status == "ok"
+    assert (await endpoints.takeover("Coordinator", "old-owner", "replacement")).status == "ok"
     stale = await endpoints.approve_transfer(requested.request_id)
     replay = await endpoints.approve_transfer(requested.request_id)
     assert (stale.status, stale.reason, replay) == ("stale", "mailbox_changed", stale)
@@ -119,8 +139,8 @@ async def test_cross_principal_transfer_rejects_stale_preimage(endpoints):
 
 
 async def test_cross_principal_transfer_rejects_destination_session_collision(endpoints):
-    await endpoints.register_agent("Root", "old-owner", "old-chat")
-    requested = await endpoints.request_transfer("Root", "new-owner", "new-chat")
+    await endpoints.register_agent("Coordinator", "old-owner", "old-chat")
+    requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.request_id is not None
     assert (await endpoints.register_agent("Other", "new-owner", "new-chat")).status == "ok"
     conflict = await endpoints.approve_transfer(requested.request_id)

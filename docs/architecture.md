@@ -412,9 +412,12 @@ messaging, and required continuation:
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
-  unreferenced legacy residue. Registration is read-or-create for that authenticated session: a
-  resume returns its existing immutable mailbox, including `/root`, rather than renaming or taking
-  it over. For cross-principal recovery, the destination authenticated session
+  unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
+  that the canonical `root` name key is reserved: an unbound session cannot create it through
+  `agent_register`. A resume returns the session's existing immutable mailbox, including `/root`,
+  rather than renaming or taking it over. Rebinding an existing `/root` uses same-principal
+  `agent_takeover` only after Marco explicitly authorizes that takeover. For cross-principal
+  recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
@@ -750,10 +753,11 @@ The `run_inbound` pilot reuses existing authorized `MessageState` and
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
 configuration and reuses `chatgpt_edge.resource_service()`. With
 `SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child, registers its
-exact authenticated thread through the existing MCP `agent_register` read-or-create operation,
-validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
-An existing registration, including `/root`, is reused without takeover; generated names are never
-`/root`. Runner failure is retried while Codex remains active, and Codex exit or supervisor death
+  exact authenticated thread through the existing MCP `agent_register` operation,
+  validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
+  An existing registration, including `/root`, is reused without takeover; ordinary registration
+  cannot create the reserved canonical `root` name and generated names are never `/root`. Runner
+  failure is retried while Codex remains active, and Codex exit or supervisor death
 closes the lifeline so intake stops. The activated selector defaults to `PILOT`; an explicit
 `SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-launch rollback path. The runner creates no
 database or service owner and leaves the existing probe CLI

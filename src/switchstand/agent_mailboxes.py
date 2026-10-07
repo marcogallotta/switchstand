@@ -75,7 +75,8 @@ class AgentMailboxResult(ClosedModel):
     mailbox: AgentMailbox | None = None
     reason: Literal[
         "name_collision", "session_already_registered", "mailbox_not_found",
-        "agent_not_registered", "principal_mismatch", "state_unavailable",
+        "agent_not_registered", "principal_mismatch", "reserved_name_requires_takeover",
+        "state_unavailable",
     ] | None = None
 
     @model_validator(mode="after")
@@ -131,6 +132,18 @@ class AgentMailboxState:
             key, display = agent_name_key(name), " ".join(name.strip().split())
             session_key = chat_session_key(chat_session)
             async with self.engine.begin() as connection:
+                prior = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.principal_key == principal_key,
+                    agent_mailboxes.c.session_key == session_key,
+                ))).mappings().one_or_none()
+                if prior is not None:
+                    # Registration is idempotent for the already-bound session, including
+                    # an existing /root. It never renames or takes over that mailbox.
+                    return AgentMailboxResult(status="ok", mailbox=self._view(prior))
+                if key == "root":
+                    return AgentMailboxResult(
+                        status="denied", reason="reserved_name_requires_takeover",
+                    )
                 await connection.execute(insert(agent_mailboxes).values(
                     name_key=key, display_name=display, endpoint_id=uuid4(),
                     principal_key=principal_key, session_key=session_key, generation=1,
@@ -140,8 +153,6 @@ class AgentMailboxState:
                     agent_mailboxes.c.session_key == session_key,
                 ))).mappings().one_or_none()
                 if prior is not None:
-                    # The authenticated session identity wins even when its requested default name
-                    # is occupied. This reuses special names such as /root without takeover.
                     return AgentMailboxResult(status="ok", mailbox=self._view(prior))
                 bound = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.name_key == key

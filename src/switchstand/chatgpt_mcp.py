@@ -836,6 +836,14 @@ def build_ordinary_tools(
             return "denied", "agent_not_registered"
         return AgentMessageContext(principal, binding.mailbox)
 
+    unregistered_agent_next_action = (
+        "Call agent_register for this exact session using its intended durable agent name, "
+        "then retry. Do not infer /root from an internal role label. Only after Marco "
+        "explicitly authorizes taking over an existing /root, use agent_takeover for the "
+        "same authenticated principal; cross-principal replacement requires "
+        "agent_transfer_request and host approval."
+    )
+
     def agent_transition_failure(
         failure: tuple[
             Literal["denied", "recovery_required"],
@@ -891,7 +899,7 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
     ) -> AgentRegistrationResult:
-        """Register this authenticated actor's immutable visible agent name."""
+        """Register an immutable name; /root requires authorized takeover or transfer."""
         del api_version
         try:
             principal = await service.principal()
@@ -1008,7 +1016,13 @@ def build_ordinary_tools(
         """Send one durable request to a registered immutable agent name."""
         context = await agent_context()
         if isinstance(context, tuple):
-            return AgentMessageSubmitResult(status=context[0], reason=context[1])
+            return AgentMessageSubmitResult(
+                status=context[0], reason=context[1],
+                next_action=(
+                    unregistered_agent_next_action
+                    if context[1] == "agent_not_registered" else None
+                ),
+            )
         sender = context.mailbox
         assert mailboxes is not None and service.messages is not None
         recipient = await mailboxes.by_name(recipient_name)
@@ -1056,7 +1070,13 @@ def build_ordinary_tools(
         """List this registered agent's durable pending deliveries without WorkId addressing."""
         context = await agent_context()
         if isinstance(context, tuple):
-            return AgentMessagePendingResult(status=context[0], reason=context[1])
+            return AgentMessagePendingResult(
+                status=context[0], reason=context[1],
+                next_action=(
+                    unregistered_agent_next_action
+                    if context[1] == "agent_not_registered" else None
+                ),
+            )
         mailbox = context.mailbox
         assert mailboxes is not None and service.messages is not None
         result = await service.messages.pending_admitted(
