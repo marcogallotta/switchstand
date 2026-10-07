@@ -44,8 +44,18 @@ def prepare_socket(home: Path, socket_path: Path) -> None:
         socket_metadata = socket_path.lstat()
     except FileNotFoundError:
         return
-    if not stat.S_ISSOCK(socket_metadata.st_mode) or socket_metadata.st_uid != os.getuid():
-        raise ValueError("launch-owned app-server path is not a socket")
+    if (
+        socket_metadata.st_uid != os.getuid()
+        or not (stat.S_ISSOCK(socket_metadata.st_mode) or stat.S_ISLNK(socket_metadata.st_mode))
+    ):
+        raise ValueError("launch-owned app-server path is not an owned socket entry")
+    try:
+        target_metadata = socket_path.stat()
+    except FileNotFoundError:
+        socket_path.unlink()
+        return
+    if not stat.S_ISSOCK(target_metadata.st_mode) or target_metadata.st_uid != os.getuid():
+        raise ValueError("launch-owned app-server target is not an owned socket")
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         probe.settimeout(0.2)
@@ -57,6 +67,49 @@ def prepare_socket(home: Path, socket_path: Path) -> None:
     finally:
         probe.close()
     socket_path.unlink()
+
+
+def socket_ready(socket_path: Path) -> bool:
+    """Return true only when an owned socket endpoint accepts a connection."""
+    try:
+        entry_metadata = socket_path.lstat()
+    except FileNotFoundError:
+        return False
+    if (
+        entry_metadata.st_uid != os.getuid()
+        or not (stat.S_ISSOCK(entry_metadata.st_mode) or stat.S_ISLNK(entry_metadata.st_mode))
+    ):
+        raise ValueError("launch-owned app-server path is not an owned socket entry")
+    try:
+        target_metadata = socket_path.stat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISSOCK(target_metadata.st_mode) or target_metadata.st_uid != os.getuid():
+        raise ValueError("launch-owned app-server target is not an owned socket")
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.2)
+        result = probe.connect_ex(str(socket_path))
+    finally:
+        probe.close()
+    if result == 0:
+        socket_path.chmod(0o600)
+        return True
+    if result in {errno.ECONNREFUSED, errno.ENOENT}:
+        return False
+    raise OSError(result, "app-server socket readiness is unknown")
+
+
+def remove_owned_socket_entry(socket_path: Path) -> None:
+    """Remove only an owned socket or symlink at the exact launch-owned path."""
+    try:
+        metadata = socket_path.lstat()
+    except FileNotFoundError:
+        return
+    if metadata.st_uid == os.getuid() and (
+        stat.S_ISSOCK(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+    ):
+        socket_path.unlink()
 
 
 def start_app_server(
@@ -89,13 +142,8 @@ def start_app_server(
                 raise OSError(
                     f"launch-owned app-server exited before readiness (status {process.returncode})"
                 )
-            try:
-                metadata = socket_path.lstat()
-                if stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == os.getuid():
-                    socket_path.chmod(0o600)
-                    return process
-            except FileNotFoundError:
-                pass
+            if socket_ready(socket_path):
+                return process
             time.sleep(0.05)
         raise OSError("launch-owned app-server readiness timed out")
     except Exception:

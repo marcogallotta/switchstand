@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -16,6 +15,7 @@ from typing import Any
 from .codex_app_server import (
     open_private_append,
     remote_command,
+    remove_owned_socket_entry,
     start_app_server,
     stop_process,
 )
@@ -278,11 +278,7 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
                 codex.wait()
         if app_server is not None:
             stop_process(app_server, CODEX_TERM_SECONDS)
-        try:
-            if stat.S_ISSOCK(spec.socket_path.lstat().st_mode):
-                spec.socket_path.unlink()
-        except FileNotFoundError:
-            pass
+        remove_owned_socket_entry(spec.socket_path)
         for handled, old in previous.items():
             signal.signal(handled, old)
 
