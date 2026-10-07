@@ -11,6 +11,7 @@ fi
 host_canonical_repo="$HOME/switchstand"
 canonical_repo=${SWITCHSTAND_CODEX_QUALIFICATION_REPO:-$host_canonical_repo}
 script_dir=$(dirname -- "$(readlink -f "$0")")
+wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
 git_common() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
         -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
@@ -19,6 +20,20 @@ git_common() {
 host_canonical_common=$(git_common "$host_canonical_repo")
 canonical_common=$(git_common "$canonical_repo")
 current_common=$(git_common "$PWD")
+if [ "${SWITCHSTAND_CODEX_QUALIFICATION_REPO+x}" != "" ]; then
+    qualification_repo=$(readlink -f "$SWITCHSTAND_CODEX_QUALIFICATION_REPO" || :)
+    qualification_top=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git -C "$qualification_repo" rev-parse --show-toplevel 2>/dev/null || :)
+    current_top=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || :)
+    if [ "$wakeful_mode" != PILOT ] \
+            || [ "$qualification_repo" = "$(readlink -f "$host_canonical_repo")" ] \
+            || [ "$qualification_top" != "$qualification_repo" ] \
+            || [ "$current_top" != "$qualification_repo" ] \
+            || [ "$canonical_common" != "$host_canonical_common" ] \
+            || [ -n "$(git -C "$qualification_repo" status --porcelain)" ]; then
+        echo "Wakeful qualification repo must be a clean linked writer in PILOT" >&2
+        exit 2
+    fi
+fi
 if [ -z "$host_canonical_common" ] || [ -z "$canonical_common" ] \
         || [ "$current_common" != "$canonical_common" ]; then
     exec "$real_codex" "$@"
@@ -27,27 +42,12 @@ fi
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
 continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-PILOT}
 continuity_lifetime=${SWITCHSTAND_CODEX_LIFETIME:-ASSIGNMENT}
-wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
 case "$continuity_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_CONTINUITY must be OFF or PILOT" >&2; exit 2;; esac
 case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)
     echo "SWITCHSTAND_CODEX_LIFETIME must be ASSIGNMENT or STANDING" >&2; exit 2;; esac
 case "$wakeful_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_WAKEFUL must be OFF or PILOT" >&2; exit 2;; esac
-if [ "${SWITCHSTAND_CODEX_QUALIFICATION_REPO+x}" != "" ]; then
-    qualification_repo=$(readlink -f "$SWITCHSTAND_CODEX_QUALIFICATION_REPO")
-    qualification_top=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
-        git -C "$qualification_repo" rev-parse --show-toplevel 2>/dev/null || :)
-    if [ "$wakeful_mode" != PILOT ] \
-            || [ "$qualification_repo" = "$(readlink -f "$host_canonical_repo")" ] \
-            || [ "$canonical_repo" != "$qualification_repo" ] \
-            || [ "$qualification_top" != "$qualification_repo" ] \
-            || [ "$canonical_common" != "$host_canonical_common" ] \
-            || [ -n "$(git -C "$canonical_repo" status --porcelain)" ]; then
-        echo "Wakeful qualification repo must be a clean linked writer in PILOT" >&2
-        exit 2
-    fi
-fi
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then

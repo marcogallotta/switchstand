@@ -530,20 +530,17 @@ the stable exact-head/composition terminal Quality evidence in its versioned cod
 Each terminal job is the trusted workflow's fail-closed aggregation of exact planning, the selected
 or full Quality execution, and Docker when the reviewed policy requires it; its check name never
 varies by internal mode. Missing, stale, ambiguous, skipped, or wrong-subject terminal evidence
-fails closed; provider failure is `UNKNOWN`.
-`PROMOTE_TEST_MODULE_ONLY_V1` also requires the repository variable
-`SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED` to equal `true`; absent or other values force
-`FULL_FALLBACK`. Setting it is a separate provider activation still subordinate to selector-health
-and broad-backstop gates. Compact gate identity, reason, and timing are returned by default, while
-bounded failed-step and check-output
+fails closed; provider failure is `UNKNOWN`. Compact
+gate identity, reason, and timing are returned by default, while bounded failed-step and check-output
 detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
 fallback during qualification of the semantic path.
 
-`full_suite_due.py` owns the pure shadow-only adaptive broad-truth evaluator. It returns
-`FULL_SUITE_DUE`, `NOT_DUE`, or `UNKNOWN` only from exact current evidence. Known baseline absence
-or non-ancestry is due; unavailable or contradictory observations are unknown. It neither dispatches
-CI nor reduces the existing cadence/backstop, and it grants no merge authority.
+Selective foreground is default-off behind `SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED=true`; all
+other values use the full suite. Adaptive broad truth remains shadow-only and preserves its backstop.
+`full_suite_due.py` owns its pure tri-state evaluator: known baseline absence or non-ancestry is
+`FULL_SUITE_DUE`, while unavailable or contradictory observations are `UNKNOWN`. It neither
+dispatches CI nor reduces the existing cadence/backstop, and it grants no merge authority.
 
 `stacked_delivery.py` owns the pure fail-closed identity and evidence predicates for
 GitHub-native stacked delivery. It can preserve a focused layer verdict only across an
@@ -600,12 +597,8 @@ manifests; changed controls report bounded recheck boundaries instead of permane
 executable, repository controls and
 privacy-preserving invocation identity in the per-generation manifest owned by
 `scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's evidence. The full
-An explicit Wakeful qualification launch may substitute one clean, non-canonical registered linked
-writer only in PILOT mode. The dispatcher requires its resolved path to be that worktree's top level
-and its Git common directory to equal canonical Switchstand, then records the candidate's exact HEAD.
-This test seam grants no deployment, activation, provider effect, or ordinary caller-selected source.
-The full
+session storage and byte-stable hooks without replacing another generation's evidence. A PILOT-only
+Wakeful qualifier accepts a clean non-canonical linked writer; it grants no activation. The full
 local Markdown dependency graph rooted at `AGENTS.md` remains tracked for post-sync change
 detection, while schema v3 records a separate bounded post-compaction reread set. Fresh Coordinator
 manifests include both `AGENTS.md` and `docs/coordinator-tracker-contract.md`; an already-created
