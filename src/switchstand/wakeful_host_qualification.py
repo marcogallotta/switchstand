@@ -42,6 +42,9 @@ class JourneyEvidence:
     source_result_residue: int | None
     lower_fidelity_checks_green: bool | None = None
     resume_failure: str | None = None
+    observed_identity: HostIdentity | None = None
+    observed_nonce: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,9 @@ class HostQualification:
 class JourneyDriver(Protocol):
     """Real implementations must execute each method against one host session."""
 
+    def observed_binding(
+        self, nonce: str,
+    ) -> tuple[HostIdentity | None, str | None, str | None]: ...
     def launch_ordinary_pilot(self) -> tuple[bool | None, bool | None]: ...
     def bind_registration(self) -> bool | None: ...
     def resume_session(self) -> bool | None: ...
@@ -78,43 +84,44 @@ class JourneyDriver(Protocol):
 def collect_journey(driver: JourneyDriver, nonce: str) -> JourneyEvidence:
     """Run the ordered falsifier; a first definite failure stops the journey."""
 
+    observed_identity, observed_nonce, session_id = driver.observed_binding(nonce)
     launched, persistent_pty = driver.launch_ordinary_pilot()
     if launched is not True or persistent_pty is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(
             launched, persistent_pty, None, None, None, None, None, None, None, None,
-            None, lower, failure,
+            None, lower, failure, observed_identity, observed_nonce, session_id,
         )
     bound = driver.bind_registration()
     if bound is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, bound, None, None, None, None, None, None, None,
-                               None, lower, failure)
+                               None, lower, failure, observed_identity, observed_nonce, session_id)
     resumed = driver.resume_session()
     if resumed is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, resumed, None, None, None, None, None, None,
-                               None, lower, failure)
+                               None, lower, failure, observed_identity, observed_nonce, session_id)
     committed = driver.commit_nonce(nonce)
     if committed is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, True, committed, None, None, None, None,
-                               None, None, lower, failure)
+                               None, None, lower, failure, observed_identity, observed_nonce, session_id)
     wake = driver.await_visible_wake()
     if wake is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, True, True, wake, None, None, None, None,
-                               None, lower, failure)
+                               None, lower, failure, observed_identity, observed_nonce, session_id)
     turn = driver.await_same_session_turn(nonce)
     if turn is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, True, True, True, turn, None, None, None,
-                               None, lower, failure)
+                               None, lower, failure, observed_identity, observed_nonce, session_id)
     consumed, queue, wake_count, source = driver.consume_and_read_residue()
     lower, failure = driver.diagnostic()
     return JourneyEvidence(
         True, True, True, True, True, True, True, consumed, queue, wake_count, source,
-        lower, failure,
+        lower, failure, observed_identity, observed_nonce, session_id,
     )
 
 
@@ -133,6 +140,16 @@ def qualify_host_journey(
     )
     if not identity_valid:
         return HostQualification("UNKNOWN", "identity-unavailable", identity, nonce)
+    if (
+        evidence.observed_identity is None
+        or evidence.observed_nonce is None
+        or evidence.session_id is None
+    ):
+        return HostQualification("UNKNOWN", "journey-binding-unavailable", identity, nonce)
+    if evidence.observed_identity != identity or evidence.observed_nonce != nonce:
+        return HostQualification("FAIL", "journey-binding-mismatch", identity, nonce)
+    if not evidence.session_id.strip():
+        return HostQualification("UNKNOWN", "session-binding-unavailable", identity, nonce)
     stages = (
         evidence.ordinary_dispatch_pilot,
         evidence.persistent_host_pty,

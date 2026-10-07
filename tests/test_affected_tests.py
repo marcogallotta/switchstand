@@ -230,6 +230,14 @@ def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Pat
         selector_health_clear=True,
         cumulative_stack_top=True,
     ).mode == "FULL_FALLBACK"
+    backstop = foreground_authority(
+        plan,
+        subject_verified=True,
+        selector_health_clear=True,
+        broad_backstop_due=True,
+    )
+    assert backstop.mode == "FULL_FALLBACK"
+    assert backstop.reasons == ("broad-backstop-requires-full",)
 
 
 def test_serial_sensitive_modules_always_fall_back_on_changed_and_selected_paths() -> None:

@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from switchstand.stacked_delivery import (
+    EvidenceDimension,
     FocusedLayerReview,
     LayerQualification,
     LayerReviewIdentity,
@@ -100,7 +101,9 @@ def test_proportional_inert_qualification_fails_closed() -> None:
 
 
 def test_typed_proportional_dimensions_fail_closed() -> None:
-    required = frozenset({"LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE"})
+    required: frozenset[EvidenceDimension] = frozenset({
+        "LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE",
+    })
     complete = ProportionalQualification("a" * 40, required, required)
     assert proportional_qualification_is_sufficient(complete)
     assert not proportional_qualification_is_sufficient(
@@ -112,20 +115,37 @@ def test_typed_proportional_dimensions_fail_closed() -> None:
     assert not proportional_qualification_is_sufficient(
         ProportionalQualification("not-a-sha", required, required)
     )
+    assert not proportional_qualification_is_sufficient(
+        ProportionalQualification("a" * 40, frozenset({"invented"}), frozenset({"invented"}))  # type: ignore[arg-type]
+    )
 
 
 def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
-    ready = StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, True, True)
+    qualification = ProportionalQualification(
+        "a" * 40, frozenset({"LAYER_CAUSAL_QUALITY"}),
+        frozenset({"LAYER_CAUSAL_QUALITY"}),
+    )
+    required: frozenset[EvidenceDimension] = frozenset({"LAYER_CAUSAL_QUALITY"})
+    ready = StackLandingEvidence(
+        "a" * 40, "a" * 40, "a" * 40, True, required, (qualification,),
+    )
     assert stack_is_ready_to_land(ready)
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, None, True, True)
+        StackLandingEvidence("a" * 40, "a" * 40, None, True, required, (qualification,))
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "b" * 40, "a" * 40, True, True)
+        StackLandingEvidence("a" * 40, "b" * 40, "a" * 40, True, required, (qualification,))
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, False, True)
+        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, False, required, (qualification,))
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("x", "x", "x", True, True)
+        StackLandingEvidence("x", "x", "x", True, required, (qualification,))
     )
+    assert not stack_is_ready_to_land(
+        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, True, required, ())
+    )
+    assert not stack_is_ready_to_land(StackLandingEvidence(
+        "a" * 40, "a" * 40, "a" * 40, True,
+        frozenset({"WAKEFUL_REAL_HOST"}), (qualification,),
+    ))

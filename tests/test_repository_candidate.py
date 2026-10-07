@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
+from switchstand.stacked_delivery import EvidenceDimension, proportional_qualification_is_sufficient
 
 BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
     "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
@@ -119,6 +120,10 @@ async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timin
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
     assert all(gate.policy_mode == "FULL_FALLBACK" for gate in result.gates)
     assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in result.gates)
+    required: frozenset[EvidenceDimension] = frozenset({
+        "LAYER_CAUSAL_QUALITY", "BROAD_QUALITY", "RUNTIME_LIFECYCLE",
+    })
+    assert proportional_qualification_is_sufficient(result.proportional_evidence(required))
 
 
 async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_closed():

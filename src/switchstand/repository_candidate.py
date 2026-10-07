@@ -9,9 +9,11 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .stacked_delivery import EvidenceDimension, ProportionalQualification
+
 REPOSITORY = "marcogallotta/switchstand"
 API = f"https://api.github.com/repos/{REPOSITORY}"
-CATALOGUE = "switchstand-quality-v2"
+CATALOGUE = "switchstand-quality-v1"
 GATES = (
     ("Exact-head Quality", "exact_head"),
     ("PR composition Quality", "composition"),
@@ -42,7 +44,9 @@ class QualificationGate(BaseModel):
     failure_excerpt: str | None = None
     detail_reason: str | None = None
     policy_mode: PolicyMode | None = None
-    evidence_dimensions: list[str] = Field(default_factory=list)
+    evidence_dimensions: list[EvidenceDimension] = Field(
+        default_factory=lambda: list[EvidenceDimension]()
+    )
 
 
 class RepositoryCandidateQualification(BaseModel):
@@ -58,6 +62,22 @@ class RepositoryCandidateQualification(BaseModel):
     catalogue: str = CATALOGUE
     gates: list[QualificationGate]
     reason: str | None = None
+
+    def proportional_evidence(
+        self, required: frozenset[EvidenceDimension],
+    ) -> ProportionalQualification:
+        """Project catalogue truth into the one shared qualification predicate."""
+
+        passed: set[EvidenceDimension] = set()
+        for gate in self.gates:
+            if gate.state == "completed" and gate.conclusion == "success" and gate.reason is None:
+                passed.update(gate.evidence_dimensions)
+        unknown: frozenset[EvidenceDimension] = (
+            required if self.status == "UNKNOWN" or self.head_sha is None else frozenset()
+        )
+        return ProportionalQualification(
+            self.head_sha or "", required, frozenset(passed), frozenset(unknown),
+        )
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -154,7 +174,7 @@ def _check_identity(check: dict[str, Any]) -> tuple[int | None, int | None]:
 
 def _policy_evidence(
     checks: list[dict[str, Any]], run_id: int | None, kind: str, head: str,
-) -> tuple[PolicyMode | None, list[str], str | None]:
+) -> tuple[PolicyMode | None, list[EvidenceDimension], str | None]:
     """Validate the typed evidence hidden behind the one stable Quality gate."""
 
     if run_id is None:
@@ -193,7 +213,7 @@ def _policy_evidence(
     expected_docker = "skipped" if mode == "PROMOTE_TEST_MODULE_ONLY_V1" else "success"
     if docker[0].get("conclusion") != expected_docker:
         return mode, [], "policy-evidence-conflicting"
-    dimensions = ["LAYER_CAUSAL_QUALITY"]
+    dimensions: list[EvidenceDimension] = ["LAYER_CAUSAL_QUALITY"]
     if kind == "composition":
         dimensions.append("CUMULATIVE_TOP_QUALITY")
     if mode == "FULL_FALLBACK":

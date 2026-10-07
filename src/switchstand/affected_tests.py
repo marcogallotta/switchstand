@@ -104,6 +104,7 @@ def foreground_authority(
     subject_verified: bool,
     selector_health_clear: bool,
     cumulative_stack_top: bool = False,
+    broad_backstop_due: bool = False,
 ) -> ForegroundAuthority:
     """Promote only the reviewed direct test-module class; fail closed otherwise."""
 
@@ -116,6 +117,8 @@ def foreground_authority(
         reasons.append("selector-health-not-clear")
     if cumulative_stack_top:
         reasons.append("cumulative-stack-top-requires-full")
+    if broad_backstop_due:
+        reasons.append("broad-backstop-requires-full")
     if plan.mode != "SELECTED" or plan.fallback_reasons:
         reasons.append("planner-did-not-select-cleanly")
     if plan.destructive:
