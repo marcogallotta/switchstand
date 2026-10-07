@@ -82,7 +82,7 @@ async def test_disposition_between_scan_and_admission_does_not_wake(subject, set
     assert not Projection(home, binding).path.exists()
 
 
-async def test_source_lifecycle_progresses_while_host_admission_waits(subject, setup, monkeypatch):
+async def test_admission_first_fences_takeover_until_queue_result(subject, setup, monkeypatch):
     home, _, client, binding = setup
     messages, mailboxes, mailbox, delivery_id = await source(subject)
     sync = create_engine(messages.engine.url)
@@ -92,9 +92,6 @@ async def test_source_lifecycle_progresses_while_host_admission_waits(subject, s
         try:
             with sync.begin() as connection:
                 connection.execute(text("SET LOCAL lock_timeout = '500ms'"))
-                connection.execute(update(message_deliveries).where(
-                    message_deliveries.c.delivery_id == delivery_id
-                ).values(state="DISPOSITIONED"))
                 connection.execute(update(agent_mailboxes).where(
                     agent_mailboxes.c.endpoint_id == mailbox.endpoint_id
                 ).values(generation=mailbox.generation + 1,
@@ -108,18 +105,39 @@ async def test_source_lifecycle_progresses_while_host_admission_waits(subject, s
         worker = threading.Thread(target=transition)
         worker.start()
         try:
-            assert finished.wait(3), "source lifecycle blocked by host admission"
-            assert not failures, "source lifecycle could not acquire canonical locks"
+            assert finished.wait(3)
+            assert failures, "takeover crossed in-flight queue admission"
         finally:
             worker.join(timeout=3)
-        return "UNKNOWN"
+        return "PENDING"
 
     monkeypatch.setattr(Projection, "admit", waiting_host)
     try:
-        await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client)
-        assert await messages.pending_delivery_ids(mailbox) is None
+        _, results = await inbound_cycle(
+            messages, mailboxes, mailbox, Projection(home, binding), client)
+        assert set(results.values()) == {"PENDING"}
+        assert await messages.pending_delivery_ids(mailbox) == (delivery_id,)
     finally:
         sync.dispose()
+
+
+async def test_takeover_first_prevents_stale_queue_admission(subject, setup, monkeypatch):
+    home, _, client, binding = setup
+    messages, mailboxes, mailbox, _ = await source(subject)
+    scan = messages.pending_delivery_ids
+
+    async def takeover_after_scan(selected, cursor=None):
+        ids = await scan(selected, cursor)
+        result = await mailboxes.takeover(
+            mailbox.name, mailbox.principal_key, "codex:replacement")
+        assert result.status == "ok"
+        return ids
+
+    monkeypatch.setattr(messages, "pending_delivery_ids", takeover_after_scan)
+    _, results = await inbound_cycle(
+        messages, mailboxes, mailbox, Projection(home, binding), client)
+    assert set(results.values()) == {"STALE"}
+    assert not client.calls
 
 
 async def test_exact_mailbox_session_and_takeover_fence(subject, setup):
@@ -189,6 +207,18 @@ async def test_supervised_intake_scans_real_source_without_agent_poll(subject, s
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=3)
+
+
+async def test_supervised_stale_generation_exits(subject, setup, monkeypatch):
+    home, _, client, binding = setup
+    messages, mailboxes, mailbox, _ = await source(subject, "codex:replacement")
+    monkeypatch.setattr(client, "close", lambda: None)
+    monkeypatch.setattr("switchstand.codex_wakeful.QueueClient", lambda *_: client)
+    await asyncio.wait_for(run_inbound(
+        messages, mailboxes, mailbox, binding, home, home / "unused", asyncio.Event(),
+        opt_in=True,
+    ), timeout=3)
+    assert not client.calls
 
 
 def test_projection_lock_isolates_generations_and_rejects_symlink(setup):

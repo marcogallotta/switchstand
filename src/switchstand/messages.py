@@ -3,7 +3,8 @@
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
@@ -441,6 +442,20 @@ class MessageState:
                 message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
             ))).scalar_one_or_none() if current else None
         return row is not None
+
+    @asynccontextmanager
+    async def pending_delivery_fence(
+        self, binding: AgentMailbox, delivery_id: UUID,
+    ) -> AsyncGenerator[bool]:
+        """Fence final source validation and host admission against actor movement."""
+        async with self.engine.begin() as connection:
+            current = await self._current_agent_binding(connection, binding)
+            row = (await connection.execute(select(message_deliveries.c.delivery_id).where(
+                message_deliveries.c.delivery_id == delivery_id,
+                message_deliveries.c.recipient_work_id == binding.endpoint_id,
+                message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            ).with_for_update(read=True))).scalar_one_or_none() if current else None
+            yield row is not None
 
     async def reply_context(self, delivery_id: UUID) -> MessageReplyContext | None:
         async with self.engine.connect() as connection:
