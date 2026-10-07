@@ -45,8 +45,11 @@ class WakeSourceRef:
     def reread_instruction(self) -> str:
         if self.source_kind == "switchstand_inbound":
             return (
-                "Reread this exact delivery_id with the repository MCP tool "
-                "mcp__switchstand__agent_message_receive before acting. Do not use the "
+                "List the repository MCP mailbox with "
+                "mcp__switchstand__agent_message_pending, following next_cursor pages until "
+                "this exact delivery_id is found. Retain its payload, then receive it with "
+                "mcp__switchstand__agent_message_receive and act on the retained payload. "
+                "Do not use the "
                 "codex_apps Switchstand connector: that connector has a different session "
                 "identity and cannot receive this Codex mailbox delivery."
             )
