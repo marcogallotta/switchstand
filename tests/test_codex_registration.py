@@ -57,18 +57,36 @@ def test_database_url_requires_private_owned_environment(spec: Spec) -> None:
         database_url(spec.environment_file)
 
 
-def test_prepare_registers_exact_launch_owned_thread(spec: Spec, monkeypatch) -> None:
+def test_prepare_materializes_resumable_exact_launch_owned_thread(
+    spec: Spec, monkeypatch,
+) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     binding = CodexBinding("thread-1", str(spec.start_record), spec.start_record.name)
+    rollout = spec.home / "rollout-thread-1.jsonl"
+    developer = ""
 
     class Client:
         def __init__(self, codex: Path, home: Path, socket_path: Path):
             assert (codex, home, socket_path) == (spec.codex, spec.home, spec.socket_path)
 
         def call(self, method: str, arguments: dict[str, object]):
+            nonlocal developer
             calls.append((method, arguments))
             if method == "thread/start":
+                developer = str(arguments["developerInstructions"])
                 return {"thread": {"id": "thread-1"}}
+            if method == "thread/inject_items":
+                rollout.write_text(json.dumps({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message", "role": "developer",
+                        "content": [{"type": "input_text", "text": developer}],
+                    },
+                }) + "\n")
+                return {}
+            if method == "thread/read":
+                assert rollout.exists(), "zero-turn thread was not materialized before readback"
+                return {"thread": {"id": "thread-1", "path": str(rollout)}}
             return {"structuredContent": {"status": "ok", "name": spec.default_name}}
 
         def close(self) -> None:
@@ -81,12 +99,6 @@ def test_prepare_registers_exact_launch_owned_thread(spec: Spec, monkeypatch) ->
         return spec.home / "runner.json"
 
     monkeypatch.setattr("switchstand.codex_registration.QueueClient", Client)
-    monkeypatch.setattr(
-        "switchstand.codex_registration.bind",
-        lambda *_args: (_ for _ in ()).throw(AssertionError(
-            "a zero-turn thread has no rollout to read back",
-        )),
-    )
     monkeypatch.setattr("switchstand.codex_registration.existing_registration", existing)
     monkeypatch.setattr("switchstand.codex_registration.freeze_config", freeze)
 
@@ -97,7 +109,23 @@ def test_prepare_registers_exact_launch_owned_thread(spec: Spec, monkeypatch) ->
     assert calls[0][1]["approvalPolicy"] == "never"
     assert calls[0][1]["sandbox"] == "danger-full-access"
     assert "permissions" not in calls[0][1]
-    assert calls[1] == ("mcpServer/tool/call", {
+    assert [method for method, _arguments in calls[:3]] == [
+        "thread/start", "thread/inject_items", "thread/read",
+    ]
+    assert calls[1][1] == {
+        "threadId": "thread-1",
+        "items": [{
+            "type": "message", "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": (
+                    "Switchstand Wakeful bootstrap only: this message materializes the "
+                    "durable thread, is not a user assignment, and grants no authority."
+                ),
+            }],
+        }],
+    }
+    assert calls[3] == ("mcpServer/tool/call", {
         "threadId": "thread-1", "server": "switchstand", "tool": "agent_register",
         "arguments": {"api_version": "1", "name": spec.default_name},
     })
@@ -119,6 +147,8 @@ def test_prepare_never_automatically_takes_over_root(spec: Spec, monkeypatch) ->
         def call(self, method: str, _arguments: dict[str, object]):
             if method == "thread/start":
                 return {"thread": {"id": "thread-1"}}
+            if method == "thread/inject_items":
+                return {}
             raise AssertionError("root takeover must require explicit authorization")
 
         def close(self) -> None:
@@ -172,7 +202,7 @@ def test_prepare_retires_unbound_persisted_thread(spec: Spec, monkeypatch) -> No
 
     assert prepare_registration(spec)[2] == fresh
     assert thread.read_text() == "fresh-thread\n"
-    assert calls == ["thread/start", "mcpServer/tool/call"]
+    assert calls == ["thread/start", "thread/inject_items", "mcpServer/tool/call"]
 
 
 def test_prepare_reuses_exact_persisted_registration(spec: Spec, monkeypatch) -> None:
