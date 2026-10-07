@@ -433,3 +433,13 @@ mode-required Docker result are all valid; internal mode never changes its requi
 Planner identity,
 mode, selected membership, JUnit, and timings are retained with the authoritative result. There is
 no telemetry service or second test scheduler.
+Qualification-attempt lineage is advisory. A stable logical lineage contains provider-idempotent
+GitHub run/attempt identities, exact subject/plan/harness/environment scope, typed retry reasons,
+cumulative timing, and harness/wrapper/fixture/setup rework. Missing or conflicting currentness is
+`UNKNOWN`; identical provider replays deduplicate and conflicting replays fail closed. A
+`CI_QUALIFICATION_REWORK_WARNING` request is deterministic and once-per-lineage, but live delivery
+remains dependent on the existing Tests & CI to Wakeful attention route. V1 retains each attempt as
+a 90-day workflow artifact but does not fetch prior artifacts, classify failure/rework, summarize a
+live lineage, or submit attention. The summarizer and warning-request projector are an inert library
+foundation until that delivery dependency exists. They do not block retries or change qualification
+or merge authority.
