@@ -65,6 +65,16 @@ def test_unknown_never_becomes_not_due() -> None:
     assert all(evaluate_full_suite_due(value, POLICY).status == "UNKNOWN" for value in cases)
 
 
+def test_known_non_ancestor_is_due_without_meaningless_diff_counters() -> None:
+    decision = evaluate_full_suite_due(inputs(
+        ancestry_verified=False,
+        commits_since_baseline=None,
+        changed_paths_since_baseline=None,
+    ), POLICY)
+    assert decision.status == "FULL_SUITE_DUE"
+    assert decision.reasons == ("baseline-not-ancestor",)
+
+
 def test_shadow_reuses_current_run_and_never_dispatches() -> None:
     decision = evaluate_full_suite_due(inputs(planner_policy_changed=True), POLICY)
     run = BroadRun("b" * 40, "in_progress")

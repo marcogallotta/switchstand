@@ -14,29 +14,40 @@ IDENTITY = HostIdentity("a" * 40, "b" * 64, "c" * 64, "d" * 64)
 @dataclass
 class FixtureDriver:
     no_rollout: bool = False
+    calls: list[str] | None = None
 
-    def observed_binding(self, nonce: str):
-        return IDENTITY, nonce, "thread-1"
+    def _record(self, call: str) -> None:
+        if self.calls is not None:
+            self.calls.append(call)
+
+    def observed_binding(self):
+        self._record("observed_binding")
+        return IDENTITY, "thread-1"
 
     def launch_ordinary_pilot(self):
+        self._record("launch")
         return True, True
 
     def bind_registration(self):
+        self._record("bind")
         return True
 
     def resume_session(self):
+        self._record("resume")
         return not self.no_rollout
 
     def commit_nonce(self, nonce: str) -> bool:
         del nonce
+        self._record("commit_nonce")
         return True
 
     def await_visible_wake(self):
+        self._record("visible_wake")
         return True
 
-    def await_same_session_turn(self, nonce: str) -> bool:
-        del nonce
-        return True
+    def await_same_session_turn(self, nonce: str) -> tuple[bool, str | None]:
+        self._record("same_session_turn")
+        return True, nonce
 
     def consume_and_read_residue(self):
         return True, 0, 0, 0
@@ -46,10 +57,15 @@ class FixtureDriver:
 
 
 def test_complete_journey_passes_same_predicate_dimension() -> None:
-    evidence = collect_journey(FixtureDriver(), "fresh-nonce-0123456789")
+    calls: list[str] = []
+    evidence = collect_journey(FixtureDriver(calls=calls), "fresh-nonce-0123456789")
     result = qualify_host_journey(IDENTITY, "fresh-nonce-0123456789", evidence)
     assert (result.verdict, result.reason) == ("PASS", "complete-attributed-journey")
     assert proportional_qualification_is_sufficient(result.proportional_evidence())
+    assert calls[:7] == [
+        "launch", "bind", "observed_binding", "commit_nonce", "resume",
+        "visible_wake", "same_session_turn",
+    ]
 
 
 def test_stable_zero_turn_no_rollout_negative_control_catches_escape() -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from .stacked_delivery import EvidenceDimension, ProportionalQualification
 
@@ -65,18 +65,67 @@ class HostQualification:
         )
 
 
+@dataclass(frozen=True)
+class SameSessionTurnObservation:
+    same_session_assistant_turn: bool | None
+    observed_nonce: str | None
+    resume_failure: str | None
+
+
+def observe_same_session_turn(
+    thread: dict[str, Any], wake_id: str, nonce: str,
+) -> SameSessionTurnObservation:
+    """Distinguish queue consumption from a nonce-attributed assistant rollout."""
+
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return SameSessionTurnObservation(None, None, "thread-observation-unavailable")
+    matches: list[tuple[dict[str, Any], int]] = []
+    for raw_turn in cast(list[Any], turns):
+        if not isinstance(raw_turn, dict):
+            return SameSessionTurnObservation(None, None, "thread-observation-unavailable")
+        turn = cast(dict[str, Any], raw_turn)
+        items = turn.get("items")
+        if not isinstance(items, list):
+            return SameSessionTurnObservation(None, None, "thread-observation-unavailable")
+        for index, raw_item in enumerate(cast(list[Any], items)):
+            if not isinstance(raw_item, dict):
+                continue
+            item = cast(dict[str, Any], raw_item)
+            if (
+                item.get("type") == "userMessage"
+                and item.get("clientId") == wake_id
+            ):
+                matches.append((turn, index))
+    if len(matches) != 1:
+        return SameSessionTurnObservation(None, None, "wake-turn-ambiguous")
+    turn, user_index = matches[0]
+    assistant_text: list[str] = []
+    for raw_item in cast(list[Any], turn["items"])[user_index + 1:]:
+        if not isinstance(raw_item, dict):
+            continue
+        item = cast(dict[str, Any], raw_item)
+        text = item.get("text")
+        if item.get("type") == "agentMessage" and isinstance(text, str):
+            assistant_text.append(text)
+    if any(nonce in text for text in assistant_text):
+        return SameSessionTurnObservation(True, nonce, None)
+    if turn.get("status") in {"completed", "failed", "cancelled"}:
+        failure = "nonce-not-observed" if assistant_text else "zero-turn-no-rollout"
+        return SameSessionTurnObservation(False, None, failure)
+    return SameSessionTurnObservation(None, None, "turn-incomplete")
+
+
 class JourneyDriver(Protocol):
     """Real implementations must execute each method against one host session."""
 
-    def observed_binding(
-        self, nonce: str,
-    ) -> tuple[HostIdentity | None, str | None, str | None]: ...
+    def observed_binding(self) -> tuple[HostIdentity | None, str | None]: ...
     def launch_ordinary_pilot(self) -> tuple[bool | None, bool | None]: ...
     def bind_registration(self) -> bool | None: ...
     def resume_session(self) -> bool | None: ...
     def commit_nonce(self, nonce: str) -> bool | None: ...
     def await_visible_wake(self) -> bool | None: ...
-    def await_same_session_turn(self, nonce: str) -> bool | None: ...
+    def await_same_session_turn(self, nonce: str) -> tuple[bool | None, str | None]: ...
     def consume_and_read_residue(self) -> tuple[bool | None, int | None, int | None, int | None]: ...
     def diagnostic(self) -> tuple[bool | None, str | None]: ...
 
@@ -96,23 +145,23 @@ def collect_journey(driver: JourneyDriver, nonce: str) -> JourneyEvidence:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, bound, None, None, None, None, None, None, None,
                                None, lower, failure)
+    observed_identity, session_id = driver.observed_binding()
+    committed = driver.commit_nonce(nonce)
+    if committed is not True:
+        lower, failure = driver.diagnostic()
+        return JourneyEvidence(True, True, True, None, committed, None, None, None, None,
+                               None, None, lower, failure, observed_identity, None, session_id)
     resumed = driver.resume_session()
     if resumed is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, resumed, None, None, None, None, None, None,
-                               None, lower, failure)
-    observed_identity, observed_nonce, session_id = driver.observed_binding(nonce)
-    committed = driver.commit_nonce(nonce)
-    if committed is not True:
-        lower, failure = driver.diagnostic()
-        return JourneyEvidence(True, True, True, True, committed, None, None, None, None,
-                               None, None, lower, failure, observed_identity, observed_nonce, session_id)
+                               None, lower, failure, observed_identity, None, session_id)
     wake = driver.await_visible_wake()
     if wake is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, True, True, wake, None, None, None, None,
-                               None, lower, failure, observed_identity, observed_nonce, session_id)
-    turn = driver.await_same_session_turn(nonce)
+                               None, lower, failure, observed_identity, None, session_id)
+    turn, observed_nonce = driver.await_same_session_turn(nonce)
     if turn is not True:
         lower, failure = driver.diagnostic()
         return JourneyEvidence(True, True, True, True, True, True, turn, None, None, None,

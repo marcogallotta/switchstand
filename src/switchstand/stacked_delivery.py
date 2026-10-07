@@ -86,6 +86,7 @@ class StackLandingEvidence:
     """Evidence required before any contiguous part of a V1 stack may land."""
 
     exact_top_sha: str
+    exact_composition_sha: str
     cumulative_review_sha: str | None
     cumulative_quality_sha: str | None
     focused_reviews_current: bool
@@ -135,11 +136,16 @@ def stack_is_ready_to_land(evidence: StackLandingEvidence) -> bool:
         dimension
         for item in evidence.layer_qualifications
         if item.subject_sha == evidence.exact_top_sha
+        and (
+            "CUMULATIVE_TOP_QUALITY" not in item.passed
+            or item.composition_sha == evidence.exact_composition_sha
+        )
         for dimension in item.passed
         if proportional_qualification_is_sufficient(item)
     )
     return (
         _SHA.fullmatch(evidence.exact_top_sha) is not None
+        and _SHA.fullmatch(evidence.exact_composition_sha) is not None
         and _SHA.fullmatch(evidence.cumulative_review_sha or "") is not None
         and _SHA.fullmatch(evidence.cumulative_quality_sha or "") is not None
         and evidence.focused_reviews_current
@@ -149,6 +155,11 @@ def stack_is_ready_to_land(evidence: StackLandingEvidence) -> bool:
         and evidence.required_dimensions <= passed
         and all(
             proportional_qualification_is_sufficient(item)
+            for item in evidence.layer_qualifications
+        )
+        and all(
+            "CUMULATIVE_TOP_QUALITY" not in item.required
+            or item.composition_sha == evidence.exact_composition_sha
             for item in evidence.layer_qualifications
         )
         and evidence.cumulative_review_sha == evidence.exact_top_sha

@@ -127,26 +127,34 @@ def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
     )
     required: frozenset[EvidenceDimension] = frozenset({"LAYER_CAUSAL_QUALITY"})
     ready = StackLandingEvidence(
-        "a" * 40, "a" * 40, "a" * 40, True, required, (qualification,),
+        "a" * 40, "c" * 40, "a" * 40, "a" * 40, True, required, (qualification,),
     )
     assert stack_is_ready_to_land(ready)
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, None, True, required, (qualification,))
+        StackLandingEvidence(
+            "a" * 40, "c" * 40, "a" * 40, None, True, required, (qualification,),
+        )
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "b" * 40, "a" * 40, True, required, (qualification,))
+        StackLandingEvidence(
+            "a" * 40, "c" * 40, "b" * 40, "a" * 40, True, required, (qualification,),
+        )
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, False, required, (qualification,))
+        StackLandingEvidence(
+            "a" * 40, "c" * 40, "a" * 40, "a" * 40, False, required, (qualification,),
+        )
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("x", "x", "x", True, required, (qualification,))
+        StackLandingEvidence("x", "x", "x", "x", True, required, (qualification,))
     )
     assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, True, required, ())
+        StackLandingEvidence(
+            "a" * 40, "c" * 40, "a" * 40, "a" * 40, True, required, (),
+        )
     )
     assert not stack_is_ready_to_land(StackLandingEvidence(
-        "a" * 40, "a" * 40, "a" * 40, True,
+        "a" * 40, "c" * 40, "a" * 40, "a" * 40, True,
         frozenset({"WAKEFUL_REAL_HOST"}), (qualification,),
     ))
     old_host = ProportionalQualification(
@@ -154,6 +162,22 @@ def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
         frozenset({"WAKEFUL_REAL_HOST"}),
     )
     assert not stack_is_ready_to_land(StackLandingEvidence(
-        "a" * 40, "a" * 40, "a" * 40, True,
+        "a" * 40, "c" * 40, "a" * 40, "a" * 40, True,
         frozenset({"WAKEFUL_REAL_HOST"}), (old_host,),
+    ))
+
+
+def test_cumulative_quality_is_bound_to_exact_composition() -> None:
+    required: frozenset[EvidenceDimension] = frozenset({"CUMULATIVE_TOP_QUALITY"})
+    wrong = ProportionalQualification(
+        "a" * 40, required, required, composition_sha="d" * 40,
+    )
+    assert not stack_is_ready_to_land(StackLandingEvidence(
+        "a" * 40, "c" * 40, "a" * 40, "a" * 40, True, required, (wrong,),
+    ))
+    right = ProportionalQualification(
+        "a" * 40, required, required, composition_sha="c" * 40,
+    )
+    assert stack_is_ready_to_land(StackLandingEvidence(
+        "a" * 40, "c" * 40, "a" * 40, "a" * 40, True, required, (right,),
     ))

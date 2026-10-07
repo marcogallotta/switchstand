@@ -69,9 +69,14 @@ class RepositoryCandidateQualification(BaseModel):
         """Project catalogue truth into the one shared qualification predicate."""
 
         passed: set[EvidenceDimension] = set()
-        for gate in self.gates:
-            if gate.state == "completed" and gate.conclusion == "success" and gate.reason is None:
-                passed.update(gate.evidence_dimensions)
+        if self.status == "READY":
+            for gate in self.gates:
+                if (
+                    gate.state == "completed"
+                    and gate.conclusion == "success"
+                    and gate.reason is None
+                ):
+                    passed.update(gate.evidence_dimensions)
         unknown: frozenset[EvidenceDimension] = (
             required if self.status == "UNKNOWN" or self.head_sha is None else frozenset()
         )

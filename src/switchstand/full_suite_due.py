@@ -114,14 +114,19 @@ def evaluate_full_suite_due(
         _SHA.fullmatch(inputs.baseline_sha) is None
         or inputs.baseline_completed_at.tzinfo is None
         or inputs.ancestry_verified is None
-        or not counters_known
     ):
+        return FullSuiteDecision("UNKNOWN", ("current-inputs-unavailable",), None, None)
+    if not inputs.ancestry_verified:
+        nonancestor_reasons = ("baseline-not-ancestor",)
+        return FullSuiteDecision(
+            "FULL_SUITE_DUE", nonancestor_reasons,
+            _event_id(inputs, policy, nonancestor_reasons), inputs.landed_sha,
+        )
+    if not counters_known:
         return FullSuiteDecision("UNKNOWN", ("current-inputs-unavailable",), None, None)
     assert commits is not None and changed_paths is not None
 
     reasons: list[str] = []
-    if not inputs.ancestry_verified:
-        reasons.append("baseline-not-ancestor")
     if inputs.planner_policy_changed:
         reasons.append("planner-policy-changed")
     if inputs.unresolved_hard_miss:
