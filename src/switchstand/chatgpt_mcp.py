@@ -691,7 +691,8 @@ def build_ordinary_tools(
             return CallToolResult(content=[TextContent(type="text", text=status)],
                                   structured_content={"status": status, "reason": reason} | detail)
         def qualification_status(value: repository_candidate.RepositoryCandidateQualification) -> str:
-            if None in (value.base_sha, value.head_sha, value.composition_sha) or len(value.composition_parents) != 2:
+            identity = (value.base_sha, value.head_sha, value.composition_sha)
+            if None in identity or len(value.composition_parents) != 2:
                 return "UNKNOWN"
             expected = {
                 ("Exact-head Quality", "exact_head", value.head_sha),
@@ -761,15 +762,14 @@ def build_ordinary_tools(
             "candidate": refreshed.model_dump(), "bundle": bundle.model_dump(),
             "exclusions": ["prior_verdicts", "author_narrative", "effect_authority"],
         }
-        content: list[Any] = [
-            TextContent(type="text", text="READY"),
-            ResourceLink(
+        audited("review_bundle_get", str(review_id), final.status)
+        return CallToolResult(
+            content=[ResourceLink(
                 type="resource_link", name=repository_bundle.BUNDLE_NAME,
                 uri=bundle.bundle_url, mime_type="application/octet-stream",
-            ),
-        ]
-        audited("review_bundle_get", str(review_id), final.status)
-        return CallToolResult(content=content, structured_content=structured)
+            )],
+            structured_content=structured,
+        )
     async def review_submit(
         api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
         context_provenance: ContextProvenance,
