@@ -8,6 +8,7 @@ from _pytest.capture import CaptureFixture
 
 from switchstand.affected_tests import (
     BroadQualityRun,
+    Plan,
     foreground_authority,
     main,
     plan_exact,
@@ -229,6 +230,43 @@ def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Pat
         selector_health_clear=True,
         cumulative_stack_top=True,
     ).mode == "FULL_FALLBACK"
+    backstop = foreground_authority(
+        plan,
+        subject_verified=True,
+        selector_health_clear=True,
+        broad_backstop_due=True,
+    )
+    assert backstop.mode == "FULL_FALLBACK"
+    assert backstop.reasons == ("broad-backstop-requires-full",)
+
+
+def test_serial_sensitive_modules_always_fall_back_on_changed_and_selected_paths() -> None:
+    selected_sensitive = Plan(
+        "SELECTED", "exact", "a" * 40, "b" * 40,
+        ("tests/test_alpha.py",),
+        ("tests/test_alpha.py", "tests/test_update_gateway.py"),
+        {}, (),
+    )
+    selected = foreground_authority(
+        selected_sensitive, subject_verified=True, selector_health_clear=True
+    )
+    assert selected.mode == "FULL_FALLBACK"
+    assert selected.reasons == ("serial-sensitive-selected-path",)
+
+    changed_sensitive = Plan(
+        "SELECTED", "exact", "a" * 40, "b" * 40,
+        ("tests/test_chatgpt_edge_process.py",),
+        ("tests/test_chatgpt_edge_process.py",),
+        {}, (),
+    )
+    changed = foreground_authority(
+        changed_sensitive, subject_verified=True, selector_health_clear=True
+    )
+    assert changed.mode == "FULL_FALLBACK"
+    assert changed.reasons == (
+        "serial-sensitive-changed-path",
+        "serial-sensitive-selected-path",
+    )
 
 
 def test_direct_test_change_does_not_parse_unrelated_dependency_graph(
