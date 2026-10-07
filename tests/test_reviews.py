@@ -199,6 +199,25 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         agent_binding=reviewer,
     )
     assert received.status == "ok"
+    reviewer = (await mailboxes.takeover(
+        "Reviewer", "principal-b", "chat-b-replacement",
+    )).mailbox
+    assert reviewer is not None and reviewer.generation == 2
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE message_deliveries SET recipient_grant_version = 2 "
+            "WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})
+    inconsistent = await service.recover(sent.review_id, reviewer)
+    assert (inconsistent.status, inconsistent.reason) == ("DENIED", "recovery_not_allowed")
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE message_deliveries SET recipient_grant_version = 1 "
+            "WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})
+    recovered = await service.recover(sent.review_id, reviewer)
+    assert recovered.status == "RECEIVED" and recovered.delivery_id == sent.delivery_id, recovered
+    assert await service.recover(sent.review_id, reviewer) == recovered
     submitted = await service.submit(ReviewSubmit(
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
@@ -259,6 +278,53 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
             connection, subject_id, current_revision,
         ) == "NOT_PASS"
 
+
+async def test_recovery_rejects_concluded_historical_delivery(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b"
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    submitted = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    replacement = (await mailboxes.takeover(
+        "Reviewer", "principal-b", "chat-b-replacement",
+    )).mailbox
+    assert replacement is not None and replacement.generation == 2
+    denied = await service.recover(sent.review_id, replacement)
+    assert (denied.status, denied.reason) == ("DENIED", "recovery_not_allowed")
+    async with engine.connect() as connection:
+        generation = (await connection.execute(text(
+            "SELECT recipient_grant_version, receiving_generation "
+            "FROM message_deliveries WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})).one()
+    assert tuple(generation) == (1, "1")
 
 async def test_flow_report_projects_exact_current_review_pickup(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
@@ -522,3 +588,4 @@ async def test_focused_rereview_requires_authoritative_named_finding(occurrence_
         review_kind="CODE", prior_review_id=initial.review_id,
     ), requester)
     assert (upgraded.status, upgraded.reason) == ("UNKNOWN", "duplicate_authoritative_state")
+    assert (await service.recover(initial.review_id, reviewer)).reason == "duplicate_authoritative_state"
