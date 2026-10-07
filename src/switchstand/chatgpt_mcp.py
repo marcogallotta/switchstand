@@ -227,7 +227,8 @@ PRIORITY_CONTEXT_TOOLS = frozenset({"priority_context_get"})
 IMPLEMENTATION_REQUEST_TOOLS = frozenset({"implementation_request"})
 PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
-REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_recover", "review_submit"})
+REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_recover", "review_submit",
+                          "review_bundle_get"})
 OBSERVABILITY_TOOLS = frozenset({"observability_get"})
 
 
@@ -265,6 +266,7 @@ def build_ordinary_tools(
     audit: Callable[[str, str | None, str], None] | None = None,
     agent_identity: Callable[[], str] | None = None,
     correlate_work: Callable[[UUID | None], None] | None = None,
+    review_bundle_enabled: bool = False,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
@@ -683,6 +685,54 @@ def build_ordinary_tools(
             ), context.mailbox)
         audited("review_request", str(subject_work_id), result.status)
         return result
+
+    async def review_bundle_get(api_version: Literal["1"], review_id: UUID) -> CallToolResult:
+        del api_version
+        def unavailable(status: str, reason: str | None = None, **detail: object) -> CallToolResult:
+            return CallToolResult(content=[TextContent(type="text", text=status)],
+                                  structured_content={"status": status, "reason": reason} | detail)
+        context = await agent_context()
+        if isinstance(context, tuple):
+            status = "UNKNOWN" if context[0] == "recovery_required" else "DENIED"
+            return unavailable(status)
+        assert service.reviews is not None
+        access = await service.reviews.bundle_access(review_id, context.mailbox)
+        if access.status != "AUTHORIZED" or access.basis is None:
+            return unavailable(access.status, access.reason)
+        prefix, candidate = "github:marcogallotta/switchstand:pr/", access.basis.candidate_ref or ""
+        number = candidate.removeprefix(prefix)
+        if not candidate.startswith(prefix) or not number.isdigit() or int(number) < 1:
+            return unavailable("STALE", "candidate_identity")
+        qualification = await repository_candidate.qualify_repository_candidate(int(number))
+        reason = qualification.reason
+        status = ("UNKNOWN" if qualification.status == "UNKNOWN" or reason not in {
+            None, "gates_not_ready", "composition_mismatch", "candidate_changed",
+        } else "STALE" if reason in {"composition_mismatch", "candidate_changed"} else "READY")
+        if status != "READY" or qualification.head_sha is None:
+            return unavailable(status, reason, qualification=qualification.model_dump())
+        bundle = await repository_bundle.resolve_repository_bundle(qualification.head_sha)
+        if bundle.status != "current" or bundle.bundle_url is None:
+            return unavailable("UNKNOWN", bundle.reason, bundle=bundle.model_dump())
+        final = await service.reviews.bundle_access(review_id, context.mailbox, access.basis)
+        if final.status != "READY":
+            return unavailable(final.status, final.reason)
+        structured = {
+            "status": final.status, "reason": final.reason,
+            "review_id": str(review_id), "delivery_id": str(final.delivery_id),
+            "subject_work_id": str(access.basis.subject_work_id),
+            "subject_revision": access.basis.subject_revision, "subject_title": final.subject_title,
+            "material_claim_digest": final.material_claim_digest,
+            "candidate": qualification.model_dump(), "bundle": bundle.model_dump(),
+            "exclusions": ["prior_verdicts", "author_narrative", "effect_authority"],
+        }
+        content: list[Any] = [TextContent(type="text", text="READY")]
+        if final.status == "READY":
+            content.append(ResourceLink(
+                type="resource_link", name=repository_bundle.BUNDLE_NAME,
+                uri=bundle.bundle_url, description="Exact reviewed Git repository bundle",
+                mime_type="application/octet-stream"))
+        audited("review_bundle_get", str(review_id), final.status)
+        return CallToolResult(content=content, structured_content=structured)
 
     async def review_submit(
         api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
@@ -1251,6 +1301,8 @@ def build_ordinary_tools(
             ("review_request", review_request), ("review_get", review_get),
             ("review_recover", review_recover), ("review_submit", review_submit),
         ) if service.reviews is not None else ()),
+        *((("review_bundle_get", review_bundle_get),)
+          if service.reviews is not None and review_bundle_enabled else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
         ("capability_preflight_get", capability_preflight_get),

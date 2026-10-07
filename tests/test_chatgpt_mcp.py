@@ -48,6 +48,15 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
 
 
+def test_review_bundle_tool_is_default_off():
+    subject = service()
+    subject.reviews = object()  # type: ignore[assignment]
+    assert "review_bundle_get" not in dict(build_ordinary_tools(subject))
+    assert "review_bundle_get" in dict(build_ordinary_tools(
+        subject, review_bundle_enabled=True,
+    ))
+
+
 def test_priority_claim_tools_are_default_off_and_human_only():
     subject = service()
     assert not {name for name, _ in build_ordinary_tools(subject)} & {
