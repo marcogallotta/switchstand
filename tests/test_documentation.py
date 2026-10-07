@@ -92,6 +92,42 @@ def test_bootstrap_has_a_small_stable_section_shape():
     assert read("CLAUDE.md").splitlines().count("@AGENTS.md") == 1
 
 
+def test_tracker_recovery_is_bounded_classified_and_non_authoritative():
+    recovery = section(
+        read("docs/coordinator-tracker-contract.md"),
+        "## Recover incomplete coverage without adopting history",
+    )
+    classifications = {
+        "PROPOSED_OWNED_TASK", "REVIEW_OCCURRENCE", "DEPENDENCY_REFERENCE",
+        "EVIDENCE_CONTEXT", "INSPECTED_NOT_OWNED", "SUPERSEDED_HISTORY",
+        "MISSING_ID", "UNCERTAIN",
+    }
+    compact = " ".join(recovery.split())
+    assert classifications <= set(re.findall(r"`([A-Z_]+)`", recovery))
+    assert recovery.index("current attributable direction") < recovery.index("bounded history")
+    assert "only while coverage remains incomplete" in compact
+    assert "never assign work or transfer ownership" in compact
+    assert "Adoption is proposal-first" in recovery
+    assert "until Marco directly confirms that exact task" in compact
+    assert "count for every recovery classification including zero" in compact
+    assert "not a workspace-wide inventory" in compact
+
+
+def test_tracker_decomposition_requires_outcomes_and_control_benefit():
+    contract = " ".join(section(
+        read("docs/coordinator-tracker-contract.md"),
+        "## Split outcomes only when control improves",
+    ).split())
+    assert "at least two distinct outcomes" in contract
+    assert "different owner, blocker or dependency, review path, priority" in contract
+    assert "ability to make independent progress" in contract
+    assert "100% of the original outcome" in contract
+    assert "Preserve every existing WorkId" in contract
+    assert "Do not split technical steps, tightly coupled work" in contract
+    assert "numeric size, count, age, or line threshold" in contract
+    assert "scheduler, ownership registry, or automatic splitter" in contract
+
+
 def test_role_router_has_exact_function_routes_and_owner_links():
     router = section(read("AGENTS.md"), "### Route only the current function")
     routes = {
