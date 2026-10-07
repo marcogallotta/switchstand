@@ -130,11 +130,27 @@ class JourneyDriver(Protocol):
     def diagnostic(self) -> tuple[bool | None, str | None]: ...
 
 
+def _identity_and_nonce_are_valid(identity: HostIdentity, nonce: str) -> bool:
+    return (
+        _SHA.fullmatch(identity.candidate_sha) is not None
+        and all(_DIGEST.fullmatch(value) is not None for value in (
+            identity.launcher_digest, identity.profile_digest, identity.config_digest,
+        ))
+        and identity.qualifier_version == "wakeful-real-host-v1"
+        and len(nonce) >= 16
+    )
+
+
 def collect_journey(
     driver: JourneyDriver, expected_identity: HostIdentity, nonce: str,
 ) -> JourneyEvidence:
     """Run the ordered falsifier; a first definite failure stops the journey."""
 
+    if not _identity_and_nonce_are_valid(expected_identity, nonce):
+        return JourneyEvidence(
+            None, None, None, None, None, None, None, None, None, None, None,
+            resume_failure="identity-unavailable",
+        )
     launched, persistent_pty = driver.launch_ordinary_pilot()
     if launched is not True or persistent_pty is not True:
         lower, failure = driver.diagnostic()
@@ -187,15 +203,7 @@ def qualify_host_journey(
 ) -> HostQualification:
     """Fail closed and bind PASS to exact candidate plus host-control digests."""
 
-    identity_valid = (
-        _SHA.fullmatch(identity.candidate_sha) is not None
-        and all(_DIGEST.fullmatch(value) is not None for value in (
-            identity.launcher_digest, identity.profile_digest, identity.config_digest,
-        ))
-        and identity.qualifier_version == "wakeful-real-host-v1"
-        and len(nonce) >= 16
-    )
-    if not identity_valid:
+    if not _identity_and_nonce_are_valid(identity, nonce):
         return HostQualification("UNKNOWN", "identity-unavailable", identity, nonce)
     if evidence.resume_failure == "zero-turn-no-rollout":
         return HostQualification("FAIL", "zero-turn-no-rollout", identity, nonce)

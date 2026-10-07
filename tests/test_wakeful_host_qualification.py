@@ -114,3 +114,19 @@ def test_wrong_host_binding_stops_before_nonce_or_resume() -> None:
     assert evidence.resume_failure == "journey-binding-mismatch"
     assert "commit_nonce" not in calls
     assert "resume" not in calls
+
+
+def test_malformed_identity_and_nonce_stop_before_any_host_call() -> None:
+    malformed = (
+        HostIdentity("bad", "b" * 64, "c" * 64, "d" * 64),
+        HostIdentity("a" * 40, "bad", "c" * 64, "d" * 64),
+        HostIdentity("a" * 40, "b" * 64, "c" * 64, "d" * 64, "future-v2"),
+    )
+    for identity, nonce in [
+        *((identity, "valid-nonce-012345") for identity in malformed),
+        (IDENTITY, "short"),
+    ]:
+        calls: list[str] = []
+        evidence = collect_journey(FixtureDriver(calls=calls), identity, nonce)
+        assert evidence.resume_failure == "identity-unavailable"
+        assert calls == []
