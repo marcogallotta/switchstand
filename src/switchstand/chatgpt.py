@@ -77,6 +77,12 @@ from .priority_context import PriorityContextProjection, PriorityContextResult
 from .product_currentness import ProductCurrentness
 from .relations import RelationGateway
 from .reviews import ReviewService
+from .task_control import (
+    DurableControlCapsule,
+    TaskControlCheckpointResult,
+    TaskControlReadResult,
+    TaskControlState,
+)
 from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
 from .workspace_admission import WorkspaceAdmissionState
@@ -120,6 +126,7 @@ class ChatGPTService:
         ordinary_workspace_admission: bool = False,
         canonical_work: CanonicalWorkRuntime | None = None,
         canonical_events: CanonicalEventReader | None = None,
+        task_control: TaskControlState | None = None,
         canonical_work_active: bool = False,
         outcome_state_enabled: bool = False,
         priority_claims: PriorityClaimService | None = None,
@@ -137,7 +144,9 @@ class ChatGPTService:
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
-            WorkspaceAdmissionState(grants.engine, principal)
+            WorkspaceAdmissionState(
+                grants.engine, principal, task_control_enabled=task_control is not None,
+            )
             if ordinary_workspace_admission and type(grants) is GrantState
             else grants
         )
@@ -153,6 +162,7 @@ class ChatGPTService:
         self.required_results = required_results
         self.canonical_work = canonical_work
         self.canonical_events = canonical_events
+        self.task_control = task_control
         self.canonical_work_active = canonical_work_active
         self.outcome_state_enabled = outcome_state_enabled
         self.priority_claims = priority_claims
@@ -613,6 +623,62 @@ class ChatGPTService:
                 self.admission_grants, principal, request
             )
         return await self.create_gateway.create(principal, request)
+
+    async def task_control_get(self, work_id: UUID) -> TaskControlReadResult:
+        if self.task_control is None:
+            return TaskControlReadResult(
+                status="unknown", currentness="UNKNOWN", reason="feature_default_off",
+            )
+        principal = await self.principal()
+        if principal is None:
+            return TaskControlReadResult(
+                status="denied", currentness="UNKNOWN",
+                reason="authenticated_principal_required",
+            )
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if (
+                    grant is None or grant.principal != principal or not grant.current()
+                    or "work_get" not in grant.operations
+                    or not grant.can_read(work_id, explicit_target=True)
+                ):
+                    return TaskControlReadResult(
+                        status="denied", currentness="UNKNOWN", reason="work_not_granted",
+                    )
+                return await self.task_control.read(work_id)
+        except SQLAlchemyError:
+            return TaskControlReadResult(
+                status="unknown", currentness="UNKNOWN", reason="state_unavailable",
+            )
+
+    async def task_control_checkpoint(
+        self, operation_id: UUID, work_id: UUID, observed_work_revision: str,
+        expected_checkpoint_generation: int | None, capsule: DurableControlCapsule,
+    ) -> TaskControlCheckpointResult:
+        if self.task_control is None:
+            return TaskControlCheckpointResult(
+                status="unknown", currentness="UNKNOWN", reason="feature_default_off",
+            )
+        principal = await self.principal()
+        if principal is None:
+            return TaskControlCheckpointResult(
+                status="denied", currentness="UNKNOWN",
+                reason="authenticated_principal_required",
+            )
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if grant is None or grant.principal != principal or not grant.current():
+                    return TaskControlCheckpointResult(
+                        status="denied", currentness="UNKNOWN", reason="no_current_grant",
+                    )
+                return await self.task_control.checkpoint(
+                    principal, grant, operation_id, work_id, observed_work_revision,
+                    expected_checkpoint_generation, capsule,
+                )
+        except SQLAlchemyError:
+            return TaskControlCheckpointResult(
+                status="unknown", currentness="UNKNOWN", reason="state_unavailable",
+            )
 
     async def update(self, request: ProtectedUpdate) -> GuardOutcome:
         principal = await self.principal()

@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID, uuid5
 
 from sqlalchemy import select
@@ -21,23 +22,35 @@ WORKSPACE_CONTEXT = UUID(int=0)
 class WorkspaceAdmissionState(GrantState):
     """Effect-journal-compatible admission that never reads or writes work_grants."""
 
-    def __init__(self, engine: AsyncEngine, principal: PrincipalResolver):
+    def __init__(
+        self, engine: AsyncEngine, principal: PrincipalResolver,
+        *, task_control_enabled: bool = False,
+    ):
         super().__init__(engine)
         self.principal = principal
+        self.task_control_enabled = task_control_enabled
 
     @staticmethod
-    def admission(principal: PrincipalContext) -> WorkGrant:
+    def admission(
+        principal: PrincipalContext, *, task_control_enabled: bool = False,
+    ) -> WorkGrant:
         prefix = "test" if principal.assurance == "test" else "real"
+        operations: set[Literal[
+            "work_get", "work_search", "work_append", "work_create", "work_update",
+            "work_relate", "priority_claim", "task_control",
+        ]] = {
+            "work_get", "work_search", "work_append", "work_create", "work_update",
+            "work_relate", "priority_claim",
+        }
+        if task_control_enabled:
+            operations.add("task_control")
         return WorkGrant(
             id=uuid5(WORKSPACE_ADMISSION_NAMESPACE, principal.key),
             version=1,
             principal=principal,
             authority=LaunchAuthority(active_work_id=WORKSPACE_CONTEXT),
             scope="workspace",
-            operations=frozenset({
-                "work_get", "work_search", "work_append", "work_create", "work_update",
-                "work_relate", "priority_claim",
-            }),
+            operations=frozenset(operations),
             issuer="switchstand-ordinary-authenticated",
             provenance="server-owned ordinary authenticated workspace admission",
             expires_at=datetime.max.replace(tzinfo=UTC),
@@ -52,7 +65,9 @@ class WorkspaceAdmissionState(GrantState):
         principal = await self.principal()
         if principal is None or principal.key != principal_key:
             return None
-        return self.admission(principal)
+        return self.admission(
+            principal, task_control_enabled=self.task_control_enabled,
+        )
 
     @asynccontextmanager
     async def locked(
@@ -67,4 +82,6 @@ class WorkspaceAdmissionState(GrantState):
                 await connection.execute(select(work_handles.c.id).where(
                     work_handles.c.id == work_id
                 ).with_for_update())
-            yield self.admission(principal)
+            yield self.admission(
+                principal, task_control_enabled=self.task_control_enabled,
+            )

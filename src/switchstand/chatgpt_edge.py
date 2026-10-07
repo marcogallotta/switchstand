@@ -77,13 +77,14 @@ from .stable_auth import (
     normalize_resource_url,
 )
 from .state import PostgresState
+from .task_control import TaskControlState
 from .task_runs import TaskRunState
 from .work_events import WorkEventRepository
 
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
-STATEFUL_MIGRATION_REVISION = "0024_mcp_operation_timings"
+STATEFUL_MIGRATION_REVISION = "0025_task_control_checkpoints"
 _https_resource_url = normalize_resource_url
 
 
@@ -446,6 +447,7 @@ def _create_resource_app(
         ordinary_workspace_admission=True,
         canonical_work=service.canonical_work,
         canonical_events=service.canonical_events,
+        task_control=service.task_control,
         canonical_work_active=service.canonical_work_active,
         outcome_state_enabled=service.outcome_state_enabled,
         priority_claims=service.priority_claims,
@@ -570,6 +572,11 @@ async def resource_service(
         canonical_work = CanonicalWorkRuntime(
             canonical_repository, canonical_relations
         )
+        task_control_enabled = os.getenv("SWITCHSTAND_TASK_CONTROL") == "1"
+        task_control = (
+            TaskControlState(engine, canonical_repository)
+            if task_control_enabled else None
+        )
         canonical_events = CanonicalEventReader(
             canonical_repository, WorkEventRepository(engine)
         )
@@ -613,6 +620,7 @@ async def resource_service(
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {},
             messages, RequiredResultPersistence(LifecycleRepository(engine)),
             canonical_work=canonical_work, canonical_events=canonical_events,
+            task_control=task_control,
             canonical_work_active=True,
             outcome_state_enabled=os.getenv("SWITCHSTAND_OUTCOME_STATE_ACTIONS") == "1",
             priority_claims=priority_claims,

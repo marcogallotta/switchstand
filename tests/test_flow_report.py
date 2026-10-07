@@ -394,7 +394,7 @@ async def test_durable_mcp_timing_is_private_bounded_cohort_evidence(engine: Asy
     assert timing["db_total_ms"] == 60.0 and timing["server_residual_ms"] == 140.0
     assert timing["cohorts"] == [{
         "runtime_generation": runtime,
-        "schema_generation": "0024_mcp_operation_timings", "tool": "work_get",
+        "schema_generation": "0025_task_control_checkpoints", "tool": "work_get",
         "sample_count": 2, "p50_ms": 200.0, "p90_ms": 280.0,
     }]
     assert result["coverage"]["timing_journal"] == {

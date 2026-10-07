@@ -974,12 +974,12 @@ class HostOperations:
                 "-U", "switchstand", "-d", "switchstand", "-At", "-c",
                 (
                     "SELECT version_num || '|' || COALESCE("
-                    "to_regclass('public.mcp_operation_timings')::text, "
+                    "to_regclass('public.task_control_checkpoints')::text, "
                     "'ABSENT') FROM alembic_version"
                 ),
             ]
         ).stdout.strip()
-        if database != "0023_activation_continuity|ABSENT":
+        if database != "0024_mcp_operation_timings|ABSENT":
             raise Unknown("shared state is not the exact pre-upgrade state")
 
 

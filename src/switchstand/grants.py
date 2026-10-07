@@ -32,7 +32,7 @@ class WorkGrant(ClosedModel):
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
         "work_relate", "priority_claim", "message", "agent_task", "implementation_request",
-        "activation_continuity"
+        "activation_continuity", "task_control"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)

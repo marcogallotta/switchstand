@@ -487,6 +487,7 @@ async def test_resource_service_priority_surface_is_explicit_and_default_off(mon
         assert plain.priority_context is None
         assert plain.priority_claims_enabled is False
         assert plain.priority_context_enabled is False
+        assert plain.task_control is None
 
     monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
     async with chatgpt_edge.resource_service() as (enabled, _runtime):
@@ -494,6 +495,10 @@ async def test_resource_service_priority_surface_is_explicit_and_default_off(mon
         assert isinstance(enabled.priority_context, PriorityContextProjection)
         assert enabled.priority_claims_enabled is True
         assert enabled.priority_context_enabled is True
+
+    monkeypatch.setenv("SWITCHSTAND_TASK_CONTROL", "1")
+    async with chatgpt_edge.resource_service() as (enabled, _runtime):
+        assert enabled.task_control is not None
 
 
 async def test_resource_service_publishes_configured_currentness_runtime(monkeypatch):

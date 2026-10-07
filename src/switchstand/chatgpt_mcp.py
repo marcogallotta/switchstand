@@ -77,6 +77,7 @@ from .reviews import (
     ReviewSubmit,
     ReviewVerdict,
 )
+from .task_control import DurableControlCapsule, TaskControlCheckpointResult, TaskControlReadResult
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -214,6 +215,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_event",
     "agent_message_pending",
     "capability_preflight_get",
+    "task_control_get",
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
@@ -230,6 +232,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_recover",
     "agent_message_result_send",
     "agent_message_disposition",
+    "task_control_checkpoint",
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
@@ -580,6 +583,32 @@ def build_ordinary_tools(
             next_action_class=next_action_class, next_action_ref=next_action_ref,
         ))
         audited("work_create", str(parent_work_id or project_id), result.status)
+        return result
+
+    async def task_control_get(
+        api_version: Literal["1"], work_id: UUID,
+    ) -> TaskControlReadResult:
+        """Read the latest durable control capsule and server-computed currentness."""
+        del api_version
+        correlate(work_id)
+        result = await service.task_control_get(work_id)
+        audited("task_control_get", str(work_id), result.status)
+        return result
+
+    async def task_control_checkpoint(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_work_revision: str,
+        expected_checkpoint_generation: Annotated[int | None, Field(ge=1)],
+        capsule: DurableControlCapsule,
+    ) -> TaskControlCheckpointResult:
+        """CAS-replace one owner checkpoint; effect labels never grant authority."""
+        del api_version
+        correlate(work_id)
+        result = await service.task_control_checkpoint(
+            operation_id, work_id, observed_work_revision,
+            expected_checkpoint_generation, capsule,
+        )
+        audited("task_control_checkpoint", str(work_id), result.status)
         return result
 
     async def work_update(
@@ -1361,6 +1390,8 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
+        ("task_control_get", task_control_get),
+        ("task_control_checkpoint", task_control_checkpoint),
         ("work_update", enriched_work_update if (
             service.outcome_state_enabled or service.activation_continuity is not None
         ) else work_update),

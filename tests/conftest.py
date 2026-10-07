@@ -14,10 +14,12 @@ from switchstand.canonical_work import canonical_metadata, canonical_work, legac
 from switchstand.database import validate_test_database_url
 from switchstand.human_reviews import human_review_consequences
 from switchstand.priority_claims import priority_claims
+from switchstand.task_control import task_control_checkpoints
 from switchstand.task_runs import task_run_requests
 from switchstand.work_events import work_events
 
 CANONICAL_TABLES = (
+    task_control_checkpoints,
     task_run_requests,
     priority_claims,
     human_review_consequences,
@@ -55,6 +57,7 @@ def database_prerequisite() -> None:
             with engine.begin() as connection:
                 connection.exec_driver_sql(
                     "DROP TABLE IF EXISTS activation_obligation_revisions, "
+                    "task_control_checkpoints, "
                     "task_run_results, task_run_executions, "
                     "task_run_requests, failure_resolutions, failure_records, "
                     "work_migration_receipts CASCADE"

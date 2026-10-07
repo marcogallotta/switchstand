@@ -446,7 +446,7 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--expected-runtime-sha", required=True)
     qualify.add_argument("--expected-run-id", required=True)
     qualify.add_argument("--expected-tools-sha256", required=True)
-    qualify.add_argument("--expected-migration", default="0024_mcp_operation_timings")
+    qualify.add_argument("--expected-migration", default="0025_task_control_checkpoints")
     qualify.add_argument("--key", required=True, type=Path)
     qualify.add_argument("--receipt", required=True, type=Path)
     qualify.add_argument("--repo", type=Path, default=Path.cwd())
