@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from switchstand.codex_registration import database_url, prepare_registration
+from switchstand.agent_mailboxes import chat_session_key
+from switchstand.codex_registration import (
+    database_url,
+    existing_registration,
+    freeze_config,
+    prepare_registration,
+)
 from switchstand.codex_wakeful import CodexBinding
 
 
@@ -156,3 +165,185 @@ def test_prepare_retires_unbound_persisted_thread(spec: Spec, monkeypatch) -> No
     assert prepare_registration(spec)[2] == fresh
     assert thread.read_text() == "fresh-thread\n"
     assert calls == ["thread/start", "mcpServer/tool/call"]
+
+
+def test_prepare_reuses_exact_persisted_registration(spec: Spec, monkeypatch) -> None:
+    thread = spec.home / "wakeful-thread-exact"
+    thread.write_text("thread-1\n")
+    thread.chmod(0o600)
+    binding = CodexBinding("thread-1", str(spec.start_record), spec.start_record.name)
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, *_args):
+            pass
+
+        def call(self, method: str, _arguments: dict[str, object]):
+            calls.append(method)
+            raise AssertionError("exact registration must not be retried")
+
+        def close(self) -> None:
+            calls.append("closed")
+
+    monkeypatch.setattr("switchstand.codex_registration.QueueClient", Client)
+    monkeypatch.setattr("switchstand.codex_registration.bind", lambda *_args: binding)
+    monkeypatch.setattr(
+        "switchstand.codex_registration.existing_registration",
+        lambda *_args: _async_value(("exact", spec.default_name)),
+    )
+    monkeypatch.setattr(
+        "switchstand.codex_registration.freeze_config",
+        lambda *_args: _async_value(spec.home / "runner.json"),
+    )
+
+    assert prepare_registration(spec) == (
+        spec.home / "runner.json", "postgresql://exact", binding,
+    )
+    assert calls == ["closed"]
+
+
+def test_prepare_recovers_registration_after_lost_response(spec: Spec, monkeypatch) -> None:
+    binding = CodexBinding("thread-1", str(spec.start_record), spec.start_record.name)
+    calls: list[tuple[str, str]] = []
+    attempt = 0
+
+    class Client:
+        def __init__(self, *_args):
+            pass
+
+        def call(self, method: str, arguments: dict[str, object]):
+            tool = str(arguments.get("tool", ""))
+            calls.append((method, tool))
+            if method == "thread/start":
+                return {"thread": {"id": "thread-1"}}
+            if tool == "agent_register":
+                raise OSError("response lost after durable registration")
+            return {"structuredContent": {"status": "ok", "name": spec.default_name}}
+
+        def close(self) -> None:
+            pass
+
+    async def existing(*_args):
+        nonlocal attempt
+        attempt += 1
+        return (("missing", None) if attempt == 1 else
+                ("takeover", spec.default_name))
+
+    monkeypatch.setattr("switchstand.codex_registration.QueueClient", Client)
+    monkeypatch.setattr("switchstand.codex_registration.bind", lambda *_args: binding)
+    monkeypatch.setattr("switchstand.codex_registration.existing_registration", existing)
+    monkeypatch.setattr(
+        "switchstand.codex_registration.freeze_config",
+        lambda *_args: _async_value(spec.home / "runner.json"),
+    )
+
+    with pytest.raises(OSError, match="response lost"):
+        prepare_registration(spec)
+    assert prepare_registration(spec)[2] == binding
+    assert calls.count(("mcpServer/tool/call", "agent_register")) == 1
+    assert calls.count(("mcpServer/tool/call", "agent_takeover")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_key,principal_key,expected",
+    [
+        (chat_session_key("codex:thread-1"), "principal-1", ("exact", "codex-head-exact")),
+        (chat_session_key("codex:old-thread"), "principal-1", ("takeover", "codex-head-exact")),
+    ],
+)
+async def test_existing_registration_classifies_exact_and_same_principal(
+    monkeypatch, session_key: str, principal_key: str, expected,
+) -> None:
+    mailbox = SimpleNamespace(
+        name="codex-head-exact",
+        session_key=session_key,
+        principal_key=principal_key,
+    )
+
+    class Mailboxes:
+        def __init__(self, _engine):
+            pass
+
+        async def by_name(self, _name: str):
+            return SimpleNamespace(status="ok", mailbox=mailbox)
+
+    service = SimpleNamespace(
+        messages=SimpleNamespace(engine=object()),
+        principal=lambda: _async_value(SimpleNamespace(key="principal-1")),
+    )
+
+    @asynccontextmanager
+    async def resources():
+        yield service, object()
+
+    monkeypatch.setattr("switchstand.codex_registration.AgentMailboxState", Mailboxes)
+    monkeypatch.setattr("switchstand.chatgpt_edge.resource_service", resources)
+    binding = CodexBinding("thread-1", "/start", "generation")
+    assert await existing_registration(binding, "codex-head-exact", "postgresql://exact") == expected
+
+
+@pytest.mark.asyncio
+async def test_existing_registration_rejects_cross_principal(monkeypatch) -> None:
+    mailbox = SimpleNamespace(
+        name="codex-head-exact",
+        session_key=chat_session_key("codex:old-thread"),
+        principal_key="principal-2",
+    )
+
+    class Mailboxes:
+        def __init__(self, _engine):
+            pass
+
+        async def by_name(self, _name: str):
+            return SimpleNamespace(status="ok", mailbox=mailbox)
+
+    service = SimpleNamespace(
+        messages=SimpleNamespace(engine=object()),
+        principal=lambda: _async_value(SimpleNamespace(key="principal-1")),
+    )
+
+    @asynccontextmanager
+    async def resources():
+        yield service, object()
+
+    monkeypatch.setattr("switchstand.codex_registration.AgentMailboxState", Mailboxes)
+    monkeypatch.setattr("switchstand.chatgpt_edge.resource_service", resources)
+    binding = CodexBinding("thread-1", "/start", "generation")
+    with pytest.raises(ValueError, match="another principal"):
+        await existing_registration(binding, "codex-head-exact", "postgresql://exact")
+
+
+@pytest.mark.asyncio
+async def test_freeze_config_replaces_stale_config_after_exact_readback(
+    spec: Spec, monkeypatch,
+) -> None:
+    binding = CodexBinding("thread-1", str(spec.start_record), spec.start_record.name)
+    mailbox = SimpleNamespace(
+        session_key=chat_session_key("codex:thread-1"),
+        model_dump=lambda **_kwargs: {"name": spec.default_name},
+    )
+
+    class Mailboxes:
+        def __init__(self, _engine):
+            pass
+
+        async def by_name(self, _name: str):
+            return SimpleNamespace(status="ok", mailbox=mailbox)
+
+    service = SimpleNamespace(messages=SimpleNamespace(engine=object()))
+
+    @asynccontextmanager
+    async def resources():
+        yield service, object()
+
+    monkeypatch.setattr("switchstand.codex_registration.AgentMailboxState", Mailboxes)
+    monkeypatch.setattr("switchstand.chatgpt_edge.resource_service", resources)
+    path = spec.home / "wakeful-exact.json"
+    path.write_text("stale")
+    path.chmod(0o600)
+
+    assert await freeze_config(spec, binding, spec.default_name, "postgresql://exact") == path
+    value = json.loads(path.read_text())
+    assert value["binding"]["thread_id"] == "thread-1"
+    assert value["app_server_socket"] == str(spec.socket_path)
