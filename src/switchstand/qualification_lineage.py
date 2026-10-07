@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import pairwise
-from typing import cast
+from typing import Any, cast
 
 
 class RetryReason(StrEnum):
@@ -131,6 +131,10 @@ class LineageMetrics:
     cumulative_foreground_seconds: float | None = None
     repeated_scope_retry_count: int | None = None
     rework_seconds: float | None = None
+    harness_rework_seconds: float | None = None
+    wrapper_rework_seconds: float | None = None
+    fixture_rework_seconds: float | None = None
+    setup_rework_seconds: float | None = None
     time_to_first_decisive_failure_seconds: float | None = None
     time_after_decisive_failure_seconds: float | None = None
     reason: str | None = None
@@ -152,6 +156,8 @@ def summarize_lineage(attempts: tuple[QualificationAttempt, ...]) -> LineageMetr
     observed = tuple(unique.values())
     if any(item.current is not True for item in observed):
         return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="currentness-conflict")
+    if any(item.retry_reason is RetryReason.UNKNOWN for item in observed):
+        return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="retry-reason-unknown")
     if any(
         item.started_at is None or item.completed_at is None
         or any(value is None or value == "" for value in item.scope.identity)
@@ -186,14 +192,15 @@ def summarize_lineage(attempts: tuple[QualificationAttempt, ...]) -> LineageMetr
     last_end = max(ends)
     first_failure = failures[0] if failures else None
     foreground = [cast(float, item.foreground_seconds) for item in ordered]
-    rework = sum(
-        cast(float, getattr(item, field))
-        for item in ordered
-        for field in (
-            "harness_rework_seconds", "wrapper_rework_seconds",
-            "fixture_rework_seconds", "setup_rework_seconds",
-        )
+    rework_fields = (
+        "harness_rework_seconds", "wrapper_rework_seconds",
+        "fixture_rework_seconds", "setup_rework_seconds",
     )
+    rework_by_kind = {
+        field: sum(cast(float, getattr(item, field)) for item in ordered)
+        for field in rework_fields
+    }
+    rework = sum(rework_by_kind.values())
     return LineageMetrics(
         ObservationStatus.AVAILABLE,
         lineage,
@@ -204,6 +211,10 @@ def summarize_lineage(attempts: tuple[QualificationAttempt, ...]) -> LineageMetr
         cumulative_foreground_seconds=sum(foreground),
         repeated_scope_retry_count=sum(same_scope),
         rework_seconds=rework,
+        harness_rework_seconds=rework_by_kind["harness_rework_seconds"],
+        wrapper_rework_seconds=rework_by_kind["wrapper_rework_seconds"],
+        fixture_rework_seconds=rework_by_kind["fixture_rework_seconds"],
+        setup_rework_seconds=rework_by_kind["setup_rework_seconds"],
         time_to_first_decisive_failure_seconds=(
             (first_failure - first_start).total_seconds() if first_failure else None
         ),
@@ -211,6 +222,50 @@ def summarize_lineage(attempts: tuple[QualificationAttempt, ...]) -> LineageMetr
             (last_end - first_failure).total_seconds() if first_failure else None
         ),
     )
+
+
+def attempt_from_metrics_record(record: dict[str, Any]) -> QualificationAttempt | None:
+    """Map one retained GitHub/JUnit artifact to the typed attempt model.
+
+    Invalid or incomplete observations return ``None``; callers must preserve
+    that as UNKNOWN rather than inventing a zero-duration attempt.
+    """
+
+    try:
+        raw = record["qualification_attempt"]
+        provider = raw["provider"]
+        scope = raw["scope"]
+        rework = raw["rework"]
+        retry_reason = RetryReason(raw["retry_reason"])
+        started = datetime.fromisoformat(raw["started_at"])
+        completed = datetime.fromisoformat(raw["completed_at"])
+        decisive = (
+            datetime.fromisoformat(raw["decisive_failure_at"])
+            if raw.get("decisive_failure_at") else None
+        )
+        return QualificationAttempt(
+            lineage_id=raw["lineage_id"],
+            provider=ProviderAttemptIdentity(
+                provider["repository"], provider["workflow"], provider["job"],
+                int(provider["run_id"]), int(provider["run_attempt"]),
+            ),
+            scope=AttemptScope(
+                scope["candidate_sha"], scope["base_sha"], scope["plan_digest"],
+                scope["harness_digest"], scope["environment_digest"],
+            ),
+            retry_reason=retry_reason,
+            started_at=started,
+            completed_at=completed,
+            decisive_failure_at=decisive,
+            foreground_seconds=(completed - started).total_seconds(),
+            harness_rework_seconds=rework["harness_seconds"],
+            wrapper_rework_seconds=rework["wrapper_seconds"],
+            fixture_rework_seconds=rework["fixture_seconds"],
+            setup_rework_seconds=rework["setup_seconds"],
+            current=raw["current"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True, slots=True)

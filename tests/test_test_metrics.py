@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from switchstand.test_metrics import collect
+from switchstand.test_metrics import collect, qualification_attempt_observation
 
 ROOT = Path(__file__).parents[1]
 
@@ -75,6 +75,35 @@ def test_environment_key_ignores_source_image_but_changes_with_runtime_packages(
     assert keys[0] == keys[1] and keys[1] != keys[2]
 
 
+def test_github_junit_identity_maps_to_advisory_attempt() -> None:
+    identity = {
+        'subject_sha': 'a' * 40, 'base_sha': 'b' * 40,
+        'candidate_image': 'sha256:image', 'environment_key': 'environment',
+        'started_at': '2026-10-07T10:00:00+00:00',
+        'completed_at': '2026-10-07T10:01:00+00:00',
+        'quality_outcome': 'failure', 'current': True,
+        'environment': {'workflow_blob': 'workflow', 'manifest_blobs': 'manifests'},
+        'github': {'repository': 'owner/repo', 'workflow': 'Quality', 'job': 'quality',
+                   'run_id': '17', 'run_attempt': '1'},
+        'qualification_rework': {'retry_reason': 'INITIAL', 'harness_seconds': 1,
+                                 'wrapper_seconds': 2, 'fixture_seconds': 3,
+                                 'setup_seconds': 4},
+    }
+    result = qualification_attempt_observation(identity, {'mode': 'FULL_FALLBACK'})
+    assert result['lineage_id'].startswith('ql-')
+    assert result['provider']['executed_attempt_id'].startswith('qa-')
+    assert result['scope']['candidate_sha'] == 'a' * 40
+    assert result['decisive_failure_at'] == identity['completed_at']
+    assert result['retry_reason'] == 'INITIAL'
+
+    rerun = qualification_attempt_observation(
+        identity | {'github': identity['github'] | {'run_attempt': '2'},
+                    'qualification_rework': None},
+        {'mode': 'FULL_FALLBACK'},
+    )
+    assert rerun['retry_reason'] == 'UNKNOWN'
+
+
 def test_workflow_preserves_authority_and_attempts():
     text = (ROOT / '.github/workflows/quality.yml').read_text()
     execution, remainder = text.split('  docker_lifecycle:')
@@ -121,6 +150,10 @@ def test_workflow_preserves_authority_and_attempts():
     assert "|| 'Exact-head Quality'" in terminal
     assert 'github.run_id }}-${{ github.run_attempt }}-quality' in execution
     assert 'retention-days: 90' in execution
+    assert 'id: quality_run' in execution
+    assert 'qualification_rework' in execution
+    assert 'started-at' in execution and 'completed-at' in execution
+    assert 'steps.quality_run.outcome' in execution
     identity = ('scripts/verify-quality-composition', 'QUALITY_COMPOSITION_SHA',
                 'QUALITY_SUBJECT_SHA', 'QUALITY_BASE_SHA', 'STACK_BASE_REF', 'STACK_POSITION')
     assert all(token in execution for token in identity)

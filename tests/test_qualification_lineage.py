@@ -9,6 +9,7 @@ from switchstand.qualification_lineage import (
     RetryReason,
     WarningDisposition,
     advisory_warning,
+    attempt_from_metrics_record,
     qualification_lineage_id,
     summarize_lineage,
 )
@@ -69,6 +70,12 @@ def test_cumulative_metrics_and_decisive_failure_timing() -> None:
         metrics.time_to_first_decisive_failure_seconds,
         metrics.time_after_decisive_failure_seconds,
     ) == (3, 180, 120, 2, 30, 20, 160)
+    assert (
+        metrics.harness_rework_seconds,
+        metrics.wrapper_rework_seconds,
+        metrics.fixture_rework_seconds,
+        metrics.setup_rework_seconds,
+    ) == (30, 0, 0, 0)
 
 
 def test_missing_currentness_conflict_and_duplicate_attempt_are_unknown() -> None:
@@ -77,6 +84,12 @@ def test_missing_currentness_conflict_and_duplicate_attempt_are_unknown() -> Non
     assert summarize_lineage((attempt(1), attempt(1))).attempt_count == 1
     duplicate = summarize_lineage((attempt(1), attempt(1, foreground_seconds=12)))
     assert (duplicate.status, duplicate.reason) == (ObservationStatus.UNKNOWN, "attempt-conflict")
+    assert summarize_lineage((attempt(1, retry_reason=RetryReason.UNKNOWN),)).reason == (
+        "retry-reason-unknown"
+    )
+    assert summarize_lineage((attempt(1, scope=replace(SCOPE, candidate_sha=None)),)).reason == (
+        "evidence-missing"
+    )
 
 
 def test_warning_is_advisory_once_per_lineage() -> None:
@@ -103,3 +116,35 @@ def test_unknown_metrics_never_emit_warning() -> None:
     assert advisory_warning(
         metrics, repeated_scope_threshold=0, rework_seconds_threshold=0,
     ).disposition is WarningDisposition.UNKNOWN
+
+
+def test_warning_not_due_and_metrics_artifact_adapter() -> None:
+    metrics = summarize_lineage((attempt(1),))
+    assert advisory_warning(
+        metrics, repeated_scope_threshold=2, rework_seconds_threshold=60,
+    ).disposition is WarningDisposition.NOT_DUE
+
+    record = {"qualification_attempt": {
+        "lineage_id": LINEAGE,
+        "provider": {
+            "repository": "owner/repo", "workflow": "Quality", "job": "quality",
+            "run_id": 100, "run_attempt": 1,
+        },
+        "scope": {
+            "candidate_sha": "a" * 40, "base_sha": "b" * 40,
+            "plan_digest": "p", "harness_digest": "h", "environment_digest": "e",
+        },
+        "retry_reason": "INITIAL", "started_at": START.isoformat(),
+        "completed_at": (START + timedelta(seconds=60)).isoformat(),
+        "decisive_failure_at": (START + timedelta(seconds=20)).isoformat(),
+        "rework": {"harness_seconds": 1, "wrapper_seconds": 2,
+                   "fixture_seconds": 3, "setup_seconds": 4},
+        "current": True,
+    }}
+    mapped = attempt_from_metrics_record(record)
+    assert mapped is not None
+    assert mapped.provider.executed_attempt_id == ProviderAttemptIdentity(
+        "owner/repo", "Quality", "quality", 100, 1,
+    ).executed_attempt_id
+    assert mapped.foreground_seconds == 60
+    assert attempt_from_metrics_record({}) is None
