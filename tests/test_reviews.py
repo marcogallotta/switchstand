@@ -1003,6 +1003,28 @@ async def test_acquisition_is_atomic_and_bundle_is_fenced(occurrence_runtime):
     assert (await service.bundle_access(
         waiting.review_id, reviewer, access.basis,
     )).status == "READY"
+    service.policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={
+        "CODE": "Reviewer", "DESIGN": "Reviewer",
+    })
+    occurrences.policy = service.policy
+    unsupported = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject_id, subject.row_version),
+        review_kind="DESIGN", candidate_ref="github:marcogallotta/switchstand:pr/8",
+    ), requester)
+    assert unsupported.delivery_id is not None and unsupported.review_id is not None
+    picked_up = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(api_version="1", delivery_id=unsupported.delivery_id,
+                              grant_version=reviewer.generation),
+        agent_binding=reviewer,
+    )
+    assert picked_up.status == "ok"
+    unsupported_access = await service.bundle_access(unsupported.review_id, reviewer)
+    assert (unsupported_access.status, unsupported_access.reason) == (
+        "UNKNOWN", "REVIEW_KIND_UNSUPPORTED_V1",
+    )
     async with engine.begin() as connection:
         acknowledgement = ReviewerBound(review_id=waiting.review_id,
             reviewer_delivery_id=sent.delivery_id, reviewer_name=reviewer.name)

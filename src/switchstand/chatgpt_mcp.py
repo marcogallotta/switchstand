@@ -687,23 +687,39 @@ def build_ordinary_tools(
         return result
 
     async def review_bundle_get(api_version: Literal["1"], review_id: UUID) -> CallToolResult:
-        del api_version
         def unavailable(status: str, reason: str | None = None, **detail: object) -> CallToolResult:
             return CallToolResult(content=[TextContent(type="text", text=status)],
                                   structured_content={"status": status, "reason": reason} | detail)
         def qualification_status(value: repository_candidate.RepositoryCandidateQualification) -> str:
-            allowed = {("queued", None, "queued"), ("in_progress", None, "running"), ("completed", "success", None),
-                       ("completed", "cancelled", "cancelled"), ("completed", "skipped", "skipped"), ("missing", None, "missing")}
-            expected = {("Exact-head Quality", "exact_head", value.head_sha), ("PR composition Quality", "composition", value.composition_sha)}
-            if value.status == "UNKNOWN" or len(value.gates) != 2 or any(
-                (gate.name, gate.subject_kind, gate.subject_sha) not in expected
-                or gate.detail_reason is not None or (gate.state, gate.conclusion, gate.reason)
-                not in allowed and not (gate.state == "completed" and gate.reason == "failed"
-                and gate.conclusion in {"action_required", "failure", "neutral", "stale",
-                                        "startup_failure", "timed_out"}) for gate in value.gates):
+            identity = (value.base_sha, value.head_sha, value.composition_sha)
+            if None in identity or len(value.composition_parents) != 2:
                 return "UNKNOWN"
-            return "STALE" if value.reason in {"composition_mismatch", "candidate_changed"} else (
-                "READY" if value.reason in {None, "gates_not_ready"} else "UNKNOWN")
+            if (value.status, value.reason) in {
+                ("NOT_READY", "composition_mismatch"), ("NOT_READY", "candidate_changed"),
+            }:
+                return "STALE"
+            expected = {
+                ("Exact-head Quality", "exact_head", value.head_sha),
+                ("PR composition Quality", "composition", value.composition_sha),
+            }
+            observed = {(gate.name, gate.subject_kind, gate.subject_sha) for gate in value.gates}
+            failed = {"action_required", "failure", "neutral", "stale", "startup_failure",
+                      "timed_out"}
+            known = {("queued", None, "queued"), ("in_progress", None, "running"),
+                     ("completed", "success", None), ("completed", "cancelled", "cancelled"),
+                     ("completed", "skipped", "skipped"), ("missing", None, "missing")}
+            if len(value.gates) != 2 or observed != expected or any(
+                gate.detail_reason is not None
+                or (gate.state, gate.conclusion, gate.reason) not in known
+                and not (gate.state == "completed" and gate.reason == "failed"
+                         and gate.conclusion in failed) for gate in value.gates
+            ):
+                return "UNKNOWN"
+            gate_ready = all(gate.reason is None for gate in value.gates)
+            coherent = (value.status, value.reason, gate_ready) in {
+                ("READY", None, True), ("NOT_READY", "gates_not_ready", False),
+            }
+            return "READY" if coherent else "UNKNOWN"
         context = await agent_context()
         if isinstance(context, tuple):
             status = "UNKNOWN" if context[0] == "recovery_required" else "DENIED"
@@ -724,26 +740,34 @@ def build_ordinary_tools(
         if bundle.status != "current" or bundle.bundle_url is None:
             return unavailable("UNKNOWN", bundle.reason, bundle=bundle.model_dump())
         refreshed = await repository_candidate.qualify_repository_candidate(int(number))
-        identity = {"pull_request", "base_sha", "head_sha", "composition_sha", "composition_parents"}
+        identity = {
+            "pull_request", "base_sha", "head_sha", "composition_sha", "composition_parents",
+        }
         if refreshed.model_dump(include=identity) != qualification.model_dump(include=identity):
             return unavailable("STALE", "candidate_changed")
-        status = qualification_status(refreshed)
-        if status != "READY":
+        if (status := qualification_status(refreshed)) != "READY":
             return unavailable(status, refreshed.reason, qualification=refreshed.model_dump())
-        qualification = refreshed
         final = await service.reviews.bundle_access(review_id, context.mailbox, access.basis)
         if final.status != "READY":
             return unavailable(final.status, final.reason)
-        structured = {"status": final.status, "reason": final.reason, "review_id": str(review_id),
-            "delivery_id": str(final.delivery_id), "subject_work_id": str(access.basis.subject_work_id),
-            "subject_revision": access.basis.subject_revision, "subject_title": final.subject_title, "material_claim_digest": final.material_claim_digest,
-            "candidate": qualification.model_dump(), "bundle": bundle.model_dump(), "exclusions": ["prior_verdicts", "author_narrative", "effect_authority"],
+        structured = {
+            "status": final.status, "review_id": str(review_id),
+            "delivery_id": str(final.delivery_id),
+            "subject_work_id": str(access.basis.subject_work_id),
+            "subject_revision": access.basis.subject_revision, "subject_title": final.subject_title,
+            "material_claim_digest": final.material_claim_digest,
+            "candidate": refreshed.model_dump(), "bundle": bundle.model_dump(),
+            "exclusions": ["prior_verdicts", "author_narrative", "effect_authority"],
         }
-        content: list[Any] = [TextContent(type="text", text="READY"), ResourceLink(
-            type="resource_link", name=repository_bundle.BUNDLE_NAME, uri=bundle.bundle_url, description="Exact reviewed Git repository bundle", mime_type="application/octet-stream")]
+        content: list[Any] = [
+            TextContent(type="text", text="READY"),
+            ResourceLink(
+                type="resource_link", name=repository_bundle.BUNDLE_NAME,
+                uri=bundle.bundle_url, mime_type="application/octet-stream",
+            ),
+        ]
         audited("review_bundle_get", str(review_id), final.status)
         return CallToolResult(content=content, structured_content=structured)
-
     async def review_submit(
         api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
         context_provenance: ContextProvenance,

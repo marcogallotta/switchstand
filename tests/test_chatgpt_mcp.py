@@ -74,7 +74,7 @@ async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatc
                         review_kind="CODE", candidate_ref="github:marcogallotta/switchstand:pr/7",
                         mode="FULL", requester_endpoint_id=uuid4(), requester_generation=1,
                         policy_version="p1", guidelines_version="g1", guidelines_digest="0" * 64)
-    access = ReviewBundleAccess("AUTHORIZED", review_id, basis=basis)
+    access = ReviewBundleAccess("AUTHORIZED", basis=basis)
     subject = service()
     subject.messages = SimpleNamespace(engine=object())
     subject.reviews = SimpleNamespace(bundle_access=AsyncMock(return_value=access))
@@ -101,8 +101,13 @@ async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatc
         state="in_progress", reason="running") for name, kind in (
             ("Exact-head Quality", "exact_head"), ("PR composition Quality", "composition"))]
     current = unknown.model_copy(update={"gates": gates})
+    duplicate = current.model_copy(update={"gates": [gates[0], gates[0]]})
+    contradictory = current.model_copy(update={"status": "READY", "reason": None})
     changed = current.model_copy(update={"head_sha": "d" * 40})
-    qualify.side_effect = [current, changed]
+    qualify.side_effect = [duplicate, contradictory, current, changed]
+    for _ in range(2):
+        result = await tool("1", review_id)
+        assert result.structured_content["status"] == "UNKNOWN" and len(result.content) == 1
     result = await tool("1", review_id)
     assert result.structured_content["status"] == "STALE" and len(result.content) == 1
 
