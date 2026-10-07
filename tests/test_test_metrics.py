@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from switchstand.qualification_lineage import attempt_from_metrics_record, summarize_lineage
 from switchstand.test_metrics import collect, qualification_attempt_observation
 
 ROOT = Path(__file__).parents[1]
@@ -98,6 +99,7 @@ def test_github_junit_identity_maps_to_advisory_attempt() -> None:
     assert result['decisive_failure_at'] == '2026-10-07T10:00:20+00:00'
     assert result['foreground_seconds'] == 60
     assert result['retry_reason'] == 'INITIAL'
+    assert result['outcome'] == 'FAILURE'
 
     rerun = qualification_attempt_observation(
         identity | {'github': identity['github'] | {'run_attempt': '2'},
@@ -121,6 +123,13 @@ def test_github_junit_identity_maps_to_advisory_attempt() -> None:
     )
     assert unclassified['decisive_failure_at'] is None
     assert unclassified['retry_reason'] == 'UNKNOWN'
+
+    failed_without_classifier = qualification_attempt_observation(
+        identity | {'failure_classification': None}, {'mode': 'FULL_FALLBACK'},
+    )
+    mapped = attempt_from_metrics_record({'qualification_attempt': failed_without_classifier})
+    assert mapped is not None
+    assert summarize_lineage((mapped,)).reason == 'failure-classification-unknown'
 
 
 def test_workflow_preserves_authority_and_attempts():

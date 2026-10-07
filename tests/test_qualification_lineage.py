@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from switchstand.qualification_lineage import (
+    AttemptOutcome,
     AttemptScope,
     ObservationStatus,
     ProviderAttemptIdentity,
@@ -25,6 +26,7 @@ def attempt(number: int, **changes: object) -> QualificationAttempt:
         "provider": ProviderAttemptIdentity("owner/repo", "Quality", "quality", 100, number),
         "scope": SCOPE,
         "retry_reason": RetryReason.INITIAL if number == 1 else RetryReason.HARNESS_REWORK,
+        "outcome": AttemptOutcome.SUCCESS,
         "started_at": START + timedelta(minutes=number - 1),
         "completed_at": START + timedelta(minutes=number),
         "foreground_seconds": 40,
@@ -56,7 +58,8 @@ def test_same_scope_requires_exact_subject_plan_harness_and_environment() -> Non
 
 def test_cumulative_metrics_and_decisive_failure_timing() -> None:
     metrics = summarize_lineage((
-        attempt(1, decisive_failure_at=START + timedelta(seconds=20)),
+        attempt(1, outcome=AttemptOutcome.FAILURE,
+                decisive_failure_at=START + timedelta(seconds=20)),
         attempt(2),
         attempt(3),
     ))
@@ -86,6 +89,12 @@ def test_missing_currentness_conflict_and_duplicate_attempt_are_unknown() -> Non
     assert (duplicate.status, duplicate.reason) == (ObservationStatus.UNKNOWN, "attempt-conflict")
     assert summarize_lineage((attempt(1, retry_reason=RetryReason.UNKNOWN),)).reason == (
         "retry-reason-unknown"
+    )
+    assert summarize_lineage((attempt(1, outcome=AttemptOutcome.UNKNOWN),)).reason == (
+        "attempt-outcome-unknown"
+    )
+    assert summarize_lineage((attempt(1, outcome=AttemptOutcome.FAILURE),)).reason == (
+        "failure-classification-unknown"
     )
     assert summarize_lineage((attempt(1, scope=replace(SCOPE, candidate_sha=None)),)).reason == (
         "evidence-missing"
@@ -135,6 +144,7 @@ def test_warning_not_due_and_metrics_artifact_adapter() -> None:
             "plan_digest": "p", "harness_digest": "h", "environment_digest": "e",
         },
         "retry_reason": "INITIAL", "started_at": START.isoformat(),
+        "outcome": "FAILURE",
         "completed_at": (START + timedelta(seconds=60)).isoformat(),
         "decisive_failure_at": (START + timedelta(seconds=20)).isoformat(),
         "foreground_seconds": 60,
@@ -159,6 +169,7 @@ def test_adapter_does_not_invent_foreground_time() -> None:
         "scope": {"candidate_sha": "a" * 40, "base_sha": "b" * 40,
                   "plan_digest": "p", "harness_digest": "h", "environment_digest": "e"},
         "retry_reason": "INITIAL", "started_at": START.isoformat(),
+        "outcome": "SUCCESS",
         "completed_at": (START + timedelta(seconds=60)).isoformat(),
         "decisive_failure_at": None,
         "rework": {"harness_seconds": 0, "wrapper_seconds": 0,

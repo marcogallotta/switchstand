@@ -28,6 +28,12 @@ class ObservationStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class AttemptOutcome(StrEnum):
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
+    UNKNOWN = "UNKNOWN"
+
+
 class WarningDisposition(StrEnum):
     EMIT = "EMIT"
     DEDUPED = "DEDUPED"
@@ -96,6 +102,7 @@ class QualificationAttempt:
     provider: ProviderAttemptIdentity
     scope: AttemptScope
     retry_reason: RetryReason
+    outcome: AttemptOutcome
     started_at: datetime | None
     completed_at: datetime | None
     decisive_failure_at: datetime | None = None
@@ -158,6 +165,20 @@ def summarize_lineage(attempts: tuple[QualificationAttempt, ...]) -> LineageMetr
         return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="currentness-conflict")
     if any(item.retry_reason is RetryReason.UNKNOWN for item in observed):
         return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="retry-reason-unknown")
+    if any(item.outcome is AttemptOutcome.UNKNOWN for item in observed):
+        return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="attempt-outcome-unknown")
+    if any(
+        item.outcome is AttemptOutcome.FAILURE and item.decisive_failure_at is None
+        for item in observed
+    ):
+        return LineageMetrics(
+            ObservationStatus.UNKNOWN, lineage, reason="failure-classification-unknown"
+        )
+    if any(
+        item.outcome is AttemptOutcome.SUCCESS and item.decisive_failure_at is not None
+        for item in observed
+    ):
+        return LineageMetrics(ObservationStatus.UNKNOWN, lineage, reason="outcome-conflict")
     if any(
         item.started_at is None or item.completed_at is None
         or any(value is None or value == "" for value in item.scope.identity)
@@ -237,6 +258,7 @@ def attempt_from_metrics_record(record: dict[str, Any]) -> QualificationAttempt 
         scope = raw["scope"]
         rework = raw["rework"]
         retry_reason = RetryReason(raw["retry_reason"])
+        outcome = AttemptOutcome(raw["outcome"])
         started = datetime.fromisoformat(raw["started_at"])
         completed = datetime.fromisoformat(raw["completed_at"])
         decisive = (
@@ -254,6 +276,7 @@ def attempt_from_metrics_record(record: dict[str, Any]) -> QualificationAttempt 
                 scope["harness_digest"], scope["environment_digest"],
             ),
             retry_reason=retry_reason,
+            outcome=outcome,
             started_at=started,
             completed_at=completed,
             decisive_failure_at=decisive,

@@ -100,6 +100,12 @@ def qualification_attempt_observation(
         "manifest_blobs": environment.get("manifest_blobs"),
         "candidate_image": identity.get("candidate_image"),
     }
+    quality_outcome = identity.get("quality_outcome")
+    attempt_outcome = (
+        "SUCCESS" if quality_outcome == "success"
+        else "FAILURE" if quality_outcome == "failure"
+        else "UNKNOWN"
+    )
     return {
         "lineage_id": lineage,
         "provider": provider_record,
@@ -113,6 +119,7 @@ def qualification_attempt_observation(
             "environment_digest": identity.get("environment_key"),
         },
         "retry_reason": rework.get("retry_reason", retry_reason),
+        "outcome": attempt_outcome,
         "started_at": started_at,
         "completed_at": completed_at,
         "foreground_seconds": foreground_seconds,
