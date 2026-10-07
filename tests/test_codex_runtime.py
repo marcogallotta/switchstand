@@ -248,6 +248,7 @@ def test_readback_disables_all_switchstand_servers(monkeypatch):
 
     _rpc_messages(Path("/repo"), Path("/writer"), {})
     arguments = launched["arguments"]
+    assert 'default_permissions="switchstand-development"' in arguments
     assert 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"' in arguments
     assert "mcp_servers.switchstand.enabled=false" in arguments
     assert 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"' in arguments
