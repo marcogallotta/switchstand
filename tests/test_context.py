@@ -61,7 +61,7 @@ def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: 
         "SWITCHSTAND_ACTIVATION_CONTINUITY": "1", "SWITCHSTAND_PRODUCT_CURRENTNESS": "1",
         "SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES": '["work_get"]',
     }
-    paths = ("SWITCHSTAND_ACTIVATION_CONTRACTS_PATH", "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT", "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY")
+    paths = tuple(name for name in ACTIVATION_ENV if name.endswith(("PATH", "RECEIPT", "KEY")))
     for name in paths:
         source = tmp_path / name
         source.write_text("evidence")
@@ -202,8 +202,7 @@ def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) ->
 def test_context_server_exposes_only_bound_read_context():
     server = build_context_server(FakeService(), ACTIVE)
     assert set(server._tool_manager._tools) == {
-        "work_get", "work_history", "capability_preflight_get",
-    }
+        "work_get", "work_history", "capability_preflight_get"}
     schema = server._tool_manager.get_tool("work_get").parameters
     assert set(schema["properties"]) == {"api_version"}
     assert "work_id" not in schema["properties"]
@@ -227,9 +226,8 @@ async def test_context_server_real_stdio_exposes_only_bound_read_context():
     )
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
-        assert [tool.name for tool in tools] == [
-            "work_get", "work_history", "capability_preflight_get",
-        ]
+        assert [tool.name for tool in tools] == ["work_get", "work_history",
+                                                 "capability_preflight_get"]
         assert all("work_id" not in tool.input_schema["properties"] for tool in tools)
         got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content["item"]["id"] == str(ACTIVE)

@@ -7,13 +7,9 @@ from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import activation_continuity as activation
 from . import flow_report, repository_bundle, repository_candidate
-from .activation_continuity import (
-    CapabilityPreflight,
-    ContinuityResult,
-    Transition,
-    next_action,
-)
+from .activation_continuity import ContinuityResult, Transition, next_action
 from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from .agent_messages import (
     AgentMessageContext,
@@ -760,11 +756,12 @@ def build_ordinary_tools(
             raise PermissionError("authenticated principal is unavailable")
         return await service.product_currentness(principal)
 
-    async def capability_preflight_get(api_version: Literal["1"]) -> CapabilityPreflight:
-        """Report why activation continuity requires a launch-bound actor."""
+    async def capability_preflight_get(api_version: Literal["1"]) -> activation.CapabilityPreflight:
         del api_version
-        return CapabilityPreflight(surface="ORDINARY_WORKSPACE", status="MISSING_CAPABILITY",
-                                   reasons=("WORK_BOUND_ACTOR_REQUIRED",))
+        return activation.CapabilityPreflight(
+            surface="ORDINARY_WORKSPACE", status="MISSING_CAPABILITY",
+            reasons=("WORK_BOUND_ACTOR_REQUIRED",),
+        )
 
     async def activation_obligation_transition(
         api_version: Literal["1"], operation_id: UUID, obligation_id: UUID,

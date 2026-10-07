@@ -39,25 +39,24 @@ def main() -> None:
             relations=service.work.relations,
             claims=priority_claims,
         )
-    enabled = os.getenv("SWITCHSTAND_ACTIVATION_CONTINUITY") == "1"
     activation = None
-    if enabled:
+    if os.getenv("SWITCHSTAND_ACTIVATION_CONTINUITY") == "1":
         contracts = load_activation_contracts_from_environment()
-        config = chatgpt_edge._ProductCurrentnessConfig.from_environment()  # pyright: ignore[reportPrivateUsage]
-        names: object = json.loads(os.environ["SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES"])
-        if (contracts is None or config is None or not isinstance(names, list) or not names
-                or len(names) > 128 or any(not isinstance(name, str) or not name  # pyright: ignore[reportUnknownArgumentType]
-                    or len(name) > 120 for name in names) or len(set(names)) != len(names)):  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+        config = chatgpt_edge._ProductCurrentnessConfig.from_environment()  # pyright: ignore
+        names = cast(list[object], json.loads(
+            os.environ["SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES"]))
+        valid = isinstance(names, list) and 0 < len(names) <= 128  # pyright: ignore
+        valid = valid and len(set(names)) == len(names)  # pyright: ignore
+        valid = valid and all(isinstance(name, str) and 0 < len(name) <= 120 for name in names)
+        if contracts is None or config is None or not valid:
             raise ValueError("activation continuity configuration is invalid")
-        names = cast(list[str], names)
-        continuity = ActivationContinuity(engine, contracts)
         async def read_principal():
             return principal
         async def read_snapshot():
             return StatefulServerSnapshot(
                 runtime_sha=config.runtime_sha, selected_runtime_sha=config.selected_runtime_sha,
                 run_id=config.run_id, principal_key=principal.key,
-                outcome_actions_enabled=True, tool_names=tuple(names),
+                outcome_actions_enabled=True, tool_names=tuple(cast(list[str], names)),
                 tools_schema_sha256=config.expected_tools_schema_sha256,
             )
         reader = LiveStatefulEvidenceReader(
@@ -67,7 +66,6 @@ def main() -> None:
             qualification_receipt=config.qualification_receipt,
             qualification_key=config.qualification_key,
         )
-
         async def technical(_principal: object, obligation_id: UUID) -> TechnicalBasis | None:
             contract = contracts.get(obligation_id)
             if contract is None:
@@ -77,9 +75,11 @@ def main() -> None:
                 target_revision=contract.target_revision, target_phase=contract.target_phase,
                 currentness="CURRENT", result=result,
             )
-        activation = (continuity, technical,
-                      chatgpt_edge.managed_activation_proof(TaskRunState(engine, service.work.works), contracts),
-                      (UUID(os.environ["SWITCHSTAND_GRANT_ID"]), int(os.environ["SWITCHSTAND_GRANT_VERSION"])))
+        runs = TaskRunState(engine, service.work.works)
+        proof = chatgpt_edge.managed_activation_proof(runs, contracts)
+        env = os.environ
+        grant = UUID(env["SWITCHSTAND_GRANT_ID"]), int(env["SWITCHSTAND_GRANT_VERSION"])
+        activation = ActivationContinuity(engine, contracts), technical, proof, grant
     build_context_server(
         service, active, service.authority.reference_work_ids,
         priority_claims=priority_claims,

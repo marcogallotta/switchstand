@@ -178,6 +178,10 @@ class ContinuityResult(ClosedModel):
     reason: str | None = None
 
 
+_ProofStatus = Literal["READY", "MISSING", "STALE", "UNKNOWN", "NOT_APPLICABLE"]
+_RouteStatus = Literal["READY", "MISSING", "UNKNOWN", "NOT_APPLICABLE"]
+
+
 class CapabilityPreflight(ClosedModel):
     capability: Literal["activation_continuity"] = "activation_continuity"
     surface: Literal["ORDINARY_WORKSPACE", "MANAGED_LAUNCH"]
@@ -187,8 +191,8 @@ class CapabilityPreflight(ClosedModel):
     operation_granted: Literal["TRUE", "FALSE", "UNKNOWN"] = "FALSE"
     actor_binding: Literal["CURRENT", "STALE", "UNKNOWN", "NOT_APPLICABLE"] = "NOT_APPLICABLE"
     contract: Literal["INSTALLED", "MISSING", "UNKNOWN", "NOT_APPLICABLE"] = "NOT_APPLICABLE"
-    technical_proof: Literal["READY", "MISSING", "STALE", "UNKNOWN", "NOT_APPLICABLE"] = "NOT_APPLICABLE"
-    acceptance_proof_route: Literal["READY", "MISSING", "UNKNOWN", "NOT_APPLICABLE"] = "NOT_APPLICABLE"
+    technical_proof: _ProofStatus = "NOT_APPLICABLE"
+    acceptance_proof_route: _RouteStatus = "NOT_APPLICABLE"
 
 def _digest(value: dict[str, object]) -> str:
     return hashlib.sha256(

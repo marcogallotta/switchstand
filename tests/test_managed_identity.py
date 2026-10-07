@@ -20,8 +20,7 @@ async def test_priority_claim_authority_is_explicit_launch_opt_in():
         Grants(), authority, priority_claims=True,  # type: ignore[arg-type]
     )
     activation = await rotate_managed_grant(
-        Grants(), authority, activation_continuity=True,  # type: ignore[arg-type]
-    )
+        Grants(), authority, activation_continuity=True)  # type: ignore[arg-type]
 
     assert "priority_claim" not in ordinary.operations
     assert "activation_continuity" not in ordinary.operations

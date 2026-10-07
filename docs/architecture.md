@@ -209,9 +209,9 @@ the managed surface derives the claim target and grant version from that trusted
 the active claim read/write tools, and bounds priority context to the active WorkId plus its
 launch-bound read-only references.
 
-`mcp.py::build_context_server` exposes bound work/history plus read-only activation preflight;
-explicit managed activation opt-in alone adds its mutation and grant. Priority claims additionally
-expose the same active-work priority adapter and bounded context projection as the full managed
+`mcp.py::build_context_server` exposes launch-bound work, history, and read-only preflight;
+explicit activation opt-in adds mutation, while priority claims additionally
+exposes the same active-work priority adapter and bounded context projection as the full managed
 server. Managed and ordinary MCPs reuse contracts and state, but their authority and inventories
 are intentionally not interchangeable.
 
