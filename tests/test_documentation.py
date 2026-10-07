@@ -229,8 +229,13 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     routing = " ".join(section(agents, "## Work, messages, and routing").split())
 
     assert "Role, docs, placement, readability, login/tools and procedures never grant authority" in authority
-    assert "ordinary unbound Coordinator never uses bare `work_get` to infer focus" in authority
-    assert "mailbox registration or takeover does not supply work identity or authority" in authority
+    assert "An ordinary unbound Coordinator instead reads an assigned/handoff ID" in authority
+    assert "mailbox registration/takeover supplies neither identity nor authority" in authority
+    assert "otherwise use only the legacy create's required arguments" in authority
+    assert "Use one stable OperationId" in authority
+    assert '`owner_key="SELF"`' in authority
+    assert "only with identical arguments/OperationId" in authority
+    assert "Never create from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
     assert "exact WorkId/message identity, owner/purpose, state, next check, and terminal condition" in routing
     assert "inactive sessions do not poll or wake" in routing
@@ -256,7 +261,7 @@ def test_handoff_and_unbound_grounding_have_one_consistent_owner():
     assert "plain raw `codex` launch always creates an independent session and never claims" in agents
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
     assert "registration and a later plain launch are not pickup" in usage
-    assert "missing trusted identity is `COVERAGE_GAP / UNKNOWN`" in architecture
+    assert "grounding after reconciliation remains `COVERAGE_GAP / UNKNOWN`" in architecture
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
 

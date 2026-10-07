@@ -285,6 +285,13 @@ async def test_canonical_create_derives_self_owner_from_registered_mailbox(monke
     )
     request = create.await_args.args[0]
     assert request.owner_key == "agent:root"
+    assert request.work_type == "Task" and request.lifecycle_state == "CURRENT"
+    assert (request.wait_kind, request.unblock_condition, request.next_due) == (
+        "NONE", "NONE", "NONE",
+    )
+    assert (request.next_action_class, request.next_action_ref) == (
+        "OWNER_CAN_DO", "implement",
+    )
 
     denied = await tool(
         api_version="1", operation_id=uuid4(), title="Wrong owner", parent_work_id=ACTIVE,

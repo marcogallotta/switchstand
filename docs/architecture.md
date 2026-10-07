@@ -623,9 +623,15 @@ user-level instructions. It separately copies only the repository-owned canonica
 HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
 Coordinator-control MCP; unrelated user MCP configuration remains excluded. Its injected bootstrap
 instructions preserve the ordinary/managed authority split: mailbox takeover permits mailbox use
-only, a raw Coordinator reads work by an exact WorkId from direct assignment or an acknowledged
-addressed handoff, and missing trusted identity is `COVERAGE_GAP / UNKNOWN`. It never treats bare
-`work_get` as focus recovery for an unbound Coordinator; that shorthand belongs only to trusted
+only, and a raw Coordinator reads work by an exact WorkId from direct assignment or an acknowledged
+addressed handoff. For new substantive work directly assigned without an ID, it resolves and reads
+`START HERE` only as a provider-neutral parent. An exact canonical parent gets a CURRENT,
+SELF-owned actionable create; a legacy parent gets the legacy-compatible required arguments only.
+Both paths use one stable operation identity. A possible-send ambiguity is reconciled only by replaying that
+same identity and arguments; a second intent is forbidden. Exact created-ID readback is required
+before continuing. Simple questions, status, corrections, approvals,
+already-grounded continuation, and inferred work do not create records; failed or ambiguous
+grounding after reconciliation remains `COVERAGE_GAP / UNKNOWN`. It never treats bare `work_get` as focus recovery for an unbound Coordinator; that shorthand belongs only to trusted
 launch-bound managed MCP. The same per-launch renderer defaults role-neutral root continuity to
 `PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
 `scripts/codex-continuity-hook`. The explicit launch-only

@@ -11,10 +11,19 @@ Authority is separate from technical truth. It comes only from Marco's direct ac
 If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through
 the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
 identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
-ownership, or grant an effect. Do not substitute broad provider search or a remembered/candidate
-route, and do not start substantive work until Marco's direct assignment or an explicit current
-grant names the exact WorkId. For an unbound Coordinator, navigation without that trusted binding
-remains `COVERAGE_GAP / UNKNOWN` rather than recovered focus.
+ownership, or grant an effect. When Marco directly assigns new substantive work but supplies no
+WorkId, resolve and read `START HERE` as its provider-neutral parent. If the parent exposes an exact
+`canonical_root`, create a minimally titled child with `work_type="Task"`,
+`lifecycle_state="CURRENT"`, `owner_key="SELF"`, `wait_kind=unblock_condition=next_due="NONE"`,
+`next_action_class="OWNER_CAN_DO"`, and an assignment-derived exact `next_action_ref`; otherwise
+use only the legacy create's required arguments. Use one stable OperationId. Inspect the complete
+create outcome and require exact created-ID readback. For a
+possible-send ambiguity, replay only the identical OperationId and arguments as directed; never
+mint a second create intent. This grounding step derives authority only from Marco's assignment; the route supplies
+placement. Do not create a record for a simple question, status request, correction, approval,
+already-grounded continuation, or inferred/contextual work. A denied, unavailable, or ambiguous
+create after reconciliation remains `COVERAGE_GAP / UNKNOWN`. Do not substitute broad provider search or a
+remembered/candidate route.
 
 When that route or Marco requests meaningful root-cause analysis, use the canonical
 [root-cause analysis procedure](root-cause-analysis.md). It keeps one sanitized parent WorkId,
@@ -38,8 +47,9 @@ and external rejection remain real.
 Mailbox registration or same-principal `/root` takeover restores only the durable messaging
 address; it does not recover or grant a WorkId. An ordinary Coordinator grounds work by reading
 the exact WorkId in Marco's direct assignment or in an acknowledged addressed handoff. It must
-not call bare `work_get` to guess a current focus. If neither trusted source supplies an exact
-WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
+not call bare `work_get` to guess a current focus. For a new direct substantive assignment without
+an ID, it follows the single-create-and-readback route above. If that route cannot establish an
+exact WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
 `work_get` remains the launch-bound managed-worker behavior described below.
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
