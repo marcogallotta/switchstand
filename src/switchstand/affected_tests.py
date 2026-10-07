@@ -39,6 +39,10 @@ EXPLICIT_RULES: tuple[tuple[str, tuple[str, ...] | None], ...] = (
 )
 _SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _DIRECT_TEST_MODULE = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
+SERIAL_SENSITIVE_V1 = frozenset({
+    "tests/test_chatgpt_edge_process.py",
+    "tests/test_update_gateway.py",
+})
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,10 @@ def foreground_authority(
         reasons.append("selected-path-outside-direct-test-modules")
     if not set(plan.changed_paths).issubset(plan.selected_tests):
         reasons.append("changed-test-module-not-selected")
+    if SERIAL_SENSITIVE_V1.intersection(plan.changed_paths):
+        reasons.append("serial-sensitive-changed-path")
+    if SERIAL_SENSITIVE_V1.intersection(plan.selected_tests):
+        reasons.append("serial-sensitive-selected-path")
     if reasons:
         return ForegroundAuthority("FULL_FALLBACK", tuple(sorted(set(reasons))))
     return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
