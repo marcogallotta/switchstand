@@ -166,6 +166,7 @@ def codex_command(
     codex_args: list[str],
     *,
     agent_task: bool = False,
+    noninteractive: bool = False,
 ) -> list[str]:
     requests = validate_codex_args(codex_args)
     prompt = (
@@ -211,4 +212,6 @@ def codex_command(
             "mcp_servers.switchstand_managed.enabled_tools="
             + json.dumps(AGENT_TASK_MANAGED_TOOLS, separators=(",", ":")),
         ]
+    if noninteractive:
+        command.insert(-1, "exec")
     return command

@@ -95,6 +95,7 @@ def parser() -> argparse.ArgumentParser:
         "--agent-task", action="store_true",
         help="enable task-run request/result tools for this launch only",
     )
+    result.add_argument("--noninteractive", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("codex_args", nargs=argparse.REMAINDER, help="arguments passed to Codex")
     return result
 
@@ -517,8 +518,20 @@ def run(arguments: argparse.Namespace) -> None:
     print(f"Run: {receipt.run_id}", file=sys.stderr)
     print("Instruction sources: " + ", ".join(checked.instruction_sources), file=sys.stderr)
     command = (
-        codex_command(control, candidate, codex_args, agent_task=True)
-        if arguments.agent_task else codex_command(control, candidate, codex_args)
+        codex_command(
+            control,
+            candidate,
+            codex_args,
+            agent_task=True,
+            noninteractive=arguments.noninteractive,
+        )
+        if arguments.agent_task
+        else codex_command(
+            control,
+            candidate,
+            codex_args,
+            noninteractive=arguments.noninteractive,
+        )
     )
     raise SystemExit(supervise_codex(command, env, development, receipt.run_id))
 

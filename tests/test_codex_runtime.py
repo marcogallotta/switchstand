@@ -120,6 +120,17 @@ def test_agent_task_tools_are_exposed_only_for_explicit_launch_opt_in():
     assert opted_in[-1] == default[-1]
 
 
+def test_noninteractive_managed_codex_uses_exec_after_global_options():
+    command = codex_command(
+        Path("/control"), Path("/writer"), [], agent_task=True, noninteractive=True
+    )
+
+    assert command[-2] == "exec"
+    assert command[-1].startswith("Start the launch-bound Switchstand work")
+    assert command.index("exec") > command.index("-a")
+    assert command[command.index("-a") + 1] == "never"
+
+
 def test_agent_task_opt_in_preserves_exact_managed_tool_baseline():
     config = tomllib.loads(
         (Path(__file__).parents[1] / ".codex/config.toml").read_text()

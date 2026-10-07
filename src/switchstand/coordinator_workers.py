@@ -86,6 +86,7 @@ class CoordinatorWorkers:
                 str(work_id),
                 "--commit",
                 base,
+                "--noninteractive",
                 self._prompt(work_id, objective),
             ),
         )
