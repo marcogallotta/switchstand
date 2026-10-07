@@ -69,6 +69,9 @@ class FakeOperations:
         fail_at: str | None = None,
         unknown_at: str | None = None,
         rollback: bool = True,
+        rollback_complete: bool = True,
+        upgrade: str = "APPLIED",
+        semantic: bool = True,
     ):
         self.events: list[str] = []
         self.gated = False
@@ -79,6 +82,9 @@ class FakeOperations:
         self.fail_at = fail_at
         self.unknown_at = unknown_at
         self.rollback = rollback
+        self.complete = rollback_complete
+        self.upgrade = upgrade
+        self.semantic = semantic
 
     def _event(self, name: str) -> None:
         self.events.append(name)
@@ -107,6 +113,7 @@ class FakeOperations:
 
     def upgrade_state(self):
         self._event("upgrade_state")
+        return self.upgrade
 
     def snapshot(self):
         self._event("snapshot")
@@ -128,9 +135,19 @@ class FakeOperations:
         self._event("local_ready")
         return self.local
 
+    def semantic_ready(self):
+        self._event("semantic_ready")
+        if not self.semantic:
+            raise Failed("semantic proof failed")
+        return "e" * 64
+
     def rollback_ready(self):
         self._event("rollback_ready")
         return self.rollback
+
+    def rollback_complete(self):
+        self._event("rollback_complete")
+        return self.complete
 
     def gate_abort_ready(self):
         self._event("gate_abort_ready")
@@ -624,6 +641,65 @@ def test_candidate_failure_after_state_upgrade_keeps_gate_and_reports_unknown(tm
     assert receipt(subject)["phase"] == "STARTED"
 
 
+def test_no_effect_candidate_semantic_failure_restores_complete_old_basis(
+    tmp_path: Path,
+):
+    subject = config(tmp_path)
+    operations = FakeOperations(upgrade="NO_EFFECT", semantic=False)
+
+    assert deploy(subject, operations) == "FAIL"
+
+    assert operations.events[-8:] == [
+        "semantic_ready", "stop", "restore_launcher", "start",
+        "rollback_ready", "ungate", "public_ready", "rollback_complete",
+    ]
+    assert not operations.gated
+    assert {key: receipt(subject)[key] for key in (
+        "phase", "status", "state_upgrade",
+    )} == {"phase": "ROLLED_BACK", "status": "FAIL", "state_upgrade": "NO_EFFECT"}
+
+
+def test_no_effect_partial_restoration_never_reports_rolled_back(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(
+        upgrade="NO_EFFECT", semantic=False, rollback_complete=False,
+    )
+
+    assert deploy(subject, operations) == "UNKNOWN"
+
+    assert operations.events[-1] == "public_gated"
+    assert operations.gated
+    assert receipt(subject)["error"] == "RollbackUnknown"
+
+
+def test_no_effect_success_requires_and_records_governing_semantic_proof(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+
+    assert deploy(subject, operations) == "PASS"
+
+    assert "semantic_ready" in operations.events
+    assert receipt(subject)["semantic_probe"] == "e" * 64
+
+
+def test_no_effect_changed_semantic_proof_is_unknown_without_blind_activation(
+    tmp_path: Path,
+):
+    subject = config(tmp_path)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+    assert deploy(subject, operations) == "PASS"
+    value = receipt(subject)
+    value["status"] = "RUNNING"
+    value["phase"] = "STARTED"
+    subject.attempt_dir.joinpath("receipt.json").write_text(json.dumps(value))
+    subject.attempt_dir.joinpath("receipt.json").chmod(0o600)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+    operations.semantic_ready = lambda: "f" * 64  # type: ignore[method-assign]
+
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert "ungate" not in operations.events
+
+
 def test_rollback_ambiguity_keeps_maintenance_gate_and_reports_unknown(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(local=False, rollback=False)
@@ -830,7 +906,9 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
         maintenance,
         "run_host_command",
         lambda command, **_kwargs: (
-            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+            commands.append(command) or subprocess.CompletedProcess(
+                command, 0, "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=0025\n", ""
+            )
         ),
     )
 
@@ -858,6 +936,57 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
 
     with pytest.raises(Unknown, match="did not complete"):
         operations.upgrade_state()
+
+
+def test_host_r0_semantic_probe_consumes_current_owner_and_freezes_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    values = {
+        key: f"value-{name}" for name, key in maintenance.R0_ENV.items()
+    }
+    subject.env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        receipt_path = Path(command[command.index("--receipt") + 1])
+        receipt_path.write_text(json.dumps({
+            "result": "PASS", "candidate_sha": subject.candidate_sha,
+            "results": {"product_currentness": {
+                "status": "ok",
+                "product_work_id": str(maintenance.STATEFUL_PRODUCT_WORK_ID),
+                "current": "TRUE", "blockers": [],
+            }},
+        }))
+        receipt_path.chmod(0o600)
+        return subprocess.CompletedProcess(command, 0, "PASS\n", "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    digest = operations.semantic_ready()
+
+    assert len(digest) == 64
+    assert commands[0][0] == str(
+        subject.candidate_runtime / "scripts" / "switchstand-edge-semantic-probe"
+    )
+    assert commands[0][commands[0].index("--endpoint") + 1] == subject.local_url
+    commands.clear()
+    assert operations.semantic_ready() == digest
+    assert commands == []
+
+
+def test_host_r0_missing_semantic_inputs_fails_before_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        maintenance, "run_host_command",
+        lambda *_args, **_kwargs: pytest.fail("probe must not run"),
+    )
+
+    with pytest.raises(Failed, match="inputs are unavailable"):
+        operations.semantic_ready()
 
 
 def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
@@ -954,7 +1083,7 @@ def test_state_upgrade_passes_exact_detached_candidate_selectors(
             else:
                 output = str(common) + "\n"
         else:
-            output = ""
+            output = "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=0025\n"
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
@@ -1002,7 +1131,7 @@ def test_state_upgrade_overwrites_inherited_control_selectors(
                 output = str(common) + "\n"
         else:
             command_env = kwargs["env"]
-            output = ""
+            output = "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=0025\n"
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(maintenance, "run_host_command", run)

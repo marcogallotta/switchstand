@@ -84,7 +84,7 @@ sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d sw
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
     "$EXPECTED_NEW")
-        printf 'state upgrade passed: already at %s; no migration required\n' "$EXPECTED_NEW"
+        printf 'SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=%s\n' "$EXPECTED_NEW"
         exit 0
         ;;
     0002_grants_and_effects)
@@ -208,5 +208,5 @@ after_counts=$(sql "$counts_sql")
 [ "$revision" = "$EXPECTED_NEW" ] && [ "$after_counts" = "$before_counts" ] \
     || { echo "shared state upgrade readback failed; preserve backup $backup" >&2; exit 1; }
 
-printf 'state upgrade passed: %s -> %s; preserved counts %s; backup %s\n' \
+printf 'SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED from=%s to=%s preserved_counts=%s backup=%s\n' \
     "$EXPECTED_OLD" "$EXPECTED_NEW" "$after_counts" "$backup"
