@@ -66,7 +66,7 @@ def wake_id(binding: CodexBinding, source: WakeSourceRef) -> str:
 class QueueClient:
     """Lazy bounded client for Codex's durable same-home user-message queue."""
 
-    def __init__(self, codex: Path, home: Path):
+    def __init__(self, codex: Path, home: Path, socket_path: Path | None = None):
         try:
             self.codex = codex.resolve(strict=True)
             self.home = home.resolve(strict=True)
@@ -81,6 +81,7 @@ class QueueClient:
         self.selector: selectors.BaseSelector | None = None
         self.read_buffer = bytearray()
         self.sequence = 0
+        self.socket_path = socket_path
 
     def _start(self) -> None:
         if self.process is not None:
@@ -88,8 +89,13 @@ class QueueClient:
         environment = dict(os.environ)
         environment["CODEX_HOME"] = str(self.home)
         try:
+            command = (
+                [str(self.codex), "app-server", "--listen", "stdio://"]
+                if self.socket_path is None
+                else [str(self.codex), "app-server", "proxy", "--sock", str(self.socket_path)]
+            )
             process = subprocess.Popen(
-                [str(self.codex), "app-server", "--listen", "stdio://"],
+                command,
                 cwd=self.home,
                 env=environment,
                 stdin=subprocess.PIPE,
