@@ -1270,7 +1270,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
-    { name = "websockets", specifier = ">=17,<18" },
+    { name = "websockets", specifier = ">=17.1,<18" },
 ]
 
 [package.metadata.requires-dev]

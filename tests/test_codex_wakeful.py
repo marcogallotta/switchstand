@@ -1,11 +1,14 @@
 import json
 import subprocess
 import sys
+import tempfile
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from websockets.sync.server import unix_serve
 
 from switchstand.codex_wakeful import (
     CodexBinding,
@@ -360,8 +363,7 @@ def test_claude_conformance_fake_only():
     assert fake("exact", "one", [("newest", "two")]) == "UNKNOWN"
     assert fake("exact", "one", [("exact", "one"), ("exact", "two")]) == "UNKNOWN"
 
-@pytest.mark.parametrize("socket_name", [None, "shared.sock"])
-def test_queue_client_uses_exact_same_home_app_server_transport(tmp_path, socket_name):
+def test_queue_client_uses_private_stdio_app_server(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     observed = tmp_path / "observed.json"
@@ -391,8 +393,7 @@ for line in sys.stdin:
     print(json.dumps({{"jsonrpc": "2.0", "id": request["id"], "result": result}}), flush=True)
 """)
     codex.chmod(0o700)
-    socket_path = home / socket_name if socket_name is not None else None
-    client = QueueClient(codex, home, socket_path)
+    client = QueueClient(codex, home)
     assert client.process is None
     try:
         assert client.call("thread/queue/list", {"threadId": "exact"}) == {
@@ -401,9 +402,54 @@ for line in sys.stdin:
         process = client.process
         client.close()
     assert process is not None and process.poll() is not None
-    expected = (["app-server", "--listen", "stdio://"] if socket_path is None else
-                ["app-server", "proxy", "--sock", str(socket_path)])
-    assert json.loads(observed.read_text()) == {"argv": expected, "home": str(home)}
+    assert json.loads(observed.read_text()) == {
+        "argv": ["app-server", "--listen", "stdio://"], "home": str(home)}
+
+
+def test_queue_client_uses_websocket_over_owned_socket_alias():
+    temporary = tempfile.TemporaryDirectory(prefix="wf-", dir=Path.home() / ".cache")
+    home = Path(temporary.name)
+    codex = home / "codex"
+    codex.write_text("")
+    codex.chmod(0o700)
+    target = home / "physical.sock"
+    alias = home / "requested.sock"
+    observed = []
+
+    def handler(connection):
+        observed.append(connection.request.path)
+        initialize = json.loads(connection.recv())
+        observed.append(initialize["method"])
+        connection.send(json.dumps({
+            "jsonrpc": "2.0", "id": initialize["id"],
+            "result": {"serverInfo": {"name": "fixture", "version": "1"}},
+        }))
+        observed.append(json.loads(connection.recv())["method"])
+        request = json.loads(connection.recv())
+        connection.send(json.dumps({
+            "jsonrpc": "2.0", "id": 999, "method": "fixture/request",
+        }))
+        rejection = json.loads(connection.recv())
+        observed.append(rejection["error"]["code"])
+        connection.send(json.dumps({
+            "jsonrpc": "2.0", "id": request["id"],
+            "result": {"data": [], "nextCursor": None},
+        }))
+
+    with unix_serve(handler, target) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        alias.symlink_to(target)
+        client = QueueClient(codex, home, alias)
+        try:
+            assert client.call("thread/queue/list", {"threadId": "exact"}) == {
+                "data": [], "nextCursor": None}
+        finally:
+            client.close()
+            server.shutdown()
+            thread.join(timeout=2)
+    assert observed == ["/rpc", "initialize", "initialized", -32601]
+    temporary.cleanup()
 
 
 def test_queue_client_rejects_unproved_runtime(tmp_path):

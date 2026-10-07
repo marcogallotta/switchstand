@@ -21,6 +21,8 @@ from typing import Any, BinaryIO, cast
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
+from websockets.exceptions import ConnectionClosed
+from websockets.sync.client import ClientConnection, unix_connect
 
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from switchstand.messages import MessageState, PendingMessage
@@ -79,37 +81,44 @@ class QueueClient:
         self.stdin: BinaryIO | None = None
         self.stdout: BinaryIO | None = None
         self.selector: selectors.BaseSelector | None = None
+        self.websocket: ClientConnection | None = None
         self.read_buffer = bytearray()
         self.sequence = 0
         self.socket_path = socket_path
 
     def _start(self) -> None:
-        if self.process is not None:
+        if self.process is not None or self.websocket is not None:
             return
         environment = dict(os.environ)
         environment["CODEX_HOME"] = str(self.home)
         try:
-            command = (
-                [str(self.codex), "app-server", "--listen", "stdio://"]
-                if self.socket_path is None
-                else [str(self.codex), "app-server", "proxy", "--sock", str(self.socket_path)]
-            )
-            process = subprocess.Popen(
-                command,
-                cwd=self.home,
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                bufsize=0,
-            )
-            self.process = process
-            if process.stdin is None or process.stdout is None:
-                raise OSError("Codex app-server pipes unavailable")
-            self.stdin = cast(BinaryIO, process.stdin)
-            self.stdout = cast(BinaryIO, process.stdout)
-            self.selector = selectors.DefaultSelector()
-            self.selector.register(process.stdout, selectors.EVENT_READ)
+            if self.socket_path is not None:
+                self.websocket = unix_connect(
+                    str(self.socket_path),
+                    uri="ws://localhost/rpc",
+                    proxy=None,
+                    open_timeout=10,
+                    close_timeout=2,
+                    max_size=16 * 1024 * 1024,
+                    legacy=True,
+                )
+            else:
+                process = subprocess.Popen(
+                    [str(self.codex), "app-server", "--listen", "stdio://"],
+                    cwd=self.home,
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+                self.process = process
+                if process.stdin is None or process.stdout is None:
+                    raise OSError("Codex app-server pipes unavailable")
+                self.stdin = cast(BinaryIO, process.stdin)
+                self.stdout = cast(BinaryIO, process.stdout)
+                self.selector = selectors.DefaultSelector()
+                self.selector.register(process.stdout, selectors.EVENT_READ)
             self.call("initialize", {"clientInfo": {"name": "switchstand-wakeful-probe",
                       "version": "1"}, "capabilities": {"experimentalApi": True}})
             self.write({"method": "initialized", "params": {}})
@@ -119,26 +128,32 @@ class QueueClient:
 
     def write(self, message: dict[str, Any]) -> None:
         self._start()
-        assert self.stdin is not None
+        payload = json.dumps(message, separators=(",", ":"))
         try:
-            self.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
-            self.stdin.flush()
-        except (OSError, BrokenPipeError) as exc:
+            if self.websocket is not None:
+                self.websocket.send(payload)
+            else:
+                assert self.stdin is not None
+                self.stdin.write((payload + "\n").encode())
+                self.stdin.flush()
+        except (OSError, BrokenPipeError, ConnectionClosed) as exc:
             raise OSError("UNKNOWN: request send failed") from exc
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._start()
-        assert self.stdout is not None and self.selector is not None
+        assert self.websocket is not None or (
+            self.stdout is not None and self.selector is not None
+        )
         self.sequence += 1
         deadline = time.monotonic() + 10
         try:
             self.write({"jsonrpc": "2.0", "id": self.sequence,
                         "method": method, "params": params})
             while time.monotonic() < deadline:
-                line = self.read_line(deadline)
-                if not line:
+                message = self.read_message(deadline)
+                if message is None:
                     break
-                response = json.loads(line)
+                response = json.loads(message)
                 if isinstance(response.get("method"), str) and "id" in response:
                     self.write({"jsonrpc": "2.0", "id": response["id"], "error": {
                         "code": -32601, "message": "Wakeful does not handle server requests"}})
@@ -147,9 +162,27 @@ class QueueClient:
                     if "error" in response:
                         raise OSError("UNKNOWN: RPC rejected")
                     return cast(dict[str, Any], response["result"])
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except OSError:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise OSError("UNKNOWN: response lost") from exc
         raise OSError("UNKNOWN: response lost")
+
+    def read_message(self, deadline: float) -> str | bytes | None:
+        if self.websocket is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                message = self.websocket.recv(timeout=remaining)
+            except TimeoutError:
+                return None
+            except ConnectionClosed as exc:
+                raise OSError("UNKNOWN: response connection closed") from exc
+            if not isinstance(message, str):
+                raise OSError("UNKNOWN: binary app-server response")
+            return message
+        return self.read_line(deadline)
 
     def read_line(self, deadline: float) -> bytes | None:
         assert self.stdout is not None and self.selector is not None
@@ -168,14 +201,17 @@ class QueueClient:
             self.read_buffer.extend(chunk)
 
     def close(self) -> None:
-        selector, process = self.selector, self.process
+        selector, process, websocket = self.selector, self.process, self.websocket
         self.selector = None
         self.process = None
+        self.websocket = None
         self.stdin = None
         self.stdout = None
         self.read_buffer.clear()
         if selector is not None:
             selector.close()
+        if websocket is not None:
+            websocket.close()
         if process is None or process.poll() is not None:
             return
         try:
