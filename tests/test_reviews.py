@@ -252,6 +252,85 @@ async def test_ineligible_reviewer_denial_leaves_no_review_state(occurrence_runt
     assert await occurrences.request_sources(basis.review_id) == ()
 
 
+async def test_reviewer_becoming_ineligible_during_request_rolls_back_review_state(
+    occurrence_runtime, monkeypatch,
+):
+    occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-shared", "chat-requester",
+    )).mailbox
+    assert requester is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    request = ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    )
+    basis = service._basis(request, requester)
+    record_basis = service._record_basis
+
+    async def record_basis_then_register_ineligible_reviewer(
+        brief, owner, connection=None,
+    ):
+        recorded = await record_basis(brief, owner, connection)
+        reviewer = (await mailboxes.register_agent(
+            "Reviewer", "principal-shared", "chat-reviewer",
+        )).mailbox
+        assert reviewer is not None
+        return recorded
+
+    monkeypatch.setattr(service, "_record_basis", record_basis_then_register_ineligible_reviewer)
+
+    denied = await service.request(request, requester)
+
+    assert (denied.status, denied.reason, denied.review_id) == (
+        "DENIED", "reviewer_not_eligible", basis.review_id,
+    )
+    assert await occurrences.works.get(basis.review_id) is None
+    assert await occurrences.basis_sources(basis.review_id) == ()
+    assert await occurrences.stored_request_sources(basis.review_id) == ()
+
+
+async def test_sent_request_replay_survives_reviewer_principal_transfer(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-requester",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-reviewer",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    request = ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    )
+    sent = await service.request(request, requester)
+    assert sent.status == "SENT" and sent.delivery_id is not None
+    transfer = await mailboxes.request_transfer(
+        "Reviewer", "principal-a", "chat-reviewer-shared",
+    )
+    assert transfer.status == "pending" and transfer.request_id is not None
+    approved = await mailboxes.approve_transfer(transfer.request_id)
+    assert approved.status == "approved"
+
+    replay = await service.request(request, requester)
+
+    assert replay == sent
+    assert len(await occurrences.stored_request_sources(sent.review_id)) == 1
+
+
 async def test_concurrent_review_request_converges_on_one_occurrence_and_delivery(
     occurrence_runtime,
 ):
