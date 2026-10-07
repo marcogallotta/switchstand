@@ -1,10 +1,11 @@
+import asyncio
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import insert, text
+from sqlalchemy import event, insert, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
@@ -38,6 +39,63 @@ from switchstand.reviews import (
     _stable,
 )
 from switchstand.state import work_handles, work_migration_receipts
+
+
+def _independent_services(
+    occurrences: ReviewOccurrenceState, policy: ReviewPolicy,
+) -> tuple[tuple[ReviewService, ...], tuple[AsyncEngine, ...], tuple[str, ...]]:
+    services, engines, applications = [], [], []
+    database_url = occurrences.engine.url.render_as_string(hide_password=False)
+    for _ in range(2):
+        application = f"typed-review-race-{uuid4()}"
+        engine = create_async_engine(
+            database_url, connect_args={"application_name": application},
+        )
+        mailboxes = AgentMailboxState(engine)
+        occurrence_state = ReviewOccurrenceState(
+            CanonicalWorkRepository(engine), mailboxes, policy,
+        )
+        services.append(ReviewService(
+            occurrence_state, mailboxes, MessageState(engine, GrantState(engine)), policy,
+            ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+        ))
+        engines.append(engine)
+        applications.append(application)
+    return tuple(services), tuple(engines), tuple(applications)
+
+
+async def _race_while_occurrence_locked(
+    engine: AsyncEngine, review_id: UUID, calls, applications: tuple[str, str],
+):
+    tasks = []
+    try:
+        async with engine.begin() as blocker:
+            locked = await blocker.scalar(text(
+                "SELECT work_id FROM canonical_work "
+                "WHERE work_id = :review_id FOR UPDATE"
+            ), {"review_id": review_id})
+            assert locked == review_id
+            tasks = [asyncio.create_task(call()) for call in calls]
+            deadline = asyncio.get_running_loop().time() + 2
+            while True:
+                async with engine.connect() as monitor:
+                    waiting = await monitor.scalar(text(
+                        "SELECT count(DISTINCT application_name) FROM pg_stat_activity "
+                        "WHERE application_name IN (:first, :second) "
+                        "AND wait_event_type = 'Lock'"
+                    ), {"first": applications[0], "second": applications[1]})
+                if waiting == 2:
+                    break
+                assert not any(task.done() for task in tasks)
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise AssertionError("both review calls did not reach the database lock")
+                await asyncio.sleep(0.01)
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 @pytest.fixture
@@ -159,6 +217,166 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
         ), {"id": subject_id})
     stale = await service.request(request, requester)
     assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+
+
+async def test_concurrent_review_request_converges_on_one_occurrence_and_delivery(
+    occurrence_runtime,
+):
+    occurrences, _messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    request = ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    )
+    services, engines, applications = _independent_services(
+        occurrences, occurrences.policy,
+    )
+    basis = services[0]._basis(request, requester)
+    assert await occurrences.ensure(services[0]._brief(basis, subject))
+    try:
+        results = await _race_while_occurrence_locked(
+            engine, basis.review_id,
+            tuple(lambda service=service: service.request(
+                request, requester,
+            ) for service in services),
+            applications,
+        )
+    finally:
+        await asyncio.gather(*(current.dispose() for current in engines))
+
+    assert {result.status for result in results} == {"SENT"}
+    assert len({result.review_id for result in results}) == 1
+    assert len({result.delivery_id for result in results}) == 1
+    review_id = results[0].review_id
+    assert review_id is not None
+    assert len(await occurrences.basis_sources(review_id)) == 1
+    assert len(await occurrences.request_sources(review_id)) == 1
+
+
+async def test_concurrent_review_get_converges_on_one_reviewer_delivery(
+    occurrence_runtime,
+):
+    occurrences, _messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    assert requester is not None
+    no_reviewer = ReviewPolicy(version="policy-v1", reviewer_by_kind={})
+    waiting_service = ReviewService(
+        occurrences, mailboxes, _messages, no_reviewer,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    waiting = await waiting_service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert waiting.status == "WAITING_REVIEWER" and waiting.review_id is not None
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b",
+    )).mailbox
+    assert reviewer is not None
+    policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"})
+    occurrences.policy = policy
+    services, engines, applications = _independent_services(occurrences, policy)
+    try:
+        results = await _race_while_occurrence_locked(
+            engine, waiting.review_id,
+            tuple(lambda service=service: service.get(
+                waiting.review_id, requester,
+            ) for service in services),
+            applications,
+        )
+    finally:
+        await asyncio.gather(*(current.dispose() for current in engines))
+
+    assert {result.status for result in results} == {"REQUEST_UNPICKED"}
+    assert len({result.delivery_id for result in results}) == 1
+    sources = await occurrences.request_sources(waiting.review_id)
+    assert len(sources) == 1
+    assert sources[0][0].delivery.recipient_work_id == reviewer.endpoint_id
+    assert sources[0][2] is None
+
+
+async def test_concurrent_review_recover_converges_on_one_generation_transition(
+    occurrence_runtime,
+):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    replacement = (await mailboxes.takeover(
+        "Reviewer", "principal-b", "chat-b-replacement",
+    )).mailbox
+    assert replacement is not None and replacement.generation == 2
+    services, engines, applications = _independent_services(
+        occurrences, occurrences.policy,
+    )
+    transitions = []
+    for current in engines:
+        event.listen(
+            current.sync_engine, "after_cursor_execute",
+            lambda _connection, _cursor, statement, _parameters, _context, _many: (
+                transitions.append(statement)
+                if statement.lstrip().startswith("UPDATE message_deliveries") else None
+            ),
+        )
+    try:
+        results = await _race_while_occurrence_locked(
+            engine, sent.review_id,
+            tuple(lambda current=service: current.recover(
+                sent.review_id, replacement,
+            ) for service in services),
+            applications,
+        )
+    finally:
+        await asyncio.gather(*(current.dispose() for current in engines))
+
+    assert {result.status for result in results} == {"RECEIVED"}
+    assert {result.delivery_id for result in results} == {sent.delivery_id}
+    assert len(transitions) == 1
+    async with engine.connect() as connection:
+        generation = (await connection.execute(text(
+            "SELECT recipient_grant_version, receiving_generation "
+            "FROM message_deliveries WHERE delivery_id = :id"
+        ), {"id": sent.delivery_id})).one()
+    assert tuple(generation) == (2, "2")
 
 
 async def test_received_review_submits_authoritative_pass(occurrence_runtime):
