@@ -763,7 +763,9 @@ The `run_inbound` pilot reuses existing authorized `MessageState` and
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
 configuration and reuses `chatgpt_edge.resource_service()`. With
 `SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child, registers its
-  exact authenticated thread through the existing MCP `agent_register` operation,
+  exact authenticated thread through the existing MCP `agent_register` operation, first
+  materializes the zero-turn durable rollout with non-user bootstrap context, and reads back its
+  exact start-record binding before registration,
   validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
   An existing registration, including `/root`, is reused without takeover; ordinary registration
   cannot create the reserved canonical `root` name and generated names are never `/root`. Runner
