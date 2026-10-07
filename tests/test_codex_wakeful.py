@@ -30,6 +30,7 @@ from switchstand.codex_wakeful import (
 from switchstand.messages import PendingMessage
 from switchstand.secure_file import atomic_replace_bytes
 from switchstand.wakeful import EventSeverity, WakeEvent, WakefulStore
+from switchstand.wakeful_host_qualification import observe_same_session_turn
 
 
 class Client(QueueClient):
@@ -392,6 +393,39 @@ def test_delivery_identity_and_missed_child_latest_parent_oracle(setup, stale):
     client.consume()
     assert Projection(home, binding).admit(client, children(thread)[0]) == "ADMITTED"
     assert len(client.calls) == 1
+
+
+def test_projection_false_green_is_caught_by_real_consumer_oracle(setup):
+    home, _, client, binding = setup
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    identity = wake_id(binding, source)
+    projection = Projection(home, binding)
+    assert projection.admit(client, source) == "PENDING"
+    client.consume()
+    client.thread["turns"][0]["status"] = "completed"
+
+    # The producer/projection contract is green once the user item is durable,
+    # even though no assistant rollout happened.
+    assert Projection(home, binding).admit(client, source) == "ADMITTED"
+    negative = observe_same_session_turn(
+        client.thread, identity, "negative-control-nonce-012345",
+    )
+    assert negative.same_session_assistant_turn is False
+    assert negative.resume_failure == "zero-turn-no-rollout"
+    assert negative.observed_session_id == "exact"
+
+    client.thread["turns"][0]["items"].append({
+        "type": "agentMessage",
+        "id": "assistant-item",
+        "text": "ACK negative-control-nonce-012345",
+    })
+    positive = observe_same_session_turn(
+        client.thread, identity, "negative-control-nonce-012345",
+    )
+    assert positive.same_session_assistant_turn is True
+    assert positive.observed_nonce == "negative-control-nonce-012345"
+    assert positive.resume_failure is None
+    assert positive.observed_session_id == "exact"
 
 
 def test_current_host_subagent_activity_terminal_shape_and_ambiguity():

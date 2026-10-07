@@ -155,6 +155,65 @@ def test_dispatch_rejects_invalid_wakeful_selector(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_wakeful_qualification_repo_is_exact_clean_linked_candidate(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    del marker
+    environment = home / ".config/switchstand/.env"
+    environment.parent.mkdir(parents=True)
+    environment.write_text("DATABASE_URL=postgresql://unused\n")
+    environment.chmod(0o600)
+    executable(primary / ".venv/bin/python", '#!/bin/sh\nprintf "%s\\n" "$@" > "$OBSERVED"\n')
+    subprocess.run(["git", "-C", primary, "add", ".venv/bin/python"], check=True)
+    subprocess.run(
+        ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "-m", "runtime"], check=True, capture_output=True,
+    )
+    candidate = tmp_path / "candidate"
+    subprocess.run(
+        ["git", "-C", primary, "worktree", "add", "-q", "-b", "candidate", candidate],
+        check=True,
+    )
+    (candidate / "candidate.txt").write_text("exact\n")
+    subprocess.run(["git", "-C", candidate, "add", "candidate.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", candidate, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "-m", "candidate"], check=True, capture_output=True,
+    )
+    candidate_sha = subprocess.check_output(
+        ["git", "-C", candidate, "rev-parse", "HEAD"], text=True,
+    ).strip()
+    observed = tmp_path / "observed"
+    result = subprocess.run(
+        [DISPATCH], cwd=candidate,
+        env=env | {
+            "SWITCHSTAND_CODEX_WAKEFUL": "PILOT",
+            "SWITCHSTAND_CODEX_QUALIFICATION_REPO": str(candidate),
+            "OBSERVED": str(observed),
+        }, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(candidate / "src") in observed.read_text()
+    records = [
+        path for path in (home / ".local/state/switchstand/codex/coordinator").glob(
+            "start-commit.*"
+        ) if "." not in path.name.removeprefix("start-commit.")
+    ]
+    assert len(records) == 1
+    assert records[0].read_text().strip() == candidate_sha
+
+
+def test_qualification_repo_is_rejected_outside_pilot(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"SWITCHSTAND_CODEX_QUALIFICATION_REPO": str(primary)},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "clean linked writer in PILOT" in result.stderr
+    assert not marker.exists()
+
+
 def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) -> None:
     home, primary, marker, env = dispatch_fixture(tmp_path)
     handoff = primary / "scripts/coordinator-handoff"
