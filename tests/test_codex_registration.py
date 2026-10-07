@@ -94,6 +94,9 @@ def test_prepare_registers_exact_launch_owned_thread(spec: Spec, monkeypatch) ->
         spec.home / "runner.json", "postgresql://exact", binding,
     )
     assert calls[0][0] == "thread/start"
+    assert calls[0][1]["approvalPolicy"] == "never"
+    assert calls[0][1]["sandbox"] == "danger-full-access"
+    assert "permissions" not in calls[0][1]
     assert calls[1] == ("mcpServer/tool/call", {
         "threadId": "thread-1", "server": "switchstand", "tool": "agent_register",
         "arguments": {"api_version": "1", "name": spec.default_name},

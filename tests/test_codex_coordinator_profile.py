@@ -93,7 +93,7 @@ trusted_hash = "must-not-copy"
 
     profile = tomllib.loads(destination.read_text())
     assert profile["approval_policy"] == "never"
-    assert profile["default_permissions"] == "switchstand-coordinator"
+    assert profile["sandbox_mode"] == "danger-full-access"
     instructions = profile["developer_instructions"]
     assert str(tmp_path / "coordinator/start-commit.coordinator.config") in instructions
     assert "synchronous compact-session hook" in instructions
@@ -123,6 +123,8 @@ trusted_hash = "must-not-copy"
         "Built-in Workers are read-only: their shell and file-edit tools are denied"
         in instructions
     )
+    assert "Native full local-user execution applies to directly operated Root" in instructions
+    assert "grants no provider, deployment, activation" in instructions
     assert "a Worker returns a patch proposal and Root applies it" in instructions
     assert not Path(
         f"{tmp_path / 'coordinator/start-commit.coordinator.config'}.worker-writers"
@@ -146,22 +148,13 @@ trusted_hash = "must-not-copy"
             ],
         }
     }
-    filesystem = profile["permissions"]["switchstand-coordinator"]["filesystem"]
-    assert filesystem == {
-        ":root": "read",
-        str(Path.home().resolve()): "write",
-        str(primary): {".": "read", ".git": "write"},
-    }
-    assert profile["permissions"]["switchstand-coordinator"]["network"] == {
-        "enabled": True,
-        "dangerously_allow_all_unix_sockets": True,
-    }
+    assert "permissions" not in profile
     assert profile["model_auto_compact_token_limit"] == 200000
     assert profile["model_auto_compact_token_limit_scope"] == "total"
     assert profile["tui"] == {"alternate_screen": "never"}
     assert profile["notice"] == {"hide_rate_limit_model_nudge": True}
     assert set(profile) == {
-        "approval_policy", "default_permissions", "developer_instructions", "features", "permissions",
+        "approval_policy", "sandbox_mode", "developer_instructions", "features",
         "mcp_servers", "hooks",
         "model_auto_compact_token_limit", "model_auto_compact_token_limit_scope",
         "tui", "notice",
@@ -258,4 +251,5 @@ def test_new_profile_omits_removed_preferences_without_replacing_prior_profile(
     assert "model_auto_compact_token_limit" not in profile
     assert "apps" not in profile
     assert profile["approval_policy"] == "never"
+    assert profile["sandbox_mode"] == "danger-full-access"
     assert destination.read_bytes() == original

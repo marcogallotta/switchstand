@@ -91,11 +91,16 @@ For an ordinary Claude Code Coordinator, install the host shim once with
 `scripts/codex-hook --coordinator-primary` on Bash, Edit, MultiEdit, Write and NotebookEdit. It uses your
 normal Claude login. Tool access grants no authority.
 
-The ordinary Codex Coordinator profile likewise grants practical user-level filesystem writes while
-the same hook keeps the canonical primary source checkout read-only. It permits mutation in adjacent
-repair worktrees and local operational state; the filesystem sandbox is not a substitute for effect
-authority. Malformed auxiliary friction state is quarantined and regenerated visibly so launch and
-unrelated diagnosis remain usable.
+The ordinary Codex Coordinator profile runs directly operated Root and sub-Coordinators with native
+`danger-full-access` and `approval_policy=never`, so host user-session IPC, services, files, and
+networking are available without a second approval path. Repository policy still forbids canonical
+primary source mutation; the hook blocks recognized Git and editing-tool mutation routes but is a
+guardrail, not complete shell or operating-system isolation. Arbitrary local-user shell code remains
+technically capable of writing the canonical checkout, so implementation must stay in an owned
+writer. The hook also keeps built-in Workers' shell and file-edit tools denied and blocks
+auto-memory writes. Full local-user execution is not provider, deployment, activation, or other
+consequential-effect authority; those exact grants and readbacks remain separate. Malformed auxiliary
+friction state is quarantined and regenerated visibly so launch and unrelated diagnosis remain usable.
 
 The detailed lifecycle, recovery, and isolated-candidate routes remain below.
 
