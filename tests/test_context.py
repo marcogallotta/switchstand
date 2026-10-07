@@ -124,6 +124,14 @@ def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
     root_writer, assigned, foreign = (tmp_path / name for name in ("root", "assigned", "foreign"))
     for path in (root_writer, assigned, foreign):
         git(primary, "worktree", "add", "-b", path.name, str(path))
+    inspector = Path(__file__).parents[1] / "scripts/codex-worker-inspect"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private\n")
+    (root_writer / "escape").symlink_to(outside)
+    nested_git = root_writer / "nested/.git"
+    nested_git.mkdir(parents=True)
+    (nested_git / "secret").write_text("administrative\n")
+    (root_writer / "nested-secret").symlink_to(nested_git / "secret")
     common = {
         "environment": dict(os.environ),
         "coordinator_primary": primary,
@@ -136,9 +144,51 @@ def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
                (repo / "tracked.txt").read_text())
         for repo in protected
     }
+    allowed = (
+        f"{inspector} --root {root_writer} files .",
+        f"{inspector} --root {root_writer} read tracked.txt",
+        f"{inspector} --root {root_writer} search base tracked.txt",
+        f"{inspector} --root {root_writer} status",
+        f"{inspector} --root {root_writer} diff tracked.txt",
+        f"{inspector} --root {root_writer} log 1",
+    )
+    worker_environment = os.environ | {
+        "GIT_DIR": git(foreign, "rev-parse", "--absolute-git-dir"),
+        "GIT_WORK_TREE": str(foreign),
+        "GIT_COMMON_DIR": git(foreign, "rev-parse", "--git-common-dir"),
+    }
+    outputs = []
+    for command in allowed:
+        assert hook(assigned, command, **common) == {}
+        outputs.append(subprocess.run(
+            ["bash", "-lc", command], cwd=assigned, text=True,
+            capture_output=True, check=True, env=worker_environment,
+        ).stdout)
+    assert "tracked.txt" in outputs[0]
+    assert "nested-secret" not in outputs[0]
+    assert "nested/.git" not in outputs[0]
+    assert "1:base" in outputs[1]
+    assert "tracked.txt:1:base" in outputs[2]
+    assert "root" in outputs[3]
+    assert "base" in outputs[5]
+
+    for raw in ("../outside.txt", "/etc/passwd", ".git", "nested/.git/secret", "escape"):
+        command = f"{inspector} --root {root_writer} read {raw}"
+        assert hook(assigned, command, **common) == {}
+        escaped = subprocess.run(
+            ["bash", "-lc", command], cwd=assigned, text=True, capture_output=True,
+            check=False,
+        )
+        assert escaped.returncode != 0
+        assert "private" not in escaped.stdout and "root:" not in escaped.stdout
     root_git_dir = git(root_writer, "rev-parse", "--absolute-git-dir")
     foreign_git_dir = git(foreign, "rev-parse", "--absolute-git-dir")
     hostile = (
+        "cat /etc/passwd",
+        f"git -C {root_writer} status --short",
+        "systemctl --user status switchstand.service",
+        "curl --unix-socket /run/docker.sock http://localhost/version",
+        f"{inspector} --root {root_writer} read $(pwd)/tracked.txt",
         f"printf contaminated > {root_writer / 'tracked.txt'}",
         f"sh -c 'printf contaminated > {foreign / 'tracked.txt'}'",
         f"git -C {foreign} add tracked.txt",
@@ -176,6 +226,62 @@ def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
         for decision in decisions
     )
     assert after == before
+
+
+def test_worker_inspector_rejects_executable_git_attributes(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Test")
+    git(root, "config", "user.email", "test@example.invalid")
+    tracked = root / "tracked.txt"
+    tracked.write_text("base\n")
+    git(root, "add", "tracked.txt")
+    git(root, "commit", "-m", "base")
+    marker = tmp_path / "filter-executed"
+    attributes = root / ".gitattributes"
+    attributes.write_text("*.txt filter=hostile\n")
+    git(root, "config", "filter.hostile.clean", f"touch {marker}")
+    admin = Path(git(root, "rev-parse", "--absolute-git-dir")) / "config"
+    before = admin.read_bytes()
+    inspector = Path(__file__).parents[1] / "scripts/codex-worker-inspect"
+
+    for action in ("status", "diff"):
+        result = subprocess.run(
+            [inspector, "--root", root, action], text=True, capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "repository attributes" in result.stderr
+    assert not marker.exists()
+    assert admin.read_bytes() == before
+
+    git(root, "add", ".gitattributes")
+    git(root, "commit", "-m", "track attributes")
+    marker.unlink(missing_ok=True)
+    attributes.unlink()
+    for action in ("status", "diff"):
+        result = subprocess.run(
+            [inspector, "--root", root, action], text=True, capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "repository attributes" in result.stderr
+    assert not marker.exists()
+
+    git(root, "rm", "--cached", ".gitattributes")
+    marker.unlink(missing_ok=True)
+    external_attributes = tmp_path / "external-attributes"
+    external_attributes.write_text("*.txt filter=hostile\n")
+    git(root, "config", "core.attributesFile", str(external_attributes))
+    for action in ("status", "diff"):
+        result = subprocess.run(
+            [inspector, "--root", root, action], text=True, capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "repository attributes" in result.stderr
+    assert not marker.exists()
 
 
 def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) -> None:

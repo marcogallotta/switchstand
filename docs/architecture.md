@@ -657,11 +657,15 @@ shared-filesystem Workers remain read-only.
 Built-in delegated Workers share the Coordinator process and filesystem profile. Hooks are a
 useful guardrail rather than a security sandbox, so they cannot safely grant a Worker mutation in
 one writer while withholding Root's writer or sibling writers. Built-in Workers therefore remain
-repository-read-only through the standard local mutation surfaces: any Worker shell or file-edit
-call carrying Codex's subagent `agent_id` is denied. This is a process guard, not an adversarial OS
-boundary. Root delegates research and review directly; an implementation Worker returns a patch
-proposal for Root to apply in the generation-owned writer. Managed Workers retain their separate
-trusted task-private writer contract.
+repository-read-only through a single runtime-admitted `codex-worker-inspect` command bound to the
+generation-owned writer. It provides bounded file listing, UTF-8 reading and literal search plus
+fixed non-locking Git status, diff, and log operations. The hook denies every other Worker shell
+command and every file-edit call; the inspector rejects paths outside the bound writer, Git
+administrative files, symlink escapes, oversized/binary reads, and caller-selected Git operations.
+This is a process guard, not an adversarial OS boundary. Root delegates research and review
+directly; an implementation Worker returns a patch proposal for Root to apply in the
+generation-owned writer. Managed Workers retain their separate trusted task-private writer
+contract.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
 `scripts/docker-gc` BuildKit cache cap whenever managed Docker work is reconciled. `scripts/docker-gc` serializes

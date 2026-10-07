@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Bounded read-only repository inspection for built-in Codex Workers."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Never
+
+MAX_FILE_BYTES = 1_000_000
+MAX_RESULTS = 5_000
+
+
+def fail(message: str) -> Never:
+    raise SystemExit(f"codex-worker-inspect: {message}")
+
+
+def git_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")} | {
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_EXTERNAL_DIFF": "", "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat",
+    }
+
+
+def repository(root: Path) -> Path:
+    try:
+        resolved = root.resolve(strict=True)
+        result = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, timeout=5, check=False,
+            env=git_environment(),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"repository identity is unavailable: {error}")
+    if result.returncode or Path(result.stdout.strip()).resolve() != resolved:
+        fail("--root must name the exact repository worktree")
+    return resolved
+
+
+def bounded(root: Path, raw: str, *, file: bool | None = None) -> Path:
+    try:
+        candidate = (root / raw if not os.path.isabs(raw) else Path(raw)).resolve(strict=True)
+        relative = candidate.relative_to(root)
+    except (OSError, ValueError):
+        fail(f"path escapes or is unavailable: {raw}")
+    if ".git" in relative.parts:
+        fail("Git administrative files are not inspectable")
+    if file is True and not candidate.is_file():
+        fail(f"not a regular file: {raw}")
+    if file is False and not candidate.is_dir():
+        fail(f"not a directory: {raw}")
+    return candidate
+
+
+def walk_files(root: Path, start: Path) -> Iterator[Path]:
+    for directory, names, filenames in os.walk(start, followlinks=False):
+        names[:] = sorted(name for name in names if name != ".git")
+        for name in sorted(name for name in filenames if name != ".git"):
+            try:
+                path = (Path(directory) / name).resolve(strict=True)
+                relative = path.relative_to(root)
+            except (OSError, ValueError):
+                continue
+            if ".git" in relative.parts:
+                continue
+            yield path
+
+
+def files(root: Path, raw: str) -> None:
+    start = bounded(root, raw, file=False)
+    for count, path in enumerate(walk_files(root, start), 1):
+        print(path.relative_to(root))
+        if count >= MAX_RESULTS:
+            fail(f"result limit reached ({MAX_RESULTS})")
+
+
+def text(path: Path) -> list[str]:
+    if path.stat().st_size > MAX_FILE_BYTES:
+        fail(f"file exceeds {MAX_FILE_BYTES} bytes: {path.name}")
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        fail(f"file is not UTF-8 text: {path.name}")
+
+
+def read(root: Path, raw: str, start: int, end: int | None) -> None:
+    lines = text(bounded(root, raw, file=True))
+    if start < 1 or end is not None and end < start:
+        fail("line bounds are invalid")
+    stop = len(lines) if end is None else end
+    for number, line in enumerate(lines[start - 1:stop], start):
+        print(f"{number}:{line}")
+
+
+def search(root: Path, needle: str, raws: list[str]) -> None:
+    if not needle:
+        fail("search text must not be empty")
+    hits = 0
+    for raw in raws or ["."]:
+        target = bounded(root, raw)
+        candidates = iter((target,)) if target.is_file() else walk_files(root, target)
+        for path in candidates:
+            try:
+                path = bounded(root, str(path), file=True)
+                lines = text(path)
+            except (OSError, SystemExit):
+                continue
+            for number, line in enumerate(lines, 1):
+                if needle in line:
+                    print(f"{path.relative_to(root)}:{number}:{line}")
+                    hits += 1
+                    if hits >= MAX_RESULTS:
+                        fail(f"result limit reached ({MAX_RESULTS})")
+
+
+def git_read(root: Path, action: str, paths: list[str], count: int) -> None:
+    if action in {"status", "diff"}:
+        for _directory, names, filenames in os.walk(root, followlinks=False):
+            names[:] = [name for name in names if name != ".git"]
+            if ".gitattributes" in filenames:
+                fail("Git status/diff is unavailable with repository attributes")
+        tracked_attributes = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--", ".gitattributes", "*/.gitattributes"],
+            text=True, capture_output=True, timeout=5, check=False, env=git_environment(),
+        )
+        configured_attributes = subprocess.run(
+            ["git", "-C", str(root), "config", "--local", "--no-includes", "--get",
+             "core.attributesFile"],
+            text=True, capture_output=True, timeout=5, check=False, env=git_environment(),
+        )
+        common = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            text=True, capture_output=True, timeout=5, check=False, env=git_environment(),
+        )
+        attributes = Path(common.stdout.strip()) / "info/attributes"
+        if (
+            tracked_attributes.returncode or tracked_attributes.stdout.strip()
+            or configured_attributes.returncode not in {0, 1}
+            or configured_attributes.returncode == 0
+            or common.returncode
+            or attributes.is_file() and attributes.stat().st_size
+        ):
+            fail("Git status/diff is unavailable with repository attributes")
+    selected = [str(bounded(root, path).relative_to(root)) for path in paths]
+    prefix = [
+        "git", "-C", str(root), "--no-pager", "-c", "core.fsmonitor=false",
+        "-c", "core.attributesFile=/dev/null",
+    ]
+    if action == "status":
+        command = [*prefix, "status", "--short", "--branch", "--untracked-files=all"]
+    elif action == "diff":
+        command = [*prefix, "diff", "--no-ext-diff", "--no-textconv", "--", *selected]
+    else:
+        command = [*prefix, "log", f"-{count}", "--format=%h %s"]
+    result = subprocess.run(command, text=True, timeout=10, check=False, env=git_environment())
+    if result.returncode:
+        fail(f"Git {action} failed ({result.returncode})")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", required=True, type=Path)
+    commands = parser.add_subparsers(dest="action", required=True)
+    listing = commands.add_parser("files")
+    listing.add_argument("path", nargs="?", default=".")
+    reading = commands.add_parser("read")
+    reading.add_argument("path")
+    reading.add_argument("start", nargs="?", default=1, type=int)
+    reading.add_argument("end", nargs="?", type=int)
+    searching = commands.add_parser("search")
+    searching.add_argument("text")
+    searching.add_argument("paths", nargs="*")
+    commands.add_parser("status")
+    difference = commands.add_parser("diff")
+    difference.add_argument("paths", nargs="*")
+    history = commands.add_parser("log")
+    history.add_argument("count", nargs="?", default=20, type=int)
+    args = parser.parse_args()
+    root = repository(args.root)
+    if args.action == "files":
+        files(root, args.path)
+    elif args.action == "read":
+        read(root, args.path, args.start, args.end)
+    elif args.action == "search":
+        search(root, args.text, args.paths)
+    elif args.action in {"status", "diff", "log"}:
+        if args.action == "log" and not 1 <= args.count <= 100:
+            fail("log count must be between 1 and 100")
+        git_read(root, args.action, getattr(args, "paths", []), getattr(args, "count", 20))
+
+
+if __name__ == "__main__":
+    main()

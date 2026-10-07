@@ -297,6 +297,7 @@ def test_compact_snapshots_survive_canonical_control_mutation_and_removal(
         "scripts/codex-continuity-hook",
         "scripts/codex-compact-hook",
         "scripts/codex-hook",
+        "scripts/codex-worker-inspect",
         "scripts/coordinator-control",
         "scripts/coordinator-handoff",
         "scripts/switchstand-worktree",

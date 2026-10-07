@@ -478,6 +478,8 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     assert hook_arguments[0] == str(ROOT / "scripts/codex-hook")
     assert hook_arguments[-2:] == ["--coordinator-writer", str(writer)]
     assert "Built-in Workers are read-only" in profile["developer_instructions"]
+    assert "codex-worker-inspect" in profile["developer_instructions"]
+    assert "runtime denies every other shell" in profile["developer_instructions"]
     assert profile["mcp_servers"]["switchstand_coordinator_control"]["command"] == str(
         primary / "scripts/switchstand-coordinator-control-mcp"
     )
