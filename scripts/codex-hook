@@ -434,7 +434,8 @@ def run() -> int:
                 command, coordinator_primary, coordinator_writer
             ):
         return 0
-    if isinstance(agent_id, str) and agent_id and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
+    if coordinator_writer is not None and isinstance(agent_id, str) and agent_id \
+            and tool in EDIT_TOOLS | {"apply_patch", "Bash"}:
         print(json.dumps(deny(
             "[worker-read-only] delegated Workers may use only the bound repository "
             "inspection command; shell and file-edit mutation remain denied.", event,
