@@ -41,7 +41,12 @@ class WakeSourceRef:
     @property
     def reread_instruction(self) -> str:
         if self.source_kind == "switchstand_inbound":
-            return "Reread this exact delivery_id through Switchstand MCP before acting."
+            return (
+                "Reread this exact delivery_id with the repository MCP tool "
+                "mcp__switchstand__agent_message_receive before acting. Do not use the "
+                "codex_apps Switchstand connector: that connector has a different session "
+                "identity and cannot receive this Codex mailbox delivery."
+            )
         if self.source_kind == "child_completion":
             return "Reread the exact parent call and latest persisted child state before acting."
         raise ValueError("unsupported source")
