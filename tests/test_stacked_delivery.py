@@ -149,3 +149,11 @@ def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
         "a" * 40, "a" * 40, "a" * 40, True,
         frozenset({"WAKEFUL_REAL_HOST"}), (qualification,),
     ))
+    old_host = ProportionalQualification(
+        "b" * 40, frozenset({"WAKEFUL_REAL_HOST"}),
+        frozenset({"WAKEFUL_REAL_HOST"}),
+    )
+    assert not stack_is_ready_to_land(StackLandingEvidence(
+        "a" * 40, "a" * 40, "a" * 40, True,
+        frozenset({"WAKEFUL_REAL_HOST"}), (old_host,),
+    ))

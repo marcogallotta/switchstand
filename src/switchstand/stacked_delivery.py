@@ -61,6 +61,7 @@ class ProportionalQualification:
     required: frozenset[EvidenceDimension]
     passed: frozenset[EvidenceDimension]
     unknown: frozenset[EvidenceDimension] = frozenset()
+    composition_sha: str | None = None
 
 
 def proportional_qualification_is_sufficient(evidence: ProportionalQualification) -> bool:
@@ -71,6 +72,10 @@ def proportional_qualification_is_sufficient(evidence: ProportionalQualification
         and evidence.required <= EVIDENCE_DIMENSIONS
         and evidence.passed <= EVIDENCE_DIMENSIONS
         and evidence.unknown <= EVIDENCE_DIMENSIONS
+        and (
+            "CUMULATIVE_TOP_QUALITY" not in evidence.required
+            or _SHA.fullmatch(evidence.composition_sha or "") is not None
+        )
         and not evidence.unknown
         and evidence.required <= evidence.passed
     )
@@ -129,6 +134,7 @@ def stack_is_ready_to_land(evidence: StackLandingEvidence) -> bool:
     passed = frozenset(
         dimension
         for item in evidence.layer_qualifications
+        if item.subject_sha == evidence.exact_top_sha
         for dimension in item.passed
         if proportional_qualification_is_sufficient(item)
     )

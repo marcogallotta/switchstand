@@ -8,16 +8,19 @@ if [ ! -x "$real_codex" ]; then
     exit 1
 fi
 
-canonical_repo="$HOME/switchstand"
+host_canonical_repo="$HOME/switchstand"
+canonical_repo=${SWITCHSTAND_CODEX_QUALIFICATION_REPO:-$host_canonical_repo}
 script_dir=$(dirname -- "$(readlink -f "$0")")
 git_common() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
         -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
         git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || :
 }
+host_canonical_common=$(git_common "$host_canonical_repo")
 canonical_common=$(git_common "$canonical_repo")
 current_common=$(git_common "$PWD")
-if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; then
+if [ -z "$host_canonical_common" ] || [ -z "$canonical_common" ] \
+        || [ "$current_common" != "$canonical_common" ]; then
     exec "$real_codex" "$@"
 fi
 
@@ -31,6 +34,17 @@ case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)
     echo "SWITCHSTAND_CODEX_LIFETIME must be ASSIGNMENT or STANDING" >&2; exit 2;; esac
 case "$wakeful_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_WAKEFUL must be OFF or PILOT" >&2; exit 2;; esac
+if [ "${SWITCHSTAND_CODEX_QUALIFICATION_REPO+x}" != "" ]; then
+    qualification_repo=$(readlink -f "$SWITCHSTAND_CODEX_QUALIFICATION_REPO")
+    if [ "$wakeful_mode" != PILOT ] \
+            || [ "$qualification_repo" = "$(readlink -f "$host_canonical_repo")" ] \
+            || [ "$canonical_repo" != "$qualification_repo" ] \
+            || [ "$canonical_common" != "$host_canonical_common" ] \
+            || [ -n "$(git -C "$canonical_repo" status --porcelain)" ]; then
+        echo "Wakeful qualification repo must be a clean linked writer in PILOT" >&2
+        exit 2
+    fi
+fi
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then
@@ -153,14 +167,14 @@ owned_writer=$(
 )
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
-    "$canonical_repo" "$owned_writer" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
+    "$host_canonical_repo" "$owned_writer" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
     "$script_dir/codex-continuity-hook" "$script_dir/codex-compact-hook" \
     "$script_dir/coordinator-control" "$continuity_mode" "$continuity_lifetime" \
     "$continuity_telemetry" \
     "$start_record" "$manifest_record"
 
 "$script_dir/coordinator-control" create \
-    --repo "$canonical_repo" --control-root "$script_dir/.." \
+    --repo "$host_canonical_repo" --control-root "$script_dir/.." \
     --writer "$owned_writer" \
     --start-record "$start_record" \
     --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
@@ -176,7 +190,8 @@ if [ ! -e "$owned_writer/friction" ]; then
     ln -s "$friction_root" "$owned_writer/friction"
 fi
 
-unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME SWITCHSTAND_CODEX_WAKEFUL
+unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME \
+    SWITCHSTAND_CODEX_WAKEFUL SWITCHSTAND_CODEX_QUALIFICATION_REPO
 cd "$owned_writer"
 if [ "$wakeful_mode" = PILOT ]; then
     runtime_python="$canonical_repo/.venv/bin/python"

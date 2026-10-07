@@ -145,7 +145,7 @@ jobs:
               selector_health_clear, validate_execution_tree,
           )
           from switchstand.full_suite_due import (
-              FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due,
+              FullSuiteDecision, FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due,
           )
 
           (base, head, execution, verified, history_complete, current_blob,
@@ -175,35 +175,40 @@ jobs:
                   or (event_kind == 'push' and ref_name == default_branch)
               ),
           )
-          candidates = tuple(row for row in rows if (
-              row[2] == 'success' and row[3] == current_blob and row[1] != head and row[4]
-          ))
-          baseline = max(candidates, key=lambda row: datetime.fromisoformat(row[4])) \
-              if candidates else None
-          baseline_sha = baseline[1] if baseline else None
-          baseline_at = datetime.fromisoformat(baseline[4]) if baseline else None
-          ancestry = None
-          commits = None
-          changed_paths = None
-          if baseline_sha:
-              ancestry = subprocess.run(
-                  ['git', 'merge-base', '--is-ancestor', baseline_sha, head], check=False,
-              ).returncode == 0
-              if ancestry:
-                  commits = int(subprocess.check_output(
-                      ['git', 'rev-list', '--count', f'{baseline_sha}..{head}'], text=True,
-                  ))
-                  changed_paths = len(subprocess.check_output(
-                      ['git', 'diff', '--name-only', baseline_sha, head], text=True,
-                  ).splitlines())
-          adaptive = evaluate_full_suite_due(FullSuiteInputs(
-              repository='marcogallotta/switchstand', landed_sha=head,
-              baseline_sha=baseline_sha, baseline_completed_at=baseline_at,
-              evaluated_at=datetime.now(UTC), commits_since_baseline=commits,
-              changed_paths_since_baseline=changed_paths, ancestry_verified=ancestry,
-              planner_policy_changed=False, unresolved_hard_miss=False,
-              current_truth_known=history_complete == 'true',
-          ), FullSuitePolicy('adaptive-v1', 20, 24 * 60 * 60, 100))
+          try:
+              candidates = tuple(row for row in rows if (
+                  row[2] == 'success' and row[3] == current_blob and row[1] != head and row[4]
+              ))
+              baseline = max(candidates, key=lambda row: datetime.fromisoformat(row[4])) \
+                  if candidates else None
+              baseline_sha = baseline[1] if baseline else None
+              baseline_at = datetime.fromisoformat(baseline[4]) if baseline else None
+              ancestry = None
+              commits = None
+              changed_paths = None
+              if baseline_sha:
+                  ancestry = subprocess.run(
+                      ['git', 'merge-base', '--is-ancestor', baseline_sha, head], check=False,
+                  ).returncode == 0
+                  if ancestry:
+                      commits = int(subprocess.check_output(
+                          ['git', 'rev-list', '--count', f'{baseline_sha}..{head}'], text=True,
+                      ))
+                      changed_paths = len(subprocess.check_output(
+                          ['git', 'diff', '--name-only', baseline_sha, head], text=True,
+                      ).splitlines())
+              adaptive = evaluate_full_suite_due(FullSuiteInputs(
+                  repository='marcogallotta/switchstand', landed_sha=head,
+                  baseline_sha=baseline_sha, baseline_completed_at=baseline_at,
+                  evaluated_at=datetime.now(UTC), commits_since_baseline=commits,
+                  changed_paths_since_baseline=changed_paths, ancestry_verified=ancestry,
+                  planner_policy_changed=False, unresolved_hard_miss=False,
+                  current_truth_known=history_complete == 'true',
+              ), FullSuitePolicy('adaptive-v1', 20, 24 * 60 * 60, 100))
+          except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+              adaptive = FullSuiteDecision(
+                  'UNKNOWN', ('observation-unavailable',), None, None,
+              )
           summary = {
               'authority': decision.mode,
               'authority_reasons': decision.reasons,

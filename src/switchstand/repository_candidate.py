@@ -77,6 +77,7 @@ class RepositoryCandidateQualification(BaseModel):
         )
         return ProportionalQualification(
             self.head_sha or "", required, frozenset(passed), frozenset(unknown),
+            self.composition_sha,
         )
 
 
