@@ -360,7 +360,8 @@ def test_claude_conformance_fake_only():
     assert fake("exact", "one", [("newest", "two")]) == "UNKNOWN"
     assert fake("exact", "one", [("exact", "one"), ("exact", "two")]) == "UNKNOWN"
 
-def test_queue_client_uses_exact_same_home_stdio_app_server(tmp_path):
+@pytest.mark.parametrize("socket_name", [None, "shared.sock"])
+def test_queue_client_uses_exact_same_home_app_server_transport(tmp_path, socket_name):
     home = tmp_path / "home"
     home.mkdir()
     observed = tmp_path / "observed.json"
@@ -390,7 +391,8 @@ for line in sys.stdin:
     print(json.dumps({{"jsonrpc": "2.0", "id": request["id"], "result": result}}), flush=True)
 """)
     codex.chmod(0o700)
-    client = QueueClient(codex, home)
+    socket_path = home / socket_name if socket_name is not None else None
+    client = QueueClient(codex, home, socket_path)
     assert client.process is None
     try:
         assert client.call("thread/queue/list", {"threadId": "exact"}) == {
@@ -399,8 +401,9 @@ for line in sys.stdin:
         process = client.process
         client.close()
     assert process is not None and process.poll() is not None
-    assert json.loads(observed.read_text()) == {
-        "argv": ["app-server", "--listen", "stdio://"], "home": str(home)}
+    expected = (["app-server", "--listen", "stdio://"] if socket_path is None else
+                ["app-server", "proxy", "--sock", str(socket_path)])
+    assert json.loads(observed.read_text()) == {"argv": expected, "home": str(home)}
 
 
 def test_queue_client_rejects_unproved_runtime(tmp_path):
