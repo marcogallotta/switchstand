@@ -32,8 +32,11 @@ jobs:
           PUSH_BASE_SHA: ${{ github.event.before }}
           PUSH_FORCED: ${{ github.event.forced }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
           STACK_BASE_REF: ${{ github.event.pull_request.stack != null && github.event.pull_request.stack.base.ref || github.event.pull_request.base.ref }}
@@ -43,10 +46,14 @@ jobs:
           stack_top=false
           if test "$EVENT_KIND" = pull_request; then
             stack_top=unknown
-            if test -n "$PR_HEAD_REF" && children="$(gh api --method GET --paginate \
-                "repos/$GITHUB_REPOSITORY/pulls" -f state=open -f base="$PR_HEAD_REF" \
-                -f per_page=100 --jq '.[].number' 2>/dev/null)"; then
-              test -z "$children" && stack_top=true || stack_top=false
+            if test -n "$PR_BASE_REF" && test -n "$PR_BASE_REPO" \
+              && relations="$(gh api --method GET --paginate --slurp \
+                "repos/$GITHUB_REPOSITORY/pulls" -f state=open -f per_page=100 \
+                --jq '[[.[][] | select(.head.ref == env.PR_BASE_REF and .head.repo.full_name == env.PR_BASE_REPO)] | length, [.[][] | select(.base.ref == env.PR_HEAD_REF and .base.repo.full_name == env.PR_HEAD_REPO)] | length] | @tsv' 2>/dev/null)"; then
+              read -r parents children <<< "$relations"
+              stack_top="$(PYTHONPATH=src python3 -c \
+                'from switchstand.affected_tests import classify_cumulative_stack_top as f; import sys; v=f(parent_count=int(sys.argv[1]), child_count=int(sys.argv[2])); print("unknown" if v is None else str(v).lower())' \
+                "$parents" "$children")"
             fi
             planner_base_sha="$(git rev-parse HEAD^)"
             planner_head_sha="$PR_HEAD_SHA"
