@@ -72,6 +72,20 @@ async def test_relation_gateway_resolves_workid_and_replays_without_resend():
     assert provider.relation_sends == 1
 
 
+async def test_relation_gateway_rejects_canonical_project_before_provider_access():
+    selected = grant(
+        scope="workspace", operations=frozenset({"work_relate"}),
+        relation_qualification="test:relations",
+    )
+    provider = RelationProvider()
+    gateway = RelationGateway(Handles(), MemoryGrants(selected), {"asana": provider})
+    outcome = await gateway.update(PRINCIPAL, request(
+        selected, RelationPatch(kind="placement", action="add", project_id=uuid4()),
+    ))
+    assert outcome.reason == "provider_relation_not_supported"
+    assert outcome.effect == "not_sent" and provider.relation_sends == 0
+
+
 async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effect():
     selected = grant(
         scope="workspace", operations=frozenset({"work_relate"}),

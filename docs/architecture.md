@@ -161,8 +161,12 @@ metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
-Ordinary creation is parent-WorkId-only, and ordinary relation changes accept only parent or
-dependency WorkIds; raw project, section, and assignee identifiers stay behind trusted internal
+Ordinary creation accepts one admitted parent WorkId or canonical project ID. Native canonical
+creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
+`SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
+parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
+relation changes accept parent/dependency WorkIds or canonical project-membership add/remove;
+provider project/section/assignee identifiers and placement moves stay behind trusted internal
 and provider boundaries.
 Every current tool is explicitly non-destructive and bounded rather than open-world. Current tools
 are idempotent under their stable identity or transition contracts. Registration rejects a new

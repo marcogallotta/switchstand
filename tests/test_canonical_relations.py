@@ -146,20 +146,40 @@ async def test_real_postgres_relations_placements_versions_and_rollbacks(
     assert stored.placements == placements
     assert (await works.get(child)).row_version == 4  # type: ignore[union-attr]
 
+    assert await relations.change_project_membership(
+        child, first_project, add=True, observed_version=4,
+    ) == 4
+    assert await relations.change_project_membership(
+        child, first_project, add=False, observed_version=4,
+    ) == 5
+    remaining = await relations.get(child)
+    assert remaining.placements == (placements[1],)
+    assert await relations.change_project_membership(
+        child, first_project, add=False, observed_version=5,
+    ) == 5
+    assert await relations.change_project_membership(
+        child, first_project, add=True, observed_version=5,
+    ) == 6
+    restored = await relations.get(child)
+    assert {value.project_id for value in restored.placements} == {
+        first_project, second_project,
+    }
+    assert next(
+        value for value in restored.placements if value.project_id == second_project
+    ).section_name is None
+
     with pytest.raises(ValueError, match="project identity"):
         await relations.replace_placements(child, (
             ProjectPlacement(first_project, "Renamed", "111"),
-        ), 4)
-    assert (await works.get(child)).row_version == 4  # type: ignore[union-attr]
-    assert (await relations.get(child)).placements == placements
+        ), 6)
+    assert (await works.get(child)).row_version == 6  # type: ignore[union-attr]
 
     with pytest.raises(ValueError, match="stale"):
         await relations.replace_placements(child, (), 3)
-    assert (await relations.get(child)).placements == placements
 
     assert await relations.change_dependency(
-        child, dependency, add=False, observed_version=4,
-    ) == 5
+        child, dependency, add=False, observed_version=6,
+    ) == 7
     assert (await relations.get(child)).dependency_work_ids == ()
 
 
@@ -174,6 +194,10 @@ async def test_real_postgres_rejects_unknown_and_invalid_targets_without_changes
         await relations.set_parent(work_id, missing, 1)
     with pytest.raises(LookupError, match="dependency"):
         await relations.change_dependency(
+            work_id, missing, add=True, observed_version=1,
+        )
+    with pytest.raises(LookupError, match="project"):
+        await relations.change_project_membership(
             work_id, missing, add=True, observed_version=1,
         )
     with pytest.raises(ValueError, match="itself"):

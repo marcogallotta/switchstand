@@ -48,7 +48,7 @@ from .grants import (
 from .mutation_effect import blocked_effect_next_action
 from .relations import RelationGateway
 from .state import work_handles
-from .work_policy import SEMANTIC_FIELDS, validate_resultant_state
+from .work_policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",
@@ -395,7 +395,15 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "parent_not_writable"
                                 )
-                            inherited = current.canonical_root or "UNKNOWN"
+                            inherited = current.canonical_root
+                            try:
+                                inherited_root = _exact_root(inherited)
+                            except ValueError:
+                                inherited_root = None
+                            if inherited_root is None:
+                                return CreateGateway.guard(
+                                    request, "denied", "parent_root_not_exact"
+                                )
                             if root is not None and root != inherited:
                                 return CreateGateway.guard(
                                     request, "denied", "child_root_conflicts_with_parent"
@@ -414,7 +422,12 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"
                                 )
-                            root = str(work_id) if root is None else root
+                            expected_root = str(work_id)
+                            if root is not None and root != expected_root:
+                                return CreateGateway.guard(
+                                    request, "denied", "root_must_be_self"
+                                )
+                            root = expected_root
                         created = CurrentWork(
                             work_id, request.title, False, request.notes,
                             priority=request.priority, work_type=request.work_type,
@@ -425,7 +438,18 @@ class CanonicalWorkRuntime:
                             next_action_ref=request.next_action_ref,
                         )
                         try:
-                            _validate_semantic_write(created, SEMANTIC_FIELDS)
+                            validate_create_state(
+                                parented=parent is not None,
+                                work_type=created.work_type,
+                                lifecycle_state=created.lifecycle_state,
+                                canonical_root=created.canonical_root,
+                                owner_key=created.owner_key,
+                                wait_kind=created.wait_kind,
+                                unblock_condition=created.unblock_condition,
+                                next_due=created.next_due,
+                                next_action_class=created.next_action_class,
+                                next_action_ref=created.next_action_ref,
+                            )
                         except ValueError:
                             return CreateGateway.guard(
                                 request, "denied", "invalid_resultant_state"
@@ -574,7 +598,7 @@ class CanonicalWorkRuntime:
                             request, "stale", "source_revision_changed"
                         )
                     patch = request.patch
-                    if patch.kind not in {"parent", "dependency"}:
+                    if patch.kind not in {"parent", "dependency", "placement"}:
                         return RelationGateway.guard(
                             request, "denied", "invalid_database_relation"
                         )
@@ -588,10 +612,23 @@ class CanonicalWorkRuntime:
                             request.work_id, target, current.row_version,
                             connection=connection,
                         )
-                    else:
+                    elif patch.kind == "dependency":
                         assert target is not None
                         await self.relations.change_dependency(
                             request.work_id, target, add=patch.action == "add",
+                            observed_version=current.row_version, connection=connection,
+                        )
+                    else:
+                        assert patch.project_id is not None
+                        if await connection.scalar(select(projects.c.project_id).where(
+                            projects.c.project_id == patch.project_id
+                        )) is None:
+                            return RelationGateway.guard(
+                                request, "denied", "project_not_admitted"
+                            )
+                        await self.relations.change_project_membership(
+                            request.work_id, patch.project_id,
+                            add=patch.action == "add",
                             observed_version=current.row_version, connection=connection,
                         )
                     receipt = RelationReceipt(

@@ -169,9 +169,10 @@ def project_activation_continuity(result: ContinuityResult) -> ActivationContinu
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency"]
+    kind: Literal["parent", "dependency", "placement"]
     action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
+    project_id: UUID | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
@@ -180,15 +181,26 @@ class OrdinaryRelationPatch(ClosedModel):
                 raise ValueError("parent relation requires set or clear")
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
+            if self.project_id is not None:
+                raise ValueError("parent relation forbids unrelated fields")
         elif self.kind == "dependency" and (
             self.action not in {"add", "remove"} or self.target_work_id is None
         ):
             raise ValueError("dependency relation requires target and add/remove")
+        elif self.kind == "dependency" and self.project_id is not None:
+            raise ValueError("dependency relation forbids unrelated fields")
+        elif self.kind == "placement" and (
+            self.action not in {"add", "remove"}
+            or self.project_id is None
+            or self.target_work_id is not None
+        ):
+            raise ValueError("placement requires project and add/remove")
         return self
 
     def internal(self) -> RelationPatch:
         return RelationPatch(
             kind=self.kind, action=self.action, target_work_id=self.target_work_id,
+            project_id=self.project_id,
         )
 
 
@@ -529,6 +541,35 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
+        if service.canonical_work_active:
+            evidence = (
+                parent_work_id is not None
+                and work_type == "Evidence"
+                and owner_key == "NONE"
+            )
+            if not evidence:
+                if owner_key != "SELF":
+                    return service.denied(
+                        "work_create", "canonical_owner_must_be_self",
+                        "Use SELF for substantive work; ownership never grants create authority.",
+                    )
+                context = await agent_context()
+                if isinstance(context, tuple):
+                    status, reason = context
+                    if status == "recovery_required":
+                        return GuardOutcome(
+                            status="unknown", operation="work_create",
+                            operation_id=operation_id,
+                            reason=reason, effect="not_sent", retry="none",
+                            next_action="Restore the registered runtime identity, then retry.",
+                        )
+                    return GuardOutcome(
+                        status="denied", operation="work_create",
+                        operation_id=operation_id,
+                        reason=reason, effect="not_sent", retry="none",
+                        next_action=unregistered_agent_next_action,
+                    )
+                owner_key = f"agent:{context.mailbox.name_key}"
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
             project_id=project_id,
