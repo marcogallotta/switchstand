@@ -118,10 +118,21 @@ trusted_hash = "must-not-copy"
     ) in instructions
     assert (
         "Ground work through an exact WorkId from Marco's direct assignment or an acknowledged "
-        "addressed handoff, and call work_get with that exact ID. If neither trusted source "
-        "supplies one, report COVERAGE_GAP / UNKNOWN. Bare work_get is reserved for trusted "
-        "launch-bound managed runs."
+        "addressed handoff, and call work_get with that exact ID. When Marco directly assigns new "
+        "substantive work without one, resolve and read START HERE 1218327002478382 as its "
+        "provider-neutral parent. If the parent exposes an exact canonical_root"
     ) in instructions
+    assert "work_type=Task, lifecycle_state=CURRENT, owner_key=SELF" in instructions
+    assert "wait_kind=unblock_condition=next_due=NONE" in instructions
+    assert "otherwise use only the legacy create's required arguments" in instructions
+    assert "Use one stable OperationId" in instructions
+    assert "next_action_class=OWNER_CAN_DO" in instructions
+    assert "continue only after exact work_get readback of the created WorkId" in instructions
+    assert "only with the identical OperationId and arguments as directed" in instructions
+    assert "never mint a second intent" in instructions
+    assert "Do not create work for simple questions, status, corrections" in instructions
+    assert "creation is denied/unresolved, report COVERAGE_GAP / UNKNOWN" in instructions
+    assert "Bare work_get is reserved for trusted launch-bound managed runs." in instructions
     assert (
         "Built-in Workers are read-only because they share Root's filesystem profile"
         in instructions

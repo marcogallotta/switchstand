@@ -1,11 +1,11 @@
 # Switchstand agent bootstrap
 
-This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. Ordinary sessions must not invent either. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
+This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. Ordinary sessions must not infer a WorkId or assignment. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
 
 ## Authority and grounding
 
 - Effects require Marco's direct active assignment or an explicit `CURRENT` grant bound to exact WorkId, writable surface and effect. A current human-reviewed position controls until superseded; steering authorizes only its exact package/revision/effect. Role, docs, placement, readability, login/tools and procedures never grant authority.
-- Meaningful work needs an exact WorkId; live mitigation attaches it when safe. Managed runs whose trusted launch binds a WorkId start/re-enter with `work_get(api_version="1")` without a WorkId: read active work/bounded references, verify the exact green repository SHA, and write only the active WorkId unless an explicit current grant names another target/effect; references are read-only. An ordinary unbound Coordinator never uses bare `work_get` to infer focus: it reads an exact WorkId supplied by Marco's direct assignment or an acknowledged addressed handoff. If neither exists, report `COVERAGE_GAP / UNKNOWN`; mailbox registration or takeover does not supply work identity or authority. Other ordinary sessions follow direct assignment and repository evidence; unavailable managed `work_get` does not block ordinary editing.
+- A managed run may use bare `work_get(api_version="1")` only when its launch binds work. An ordinary unbound Coordinator instead reads an assigned/handoff ID. For Marco's new task without one, resolve/read `START HERE` `1218327002478382` as parent. If it has an exact `canonical_root`, create with `work_type="Task"`, `lifecycle_state="CURRENT"`, `owner_key="SELF"`, `wait_kind=unblock_condition=next_due="NONE"`, `next_action_class="OWNER_CAN_DO"`, and an assignment-derived `next_action_ref`; otherwise use only the legacy create's required arguments. Use one stable OperationId, inspect the full result, and require exact created-ID `work_get`. Reconcile possible-send ambiguity only with identical arguments/OperationId; never mint a second intent. Never create from a question, status, correction, approval, grounded continuation, or context. Failure after reconciliation is `COVERAGE_GAP / UNKNOWN`; mailbox registration/takeover supplies neither identity nor authority.
 - Preserve role/work identity across re-entry; messages, adjacent reads, context, capability and placement do not reassign them. At material phase change or lost currentness, load the current routed procedure/Contract/Plan and applicable canary. Canary never expands authority; RED suspends only its experimental delta. Missing authority/procedure/canary/candidate blocks only its path; unrelated authorized work continues.
 - A scoped repository implementation assignment conditionally authorizes commit/branch/PR. Landing requires current independent review and exact-head/composition gates and stops on current `HOLD`/`DENIED`; deployment, activation, migration, credentials and provider-production effects are separate.
 - Human Review bounds do not grant activation. Only current direct assignment or a `CURRENT` grant authorizes the exact effect/surface. Within it, reversible bounded activation, rollback/disable and readback are agent-owned; protected effects retain their existing requirements.
@@ -83,7 +83,8 @@ resolved through the authenticated provider-neutral Switchstand HTTP/OAuth MCP i
 config. It may identify current routes or candidate WorkIds, but it never supplies assignment,
 focus, ownership, or effect authority. Use it instead of broad search or candidate documents;
 substantive work still requires Marco's direct assignment or an explicit current grant for the
-exact WorkId. Project Settings may point there but is not parallel authority.
+exact WorkId. For the direct-assignment creation above, `START HERE` supplies placement, not
+authority. Project Settings may point there but is not parallel authority.
 
 ## Codex roles and shared engineering process
 
