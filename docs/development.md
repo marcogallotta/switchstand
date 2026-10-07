@@ -429,3 +429,24 @@ mode-required Docker result are all valid; internal mode never changes its requi
 Planner identity,
 mode, selected membership, JUnit, and timings are retained with the authoritative result. There is
 no telemetry service or second test scheduler.
+
+The Quality policy job also records an `adaptive_full_suite_shadow` decision in its
+observational identity. `FULL_SUITE_DUE`, `NOT_DUE`, and `UNKNOWN` are computed from the exact
+candidate, the newest successful broad result in the current workflow generation, ancestry,
+commit/change budgets, and a 24-hour maximum age. This shadow decision never dispatches CI or
+advances a watermark. Default-branch pushes and the daily schedule remain unconditional full-suite
+backstops, independently of the shadow result.
+
+Stack qualification uses the existing `switchstand-quality-v1` catalogue and one typed
+proportional-evidence predicate. Catalogue evidence, focused layer evidence, cumulative top
+evidence, runtime lifecycle evidence, and claim-specific `WAKEFUL_REAL_HOST` evidence must be
+explicitly required and passed; missing, unknown, or undeclared dimensions fail closed. Landing
+readiness derives from those receipts and cannot be supplied as an unbound boolean.
+
+`wakeful_host_qualification.py` validates one exact, receipt-bound real-host journey: candidate and
+launcher/profile/config digests, persistent PTY session, exact registration, committed nonce,
+visible wake without stdin, same-session assistant turn, consumption, and zero queue/wake/source
+residue. The stable zero-turn/no-rollout fixture remains a negative control. Unit tests validate the
+predicate only; the required ordinary `codex-dispatch` PILOT journey remains a separate exact-host
+qualification and does not activate Wakeful.
+
