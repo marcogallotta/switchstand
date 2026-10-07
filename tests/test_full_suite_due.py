@@ -1,10 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from switchstand.full_suite_due import (
-    FullSuiteInputs,
-    FullSuitePolicy,
-    evaluate_full_suite_due,
-)
+from switchstand.full_suite_due import FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due
 
 NOW = datetime(2026, 10, 7, tzinfo=UTC)
 POLICY = FullSuitePolicy(20, 24 * 60 * 60, 100)
@@ -13,12 +9,11 @@ POLICY = FullSuitePolicy(20, 24 * 60 * 60, 100)
 def inputs(**changes: object) -> FullSuiteInputs:
     values: dict[str, object] = {
         "landed_sha": "b" * 40,
-        "baseline_sha": "a" * 40,
-        "baseline_completed_at": NOW - timedelta(hours=1),
+        "baseline_sha": "a" * 40, "baseline_completed_at": NOW - timedelta(hours=1),
         "evaluated_at": NOW,
-        "commits_since_baseline": 2,
-        "changed_paths_since_baseline": 8,
+        "commits_since_baseline": 2, "changed_paths_since_baseline": 8,
         "ancestry_verified": True,
+        "planner_policy_changed": False, "unresolved_hard_miss": False,
     }
     values.update(changes)
     return FullSuiteInputs(**values)  # type: ignore[arg-type]
@@ -56,6 +51,8 @@ def test_unknown_never_becomes_not_due() -> None:
         inputs(changed_paths_since_baseline=-1),
         inputs(landed_sha="not-a-sha"),
         inputs(baseline_completed_at=NOW + timedelta(seconds=1)),
+        inputs(planner_policy_changed=None),
+        inputs(unresolved_hard_miss=None),
     )
     assert all(evaluate_full_suite_due(value, POLICY).status == "UNKNOWN" for value in cases)
 
