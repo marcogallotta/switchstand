@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from switchstand.qualification_lineage import qualification_attempt_observation
+
 
 def collect(junit: Path, identity: dict[str, Any], execution_kind: str,
             planner: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -30,6 +32,7 @@ def collect(junit: Path, identity: dict[str, Any], execution_kind: str,
         total = record["total_test_count"]
         if isinstance(total, int) and total > 0:
             record["selection_ratio"] = record["selected_count"] / total
+    record["qualification_attempt"] = qualification_attempt_observation(identity, planner)
     try:
         root = ElementTree.parse(junit).getroot()
         if root.tag not in ("testsuite", "testsuites"):
