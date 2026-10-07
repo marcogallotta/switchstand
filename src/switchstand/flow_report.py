@@ -167,6 +167,7 @@ async def _run_receipts(
                        else str(cast(UUID, execution["run_id"]))),
             "task_kind": request.task_kind, "continuation": request.continuation,
             "candidate_ref": request.candidate_ref, "correlation_roles": roles,
+            "_request_content_digest": cast(str, row["content_digest"]),
             "state": ("COMPLETE" if completed is not None else
                       "RUNNING" if bound is not None else "REQUESTED"),
             "outcome": None if result is None else result.outcome,
@@ -182,6 +183,109 @@ async def _run_receipts(
         "truncated": total > len(attempts),
         "cumulative_observed_duration_ms": cumulative, "attempts": attempts,
     }, True)
+
+
+def _process_shape_and_advisories(
+    run_receipts: Mapping[str, object], review_pickup: Mapping[str, object],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Project raw exact shape and conservative shadow-only anomaly signals."""
+    receipt_status = cast(str, run_receipts["status"])
+    attempts = cast(list[dict[str, object]], run_receipts.get("attempts", []))
+    by_kind: dict[str, int] = {}
+    by_state: dict[str, int] = {}
+    continuations = 0
+    for attempt in attempts:
+        kind = cast(str, attempt["task_kind"])
+        state = cast(str, attempt["state"])
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        by_state[state] = by_state.get(state, 0) + 1
+        continuations += attempt["continuation"] != "START"
+    repeated: dict[str, list[dict[str, object]]] = {}
+    for attempt in attempts:
+        if (attempt.get("task_kind") == "VALIDATION"
+                and isinstance(attempt.get("observed_duration_ms"), int)):
+            repeated.setdefault(
+                cast(str, attempt["_request_content_digest"]), []
+            ).append(attempt)
+    repeated_groups = [{
+        "group_id": values[0]["request_id"],
+        "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        "attempt_count": len(values),
+        "cumulative_observed_duration_ms": sum(
+            cast(int, value["observed_duration_ms"]) for value in values
+        ),
+        "request_ids": [value["request_id"] for value in values],
+        "operation_ids": [value["operation_id"] for value in values],
+    } for _digest, values in sorted(repeated.items()) if len(values) >= 2]
+    for attempt in attempts:
+        attempt.pop("_request_content_digest", None)
+    managed_status = receipt_status if receipt_status in {"KNOWN", "PARTIAL"} else "UNKNOWN"
+    managed_known = managed_status != "UNKNOWN"
+    process_shape: dict[str, object] = {
+        "status": "UNKNOWN" if managed_status == "UNKNOWN" else "PARTIAL",
+        "reason": (run_receipts.get("reason") if managed_status == "UNKNOWN"
+                   else "ONLY_EXACT_AVAILABLE_SOURCES_INCLUDED"),
+        "review_rounds": {
+            "status": "UNKNOWN", "reason": "HISTORICAL_OCCURRENCES_NOT_PROJECTED",
+            "count": None,
+        },
+        "pull_requests": {
+            "status": "UNKNOWN", "reason": "EXACT_WORK_ID_CORRELATION_UNAVAILABLE",
+            "count": None, "changed_lines": None, "forecast": None,
+        },
+        "managed_attempts": {
+            "status": managed_status,
+            "reason": run_receipts.get("reason"),
+            "total": run_receipts.get("total_attempts") if managed_known else None,
+            "retained": run_receipts.get("retained_attempts") if managed_known else None,
+            "truncated": run_receipts.get("truncated") if managed_known else None,
+            "cumulative_observed_duration_ms": (
+                run_receipts.get("cumulative_observed_duration_ms")
+                if managed_known else None
+            ),
+            "retained_by_kind": dict(sorted(by_kind.items())) if managed_known else None,
+            "retained_by_state": dict(sorted(by_state.items())) if managed_known else None,
+            "retained_continuations": continuations if managed_known else None,
+            "repeated_identical_validation_requests": (
+                repeated_groups if managed_known else None
+            ),
+        },
+        "correction_rework_rounds": {
+            "status": "UNKNOWN", "reason": "CONTINUATION_IS_NOT_REWORK_PROOF",
+            "count": None,
+        },
+    }
+
+    advisories: list[dict[str, object]] = [{
+        "code": "REVIEW_UNPICKED", "mode": "SHADOW", "status": "UNKNOWN",
+        "reason": "MEASURED_PICKUP_BASELINE_UNAVAILABLE",
+        "evidence": {
+            "current_projection_status": review_pickup.get("status"),
+            "current_unpicked": review_pickup.get("unpicked"),
+            "current_request_age_ms": review_pickup.get("oldest_request_age_ms"),
+        },
+    }]
+    advisories.append({
+        "code": "REPEATED_EXPENSIVE_ATTEMPT", "mode": "SHADOW",
+        "status": "UNKNOWN", "reason": "MATERIAL_CLEARING_CHANGE_NOT_CORRELATED",
+        "evidence": {
+            "identical_completed_validation_groups": (
+                len(repeated_groups) if managed_known else None
+            ),
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        },
+    })
+    advisories.extend((
+        {
+            "code": "WORK_SHAPE_EXPANSION", "mode": "SHADOW", "status": "UNKNOWN",
+            "reason": "STRUCTURED_FORECAST_AND_PR_SHAPE_NOT_CORRELATED", "evidence": {},
+        },
+        {
+            "code": "RECOVERY_DOMINATES", "mode": "SHADOW", "status": "UNKNOWN",
+            "reason": "IMPLEMENTATION_AND_RECOVERY_INTERVALS_NOT_BOTH_TYPED", "evidence": {},
+        },
+    ))
+    return process_shape, advisories
 
 
 def _review_wait(
@@ -629,6 +733,9 @@ async def _snapshot(
         "prepared_at": _time(row.created_at), "decided_at": _time(row.decided_at),
         "wait": _review_wait(row.created_at, row.decided_at, captured_at),
     } for row in reviews]
+    process_shape, advisories = _process_shape_and_advisories(
+        run_receipts, review_pickup,
+    )
     ordered_evidence = [{
         "source": "work_events", "kind": row.subtype, "id": str(row.id),
         "at": _time(row.created_at), "duration_ms": 0,
@@ -722,6 +829,8 @@ async def _snapshot(
         "mcp_tracker_timing": mcp_timings,
         "run_receipts": run_receipts,
         "review_pickup": review_pickup,
+        "process_shape": process_shape,
+        "advisories": advisories,
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,

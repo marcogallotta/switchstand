@@ -85,6 +85,13 @@ stable-cohort service evidence, never task critical path. A separate additive
 source-coverage projection uses only `KNOWN`, `PARTIAL`, or `UNKNOWN`; absent exact candidate,
 test-run, or durable MCP-timing correlation stays `UNKNOWN`. Its concise format is a deterministic
 projection of the same JSON facts and coverage reasons, not another correlation or inference layer.
+Exact managed-run receipts also provide bounded raw process-shape counts and repeated identical
+completed-validation groups compared by a private validated content digest. The digest and any
+derived fingerprint stay private; output group identities reuse request IDs. Envelope identity
+does not prove the
+absence of external clearing changes, so the repeated-expensive-attempt advisory remains `UNKNOWN`.
+Missing pickup distributions, explicit shape caps, or comparable fix durations likewise remain
+`UNKNOWN`. Advisories are shadow-only and never change work or routing.
 Optional GitHub evidence requires a caller-supplied pull-request number and expected exact head;
 the existing repository-candidate qualifier validates their current identity. Exact-head and
 composition gate intervals remain separate, and overlapping intervals are unioned within each
