@@ -2,7 +2,11 @@ from uuid import uuid4
 
 import pytest
 
-from switchstand.work_policy import SEMANTIC_FIELDS, validate_resultant_state
+from switchstand.work_policy import (
+    SEMANTIC_FIELDS,
+    validate_create_state,
+    validate_resultant_state,
+)
 
 
 def state(**changes: str | None) -> dict[str, str | None]:
@@ -49,3 +53,40 @@ def test_coherent_resultant_state_is_accepted(values: dict[str, str | None]) -> 
 def test_semantic_field_boundary_excludes_legacy_and_content_fields() -> None:
     assert "review_next_action" not in SEMANTIC_FIELDS
     assert SEMANTIC_FIELDS.isdisjoint({"title", "notes"})
+
+
+@pytest.mark.parametrize("values", [
+    state(),
+    state(lifecycle_state="WAITING", wait_kind="human", unblock_condition="answer",
+          next_due="2026-10-08", next_action_class="NONE", next_action_ref="NONE"),
+    state(lifecycle_state="DEFERRED", wait_kind="date", unblock_condition="2026-11-01",
+          next_due="2026-11-01", next_action_class="NONE", next_action_ref="NONE"),
+])
+def test_substantive_create_requires_complete_action_or_wait(
+    values: dict[str, str | None],
+) -> None:
+    validate_create_state(parented=True, work_type="Task", **values)
+
+
+def test_ownerless_create_is_only_inert_parented_evidence() -> None:
+    values = state(
+        owner_key="NONE", next_action_class="NONE", next_action_ref="NONE",
+    )
+    validate_create_state(parented=True, work_type="Evidence", **values)
+    with pytest.raises(ValueError):
+        validate_create_state(parented=False, work_type="Evidence", **values)
+
+
+@pytest.mark.parametrize("changes", [
+    {"work_type": "UNKNOWN"},
+    {"lifecycle_state": "UNKNOWN"},
+    {"owner_key": "UNKNOWN"},
+    {"canonical_root": "UNKNOWN"},
+    {"next_action_class": "NONE", "next_action_ref": "NONE"},
+])
+def test_opaque_or_incomplete_substantive_create_is_rejected(
+    changes: dict[str, str | None],
+) -> None:
+    work_type = changes.pop("work_type", "Task")
+    with pytest.raises(ValueError):
+        validate_create_state(parented=True, work_type=work_type, **state(**changes))

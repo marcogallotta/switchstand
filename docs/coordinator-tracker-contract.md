@@ -28,6 +28,72 @@ Assignment is not progress. A lane with an owner but no attributable pickup/prog
 
 Merge or landing is not live completion. Keep implementation, merge, deployment, activation, adoption, verification, and proven-live remainder distinct, and keep post-merge activation/reliance work visible until terminal evidence or explicit deferral.
 
+## Recover incomplete coverage without adopting history
+
+Historical recovery is exceptional and begins only when Root cannot prove complete
+coverage of its assigned portfolio. Recover progressively and stop as soon as the
+current picture is sufficient:
+
+1. reconcile Marco's current attributable direction, acknowledged addressed
+   handoffs, and exact currently owned WorkIds;
+2. reconcile durable open obligations, reviews, messages, watches, dependencies,
+   and current work state for those exact identities;
+3. use provider-neutral navigation or admitted search only to resolve a known gap;
+4. read bounded history with the explicit `recovery` purpose only while coverage
+   remains incomplete.
+
+A partial, stale, malformed, or unavailable source never proves complete coverage.
+Do not broaden recovery merely because more history exists.
+
+Classify every recovered subject exactly once:
+
+- `PROPOSED_OWNED_TASK` — a substantive candidate that may belong in Root's portfolio but lacks current attributable ownership;
+- `REVIEW_OCCURRENCE` — a review event or obligation attached to exact work, not another owned task;
+- `DEPENDENCY_REFERENCE` — work read to understand an owned dependency or blocker;
+- `EVIDENCE_CONTEXT` — evidence that informs current work without becoming work;
+- `INSPECTED_NOT_OWNED` — deliberately inspected work outside the owned portfolio;
+- `SUPERSEDED_HISTORY` — historical state displaced by newer current evidence;
+- `MISSING_ID` — a potentially relevant record without an exact WorkId;
+- `UNCERTAIN` — evidence whose current meaning or relation cannot be established.
+
+These classifications are recovery dispositions in the existing derived coordination cache,
+not authority or a second work store. History, remit, project placement, dependency position,
+readability, and classification never assign work or transfer ownership.
+
+Adoption is proposal-first. For each `PROPOSED_OWNED_TASK`, surface the exact WorkId, recovery
+source, reason it may belong, and the consequence of leaving it unowned. It remains unowned
+until Marco directly confirms that exact task or a current grant assigns it. After confirmation,
+reread the exact work before adding it to the owned picture. Never bulk-adopt inferred candidates.
+
+The handoff obligations manifest records the exact currently owned WorkIds, a count for every
+recovery classification including zero, and every remaining unknown with its exact WorkId when
+known. Counts describe only the bounded recovery set; they are not a workspace-wide inventory.
+`MISSING_ID`, `UNCERTAIN`, or incomplete source coverage remains explicit and prevents a
+complete-coverage claim, but does not block truthful handoff of the known portfolio.
+
+## Split outcomes only when control improves
+
+Decomposition is a coordination decision, not a measure of task size. Split work only when both
+conditions hold:
+
+1. the current work contains at least two distinct outcomes, rather than implementation steps;
+2. separate WorkIds provide a real control benefit through a different owner, blocker or
+   dependency, review path, priority, or the ability to make independent progress.
+
+Before dispatching a split, account for **100% of the original outcome**: map every part to the
+originating work or exactly one child, preserve the original completion condition across that map,
+and leave no implicit remainder. Preserve every existing WorkId and its history; decomposition may
+add genuine child WorkIds, but it must not replace or re-key existing work, silently reassign its
+owner or priority, or grant authority.
+
+Do not split technical steps, tightly coupled work, or work whose owner, blockers, review path,
+priority, and progress controls remain materially the same. Keep those execution details in the
+current work's checkpoint or plan.
+
+Do not introduce a numeric size, count, age, or line threshold, and do not build a scheduler,
+ownership registry, or automatic splitter. When the outcome/control test does not pass, retain one
+WorkId.
+
 ## Reconcile priority; do not replay it
 
 Root may reason about dependencies, blockers, safety, collisions, and feasibility. It may recommend priority. It must not invent product-value priority.
@@ -103,6 +169,22 @@ Focus changes, `SENT`, child completion, merge, or an independent agent launch d
 Until a handoff has attributable pickup, the existing owner retains the obligation.
 
 Keep implemented, landed, deployed, activated, and live claims distinct enough that one is never mistaken for another.
+
+## Keep durable control current
+
+The canonical task-control capsule is a checkpoint, not authority, priority, a scheduler, or an
+automatic resume mechanism. Before the next consequential effect after an action, correction, or
+material revision, refresh exact work and record/read a `CURRENT` checkpoint. Its objective,
+completion condition, proof, targets, progress evidence, unknowns, attributable corrections,
+suspended return, and do-not-retry/failed-route references must describe the work actually being
+continued; its intended effect class is descriptive only.
+
+Before suspending for a human tangent, preserve the exact return obligation and condition. On
+resume or re-entry, after replacement, and before handoff or `ASSIGNMENT_COMPLETE`, reread exact
+work, recover a `CURRENT` checkpoint, and explicitly recommit to its objective. A `STALE`, missing,
+or unreadable checkpoint remains `STALE`/`UNKNOWN` and blocks only the dependent consequential or
+terminal claim. Note-only progress does not itself stale the checkpoint; owner, lifecycle,
+action/wait, root, parent, or dependency changes do.
 
 ## Marco surface: compress, do not dump
 

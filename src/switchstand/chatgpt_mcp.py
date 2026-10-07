@@ -77,6 +77,8 @@ from .reviews import (
     ReviewSubmit,
     ReviewVerdict,
 )
+from .task_control import DurableControlCapsule, TaskControlCheckpointResult, TaskControlReadResult
+from .work_hygiene import HygieneGate, WorkHygieneResult
 
 HistoryPurpose = Literal["investigation", "recovery", "legacy_reconciliation"]
 AppendPurpose = Literal["provenance", "investigation", "legacy_reconciliation"]
@@ -169,9 +171,10 @@ def project_activation_continuity(result: ContinuityResult) -> ActivationContinu
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency"]
+    kind: Literal["parent", "dependency", "placement"]
     action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
+    project_id: UUID | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
@@ -180,15 +183,26 @@ class OrdinaryRelationPatch(ClosedModel):
                 raise ValueError("parent relation requires set or clear")
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
+            if self.project_id is not None:
+                raise ValueError("parent relation forbids unrelated fields")
         elif self.kind == "dependency" and (
             self.action not in {"add", "remove"} or self.target_work_id is None
         ):
             raise ValueError("dependency relation requires target and add/remove")
+        elif self.kind == "dependency" and self.project_id is not None:
+            raise ValueError("dependency relation forbids unrelated fields")
+        elif self.kind == "placement" and (
+            self.action not in {"add", "remove"}
+            or self.project_id is None
+            or self.target_work_id is not None
+        ):
+            raise ValueError("placement requires project and add/remove")
         return self
 
     def internal(self) -> RelationPatch:
         return RelationPatch(
             kind=self.kind, action=self.action, target_work_id=self.target_work_id,
+            project_id=self.project_id,
         )
 
 
@@ -202,6 +216,8 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_event",
     "agent_message_pending",
     "capability_preflight_get",
+    "task_control_get",
+    "work_hygiene_check",
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
@@ -218,6 +234,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_recover",
     "agent_message_result_send",
     "agent_message_disposition",
+    "task_control_checkpoint",
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
@@ -529,6 +546,35 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
+        if service.canonical_work_active:
+            evidence = (
+                parent_work_id is not None
+                and work_type == "Evidence"
+                and owner_key == "NONE"
+            )
+            if not evidence:
+                if owner_key != "SELF":
+                    return service.denied(
+                        "work_create", "canonical_owner_must_be_self",
+                        "Use SELF for substantive work; ownership never grants create authority.",
+                    )
+                context = await agent_context()
+                if isinstance(context, tuple):
+                    status, reason = context
+                    if status == "recovery_required":
+                        return GuardOutcome(
+                            status="unknown", operation="work_create",
+                            operation_id=operation_id,
+                            reason=reason, effect="not_sent", retry="none",
+                            next_action="Restore the registered runtime identity, then retry.",
+                        )
+                    return GuardOutcome(
+                        status="denied", operation="work_create",
+                        operation_id=operation_id,
+                        reason=reason, effect="not_sent", retry="none",
+                        next_action=unregistered_agent_next_action,
+                    )
+                owner_key = f"agent:{context.mailbox.name_key}"
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
             project_id=project_id,
@@ -539,6 +585,43 @@ def build_ordinary_tools(
             next_action_class=next_action_class, next_action_ref=next_action_ref,
         ))
         audited("work_create", str(parent_work_id or project_id), result.status)
+        return result
+
+    async def task_control_get(
+        api_version: Literal["1"], work_id: UUID,
+    ) -> TaskControlReadResult:
+        """Read the latest durable control capsule and server-computed currentness."""
+        del api_version
+        correlate(work_id)
+        result = await service.task_control_get(work_id)
+        audited("task_control_get", str(work_id), result.status)
+        return result
+
+    async def work_hygiene_check(
+        api_version: Literal["1"], work_id: UUID, observed_revision: str,
+        gate: HygieneGate,
+    ) -> WorkHygieneResult:
+        """Read deterministic readiness evidence; never repair or schedule work."""
+        del api_version
+        correlate(work_id)
+        result = await service.work_hygiene_check(work_id, observed_revision, gate)
+        audited("work_hygiene_check", str(work_id), result.status)
+        return result
+
+    async def task_control_checkpoint(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        observed_work_revision: str,
+        expected_checkpoint_generation: Annotated[int | None, Field(ge=1)],
+        capsule: DurableControlCapsule,
+    ) -> TaskControlCheckpointResult:
+        """CAS-replace one owner checkpoint; effect labels never grant authority."""
+        del api_version
+        correlate(work_id)
+        result = await service.task_control_checkpoint(
+            operation_id, work_id, observed_work_revision,
+            expected_checkpoint_generation, capsule,
+        )
+        audited("task_control_checkpoint", str(work_id), result.status)
         return result
 
     async def work_update(
@@ -1320,6 +1403,9 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
+        ("task_control_get", task_control_get),
+        ("work_hygiene_check", work_hygiene_check),
+        ("task_control_checkpoint", task_control_checkpoint),
         ("work_update", enriched_work_update if (
             service.outcome_state_enabled or service.activation_continuity is not None
         ) else work_update),

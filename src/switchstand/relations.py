@@ -94,6 +94,8 @@ class RelationGateway:
         self, principal: PrincipalContext, request: ProtectedRelation,
         grant: WorkGrant, qualification: str,
     ) -> PreparedMutation | GuardOutcome:
+        if request.patch.project_id is not None:
+            return self.guard(request, "denied", "provider_relation_not_supported")
         handle = await self.state.get(request.work_id)
         if handle is None:
             return self.guard(request, "denied", "work_not_bound")

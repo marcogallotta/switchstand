@@ -32,7 +32,7 @@ class WorkGrant(ClosedModel):
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
         "work_relate", "priority_claim", "message", "agent_task", "implementation_request",
-        "activation_continuity"
+        "activation_continuity", "task_control"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -145,6 +145,7 @@ class RelationPatch(ClosedModel):
     kind: Literal["assignee", "placement", "parent", "dependency"]
     action: Literal["set", "clear", "add", "remove", "move"]
     target_work_id: UUID | None = None
+    project_id: UUID | None = None
     assignee_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     section_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
@@ -157,32 +158,40 @@ class RelationPatch(ClosedModel):
             if (self.action == "set") != (self.assignee_gid is not None):
                 raise ValueError("assignee target does not match action")
             if any(value is not None for value in (
-                self.target_work_id, self.project_gid, self.section_gid
+                self.target_work_id, self.project_id, self.project_gid, self.section_gid
             )):
                 raise ValueError("assignee relation forbids unrelated fields")
         elif self.kind == "placement":
-            if (
-                self.action not in {"add", "move", "remove"} or self.project_gid is None
+            canonical = self.project_id is not None
+            provider = self.project_gid is not None
+            if canonical == provider:
+                raise ValueError("placement requires exactly one project identity")
+            if canonical:
+                if self.action not in {"add", "remove"} or any(value is not None for value in (
+                    self.target_work_id, self.assignee_gid, self.project_gid, self.section_gid,
+                )):
+                    raise ValueError("canonical placement requires project and add/remove")
+            elif (
+                self.action not in {"add", "move", "remove"}
+                or self.target_work_id is not None
+                or self.assignee_gid is not None
+                or (self.action == "remove" and self.section_gid is not None)
             ):
-                raise ValueError("provider placement requires project and add/move/remove")
-            if self.target_work_id is not None or self.assignee_gid is not None or (
-                self.action == "remove" and self.section_gid is not None
-            ):
-                raise ValueError("placement relation fields do not match action")
+                raise ValueError("provider placement fields do not match action")
         elif self.kind == "parent":
             if self.action not in {"set", "clear"}:
                 raise ValueError("parent relation requires set or clear")
             if (self.action == "set") != (self.target_work_id is not None):
                 raise ValueError("parent target does not match action")
             if any(value is not None for value in (
-                self.assignee_gid, self.project_gid, self.section_gid
+                self.project_id, self.assignee_gid, self.project_gid, self.section_gid
             )):
                 raise ValueError("parent relation forbids unrelated fields")
         else:
             if self.action not in {"add", "remove"} or self.target_work_id is None:
                 raise ValueError("dependency relation requires target and add/remove")
             if any(value is not None for value in (
-                self.assignee_gid, self.project_gid, self.section_gid
+                self.project_id, self.assignee_gid, self.project_gid, self.section_gid
             )):
                 raise ValueError("dependency relation forbids unrelated fields")
         return self

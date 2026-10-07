@@ -259,6 +259,41 @@ async def test_work_create_routes_provider_neutral_project_target(monkeypatch):
     assert request.parent_work_id is None and request.project_id == project_id
     assert request.project_gid is None and request.canonical_root == str(ACTIVE)
 
+
+async def test_canonical_create_derives_self_owner_from_registered_mailbox(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    subject.messages = SimpleNamespace(engine=object())
+    mailbox = AgentMailbox(
+        name="Root", name_key="root", endpoint_id=uuid4(),
+        principal_key=PRINCIPAL.key, session_key="session", generation=1,
+    )
+    lookup = SimpleNamespace(for_actor=AsyncMock(return_value=AgentMailboxResult(
+        status="ok", mailbox=mailbox,
+    )))
+    monkeypatch.setattr(chatgpt_mcp, "AgentMailboxState", lambda _engine: lookup)
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "session"))["work_create"]
+
+    await tool(
+        api_version="1", operation_id=uuid4(), title="Child", parent_work_id=ACTIVE,
+        work_type="Task", lifecycle_state="CURRENT", owner_key="SELF",
+        wait_kind="NONE", unblock_condition="NONE", next_due="NONE",
+        next_action_class="OWNER_CAN_DO", next_action_ref="implement",
+    )
+    request = create.await_args.args[0]
+    assert request.owner_key == "agent:root"
+
+    denied = await tool(
+        api_version="1", operation_id=uuid4(), title="Wrong owner", parent_work_id=ACTIVE,
+        work_type="Task", lifecycle_state="CURRENT", owner_key="agent:root",
+        wait_kind="NONE", unblock_condition="NONE", next_due="NONE",
+        next_action_class="OWNER_CAN_DO", next_action_ref="implement",
+    )
+    assert denied.reason == "canonical_owner_must_be_self"
+
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()
     subject.outcome_state_enabled = True
@@ -399,6 +434,22 @@ def test_ordinary_relation_patch_converts_provider_neutral_targets():
             "kind": "parent", "action": "set", "target_work_id": ACTIVE,
             "project_gid": "123",
         })
+    project_id = uuid4()
+    placement = OrdinaryRelationPatch(
+        kind="placement", action="add", project_id=project_id,
+    ).internal()
+    assert placement.project_id == project_id
+    assert placement.project_gid is None and placement.section_gid is None
+    for invalid in (
+        {"kind": "placement", "action": "move", "project_id": project_id},
+        {"kind": "placement", "action": "add"},
+        {"kind": "placement", "action": "add", "project_id": project_id,
+         "target_work_id": ACTIVE},
+        {"kind": "dependency", "action": "add", "target_work_id": ACTIVE,
+         "project_id": project_id},
+    ):
+        with pytest.raises(ValidationError):
+            OrdinaryRelationPatch.model_validate(invalid)
 
 
 @pytest.mark.parametrize("field", ["principal", "role", "grant", "allowed_operations"])
@@ -633,6 +684,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
             "work_history", "work_event", "work_append", "capability_preflight_get",
             "work_create", "work_update", "work_relate",
+            "task_control_get", "task_control_checkpoint", "work_hygiene_check",
             "agent_register", "agent_takeover", "agent_transfer_request",
             "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
@@ -729,7 +781,10 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         )
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
-        assert relation["properties"]["kind"]["enum"] == ["parent", "dependency"]
+        assert relation["properties"]["kind"]["enum"] == [
+            "parent", "dependency", "placement",
+        ]
+        assert "project_id" in relation["properties"]
         assert "gid" not in str(relation).lower()
         got = (await client.call_tool("work_get", {"api_version": "1"})).structured_content
         assert got["item"]["id"] == str(ACTIVE)

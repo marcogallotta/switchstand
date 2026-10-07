@@ -8,7 +8,8 @@ from uuid import UUID
 
 from sqlalchemy import Column, Integer, Table, Text, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .grants import GuardOutcome, WorkGrant
 from .state import metadata, work_handles
@@ -51,6 +52,24 @@ class GrantState:
                 work_grants.c.principal_key == principal_key
             ))).scalar_one_or_none()
         return None if value is None else WorkGrant.model_validate(value)
+
+    async def unresolved_effect_ids(
+        self, work_id: UUID, connection: AsyncConnection | None = None,
+    ) -> tuple[str, ...] | None:
+        """Project unresolved existing effects for readiness checks."""
+        try:
+            if connection is None:
+                async with self.engine.connect() as owned:
+                    return await self.unresolved_effect_ids(work_id, owned)
+            values = (await connection.scalars(select(
+                    effect_intents.c.operation_id
+                ).where(
+                    (effect_intents.c.work_id == str(work_id))
+                    & (effect_intents.c.outcome["effect"].astext == "unknown")
+                ).order_by(effect_intents.c.operation_id))).all()
+            return tuple(cast(str, value) for value in values)
+        except (SQLAlchemyError, KeyError, TypeError, ValueError):
+            return None
 
     async def current_for_active_work(self, work_id: UUID) -> WorkGrant | None:
         """Resolve one current task-owner grant without exposing principal identity to callers."""

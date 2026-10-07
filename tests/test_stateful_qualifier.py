@@ -140,7 +140,7 @@ async def test_qualifier_journals_before_effect_and_emits_rechecked_receipt(
         expected_runtime_sha=runtime_sha,
         expected_run_id="run-1",
         expected_tools_sha256=tools_digest,
-        expected_migration="0024_mcp_operation_timings",
+        expected_migration="0025_task_control_checkpoints",
         key=key,
         receipt=receipt,
         repo=Path.cwd(),

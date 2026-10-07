@@ -363,6 +363,55 @@ class MessageState:
         if self.review_cutoff is not None and self.review_cutoff.utcoffset() is None:
             raise ValueError("review cutoff receipt must include a timezone")
 
+    async def open_handoff_watches(
+        self, work_id: UUID, connection: AsyncConnection | None = None,
+    ) -> tuple[str, ...] | None:
+        """Project open non-review requests explicitly bound to one WorkId."""
+        try:
+            if connection is None:
+                async with self.engine.connect() as owned:
+                    return await self.open_handoff_watches(work_id, owned)
+            values = (await connection.scalars(select(
+                    message_deliveries.c.delivery_id
+                ).join(messages, and_(
+                    messages.c.sender_work_id == message_deliveries.c.sender_work_id,
+                    messages.c.message_id == message_deliveries.c.message_id,
+                )).where(
+                    message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+                    messages.c.kind == "request",
+                    messages.c.route_ref.not_in(REVIEW_ROUTE_REFS),
+                    messages.c.payload["work_id"].astext == str(work_id),
+                ).order_by(message_deliveries.c.delivery_id))).all()
+            return tuple(f"message:{value}" for value in values)
+        except (SQLAlchemyError, KeyError, TypeError, ValueError):
+            return None
+
+    async def has_open_owner_proposal(
+        self, connection: AsyncConnection, *, work_id: UUID,
+        proposal_ref: str, owner_ref: str,
+    ) -> bool:
+        """Validate one typed, still-open proposed-owner message reference."""
+        prefix = "message:"
+        if not proposal_ref.startswith(prefix):
+            return False
+        try:
+            delivery_id = UUID(proposal_ref[len(prefix):])
+        except ValueError:
+            return False
+        return bool(await connection.scalar(select(message_deliveries.c.delivery_id).join(
+            messages, and_(
+                messages.c.sender_work_id == message_deliveries.c.sender_work_id,
+                messages.c.message_id == message_deliveries.c.message_id,
+            ),
+        ).where(
+            message_deliveries.c.delivery_id == delivery_id,
+            message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            messages.c.kind == "request",
+            messages.c.route_ref.not_in(REVIEW_ROUTE_REFS),
+            messages.c.payload["work_id"].astext == str(work_id),
+            messages.c.payload["proposed_owner"].astext == owner_ref,
+        ).limit(1)))
+
     async def pending_delivery_ids(
         self, binding: AgentMailbox, cursor: UUID | None = None,
     ) -> tuple[UUID, ...] | None:

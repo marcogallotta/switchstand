@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .canonical_work import canonical_metadata, canonical_work
@@ -203,6 +204,40 @@ class CanonicalRelationsRepository:
             else:
                 await connection.execute(delete(work_dependencies).where(condition))
             return await _bump(connection, work_id, version)
+
+    async def change_project_membership(
+        self, work_id: UUID, project_id: UUID, *, add: bool,
+        observed_version: int, connection: AsyncConnection | None = None,
+    ) -> int:
+        """Add or remove one admitted project membership without disturbing others."""
+        if connection is None:
+            async with self.engine.begin() as owned:
+                return await self.change_project_membership(
+                    work_id, project_id, add=add,
+                    observed_version=observed_version, connection=owned,
+                )
+        version = await _locked_version(connection, work_id, observed_version)
+        if await connection.scalar(select(projects.c.project_id).where(
+            projects.c.project_id == project_id
+        )) is None:
+            raise LookupError("project does not exist")
+        condition = (
+            (project_memberships.c.work_id == work_id)
+            & (project_memberships.c.project_id == project_id)
+        )
+        exists = await connection.scalar(select(project_memberships.c.work_id).where(condition))
+        if bool(exists) == add:
+            return version
+        if add:
+            await connection.execute(insert(project_memberships).values(
+                work_id=work_id, project_id=project_id, section_name=None,
+            ))
+        else:
+            await connection.execute(delete(project_memberships).where(condition))
+        confirmed = await connection.scalar(select(project_memberships.c.work_id).where(condition))
+        if bool(confirmed) != add:
+            raise SQLAlchemyError("project membership readback did not converge")
+        return await _bump(connection, work_id, version)
 
     async def replace_placements(
         self, work_id: UUID, values: tuple[ProjectPlacement, ...], observed_version: int,

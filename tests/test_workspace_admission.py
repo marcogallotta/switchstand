@@ -45,7 +45,11 @@ async def test_workspace_admission_is_stable_without_work_grant_and_preserves_ef
         assert first.can_write(handle.id)
         assert first.create_qualification == "real:ordinary-workspace"
         assert "work_relate" in first.operations
+        assert "task_control" not in first.operations
         assert first.relation_qualification == "real:ordinary-workspace"
+        enabled = WorkspaceAdmissionState(engine, resolve, task_control_enabled=True)
+        enabled_grant = await enabled.current(principal.key)
+        assert enabled_grant is not None and "task_control" in enabled_grant.operations
 
         operation_id = uuid4()
         unknown = GuardOutcome(

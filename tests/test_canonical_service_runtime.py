@@ -81,7 +81,13 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
     state, grants = PostgresState(engine), GrantState(engine)
     handle = await state.bind("asana", "123")
     works = CanonicalWorkRepository(engine)
-    await works.create(CurrentWork(handle.id, "Database task", False, "notes"))
+    await works.create(CurrentWork(
+        handle.id, "Database task", False, "notes",
+        priority="UNSET", work_type="Task", lifecycle_state="CURRENT",
+        canonical_root=str(handle.id), owner_key="agent:root",
+        wait_kind="NONE", unblock_condition="NONE", next_due="NONE",
+        next_action_class="OWNER_CAN_DO", next_action_ref="implement",
+    ))
     principal = PrincipalContext(
         issuer="test", subject=str(uuid4()), client_id="test", assurance="test",
     )
@@ -134,6 +140,9 @@ def create(subject: Subject, operation_id: UUID | None = None, **values: object)
     return ProtectedCreate.model_validate({
         "api_version": "1", "operation_id": operation_id or uuid4(), "grant_version": 1,
         "title": "Created", "notes": "created notes", "parent_work_id": subject.work_id,
+        "work_type": "Task", "lifecycle_state": "CURRENT", "owner_key": "agent:root",
+        "wait_kind": "NONE", "unblock_condition": "NONE", "next_due": "NONE",
+        "next_action_class": "OWNER_CAN_DO", "next_action_ref": "implement",
     } | values)
 
 
@@ -160,7 +169,9 @@ async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Sub
 async def test_service_updates_and_projects_coherent_lifecycle_routing(
     subject: Subject,
 ) -> None:
-    incomplete = await subject.service.update(update(subject, completed=True))
+    incomplete = await subject.service.update(update(
+        subject, completed=True, wait_kind="DEPENDENCY",
+    ))
     changed = await subject.service.update(update(
         subject, lifecycle_state="WAITING", wait_kind="DEPENDENCY",
         unblock_condition="dependency completes", next_due="2026-10-05",
@@ -362,9 +373,9 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
     stored = await subject.runtime.get(first.work_id)  # type: ignore[arg-type]
     assert stored.status == "ok" and stored.item is not None
     assert stored.item.title == "Created" and stored.item.notes == "created notes"
-    assert stored.item.routing.canonical_root == "UNKNOWN"
-    assert stored.item.routing.owner_key == "UNKNOWN"
-    assert stored.item.routing.next_action_class == "UNKNOWN"
+    assert stored.item.routing.canonical_root == str(subject.work_id)
+    assert stored.item.routing.owner_key == "agent:root"
+    assert stored.item.routing.next_action_class == "OWNER_CAN_DO"
     async with subject.engine.connect() as connection:
         assert await connection.scalar(select(work_parents.c.parent_work_id)) == subject.work_id
         handle = (await connection.execute(select(work_handles).where(
@@ -383,6 +394,8 @@ async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_cu
         lifecycle_state="CURRENT",
         wait_kind="NONE",
         unblock_condition="NONE",
+        next_action_class="UNKNOWN",
+        next_action_ref="UNKNOWN",
     ))
     coherent = await subject.service.create(create(
         subject,
@@ -390,8 +403,8 @@ async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_cu
         wait_kind="NONE",
         unblock_condition="NONE",
         next_due="NONE",
-        next_action_class="NONE",
-        next_action_ref="NONE",
+        next_action_class="OWNER_CAN_DO",
+        next_action_ref="implement",
     ))
 
     assert (invalid.status, invalid.effect, invalid.reason) == (
@@ -424,7 +437,7 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
 
     applied = await subject.service.create(request)
     replay = await subject.service.create(request)
-    existing_root = await subject.service.create(create(
+    conflicting_root = await subject.service.create(create(
         subject, parent_work_id=None, project_id=project_id,
         canonical_root=str(subject.work_id),
     ))
@@ -436,22 +449,17 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
     ))
 
     assert applied == replay and applied.effect == "applied"
-    assert existing_root.effect == "applied"
+    assert conflicting_root.reason == "root_must_be_self"
     assert missing.reason == "project_not_admitted" and missing.effect == "not_sent"
-    assert missing_root.reason == "canonical_root_not_bound"
+    assert missing_root.reason == "root_must_be_self"
     created = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert created.item is not None
     assert created.item.routing.canonical_root == str(applied.work_id)
-    rooted = await subject.runtime.get(existing_root.work_id)  # type: ignore[arg-type]
-    assert rooted.item is not None
-    assert rooted.item.routing.canonical_root == str(subject.work_id)
     async with subject.engine.connect() as connection:
         memberships = (await connection.execute(select(
             project_memberships.c.project_id, project_memberships.c.work_id
         ))).all()
-        assert set(memberships) == {
-            (project_id, applied.work_id), (project_id, existing_root.work_id),
-        }
+        assert set(memberships) == {(project_id, applied.work_id)}
 
 
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:

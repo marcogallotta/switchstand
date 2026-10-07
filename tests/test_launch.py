@@ -147,11 +147,16 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
     assert "oauth_resource" not in switchstand
     assert "auth" not in switchstand
-    assert set(switchstand["enabled_tools"]) == ordinary
+    # Task-control and hygiene are intentionally shipped inert. Enabling their
+    # client surface is part of the separately authorized activation step.
+    activation_gated = {
+        "task_control_get", "task_control_checkpoint", "work_hygiene_check",
+    }
+    assert set(switchstand["enabled_tools"]) == ordinary - activation_gated
     assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
     certification = servers["switchstand_certification"]
-    assert set(certification["enabled_tools"]) == ordinary
+    assert set(certification["enabled_tools"]) == ordinary - activation_gated
 
     managed = {
         "work_get", "work_history", "work_event", "work_append", "work_update", "message_pending",

@@ -62,3 +62,47 @@ def validate_resultant_state(
             raise ValueError("terminal work cannot carry a next action")
     elif not all((wait_kind, unblock_condition, next_due)):
         raise ValueError("unknown-lifecycle work requires explicit wait dispositions")
+
+
+def validate_create_state(
+    *, parented: bool, work_type: str | None, lifecycle_state: str | None,
+    canonical_root: str | None, owner_key: str | None, wait_kind: str | None,
+    unblock_condition: str | None, next_due: str | None,
+    next_action_class: str | None, next_action_ref: str | None,
+) -> None:
+    """Apply the strict Step-0 contract only to newly created canonical work."""
+    validate_resultant_state(
+        lifecycle_state=lifecycle_state, canonical_root=canonical_root,
+        owner_key=owner_key, wait_kind=wait_kind,
+        unblock_condition=unblock_condition, next_due=next_due,
+        next_action_class=next_action_class, next_action_ref=next_action_ref,
+    )
+    if canonical_root in {None, "NONE", "UNKNOWN"}:
+        raise ValueError("created work requires an exact root")
+
+    evidence = parented and work_type == "Evidence" and owner_key == "NONE"
+    if evidence:
+        if (
+            lifecycle_state != "CURRENT"
+            or (wait_kind, unblock_condition, next_due) != ("NONE", "NONE", "NONE")
+            or (next_action_class, next_action_ref) != ("NONE", "NONE")
+        ):
+            raise ValueError("ownerless Evidence must be an inert CURRENT child")
+        return
+
+    if work_type in {None, "UNKNOWN"}:
+        raise ValueError("substantive create requires an explicit work type")
+    if lifecycle_state not in {"CURRENT", "WAITING", "DEFERRED"}:
+        raise ValueError("substantive create requires an actionable lifecycle")
+    if owner_key is None or not owner_key.startswith("agent:") or not _exact(owner_key):
+        raise ValueError("substantive create requires derived agent ownership")
+    if lifecycle_state == "CURRENT":
+        if (wait_kind, unblock_condition, next_due) != ("NONE", "NONE", "NONE"):
+            raise ValueError("current create cannot carry a wait")
+        if not all(_exact(value) for value in (next_action_class, next_action_ref)):
+            raise ValueError("current create requires an exact next action")
+    elif (
+        (next_action_class, next_action_ref) != ("NONE", "NONE")
+        or not all(_exact(value) for value in (wait_kind, unblock_condition, next_due))
+    ):
+        raise ValueError("waiting create requires an exact wait and no action")

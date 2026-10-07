@@ -161,8 +161,12 @@ metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
-Ordinary creation is parent-WorkId-only, and ordinary relation changes accept only parent or
-dependency WorkIds; raw project, section, and assignee identifiers stay behind trusted internal
+Ordinary creation accepts one admitted parent WorkId or canonical project ID. Native canonical
+creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
+`SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
+parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
+relation changes accept parent/dependency WorkIds or canonical project-membership add/remove;
+provider project/section/assignee identifiers and placement moves stay behind trusted internal
 and provider boundaries.
 Every current tool is explicitly non-destructive and bounded rather than open-world. Current tools
 are idempotent under their stable identity or transition contracts. Registration rejects a new
@@ -280,7 +284,13 @@ messaging, and required continuation:
   wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
   existing get, search, create, scalar-update, parent, and dependency contracts. Protected creates
   atomically persist the row, requested parent or project placement, and effect receipt; protected
-  parent/dependency changes atomically persist the relation and receipt. The repository's ordinary
+  parent/dependency changes and canonical project-membership add/remove atomically persist the
+  relation and receipt. `task_control.py` owns append-only owner checkpoints whose server-computed
+  control basis excludes notes but includes reviewed routing and structural relations; missing or
+  unreadable checkpoints remain `UNKNOWN`, and intended effect labels never grant authority.
+  `work_hygiene.py` derives deterministic readiness from canonical work, that checkpoint API,
+  reviews, messages, typed finding capture, and unresolved effects. It creates no persistence,
+  scheduler, scanner, ownership registry, repair, or automatic work. The repository's ordinary
   edge constructs this runtime directly; deployment and cutover remain separate effects.
   Migration `0008` materializes the compact tables; migration `0014_canonical_routing` adds the
   nullable canonical-root, owner, and next-action routing projection without inferring legacy
@@ -290,7 +300,11 @@ messaging, and required continuation:
   the import carries a trustworthy timestamp. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
   state for semantic writes; legacy incomplete rows remain editable through title/notes-only
   changes. The repositories remain outside shared
-  `state.metadata` and are registered explicitly by the edge.
+  `state.metadata` and are registered explicitly by the edge. Migration
+  `0025_task_control_checkpoints` adds only the durable checkpoint table; schema migration,
+  service deployment, grant issuance, client refresh, and live reliance remain separate effects.
+  `SWITCHSTAND_TASK_CONTROL=1` is the explicit default-off service/grant selector; without it
+  checkpoint and hygiene calls report unavailable and ordinary admission has no write operation.
 - `priority_claim_service.py` owns an injectable, default-off MCP projection. Reads expose exact
   work/project claims and explicit source currentness. The ordinary authenticated workspace
   adapter derives `HUMAN_PRIORITY` for SET/CLEAR requests made while following explicit current

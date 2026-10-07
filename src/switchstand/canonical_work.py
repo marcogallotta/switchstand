@@ -139,9 +139,15 @@ class CanonicalWorkRepository:
 
     async def get(self, work_id: UUID) -> CurrentWork | None:
         async with self.engine.connect() as connection:
-            row = (await connection.execute(select(*_COLUMNS).where(
-                canonical_work.c.work_id == work_id
-            ))).one_or_none()
+            return await self.get_in(connection, work_id)
+
+    async def get_in(
+        self, connection: AsyncConnection, work_id: UUID,
+    ) -> CurrentWork | None:
+        """Read one item in a caller-owned coherent transaction snapshot."""
+        row = (await connection.execute(select(*_COLUMNS).where(
+            canonical_work.c.work_id == work_id
+        ))).one_or_none()
         return None if row is None else _item(row)
 
     async def get_locked(
