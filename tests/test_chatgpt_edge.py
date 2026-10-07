@@ -457,7 +457,7 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
 
     assert {
         "priority_claim_get", "priority_claim_record", "priority_context_get",
-        "review_submit",
+        "review_submit", "review_bundle_get",
     } <= injected_tools
     assert {"review_request", "review_get", "review_recover"} <= injected_tools
     assert [
