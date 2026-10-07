@@ -169,10 +169,8 @@ def test_managed_command_seals_activation_inputs_only_on_opt_in(tmp_path: Path) 
         tmp_path / "codex", tmp_path / "control", tmp_path / "writer", "task",
         activation_environment=environment,
     )
-    enabled = next(value for value in command if value.startswith(
-        "mcp_servers.switchstand.enabled_tools="))
-    configured = next(value for value in command if value.startswith(
-        "mcp_servers.switchstand.env="))
+    enabled = next(value for value in command if value.startswith("mcp_servers.switchstand.enabled_tools="))
+    configured = next(value for value in command if value.startswith("mcp_servers.switchstand.env="))
     assert "activation_obligation_transition" in enabled
     assert json.loads(configured.partition("=")[2]) == environment
     with pytest.raises(ValueError, match="exact launch environment"):

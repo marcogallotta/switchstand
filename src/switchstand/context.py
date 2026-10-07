@@ -433,8 +433,7 @@ def codex_command(
     ]
 
 
-def run(active: str, assignment: str, target_repo: Path | None = None, *,
-        activation_continuity: bool = False) -> None:
+def run(active: str, assignment: str, target_repo: Path | None = None, *, activation_continuity: bool = False) -> None:
     env = clean_environment(dict(os.environ))
     if activation_continuity:
         env["SWITCHSTAND_ACTIVATION_CONTINUITY"] = "1"
@@ -445,6 +444,7 @@ def run(active: str, assignment: str, target_repo: Path | None = None, *,
         os.execv(str(control / "scripts/switchstand"),
                  [str(control / "scripts/switchstand"), "--active", active,
                   *(["--target-repo", str(target_repo)] if target_repo else []),
+                  *(["--activation-continuity"] if activation_continuity else []),
                   "--", assignment])
     env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
     target = None

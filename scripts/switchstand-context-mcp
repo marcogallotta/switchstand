@@ -19,7 +19,7 @@ if [ "${SWITCHSTAND_ACTIVATION_CONTINUITY:-0}" = 1 ]; then
         "$SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT" \
         "$SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY"; do
         case "$value" in /*) ;; *) echo "activation input must be absolute" >&2; exit 1;; esac
-        [ -f "$value" ] && [ -r "$value" ] && [ ! -L "$value" ] || {
+        [ "$(realpath "$value")" = "$value" ] && [ -f "$value" ] && [ -r "$value" ] && [ ! -L "$value" ] || {
             echo "activation input must be a readable regular non-symlink" >&2; exit 1;
         }
     done

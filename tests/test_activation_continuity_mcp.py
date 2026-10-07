@@ -72,7 +72,7 @@ async def test_ordinary_mutation_absent_even_when_continuity_configured() -> Non
 
 
 async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None:
-    bound, selected = contract(), grant(operations=frozenset({"activation_continuity"}))
+    bound, selected = contract(), grant()
     continuity = Continuity(bound)
 
     class Grants:
@@ -94,7 +94,8 @@ async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None
         tool.name for tool in await plain.list_tools()
     }
     unavailable = await plain.call_tool("capability_preflight_get", {"api_version": "1"})
-    assert unavailable.structured_content["reasons"] == ["TOOL_NOT_EXPOSED"]
+    assert unavailable.structured_content["reasons"] == ["TOOL_NOT_EXPOSED", "OPERATION_NOT_GRANTED"]
+    selected = grant(operations=frozenset({"activation_continuity"}))
     activation = (continuity, resolve_technical, resolve_proof, (selected.id, selected.version))
     server = build_context_server(object(), ACTIVE, grants=Grants(), principal=PRINCIPAL,
                                   activation=activation)
@@ -112,6 +113,35 @@ async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None
                                  activation=(*activation[:3], (uuid4(), selected.version)))
     result = await stale.call_tool("capability_preflight_get", {"api_version": "1"})
     assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
+    selected = selected.model_copy(update={"state": "revoked"})
+    result = await build_context_server(object(), ACTIVE, grants=Grants(), principal=PRINCIPAL,
+        activation=(*activation[:3], (selected.id, selected.version))).call_tool(
+            "capability_preflight_get", {"api_version": "1"})
+    assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
+
+
+async def test_managed_preflight_closes_missing_stale_mismatched_and_failed_inputs() -> None:
+    bound, selected = contract(), grant(operations=frozenset({"activation_continuity"}))
+    continuity = Continuity(bound)
+    grants = service().admission_grants
+    grants.grant = selected
+    async def project(contracts, basis, proof_route=True):
+        async def resolve(_principal, _obligation_id):
+            if isinstance(basis, Exception):
+                raise basis
+            return basis
+        server = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+            activation=(contracts, resolve, resolve if proof_route else None, (selected.id, selected.version)))
+        return (await server.call_tool("capability_preflight_get", {"api_version": "1"})).structured_content
+    empty = Continuity(bound)
+    empty.contracts = {}
+    assert "CONTRACT_NOT_INSTALLED" in (await project(empty, None))["reasons"]
+    assert "TECHNICAL_PROOF_MISSING" in (await project(continuity, None))["reasons"]
+    assert "TECHNICAL_PROOF_STALE" in (await project(continuity, technical(bound).model_copy(update={"currentness": "STALE"})))["reasons"]
+    assert "TECHNICAL_PROOF_MISSING" in (await project(continuity, technical(bound).model_copy(update={"result": technical(bound).result.model_copy(update={"product_work_id": uuid4()})})))["reasons"]
+    assert "PROOF_ROUTE_MISSING" in (await project(continuity, technical(bound), False))["reasons"]
+    failed = await project(continuity, RuntimeError("currentness unavailable"))
+    assert (failed["status"], failed["actor_binding"], failed["technical_proof"]) == ("UNKNOWN", "UNKNOWN", "UNKNOWN")
 
 
 async def test_unresolved_runtime_and_proof_fail_closed_before_transition() -> None:

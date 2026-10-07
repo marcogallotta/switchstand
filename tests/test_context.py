@@ -57,16 +57,12 @@ def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: 
     subprocess.run([script], env=environment, check=True)
     assert "SWITCHSTAND_ACTIVATION_CONTINUITY=0" in capture.read_text()
     assert ":ro" not in capture.read_text()
-
-    inputs = {name: "value" for name in ACTIVATION_ENV}
-    inputs["SWITCHSTAND_ACTIVATION_CONTINUITY"] = "1"
-    inputs["SWITCHSTAND_PRODUCT_CURRENTNESS"] = "1"
-    inputs["SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES"] = '["work_get"]'
-    for name in (
-        "SWITCHSTAND_ACTIVATION_CONTRACTS_PATH",
-        "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT",
-        "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY",
-    ):
+    inputs = {name: "value" for name in ACTIVATION_ENV} | {
+        "SWITCHSTAND_ACTIVATION_CONTINUITY": "1", "SWITCHSTAND_PRODUCT_CURRENTNESS": "1",
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES": '["work_get"]',
+    }
+    paths = ("SWITCHSTAND_ACTIVATION_CONTRACTS_PATH", "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT", "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY")
+    for name in paths:
         source = tmp_path / name
         source.write_text("evidence")
         inputs[name] = str(source)
@@ -75,6 +71,9 @@ def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: 
     assert "SWITCHSTAND_ACTIVATION_CONTINUITY=1" in arguments
     assert arguments.count(":ro") == 3
     assert "SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES" in arguments
+    (tmp_path / "nested").mkdir()
+    inputs[paths[0]] = f"{tmp_path}/nested/../{paths[0]}"
+    assert subprocess.run([script], env=environment | inputs, check=False).returncode != 0
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -586,13 +585,13 @@ def test_run_reexecutes_updated_control_before_shared_effects(monkeypatch, tmp_p
     def execv(path, arguments):
         assert path == str(tmp_path / "scripts/switchstand")
         assert arguments == [
-            path, "--active", "1218483858041754", "--", "assignment",
+            path, "--active", "1218483858041754", "--activation-continuity", "--", "assignment",
         ]
         raise Reexec
 
     monkeypatch.setattr(context.os, "execv", execv)
     with pytest.raises(Reexec):
-        context.run("1218483858041754", "assignment")
+        context.run("1218483858041754", "assignment", activation_continuity=True)
 
 
 def test_clean_private_writer_fast_forwards_to_control(tmp_path):

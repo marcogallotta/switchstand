@@ -18,6 +18,7 @@ from .activation_continuity import (
     Transition,
     TransitionIntent,
     TransitionProof,
+    _technical_true,  # pyright: ignore[reportPrivateUsage]
 )
 from .activation_continuity_store import ActivationContinuity
 from .canonical_event_reads import CanonicalEventReader
@@ -83,8 +84,7 @@ from .task_runs import (
 )
 from .work_events import WorkEventRepository
 
-ActivationContext = tuple[ActivationContinuity, Callable[..., Awaitable[TechnicalBasis | None]],
-                          Callable[..., Awaitable[TransitionProof | None]], tuple[UUID, int]]
+ActivationContext = tuple[ActivationContinuity, Callable[..., Awaitable[TechnicalBasis | None]], Callable[..., Awaitable[TransitionProof | None]], tuple[UUID, int]]
 
 
 class PublicWorkItem(WorkSearchItem):
@@ -253,35 +253,39 @@ def register_activation_tools(
                  else await technical(principal, actor_contract.obligation_id))
         proof_state = "MISSING" if basis is None else (
             "STALE" if basis.currentness == "STALE" else
-            "READY" if basis.result.current == "TRUE" else
-            "UNKNOWN" if basis.result.current == "UNKNOWN" else "MISSING"
-        )
+            "UNKNOWN" if basis.result.current == "UNKNOWN" else
+            "READY" if actor_contract is not None and _technical_true(actor_contract, basis) else "MISSING")
         actor = ("UNKNOWN" if grant is None else
                  "CURRENT" if matches and grant.current() else "STALE")
         contract = "INSTALLED" if installed else "MISSING"
         route = "READY" if proof is not None else "MISSING"
         facts = (
             (not opted_in, "TOOL_NOT_EXPOSED"), (operation == "FALSE", "OPERATION_NOT_GRANTED"),
-            (actor == "STALE", "ACTOR_GRANT_STALE"),
-            (opted_in and not installed, "CONTRACT_NOT_INSTALLED"),
-            (opted_in and installed and actor_contract is None, "ACTOR_NOT_IN_CONTRACT"),
-            (actor == "STALE", "RUNTIME_STALE"),
-            (opted_in and proof_state == "MISSING", "TECHNICAL_PROOF_MISSING"),
-            (opted_in and proof_state == "STALE", "TECHNICAL_PROOF_STALE"),
+            (actor == "STALE", "ACTOR_GRANT_STALE"), (opted_in and not installed, "CONTRACT_NOT_INSTALLED"),
+            (opted_in and installed and actor_contract is None, "ACTOR_NOT_IN_CONTRACT"), (actor == "STALE", "RUNTIME_STALE"),
+            (opted_in and proof_state == "MISSING", "TECHNICAL_PROOF_MISSING"), (opted_in and proof_state == "STALE", "TECHNICAL_PROOF_STALE"),
             (opted_in and route == "MISSING", "PROOF_ROUTE_MISSING"),
         )
         unknown = actor == "UNKNOWN" or proof_state == "UNKNOWN"
         reasons = tuple(reason for failed, reason in facts if failed)
         return CapabilityPreflight(
-            surface="MANAGED_LAUNCH",
-            status="UNKNOWN" if unknown else "READY" if not reasons else "MISSING_CAPABILITY",
-            reasons=() if unknown else reasons, tool_exposed=opted_in,
-            operation_granted=operation, actor_binding=actor,
+            surface="MANAGED_LAUNCH", status="UNKNOWN" if unknown else "READY" if not reasons else "MISSING_CAPABILITY",
+            reasons=() if unknown else reasons, tool_exposed=opted_in, operation_granted=operation, actor_binding=actor,
             contract=contract if opted_in else "NOT_APPLICABLE",
             technical_proof=proof_state if opted_in else "NOT_APPLICABLE",
             acceptance_proof_route=route if opted_in else "NOT_APPLICABLE",
         )
-    closed_tool(server, "capability_preflight_get", preflight)
+    async def safe_preflight(api_version: Literal["1"]) -> CapabilityPreflight:
+        try:
+            return await preflight(api_version)
+        except Exception:  # noqa: BLE001 - read-only preflight must close resolver failures.
+            return CapabilityPreflight(
+                surface="MANAGED_LAUNCH", status="UNKNOWN", tool_exposed=opted_in,
+                operation_granted="UNKNOWN", actor_binding="UNKNOWN",
+                contract="UNKNOWN" if opted_in else "NOT_APPLICABLE",
+                technical_proof="UNKNOWN" if opted_in else "NOT_APPLICABLE",
+                acceptance_proof_route="UNKNOWN" if opted_in else "NOT_APPLICABLE")
+    closed_tool(server, "capability_preflight_get", safe_preflight)
     if not opted_in or continuity is None or grants is None or principal is None:
         return
 
@@ -302,11 +306,7 @@ def register_activation_tools(
                                              or (grant.id, grant.version) == expected_grant)
             if grant is None or "activation_continuity" not in grant.operations or not matches:
                 return ContinuityResult(status="UNKNOWN", reason="state_unavailable")
-            binding = RuntimeBinding(
-                actor_work_id=active,
-                binding_token=f"{principal.key}:{grant.id}:{grant.version}",
-                currentness="CURRENT",
-            )
+            binding = RuntimeBinding(actor_work_id=active, binding_token=f"{principal.key}:{grant.id}:{grant.version}", currentness="CURRENT")
             basis = None if technical is None else await technical(principal, obligation_id)
             sealed = None if proof is None else await proof(principal, grant, intent)
             return await continuity.transition(principal, grant, binding, intent, basis, sealed)
