@@ -9,14 +9,17 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .stacked_delivery import EvidenceDimension, ProportionalQualification
+
 REPOSITORY = "marcogallotta/switchstand"
 API = f"https://api.github.com/repos/{REPOSITORY}"
-CATALOGUE = "switchstand-quality-v2"
+CATALOGUE = "switchstand-quality-v1"
 GATES = (
     ("Exact-head Quality", "exact_head"),
     ("PR composition Quality", "composition"),
 )
 DETAILS_RE = re.compile(r"/actions/runs/(?P<run>[0-9]+)(?:/job/(?P<job>[0-9]+))?")
+PolicyMode = Literal["PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"]
 
 
 class QualificationGate(BaseModel):
@@ -40,6 +43,10 @@ class QualificationGate(BaseModel):
     failed_steps: list[str] = Field(default_factory=list)
     failure_excerpt: str | None = None
     detail_reason: str | None = None
+    policy_mode: PolicyMode | None = None
+    evidence_dimensions: list[EvidenceDimension] = Field(
+        default_factory=lambda: list[EvidenceDimension]()
+    )
 
 
 class RepositoryCandidateQualification(BaseModel):
@@ -55,6 +62,28 @@ class RepositoryCandidateQualification(BaseModel):
     catalogue: str = CATALOGUE
     gates: list[QualificationGate]
     reason: str | None = None
+
+    def proportional_evidence(
+        self, required: frozenset[EvidenceDimension],
+    ) -> ProportionalQualification:
+        """Project catalogue truth into the one shared qualification predicate."""
+
+        passed: set[EvidenceDimension] = set()
+        if self.status == "READY":
+            for gate in self.gates:
+                if (
+                    gate.state == "completed"
+                    and gate.conclusion == "success"
+                    and gate.reason is None
+                ):
+                    passed.update(gate.evidence_dimensions)
+        unknown: frozenset[EvidenceDimension] = (
+            required if self.status == "UNKNOWN" or self.head_sha is None else frozenset()
+        )
+        return ProportionalQualification(
+            self.head_sha or "", required, frozenset(passed), frozenset(unknown),
+            self.composition_sha,
+        )
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -137,6 +166,65 @@ def _excerpt(output: Any) -> str | None:
     if not text:
         return None
     return text[:1000] + ("…" if len(text) > 1000 else "")
+
+
+def _check_identity(check: dict[str, Any]) -> tuple[int | None, int | None]:
+    identity = DETAILS_RE.search(str(check.get("details_url") or ""))
+    if identity is None:
+        return None, None
+    return (
+        int(identity.group("run")),
+        int(identity.group("job")) if identity.group("job") else None,
+    )
+
+
+def _policy_evidence(
+    checks: list[dict[str, Any]], run_id: int | None, kind: str, head: str,
+) -> tuple[PolicyMode | None, list[EvidenceDimension], str | None]:
+    """Validate the typed evidence hidden behind the one stable Quality gate."""
+
+    if run_id is None:
+        return None, [], "policy-evidence-missing"
+
+    def same_run(check: dict[str, Any]) -> bool:
+        app = check.get("app")
+        check_run, _ = _check_identity(check)
+        return (
+            isinstance(app, dict)
+            and cast(dict[str, Any], app).get("slug") == "github-actions"
+            and check_run == run_id
+            and check.get("head_sha") == head
+        )
+
+    policies = [check for check in checks if check.get("name") == "Quality policy" and same_run(check)]
+    executions = [
+        check for check in checks
+        if str(check.get("name") or "").startswith("Quality execution / ") and same_run(check)
+    ]
+    docker_name = "Exact-head Docker lifecycle" if kind == "exact_head" else (
+        "PR composition Docker lifecycle"
+    )
+    docker = [check for check in checks if check.get("name") == docker_name and same_run(check)]
+    if len(policies) != 1 or len(executions) != 1 or len(docker) != 1:
+        return None, [], "policy-evidence-missing"
+    execution_name = str(executions[0]["name"])
+    raw_mode = execution_name.removeprefix("Quality execution / ")
+    if raw_mode not in {"PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"}:
+        return None, [], "policy-evidence-unknown"
+    mode = cast(PolicyMode, raw_mode)
+    if any(check.get("status") != "completed" for check in (*policies, *executions, *docker)):
+        return mode, [], "policy-evidence-running"
+    if policies[0].get("conclusion") != "success" or executions[0].get("conclusion") != "success":
+        return mode, [], "policy-evidence-failed"
+    expected_docker = "skipped" if mode == "PROMOTE_TEST_MODULE_ONLY_V1" else "success"
+    if docker[0].get("conclusion") != expected_docker:
+        return mode, [], "policy-evidence-conflicting"
+    dimensions: list[EvidenceDimension] = ["LAYER_CAUSAL_QUALITY"]
+    if kind == "composition":
+        dimensions.append("CUMULATIVE_TOP_QUALITY")
+    if mode == "FULL_FALLBACK":
+        dimensions.extend(("BROAD_QUALITY", "RUNTIME_LIFECYCLE"))
+    return mode, dimensions, None
 
 
 def _run_matches(
@@ -243,9 +331,7 @@ async def qualify_repository_candidate(
             conclusion = check.get("conclusion")
             conclusion = str(conclusion) if conclusion is not None else None
             details = str(check.get("details_url") or "")
-            identity = DETAILS_RE.search(details)
-            run_id = int(identity.group("run")) if identity else None
-            job_id = int(identity.group("job")) if identity and identity.group("job") else None
+            run_id, job_id = _check_identity(check)
             run: dict[str, Any] = {}
             if run_id is not None:
                 if run_id not in runs:
@@ -261,6 +347,11 @@ async def qualify_repository_candidate(
                 reason = "conflicting"
             elif kind == "composition" and composition_reason is not None:
                 reason = composition_reason
+            policy_mode, evidence_dimensions, policy_reason = _policy_evidence(
+                checks, run_id, kind, head,
+            )
+            if reason is None and policy_reason is not None:
+                reason = policy_reason
             failed_steps: list[str] = []
             failure_excerpt = None
             detail_reason = None
@@ -286,6 +377,7 @@ async def qualify_repository_candidate(
                 age_ms=_elapsed(started, now) if status == "queued" else None,
                 failed_steps=failed_steps, failure_excerpt=failure_excerpt,
                 detail_reason=detail_reason,
+                policy_mode=policy_mode, evidence_dimensions=evidence_dimensions,
             ))
         ready = composition_reason is None and all(g.reason is None for g in gates)
         result_reason = None if ready else (
