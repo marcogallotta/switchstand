@@ -14,6 +14,7 @@ from switchstand.codex_app_server import (
     open_private_append,
     prepare_socket,
     remote_command,
+    remove_owned_socket_entry,
     start_app_server,
     stop_process,
 )
@@ -94,6 +95,56 @@ time.sleep(10)
             assert process.poll() is None
         finally:
             stop_process(process, 1)
+
+
+def test_start_app_server_accepts_owned_symlink_to_private_socket() -> None:
+    with tempfile.TemporaryDirectory(prefix="wf-", dir=Path.home() / ".cache") as temporary:
+        home = Path(temporary)
+        socket_path = home / "app-server.sock"
+        target_path = home / "physical.sock"
+        log_path = home / "app-server.log"
+        codex = _executable(home / "codex", f"""\
+import os
+import socket
+import sys
+import time
+
+requested = sys.argv[-1].removeprefix("unix://")
+target = {str(target_path)!r}
+listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+listener.bind(target)
+listener.listen()
+os.symlink(target, requested)
+time.sleep(10)
+""")
+        process = start_app_server(
+            codex, home, socket_path, log_path, dict(os.environ), timeout=2,
+        )
+        try:
+            assert socket_path.is_symlink()
+            assert socket_path.stat().st_mode & 0o777 == 0o600
+            assert process.poll() is None
+        finally:
+            stop_process(process, 1)
+            remove_owned_socket_entry(socket_path)
+            target_path.unlink(missing_ok=True)
+
+
+def test_remove_owned_socket_entry_unlinks_alias_not_target() -> None:
+    with tempfile.TemporaryDirectory(prefix="wf-", dir=Path.home() / ".cache") as temporary:
+        home = Path(temporary)
+        target = home / "target.sock"
+        alias = home / "alias.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(target))
+        alias.symlink_to(target)
+        try:
+            remove_owned_socket_entry(alias)
+            assert not alias.exists()
+            assert target.exists()
+        finally:
+            listener.close()
+            target.unlink()
 
 
 def test_start_app_server_reports_child_exit() -> None:
