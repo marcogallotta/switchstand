@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import signal
@@ -10,12 +9,10 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from .agent_mailboxes import AgentMailboxState, chat_session_key
 from .codex_app_server import (
     open_private_append,
     remote_command,
@@ -23,8 +20,6 @@ from .codex_app_server import (
     stop_process,
 )
 from .codex_registration import prepare_registration
-from .codex_wakeful import CodexBinding, QueueClient, bind
-from .secure_file import atomic_replace_bytes, create_new_private_bytes, read_private_bytes
 
 CODEX_TERM_SECONDS = 10.0
 RUNNER_EOF_SECONDS = 12.0
@@ -67,181 +62,6 @@ def _diagnostic(spec: SessionSpec, event: str, **details: object) -> None:
     finally:
         if descriptor is not None:
             os.close(descriptor)
-
-
-def _database_url(path: Path) -> str:
-    metadata = path.lstat()
-    if (
-        path.is_symlink()
-        or not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-    ):
-        raise ValueError("Wakeful environment must be an owned mode-0600 regular file")
-    for line in path.read_text().splitlines():
-        if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key.strip() == "DATABASE_URL":
-            result = value.strip().strip("'\"")
-            if result:
-                return result
-    raise ValueError("Wakeful environment does not contain DATABASE_URL")
-
-
-@contextmanager
-def _configured_database(url: str):
-    previous = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = url
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = previous
-
-
-async def _freeze_config(
-    spec: SessionSpec, binding: CodexBinding, name: str, database_url: str,
-) -> Path:
-    from .chatgpt_edge import resource_service
-
-    with _configured_database(database_url):
-        async with resource_service() as (service, _runtime):
-            if service.messages is None:
-                raise ValueError("message state is unavailable")
-            result = await AgentMailboxState(service.messages.engine).by_name(name)
-    mailbox = result.mailbox
-    if (
-        result.status != "ok"
-        or mailbox is None
-        or mailbox.session_key != chat_session_key(f"codex:{binding.thread_id}")
-    ):
-        raise ValueError("registered mailbox does not match the exact Codex thread")
-    body = json.dumps({
-        "mailbox": mailbox.model_dump(mode="json"),
-        "binding": asdict(binding),
-        "codex_home": str(spec.home),
-        "codex": str(spec.codex),
-    }, sort_keys=True, separators=(",", ":")).encode()
-    path = spec.home / f"wakeful-{spec.start_record.name.removeprefix('start-commit.')}.json"
-    try:
-        create_new_private_bytes(path, body)
-    except FileExistsError:
-        if read_private_bytes(path) != body:
-            raise ValueError("Wakeful configuration identity changed") from None
-    return path
-
-
-async def _rebind_registration(
-    binding: CodexBinding, name: str, registration_thread: str, database_url: str,
-) -> str:
-    """Move one authenticated helper registration onto the proven live Codex thread."""
-    from .chatgpt_edge import resource_service
-
-    with _configured_database(database_url):
-        async with resource_service() as (service, _runtime):
-            if service.messages is None:
-                raise ValueError("message state is unavailable")
-            mailboxes = AgentMailboxState(service.messages.engine)
-            registered = await mailboxes.by_name(name)
-            mailbox = registered.mailbox
-            if (
-                registered.status != "ok"
-                or mailbox is None
-                or mailbox.session_key != chat_session_key(f"codex:{registration_thread}")
-            ):
-                raise ValueError("helper registration does not match its exact Codex thread")
-            moved = await mailboxes.takeover(
-                name, mailbox.principal_key, f"codex:{binding.thread_id}"
-            )
-            if moved.status != "ok" or moved.mailbox is None:
-                raise ValueError("live Codex mailbox rebind did not converge")
-            return moved.mailbox.name
-
-
-async def _existing_live_registration(
-    binding: CodexBinding, name: str, registration_thread: str | None, database_url: str,
-) -> str | None:
-    from .chatgpt_edge import resource_service
-
-    with _configured_database(database_url):
-        async with resource_service() as (service, _runtime):
-            if service.messages is None:
-                raise ValueError("message state is unavailable")
-            mailboxes = AgentMailboxState(service.messages.engine)
-            result = await mailboxes.by_name(name)
-            if result.status == "denied" and result.reason == "mailbox_not_found":
-                return None
-            mailbox = result.mailbox
-            if result.status != "ok" or mailbox is None:
-                raise ValueError("mailbox registration state is unavailable")
-            if mailbox.session_key == chat_session_key(f"codex:{binding.thread_id}"):
-                return mailbox.name
-            if (
-                registration_thread is not None
-                and mailbox.session_key == chat_session_key(f"codex:{registration_thread}")
-            ):
-                moved = await mailboxes.takeover(
-                    name, mailbox.principal_key, f"codex:{binding.thread_id}"
-                )
-                if moved.status == "ok" and moved.mailbox is not None:
-                    return moved.mailbox.name
-                raise ValueError("persisted helper registration did not converge")
-            raise ValueError("mailbox name is bound to an unexpected session")
-
-
-def _registration_thread_path(spec: SessionSpec) -> Path:
-    suffix = spec.start_record.name.removeprefix("start-commit.")
-    return spec.home / f"wakeful-registration-{suffix}"
-
-
-def _pending_registration_thread(spec: SessionSpec) -> str | None:
-    path = _registration_thread_path(spec)
-    if not path.exists():
-        return None
-    value = read_private_bytes(path).decode().strip()
-    if not value:
-        raise ValueError("persisted helper registration thread is invalid")
-    return value
-
-
-def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
-    """Legacy helper-thread registration retained until the cleanup layer lands."""
-    database_url = _database_url(spec.environment_file)
-    client = QueueClient(spec.codex, spec.home)
-    try:
-        binding = bind(client, spec.home, spec.start_record)
-        if not isinstance(binding, CodexBinding):
-            raise TypeError(f"Codex thread binding is {binding}")
-        existing_name = asyncio.run(_existing_live_registration(
-            binding, spec.default_name, _pending_registration_thread(spec), database_url,
-        ))
-        if existing_name is not None:
-            return asyncio.run(_freeze_config(spec, binding, existing_name, database_url)), database_url
-        started = client.call("thread/start", {"cwd": str(Path.cwd()), "ephemeral": True})
-        registration_thread = cast(dict[str, Any], started["thread"])["id"]
-        if not isinstance(registration_thread, str) or not registration_thread:
-            raise ValueError("helper registration thread is unavailable")
-        atomic_replace_bytes(
-            _registration_thread_path(spec), (registration_thread + "\n").encode(),
-        )
-        response = client.call("mcpServer/tool/call", {
-            "threadId": registration_thread, "server": spec.mcp_server,
-            "tool": "agent_register",
-            "arguments": {"api_version": "1", "name": spec.default_name},
-        })
-        registered = cast(dict[str, Any], response["structuredContent"])
-        if registered.get("status") != "ok" or not isinstance(registered.get("name"), str):
-            raise RuntimeError("authenticated mailbox registration did not converge")
-        helper_name = cast(str, registered["name"])
-    finally:
-        client.close()
-    name = asyncio.run(_rebind_registration(
-        binding, helper_name, registration_thread, database_url,
-    ))
-    return asyncio.run(_freeze_config(spec, binding, name, database_url)), database_url
 
 
 def _runner_command(config: Path, lifeline: int) -> tuple[str, ...]:

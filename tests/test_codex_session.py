@@ -10,11 +10,9 @@ import pytest
 from switchstand.codex_app_server import SOCKET_PLACEHOLDER, THREAD_PLACEHOLDER
 from switchstand.codex_session import (
     SessionSpec,
-    _database_url,
     _start_runner,
     _stop_runner,
     main,
-    prepare_runner,
     supervise,
 )
 from switchstand.codex_wakeful import CodexBinding
@@ -43,149 +41,6 @@ def spec(tmp_path: Path) -> SessionSpec:
         environment_file=private_environment(tmp_path / ".env"),
         profile_path=profile,
     )
-
-
-def test_database_url_reads_only_private_owned_environment(tmp_path: Path) -> None:
-    environment = private_environment(tmp_path / ".env")
-    assert _database_url(environment) == "postgresql://exact"
-    environment.chmod(0o644)
-    with pytest.raises(ValueError, match="mode-0600"):
-        _database_url(environment)
-
-
-def test_prepare_registers_on_owned_helper_then_rebinds_exact_thread(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    session = spec(tmp_path)
-    binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class Client:
-        def __init__(self, codex: Path, home: Path):
-            assert (codex, home) == (session.codex, session.home)
-
-        def call(self, method: str, arguments: dict[str, object]):
-            calls.append((method, arguments))
-            if method == "thread/start":
-                return {"thread": {"id": "registration-thread"}}
-            return {"structuredContent": {"status": "ok", "name": "/root"}}
-
-        def close(self) -> None:
-            calls.append(("closed", {}))
-
-    observed: list[tuple[CodexBinding, str, str]] = []
-
-    async def freeze(
-        value: SessionSpec, exact: CodexBinding, name: str, database_url: str,
-    ) -> Path:
-        assert value == session
-        observed.append((exact, name, database_url))
-        return tmp_path / "runner.json"
-
-    monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
-    monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
-    monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
-
-    async def existing(*_args):
-        return None
-
-    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
-
-    async def rebind(exact, name, registration_thread, database_url):
-        assert (exact, name, registration_thread, database_url) == (
-            binding, "/root", "registration-thread", "postgresql://exact",
-        )
-        return name
-
-    monkeypatch.setattr("switchstand.codex_session._rebind_registration", rebind)
-    assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
-    assert calls[0][0] == "thread/start"
-    assert calls[1] == ("mcpServer/tool/call", {
-        "threadId": "registration-thread", "server": "switchstand",
-        "tool": "agent_register",
-        "arguments": {"api_version": "1", "name": "codex-head-exact"},
-    })
-    assert observed == [(binding, "/root", "postgresql://exact")]
-
-
-def test_prepare_reconciles_committed_live_registration_before_retrying_helper(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    session = spec(tmp_path)
-    binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
-    calls: list[str] = []
-
-    class Client:
-        def __init__(self, _codex: Path, _home: Path):
-            pass
-
-        def call(self, method: str, _arguments: dict[str, object]):
-            calls.append(method)
-            raise AssertionError("helper registration must not be retried")
-
-        def close(self) -> None:
-            calls.append("closed")
-
-    async def existing(*_args):
-        return "codex-head-exact"
-
-    async def freeze(*_args):
-        return tmp_path / "runner.json"
-
-    monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
-    monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
-    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
-    monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
-    assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
-    assert calls == ["closed"]
-
-
-def test_prepare_reconciles_committed_helper_registration_after_failed_rebind(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    session = spec(tmp_path)
-    binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
-    calls: list[str] = []
-    attempt = 0
-
-    class Client:
-        def __init__(self, _codex: Path, _home: Path):
-            pass
-
-        def call(self, method: str, _arguments: dict[str, object]):
-            calls.append(method)
-            if method == "thread/start":
-                return {"thread": {"id": "committed-helper"}}
-            return {"structuredContent": {"status": "ok", "name": "codex-head-exact"}}
-
-        def close(self) -> None:
-            calls.append("closed")
-
-    async def existing(_binding, _name, helper, _database_url):
-        nonlocal attempt
-        attempt += 1
-        if attempt == 1:
-            assert helper is None
-            return None
-        assert helper == "committed-helper"
-        return "codex-head-exact"
-
-    async def rebind(*_args):
-        raise ValueError("transient failure before takeover")
-
-    async def freeze(*_args):
-        return tmp_path / "runner.json"
-
-    monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
-    monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
-    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
-    monkeypatch.setattr("switchstand.codex_session._rebind_registration", rebind)
-    monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
-    with pytest.raises(ValueError, match="transient failure"):
-        prepare_runner(session)
-    assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
-    assert calls.count("thread/start") == 1
-    assert calls.count("mcpServer/tool/call") == 1
 
 
 def test_runner_lifeline_eof_is_inherited_only_by_runner(tmp_path: Path, monkeypatch) -> None:
