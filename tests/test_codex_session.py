@@ -48,7 +48,9 @@ def test_database_url_reads_only_private_owned_environment(tmp_path: Path) -> No
         _database_url(environment)
 
 
-def test_prepare_registers_exact_thread_and_reuses_root(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_registers_on_owned_helper_then_rebinds_exact_thread(
+    tmp_path: Path, monkeypatch,
+) -> None:
     session = spec(tmp_path)
     binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
     calls: list[tuple[str, dict[str, object]]] = []
@@ -59,6 +61,8 @@ def test_prepare_registers_exact_thread_and_reuses_root(tmp_path: Path, monkeypa
 
         def call(self, method: str, arguments: dict[str, object]):
             calls.append((method, arguments))
+            if method == "thread/start":
+                return {"thread": {"id": "registration-thread"}}
             return {"structuredContent": {"status": "ok", "name": "/root"}}
 
         def close(self) -> None:
@@ -76,10 +80,17 @@ def test_prepare_registers_exact_thread_and_reuses_root(tmp_path: Path, monkeypa
     monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
     monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
     monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
+    async def rebind(exact, name, registration_thread, database_url):
+        assert (exact, name, registration_thread, database_url) == (
+            binding, "/root", "registration-thread", "postgresql://exact",
+        )
+        return name
+    monkeypatch.setattr("switchstand.codex_session._rebind_registration", rebind)
 
     assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
-    assert calls[0] == ("mcpServer/tool/call", {
-        "threadId": "thread-1",
+    assert calls[0][0] == "thread/start"
+    assert calls[1] == ("mcpServer/tool/call", {
+        "threadId": "registration-thread",
         "server": "switchstand",
         "tool": "agent_register",
         "arguments": {"api_version": "1", "name": "codex-head-exact"},

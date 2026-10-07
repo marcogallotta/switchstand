@@ -101,15 +101,48 @@ async def _freeze_config(
     return path
 
 
+async def _rebind_registration(
+    binding: CodexBinding, name: str, registration_thread: str, database_url: str,
+) -> str:
+    """Move one authenticated helper registration onto the proven live Codex thread."""
+    from .chatgpt_edge import resource_service
+
+    with _configured_database(database_url):
+        async with resource_service() as (service, _runtime):
+            if service.messages is None:
+                raise ValueError("message state is unavailable")
+            mailboxes = AgentMailboxState(service.messages.engine)
+            registered = await mailboxes.by_name(name)
+            mailbox = registered.mailbox
+            if (
+                registered.status != "ok"
+                or mailbox is None
+                or mailbox.session_key
+                != chat_session_key(f"codex:{registration_thread}")
+            ):
+                raise ValueError("helper registration does not match its exact Codex thread")
+            moved = await mailboxes.takeover(
+                name, mailbox.principal_key, f"codex:{binding.thread_id}"
+            )
+            if moved.status != "ok" or moved.mailbox is None:
+                raise ValueError("live Codex mailbox rebind did not converge")
+            return moved.mailbox.name
+
+
 def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
-    """Bind, register through authenticated MCP, and freeze one exact runner config."""
+    """Bind, authenticate registration on an owned helper thread, and freeze config."""
+    database_url = _database_url(spec.environment_file)
     client = QueueClient(spec.codex, spec.home)
     try:
         binding = bind(client, spec.home, spec.start_record)
         if not isinstance(binding, CodexBinding):
             raise TypeError(f"Codex thread binding is {binding}")
+        started = client.call("thread/start", {"cwd": str(Path.cwd()), "ephemeral": True})
+        registration_thread = cast(dict[str, Any], started["thread"])["id"]
+        if not isinstance(registration_thread, str) or not registration_thread:
+            raise ValueError("helper registration thread is unavailable")
         response = client.call("mcpServer/tool/call", {
-            "threadId": binding.thread_id,
+            "threadId": registration_thread,
             "server": spec.mcp_server,
             "tool": "agent_register",
             "arguments": {"api_version": "1", "name": spec.default_name},
@@ -117,10 +150,12 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
         registered = cast(dict[str, Any], response["structuredContent"])
         if registered.get("status") != "ok" or not isinstance(registered.get("name"), str):
             raise RuntimeError("authenticated mailbox registration did not converge")
-        name = cast(str, registered["name"])
+        helper_name = cast(str, registered["name"])
     finally:
         client.close()
-    database_url = _database_url(spec.environment_file)
+    name = asyncio.run(_rebind_registration(
+        binding, helper_name, registration_thread, database_url,
+    ))
     return asyncio.run(_freeze_config(spec, binding, name, database_url)), database_url
 
 

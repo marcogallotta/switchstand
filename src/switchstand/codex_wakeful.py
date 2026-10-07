@@ -216,7 +216,7 @@ def bind(
         matches: list[str] = []
         cursor = None
         while True:
-            page = client.call("thread/list", {"cursor": cursor, "limit": 100})
+            page = client.call("thread/list", {"cursor": cursor, "limit": 10})
             for thread in page["data"]:
                 if expected_thread_id is not None and thread.get("id") != expected_thread_id:
                     continue
@@ -237,12 +237,15 @@ def bind(
                             if part.get("type") == "input_text")
                 if matched:
                     matches.append(thread["id"])
+            if matches:
+                return (
+                    CodexBinding(matches[0], str(token), token.name)
+                    if len(matches) == 1 else "CONFLICT"
+                )
             cursor = page.get("nextCursor")
             if not cursor:
                 break
-        if len(matches) != 1:
-            return "CONFLICT" if matches else "NOT_BOUND"
-        return CodexBinding(matches[0], str(token), token.name)
+        return "NOT_BOUND"
     except (OSError, ValueError, KeyError, TypeError):
         return "UNAVAILABLE"
 
@@ -287,7 +290,7 @@ def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
 
 class Projection:
     def __init__(self, home: Path, binding: CodexBinding):
-        self.path = home / "codex-wakeful.json"
+        self.path = home / f"codex-wakeful-{binding.generation}.json"
         self.binding = binding
         try:
             self.records: dict[str, dict[str, Any]] = json.loads(read_private_bytes(self.path))
@@ -418,9 +421,9 @@ class Projection:
 
 
 @contextmanager
-def projection_lock(home: Path) -> Generator[None]:
-    """All precursor writers share one lock, including different root generations."""
-    path = home / "codex-wakeful.lock"
+def projection_lock(home: Path, generation: str) -> Generator[None]:
+    """Serialize only writers for the same exact Codex generation."""
+    path = home / f"codex-wakeful-{generation}.lock"
     try:
         create_new_private_bytes(path, b"")
     except FileExistsError:
@@ -474,7 +477,7 @@ async def run_inbound(
     """Dedicated supervised host process, never a task on the live edge's event loop."""
     if not opt_in:
         return
-    with projection_lock(home):
+    with projection_lock(home, binding.generation):
         projection = Projection(home, binding)
         cursor = None
         while not stop.is_set():
@@ -566,7 +569,9 @@ def main() -> None:
     parser.add_argument("--recover-child", action="store_true")
     args = parser.parse_args()
     # An exclusive nonblocking lock on the exact existing generation token rejects a second probe.
-    with args.start_record.open("rb") as token, projection_lock(args.home):
+    with args.start_record.open("rb") as token, projection_lock(
+        args.home, args.start_record.name,
+    ):
         try:
             fcntl.flock(token, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 : "${HOME:?HOME is required for Codex launch}"
@@ -21,12 +21,15 @@ canonical_common=$(git_common "$canonical_repo")
 current_common=$(git_common "$PWD")
 
 if [ -n "$canonical_common" ] && [ "$current_common" = "$canonical_common" ]; then
+    SWITCHSTAND_CODEX_WAKEFUL=PILOT
+    export SWITCHSTAND_CODEX_WAKEFUL
     dispatcher="$canonical_repo/scripts/codex-dispatch"
     if [ ! -x "$dispatcher" ]; then
         echo "Switchstand Coordinator dispatcher is unavailable" >&2
         exit 1
     fi
-    exec "$dispatcher" "$@"
+    exec "$dispatcher" "$@" \
+        2> >(sed '/^Wakeful registration unavailable; retrying$/d' >&2)
 fi
 
 real_codex="$HOME/.codex/packages/standalone/current/bin/codex"

@@ -52,7 +52,7 @@ class Client(QueueClient):
         if method == "thread/queue/list":
             return {"data": list(self.queued), "nextCursor": None}
         assert method == "thread/queue/add"
-        pending = json.loads((self.path.parent / "codex-wakeful.json").read_text())
+        pending = json.loads(next(self.path.parent.glob("codex-wakeful-*.json")).read_text())
         assert pending[params["clientUserMessageId"]]["state"] == "PENDING"
         assert pending[params["clientUserMessageId"]]["attempted"] is True
         self.calls.append(params)
@@ -216,7 +216,7 @@ def test_paginated_incomplete_malformed_or_lost_history_is_unknown(setup, page):
     source = WakeSourceRef("switchstand_inbound", str(uuid4()))
     assert Projection(home, binding).admit(client, source) == "UNKNOWN"
     assert not client.calls
-    record = json.loads((home / "codex-wakeful.json").read_text())[wake_id(binding, source)]
+    record = json.loads(Projection(home, binding).path.read_text())[wake_id(binding, source)]
     assert record["attempted"] is False
 
 
@@ -321,7 +321,7 @@ def test_simultaneous_probe_and_private_file_boundary(setup):
             "--opt-in", "--home", str(home), "--codex", "/must-not-run",
             "--start-record", str(token)], capture_output=True, text=True, check=False)
     assert result.returncode == 0 and "simultaneous probe" in result.stdout
-    path = home / "codex-wakeful.json"
+    path = Projection(home, binding).path
     path.symlink_to(token)
     with pytest.raises(OSError):
         Projection(home, binding)
