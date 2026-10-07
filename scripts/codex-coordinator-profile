@@ -321,9 +321,9 @@ def main() -> None:
             start_record, manifest_record, resolved_hook, resolved_continuity_hook,
             continuity_mode, lifetime, telemetry, compact_hook_snapshot,
         )
+    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
     _write(snapshot, output, exclusive=True, mode=0o400)
     _write(runtime_profile, output, exclusive=True)
-    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":
