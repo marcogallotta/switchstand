@@ -9,6 +9,7 @@ from switchstand.stacked_delivery import (
     FocusedReviewCheck,
     LayerQualification,
     LayerReviewIdentity,
+    ReviewReceipt,
     StackLandingEvidence,
     focused_review_is_current,
     layer_qualification_is_sufficient,
@@ -118,12 +119,15 @@ def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
         )
     )
     ready = StackLandingEvidence(
-        "a" * 40, "c" * 40, "a" * 40, "a" * 40, reviews, (catalogue, host),
+        "a" * 40, "c" * 40, ReviewReceipt("a" * 40, "PASS"),
+        "a" * 40, reviews, (catalogue, host),
     )
     assert stack_is_ready_to_land(ready)
     rejected = (
         replace(ready, cumulative_quality_sha=None),
-        replace(ready, cumulative_review_sha="b" * 40),
+        replace(ready, cumulative_review=ReviewReceipt("b" * 40, "PASS")),
+        replace(ready, cumulative_review=ReviewReceipt("a" * 40, "FAIL")),
+        replace(ready, cumulative_review=ReviewReceipt("a" * 40, "UNKNOWN")),
         replace(ready, focused_reviews=reviews[:-1]),
         replace(ready, focused_reviews=(*reviews[:-1], reviews[0])),
         replace(ready, focused_reviews=(replace(
