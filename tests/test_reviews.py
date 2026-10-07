@@ -223,7 +223,7 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
     assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
 
 
-async def test_ineligible_reviewer_denial_leaves_no_review_state(occurrence_runtime):
+async def test_same_principal_distinct_endpoints_complete_review(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-shared", "chat-requester",
@@ -244,28 +244,43 @@ async def test_ineligible_reviewer_denial_leaves_no_review_state(occurrence_runt
         observed_revision=canonical_revision(subject.work_id, subject.row_version),
         review_kind="CODE",
     )
-    basis = service._basis(request, requester)
+    sent = await service.request(request, requester)
+    assert sent.status == "SENT" and sent.review_id is not None
+    assert sent.delivery_id is not None
+    assert await service.request(request, requester) == sent
+    assert len(await occurrences.request_sources(sent.review_id)) == 1
 
-    denied = await service.request(request, requester)
-
-    assert (denied.status, denied.reason, denied.review_id) == (
-        "DENIED", "reviewer_not_eligible", basis.review_id,
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(
+            generation=str(reviewer.generation),
+            current_generation=str(reviewer.generation),
+        ),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
     )
-    assert await occurrences.works.get(basis.review_id) is None
-    assert await occurrences.basis_sources(basis.review_id) == ()
-    assert await occurrences.request_sources(basis.review_id) == ()
+    assert received.status == "ok"
+    submitted = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    assert (await service.get(sent.review_id, requester)).status == "PASS"
 
 
-async def test_reviewer_becoming_ineligible_during_request_rolls_back_review_state(
-    occurrence_runtime, monkeypatch,
-):
+async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-shared", "chat-requester",
     )).mailbox
     assert requester is not None
+    self_review_policy = ReviewPolicy(
+        version="policy-v1", reviewer_by_kind={"CODE": "Requester"},
+    )
     service = ReviewService(
-        occurrences, mailboxes, messages, occurrences.policy,
+        occurrences, mailboxes, messages, self_review_policy,
         ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
     )
     subject = await occurrences.works.get(subject_id)
@@ -276,20 +291,6 @@ async def test_reviewer_becoming_ineligible_during_request_rolls_back_review_sta
         review_kind="CODE",
     )
     basis = service._basis(request, requester)
-    record_basis = service._record_basis
-
-    async def record_basis_then_register_ineligible_reviewer(
-        brief, owner, connection=None,
-    ):
-        recorded = await record_basis(brief, owner, connection)
-        reviewer = (await mailboxes.register_agent(
-            "Reviewer", "principal-shared", "chat-reviewer",
-        )).mailbox
-        assert reviewer is not None
-        return recorded
-
-    monkeypatch.setattr(service, "_record_basis", record_basis_then_register_ineligible_reviewer)
-
     denied = await service.request(request, requester)
 
     assert (denied.status, denied.reason, denied.review_id) == (
