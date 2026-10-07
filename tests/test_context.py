@@ -228,6 +228,38 @@ def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
     assert after == before
 
 
+def test_shared_primary_hook_defers_worker_policy_to_writer_bound_hook(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    git(primary, "config", "user.name", "Test")
+    git(primary, "config", "user.email", "test@example.invalid")
+    (primary / "tracked.txt").write_text("base\n")
+    git(primary, "add", "tracked.txt")
+    git(primary, "commit", "-m", "base")
+    writer = tmp_path / "writer"
+    git(primary, "worktree", "add", "-b", "writer", str(writer))
+    inspector = Path(__file__).parents[1] / "scripts/codex-worker-inspect"
+    command = f"{inspector} --root {writer} read tracked.txt"
+    common = {"environment": dict(os.environ), "agent_id": "worker-123"}
+
+    assert hook(
+        writer, command, coordinator_primary=primary, **common,
+    ) == {}
+    assert hook(
+        writer, command, coordinator_primary=primary, coordinator_writer=writer, **common,
+    ) == {}
+
+    mutation = f"touch {writer / 'worker-probe'}"
+    denied = hook(
+        writer, mutation, coordinator_primary=primary, coordinator_writer=writer, **common,
+    )
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "worker-read-only" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_worker_inspector_rejects_executable_git_attributes(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
