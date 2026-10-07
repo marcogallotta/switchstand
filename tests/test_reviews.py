@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, insert, text
+from sqlalchemy import event, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
@@ -25,10 +25,14 @@ from switchstand.messages import (
     MessageSubmitRequest,
     RuntimeCurrentness,
 )
+from switchstand.messages import (
+    messages as message_rows,
+)
 from switchstand.reviews import (
     CanonicalReviewBrief,
     ReviewBasis,
     ReviewEnvelope,
+    ReviewerBound,
     ReviewFinding,
     ReviewGuidelines,
     ReviewOccurrenceState,
@@ -919,3 +923,124 @@ async def test_focused_rereview_requires_authoritative_named_finding(occurrence_
     ), requester)
     assert (upgraded.status, upgraded.reason) == ("UNKNOWN", "duplicate_authoritative_state")
     assert (await service.recover(initial.review_id, reviewer)).reason == "duplicate_authoritative_state"
+
+
+async def test_acquisition_is_atomic_and_bundle_is_fenced(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    coordinator = (await mailboxes.register_agent(
+        "Coordinator", "principal-c", "chat-c",
+    )).mailbox
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    assert coordinator is not None and requester is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    waiting = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject_id, subject.row_version),
+        review_kind="CODE",
+        candidate_ref="github:marcogallotta/switchstand:pr/7",
+    ), requester)
+    assert waiting.status == "WAITING_REVIEWER" and waiting.review_id is not None
+    basis_source = await occurrences.basis_sources(waiting.review_id)
+    assert len(basis_source) == 1
+    envelope = basis_source[0][1]
+    submitted = await messages.submit_admitted(
+        requester.endpoint_id,
+        MessageRoute(
+            recipient_work_id=coordinator.endpoint_id,
+            recipient_grant_version=coordinator.generation,
+        ),
+        MessageSubmitRequest(
+            api_version="1",
+            message_id=_stable(
+                "acquisition", waiting.review_id, envelope.brief.basis.subject_revision,
+            ),
+            grant_version=requester.generation,
+            route_ref="review.acquisition",
+            kind="request",
+            payload=envelope.model_dump(mode="json"),
+        ),
+        agent_binding=requester,
+    )
+    assert submitted.status == "ok" and submitted.message is not None
+    received = await messages.receive_admitted(
+        coordinator.endpoint_id, coordinator.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=submitted.message.delivery_id,
+            grant_version=coordinator.generation,
+        ),
+        agent_binding=coordinator,
+    )
+    assert received.status == "ok"
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b",
+    )).mailbox
+    assert reviewer is not None
+    sent = await service.continue_acquisition(waiting.review_id, coordinator)
+    assert sent.status == "SENT" and sent.delivery_id is not None
+    assert len(await occurrences.stored_request_sources(waiting.review_id)) == 1
+    assert len(await occurrences.request_sources(waiting.review_id)) == 1
+    assert (await service.bundle_access(waiting.review_id, reviewer)).status == "DENIED"
+    picked_up = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert picked_up.status == "ok"
+    access = await service.bundle_access(waiting.review_id, reviewer)
+    assert access.status == "AUTHORIZED" and access.basis is not None
+    assert (await service.bundle_access(
+        waiting.review_id, reviewer, access.basis,
+    )).status == "READY"
+    service.policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={
+        "CODE": "Reviewer", "DESIGN": "Reviewer",
+    })
+    occurrences.policy = service.policy
+    unsupported = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject_id, subject.row_version),
+        review_kind="DESIGN", candidate_ref="github:marcogallotta/switchstand:pr/8",
+    ), requester)
+    assert unsupported.delivery_id is not None and unsupported.review_id is not None
+    picked_up = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(api_version="1", delivery_id=unsupported.delivery_id,
+                              grant_version=reviewer.generation),
+        agent_binding=reviewer,
+    )
+    assert picked_up.status == "ok"
+    unsupported_access = await service.bundle_access(unsupported.review_id, reviewer)
+    assert (unsupported_access.status, unsupported_access.reason) == (
+        "UNKNOWN", "REVIEW_KIND_UNSUPPORTED_V1",
+    )
+    async with engine.begin() as connection:
+        acknowledgement = ReviewerBound(review_id=waiting.review_id,
+            reviewer_delivery_id=sent.delivery_id, reviewer_name=reviewer.name)
+        target = (message_rows.c.route_ref == "review.acquisition") & (
+            message_rows.c.kind == "result")
+        await connection.execute(update(message_rows).where(target).values(payload={}))
+    assert (await service.bundle_access(
+        waiting.review_id, reviewer, access.basis,
+    )).status == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(message_rows).where(target).values(
+            payload=acknowledgement.model_dump(mode="json")))
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+    assert (await service.bundle_access(
+        waiting.review_id, reviewer, access.basis,
+    )).status == "STALE"

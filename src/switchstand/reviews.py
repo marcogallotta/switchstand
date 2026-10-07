@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .agent_mailboxes import AgentMailbox, AgentMailboxState
+from .agent_mailboxes import AgentMailbox, AgentMailboxState, agent_mailboxes
 from .canonical_relations import work_parents
 from .canonical_work import (
     CanonicalWorkRepository,
@@ -262,6 +262,16 @@ class _ReviewRecord:
     dispositioned_at: datetime | None
 
 
+@dataclass(frozen=True)
+class ReviewBundleAccess:
+    status: Literal["AUTHORIZED", "READY", "STALE", "DENIED", "UNKNOWN"]
+    reason: str | None = None
+    basis: ReviewBasis | None = None
+    delivery_id: UUID | None = None
+    subject_title: str | None = None
+    material_claim_digest: str | None = None
+
+
 class ReviewOccurrenceState:
     def __init__(
         self, works: CanonicalWorkRepository, mailboxes: AgentMailboxState,
@@ -346,6 +356,9 @@ class ReviewOccurrenceState:
                 messages.c.payload["review_id"].astext == str(review_id),
             ),
         ).order_by(messages.c.created_at, message_deliveries.c.delivery_id)
+        sync = connection.sync_connection if connection is not None else None
+        if sync is not None and sync.get_execution_options().get("review_bundle_lock"):
+            query = query.with_for_update()
         if connection is None:
             async with self.engine.connect() as owned:
                 rows = (await owned.execute(query)).mappings().all()
@@ -812,14 +825,15 @@ class ReviewService:
             return await self._record_basis_in_transaction(owned, brief, requester)
 
     async def _advance_in_transaction(
-        self, connection: AsyncConnection, review_id: UUID, requester: AgentMailbox,
+        self, connection: AsyncConnection, review_id: UUID, requester: AgentMailbox, *,
+        coordinator: AgentMailbox | None = None, acquisition: PendingMessage | None = None,
     ) -> ReviewResult:
         occurrence = (await connection.execute(select(canonical_work).where(
             canonical_work.c.work_id == review_id
         ).with_for_update())).mappings().one_or_none()
         parent = await connection.scalar(select(work_parents.c.parent_work_id).where(
             work_parents.c.child_work_id == review_id
-        ))
+        ).with_for_update())
         bases = await self.occurrences.basis_sources(review_id, connection)
         if occurrence is None or occurrence["work_type"] != "REVIEW" or parent is None:
             return ReviewResult(status="UNKNOWN", review_id=review_id,
@@ -840,6 +854,23 @@ class ReviewService:
                                 reason="duplicate_authoritative_state")
         _basis_record, basis_envelope = current_bases[0]
         basis = basis_envelope.brief.basis
+        sender = coordinator or requester
+        if coordinator is not None:
+            records = await self.occurrences.records(review_id, connection)
+            received = self.occurrences._acquisition(  # pyright: ignore[reportPrivateUsage]
+                records, basis, coordinator.endpoint_id,
+            )
+            current_coordinator = await self.mailboxes.by_endpoint_id(
+                coordinator.endpoint_id, connection,
+            )
+            if current_coordinator.mailbox != coordinator:
+                return ReviewResult(status="DENIED", review_id=review_id,
+                                    reason="requester_not_current")
+            if received is None or received.delivery != acquisition or (
+                received.delivery.state, received.delivery.receiving_generation
+            ) != ("RECEIVED", str(coordinator.generation)):
+                return ReviewResult(status="DENIED", review_id=review_id,
+                                    reason="acquisition_not_received")
         current = await self.mailboxes.by_endpoint_id(requester.endpoint_id, connection)
         if current.status != "ok" or current.mailbox != requester or (
             requester.endpoint_id != basis.requester_endpoint_id
@@ -865,6 +896,13 @@ class ReviewService:
             return ReviewResult(status="UNKNOWN", review_id=review_id,
                                 reason="duplicate_authoritative_state")
         if requests:
+            if coordinator is not None and len(tuple(
+                source for source in await self.occurrences.request_sources(
+                    review_id, connection,
+                ) if source[1].brief.basis == basis
+            )) != 1:
+                return ReviewResult(status="UNKNOWN", review_id=review_id,
+                                    reason="duplicate_authoritative_state")
             record, _envelope = requests[0]
             return ReviewResult(status="SENT", review_id=review_id,
                                 delivery_id=record.delivery.delivery_id)
@@ -887,14 +925,14 @@ class ReviewService:
             reviewer_principal_key=reviewer.principal_key,
         )
         submitted = await self.messages.submit_review_internal(
-            connection, requester,
+            connection, sender,
             MessageRoute(
                 recipient_work_id=reviewer.endpoint_id,
                 recipient_grant_version=reviewer.generation,
             ), MessageSubmitRequest(
                 api_version="1", message_id=_request_message_id(
                     basis, reviewer.endpoint_id,
-                ), grant_version=requester.generation, route_ref="review.request",
+                ), grant_version=sender.generation, route_ref="review.request",
                 kind="request",
                 payload=cast(JsonValue, envelope.model_dump(mode="json")),
             ),
@@ -902,6 +940,26 @@ class ReviewService:
         if submitted.status != "ok" or submitted.message is None:
             return ReviewResult(status="UNKNOWN", review_id=review_id,
                                 reason="message_conflict")
+        if coordinator is not None and acquisition is not None:
+            bound = ReviewerBound(
+                review_id=review_id, reviewer_delivery_id=submitted.message.delivery_id,
+                reviewer_name=reviewer.name,
+            )
+            acknowledgement = await self.messages.submit_review_internal(
+                connection, coordinator, MessageRoute(
+                    recipient_work_id=requester.endpoint_id,
+                    recipient_grant_version=requester.generation,
+                ), MessageSubmitRequest(
+                    api_version="1", message_id=_stable(
+                        "reviewer-bound", review_id, acquisition.delivery_id,
+                    ), grant_version=coordinator.generation,
+                    route_ref="review.acquisition", kind="result",
+                    payload=cast(JsonValue, bound.model_dump(mode="json")),
+                    in_reply_to_delivery_id=acquisition.delivery_id,
+                ), received_binding=(coordinator.generation, str(coordinator.generation)),
+            )
+            if acknowledgement.status != "ok":
+                raise ValueError("binding conflict")
         return ReviewResult(status="SENT", review_id=review_id,
                             delivery_id=submitted.message.delivery_id)
 
@@ -1207,33 +1265,78 @@ class ReviewService:
         if not frozen:
             return ReviewResult(status="STALE", review_id=review_id,
                                 reason="review_basis_changed")
-        review_envelope = ReviewEnvelope(
-            type="REVIEW_REQUEST", brief=envelope.brief,
-            requester_name=requester.name, requester_endpoint_id=requester.endpoint_id,
-        )
-        reviewer_delivery = await self._send(
-            coordinator, reviewer,
-            _request_message_id(basis, reviewer.endpoint_id),
-            "review.request", cast(JsonValue, review_envelope.model_dump(mode="json")),
-        )
-        if reviewer_delivery is None:
+        try:
+            async with self.occurrences.engine.begin() as connection:
+                return await self._advance_in_transaction(
+                    connection, review_id, requester, coordinator=coordinator,
+                    acquisition=incoming,
+                )
+        except (SQLAlchemyError, TypeError, ValueError):
             return ReviewResult(status="UNKNOWN", review_id=review_id,
-                                reason="message_conflict")
-        bound = ReviewerBound(
-            review_id=review_id, reviewer_delivery_id=reviewer_delivery.delivery_id,
-            reviewer_name=reviewer.name,
-        )
-        acknowledgement = await self._send(
-            coordinator, requester,
-            _stable("reviewer-bound", review_id, incoming.delivery_id),
-            "review.acquisition", cast(JsonValue, bound.model_dump(mode="json")),
-            reply_to=incoming.delivery_id,
-        )
-        if acknowledgement is None:
-            return ReviewResult(status="UNKNOWN", review_id=review_id,
-                                reason="message_conflict")
-        return ReviewResult(status="SENT", review_id=review_id,
-                            delivery_id=reviewer_delivery.delivery_id)
+                                reason="state_unavailable")
+
+    async def bundle_access(
+        self, review_id: UUID, reviewer: AgentMailbox,
+        expected: ReviewBasis | None = None,
+    ) -> ReviewBundleAccess:
+        try:
+            final = expected is not None
+            context = self.occurrences.engine.begin() if final else self.occurrences.engine.connect()
+            async with context as connection:
+                connection = await connection.execution_options(review_bundle_lock=final)
+                occurrence = select(canonical_work).where(canonical_work.c.work_id == review_id)
+                if final:
+                    occurrence = occurrence.with_for_update()
+                row = (await connection.execute(occurrence)).mappings().one_or_none()
+                parent = await connection.scalar(select(work_parents.c.parent_work_id).where(
+                    work_parents.c.child_work_id == review_id).with_for_update())
+                subject_query = select(canonical_work).where(canonical_work.c.work_id == parent)
+                if final:
+                    subject_query = subject_query.with_for_update()
+                    await connection.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.endpoint_id == reviewer.endpoint_id).with_for_update())
+                subject = (await connection.execute(subject_query)).mappings().one_or_none()
+                bases = await self.occurrences.basis_sources(review_id, connection)
+                stored = await self.occurrences.stored_request_sources(review_id, connection)
+                valid = await self.occurrences.request_sources(review_id, connection)
+                if row is None or row["work_type"] != "REVIEW" or subject is None:
+                    return ReviewBundleAccess("UNKNOWN", "occurrence_not_found")
+                revision = canonical_revision(cast(UUID, parent), subject["row_version"])
+                current_bases = tuple(source for source in bases if (
+                    source[1].brief.basis.subject_work_id == parent
+                    and source[1].brief.basis.subject_revision == revision
+                ))
+                if len(current_bases) != 1:
+                    status, reason = (("STALE", "review_basis_changed") if bases else
+                                      ("UNKNOWN", "duplicate_authoritative_state"))
+                    return ReviewBundleAccess(status, reason)
+                basis = current_bases[0][1].brief.basis
+                stored = tuple(source for source in stored
+                               if source[1].brief.basis == basis)
+                valid = tuple(source for source in valid if source[1].brief.basis == basis)
+                if len(stored) != 1 or len(valid) != 1:
+                    return ReviewBundleAccess("UNKNOWN", "duplicate_authoritative_state")
+                delivery = valid[0][0].delivery
+                current = await self.mailboxes.by_endpoint_id(reviewer.endpoint_id, connection)
+                if current.mailbox != reviewer or (
+                    delivery.recipient_work_id != reviewer.endpoint_id
+                    or delivery.state != "RECEIVED"
+                    or delivery.recipient_grant_version != reviewer.generation
+                    or delivery.receiving_generation != str(reviewer.generation)
+                ):
+                    return ReviewBundleAccess("DENIED", "reviewer_binding_changed")
+                if basis.review_kind not in {"CODE", "IMPLEMENTATION"}:
+                    return ReviewBundleAccess("UNKNOWN", "REVIEW_KIND_UNSUPPORTED_V1")
+                if basis.candidate_ref is None or final and basis != expected:
+                    return ReviewBundleAccess("STALE", "review_basis_changed")
+                return ReviewBundleAccess(
+                    "READY" if final else "AUTHORIZED",
+                    basis=basis, delivery_id=delivery.delivery_id,
+                    subject_title=str(subject["title"]),
+                    material_claim_digest=_digest(current_bases[0][1].brief.material_claim),
+                )
+        except (SQLAlchemyError, TypeError, ValueError):
+            return ReviewBundleAccess("UNKNOWN", "state_unavailable")
 
     async def submit(self, request: ReviewSubmit, reviewer: AgentMailbox) -> ReviewResult:
         current = await self.mailboxes.by_endpoint_id(reviewer.endpoint_id)

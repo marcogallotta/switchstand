@@ -1,6 +1,7 @@
 import sys
 from inspect import signature
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -17,6 +18,8 @@ from chatgpt_fixture import (
 from mcp import Client, StdioServerParameters
 from pydantic import ValidationError
 
+from switchstand import chatgpt_mcp
+from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
 from switchstand.chatgpt_mcp import (
     ORDINARY_EFFECT_TOOLS,
     ORDINARY_GENUINE_READ_TOOLS,
@@ -37,7 +40,9 @@ from switchstand.grants import (
 from switchstand.implementation_requests import ImplementationRequestResult
 from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
 from switchstand.priority_claim_service import HumanPriorityClear, HumanPrioritySet
-from switchstand.repository_candidate import RepositoryCandidateQualification
+from switchstand.repository_bundle import RepositoryBundleResolution
+from switchstand.repository_candidate import QualificationGate, RepositoryCandidateQualification
+from switchstand.reviews import ReviewBasis, ReviewBundleAccess
 
 
 def test_ordinary_annotation_policy_is_exhaustive():
@@ -46,6 +51,73 @@ def test_ordinary_annotation_policy_is_exhaustive():
     assert ORDINARY_GENUINE_READ_TOOLS | ORDINARY_EFFECT_TOOLS == tool_names
     assert ORDINARY_NON_IDEMPOTENT_TOOLS == set()
     assert ORDINARY_NON_IDEMPOTENT_TOOLS <= ORDINARY_EFFECT_TOOLS
+
+
+def test_review_bundle_tool_is_default_off():
+    subject = service()
+    subject.reviews = object()  # type: ignore[assignment]
+    assert "review_bundle_get" not in dict(build_ordinary_tools(subject))
+    assert "review_bundle_get" in dict(build_ordinary_tools(
+        subject, review_bundle_enabled=True,
+    ))
+
+
+async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatch):
+    review_id, subject_id, endpoint_id = uuid4(), uuid4(), uuid4()
+    mailbox = AgentMailbox(name="Reviewer", name_key="reviewer", endpoint_id=endpoint_id,
+                           principal_key=PRINCIPAL.key, session_key="session", generation=1)
+    state = SimpleNamespace(for_actor=AsyncMock(return_value=AgentMailboxResult(
+        status="ok", mailbox=mailbox,
+    )))
+    monkeypatch.setattr(chatgpt_mcp, "AgentMailboxState", lambda _engine: state)
+    basis = ReviewBasis(review_id=review_id, subject_work_id=subject_id, subject_revision="r1",
+                        review_kind="CODE", candidate_ref="github:marcogallotta/switchstand:pr/7",
+                        mode="FULL", requester_endpoint_id=uuid4(), requester_generation=1,
+                        policy_version="p1", guidelines_version="g1", guidelines_digest="0" * 64)
+    access = ReviewBundleAccess("AUTHORIZED", basis=basis)
+    subject = service()
+    subject.messages = SimpleNamespace(engine=object())
+    subject.reviews = SimpleNamespace(bundle_access=AsyncMock(return_value=access))
+    gate = QualificationGate(name="Exact-head Quality", subject_kind="exact_head",
+                             subject_sha="a" * 40, state="completed", conclusion="failure",
+                             reason="failed", detail_reason="provider-unavailable")
+    unknown = RepositoryCandidateQualification(status="NOT_READY", pull_request=7,
+        base_sha="b" * 40, head_sha="a" * 40, composition_sha="c" * 40,
+        composition_parents=["b" * 40, "a" * 40], gates=[gate], reason="gates_not_ready")
+    qualify = AsyncMock(return_value=unknown)
+    monkeypatch.setattr(chatgpt_mcp.repository_candidate, "qualify_repository_candidate", qualify)
+    resolve = AsyncMock(return_value=RepositoryBundleResolution(
+        status="current", bundle_url="https://example.invalid/bundle", required_sha="a" * 40,
+    ))
+    monkeypatch.setattr(chatgpt_mcp.repository_bundle, "resolve_repository_bundle", resolve)
+    tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "session",
+                                     review_bundle_enabled=True))["review_bundle_get"]
+    result = await tool("1", review_id)
+    assert result.structured_content["status"] == "UNKNOWN" and len(result.content) == 1
+    resolve.assert_not_awaited()
+
+    gates = [QualificationGate(name=name, subject_kind=kind,
+        subject_sha="a" * 40 if kind == "exact_head" else "c" * 40,
+        state="in_progress", reason="running") for name, kind in (
+            ("Exact-head Quality", "exact_head"), ("PR composition Quality", "composition"))]
+    current = unknown.model_copy(update={"gates": gates})
+    duplicate = current.model_copy(update={"gates": [gates[0], gates[0]]})
+    contradictory = current.model_copy(update={"status": "READY", "reason": None})
+    stale_gate = current.model_copy(update={"gates": [
+        gates[0].model_copy(update={"reason": "wrong-head"}), gates[1],
+    ]})
+    ambiguous_stale = stale_gate.model_copy(update={"gates": [
+        stale_gate.gates[0].model_copy(update={"detail_reason": "provider-unavailable"}), gates[1],
+    ]})
+    changed = current.model_copy(update={"head_sha": "d" * 40})
+    qualify.side_effect = [duplicate, contradictory, ambiguous_stale, stale_gate, current, changed]
+    for _ in range(3):
+        result = await tool("1", review_id)
+        assert result.structured_content["status"] == "UNKNOWN" and len(result.content) == 1
+    result = await tool("1", review_id)
+    assert result.structured_content["status"] == "STALE" and len(result.content) == 1
+    result = await tool("1", review_id)
+    assert result.structured_content["status"] == "STALE" and len(result.content) == 1
 
 
 def test_priority_claim_tools_are_default_off_and_human_only():
