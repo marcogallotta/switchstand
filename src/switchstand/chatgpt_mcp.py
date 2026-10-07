@@ -594,6 +594,7 @@ def build_ordinary_tools(
     ) -> PriorityClaimReadResult:
         """Read current priority claims for one exact WorkId or project."""
         del api_version
+        correlate(subject_id if subject_kind == "WORK" else None)
         return await service.priority_claim_get(subject_kind, subject_id)
 
     async def priority_claim_record(
@@ -658,7 +659,7 @@ def build_ordinary_tools(
     ) -> ReviewResult:
         """Submit one verdict as the current registered reviewer mailbox."""
         del api_version
-        correlate(review_id)
+        correlate(None)
         context = await agent_context()
         if isinstance(context, tuple):
             result = ReviewResult(

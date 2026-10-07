@@ -71,16 +71,31 @@ MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
-interval aggregation; it neither persists records nor establishes journal durability or reliance.
+interval aggregation and appends a bounded, privacy-safe subset after the business result through
+one non-retrying transaction. Failures leave coverage partial. Migration
+`0024_mcp_operation_timings` stores no SQL, parameters, payloads, prompts, notes, tokens, bodies,
+or principal identity.
 `flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. The report remains
 partial: it reports canonical current state and relations plus observed target events from one
 read-only, repeatable-read transaction. It projects only digest-validated failure/resolution rows
 whose owner is that exact WorkId, without exposing their private prose, and digest-validates
 activation revision chains correlated by their source-owned product/return-owner bindings.
-Activation remains `PARTIAL` because that source has no revision timestamps. A separate additive
+Activation remains `PARTIAL` because that source has no revision timestamps. Exact WorkId timing is
+stable-cohort service evidence, never task critical path. A separate additive
 source-coverage projection uses only `KNOWN`, `PARTIAL`, or `UNKNOWN`; absent exact candidate,
 test-run, or durable MCP-timing correlation stays `UNKNOWN`. Its concise format is a deterministic
 projection of the same JSON facts and coverage reasons, not another correlation or inference layer.
+Exact managed-run receipts also provide bounded raw process-shape counts and repeated identical
+completed-validation groups compared by a private validated content digest. The digest and any
+derived fingerprint stay private; output group identities reuse request IDs. Envelope identity
+does not prove the
+absence of external clearing changes, so the repeated-expensive-attempt advisory remains `UNKNOWN`.
+Missing pickup distributions, explicit shape caps, or comparable fix durations likewise remain
+`UNKNOWN`. Advisories are shadow-only and never change work or routing.
+Aggregate learning fails closed until a sufficiently covered completed-trace cohort exists. Its
+stable projection retains null sample count, coverage fraction, runtime/schema/environment cohort,
+metrics, and delivery estimate rather than promoting single-WorkId or best-effort MCP timing into
+cross-work evidence.
 Optional GitHub evidence requires a caller-supplied pull-request number and expected exact head;
 the existing repository-candidate qualifier validates their current identity. Exact-head and
 composition gate intervals remain separate, and overlapping intervals are unioned within each
@@ -101,6 +116,15 @@ Human-trajectory evidence likewise uses exact `work_id_ref` and the trajectory o
 payload/digest-chain validator, but exposes only the latest 64 trajectory ID/generation/source-kind
 timestamps. It labels a sound chain `VALIDATED` without claiming canonical currentness; sensitive
 trajectory payload and provenance references never enter the report.
+Managed task-run evidence is correlated only through the source-owned requester or execution
+WorkId. The report bounds it to the latest 128 request/bind/terminal-result receipts, exposes no
+objective, result contract, summary, or evidence references, and reports request-to-terminal-result
+duration only when the canonical request/result digests, stored timestamps, and run/result
+identities are internally consistent. A bounded recent window is explicitly `PARTIAL`.
+Completed managed-run intervals join the same observed-wall union; requested or bound but
+unterminated runs remain point/state evidence rather than inferred elapsed work. Mechanisms without
+an exact WorkId correlation, including host-maintenance receipts, remain `UNKNOWN` rather than
+acquiring an agent-authored stage label.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI

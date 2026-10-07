@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .activation_continuity import ActivationContract, Obligation, seal_obligation
@@ -27,6 +28,7 @@ from .failure_journal import (
 )
 from .human_reviews import human_review_consequences
 from .human_trajectory import validated_trajectory_headers
+from .observability import timing_persistence
 from .outcome_state import validated_revision_headers
 from .repository_candidate import (
     QualificationGate,
@@ -35,6 +37,13 @@ from .repository_candidate import (
 )
 from .reviews import ReviewOccurrenceState
 from .state import human_trajectory_revisions, outcome_state_revisions
+from .task_runs import (
+    task_run_executions,
+    task_run_requests,
+    task_run_results,
+    validated_task_run_request,
+    validated_task_run_result,
+)
 from .work_events import work_events
 
 OUTCOME_REVISION_LIMIT = 64
@@ -42,10 +51,267 @@ TRAJECTORY_REVISION_LIMIT = 64
 FAILURE_LIMIT = 128
 ACTIVATION_OBLIGATION_LIMIT = 32
 ACTIVATION_REVISION_LIMIT = 128
+TIMING_LIMIT = 256
+RUN_RECEIPT_LIMIT = 128
 
 
 def _time(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(UTC).isoformat()
+
+
+async def _run_receipts(
+    connection: AsyncConnection, work_id: UUID, captured_at: datetime,
+) -> tuple[dict[str, object], bool]:
+    """Project exact managed-run mechanism facts without task payloads."""
+    available = True
+    for name in ("task_run_requests", "task_run_executions", "task_run_results"):
+        available = available and bool(await connection.scalar(text(
+            "SELECT to_regclass(:table) IS NOT NULL"
+        ), {"table": f"public.{name}"}))
+    if not available:
+        return ({
+            "status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE",
+            "correlation": "DIRECT_REQUESTER_OR_EXECUTION_WORK_ID",
+            "total_attempts": None, "retained_attempts": 0, "truncated": None,
+            "cumulative_observed_duration_ms": None, "attempts": [],
+        }, False)
+    correlated = or_(
+        task_run_requests.c.requester_work_id == work_id,
+        task_run_requests.c.execution_work_id == work_id,
+    )
+    total = cast(int, await connection.scalar(
+        select(func.count()).select_from(task_run_requests).where(correlated)
+    ))
+    rows = (await connection.execute(select(task_run_requests).where(correlated).order_by(
+        task_run_requests.c.created_at.desc(), task_run_requests.c.request_id.desc(),
+    ).limit(RUN_RECEIPT_LIMIT))).mappings().all()
+    request_ids = [cast(UUID, row["request_id"]) for row in rows]
+    execution_rows = cast(list[RowMapping], (await connection.execute(
+        select(task_run_executions).where(
+        task_run_executions.c.request_id.in_(request_ids)
+    ))).mappings().all()) if request_ids else []
+    executions: dict[UUID, RowMapping] = {
+        cast(UUID, row["request_id"]): row for row in execution_rows
+    }
+    terminal_ids = [cast(UUID, row["terminal_result_id"]) for row in rows
+                    if row["terminal_result_id"] is not None]
+    result_rows = cast(list[RowMapping], (await connection.execute(
+        select(task_run_results).where(
+        task_run_results.c.result_id.in_(terminal_ids)
+    ))).mappings().all()) if terminal_ids else []
+    results: dict[UUID, RowMapping] = {
+        cast(UUID, row["result_id"]): row for row in result_rows
+    }
+    attempts: list[dict[str, object]] = []
+    cumulative = 0
+    for row in reversed(rows):
+        try:
+            request = await validated_task_run_request(connection, row)
+            execution = executions.get(cast(UUID, row["request_id"]))
+            terminal_id = cast(UUID | None, row["terminal_result_id"])
+            result_row = None if terminal_id is None else results.get(terminal_id)
+            result = (
+                None if result_row is None else validated_task_run_result(result_row)
+            )
+        except (TypeError, ValueError):
+            request, execution, result_row, result = None, None, None, None
+        requested_value: object = row["created_at"]
+        bound_value: object | None = None if execution is None else execution["bound_at"]
+        completed_value: object | None = (
+            None if result_row is None else result_row["created_at"]
+        )
+        requested = requested_value if isinstance(requested_value, datetime) else None
+        bound = bound_value if isinstance(bound_value, datetime) else None
+        completed = completed_value if isinstance(completed_value, datetime) else None
+        invalid = request is None or (
+            requested is None or requested.utcoffset() is None
+            or requested > captured_at
+            or (execution is not None and (
+                bound is None or bound.utcoffset() is None
+                or bound < requested or bound > captured_at
+            ))
+            or (result_row is not None and (
+                completed is None or completed.utcoffset() is None
+                or bound is None or completed < bound or completed > captured_at
+            ))
+            or (request.terminal_result_id is None) != (result is None)
+            or (result is not None and (
+                execution is None or result.run_id != cast(UUID, execution["run_id"])
+                or result.request_id != request.request_id
+            ))
+        )
+        if invalid:
+            return ({
+                "status": "UNKNOWN", "reason": "CORRUPT_OR_UNSAFE_RECEIPT",
+                "correlation": "DIRECT_REQUESTER_OR_EXECUTION_WORK_ID",
+                "total_attempts": None, "retained_attempts": 0, "truncated": None,
+                "cumulative_observed_duration_ms": None, "attempts": [],
+            }, True)
+        assert request is not None and requested is not None
+        duration = (
+            int((completed - requested).total_seconds() * 1000)
+            if completed is not None else None
+        )
+        if duration is not None:
+            cumulative += duration
+        roles = [
+            role for role, value in (
+                ("requester_work_id", request.requester_work_id),
+                ("execution_work_id", request.execution_work_id),
+            ) if value == work_id
+        ]
+        attempts.append({
+            "request_id": str(request.request_id),
+            "operation_id": str(cast(UUID, row["operation_id"])),
+            "run_id": (None if execution is None
+                       else str(cast(UUID, execution["run_id"]))),
+            "task_kind": request.task_kind, "continuation": request.continuation,
+            "candidate_ref": request.candidate_ref, "correlation_roles": roles,
+            "_request_content_digest": cast(str, row["content_digest"]),
+            "state": ("COMPLETE" if completed is not None else
+                      "RUNNING" if bound is not None else "REQUESTED"),
+            "outcome": None if result is None else result.outcome,
+            "requested_at": _time(requested),
+            "bound_at": _time(bound), "completed_at": _time(completed),
+            "observed_duration_ms": duration,
+        })
+    return ({
+        "status": "PARTIAL" if total > len(attempts) else "KNOWN",
+        "reason": "MOST_RECENT_ATTEMPTS_ONLY" if total > len(attempts) else None,
+        "correlation": "DIRECT_REQUESTER_OR_EXECUTION_WORK_ID",
+        "total_attempts": total, "retained_attempts": len(attempts),
+        "truncated": total > len(attempts),
+        "cumulative_observed_duration_ms": cumulative, "attempts": attempts,
+    }, True)
+
+
+def _process_shape_and_advisories(
+    run_receipts: Mapping[str, object], review_pickup: Mapping[str, object],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Project raw exact shape and conservative shadow-only anomaly signals."""
+    receipt_status = cast(str, run_receipts["status"])
+    attempts = cast(list[dict[str, object]], run_receipts.get("attempts", []))
+    by_kind: dict[str, int] = {}
+    by_state: dict[str, int] = {}
+    continuations = 0
+    for attempt in attempts:
+        kind = cast(str, attempt["task_kind"])
+        state = cast(str, attempt["state"])
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        by_state[state] = by_state.get(state, 0) + 1
+        continuations += attempt["continuation"] != "START"
+    repeated: dict[str, list[dict[str, object]]] = {}
+    for attempt in attempts:
+        if (attempt.get("task_kind") == "VALIDATION"
+                and isinstance(attempt.get("observed_duration_ms"), int)):
+            repeated.setdefault(
+                cast(str, attempt["_request_content_digest"]), []
+            ).append(attempt)
+    repeated_groups = [{
+        "group_id": values[0]["request_id"],
+        "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        "attempt_count": len(values),
+        "cumulative_observed_duration_ms": sum(
+            cast(int, value["observed_duration_ms"]) for value in values
+        ),
+        "request_ids": [value["request_id"] for value in values],
+        "operation_ids": [value["operation_id"] for value in values],
+    } for _digest, values in sorted(repeated.items()) if len(values) >= 2]
+    for attempt in attempts:
+        attempt.pop("_request_content_digest", None)
+    managed_status = receipt_status if receipt_status in {"KNOWN", "PARTIAL"} else "UNKNOWN"
+    managed_known = managed_status != "UNKNOWN"
+    process_shape: dict[str, object] = {
+        "status": "UNKNOWN" if managed_status == "UNKNOWN" else "PARTIAL",
+        "reason": (run_receipts.get("reason") if managed_status == "UNKNOWN"
+                   else "ONLY_EXACT_AVAILABLE_SOURCES_INCLUDED"),
+        "review_rounds": {
+            "status": "UNKNOWN", "reason": "HISTORICAL_OCCURRENCES_NOT_PROJECTED",
+            "count": None,
+        },
+        "pull_requests": {
+            "status": "UNKNOWN", "reason": "EXACT_WORK_ID_CORRELATION_UNAVAILABLE",
+            "count": None, "changed_lines": None, "forecast": None,
+        },
+        "managed_attempts": {
+            "status": managed_status,
+            "reason": run_receipts.get("reason"),
+            "total": run_receipts.get("total_attempts") if managed_known else None,
+            "retained": run_receipts.get("retained_attempts") if managed_known else None,
+            "truncated": run_receipts.get("truncated") if managed_known else None,
+            "cumulative_observed_duration_ms": (
+                run_receipts.get("cumulative_observed_duration_ms")
+                if managed_known else None
+            ),
+            "retained_by_kind": dict(sorted(by_kind.items())) if managed_known else None,
+            "retained_by_state": dict(sorted(by_state.items())) if managed_known else None,
+            "retained_continuations": continuations if managed_known else None,
+            "repeated_identical_validation_requests": (
+                repeated_groups if managed_known else None
+            ),
+        },
+        "correction_rework_rounds": {
+            "status": "UNKNOWN", "reason": "CONTINUATION_IS_NOT_REWORK_PROOF",
+            "count": None,
+        },
+    }
+
+    advisories: list[dict[str, object]] = [{
+        "code": "REVIEW_UNPICKED", "mode": "SHADOW", "status": "UNKNOWN",
+        "reason": "MEASURED_PICKUP_BASELINE_UNAVAILABLE",
+        "evidence": {
+            "current_projection_status": review_pickup.get("status"),
+            "current_unpicked": review_pickup.get("unpicked"),
+            "current_request_age_ms": review_pickup.get("oldest_request_age_ms"),
+        },
+    }]
+    advisories.append({
+        "code": "REPEATED_EXPENSIVE_ATTEMPT", "mode": "SHADOW",
+        "status": "UNKNOWN", "reason": "MATERIAL_CLEARING_CHANGE_NOT_CORRELATED",
+        "evidence": {
+            "identical_completed_validation_groups": (
+                len(repeated_groups) if managed_known else None
+            ),
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        },
+    })
+    advisories.extend((
+        {
+            "code": "WORK_SHAPE_EXPANSION", "mode": "SHADOW", "status": "UNKNOWN",
+            "reason": "STRUCTURED_FORECAST_AND_PR_SHAPE_NOT_CORRELATED", "evidence": {},
+        },
+        {
+            "code": "RECOVERY_DOMINATES", "mode": "SHADOW", "status": "UNKNOWN",
+            "reason": "IMPLEMENTATION_AND_RECOVERY_INTERVALS_NOT_BOTH_TYPED", "evidence": {},
+        },
+    ))
+    return process_shape, advisories
+
+
+def _aggregate_learning() -> dict[str, object]:
+    """Fail closed until a sufficiently covered completed-trace cohort exists."""
+    return {
+        "status": "UNKNOWN",
+        "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
+        "sample_count": None,
+        "coverage_fraction": None,
+        "cohort": {
+            "runtime_generation": None,
+            "schema_generation": None,
+            "environment": None,
+        },
+        "metrics": {
+            "lead_time_ms": None,
+            "review_pickup_ms": None,
+            "review_execution_ms": None,
+            "ci_qualification_ms": None,
+            "mcp_service_ms": None,
+            "recovery_reconciliation_ms": None,
+            "unobserved_share": None,
+            "advisory_feedback": None,
+        },
+        "delivery_estimate": None,
+    }
 
 
 def _review_wait(
@@ -347,9 +613,71 @@ async def _activation(
     }, True
 
 
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower), 3)
+
+
+async def _mcp_timings(
+    connection: AsyncConnection, work_id: UUID, write_failed: bool,
+) -> tuple[dict[str, object], bool]:
+    available = cast(bool, await connection.scalar(text(
+        "SELECT to_regclass('public.mcp_operation_timings') IS NOT NULL"
+    )))
+    if not available:
+        return {"status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE"}, False
+    total = cast(int, await connection.scalar(text(
+        "SELECT count(*) FROM mcp_operation_timings WHERE target_work_id=:work_id"
+    ), {"work_id": work_id}))
+    rows = (await connection.execute(text(
+        "SELECT tool,duration_ms,db_total_ms,db_max_ms,child_union_ms,"
+        "server_residual_ms,runtime_generation,schema_generation "
+        "FROM mcp_operation_timings WHERE target_work_id=:work_id "
+        "ORDER BY started_at DESC,call_id DESC LIMIT :limit"
+    ), {"work_id": work_id, "limit": TIMING_LIMIT})).mappings().all()
+    unstable = any(
+        row["runtime_generation"] is None or row["schema_generation"] == "UNKNOWN"
+        for row in rows
+    )
+    groups: dict[tuple[str, str, str], list[float]] = {}
+    for row in rows:
+        runtime = row["runtime_generation"]
+        key = (str(runtime), str(row["schema_generation"]), str(row["tool"]))
+        if runtime is not None and "UNKNOWN" not in key:
+            groups.setdefault(key, []).append(float(row["duration_ms"]))
+    truncated = total > len(rows)
+    reasons = ["BEST_EFFORT_NONRETRYING_CAPTURE", *[
+        reason for condition, reason in (
+            (write_failed, "PERSISTENCE_FAILURE_IN_PROCESS"),
+            (truncated, "MOST_RECENT_RECORDS_ONLY"),
+            (unstable, "UNSTABLE_COHORT_EXCLUDED"),
+        ) if condition
+    ]]
+    return {
+        "status": "PARTIAL", "reason": "+".join(reasons),
+        "correlation": "DIRECT_TARGET_WORK_ID",
+        "interpretation": "SERVICE_TIME_NOT_CRITICAL_PATH",
+        "total_records": total, "retained_records": len(rows), "truncated": truncated,
+        "service_total_ms": round(sum(float(row["duration_ms"]) for row in rows), 3),
+        "db_total_ms": round(sum(float(row["db_total_ms"]) for row in rows), 3),
+        "db_max_ms": round(max((float(row["db_max_ms"]) for row in rows), default=0), 3),
+        "child_union_ms": round(sum(float(row["child_union_ms"]) for row in rows), 3),
+        "server_residual_ms": round(sum(float(row["server_residual_ms"]) for row in rows), 3),
+        "cohorts": [{
+            "runtime_generation": runtime, "schema_generation": schema, "tool": tool,
+            "sample_count": len(durations), "p50_ms": _percentile(durations, .5),
+            "p90_ms": _percentile(durations, .9),
+        } for (runtime, schema, tool), durations in sorted(groups.items())],
+    }, True
+
+
 async def _snapshot(
     connection: AsyncConnection, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
+    timing_write_failed: bool = False,
 ) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
@@ -378,6 +706,10 @@ async def _snapshot(
     ).order_by(human_trajectory_revisions.c.generation))).all()
     failures, _failures_available = await _failures(connection, work_id, captured_at)
     activation, activation_available = await _activation(connection, work_id)
+    mcp_timings, timings_available = await _mcp_timings(connection, work_id, timing_write_failed)
+    run_receipts, run_receipts_available = await _run_receipts(
+        connection, work_id, captured_at,
+    )
 
     raw_root = cast(str | None, work.canonical_root)
     root_id: UUID | None = None
@@ -427,6 +759,9 @@ async def _snapshot(
         "prepared_at": _time(row.created_at), "decided_at": _time(row.decided_at),
         "wait": _review_wait(row.created_at, row.decided_at, captured_at),
     } for row in reviews]
+    process_shape, advisories = _process_shape_and_advisories(
+        run_receipts, review_pickup,
+    )
     ordered_evidence = [{
         "source": "work_events", "kind": row.subtype, "id": str(row.id),
         "at": _time(row.created_at), "duration_ms": 0,
@@ -460,6 +795,21 @@ async def _snapshot(
             ordered_evidence.append({
                 "source": "failure_journal", "kind": "FAILURE_RESOLVED",
                 "id": item["resolution_id"], "at": item["resolved_at"], "duration_ms": 0,
+            })
+    for attempt in cast(list[dict[str, object]], run_receipts["attempts"]):
+        ordered_evidence.append({
+            "source": "task_runs", "kind": "REQUESTED",
+            "id": attempt["request_id"], "at": attempt["requested_at"], "duration_ms": 0,
+        })
+        if attempt["bound_at"] is not None:
+            ordered_evidence.append({
+                "source": "task_runs", "kind": "BOUND",
+                "id": attempt["request_id"], "at": attempt["bound_at"], "duration_ms": 0,
+            })
+        if attempt["completed_at"] is not None:
+            ordered_evidence.append({
+                "source": "task_runs", "kind": "COMPLETED",
+                "id": attempt["request_id"], "at": attempt["completed_at"], "duration_ms": 0,
             })
     ordered_evidence.sort(key=lambda item: (cast(str, item["at"]),
                                             cast(str, item["source"]),
@@ -502,7 +852,12 @@ async def _snapshot(
         "human_trajectory": trajectory,
         "failures": failures,
         "activation": activation,
+        "mcp_tracker_timing": mcp_timings,
+        "run_receipts": run_receipts,
         "review_pickup": review_pickup,
+        "process_shape": process_shape,
+        "advisories": advisories,
+        "aggregate_learning": _aggregate_learning(),
         "ordered_evidence": {
             "meaning": "OBSERVATIONAL_NOT_CAUSAL",
             "items": ordered_evidence,
@@ -530,7 +885,11 @@ async def _snapshot(
             "review_pickup": {
                 "status": review_pickup["status"], "reason": review_pickup["reason"],
             },
-            "timing_journal": {"status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED"},
+            "timing_journal": {
+                "status": ("UNKNOWN" if not timings_available else
+                           "PARTIAL" if mcp_timings["status"] == "PARTIAL" else "INCLUDED"),
+                "reason": mcp_timings["reason"],
+            },
             "failures": {
                 "status": "INCLUDED" if failures["status"] == "KNOWN" else "UNKNOWN",
                 "reason": "DIRECT_OWNER_WORK_ID" if failures["status"] == "KNOWN"
@@ -541,8 +900,13 @@ async def _snapshot(
                            and activation["status"] != "UNKNOWN" else "UNKNOWN"),
                 "reason": activation["reason"],
             },
+            "run_receipts": {
+                "status": ("INCLUDED" if run_receipts_available
+                           and run_receipts["status"] != "UNKNOWN" else "UNKNOWN"),
+                "reason": run_receipts["reason"],
+            },
             **{name: {"status": "EXCLUDED", "reason": "NOT_INCLUDED_V2_SLICE_A"}
-               for name in ("lifecycle_timing", "github", "run_receipts")},
+               for name in ("lifecycle_timing", "github")},
         },
         "source_coverage": {
             "canonical_work": {"status": "PARTIAL", "reason": "CURRENT_ONLY"},
@@ -557,7 +921,10 @@ async def _snapshot(
             "failure_recovery": {"status": failures["status"], "reason": failures["reason"]},
             "activation": {"status": activation["status"], "reason": activation["reason"]},
             "mcp_tracker_timing": {
-                "status": "UNKNOWN", "reason": "DURABLE_RETENTION_NOT_PROVED",
+                "status": mcp_timings["status"], "reason": mcp_timings["reason"],
+            },
+            "delivery_recovery_attempts": {
+                "status": run_receipts["status"], "reason": run_receipts["reason"],
             },
         },
     }
@@ -568,10 +935,11 @@ async def report(
     engine: AsyncEngine, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
 ) -> dict[str, object]:
+    store = timing_persistence(engine)
     async with engine.connect() as connection:
         connection = await connection.execution_options(isolation_level="REPEATABLE READ")
         async with connection.begin():
-            return await _snapshot(connection, work_id, review_occurrences)
+            return await _snapshot(connection, work_id, review_occurrences, store is not None and store.write_failed)
 
 
 def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
@@ -654,6 +1022,11 @@ def project_wall(value: dict[str, object]) -> dict[str, object]:
         for item in cast(list[dict[str, object]], failures.get("items", [])):
             if item.get("resolved_at") is not None:
                 raw_intervals.append((item.get("occurred_at"), item.get("resolved_at")))
+    run_receipts = cast(dict[str, object], value.get("run_receipts", {}))
+    if run_receipts.get("status") in {"KNOWN", "PARTIAL"}:
+        for attempt in cast(list[dict[str, object]], run_receipts.get("attempts", [])):
+            if attempt.get("completed_at") is not None:
+                raw_intervals.append((attempt.get("requested_at"), attempt.get("completed_at")))
 
     clipped: list[tuple[datetime, datetime]] = []
     for raw_start, raw_end in raw_intervals:
@@ -867,6 +1240,54 @@ def render_concise(value: dict[str, object]) -> str:
             f"trajectory_id={revision['trajectory_id']} source_kind={revision['source_kind']} "
             f"created_at={revision['created_at']}"
             for revision in cast(list[dict[str, object]], trajectory["revisions"])
+        )
+    timings = cast(dict[str, object] | None, value.get("mcp_tracker_timing"))
+    if timings is not None:
+        lines.append(
+            f"mcp_tracker_timing status={timings['status']} reason={timings['reason']} "
+            f"correlation={timings.get('correlation')} total_records={timings.get('total_records')} "
+            f"retained_records={timings.get('retained_records')} truncated={timings.get('truncated')} "
+            f"service_total_ms={timings.get('service_total_ms')} "
+            f"db_total_ms={timings.get('db_total_ms')} "
+            f"server_residual_ms={timings.get('server_residual_ms')}"
+        )
+        lines.extend(
+            f"mcp_timing_cohort runtime={item['runtime_generation']} "
+            f"schema={item['schema_generation']} tool={item['tool']} "
+            f"samples={item['sample_count']} p50_ms={item['p50_ms']} p90_ms={item['p90_ms']}"
+            for item in cast(list[dict[str, object]], timings.get("cohorts", []))
+        )
+    run_receipts = cast(dict[str, object] | None, value.get("run_receipts"))
+    if run_receipts is not None:
+        lines.append(
+            f"run_receipts status={run_receipts['status']} reason={run_receipts['reason']} "
+            f"correlation={run_receipts['correlation']} "
+            f"total_attempts={run_receipts['total_attempts']} "
+            f"retained_attempts={run_receipts['retained_attempts']} "
+            f"truncated={run_receipts['truncated']} "
+            f"cumulative_observed_duration_ms="
+            f"{run_receipts['cumulative_observed_duration_ms']}"
+        )
+        lines.extend(
+            f"run_receipt request_id={item['request_id']} run_id={item['run_id']} "
+            f"task_kind={item['task_kind']} state={item['state']} outcome={item['outcome']} "
+            f"candidate_ref={item['candidate_ref']} requested_at={item['requested_at']} "
+            f"bound_at={item['bound_at']} completed_at={item['completed_at']} "
+            f"observed_duration_ms={item['observed_duration_ms']}"
+            for item in cast(list[dict[str, object]], run_receipts["attempts"])
+        )
+    aggregate = cast(dict[str, object] | None, value.get("aggregate_learning"))
+    if aggregate is not None:
+        cohort = cast(dict[str, object], aggregate["cohort"])
+        metrics = cast(dict[str, object], aggregate["metrics"])
+        lines.append(
+            f"aggregate_learning status={aggregate['status']} reason={aggregate['reason']} "
+            f"sample_count={aggregate['sample_count']} "
+            f"coverage_fraction={aggregate['coverage_fraction']} "
+            f"runtime={cohort['runtime_generation']} schema={cohort['schema_generation']} "
+            f"environment={cohort['environment']} delivery_estimate="
+            f"{aggregate['delivery_estimate']} metrics="
+            + ",".join(f"{name}:{value}" for name, value in sorted(metrics.items()))
         )
     lines.extend(
         f"coverage {name}={item['status']}:{item['reason']}"

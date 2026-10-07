@@ -51,7 +51,13 @@ from .oauth_continuity import (
     FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
     SwitchstandGitHubProvider,
 )
-from .observability import CallTimingMiddleware, annotate_target, register_sqlalchemy_timing
+from .observability import (
+    CallTimingMiddleware,
+    annotate_target,
+    register_sqlalchemy_timing,
+    register_timing_persistence,
+    timing_persistence,
+)
 from .principal import RequestPrincipal
 from .priority_claim_service import PriorityClaimService
 from .priority_claims import PriorityClaimRepository
@@ -77,7 +83,7 @@ from .work_events import WorkEventRepository
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
-STATEFUL_MIGRATION_REVISION = "0023_activation_continuity"
+STATEFUL_MIGRATION_REVISION = "0024_mcp_operation_timings"
 _https_resource_url = normalize_resource_url
 
 
@@ -511,12 +517,16 @@ def _create_resource_app(
             service.activation_technical = activation_technical
             service.activation_runtime = _activation_runtime
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
-    server.add_middleware(CallTimingMiddleware(_timing_identity))
-    for name, tool in build_ordinary_tools(
-        service, _audit,
-        agent_identity=_runtime_identity,
-        correlate_work=annotate_target,
-    ):
+    ordinary_tools = build_ordinary_tools(
+        service, _audit, agent_identity=_runtime_identity, correlate_work=annotate_target,
+    )
+    state = service.state
+    store = timing_persistence(state.engine) if isinstance(state, PostgresState) else None
+    server.add_middleware(CallTimingMiddleware(
+        _timing_identity, persist=None if store is None else store.persist,
+        allowed_tools=tuple(name for name, _tool in ordinary_tools),
+    ))
+    for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime
@@ -544,6 +554,9 @@ async def resource_service(
     """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
     register_sqlalchemy_timing(engine)
+    register_timing_persistence(
+        engine, os.getenv("SWITCHSTAND_RUNTIME_GENERATION", "UNKNOWN"),
+    )
     try:
         async def unresolved_principal():
             return None

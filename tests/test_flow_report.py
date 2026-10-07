@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import AsyncGenerator
@@ -32,9 +33,17 @@ from switchstand.human_trajectory import (
     HumanTrajectoryStore,
     SourceKind,
 )
+from switchstand.observability import register_timing_persistence
 from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
 from switchstand.state import human_trajectory_revisions, outcome_state_revisions, work_handles
 from switchstand.state import metadata as state_metadata
+from switchstand.task_runs import (
+    AgentTaskRequest,
+    AgentTaskResult,
+    task_run_executions,
+    task_run_requests,
+    task_run_results,
+)
 from switchstand.work_events import work_events
 
 
@@ -95,6 +104,309 @@ async def add_activation_revisions(
                 "(:id,:operation_id,:generation,CAST(:record AS jsonb))"
             ), {"id": obligation_id, "operation_id": value.operation_id,
                 "generation": generation, "record": value.model_dump_json()})
+
+
+async def add_timing_table(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "CREATE TABLE mcp_operation_timings (call_id text PRIMARY KEY,tool text NOT NULL,"
+            "target_work_id uuid,started_at timestamptz NOT NULL,duration_ms float NOT NULL,"
+            "status text NOT NULL,error_class text,db_count integer NOT NULL,db_total_ms float "
+            "NOT NULL,db_max_ms float NOT NULL,child_union_ms float NOT NULL,"
+            "server_residual_ms float NOT NULL,runtime_generation text NOT NULL,"
+            "schema_generation text NOT NULL)"
+        ))
+
+
+def task_request_digest(requester: UUID, request: AgentTaskRequest) -> str:
+    value = {
+        "requester_work_id": str(requester),
+        "request": request.model_dump(mode="json"),
+    }
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+
+
+def task_result_digest(request_id: UUID, run_id: UUID, result: AgentTaskResult) -> str:
+    value = {
+        "request_id": str(request_id), "run_id": str(run_id),
+        "result": result.model_dump(mode="json"),
+    }
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+
+
+async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
+    engine: AsyncEngine,
+) -> None:
+    target, requester = uuid4(), uuid4()
+    started = datetime.now(UTC) - timedelta(seconds=30)
+    bound, completed = started + timedelta(seconds=5), started + timedelta(seconds=20)
+    await add_work(engine, target, admitted_at=started - timedelta(seconds=10))
+    request_id, operation_id, run_id, result_id = uuid4(), uuid4(), uuid4(), uuid4()
+    request = AgentTaskRequest(
+        api_version="1", execution_work_id=target, observed_revision="pg_exact",
+        task_kind="VALIDATION", continuation="START", candidate_ref="candidate:abc",
+        objective="private objective", result_contract={"private": "contract"},
+    )
+    task_result = AgentTaskResult(
+        api_version="1", outcome="PASS", summary="private summary",
+        evidence_refs=("private evidence",),
+    )
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        await connection.execute(insert(task_run_requests).values(
+            request_id=request_id, operation_id=operation_id,
+            requester_work_id=requester,
+            **request.model_dump(mode="json", exclude={"api_version"}),
+            content_digest=task_request_digest(requester, request),
+            terminal_result_id=None, created_at=started,
+        ))
+        await connection.execute(insert(task_run_executions).values(
+            request_id=request_id, run_id=run_id, bound_at=bound,
+        ))
+        await connection.execute(insert(task_run_results).values(
+            result_id=result_id, request_id=request_id, run_id=run_id,
+            **task_result.model_dump(mode="json", exclude={"api_version"}),
+            content_digest=task_result_digest(request_id, run_id, task_result),
+            created_at=completed,
+        ))
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(terminal_result_id=result_id))
+
+    result = await report(engine, target)
+
+    assert result["run_receipts"] == {
+        "status": "KNOWN", "reason": None,
+        "correlation": "DIRECT_REQUESTER_OR_EXECUTION_WORK_ID",
+        "total_attempts": 1, "retained_attempts": 1, "truncated": False,
+        "cumulative_observed_duration_ms": 20_000,
+        "attempts": [{
+            "request_id": str(request_id), "operation_id": str(operation_id),
+            "run_id": str(run_id), "task_kind": "VALIDATION", "continuation": "START",
+            "candidate_ref": "candidate:abc", "correlation_roles": ["execution_work_id"],
+            "state": "COMPLETE", "outcome": "PASS",
+            "requested_at": started.isoformat(), "bound_at": bound.isoformat(),
+            "completed_at": completed.isoformat(), "observed_duration_ms": 20_000,
+        }],
+    }
+    assert result["coverage"]["run_receipts"] == {"status": "INCLUDED", "reason": None}
+    assert result["source_coverage"]["delivery_recovery_attempts"] == {
+        "status": "KNOWN", "reason": None,
+    }
+    encoded = json.dumps(result)
+    assert all(private not in encoded for private in (
+        "private objective", "private", "contract", "private summary", "private evidence",
+    ))
+    assert result["elapsed"]["observed_interval_union_ms"] == 20_000
+    assert result["aggregate_learning"] == {
+        "status": "UNKNOWN",
+        "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
+        "sample_count": None, "coverage_fraction": None,
+        "cohort": {
+            "runtime_generation": None, "schema_generation": None,
+            "environment": None,
+        },
+        "metrics": {
+            "lead_time_ms": None, "review_pickup_ms": None,
+            "review_execution_ms": None, "ci_qualification_ms": None,
+            "mcp_service_ms": None, "recovery_reconciliation_ms": None,
+            "unobserved_share": None, "advisory_feedback": None,
+        },
+        "delivery_estimate": None,
+    }
+
+    async with engine.begin() as connection:
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(candidate_ref="candidate:tampered"))
+    corrupt = await report(engine, target)
+    assert corrupt["run_receipts"]["status"] == "UNKNOWN"
+    assert corrupt["process_shape"]["status"] == "UNKNOWN"
+    assert corrupt["process_shape"]["managed_attempts"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_OR_UNSAFE_RECEIPT",
+        "total": None, "retained": None, "truncated": None,
+        "cumulative_observed_duration_ms": None,
+        "retained_by_kind": None, "retained_by_state": None,
+        "retained_continuations": None,
+        "repeated_identical_validation_requests": None,
+    }
+    async with engine.begin() as connection:
+        await connection.execute(update(task_run_requests).where(
+            task_run_requests.c.request_id == request_id
+        ).values(candidate_ref=request.candidate_ref))
+        await connection.execute(update(task_run_results).where(
+            task_run_results.c.result_id == result_id
+        ).values(outcome="TAMPERED"))
+    assert (await report(engine, target))["run_receipts"]["status"] == "UNKNOWN"
+
+
+async def test_process_shape_and_shadow_repeat_advisory_use_exact_receipts(
+    engine: AsyncEngine,
+) -> None:
+    target, requester = uuid4(), uuid4()
+    admitted = datetime.now(UTC) - timedelta(minutes=20)
+    await add_work(engine, target, admitted_at=admitted)
+    request = AgentTaskRequest(
+        api_version="1", execution_work_id=target, observed_revision="pg_exact",
+        task_kind="VALIDATION", continuation="START", candidate_ref="candidate:abc",
+        objective="private repeated validation", result_contract={"private": "contract"},
+    )
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        for index in range(2):
+            request_id, operation_id, run_id, result_id = (
+                uuid4(), uuid4(), uuid4(), uuid4()
+            )
+            started = admitted + timedelta(minutes=index * 5)
+            completed = started + timedelta(minutes=4)
+            result = AgentTaskResult(
+                api_version="1", outcome="PASS", summary="private summary",
+                evidence_refs=(),
+            )
+            await connection.execute(insert(task_run_requests).values(
+                request_id=request_id, operation_id=operation_id,
+                requester_work_id=requester,
+                **request.model_dump(mode="json", exclude={"api_version"}),
+                content_digest=task_request_digest(requester, request),
+                terminal_result_id=None, created_at=started,
+            ))
+            await connection.execute(insert(task_run_executions).values(
+                request_id=request_id, run_id=run_id,
+                bound_at=started + timedelta(seconds=5),
+            ))
+            await connection.execute(insert(task_run_results).values(
+                result_id=result_id, request_id=request_id, run_id=run_id,
+                **result.model_dump(mode="json", exclude={"api_version"}),
+                content_digest=task_result_digest(request_id, run_id, result),
+                created_at=completed,
+            ))
+            await connection.execute(update(task_run_requests).where(
+                task_run_requests.c.request_id == request_id
+            ).values(terminal_result_id=result_id))
+
+    projection = await report(engine, target)
+
+    assert projection["process_shape"]["managed_attempts"] == {
+        "status": "KNOWN", "reason": None, "total": 2, "retained": 2,
+        "truncated": False, "cumulative_observed_duration_ms": 480_000,
+        "retained_by_kind": {"VALIDATION": 2}, "retained_continuations": 0,
+        "retained_by_state": {"COMPLETE": 2},
+        "repeated_identical_validation_requests": [{
+            "group_id": projection["run_receipts"]["attempts"][0]["request_id"],
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+            "attempt_count": 2, "cumulative_observed_duration_ms": 480_000,
+            "request_ids": [
+                attempt["request_id"] for attempt in projection["run_receipts"]["attempts"]
+            ],
+            "operation_ids": [
+                attempt["operation_id"] for attempt in projection["run_receipts"]["attempts"]
+            ],
+        }],
+    }
+    repeat = next(item for item in projection["advisories"]
+                  if item["code"] == "REPEATED_EXPENSIVE_ATTEMPT")
+    assert repeat == {
+        "code": "REPEATED_EXPENSIVE_ATTEMPT", "mode": "SHADOW",
+        "status": "UNKNOWN", "reason": "MATERIAL_CLEARING_CHANGE_NOT_CORRELATED",
+        "evidence": {
+            "identical_completed_validation_groups": 1,
+            "identity_basis": "VALIDATED_IDENTICAL_REQUEST_ENVELOPE",
+        },
+    }
+    encoded = json.dumps(projection)
+    assert "private repeated validation" not in encoded
+    assert "private summary" not in encoded and "private\": \"contract" not in encoded
+    stored_digest = task_request_digest(requester, request)
+    derived_fingerprint = hashlib.sha256(
+        f"observability-attempt-v1:{stored_digest}".encode()
+    ).hexdigest()
+    assert stored_digest not in encoded and derived_fingerprint not in encoded
+
+
+async def test_managed_run_receipt_limit_is_explicitly_partial(engine: AsyncEngine) -> None:
+    target, requester = uuid4(), uuid4()
+    admitted = datetime.now(UTC) - timedelta(minutes=10)
+    await add_work(engine, target, admitted_at=admitted)
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_handles), [
+            {"id": target, "provider": "local", "provider_work_id": str(target)},
+            {"id": requester, "provider": "local", "provider_work_id": str(requester)},
+        ])
+        rows = []
+        for index in range(129):
+            request = AgentTaskRequest(
+                api_version="1", execution_work_id=target, observed_revision="pg_exact",
+                task_kind="VALIDATION", continuation="START",
+                objective=f"attempt {index}", result_contract={},
+            )
+            rows.append({
+                "request_id": uuid4(), "operation_id": uuid4(),
+                "requester_work_id": requester,
+                **request.model_dump(mode="json", exclude={"api_version"}),
+                "content_digest": task_request_digest(requester, request),
+                "created_at": admitted + timedelta(seconds=index),
+            })
+        await connection.execute(insert(task_run_requests), rows)
+
+    result = await report(engine, target)
+
+    assert result["run_receipts"]["status"] == "PARTIAL"
+    assert result["run_receipts"]["reason"] == "MOST_RECENT_ATTEMPTS_ONLY"
+    assert result["run_receipts"]["total_attempts"] == 129
+    assert result["run_receipts"]["retained_attempts"] == 128
+    assert result["run_receipts"]["truncated"] is True
+    assert result["run_receipts"]["cumulative_observed_duration_ms"] == 0
+    assert result["elapsed"]["observed_interval_union_ms"] == 0
+
+
+async def test_durable_mcp_timing_is_private_bounded_cohort_evidence(engine: AsyncEngine) -> None:
+    target = uuid4()
+    await add_work(engine, target)
+    await add_timing_table(engine)
+    runtime = "a" * 40
+    store = register_timing_persistence(engine, runtime)
+    base: dict[str, object] = {
+        "tool": "work_get", "wall_started_at": datetime.now(UTC).isoformat(), "status": "ok",
+        "error_class": None, "identity": {"subject": "private"},
+        "target_work_id": str(target), "db_count": 2, "db_sum_ms": 30.0,
+        "db_max_ms": 20.0, "child_union_ms": 30.0,
+        "server_residual_ms": 70.0,
+    }
+    await store.persist({**base, "call_id": "one", "duration_ms": 100.0})
+    await store.persist({**base, "call_id": "two", "duration_ms": 300.0})
+
+    result = await report(engine, target)
+
+    timing = result["mcp_tracker_timing"]
+    assert timing["status"] == "PARTIAL"
+    assert timing["reason"] == "BEST_EFFORT_NONRETRYING_CAPTURE"
+    assert timing["total_records"] == 2 and timing["service_total_ms"] == 400.0
+    assert timing["db_total_ms"] == 60.0 and timing["server_residual_ms"] == 140.0
+    assert timing["cohorts"] == [{
+        "runtime_generation": runtime,
+        "schema_generation": "0024_mcp_operation_timings", "tool": "work_get",
+        "sample_count": 2, "p50_ms": 200.0, "p90_ms": 280.0,
+    }]
+    assert result["coverage"]["timing_journal"] == {
+        "status": "PARTIAL", "reason": "BEST_EFFORT_NONRETRYING_CAPTURE",
+    }
+    async with engine.connect() as connection:
+        row = await connection.execute(text("SELECT * FROM mcp_operation_timings LIMIT 1"))
+        assert "identity" not in tuple(row.keys())
+    store.write_failed = True
+    assert "PERSISTENCE_FAILURE_IN_PROCESS" in (
+        await report(engine, target)
+    )["mcp_tracker_timing"]["reason"]
 
 
 async def test_exact_failure_and_activation_sources_are_private_and_validated(
@@ -319,7 +631,7 @@ async def test_root_modes_are_explicit_and_report_stays_partial(
         "isolation": "repeatable read", "read_only": "on", "row_version": 1,
     }
     assert result["coverage"]["timing_journal"] == {
-        "status": "EXCLUDED", "reason": "RETENTION_NOT_PROVED",
+        "status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE",
     }
     assert result["coverage"]["messages"] == {
         "status": "EXCLUDED", "reason": "AMBIGUOUS_ENDPOINT_NAMESPACE",

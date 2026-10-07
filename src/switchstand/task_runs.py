@@ -310,7 +310,7 @@ def task_request_operation_id(
     return uuid5(REQUEST_OPERATION_NAMESPACE, _digest(requester_work_id, request))
 
 
-async def _verified_request(
+async def validated_task_run_request(
     connection: AsyncConnection, row: RowMapping
 ) -> TaskRunRequest:
     requester_work_id = cast(UUID, row["requester_work_id"])
@@ -373,7 +373,7 @@ def _result_digest(
     ).hexdigest()
 
 
-def _result_view(row: RowMapping) -> TaskRunResult:
+def validated_task_run_result(row: RowMapping) -> TaskRunResult:
     request_id = cast(UUID, row["request_id"])
     run_id = cast(UUID, row["run_id"])
     payload = AgentTaskResult(
@@ -429,7 +429,7 @@ class TaskRunState:
                     task_run_requests.c.operation_id == operation_id
                 ).with_for_update())).mappings().one_or_none()
         if replay is not None:
-            verified = await _verified_request(connection, replay)
+            verified = await validated_task_run_request(connection, replay)
             if replay["content_digest"] != digest:
                 return TaskRunRequestResult(
                     status="conflict", reason="operation_identity_conflict"
@@ -461,14 +461,14 @@ class TaskRunState:
         )).mappings().one_or_none()
         if inserted is not None:
             return TaskRunRequestResult(
-                status="ok", request=await _verified_request(connection, inserted)
+                status="ok", request=await validated_task_run_request(connection, inserted)
             )
         replay = (await connection.execute(select(task_run_requests).where(
             task_run_requests.c.operation_id == operation_id
         ))).mappings().one_or_none()
         if replay is None:
             return TaskRunRequestResult(status="conflict", reason="operation_identity_conflict")
-        verified = await _verified_request(connection, replay)
+        verified = await validated_task_run_request(connection, replay)
         if replay["content_digest"] != digest:
             return TaskRunRequestResult(status="conflict", reason="operation_identity_conflict")
         return TaskRunRequestResult(status="ok", request=verified)
@@ -485,7 +485,7 @@ class TaskRunState:
         if row is None:
             return TaskRunRequestResult(status="denied", reason="request_not_found")
         return TaskRunRequestResult(
-            status="ok", request=await _verified_request(connection, row)
+            status="ok", request=await validated_task_run_request(connection, row)
         )
 
     async def get_implementation_in_transaction(
@@ -507,7 +507,9 @@ class TaskRunState:
         )).mappings().one_or_none()
         if row is None:
             return TaskRunRequestResult(status="denied", reason="request_not_found")
-        return TaskRunRequestResult(status="ok", request=await _verified_request(connection, row))
+        return TaskRunRequestResult(
+            status="ok", request=await validated_task_run_request(connection, row)
+        )
 
     async def get(self, request_id: UUID) -> TaskRunRequestResult:
         try:
@@ -518,7 +520,7 @@ class TaskRunState:
                 if row is None:
                     return TaskRunRequestResult(status="denied", reason="request_not_found")
                 return TaskRunRequestResult(
-                    status="ok", request=await _verified_request(connection, row)
+                    status="ok", request=await validated_task_run_request(connection, row)
                 )
         except (SQLAlchemyError, TypeError, ValueError):
             return TaskRunRequestResult(status="unknown", reason="state_unavailable")
@@ -532,13 +534,13 @@ class TaskRunState:
                 ))).mappings().one_or_none()
                 if result_row is None:
                     return None
-                result = _result_view(result_row)
+                result = validated_task_run_result(result_row)
                 request_row = (await connection.execute(select(task_run_requests).where(
                     task_run_requests.c.request_id == result.request_id
                 ))).mappings().one_or_none()
                 if request_row is None:
                     return None
-                request = await _verified_request(connection, request_row)
+                request = await validated_task_run_request(connection, request_row)
                 if request.terminal_result_id != result.result_id:
                     return None
                 return TaskRunTerminalEvidence(request=request, result=result)
@@ -557,7 +559,7 @@ class TaskRunState:
                 )).mappings().one_or_none()
                 if request is None:
                     return TaskRunBindResult(status="denied", reason="request_not_found")
-                verified = await _verified_request(connection, request)
+                verified = await validated_task_run_request(connection, request)
                 if verified.execution_work_id != receipt.active_work_id:
                     return TaskRunBindResult(
                         status="denied", reason="execution_work_mismatch"
@@ -617,7 +619,7 @@ class TaskRunState:
                 )).mappings().one_or_none()
                 if request is None:
                     return TaskRunResultResult(status="denied", reason="request_not_found")
-                verified = await _verified_request(connection, request)
+                verified = await validated_task_run_request(connection, request)
                 execution = (await connection.execute(
                     select(task_run_executions).where(
                         task_run_executions.c.request_id == request_id,
@@ -656,7 +658,7 @@ class TaskRunState:
                             **result.model_dump(mode="json", exclude={"api_version"}),
                         ).returning(*tuple(task_run_results.c))
                     )).mappings().one()
-                view = _result_view(existing)
+                view = validated_task_run_result(existing)
                 if runtime.current_generation is None:
                     return TaskRunResultResult(
                         status="unknown",
