@@ -196,7 +196,6 @@ if [ "$wakeful_mode" = PILOT ]; then
             --profile-path "$coordinator_profile_path" -- \
             "$real_codex" --profile "$coordinator_profile" \
             -c 'model_reasoning_effort="medium"' \
-            -a never -c 'default_permissions="switchstand-coordinator"' \
             --enable hooks --dangerously-bypass-hook-trust \
             resume __SWITCHSTAND_WAKEFUL_THREAD__ \
             --remote __SWITCHSTAND_WAKEFUL_SOCKET__ "$@"
