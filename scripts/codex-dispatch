@@ -24,7 +24,7 @@ fi
 coordinator_home="$HOME/.local/state/switchstand/codex/coordinator"
 continuity_mode=${SWITCHSTAND_CODEX_CONTINUITY:-PILOT}
 continuity_lifetime=${SWITCHSTAND_CODEX_LIFETIME:-ASSIGNMENT}
-wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-PILOT}
+wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
 case "$continuity_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_CONTINUITY must be OFF or PILOT" >&2; exit 2;; esac
 case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)

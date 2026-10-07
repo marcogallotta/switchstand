@@ -54,11 +54,10 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     executable(home / ".local/bin/codex", "#!/bin/sh\nexit 99\n")
     return home, primary, marker, os.environ | {
         "HOME": str(home), "MARKER": str(marker),
-        "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
     }
 
 
-def test_wakeful_pilot_routes_launch_through_default_on_supervisor(tmp_path: Path) -> None:
+def test_explicit_wakeful_pilot_routes_launch_through_supervisor(tmp_path: Path) -> None:
     home, primary, marker, env = dispatch_fixture(tmp_path)
     observed = tmp_path / "supervisor"
     environment = home / ".config/switchstand/.env"
@@ -74,11 +73,10 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
 """,
     )
 
-    default_env = env.copy()
-    default_env.pop("SWITCHSTAND_CODEX_WAKEFUL")
     result = subprocess.run(
         [DISPATCH, "resume", "thread-1"], cwd=primary,
-        env=default_env | {
+        env=env | {
+            "SWITCHSTAND_CODEX_WAKEFUL": "PILOT",
             "SUPERVISOR": str(observed), "PYTHONPATH": "original-codex-path",
         },
         text=True, capture_output=True, check=False,
@@ -112,6 +110,19 @@ def test_explicit_wakeful_off_preserves_direct_launch_rollback(tmp_path: Path) -
     result = subprocess.run(
         [DISPATCH], cwd=primary,
         env=env | {"SWITCHSTAND_CODEX_WAKEFUL": "OFF"},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == "executed\n"
+
+
+def test_default_wakeful_off_preserves_direct_launch(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env,
         text=True, capture_output=True, check=False,
     )
 
