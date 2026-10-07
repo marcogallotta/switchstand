@@ -28,8 +28,7 @@ if [ -n "$canonical_common" ] && [ "$current_common" = "$canonical_common" ]; th
         echo "Switchstand Coordinator dispatcher is unavailable" >&2
         exit 1
     fi
-    exec "$dispatcher" "$@" \
-        2> >(sed '/^Wakeful registration unavailable; retrying$/d' >&2)
+    exec "$dispatcher" "$@"
 fi
 
 real_codex="$HOME/.codex/packages/standalone/current/bin/codex"

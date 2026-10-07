@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from .agent_mailboxes import AgentMailboxState, chat_session_key
+from .codex_app_server import (
+    open_private_append,
+    remote_command,
+    start_app_server,
+    stop_process,
+)
+from .codex_registration import prepare_registration
 from .codex_wakeful import CodexBinding, QueueClient, bind
 from .secure_file import atomic_replace_bytes, create_new_private_bytes, read_private_bytes
 
@@ -24,8 +31,6 @@ RUNNER_EOF_SECONDS = 12.0
 RUNNER_TERM_SECONDS = 2.0
 MAX_RETRY_SECONDS = 10.0
 STABLE_RUNNER_SECONDS = 30.0
-
-
 @dataclass(frozen=True)
 class SessionSpec:
     home: Path
@@ -33,7 +38,35 @@ class SessionSpec:
     start_record: Path
     default_name: str
     environment_file: Path
+    profile_path: Path
     mcp_server: str = "switchstand"
+
+    @property
+    def socket_path(self) -> Path:
+        suffix = self.start_record.name.removeprefix("start-commit.")
+        return self.home / f"wakeful-app-server-{suffix}.sock"
+
+    def log_path(self, component: str = "session") -> Path:
+        suffix = self.start_record.name.removeprefix("start-commit.")
+        return self.home / f"wakeful-{component}-{suffix}.log"
+
+
+def _diagnostic(spec: SessionSpec, event: str, **details: object) -> None:
+    """Append one bounded private diagnostic event without disrupting the session."""
+    record = json.dumps(
+        {"time_ns": time.time_ns(), "event": event, **details},
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode() + b"\n"
+    descriptor: int | None = None
+    try:
+        descriptor = open_private_append(spec.log_path())
+        os.write(descriptor, record)
+        os.fsync(descriptor)
+    except (OSError, ValueError):
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _database_url(path: Path) -> str:
@@ -117,8 +150,7 @@ async def _rebind_registration(
             if (
                 registered.status != "ok"
                 or mailbox is None
-                or mailbox.session_key
-                != chat_session_key(f"codex:{registration_thread}")
+                or mailbox.session_key != chat_session_key(f"codex:{registration_thread}")
             ):
                 raise ValueError("helper registration does not match its exact Codex thread")
             moved = await mailboxes.takeover(
@@ -132,7 +164,6 @@ async def _rebind_registration(
 async def _existing_live_registration(
     binding: CodexBinding, name: str, registration_thread: str | None, database_url: str,
 ) -> str | None:
-    """Reconcile a prior committed helper registration or takeover."""
     from .chatgpt_edge import resource_service
 
     with _configured_database(database_url):
@@ -177,7 +208,7 @@ def _pending_registration_thread(spec: SessionSpec) -> str | None:
 
 
 def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
-    """Bind, authenticate registration on an owned helper thread, and freeze config."""
+    """Legacy helper-thread registration retained until the cleanup layer lands."""
     database_url = _database_url(spec.environment_file)
     client = QueueClient(spec.codex, spec.home)
     try:
@@ -188,10 +219,7 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
             binding, spec.default_name, _pending_registration_thread(spec), database_url,
         ))
         if existing_name is not None:
-            return (
-                asyncio.run(_freeze_config(spec, binding, existing_name, database_url)),
-                database_url,
-            )
+            return asyncio.run(_freeze_config(spec, binding, existing_name, database_url)), database_url
         started = client.call("thread/start", {"cwd": str(Path.cwd()), "ephemeral": True})
         registration_thread = cast(dict[str, Any], started["thread"])["id"]
         if not isinstance(registration_thread, str) or not registration_thread:
@@ -200,8 +228,7 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
             _registration_thread_path(spec), (registration_thread + "\n").encode(),
         )
         response = client.call("mcpServer/tool/call", {
-            "threadId": registration_thread,
-            "server": spec.mcp_server,
+            "threadId": registration_thread, "server": spec.mcp_server,
             "tool": "agent_register",
             "arguments": {"api_version": "1", "name": spec.default_name},
         })
@@ -230,20 +257,28 @@ def _runner_command(config: Path, lifeline: int) -> tuple[str, ...]:
     )
 
 
-def _start_runner(config: Path, database_url: str) -> tuple[subprocess.Popen[bytes], int]:
+def _start_runner(
+    config: Path, database_url: str, diagnostic_log: Path | None = None,
+) -> tuple[subprocess.Popen[bytes], int]:
     read_fd, write_fd = os.pipe()
+    log_descriptor: int | None = None
     try:
+        if diagnostic_log is not None:
+            log_descriptor = open_private_append(diagnostic_log)
         process = subprocess.Popen(
             _runner_command(config, read_fd),
             env=dict(os.environ) | {"DATABASE_URL": database_url},
             pass_fds=(read_fd,),
             start_new_session=True,
+            stderr=log_descriptor,
         )
     except Exception:
         os.close(write_fd)
         raise
     finally:
         os.close(read_fd)
+        if log_descriptor is not None:
+            os.close(log_descriptor)
     return process, write_fd
 
 
@@ -285,6 +320,7 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
         signal.SIGTSTP, signal.SIGCONT, signal.SIGWINCH,
     )
     codex: subprocess.Popen[bytes] | None = None
+    app_server: subprocess.Popen[bytes] | None = None
     runner: subprocess.Popen[bytes] | None = None
     lifeline: int | None = None
     previous: dict[signal.Signals, Any] = {}
@@ -295,7 +331,7 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
     retry_at = 0.0
     retry_delay = 1.0
     runner_started_at: float | None = None
-    registration_unavailable_reported = False
+    infrastructure_failure = False
 
     def deliver(signum: int) -> None:
         nonlocal termination
@@ -318,12 +354,49 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
     try:
         for handled in forwarded:
             previous[handled] = signal.signal(handled, forward)
-        codex = subprocess.Popen(command, env=environment, start_new_session=True)
+        try:
+            app_server = start_app_server(
+                spec.codex,
+                spec.home,
+                spec.socket_path,
+                spec.log_path("app-server"),
+                environment,
+                term_seconds=RUNNER_TERM_SECONDS,
+            )
+        except Exception as error:
+            _diagnostic(
+                spec, "launch_failed", stage="app_server_start",
+                error_type=type(error).__name__, error=str(error),
+            )
+            raise
+        _diagnostic(spec, "app_server_ready", socket=str(spec.socket_path))
+        try:
+            config, database_url, binding = prepare_registration(spec)
+            _diagnostic(
+                spec, "registration_ready", mailbox=spec.default_name,
+                thread_id=binding.thread_id,
+            )
+        except Exception as error:
+            _diagnostic(
+                spec, "launch_failed", stage="registration",
+                error_type=type(error).__name__, error=str(error),
+            )
+            raise
+        codex = subprocess.Popen(
+            remote_command(command, binding.thread_id, spec.socket_path),
+            env=environment, start_new_session=True,
+        )
         for signum in pending:
             deliver(signum)
         while True:
             returncode = codex.poll()
             if returncode is not None:
+                break
+            if app_server.poll() is not None:
+                infrastructure_failure = True
+                _diagnostic(
+                    spec, "app_server_exited", status=app_server.returncode,
+                )
                 break
             now = time.monotonic()
             if termination is not None and now >= termination[1]:
@@ -334,6 +407,10 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
                 returncode = codex.wait()
                 break
             if runner is not None and runner.poll() is not None:
+                _diagnostic(
+                    spec, "notification_runner_exited", status=runner.returncode,
+                    next_retry_seconds=retry_delay,
+                )
                 _stop_runner(runner, lifeline)
                 runner, lifeline = None, None
                 if runner_started_at is not None and now - runner_started_at >= STABLE_RUNNER_SECONDS:
@@ -343,20 +420,26 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
                 runner_started_at = None
             if runner is None and now >= retry_at:
                 try:
-                    if config is None or database_url is None:
-                        config, database_url = prepare_runner(spec)
-                    runner, lifeline = _start_runner(config, database_url)
+                    assert config is not None and database_url is not None
+                    runner, lifeline = _start_runner(
+                        config, database_url, spec.log_path("runner"),
+                    )
                     runner_started_at = time.monotonic()
-                    registration_unavailable_reported = False
-                except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                    if not registration_unavailable_reported:
-                        print("Wakeful registration unavailable; retrying", file=sys.stderr)
-                        registration_unavailable_reported = True
+                    _diagnostic(spec, "notification_runner_started", pid=runner.pid)
+                except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+                    _diagnostic(
+                        spec, "notification_runner_start_failed",
+                        error_type=type(error).__name__, error=str(error),
+                        next_retry_seconds=retry_delay,
+                    )
                     retry_at = time.monotonic() + retry_delay
                     retry_delay = min(retry_delay * 2, MAX_RETRY_SECONDS)
             time.sleep(0.1)
+        if infrastructure_failure:
+            return 1
         if termination is not None:
             return 128 + termination[0]
+        assert returncode is not None
         return returncode if returncode >= 0 else 128 - returncode
     finally:
         _stop_runner(runner, lifeline)
@@ -373,6 +456,13 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
                 except ProcessLookupError:
                     pass
                 codex.wait()
+        if app_server is not None:
+            stop_process(app_server, CODEX_TERM_SECONDS)
+        try:
+            if stat.S_ISSOCK(spec.socket_path.lstat().st_mode):
+                spec.socket_path.unlink()
+        except FileNotFoundError:
+            pass
         for handled, old in previous.items():
             signal.signal(handled, old)
 
@@ -384,6 +474,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--start-record", type=Path, required=True)
     result.add_argument("--default-name", required=True)
     result.add_argument("--environment-file", type=Path, required=True)
+    result.add_argument("--profile-path", type=Path, required=True)
     result.add_argument("codex_args", nargs=argparse.REMAINDER)
     return result
 
@@ -401,6 +492,7 @@ def main() -> None:
         start_record=arguments.start_record.resolve(strict=True),
         default_name=arguments.default_name,
         environment_file=arguments.environment_file.resolve(strict=True),
+        profile_path=arguments.profile_path.resolve(strict=True),
     )
     environment = dict(os.environ)
     environment["CODEX_HOME"] = str(spec.home)
