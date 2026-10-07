@@ -70,8 +70,8 @@ class AgentMessageSubmitResult(ClosedModel):
         if self.status == "ok":
             if self.message is None or self.reason is not None:
                 raise ValueError("successful submit requires only message")
-        elif self.message is not None or self.reason is None or self.next_action is not None:
-            raise ValueError("failed submit requires only reason")
+        elif self.message is not None or self.reason is None:
+            raise ValueError("failed submit requires a reason and no message")
         return self
 
 
@@ -81,11 +81,15 @@ class AgentMessagePendingResult(ClosedModel):
     next_cursor: UUID | None = None
     has_more: bool = False
     reason: str | None = None
+    next_action: str | None = None
 
     @model_validator(mode="after")
     def exact_shape(self):
         if self.status == "ok":
-            if self.reason is not None or self.has_more != (self.next_cursor is not None):
+            if (
+                self.reason is not None or self.next_action is not None
+                or self.has_more != (self.next_cursor is not None)
+            ):
                 raise ValueError("successful pending page shape invalid")
         elif self.messages or self.next_cursor is not None or self.has_more or self.reason is None:
             raise ValueError("failed pending page shape invalid")

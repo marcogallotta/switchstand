@@ -399,6 +399,20 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
     suffix = str(uuid4())
     alpha, beta = f"Alpha {suffix}", f"Beta {suffix}"
     with _server(env, port) as endpoint:
+        reserved = await _agent_call(
+            endpoint, "unbound-root-chat", "agent_register", register("/root"),
+        )
+        assert (reserved["status"], reserved["reason"]) == (
+            "denied", "reserved_name_requires_takeover",
+        )
+        unregistered = await _agent_call(
+            endpoint, "unregistered-chat", "agent_message_pending", {"api_version": "1"},
+        )
+        assert (unregistered["status"], unregistered["reason"]) == (
+            "denied", "agent_not_registered",
+        )
+        assert "agent_register" in unregistered["next_action"]
+        assert "Do not infer /root" in unregistered["next_action"]
         assert (await _agent_call(endpoint, "chat-a", "agent_register", register(alpha)))[
             "status"
         ] == "ok"
