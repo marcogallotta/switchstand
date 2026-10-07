@@ -160,6 +160,23 @@ def start_thread(client: QueueClient, profile: dict[str, Any], developer: str) -
     return thread_id
 
 
+def started_binding(spec: RegistrationSpec, thread_id: str) -> CodexBinding:
+    """Bind the thread created by our successful exact ``thread/start`` request.
+
+    Codex doesn't materialize a rollout for a zero-turn thread, so ``thread/read``
+    can't prove the developer instructions until after the TUI resumes it.  The
+    successful creation response is the proof for this launch-owned thread; a
+    persisted thread still goes through ``bind`` and its rollout readback.
+    """
+    if (
+        spec.start_record.parent != spec.home
+        or not spec.start_record.name.startswith("start-commit.")
+    ):
+        raise ValueError("launch-owned start record is outside CODEX_HOME")
+    read_private_bytes(spec.start_record)
+    return CodexBinding(thread_id, str(spec.start_record), spec.start_record.name)
+
+
 def prepare_registration(spec: RegistrationSpec) -> tuple[Path, str, CodexBinding]:
     """Create, register, and freeze the exact thread before the TUI owns it."""
     url = database_url(spec.environment_file)
@@ -170,12 +187,16 @@ def prepare_registration(spec: RegistrationSpec) -> tuple[Path, str, CodexBindin
     client = QueueClient(spec.codex, spec.home, spec.socket_path)
     try:
         persisted = pending_thread(spec)
-        thread_id = persisted or start_thread(client, profile, developer)
-        binding = bind(client, spec.home, spec.start_record, thread_id)
+        if persisted is None:
+            thread_id = start_thread(client, profile, developer)
+            binding: CodexBinding | str = started_binding(spec, thread_id)
+        else:
+            thread_id = persisted
+            binding = bind(client, spec.home, spec.start_record, thread_id)
         if not isinstance(binding, CodexBinding) and persisted is not None:
             thread_path(spec).unlink()
             thread_id = start_thread(client, profile, developer)
-            binding = bind(client, spec.home, spec.start_record, thread_id)
+            binding = started_binding(spec, thread_id)
         if not isinstance(binding, CodexBinding):
             raise TypeError(f"Codex thread binding is {binding}")
         state, existing_name = asyncio.run(existing_registration(
