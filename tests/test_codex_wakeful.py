@@ -164,6 +164,9 @@ def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
     assert Projection(home, binding).admit(client, source) == "ADMITTED"
     assert len(client.calls) == 1
     assert client.calls[0]["clientUserMessageId"] == wake_id(binding, source)
+    queued_text = client.calls[0]["input"][0]["text"]
+    assert "mcp__switchstand__agent_message_receive" in queued_text
+    assert "Do not use the codex_apps Switchstand connector" in queued_text
     assert set(asdict(source)) == {"source_kind", "source_id"}
     replacement = CodexBinding(binding.thread_id, binding.start_record, "new-generation")
     assert wake_id(replacement, source) != wake_id(binding, source)
