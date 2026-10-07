@@ -34,6 +34,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          PR_BASE_OWNER: ${{ github.event.pull_request.base.repo.owner.login }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -46,11 +47,13 @@ jobs:
           stack_top=false
           if test "$EVENT_KIND" = pull_request; then
             stack_top=unknown
-            if test -n "$PR_BASE_REF" && test -n "$PR_BASE_REPO" \
-              && relations="$(gh api --method GET --paginate --slurp \
-                "repos/$GITHUB_REPOSITORY/pulls" -f state=open -f per_page=100 \
-                --jq '[[.[][] | select(.head.ref == env.PR_BASE_REF and .head.repo.full_name == env.PR_BASE_REPO)] | length, [.[][] | select(.base.ref == env.PR_HEAD_REF and .base.repo.full_name == env.PR_HEAD_REPO)] | length] | @tsv' 2>/dev/null)"; then
-              read -r parents children <<< "$relations"
+            if test -n "$PR_BASE_OWNER" && test -n "$PR_BASE_REF" \
+              && parents="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+                -f state=open -f head="$PR_BASE_OWNER:$PR_BASE_REF" -f per_page=2 \
+                --jq '[.[] | select(.head.repo.full_name == env.PR_BASE_REPO)] | length' 2>/dev/null)" \
+              && children="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+                -f state=open -f base="$PR_HEAD_REF" -f per_page=1 \
+                --jq '[.[] | select(.base.repo.full_name == env.PR_HEAD_REPO)] | length' 2>/dev/null)"; then
               stack_top="$(PYTHONPATH=src python3 -c \
                 'from switchstand.affected_tests import classify_cumulative_stack_top as f; import sys; v=f(parent_count=int(sys.argv[1]), child_count=int(sys.argv[2])); print("unknown" if v is None else str(v).lower())' \
                 "$parents" "$children")"
