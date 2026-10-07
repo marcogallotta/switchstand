@@ -443,3 +443,10 @@ residue. The stable zero-turn/no-rollout fixture remains a negative control. Uni
 predicate only; the required ordinary `codex-dispatch` PILOT journey remains a separate exact-host
 qualification and does not activate Wakeful.
 
+Qualification-attempt lineage is advisory. A stable logical lineage contains provider-idempotent
+GitHub run/attempt identities, exact subject/plan/harness/environment scope, typed retry reasons,
+cumulative timing, and harness/wrapper/fixture/setup rework. Missing or conflicting currentness is
+`UNKNOWN`; identical provider replays deduplicate and conflicting replays fail closed. A
+`CI_QUALIFICATION_REWORK_WARNING` request is deterministic and once-per-lineage, but live delivery
+remains dependent on the existing Tests & CI to Wakeful attention route. It does not block retries
+or change qualification or merge authority.
