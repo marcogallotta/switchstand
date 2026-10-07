@@ -39,6 +39,10 @@ EXPLICIT_RULES: tuple[tuple[str, tuple[str, ...] | None], ...] = (
 )
 _SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _DIRECT_TEST_MODULE = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
+SERIAL_SENSITIVE_V1 = frozenset({
+    "tests/test_chatgpt_edge_process.py",
+    "tests/test_update_gateway.py",
+})
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,12 @@ class BroadQualityRun:
     head_sha: str
     conclusion: str
     workflow_blob: str | None
+
+
+def broad_backstop_required(event: str, ref_name: str, default_branch: str) -> bool:
+    """Preserve unconditional broad truth for scheduled and default-branch runs."""
+
+    return event == "schedule" or (event == "push" and ref_name == default_branch)
 
 
 def selector_health_clear(
@@ -122,6 +132,8 @@ def foreground_authority(
         reasons.append("selected-path-outside-direct-test-modules")
     if not set(plan.changed_paths).issubset(plan.selected_tests):
         reasons.append("changed-test-module-not-selected")
+    if SERIAL_SENSITIVE_V1.intersection((*plan.changed_paths, *plan.selected_tests)):
+        reasons.append("serial-sensitive-test-module")
     if reasons:
         return ForegroundAuthority("FULL_FALLBACK", tuple(sorted(set(reasons))))
     return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
