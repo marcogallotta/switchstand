@@ -42,6 +42,8 @@ def _rpc_messages(
         [
             "codex",
             "-c",
+            f'default_permissions="{PROFILE}"',
+            "-c",
             filesystem_override(control),
             "-c",
             f'mcp_servers.switchstand.url="{SWITCHSTAND_HTTP_URL}"',
