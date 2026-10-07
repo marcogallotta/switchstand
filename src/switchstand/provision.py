@@ -136,6 +136,8 @@ async def run(
         if managed_agent:
             priority_claims = os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1"
             options = {"agent_task": True} if agent_task else {}
+            if os.getenv("SWITCHSTAND_ACTIVATION_CONTINUITY") == "1":
+                options["activation_continuity"] = True
             if priority_claims:
                 options["priority_claims"] = True
             grant = await rotate_managed_grant(

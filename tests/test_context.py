@@ -20,6 +20,7 @@ from switchstand.contracts import (
     WorkSource,
 )
 from switchstand.launch import Authority
+from switchstand.managed_launch import ACTIVATION_ENV
 from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 from switchstand.mcp import build_context_server
 
@@ -42,6 +43,38 @@ class FakeService:
 def executable(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: Path) -> None:
+    binary, capture = tmp_path / "docker", tmp_path / "arguments"
+    executable(binary, '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
+    environment = os.environ | {
+        "PATH": f"{tmp_path}:{os.environ['PATH']}", "CAPTURE": str(capture),
+        "ACTIVE_WORK_ID": str(ACTIVE), "SWITCHSTAND_MANAGED": "1",
+        "SWITCHSTAND_GRANT_ID": str(ACTIVE), "SWITCHSTAND_GRANT_VERSION": "1",
+    }
+    script = Path(__file__).parents[1] / "scripts/switchstand-context-mcp"
+    subprocess.run([script], env=environment, check=True)
+    assert "SWITCHSTAND_ACTIVATION_CONTINUITY=0" in capture.read_text()
+    assert ":ro" not in capture.read_text()
+
+    inputs = {name: "value" for name in ACTIVATION_ENV}
+    inputs["SWITCHSTAND_ACTIVATION_CONTINUITY"] = "1"
+    inputs["SWITCHSTAND_PRODUCT_CURRENTNESS"] = "1"
+    inputs["SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES"] = '["work_get"]'
+    for name in (
+        "SWITCHSTAND_ACTIVATION_CONTRACTS_PATH",
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT",
+        "SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY",
+    ):
+        source = tmp_path / name
+        source.write_text("evidence")
+        inputs[name] = str(source)
+    subprocess.run([script], env=environment | inputs, check=True)
+    arguments = capture.read_text()
+    assert "SWITCHSTAND_ACTIVATION_CONTINUITY=1" in arguments
+    assert arguments.count(":ro") == 3
+    assert "SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES" in arguments
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -169,7 +202,9 @@ def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) ->
 
 def test_context_server_exposes_only_bound_read_context():
     server = build_context_server(FakeService(), ACTIVE)
-    assert set(server._tool_manager._tools) == {"work_get", "work_history"}
+    assert set(server._tool_manager._tools) == {
+        "work_get", "work_history", "capability_preflight_get",
+    }
     schema = server._tool_manager.get_tool("work_get").parameters
     assert set(schema["properties"]) == {"api_version"}
     assert "work_id" not in schema["properties"]
@@ -193,7 +228,9 @@ async def test_context_server_real_stdio_exposes_only_bound_read_context():
     )
     async with Client(server) as client:
         tools = (await client.list_tools()).tools
-        assert [tool.name for tool in tools] == ["work_get", "work_history"]
+        assert [tool.name for tool in tools] == [
+            "work_get", "work_history", "capability_preflight_get",
+        ]
         assert all("work_id" not in tool.input_schema["properties"] for tool in tools)
         got = await client.call_tool("work_get", {"api_version": "1"})
         assert got.structured_content["item"]["id"] == str(ACTIVE)

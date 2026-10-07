@@ -24,13 +24,14 @@ async def rotate_managed_grant(
     *,
     agent_task: bool = False,
     priority_claims: bool = False,
+    activation_continuity: bool = False,
 ) -> WorkGrant:
     principal = managed_principal(authority.active_work_id)
     current = await grants.current(principal.key)
     expected = None if current is None else current.version
     operations: set[Literal[
         "work_get", "work_append", "work_update", "work_relate", "message",
-        "agent_task", "priority_claim",
+        "agent_task", "priority_claim", "activation_continuity",
     ]] = {
         "work_get", "work_append", "work_update", "work_relate", "message",
     }
@@ -38,6 +39,8 @@ async def rotate_managed_grant(
         operations.add("agent_task")
     if priority_claims:
         operations.add("priority_claim")
+    if activation_continuity:
+        operations.add("activation_continuity")
     grant = WorkGrant(
         id=uuid4(), version=(expected or 0) + 1, principal=principal,
         authority=authority, scope="launch",

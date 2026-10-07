@@ -10,6 +10,16 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, JsonValue
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .activation_continuity import (
+    CapabilityPreflight,
+    ContinuityResult,
+    RuntimeBinding,
+    TechnicalBasis,
+    Transition,
+    TransitionIntent,
+    TransitionProof,
+)
+from .activation_continuity_store import ActivationContinuity
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
 from .canonical_work import CanonicalWorkRepository
@@ -72,6 +82,9 @@ from .task_runs import (
     task_request_operation_id,
 )
 from .work_events import WorkEventRepository
+
+ActivationContext = tuple[ActivationContinuity, Callable[..., Awaitable[TechnicalBasis | None]],
+                          Callable[..., Awaitable[TransitionProof | None]], tuple[UUID, int]]
 
 
 class PublicWorkItem(WorkSearchItem):
@@ -219,6 +232,86 @@ def register_priority_tools(
         closed_tool(server, "priority_context_get", _priority_context_get)
 
 
+def register_activation_tools(
+    server: MCPServer, active: UUID, *, grants: GrantState | None, principal: PrincipalContext | None,
+    activation: ActivationContext | None = None,
+) -> None:
+    continuity, technical, proof, expected_grant = activation or (None, None, None, None)
+    opted_in = activation is not None
+    async def preflight(api_version: Literal["1"]) -> CapabilityPreflight:
+        del api_version
+        grant = None if grants is None or principal is None else await grants.current(principal.key)
+        matches = grant is not None and (expected_grant is None
+                                         or (grant.id, grant.version) == expected_grant)
+        installed = continuity is not None and bool(continuity.contracts)
+        operation = "TRUE" if grant is not None and "activation_continuity" in grant.operations else "FALSE"
+        actor_contract = None if continuity is None else next((value for value in continuity.contracts.values()
+            if active in {value.product_work_id, value.return_owner_work_id,
+                value.acceptance_verifier_work_id, value.adoption_actor_work_id,
+                value.lifecycle_authority_work_id}), None)
+        basis = (None if actor_contract is None or technical is None or principal is None
+                 else await technical(principal, actor_contract.obligation_id))
+        proof_state = "MISSING" if basis is None else (
+            "STALE" if basis.currentness == "STALE" else
+            "READY" if basis.result.current == "TRUE" else
+            "UNKNOWN" if basis.result.current == "UNKNOWN" else "MISSING"
+        )
+        actor = ("UNKNOWN" if grant is None else
+                 "CURRENT" if matches and grant.current() else "STALE")
+        contract = "INSTALLED" if installed else "MISSING"
+        route = "READY" if proof is not None else "MISSING"
+        facts = (
+            (not opted_in, "TOOL_NOT_EXPOSED"), (operation == "FALSE", "OPERATION_NOT_GRANTED"),
+            (actor == "STALE", "ACTOR_GRANT_STALE"),
+            (opted_in and not installed, "CONTRACT_NOT_INSTALLED"),
+            (opted_in and installed and actor_contract is None, "ACTOR_NOT_IN_CONTRACT"),
+            (actor == "STALE", "RUNTIME_STALE"),
+            (opted_in and proof_state == "MISSING", "TECHNICAL_PROOF_MISSING"),
+            (opted_in and proof_state == "STALE", "TECHNICAL_PROOF_STALE"),
+            (opted_in and route == "MISSING", "PROOF_ROUTE_MISSING"),
+        )
+        unknown = actor == "UNKNOWN" or proof_state == "UNKNOWN"
+        reasons = tuple(reason for failed, reason in facts if failed)
+        return CapabilityPreflight(
+            surface="MANAGED_LAUNCH",
+            status="UNKNOWN" if unknown else "READY" if not reasons else "MISSING_CAPABILITY",
+            reasons=() if unknown else reasons, tool_exposed=opted_in,
+            operation_granted=operation, actor_binding=actor,
+            contract=contract if opted_in else "NOT_APPLICABLE",
+            technical_proof=proof_state if opted_in else "NOT_APPLICABLE",
+            acceptance_proof_route=route if opted_in else "NOT_APPLICABLE",
+        )
+    closed_tool(server, "capability_preflight_get", preflight)
+    if not opted_in or continuity is None or grants is None or principal is None:
+        return
+
+    async def transition(
+        api_version: Literal["1"], operation_id: UUID, obligation_id: UUID,
+        observed_revision: Annotated[str, Field(min_length=1, max_length=64)],
+        transition: Transition, evidence_refs: tuple[str, ...] = (),
+        blocker_ref: str | None = None, clearing_event_ref: str | None = None,
+    ) -> ContinuityResult:
+        intent = TransitionIntent(
+            operation_id=operation_id, obligation_id=obligation_id,
+            observed_revision=observed_revision, transition=transition,
+            evidence_refs=evidence_refs, blocker_ref=blocker_ref,
+            clearing_event_ref=clearing_event_ref,
+        )
+        async with grants.locked(principal.key) as grant:
+            matches = grant is not None and (expected_grant is None
+                                             or (grant.id, grant.version) == expected_grant)
+            if grant is None or "activation_continuity" not in grant.operations or not matches:
+                return ContinuityResult(status="UNKNOWN", reason="state_unavailable")
+            binding = RuntimeBinding(
+                actor_work_id=active,
+                binding_token=f"{principal.key}:{grant.id}:{grant.version}",
+                currentness="CURRENT",
+            )
+            basis = None if technical is None else await technical(principal, obligation_id)
+            sealed = None if proof is None else await proof(principal, grant, intent)
+            return await continuity.transition(principal, grant, binding, intent, basis, sealed)
+    closed_tool(server, "activation_obligation_transition", transition)
+
 def build_context_server(
     service: object,
     active_work_id: UUID,
@@ -228,6 +321,7 @@ def build_context_server(
     priority_context: PriorityContextProjection | None = None,
     grants: GrantState | None = None,
     principal: PrincipalContext | None = None,
+    activation: ActivationContext | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand launch-bound context")
 
@@ -272,6 +366,10 @@ def build_context_server(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
         grants=grants, principal=principal,
+    )
+    register_activation_tools(
+        server, active_work_id, grants=grants, principal=principal,
+        activation=activation,
     )
     return server
 
@@ -344,6 +442,9 @@ def build_server(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
         grants=grants, principal=principal,
+    )
+    register_activation_tools(
+        server, active_work_id, grants=grants, principal=principal,
     )
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:

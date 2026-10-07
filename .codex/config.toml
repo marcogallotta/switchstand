@@ -29,7 +29,7 @@ url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 required = false
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
-                 "work_history", "work_event", "work_append", "observability_get",
+                 "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
                  "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
@@ -48,7 +48,7 @@ url = "https://laptop.tail46f0b9.ts.net:8446/mcp"
 required = false
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
-                 "work_history", "work_event", "work_append", "observability_get",
+                 "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
                  "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
@@ -64,7 +64,7 @@ env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS
 required = false
 enabled_tools = ["work_get", "work_history", "work_event", "work_append", "work_update",
                  "priority_claim_get", "priority_claim_record", "priority_context_get",
-                 "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition"]
+                 "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition", "capability_preflight_get"]
 default_tools_approval_mode = "approve"
 
 [mcp_servers.switchstand_development]
