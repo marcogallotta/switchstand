@@ -22,6 +22,27 @@ def commit(repo: Path, ref: str) -> str:
     return git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip()
 
 
+def require_ancestor(repo: Path, base: str, head: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, head],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 1:
+        raise ValueError("base is not an ancestor of head")
+    if result.returncode:
+        raise ValueError(result.stderr.decode(errors="replace").strip())
+
+
+def tree_entry(repo: Path, revision: str, path: str) -> tuple[bytes, bytes, bytes]:
+    record = git(repo, "ls-tree", "-z", revision, "--", path).removesuffix(b"\0")
+    metadata, separator, listed_path = record.partition(b"\t")
+    fields = metadata.split()
+    if not separator or listed_path.decode(errors="surrogateescape") != path or len(fields) != 3:
+        raise ValueError(f"tree entry is not exact: {revision}:{path}")
+    return fields[0], fields[1], fields[2]
+
+
 def matches(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
@@ -82,14 +103,17 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
 
     base = commit(args.repo, args.base)
     head = commit(args.repo, args.head)
+    require_ancestor(args.repo, base, head)
     counts = {"production": 0, "support": 0}
     files = []
+    unchanged_binary_renames = []
     unknown = []
 
     for added, deleted, old, new in changes(args.repo, base, head):
         old_in = matches(old, args.package)
         new_in = matches(new, args.package)
         if not old_in and not new_in:
+            unknown.append(f"path outside package coverage: {old!r} -> {new!r}")
             continue
         if old_in != new_in:
             unknown.append(f"rename crosses package scope: {old!r} -> {new!r}")
@@ -100,12 +124,42 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
             unknown.append(f"rename changes production/support class: {old!r} -> {new!r}")
             continue
         if added == b"-" or deleted == b"-":
-            unknown.append(f"uncountable/binary package change: {old!r} -> {new!r}")
+            if old != new and tree_entry(args.repo, base, old) == tree_entry(
+                args.repo, head, new
+            ):
+                item = {
+                    "old": old,
+                    "new": new,
+                    "category": "support" if old_support else "production",
+                    "gross": 0,
+                    "kind": "unchanged_binary_rename",
+                }
+                files.append(item)
+                unchanged_binary_renames.append(item)
+                continue
+            unknown.append(f"binary content or mode change: {old!r} -> {new!r}")
             continue
         gross = int(added) + int(deleted)
         category = "support" if old_support else "production"
         counts[category] += gross
         files.append({"old": old, "new": new, "category": category, "gross": gross})
+
+    report = {
+        "status": "UNKNOWN" if unknown else "OK",
+        "base": base,
+        "head": head,
+        "package_patterns": args.package,
+        "support_patterns": args.support,
+        "binary": {
+            "changed_file_allowance": 0,
+            "changed_byte_allowance": 0,
+            "unchanged_renames": unchanged_binary_renames,
+        },
+        "files": files,
+        "unknown": unknown,
+    }
+    if unknown:
+        return report
 
     production = dimension(
         counts["production"], args.production_forecast, args.production_cap
@@ -120,17 +174,10 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     total["forecast_miss_trigger"] = bool(
         production["forecast_miss_trigger"] or support["forecast_miss_trigger"]
     )
-    return {
-        "status": "UNKNOWN" if unknown else "OK",
-        "base": base,
-        "head": head,
-        "package_patterns": args.package,
-        "support_patterns": args.support,
+    return report | {
         "production": production,
         "support": support,
         "total": total,
-        "files": files,
-        "unknown": unknown,
     }
 
 

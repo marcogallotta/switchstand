@@ -30,6 +30,7 @@ def repo(tmp_path: Path) -> tuple[Path, str]:
     git(work, "config", "user.name", "Test")
     write_lines(work / "src" / "app.py", 10)
     write_lines(work / "tests" / "test_app.py", 10)
+    (work / "src" / "asset.bin").write_bytes(b"\x00binary\xff")
     (work / "README.md").write_text("base\n")
     git(work, "add", ".")
     git(work, "commit", "-qm", "base")
@@ -116,13 +117,12 @@ def test_production_and_support_triggers_are_separate(tmp_path):
     assert payload["total"]["forecast_miss_trigger"] is True
 
 
-def test_rename_delete_and_unrelated_change_use_retained_fixed_base(tmp_path):
+def test_rename_and_delete_use_retained_fixed_base(tmp_path):
     work, base = repo(tmp_path)
     git(work, "mv", "src/app.py", "src/renamed.py")
     with (work / "src" / "renamed.py").open("a") as handle:
         handle.write("renamed-change\n")
     (work / "tests" / "test_app.py").unlink()
-    (work / "README.md").write_text("unrelated\n")
     git(work, "add", "-A")
     git(work, "commit", "-qm", "combined retained result")
 
@@ -131,7 +131,19 @@ def test_rename_delete_and_unrelated_change_use_retained_fixed_base(tmp_path):
     assert payload["status"] == "OK"
     assert payload["production"]["actual"] == 1
     assert payload["support"]["actual"] == 10
-    assert all("README.md" not in item["new"] for item in payload["files"])
+
+
+def test_unmatched_changed_path_fails_closed_without_cap_result(tmp_path):
+    work, base = repo(tmp_path)
+    (work / "README.md").write_text("uncovered\n")
+    git(work, "add", ".")
+    git(work, "commit", "-qm", "uncovered change")
+
+    code, payload = report(work, base)
+    assert code == 2
+    assert payload["status"] == "UNKNOWN"
+    assert "path outside package coverage" in payload["unknown"][0]
+    assert "total" not in payload
 
 
 def test_stacked_commits_are_counted_once_from_original_base(tmp_path):
@@ -161,6 +173,62 @@ def test_rename_across_package_scope_fails_closed(tmp_path):
     assert code == 2
     assert payload["status"] == "UNKNOWN"
     assert "rename crosses package scope" in payload["unknown"][0]
+
+
+def test_nonancestor_fails_closed(tmp_path):
+    work, base = repo(tmp_path)
+    git(work, "checkout", "--orphan", "unrelated")
+    git(work, "rm", "-qrf", ".")
+    (work / "other.txt").write_text("unrelated root\n")
+    git(work, "add", ".")
+    git(work, "commit", "-qm", "unrelated root")
+
+    code, payload = report(work, base)
+    assert code == 2
+    assert payload == {"error": "base is not an ancestor of head", "status": "UNKNOWN"}
+
+
+def test_binary_content_change_fails_closed(tmp_path):
+    work, base = repo(tmp_path)
+    (work / "src" / "added.bin").write_bytes(b"\x00new binary")
+    git(work, "add", ".")
+    git(work, "commit", "-qm", "binary addition")
+
+    code, payload = report(work, base)
+    assert code == 2
+    assert "binary content or mode change" in payload["unknown"][0]
+    assert "total" not in payload
+
+
+def test_unchanged_binary_rename_is_reported_at_zero_gross(tmp_path):
+    work, base = repo(tmp_path)
+    git(work, "mv", "src/asset.bin", "src/renamed.bin")
+    git(work, "commit", "-qm", "binary rename")
+
+    code, payload = report(work, base)
+    assert code == 0
+    assert payload["total"]["actual"] == 0
+    assert payload["binary"]["unchanged_renames"] == [
+        {
+            "category": "production",
+            "gross": 0,
+            "kind": "unchanged_binary_rename",
+            "new": "src/renamed.bin",
+            "old": "src/asset.bin",
+        }
+    ]
+
+
+def test_binary_rename_with_mode_change_fails_closed(tmp_path):
+    work, base = repo(tmp_path)
+    git(work, "mv", "src/asset.bin", "src/renamed.bin")
+    git(work, "update-index", "--chmod=+x", "src/renamed.bin")
+    git(work, "commit", "-qm", "binary rename and mode change")
+
+    code, payload = report(work, base)
+    assert code == 2
+    assert "binary content or mode change" in payload["unknown"][0]
+    assert "total" not in payload
 
 
 def test_report_is_stateless_and_reproducible(tmp_path):

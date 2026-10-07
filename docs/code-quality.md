@@ -40,6 +40,35 @@ package database, or parallel review ceremony. At approval freeze:
 - the explicit approved margins and resulting production, support and total hard caps;
 - the strongest credible simpler alternative, economy proof and material replan triggers.
 
+### Mandatory scope blocks
+
+Before Human Review, every material Design Specification records the intended repository
+surfaces/patterns; original production/config and support forecasts; production, support and
+total hard caps; the V1 binary allowance fixed at zero changed files and zero changed bytes;
+counts of new tables, tools, services, processes, flags, grant operations, persistent stores or
+state machines, and runtime-config crossings; the strongest materially smaller route; and the
+exact breach/replan condition. Missing or unresolved fields mean **NOT READY**.
+
+Before dispatch, its material Implementation Specification reconciles those fields, freezes one
+immutable package base SHA, declares package patterns covering every base-to-final-head changed
+path, uses support patterns only to classify covered paths, copies the original forecasts/caps,
+records the exact `package-size.py` command, and names one cumulative package/integration owner.
+Missing fields or unresolved `UNKNOWN` mean **NOT READY**. Revised estimates, rebases and PR
+slicing never reset the base, forecasts or caps.
+
+The report requires the base to be an ancestor of the combined head and measures their one Git
+diff. Any uncovered changed path returns `UNKNOWN` without a cap comparison. Any added, deleted
+or content-changed binary also returns `UNKNOWN`; only a Git-detected pure rename whose old and
+new blob OIDs are identical is reported at zero gross and allowed by V1. Configurable nonzero
+binary allowances are deferred.
+
+Repository gross LOC and external activation effects remain separate. A process-note or receipt
+update is outside the Git report and cannot be estimated by a second counter or used to reset its
+cap. When a governing package includes such effects, bind them to exact existing WorkIds and
+fields, preserve unrelated text, use exact CAS/operation receipts, reread exact resulting text
+and revisions, and require replan for any broader durable surface or policy effect. Repository
+landing alone never proves that process activation occurred.
+
 Forecasts are alarms, not targets. Later re-estimates may guide execution but never reset the
 original-forecast denominator or raise an approved cap. Do not maintain a running line-count
 ledger. Recompute retained fixed-base counts from Git with `python scripts/package-size.py`
