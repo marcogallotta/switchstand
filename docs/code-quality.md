@@ -104,20 +104,26 @@ to Marco. **KEEP** requires evidence that the simpler alternative is inadequate;
 removes/reuses mechanisms while preserving the outcome; **REPLACE** adopts a smaller sound
 solution and identifies what it supersedes.
 
-For size/envelope reasons, return to Marco only when the current trajectory projects a hard-cap
-breach. Bring one credible cut, or a plain reason no safe cut exists. Existing Human Input
-triggers remain independent: material scope, architecture, authority/trust, risk/burden or other
-consequential changes still return while cheap even if all line caps are green. Existing banned
-scope/authority boundaries and the >=500 actual PR/diff exemption rule remain hard and
-independent; splitting cannot launder either package growth or the per-PR rule.
+For size/envelope reasons, first apply the canonical exception challenge below. Two agreeing
+independent reviewers may clear cumulative growth only up to twice the immutable original hard
+cap without Marco. Growth beyond twice that cap is a 1-in-100 exception and may reach Marco only
+after both reviewers independently conclude that it is genuinely exceptional under the canonical
+challenge. Existing Human Input triggers remain independent:
+material scope, architecture, authority/trust, risk/burden or other consequential changes still
+return while cheap even if all line caps are green. Existing banned scope/authority boundaries
+and the >=500 actual PR/diff exemption rule remain hard and independent; splitting cannot launder
+either package growth or the per-PR rule.
 
 ### Exceptional LOC exemption gate
 
-Both a governed package hard-cap exemption and a `>=500` actual PR/diff exemption are exceptional.
-They are separate decisions: granting either one never grants or weakens the other. Root, the
-implementation parent, and the integration owner reject incomplete or routine requests before
-they reach Marco. Convenience, sunk cost, schedule pressure, "almost done", ordinary test growth,
-or avoiding another PR is not an exceptional reason.
+Both a governed package hard-cap exemption and a `>=500` actual PR/diff exemption start on
+**HOLD** and are separate decisions: granting either one never grants or weakens the other. A
+`>=500` change reaches Marco only as a 1-in-100 exception after two independent reviewers apply
+the canonical challenge below and both conclude that an emergency or a demonstrated indivisible
+correctness, migration, compatibility, recovery, or reviewability reason makes splitting genuinely
+worse. Convenience, sunk cost, schedule pressure, "almost done", ordinary test growth, or avoiding
+another PR is not exceptional. Root, the implementation parent, and the integration owner reject
+routine or incomplete requests before review or human attention.
 
 LOC bounds are controls, not optimization targets. Never compress or omit necessary work, choose
 499 lines, or otherwise shape a change to sit just below a review boundary. Estimate the smallest
@@ -135,21 +141,44 @@ correctness, migration, compatibility, recovery or reviewability invariant, a si
 external contract/artifact, or necessary mechanical movement/deletion for which splitting would
 materially reduce reviewability. Merely asserting that the change is atomic is insufficient.
 
-Before the request reaches Marco, two independent forks that did not author, design, or implement
-the candidate receive the same frozen packet and independently try to falsify its counts,
-classification, unchanged scope, smaller alternatives, atomicity claim, remaining forecast and
-contingency, and resistance to split laundering. They challenge and filter; they do not grant the
-exemption. The requester must resolve every count, evidence, scope, or viable-smaller-route finding
-before escalation. Both reviewers must explicitly `PRE-APPROVE` the same frozen packet; any `HOLD`
-blocks escalation, and any material packet revision requires both reviews again. Preserve any
-remaining genuine tradeoff dissent verbatim. Only Marco may grant the exemption.
+### Canonical exception challenge
 
-A package-cap request asks once for one absolute replacement ceiling, never an increment such as
-"20 more lines". Approval binds the exact WorkId, approved package revision and surfaces. Exceeding
-that replacement ceiling requires `STOP` and `CUT / SPLIT / REPLAN`, not another top-up. A later
-request is admissible only after genuinely new Marco-directed scope or a new external fact
-materially changes the objective; record that as explicit re-scope or a new package rather than
-underestimated continuation work. Request the exemption before crossing the cap.
+Give each reviewer this section by reference as part of the current review package; do not quote,
+summarize, or rewrite it in the request. Two reviewers who did not author, design, or implement the
+candidate independently apply this complete challenge:
+
+1. Start from `HOLD` and assume the exception should be rejected. Reconstruct the original outcome,
+   immutable base and original limits without accepting candidate-created invariants as requirements.
+2. Verify the cumulative fixed-base counts, classification, remaining forecast and resistance to
+   PR, WorkId, rebase, category, or serial-increment laundering.
+3. Produce and test the strongest credible `CUT / SPLIT / SIMPLIFY / REPLACE` route. Reject sunk
+   cost, convenience, schedule pressure, ordinary test growth, and "almost done" as reasons.
+4. Do not force a misleading or unsafe split, omit necessary tests, compress readable code, or aim
+   for 499 lines. State the concrete correctness, migration, compatibility, recovery, or
+   reviewability harm caused by the best smaller route.
+5. Return `HOLD` unless the evidence defeats that smaller route. State the evidence, the attempted
+   smaller route, why it fails, and whether the unchanged packet is genuinely exceptional.
+
+The requester resolves every count, evidence, scope, or viable-smaller-route finding. Any `HOLD`
+blocks progress, and a material packet revision requires both reviews again. For cumulative scope
+growth at or below twice the original hard cap, two explicit concurring clearances approve the
+replacement cap without Marco. Growth beyond twice the original hard cap is a 1-in-100 exception:
+it may only be presented to Marco after both reviewers independently conclude that an emergency
+or demonstrated indivisible case makes the strongest smaller route fail or cause concrete greater
+harm. A `>=500` actual PR/diff is independently a 1-in-100 exception and likewise may only be
+presented to Marco after both reviewers explicitly agree that splitting is genuinely worse. One
+canonical challenge occurrence with the same reviewer pair may adjudicate simultaneous size
+triggers, recording a separate conclusion for each; never demand serial review pairs. Reviewer
+agreement filters the request; it never grants either 1-in-100 exception. Preserve genuine
+tradeoff dissent verbatim.
+
+A package-cap request asks once for one absolute replacement ceiling measured from the immutable
+original limit, never an increment such as "20 more lines". Approval binds the exact WorkId,
+approved package revision and surfaces. Exceeding that replacement ceiling requires `STOP` and
+`CUT / SPLIT / REPLAN`, not another top-up. A later request is admissible only after genuinely new
+Marco-directed scope or a new external fact materially changes the objective; record that as
+explicit re-scope or a new package rather than underestimated continuation work. Request the
+exception before crossing the cap.
 
 The `>=500` exemption binds the exact stable merge-base/head and measured actual diff and must be
 granted before landing. Material candidate or base change invalidates it. Aggregate semantically
