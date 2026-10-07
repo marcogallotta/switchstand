@@ -134,6 +134,55 @@ def test_prepare_reconciles_committed_live_registration_before_retrying_helper(
     assert calls == ["closed"]
 
 
+def test_prepare_reconciles_committed_helper_registration_after_failed_rebind(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    session = spec(tmp_path)
+    binding = CodexBinding("thread-1", str(session.start_record), session.start_record.name)
+    calls: list[str] = []
+    attempt = 0
+
+    class Client:
+        def __init__(self, _codex: Path, _home: Path):
+            pass
+
+        def call(self, method: str, _arguments: dict[str, object]):
+            calls.append(method)
+            if method == "thread/start":
+                return {"thread": {"id": "committed-helper"}}
+            return {"structuredContent": {"status": "ok", "name": "codex-head-exact"}}
+
+        def close(self) -> None:
+            calls.append("closed")
+
+    async def existing(_binding, _name, helper, _database_url):
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            assert helper is None
+            return None
+        assert helper == "committed-helper"
+        return "codex-head-exact"
+
+    async def rebind(*_args):
+        raise ValueError("transient failure before takeover")
+
+    async def freeze(*_args):
+        return tmp_path / "runner.json"
+
+    monkeypatch.setattr("switchstand.codex_session.QueueClient", Client)
+    monkeypatch.setattr("switchstand.codex_session.bind", lambda *_args: binding)
+    monkeypatch.setattr("switchstand.codex_session._existing_live_registration", existing)
+    monkeypatch.setattr("switchstand.codex_session._rebind_registration", rebind)
+    monkeypatch.setattr("switchstand.codex_session._freeze_config", freeze)
+
+    with pytest.raises(ValueError, match="transient failure"):
+        prepare_runner(session)
+    assert prepare_runner(session) == (tmp_path / "runner.json", "postgresql://exact")
+    assert calls.count("thread/start") == 1
+    assert calls.count("mcpServer/tool/call") == 1
+
+
 def test_runner_lifeline_eof_is_inherited_only_by_runner(tmp_path: Path, monkeypatch) -> None:
     marker = tmp_path / "eof"
 

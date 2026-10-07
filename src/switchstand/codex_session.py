@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from .agent_mailboxes import AgentMailboxState, chat_session_key
 from .codex_wakeful import CodexBinding, QueueClient, bind
-from .secure_file import create_new_private_bytes, read_private_bytes
+from .secure_file import atomic_replace_bytes, create_new_private_bytes, read_private_bytes
 
 CODEX_TERM_SECONDS = 10.0
 RUNNER_EOF_SECONDS = 12.0
@@ -130,24 +130,50 @@ async def _rebind_registration(
 
 
 async def _existing_live_registration(
-    binding: CodexBinding, name: str, database_url: str,
+    binding: CodexBinding, name: str, registration_thread: str | None, database_url: str,
 ) -> str | None:
-    """Reconcile a prior committed takeover before retrying helper registration."""
+    """Reconcile a prior committed helper registration or takeover."""
     from .chatgpt_edge import resource_service
 
     with _configured_database(database_url):
         async with resource_service() as (service, _runtime):
             if service.messages is None:
                 raise ValueError("message state is unavailable")
-            result = await AgentMailboxState(service.messages.engine).by_name(name)
-    if result.status == "denied" and result.reason == "mailbox_not_found":
+            mailboxes = AgentMailboxState(service.messages.engine)
+            result = await mailboxes.by_name(name)
+            if result.status == "denied" and result.reason == "mailbox_not_found":
+                return None
+            mailbox = result.mailbox
+            if result.status != "ok" or mailbox is None:
+                raise ValueError("mailbox registration state is unavailable")
+            if mailbox.session_key == chat_session_key(f"codex:{binding.thread_id}"):
+                return mailbox.name
+            if (
+                registration_thread is not None
+                and mailbox.session_key == chat_session_key(f"codex:{registration_thread}")
+            ):
+                moved = await mailboxes.takeover(
+                    name, mailbox.principal_key, f"codex:{binding.thread_id}"
+                )
+                if moved.status == "ok" and moved.mailbox is not None:
+                    return moved.mailbox.name
+                raise ValueError("persisted helper registration did not converge")
+            raise ValueError("mailbox name is bound to an unexpected session")
+
+
+def _registration_thread_path(spec: SessionSpec) -> Path:
+    suffix = spec.start_record.name.removeprefix("start-commit.")
+    return spec.home / f"wakeful-registration-{suffix}"
+
+
+def _pending_registration_thread(spec: SessionSpec) -> str | None:
+    path = _registration_thread_path(spec)
+    if not path.exists():
         return None
-    mailbox = result.mailbox
-    if result.status != "ok" or mailbox is None:
-        raise ValueError("mailbox registration state is unavailable")
-    if mailbox.session_key == chat_session_key(f"codex:{binding.thread_id}"):
-        return mailbox.name
-    return None
+    value = read_private_bytes(path).decode().strip()
+    if not value:
+        raise ValueError("persisted helper registration thread is invalid")
+    return value
 
 
 def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
@@ -159,7 +185,7 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
         if not isinstance(binding, CodexBinding):
             raise TypeError(f"Codex thread binding is {binding}")
         existing_name = asyncio.run(_existing_live_registration(
-            binding, spec.default_name, database_url,
+            binding, spec.default_name, _pending_registration_thread(spec), database_url,
         ))
         if existing_name is not None:
             return (
@@ -170,6 +196,9 @@ def prepare_runner(spec: SessionSpec) -> tuple[Path, str]:
         registration_thread = cast(dict[str, Any], started["thread"])["id"]
         if not isinstance(registration_thread, str) or not registration_thread:
             raise ValueError("helper registration thread is unavailable")
+        atomic_replace_bytes(
+            _registration_thread_path(spec), (registration_thread + "\n").encode(),
+        )
         response = client.call("mcpServer/tool/call", {
             "threadId": registration_thread,
             "server": spec.mcp_server,
