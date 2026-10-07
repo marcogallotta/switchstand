@@ -4,10 +4,15 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import JsonValue, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .contracts import ClosedModel
+from .durable_capture import (
+    DurableCaptureGuidance,
+    durable_capture_guidance,
+    message_capture_guidance,
+)
 from .grants import PrincipalContext
 from .messages import PendingMessage
 
@@ -57,6 +62,9 @@ class AgentPendingMessage(ClosedModel):
     kind: Literal["request", "result"]
     payload: JsonValue
     state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
+    durable_capture: DurableCaptureGuidance = Field(
+        default_factory=lambda: durable_capture_guidance((), ()),
+    )
 
 
 class AgentMessageSubmitResult(ClosedModel):
@@ -114,4 +122,5 @@ async def public_message(
         kind=message.kind,
         payload=message.payload,
         state=message.state,
+        durable_capture=message_capture_guidance(message.payload),
     )

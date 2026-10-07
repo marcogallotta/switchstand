@@ -26,6 +26,7 @@ from .canonical_work import (
     normalize_title,
 )
 from .contracts import ClosedModel
+from .durable_capture import DurableCaptureGuidance, FindingRef, durable_capture_guidance
 from .messages import (
     MessageRoute,
     MessageState,
@@ -195,6 +196,7 @@ class ReviewResult(ClosedModel):
         "occurrence_not_found", "duplicate_authoritative_state", "recovery_not_allowed",
     ] | None = None
     next_action: str = ""
+    durable_capture: DurableCaptureGuidance | None = None
 
     @model_validator(mode="after")
     def exact_result(self) -> Self:
@@ -224,6 +226,16 @@ class ReviewResult(ClosedModel):
             if value is None:
                 value = ("Poll review_get for this review_id; do not stop merely because the request was sent." if self.status in {"SENT", "WAITING_REVIEWER", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
             object.__setattr__(self, "next_action", value)
+        if self.durable_capture is None:
+            refs = (
+                tuple(FindingRef(
+                    source_ref=f"review:{self.review_id}", finding_id=finding.finding_id,
+                ) for finding in self.findings)
+                if self.status == "FINDINGS" and self.review_id is not None else ()
+            )
+            object.__setattr__(
+                self, "durable_capture", durable_capture_guidance(refs, ()),
+            )
         return self
 
 
