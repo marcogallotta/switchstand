@@ -7,6 +7,7 @@ from mcp.types import CallToolResult, ResourceLink, TextContent, ToolAnnotations
 from pydantic import Field, JsonValue, ValidationError, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import activation_continuity as activation
 from . import flow_report, repository_bundle, repository_candidate
 from .activation_continuity import ContinuityResult, Transition, next_action
 from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
@@ -200,6 +201,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "work_history",
     "work_event",
     "agent_message_pending",
+    "capability_preflight_get",
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
@@ -754,6 +756,13 @@ def build_ordinary_tools(
             raise PermissionError("authenticated principal is unavailable")
         return await service.product_currentness(principal)
 
+    async def capability_preflight_get(api_version: Literal["1"]) -> activation.CapabilityPreflight:
+        del api_version
+        return activation.CapabilityPreflight(
+            surface="ORDINARY_WORKSPACE", status="MISSING_CAPABILITY",
+            reasons=("WORK_BOUND_ACTOR_REQUIRED",),
+        )
+
     async def activation_obligation_transition(
         api_version: Literal["1"], operation_id: UUID, obligation_id: UUID,
         observed_revision: Annotated[str, Field(min_length=1, max_length=64)],
@@ -1210,6 +1219,7 @@ def build_ordinary_tools(
     # tool whose registered name and generated argument title disagree.
     enriched_work_get.__name__ = "work_get"
     enriched_work_update.__name__ = "work_update"
+    _ = activation_obligation_transition  # Intentionally unavailable on this surface.
 
     return (
         ("repository_bundle_get", repository_bundle_get),
@@ -1243,8 +1253,7 @@ def build_ordinary_tools(
         ) if service.reviews is not None else ()),
         *((("product_currentness_get", product_currentness_get),)
           if service.product_currentness_enabled and service.product_currentness is not None else ()),
-        *((("activation_obligation_transition", activation_obligation_transition),)
-          if service.activation_continuity is not None else ()),
+        ("capability_preflight_get", capability_preflight_get),
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),

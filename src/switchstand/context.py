@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
+from . import managed_launch
 from .failure_capture import capture_failure
 from .failure_journal import EffectState
 from .launch import Authority, clean_environment, parse_authority, provision, provision_output
@@ -30,6 +31,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Start development in a private task clone.")
     result.add_argument("--target-repo", type=Path)
     result.add_argument("--active", required=True, help="active WorkId or legacy task ID/URL")
+    result.add_argument("--activation-continuity", action="store_true")
     result.add_argument(
         "assignment", nargs=1, type=initial_assignment,
         help="exact initial assignment (pass after --)",
@@ -432,8 +434,11 @@ def codex_command(
     ]
 
 
-def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
+def run(active: str, assignment: str, target_repo: Path | None = None, *,
+        activation_continuity: bool = False) -> None:
     env = clean_environment(dict(os.environ))
+    if activation_continuity:
+        env["SWITCHSTAND_ACTIVATION_CONTINUITY"] = "1"
     loaded_head = _git(Path.cwd(), "rev-parse", "HEAD", env=env)
     control = validate_control(Path.cwd(), env)
     if _git(control, "rev-parse", "HEAD", env=env) != loaded_head:
@@ -441,6 +446,7 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
         os.execv(str(control / "scripts/switchstand"),
                  [str(control / "scripts/switchstand"), "--active", active,
                   *(["--target-repo", str(target_repo)] if target_repo else []),
+                  *(["--activation-continuity"] if activation_continuity else []),
                   "--", assignment])
     env["SWITCHSTAND_CHECK_UV"] = prepared_check_environment(control, env)
     target = None
@@ -484,6 +490,9 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
         codex_executable=Path(executable),
         assignment=assignment,
         priority_claims=os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1",
+        activation_environment=(
+            {name: env[name] for name in managed_launch.ACTIVATION_ENV}
+            if activation_continuity else None),
     )
     if receipt.get("state") != "completed":
         raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")
@@ -499,7 +508,8 @@ def run(active: str, assignment: str, target_repo: Path | None = None) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     try:
-        run(arguments.active, arguments.assignment[0], arguments.target_repo)
+        run(arguments.active, arguments.assignment[0], arguments.target_repo,
+            activation_continuity=arguments.activation_continuity)
     except (
         KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.CalledProcessError
     ) as error:

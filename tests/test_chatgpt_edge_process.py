@@ -44,7 +44,7 @@ from switchstand.workspace_admission import WorkspaceAdmissionState
 TOOLS = {
     "repository_bundle_get", "repository_candidate_qualification_get",
     "work_get", "work_search", "work_resolve_reference",
-    "work_history", "work_event", "work_append",
+    "work_history", "work_event", "work_append", "capability_preflight_get",
     "work_create", "work_update", "work_relate",
     "agent_register", "agent_takeover", "agent_transfer_request",
     "agent_message_send", "agent_message_pending",

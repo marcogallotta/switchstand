@@ -401,7 +401,7 @@ async def test_activation_proof_resolves_only_exact_terminal_managed_validation(
             return self.value if selected == result_id else None
 
     tasks = Tasks()
-    resolve = chatgpt_edge._managed_activation_proof(
+    resolve = chatgpt_edge.managed_activation_proof(
         tasks, {contract.obligation_id: contract}
     )
     selected = grant(operations=frozenset({"activation_continuity"}))
@@ -457,7 +457,7 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
 
     assert {
         "priority_claim_get", "priority_claim_record", "priority_context_get",
-        "review_submit", "activation_obligation_transition",
+        "review_submit",
     } <= injected_tools
     assert {"review_request", "review_get", "review_recover"} <= injected_tools
     assert [

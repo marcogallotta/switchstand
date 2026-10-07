@@ -1,9 +1,6 @@
-from typing import Any
 from uuid import uuid4
 
-import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, grant, service
-from mcp.server.mcpserver.exceptions import ToolError
 
 from switchstand.activation_continuity import (
     ActivationContract,
@@ -12,6 +9,7 @@ from switchstand.activation_continuity import (
     open_obligation,
 )
 from switchstand.chatgpt_mcp import build_chatgpt_server
+from switchstand.mcp import build_context_server
 from switchstand.product_currentness import ProductCurrentness
 
 
@@ -38,6 +36,7 @@ def technical(bound: ActivationContract) -> TechnicalBasis:
 class Continuity:
     def __init__(self, bound: ActivationContract):
         self.bound, self.seen, self.current = bound, None, None
+        self.contracts = {bound.obligation_id: bound}
 
     async def transition(self, principal, selected, runtime, intent, basis, proof):
         self.seen = principal, selected, runtime, intent, basis, proof
@@ -51,67 +50,91 @@ class Continuity:
         return () if self.current is None or owner_work_id != ACTIVE else (self.current,)
 
 
-async def test_tool_is_absent_without_server_owned_continuity() -> None:
-    subject = service()
-    names = {tool.name for tool in await build_chatgpt_server(subject).list_tools()}
-    assert "activation_obligation_transition" not in names
-
-
-async def test_authenticated_tool_derives_actor_and_sanitizes_internal_evidence() -> None:
+async def test_ordinary_surface_exposes_preflight_but_never_mutation() -> None:
     subject, bound = service(), contract()
+    subject.activation_continuity = Continuity(bound)
+    server = build_chatgpt_server(subject)
+    assert "activation_obligation_transition" not in {
+        tool.name for tool in await server.list_tools()
+    }
+    result = await server.call_tool("capability_preflight_get", {"api_version": "1"})
+    assert result.structured_content["reasons"] == ["WORK_BOUND_ACTOR_REQUIRED"]
+
+
+async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None:
+    bound, selected = contract(), grant()
     continuity = Continuity(bound)
-    subject.activation_continuity = continuity
+    grants = service().admission_grants
+    grants.grant = selected
 
     async def resolve_technical(_principal, _obligation_id):
         return technical(bound)
 
-    subject.activation_technical = resolve_technical
+    async def resolve_proof(*_args):
+        return None
 
-    async def resolve_runtime(_principal, selected):
-        return RuntimeBinding(
-            actor_work_id=selected.authority.active_work_id,
-            binding_token="runtime/current",
-            currentness="CURRENT",
-        )
-
-    subject.activation_runtime = resolve_runtime
-    subject.admission_grants.grant = grant(
-        operations=frozenset({"activation_continuity", "work_get"})
-    )
-    server, operation_id = build_chatgpt_server(subject), uuid4()
-    result = await server.call_tool("activation_obligation_transition", {
-        "api_version": "1", "operation_id": str(operation_id),
-        "obligation_id": str(bound.obligation_id), "observed_revision": "MISSING",
-        "transition": "ACTIVATED",
-    })
-    payload: dict[str, Any] = result.structured_content
-    assert (payload["status"], payload["state"]) == ("APPLIED", "VERIFY_NOW")
-    assert continuity.seen[0] == PRINCIPAL and continuity.seen[3].operation_id == operation_id
-    assert "private-actor-ref" not in str(payload) and "technical_basis_ref" not in str(payload)
-    projected = await server.call_tool("work_get", {"api_version": "1", "work_id": str(ACTIVE)})
-    obligation = projected.structured_content["activation_obligations"][0]
-    assert (obligation["target_revision"], obligation["next_action"]) == (
-        "git:abc", "VERIFY_NOW"
-    )
-
-
-async def test_missing_grant_denies_and_internal_fields_are_closed() -> None:
-    subject, bound = service(), contract()
-    continuity = Continuity(bound)
-    subject.activation_continuity = continuity
-    subject.admission_grants.grant = grant(operations=frozenset({"work_get"}))
-    server = build_chatgpt_server(subject)
-    arguments = {
+    plain = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL)
+    assert "activation_obligation_transition" not in {
+        tool.name for tool in await plain.list_tools()
+    }
+    unavailable = await plain.call_tool("capability_preflight_get", {"api_version": "1"})
+    reasons = unavailable.structured_content["reasons"]
+    assert reasons == ["TOOL_NOT_EXPOSED", "OPERATION_NOT_GRANTED"]
+    selected = grant(operations=frozenset({"activation_continuity"}))
+    grants.grant = selected
+    activation = (continuity, resolve_technical, resolve_proof, (selected.id, selected.version))
+    server = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+                                  activation=activation)
+    names = {tool.name for tool in await server.list_tools()}
+    assert "activation_obligation_transition" in names
+    ready = await server.call_tool("capability_preflight_get", {"api_version": "1"})
+    assert ready.structured_content["status"] == "READY"
+    applied = await server.call_tool("activation_obligation_transition", {
         "api_version": "1", "operation_id": str(uuid4()),
         "obligation_id": str(bound.obligation_id), "observed_revision": "MISSING",
         "transition": "ACTIVATED",
-    }
-    denied = await server.call_tool("activation_obligation_transition", arguments)
-    assert (denied.structured_content["status"], continuity.seen) == ("DENIED", None)
-    with pytest.raises(ToolError, match="Extra inputs are not permitted"):
-        await server.call_tool("activation_obligation_transition", {
-            **arguments, "actor_work_id": str(ACTIVE),
-        })
+    })
+    assert applied.structured_content["status"] == "APPLIED"
+    stale = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+                                 activation=(*activation[:3], (uuid4(), selected.version)))
+    result = await stale.call_tool("capability_preflight_get", {"api_version": "1"})
+    assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
+    selected = selected.model_copy(update={"state": "revoked"})
+    grants.grant = selected
+    result = await build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+        activation=(*activation[:3], (selected.id, selected.version))).call_tool(
+            "capability_preflight_get", {"api_version": "1"})
+    assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
+
+
+async def test_managed_preflight_closes_missing_stale_mismatched_and_failed_inputs() -> None:
+    bound, selected = contract(), grant(operations=frozenset({"activation_continuity"}))
+    continuity = Continuity(bound)
+    grants = service().admission_grants
+    grants.grant = selected
+    async def project(contracts, basis, proof_route=True):
+        async def resolve(_principal, _obligation_id):
+            if isinstance(basis, Exception):
+                raise basis
+            return basis
+        expected_grant = selected.id, selected.version
+        server = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+            activation=(contracts, resolve, resolve if proof_route else None, expected_grant))
+        result = await server.call_tool("capability_preflight_get", {"api_version": "1"})
+        return result.structured_content
+    empty = Continuity(bound)
+    empty.contracts = {}
+    assert "CONTRACT_NOT_INSTALLED" in (await project(empty, None))["reasons"]
+    assert "TECHNICAL_PROOF_MISSING" in (await project(continuity, None))["reasons"]
+    stale = technical(bound).model_copy(update={"currentness": "STALE"})
+    assert "TECHNICAL_PROOF_STALE" in (await project(continuity, stale))["reasons"]
+    result = technical(bound).result.model_copy(update={"product_work_id": uuid4()})
+    mismatched = technical(bound).model_copy(update={"result": result})
+    assert "TECHNICAL_PROOF_MISSING" in (await project(continuity, mismatched))["reasons"]
+    assert "PROOF_ROUTE_MISSING" in (await project(continuity, technical(bound), False))["reasons"]
+    failed = await project(continuity, RuntimeError("currentness unavailable"))
+    states = failed["status"], failed["actor_binding"], failed["technical_proof"]
+    assert states == ("UNKNOWN", "UNKNOWN", "UNKNOWN")
 
 
 async def test_unresolved_runtime_and_proof_fail_closed_before_transition() -> None:

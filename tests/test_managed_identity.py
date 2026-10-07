@@ -19,9 +19,13 @@ async def test_priority_claim_authority_is_explicit_launch_opt_in():
     enabled = await rotate_managed_grant(
         Grants(), authority, priority_claims=True,  # type: ignore[arg-type]
     )
+    activation = await rotate_managed_grant(
+        Grants(), authority, activation_continuity=True)  # type: ignore[arg-type]
 
     assert "priority_claim" not in ordinary.operations
+    assert "activation_continuity" not in ordinary.operations
     assert ordinary.priority_claim_qualification is None
     assert "priority_claim" in enabled.operations
     assert enabled.priority_claim_qualification == "managed:task-bound"
-    assert [expected for _, expected in issued] == [None, None]
+    assert "activation_continuity" in activation.operations
+    assert [expected for _, expected in issued] == [None, None, None]

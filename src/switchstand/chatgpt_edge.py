@@ -311,7 +311,7 @@ async def _activation_runtime(
     )
 
 
-def _managed_activation_proof(
+def managed_activation_proof(
     tasks: TaskRunState,
     contracts: Mapping[UUID, ActivationContract],
 ):
@@ -626,7 +626,7 @@ async def resource_service(
                 else ActivationContinuity(engine, activation_contracts)
             ))
         if activation_contracts is not None:
-            service.activation_proof = _managed_activation_proof(
+            service.activation_proof = managed_activation_proof(
                 TaskRunState(engine, canonical_repository), activation_contracts
             )
         runtime = (

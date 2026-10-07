@@ -161,7 +161,7 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         assert set(tools) == {
             "work_get", "work_history", "priority_claim_get",
-            "priority_claim_record", "priority_context_get",
+            "priority_claim_record", "priority_context_get", "capability_preflight_get",
         }
         schema = tools["priority_claim_record"].input_schema
         assert "work_id" not in schema["properties"]
@@ -216,9 +216,10 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
         assert captured["priority_claims"] is not None
         assert captured["priority_context"] is not None
     else:
-        assert all(captured[name] is None for name in (
-            "principal", "grants", "priority_claims", "priority_context",
-        ))
+        assert captured["principal"] == managed_principal(ID)
+        assert captured["grants"] is not None
+        assert captured["priority_claims"] is captured["priority_context"] is None
+    assert captured["activation"] is None
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])
@@ -511,6 +512,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == {
             "work_get", "work_history", "work_event", "work_append",
+            "capability_preflight_get",
         }
         config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
         assert set(config["mcp_servers"]["switchstand_managed"]["enabled_tools"]) == {

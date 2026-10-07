@@ -23,6 +23,12 @@ MANIFEST_VERSION = 1
 MAX_MANIFEST_BYTES = 64 * 1024
 MANAGED_CHILDREN = Budget(1400, 2048, 256, 200, 192, 2, 0)
 MANAGED_ROOT_BUDGET = CLASSES["implementation"].add(MANAGED_CHILDREN)
+ACTIVATION_ENV = """SWITCHSTAND_ACTIVATION_CONTINUITY SWITCHSTAND_ACTIVATION_CONTRACTS_PATH
+SWITCHSTAND_PRODUCT_CURRENTNESS SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA
+SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID
+SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256
+SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT
+SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY""".split()  # noqa: SIM905
 
 
 class PreparedLaunch(BaseModel):
@@ -68,6 +74,7 @@ def managed_parent_command(
     assignment: str,
     *,
     priority_claims: bool = False,
+    activation_environment: dict[str, str] | None = None,
 ) -> tuple[str, ...]:
     """Construct the only command shape admitted by a prepared managed launch."""
     if not assignment:
@@ -79,13 +86,18 @@ def managed_parent_command(
         "Work only in the exact private writer. Native children inherit this WorkId and "
         "must use narrower authorization; messages and context never grant authority."
     )
-    enabled_tools = ["work_get", "work_history"]
-    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
+    enabled_tools = ["work_get", "work_history", "capability_preflight_get"]
+    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
+                             "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION"]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
         ))
         forwarded_environment.append("SWITCHSTAND_PRIORITY_CLAIMS")
+    if activation_environment is not None:
+        enabled_tools.append("activation_obligation_transition")
+        if set(activation_environment) != set(ACTIVATION_ENV):
+            raise ValueError("activation continuity requires its exact launch environment")
     return (
         str(codex_executable),
         "exec",
@@ -101,6 +113,9 @@ def managed_parent_command(
         "-c",
         "mcp_servers.switchstand.env_vars="
         + json.dumps(forwarded_environment, separators=(",", ":")),
+        *(("-c", "mcp_servers.switchstand.env=" + json.dumps(
+            activation_environment, separators=(",", ":"), sort_keys=True))
+          if activation_environment is not None else ()),
         "-c",
         "mcp_servers.switchstand.enabled_tools="
         + json.dumps(enabled_tools, separators=(",", ":")),
@@ -141,6 +156,7 @@ class PreparedLaunchStore:
         codex_executable: Path,
         assignment: str,
         priority_claims: bool = False,
+        activation_environment: dict[str, str] | None = None,
     ) -> Path:
         lease = self.broker.lease(lease_id)
         if lease.get("reservation_id") != reservation_id or lease["state"] != "reserved":
@@ -172,6 +188,7 @@ class PreparedLaunchStore:
             command=managed_parent_command(
                 executable, resolved_control, resolved_writer, assignment,
                 priority_claims=priority_claims,
+                activation_environment=activation_environment,
             ),
         )
         self._private_directory(self.directory)
@@ -333,6 +350,7 @@ class ManagedParentLauncher:
         codex_executable: Path,
         assignment: str,
         priority_claims: bool = False,
+        activation_environment: dict[str, str] | None = None,
         pressure: Pressure | None = None,
     ) -> dict[str, Any]:
         try:
@@ -371,6 +389,7 @@ class ManagedParentLauncher:
                 codex_executable=codex_executable,
                 assignment=assignment,
                 priority_claims=priority_claims,
+                activation_environment=activation_environment,
             )
         except Exception:
             store.reconcile_unlaunched(
