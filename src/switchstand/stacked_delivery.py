@@ -64,6 +64,12 @@ class LayerQualification:
     composition_sha: str | None = None
 
 
+@dataclass(frozen=True)
+class ReviewReceipt:
+    subject_sha: str
+    verdict: ReviewVerdict
+
+
 def layer_qualification_is_sufficient(
     evidence: LayerQualification,
     required: frozenset[EvidenceDimension] = frozenset(),
@@ -106,7 +112,7 @@ class StackLandingEvidence:
 
     exact_top_sha: str
     exact_composition_sha: str
-    cumulative_review_sha: str | None
+    cumulative_review: ReviewReceipt | None
     cumulative_quality_sha: str | None
     focused_reviews: tuple[FocusedReviewCheck, ...]
     qualifications: tuple[LayerQualification, ...]
@@ -177,9 +183,11 @@ def stack_is_ready_to_land(evidence: StackLandingEvidence) -> bool:
     return (
         _SHA.fullmatch(evidence.exact_top_sha) is not None
         and _SHA.fullmatch(evidence.exact_composition_sha) is not None
-        and _SHA.fullmatch(evidence.cumulative_review_sha or "") is not None
+        and evidence.cumulative_review is not None
+        and evidence.cumulative_review.verdict == "PASS"
+        and _SHA.fullmatch(evidence.cumulative_review.subject_sha) is not None
         and _SHA.fullmatch(evidence.cumulative_quality_sha or "") is not None
         and layer_qualification_is_sufficient(qualification, REQUIRED_LANDING_DIMENSIONS)
-        and evidence.cumulative_review_sha == evidence.exact_top_sha
+        and evidence.cumulative_review.subject_sha == evidence.exact_top_sha
         and evidence.cumulative_quality_sha == evidence.exact_top_sha
     )
