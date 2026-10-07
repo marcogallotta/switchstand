@@ -202,7 +202,20 @@ jobs:
               ancestry = None
               commits = None
               changed_paths = None
+              planner_policy_changed = None
+              unresolved_hard_miss = None
               if baseline_sha:
+                  policy_paths = ('src/switchstand/affected_tests.py',
+                                  'src/switchstand/full_suite_due.py')
+                  policy_identity = lambda sha: subprocess.check_output(
+                      ['git', 'rev-parse', *(f'{sha}:{path}' for path in policy_paths)], text=True,
+                  )
+                  planner_policy_changed = policy_identity(baseline_sha) != policy_identity(head)
+                  if history_complete == 'true':
+                      unresolved_hard_miss = any(
+                          row[2] != 'success' and row[3] == current_blob and row[4]
+                          and datetime.fromisoformat(row[4]) > baseline_at for row in rows
+                      )
                   ancestry = subprocess.run(
                       ['git', 'merge-base', '--is-ancestor', baseline_sha, head], check=False,
                   ).returncode == 0
@@ -218,7 +231,8 @@ jobs:
                   baseline_sha=baseline_sha, baseline_completed_at=baseline_at,
                   evaluated_at=datetime.now(UTC), commits_since_baseline=commits,
                   changed_paths_since_baseline=changed_paths, ancestry_verified=ancestry,
-                  planner_policy_changed=False, unresolved_hard_miss=False,
+                  planner_policy_changed=planner_policy_changed,
+                  unresolved_hard_miss=unresolved_hard_miss,
                   current_truth_known=history_complete == 'true',
               ), FullSuitePolicy(20, 24 * 60 * 60, 100))
           except (OSError, subprocess.SubprocessError, TypeError, ValueError):
