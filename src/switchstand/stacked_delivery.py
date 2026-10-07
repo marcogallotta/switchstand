@@ -12,6 +12,13 @@ from typing import Literal
 
 ReviewVerdict = Literal["PASS", "FAIL", "UNKNOWN"]
 Inertness = Literal["INERT_PROVEN", "RELIANCE_CHANGING", "UNKNOWN"]
+EvidenceDimension = Literal[
+    "LAYER_CAUSAL_QUALITY",
+    "INERTNESS_NON_RELIANCE",
+    "CUMULATIVE_TOP_QUALITY",
+    "RUNTIME_LIFECYCLE",
+    "WAKEFUL_REAL_HOST",
+]
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -39,6 +46,26 @@ class LayerQualification:
     inertness: Inertness
     runtime_boundary_implicated: bool
     runtime_boundary_passed: bool = False
+
+
+@dataclass(frozen=True)
+class ProportionalQualification:
+    """Typed evidence for one layer without creating another landing decision."""
+
+    subject_sha: str
+    required: frozenset[EvidenceDimension]
+    passed: frozenset[EvidenceDimension]
+    unknown: frozenset[EvidenceDimension] = frozenset()
+
+
+def proportional_qualification_is_sufficient(evidence: ProportionalQualification) -> bool:
+    """Accept only exact, typed proof; missing or UNKNOWN dimensions fail closed."""
+
+    return (
+        _SHA.fullmatch(evidence.subject_sha) is not None
+        and not evidence.unknown
+        and evidence.required <= evidence.passed
+    )
 
 
 @dataclass(frozen=True)

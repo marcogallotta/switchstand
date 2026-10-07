@@ -6,9 +6,11 @@ from switchstand.stacked_delivery import (
     FocusedLayerReview,
     LayerQualification,
     LayerReviewIdentity,
+    ProportionalQualification,
     StackLandingEvidence,
     focused_review_is_current,
     layer_qualification_is_sufficient,
+    proportional_qualification_is_sufficient,
     stack_is_ready_to_land,
 )
 
@@ -94,6 +96,21 @@ def test_proportional_inert_qualification_fails_closed() -> None:
     )
     assert not layer_qualification_is_sufficient(
         LayerQualification("not-a-sha", True, "INERT_PROVEN", False)
+    )
+
+
+def test_typed_proportional_dimensions_fail_closed() -> None:
+    required = frozenset({"LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE"})
+    complete = ProportionalQualification("a" * 40, required, required)
+    assert proportional_qualification_is_sufficient(complete)
+    assert not proportional_qualification_is_sufficient(
+        ProportionalQualification("a" * 40, required, frozenset({"LAYER_CAUSAL_QUALITY"}))
+    )
+    assert not proportional_qualification_is_sufficient(
+        ProportionalQualification("a" * 40, required, required, frozenset({"RUNTIME_LIFECYCLE"}))
+    )
+    assert not proportional_qualification_is_sufficient(
+        ProportionalQualification("not-a-sha", required, required)
     )
 
 
