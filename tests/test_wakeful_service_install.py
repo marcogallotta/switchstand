@@ -64,6 +64,27 @@ def test_disable_uninstall_preserves_config(host, tmp_path):
     assert invoke("uninstall").returncode == 0
     assert not (host / ".config/systemd/user/switchstand-wakeful-root.service").exists()
     assert (host / ".config/switchstand/wakeful-root.json").exists()
+    assert invoke("uninstall").returncode == 0
+
+
+def test_status_rejects_drift_and_unsafe_artifacts(host, tmp_path):
+    source = private_config(tmp_path / "wakeful.json")
+    assert invoke("install", "--config", str(source)).returncode == 0
+    unit = host / ".config/systemd/user/switchstand-wakeful-root.service"
+    for unsafe in ("drift", "symlink"):
+        unit.unlink()
+        if unsafe == "symlink": unit.symlink_to(source)
+        else: unit.write_text("drift\n")
+        assert invoke("status").returncode != 0
+
+
+def test_install_preflights_targets_before_copying_unit(host, tmp_path):
+    source = private_config(tmp_path / "wakeful.json")
+    config = host / ".config/switchstand/wakeful-root.json"
+    config.parent.mkdir(parents=True)
+    config.symlink_to(source)
+    assert invoke("install", "--config", str(source)).returncode != 0
+    assert not (host / ".config/systemd/user/switchstand-wakeful-root.service").exists()
 
 
 @pytest.mark.parametrize("kind", ["mode", "symlink"])

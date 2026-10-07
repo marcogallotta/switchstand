@@ -342,6 +342,15 @@ def _check_deadline(deadline: float | None) -> None:
         raise OSError("UNKNOWN: admission deadline expired")
 
 
+def _history_record(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError(f"malformed {label}")
+    record = cast(dict[str, object], value)
+    if not isinstance(record.get("type"), str):
+        raise TypeError(f"malformed {label}")
+    return record
+
+
 def _developer_texts(
     home: Path, path: Path, *, require_private: bool = True,
 ) -> list[str]:
@@ -358,16 +367,27 @@ def _developer_texts(
     for line in body.decode().split("\n"):
         if not line:
             continue
-        record = json.loads(line)
-        payload = record.get("payload", {})
-        if (record.get("type") != "response_item"
-                or payload.get("type") != "message"
-                or payload.get("role") != "developer"):
+        record = _history_record(json.loads(line), "thread history record")
+        if record["type"] != "response_item":
             continue
-        texts.extend(
-            part["text"] for part in payload.get("content", [])
-            if part.get("type") == "input_text" and isinstance(part.get("text"), str)
-        )
+        payload = _history_record(record.get("payload"), "response item")
+        if payload["type"] != "message":
+            continue
+        role = payload.get("role")
+        if not isinstance(role, str):
+            raise TypeError("malformed message role")
+        if role != "developer":
+            continue
+        content = payload.get("content")
+        if not isinstance(content, list):
+            raise TypeError("malformed developer message")
+        for raw_part in cast(list[object], content):
+            part = _history_record(raw_part, "developer message part")
+            if part["type"] == "input_text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("malformed developer text")
+                texts.append(text)
     return texts
 
 

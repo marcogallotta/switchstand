@@ -754,13 +754,8 @@ are removal predicates, not removal decisions:
 - `marcogallotta/switchstandold` is read-only evidence, never an implementation base or architectural
   ancestor.
 
-`codex_wakeful.py` owns the standalone Codex adapter: authoritative mailbox following, unique
-current-thread/start-record discovery, endpoint locking, generation-scoped projection, bounded
-queue admission, and transition-only diagnostics. One user service follows an endpoint across
-takeover. Final revalidation/admission holds the mailbox-row lock used by takeover and transfer;
-ambiguous RPC results are reconciled from queue/history evidence and never blindly resent. The
-versioned systemd asset and bounded control script are the sole inert installation path.
-`wakeful.py` remains the neutral SQLite/outbox owner.
+`codex_wakeful.py` owns standalone mailbox following, binding discovery, scoped projection, bounded admission, and diagnostics. Its service follows takeover under the mailbox-row lock.
+Ambiguous RPC is reconciled, never resent blindly; installation is inert. `wakeful.py` still owns SQLite/outbox.
 The legacy `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
@@ -778,9 +773,8 @@ closes the lifeline so intake stops. The activated selector defaults to `PILOT`;
 database or service owner and leaves the existing probe CLI
 semantics unchanged. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
-to the exact Codex root/start record. Its source transactions finish before host admission; this
-is not the standalone service's takeover fence. The awakened agent must still reread the exact
-delivery before acting. Busy targets retain the durable queued input
+to the exact Codex root/start record. Its source transactions finish before host admission; this is
+not the standalone takeover fence. The awakened agent must reread the delivery before acting. Busy targets retain the durable queued input
 until idle; unsupported history and ambiguous attempts remain UNKNOWN without resend. Queue and
 consumed-history readback remain distinct. A home-wide private lock excludes all
 precursor writers, and the source is never received or dispositioned by intake. Stopping the

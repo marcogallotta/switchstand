@@ -1,6 +1,5 @@
 #!/bin/sh
 set -eu
-
 unit=switchstand-wakeful-root.service
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 asset=$root/packaging/systemd/user/$unit
@@ -8,43 +7,44 @@ unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/switchstand
 installed_unit=$unit_dir/$unit
 installed_config=$config_dir/wakeful-root.json
-
 usage() {
     echo "usage: $0 install --config ABSOLUTE_PATH | status | disable | uninstall" >&2
     exit 2
 }
-
+plain_file() {
+    [ ! -L "$1" ] && { [ ! -e "$1" ] || [ -f "$1" ]; } \
+        || { echo "$2 is not a regular non-symlink file: $1" >&2; exit 1; }
+}
+private_file() {
+    plain_file "$1" "$2"
+    [ -f "$1" ] && [ "$(stat -c %u "$1")" = "$(id -u)" ] \
+        && [ "$(stat -c %a "$1")" = 600 ] \
+        || { echo "$2 is absent or unsafe" >&2; exit 1; }
+}
 copy_if_changed() {
     source=$1 destination=$2 mode=$3
     if [ -f "$destination" ] && [ ! -L "$destination" ] && cmp -s "$source" "$destination"; then
         chmod "$mode" "$destination"
         return 1
     fi
-    temporary=$destination.tmp.$$
+    temporary=$(mktemp "$(dirname -- "$destination")/.${destination##*/}.XXXXXX")
     trap 'rm -f "$temporary"' EXIT HUP INT TERM
     install -m "$mode" "$source" "$temporary"
     mv -f "$temporary" "$destination"
     trap - EXIT HUP INT TERM
     return 0
 }
-
 command=${1:-}
 case "$command" in
 install)
     [ "$#" -eq 3 ] && [ "$2" = --config ] || usage
     source_config=$3
     case "$source_config" in /*) ;; *) usage ;; esac
-    [ -f "$source_config" ] && [ ! -L "$source_config" ] || {
-        echo "config must be a regular non-symlink file" >&2; exit 1;
-    }
-    [ "$(stat -c %u "$source_config")" = "$(id -u)" ] || {
-        echo "config must be owned by the current user" >&2; exit 1;
-    }
-    [ "$(stat -c %a "$source_config")" = 600 ] || {
-        echo "config must have mode 600" >&2; exit 1;
-    }
+    private_file "$source_config" "Wakeful source config"
     mkdir -p "$unit_dir" "$config_dir"
     chmod 700 "$config_dir"
+    plain_file "$installed_unit" "Wakeful unit"
+    plain_file "$installed_config" "Wakeful config"
     changed=false
     copy_if_changed "$asset" "$installed_unit" 644 && changed=true || :
     copy_if_changed "$source_config" "$installed_config" 600 || :
@@ -53,21 +53,30 @@ install)
     ;;
 status)
     [ "$#" -eq 1 ] || usage
+    plain_file "$installed_unit" "Wakeful unit"
+    private_file "$installed_config" "Wakeful config"
+    [ -f "$installed_unit" ] && cmp -s "$asset" "$installed_unit" \
+        || { echo "Wakeful unit is absent or drifted" >&2; exit 1; }
     systemctl --user show "$unit" --no-pager \
         --property=LoadState --property=UnitFileState \
         --property=ActiveState --property=SubState
     ;;
 disable)
     [ "$#" -eq 1 ] || usage
-    if [ -f "$installed_unit" ] && [ ! -L "$installed_unit" ]; then
+    plain_file "$installed_unit" "Wakeful unit"
+    if [ -f "$installed_unit" ]; then
         systemctl --user disable --now "$unit"
-        [ "$(systemctl --user show "$unit" --property=ActiveState --value)" = inactive ]
+        state=$(systemctl --user show "$unit" --property=ActiveState --value)
+        case "$state" in inactive|failed) echo "disabled=$state" ;; *) exit 1 ;; esac
     fi
     ;;
 uninstall)
     [ "$#" -eq 1 ] || usage
-    if [ -f "$installed_unit" ] && [ ! -L "$installed_unit" ]; then
-        systemctl --user disable --now "$unit" || :
+    plain_file "$installed_unit" "Wakeful unit"
+    if [ -f "$installed_unit" ]; then
+        cmp -s "$asset" "$installed_unit" \
+            || { echo "Wakeful unit is drifted; refusing deletion" >&2; exit 1; }
+        "$0" disable
         rm -- "$installed_unit"
         systemctl --user daemon-reload
     fi

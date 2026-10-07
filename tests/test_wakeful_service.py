@@ -81,6 +81,20 @@ def test_strict_private_config_and_dynamic_binding(tmp_path):
         load_service_config(path)
 
 
+def test_dynamic_binding_handles_rollout_record_shapes(tmp_path):
+    _token, thread, mailbox = discovery_subject(tmp_path)
+    rollout = Path(thread["path"])
+    good = rollout.read_bytes()
+    malformed = [[], {"type": "response_item", "payload": {"type": "message",
+                  "role": "developer", "content": [None]}}]
+    for record in malformed:
+        atomic_replace_bytes(rollout, (json.dumps(record) + "\n").encode())
+        assert resolve_current_binding(DiscoveryClient(thread), tmp_path, mailbox) == "UNAVAILABLE"
+    atomic_replace_bytes(rollout, (json.dumps({"type": "event"}) + "\n").encode() + good)
+    result = resolve_current_binding(DiscoveryClient(thread), tmp_path, mailbox)
+    assert isinstance(result, CodexBinding)
+
+
 async def test_service_follows_takeover_without_restart(subject, tmp_path, monkeypatch):
     messages, engine, _grants, principal, sender, _, _ = subject
     mailboxes = AgentMailboxState(engine)
