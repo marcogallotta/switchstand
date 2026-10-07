@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, insert, text
+from sqlalchemy import event, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
@@ -25,10 +25,14 @@ from switchstand.messages import (
     MessageSubmitRequest,
     RuntimeCurrentness,
 )
+from switchstand.messages import (
+    messages as message_rows,
+)
 from switchstand.reviews import (
     CanonicalReviewBrief,
     ReviewBasis,
     ReviewEnvelope,
+    ReviewerBound,
     ReviewFinding,
     ReviewGuidelines,
     ReviewOccurrenceState,
@@ -999,6 +1003,18 @@ async def test_acquisition_is_atomic_and_bundle_is_fenced(occurrence_runtime):
     assert (await service.bundle_access(
         waiting.review_id, reviewer, access.basis,
     )).status == "READY"
+    async with engine.begin() as connection:
+        acknowledgement = ReviewerBound(review_id=waiting.review_id,
+            reviewer_delivery_id=sent.delivery_id, reviewer_name=reviewer.name)
+        target = (message_rows.c.route_ref == "review.acquisition") & (
+            message_rows.c.kind == "result")
+        await connection.execute(update(message_rows).where(target).values(payload={}))
+    assert (await service.bundle_access(
+        waiting.review_id, reviewer, access.basis,
+    )).status == "UNKNOWN"
+    async with engine.begin() as connection:
+        await connection.execute(update(message_rows).where(target).values(
+            payload=acknowledgement.model_dump(mode="json")))
     async with engine.begin() as connection:
         await connection.execute(text(
             "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
